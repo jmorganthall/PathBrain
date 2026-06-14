@@ -1,0 +1,30 @@
+# PathBrain — single-container deployment (API serves the built UI).
+# Designed for Unraid Docker / generic Linux hosts. Persistent state lives in the
+# named volume mounted at /data.
+
+services:
+  pathbrain:
+    build: .
+    image: pathbrain:latest
+    container_name: pathbrain
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Storage (SQLite on the persistent volume)
+      PATHBRAIN_DATABASE_URL: "sqlite:////data/pathbrain.db"
+      PATHBRAIN_LOG_LEVEL: "INFO"
+
+      # Config discovery: "mock" (default) or "opnsense"
+      PATHBRAIN_CONFIG_PROVIDER: "${PATHBRAIN_CONFIG_PROVIDER:-mock}"
+
+      # OPNsense API (only used when provider is "opnsense")
+      PATHBRAIN_OPNSENSE_URL: "${PATHBRAIN_OPNSENSE_URL:-}"
+      PATHBRAIN_OPNSENSE_API_KEY: "${PATHBRAIN_OPNSENSE_API_KEY:-}"
+      PATHBRAIN_OPNSENSE_API_SECRET: "${PATHBRAIN_OPNSENSE_API_SECRET:-}"
+      PATHBRAIN_OPNSENSE_VERIFY_TLS: "${PATHBRAIN_OPNSENSE_VERIFY_TLS:-false}"
+    volumes:
+      - pathbrain-data:/data
+
+volumes:
+  pathbrain-data:
