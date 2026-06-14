@@ -2,7 +2,7 @@
 name = "pathbrain"
 version = "0.1.0"
 description = "AI-driven Network Optimization and SD-WAN Intelligence Platform"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

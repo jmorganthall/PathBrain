@@ -10,21 +10,16 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- Stage 2: backend runtime --------------------------------------------
-FROM python:3.11-slim AS runtime
-
-# icmplib needs iputils for some environments; install ca-certs for TLS probes.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Use the official Playwright image: Chromium + all of its OS dependencies and
+# matching browser binaries are preinstalled (browser version matches the
+# playwright==1.44.0 pin in requirements.txt). This avoids the Debian-Bookworm
+# `playwright install --with-deps` font-package breakage.
+FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy AS runtime
 
 WORKDIR /app
 
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Browser engine: install Chromium + its OS dependencies for Playwright so the
-# `browser` benchmark (total render / SOPS render metric) works out of the box.
-RUN playwright install --with-deps chromium
 
 COPY backend/ ./backend/
 COPY --from=frontend /frontend/dist ./frontend/dist
