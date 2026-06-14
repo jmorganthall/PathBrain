@@ -52,9 +52,13 @@ docker compose up --build   # -> http://localhost:8000
 
 - **Phase 1 (done):** benchmark engine (ICMP/DNS/TCP/TLS/HTTP), SOPS scoring,
   history, config discovery (OPNsense/mock), REST API, dashboard.
-- **Next:** Playwright browser engine (`render` metric is already wired into
-  scoring), real-world profiles, speed test, bufferbloat, experiment engine,
+- **Phase 2 (done):** Playwright browser engine — `benchmark_browser` emits
+  `total_render_ms` (+ nav timings), captures screenshot/HAR to the artifact dir,
+  served at `/artifacts`. The `render` SOPS weight (25%) activates automatically.
+- **Next:** continuous monitoring (scheduled runs + settings-vs-responsiveness
+  correlation), real-world profiles, speed test, bufferbloat, experiment engine,
   autonomous closed-loop optimization, routing intelligence / SD-WAN.
 
-When adding the browser engine, emit metrics under a `browser` plugin with key
-`total_render_ms` and the `render` SOPS weight activates automatically.
+The browser engine imports Playwright lazily, so the plugin registry still loads
+where Playwright/Chromium isn't installed (it returns `success=False` and the
+`render` weight is redistributed). Chromium is installed in the Docker image.

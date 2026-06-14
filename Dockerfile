@@ -22,10 +22,15 @@ WORKDIR /app
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Browser engine: install Chromium + its OS dependencies for Playwright so the
+# `browser` benchmark (total render / SOPS render metric) works out of the box.
+RUN playwright install --with-deps chromium
+
 COPY backend/ ./backend/
 COPY --from=frontend /frontend/dist ./frontend/dist
 
 ENV PATHBRAIN_DATABASE_URL=sqlite:////data/pathbrain.db \
+    PATHBRAIN_ARTIFACT_DIR=/data/artifacts \
     PATHBRAIN_FRONTEND_DIST=/app/frontend/dist \
     PATHBRAIN_HOST=0.0.0.0 \
     PATHBRAIN_PORT=8000 \

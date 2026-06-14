@@ -1,11 +1,15 @@
 <h1 align="center">PathBrain</h1>
 
 <p align="center">
-  <b>An AI-driven Network Optimization &amp; SD-WAN Intelligence Platform.</b><br>
-  It doesn't ask "is your ping low?" — it asks <i>"does the Internet actually <b>feel</b> faster?"</i>
+  <b>A Seat of Pants Score engine for your Internet connection.</b><br>
+  It doesn't ask "is your ping low?" — it asks <i>"does the Internet actually <b>feel</b> faster?"</i><br>
+  …then tracks that score over time and correlates it with your network settings
+  (OPNsense FQ-CoDel / SQM being the first-class integration).
 </p>
 
 <p align="center">
+  <img alt="OPNsense" src="https://img.shields.io/badge/firewall-OPNsense-D94F00?logo=opnsense&logoColor=white">
+  <img alt="SQM" src="https://img.shields.io/badge/SQM-FQ--CoDel-blueviolet">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/UI-React%20%2B%20MUI-61DAFB?logo=react&logoColor=black">
@@ -17,16 +21,32 @@
 
 ## What is PathBrain?
 
-Most network tools optimize for **ping**, **throughput**, or synthetic benchmark
-numbers. None of those reliably answer the only question a human actually cares
-about: *when I click something, how fast does it feel?*
+PathBrain measures the one thing common tools don't: **how responsive your
+Internet connection actually *feels*.** It runs real benchmark suites, distills
+them into a single **Seat of Pants Score (SOPS)** that models **human-perceived
+responsiveness**, and tracks that score over time — so you can finally answer
+*"when was the Internet fastest?"* and *"did that change make it feel better or
+worse?"* with data instead of folklore.
 
-PathBrain optimizes for that directly. It runs real benchmark suites, scores them
-against a proprietary **Seat of Pants Score (SOPS)** that models **human-perceived
-responsiveness**, stores every run, and lets you compare configurations over time.
-The long-term goal is a self-tuning home SD-WAN controller that empirically
-discovers the settings that make the Internet *feel* fastest — safely, with
-snapshots and rollback.
+Most tools optimize for **ping**, **throughput**, or synthetic scores. None of
+those reliably answer what a human cares about: *when I click something, how fast
+does it feel?* SOPS is built for exactly that — and deliberately keeps raw ping
+from dominating.
+
+Where it gets powerful: PathBrain can **correlate your score with the network
+settings that were live when each run ran.** Its first-class integration is the
+**[OPNsense](https://opnsense.org/) API**, which it uses to discover your
+**FQ-CoDel / SQM** traffic-shaper configuration (bandwidth, quantum, limit,
+target, interval, ECN, flows, …). That turns the eternal SQM question — *what
+settings are actually best?* — into an empirical, measured answer.
+
+- **No firewall?** It's still a first-class **SOPS tracker** for your connection.
+- **Running OPNsense SQM?** You also get settings-vs-responsiveness correlation
+  and (on the roadmap) closed-loop autonomous tuning — apply a candidate,
+  benchmark, keep it if SOPS improved, roll back if not, always snapshot-first.
+
+> The provider layer is pluggable (pfSense / Linux `tc` can follow), with OPNsense
+> traffic shaping as the first-class integration.
 
 > **Philosophy:** Empirical. Never assume. Never rely on folklore. Every
 > optimization is tested, measured, scored, and historically tracked.
@@ -39,7 +59,7 @@ higher score), then combined by weight:
 
 | Metric | Source | Default weight | Why |
 | --- | --- | ---: | --- |
-| Render | Browser (Playwright, *Phase 2*) | 25% | What the user literally watches load |
+| Render | Browser (headless Chromium) | 25% | What the user literally watches load |
 | TTFB | HTTP | 20% | First sign the page is responding |
 | TLS | TLS handshake | 20% | Felt on every new secure connection |
 | TCP | TCP connect | 15% | Connection setup latency |
@@ -67,9 +87,10 @@ explore it in the dashboard.**
 
 **Implemented**
 
-- 🔌 **Plugin benchmark engine** — five independent, registered benchmarks:
+- 🔌 **Plugin benchmark engine** — six independent, registered benchmarks:
   `icmp` (latency / jitter / loss), `dns` (per-resolver lookup), `tcp` (connect),
-  `tls` (handshake), `http` (TTFB / download / transfer speed).
+  `tls` (handshake), `http` (TTFB / download / transfer speed), and `browser`
+  (headless-Chromium page-load timing + **total render**, with screenshot & HAR).
 - 🧮 **SOPS scoring engine** — weighted, normalized, with proportional weight
   redistribution.
 - 🔍 **Configuration discovery** — pluggable providers: a real **OPNsense API**
@@ -81,9 +102,10 @@ explore it in the dashboard.**
 - 💾 **SQLite persistence** with background run execution and status tracking.
 
 **Planned (next phases)** — scaffolding and scoring hooks already in place:
-Playwright **browser engine** (the `render` weight activates automatically),
-real-world test profiles, speed test, bufferbloat test, **experiment engine**
-(apply → benchmark → keep/rollback), **autonomous closed-loop optimization**, and
+**continuous monitoring** (scheduled runs + settings-vs-responsiveness
+correlation), real-world test profiles, speed test, bufferbloat test,
+**experiment engine** (apply → benchmark → keep/rollback),
+**autonomous closed-loop optimization**, and
 **routing intelligence / SD-WAN** with hysteresis.
 
 ---
@@ -91,6 +113,26 @@ real-world test profiles, speed test, bufferbloat test, **experiment engine**
 ## Quick start (Docker)
 
 The whole stack runs as a **single container** — the API serves the built UI.
+
+### Option A — pull the pre-built image (recommended)
+
+A GitHub Action publishes a ready-to-run image to the **GitHub Container
+Registry** on every push. No source checkout, no build:
+
+```bash
+# Grab just the compose file
+curl -O https://raw.githubusercontent.com/jmorganthall/pathbrain/main/docker-compose.ghcr.yml
+
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+Update later with `docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d`.
+Pin a release by changing `:latest` to a tag like `:v0.1.0`.
+
+> If the GHCR package is **private**, log in once first:
+> `docker login ghcr.io -u <you> -p <token-with-read:packages>`.
+
+### Option B — build from source
 
 ```bash
 git clone https://github.com/jmorganthall/pathbrain.git
@@ -100,8 +142,8 @@ docker compose up --build
 
 Then open **http://localhost:8000** and click **Run Benchmark**.
 
-Persistent state (SQLite DB, snapshots) lives in the `pathbrain-data` Docker
-volume, so it survives restarts and image rebuilds.
+Persistent state (SQLite DB, snapshots, browser artifacts) lives in the
+`pathbrain-data` Docker volume, so it survives restarts and image rebuilds.
 
 ### `docker-compose.yml`
 
@@ -131,8 +173,10 @@ volumes:
   pathbrain-data:
 ```
 
-> **Unraid:** add the container with port `8000` published and a single volume
-> mapped to `/data`. Set the `PATHBRAIN_*` variables as container variables.
+> **Unraid:** the simplest path is the **Docker Compose Manager** plugin —
+> create a stack from [`docker-compose.ghcr.yml`](docker-compose.ghcr.yml) and
+> drop a `.env` file (copied from [`.env.example`](.env.example)) next to it;
+> Compose auto-loads it. Publish port `8000` and keep the single `/data` volume.
 > Because PathBrain measures *your* path to the Internet, run it on the network
 > whose responsiveness you want to score.
 
@@ -278,10 +322,12 @@ docker-compose.yml   Single-container deployment
 
 - [x] **Phase 1 — Foundation:** benchmark engine, SOPS scoring, history, config
       discovery, REST API, dashboard.
-- [ ] **Phase 2 — Browser engine:** headless Chromium via Playwright (navigation
+- [x] **Phase 2 — Browser engine:** headless Chromium via Playwright (navigation
       timing, DOMContentLoaded, load, network idle, total render, screenshot +
       HAR). The `render` SOPS weight activates automatically.
-- [ ] **Phase 2 — Real-world profiles, speed test, bufferbloat test.**
+- [ ] **Continuous monitoring:** scheduled recurring runs, windowed averages, and
+      settings-vs-responsiveness correlation.
+- [ ] **Real-world profiles, speed test, bufferbloat test.**
 - [ ] **Phase 3 — Experiment engine:** apply candidate → wait → benchmark →
       keep/rollback, always snapshot-first.
 - [ ] **Phase 4 — Autonomous closed-loop optimization.**

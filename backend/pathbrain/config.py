@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     # Storage
     database_url: str = "sqlite:///./data/pathbrain.db"
+    # Where browser-engine artifacts (screenshots, HAR files) are written.
+    artifact_dir: str = "./data/artifacts"
 
     # Server
     host: str = "0.0.0.0"

@@ -43,7 +43,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="PathBrain",
     version=__version__,
-    description="AI-driven Network Optimization and SD-WAN Intelligence Platform",
+    description="Empirical tuner for OPNsense SQM / FQ-CoDel traffic shaping, "
+    "scored by human-perceived responsiveness (Seat of Pants Score).",
     lifespan=lifespan,
 )
 
@@ -64,6 +65,12 @@ app.include_router(api_router)
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok", "version": __version__}
+
+
+# -- Browser-engine artifacts (screenshots, HAR) --------------------------
+_artifact_dir = os.path.abspath(settings.artifact_dir)
+os.makedirs(_artifact_dir, exist_ok=True)
+app.mount("/artifacts", StaticFiles(directory=_artifact_dir), name="artifacts")
 
 
 # -- Static frontend (production) -----------------------------------------
