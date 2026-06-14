@@ -114,6 +114,26 @@ correlation), real-world test profiles, speed test, bufferbloat test,
 
 The whole stack runs as a **single container** — the API serves the built UI.
 
+### Option A — pull the pre-built image (recommended)
+
+A GitHub Action publishes a ready-to-run image to the **GitHub Container
+Registry** on every push. No source checkout, no build:
+
+```bash
+# Grab just the compose file
+curl -O https://raw.githubusercontent.com/jmorganthall/pathbrain/main/docker-compose.ghcr.yml
+
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+Update later with `docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d`.
+Pin a release by changing `:latest` to a tag like `:v0.1.0`.
+
+> If the GHCR package is **private**, log in once first:
+> `docker login ghcr.io -u <you> -p <token-with-read:packages>`.
+
+### Option B — build from source
+
 ```bash
 git clone https://github.com/jmorganthall/pathbrain.git
 cd pathbrain
@@ -122,8 +142,8 @@ docker compose up --build
 
 Then open **http://localhost:8000** and click **Run Benchmark**.
 
-Persistent state (SQLite DB, snapshots) lives in the `pathbrain-data` Docker
-volume, so it survives restarts and image rebuilds.
+Persistent state (SQLite DB, snapshots, browser artifacts) lives in the
+`pathbrain-data` Docker volume, so it survives restarts and image rebuilds.
 
 ### `docker-compose.yml`
 
@@ -153,8 +173,10 @@ volumes:
   pathbrain-data:
 ```
 
-> **Unraid:** add the container with port `8000` published and a single volume
-> mapped to `/data`. Set the `PATHBRAIN_*` variables as container variables.
+> **Unraid:** the simplest path is the **Docker Compose Manager** plugin —
+> create a stack from [`docker-compose.ghcr.yml`](docker-compose.ghcr.yml) and
+> drop a `.env` file (copied from [`.env.example`](.env.example)) next to it;
+> Compose auto-loads it. Publish port `8000` and keep the single `/data` volume.
 > Because PathBrain measures *your* path to the Internet, run it on the network
 > whose responsiveness you want to score.
 

@@ -1,0 +1,47 @@
+# PathBrain — deploy the pre-built image from GitHub Container Registry (GHCR).
+#
+# Use this on Unraid / any Docker host instead of building from source: it pulls
+# ghcr.io/jmorganthall/pathbrain:latest, which is published automatically by the
+# GitHub Actions workflow on every push to main.
+#
+# Quick start:
+#   docker compose -f docker-compose.ghcr.yml pull
+#   docker compose -f docker-compose.ghcr.yml up -d
+#
+# Update later:
+#   docker compose -f docker-compose.ghcr.yml pull && \
+#   docker compose -f docker-compose.ghcr.yml up -d
+#
+# Configuration: either set the PATHBRAIN_* variables in a .env file next to this
+# compose file (Docker Compose auto-loads it), or edit the environment block
+# below. Pin a specific release by changing ":latest" to e.g. ":v0.1.0".
+
+services:
+  pathbrain:
+    image: ghcr.io/jmorganthall/pathbrain:latest
+    container_name: pathbrain
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    # Allow the ICMP benchmark to send unprivileged ping (SOCK_DGRAM) sockets.
+    sysctls:
+      - net.ipv4.ping_group_range=0 2147483647
+    environment:
+      # Storage (SQLite + browser artifacts on the persistent volume)
+      PATHBRAIN_DATABASE_URL: "sqlite:////data/pathbrain.db"
+      PATHBRAIN_ARTIFACT_DIR: "/data/artifacts"
+      PATHBRAIN_LOG_LEVEL: "INFO"
+
+      # Config discovery: "mock" (default) or "opnsense"
+      PATHBRAIN_CONFIG_PROVIDER: "${PATHBRAIN_CONFIG_PROVIDER:-mock}"
+
+      # OPNsense API (only used when provider is "opnsense")
+      PATHBRAIN_OPNSENSE_URL: "${PATHBRAIN_OPNSENSE_URL:-}"
+      PATHBRAIN_OPNSENSE_API_KEY: "${PATHBRAIN_OPNSENSE_API_KEY:-}"
+      PATHBRAIN_OPNSENSE_API_SECRET: "${PATHBRAIN_OPNSENSE_API_SECRET:-}"
+      PATHBRAIN_OPNSENSE_VERIFY_TLS: "${PATHBRAIN_OPNSENSE_VERIFY_TLS:-false}"
+    volumes:
+      - pathbrain-data:/data
+
+volumes:
+  pathbrain-data:
