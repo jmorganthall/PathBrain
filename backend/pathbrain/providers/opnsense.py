@@ -1,0 +1,144 @@
+"""OPNsense configuration discovery provider.
+
+Talks to the OPNsense REST API (``/api/trafficshaper/settings/get``) using API
+key/secret basic auth to discover FQ-CoDel / dummynet shaper parameters.
+
+OPNsense returns ``<select>`` fields as ``{optionKey: {"value": ..., "selected":
+0|1}}`` maps and booleans as ``"0"``/``"1"`` strings; the helpers here normalize
+both into plain Python values.
+
+NOTE: this is written against the documented OPNsense API shape. Endpoint/
+credentials are supplied via environment settings; point ``PATHBRAIN_*`` at a
+live firewall to exercise it. The mock provider covers offline development.
+"""
+from __future__ import annotations
+
+import httpx
+
+from ..logging_config import get_logger
+from .base import ConfigProvider, FqCodelConfig
+
+log = get_logger("providers.opnsense")
+
+_SETTINGS_GET = "/api/trafficshaper/settings/get"
+
+
+def _selected(field: object) -> str | None:
+    """Extract the selected option key from an OPNsense select field."""
+    if isinstance(field, dict):
+        for key, opt in field.items():
+            if isinstance(opt, dict) and str(opt.get("selected")) == "1":
+                return key
+        return None
+    if field in (None, ""):
+        return None
+    return str(field)
+
+
+def _as_bool(field: object) -> bool | None:
+    val = _selected(field)
+    if val is None:
+        return None
+    return val in ("1", "true", "True", "on")
+
+
+def _as_int(field: object) -> int | None:
+    val = _selected(field)
+    if val in (None, ""):
+        return None
+    try:
+        return int(float(val))
+    except (TypeError, ValueError):
+        return None
+
+
+class OPNsenseProvider(ConfigProvider):
+    name = "opnsense"
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        api_secret: str,
+        verify_tls: bool = False,
+        timeout: float = 15.0,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.verify_tls = verify_tls
+        self.timeout = timeout
+
+    # -- HTTP --------------------------------------------------------------
+    def _client(self) -> httpx.Client:
+        if not self.base_url:
+            raise RuntimeError("OPNsense URL is not configured (PATHBRAIN_OPNSENSE_URL)")
+        if not (self.api_key and self.api_secret):
+            raise RuntimeError("OPNsense API key/secret not configured")
+        return httpx.Client(
+            base_url=self.base_url,
+            auth=(self.api_key, self.api_secret),
+            verify=self.verify_tls,
+            timeout=self.timeout,
+        )
+
+    def _get(self, path: str) -> dict:
+        with self._client() as client:
+            resp = client.get(path)
+            resp.raise_for_status()
+            return resp.json()
+
+    # -- ConfigProvider ----------------------------------------------------
+    def discover(self) -> list[FqCodelConfig]:
+        data = self._get(_SETTINGS_GET)
+        pipes = (((data or {}).get("ts") or {}).get("pipes") or {}).get("pipe") or {}
+
+        configs: list[FqCodelConfig] = []
+        for uuid, pipe in pipes.items():
+            if not isinstance(pipe, dict):
+                continue
+            bandwidth = _selected(pipe.get("bandwidth"))
+            metric = _selected(pipe.get("bandwidthMetric")) or ""
+            bw = f"{bandwidth}{metric}" if bandwidth else None
+            scheduler = _selected(pipe.get("scheduler"))
+
+            configs.append(
+                FqCodelConfig(
+                    download_bandwidth=bw,
+                    upload_bandwidth=None,  # OPNsense pipes are directional via rules
+                    quantum=_as_int(pipe.get("codel_quantum") or pipe.get("quantum")),
+                    limit=_as_int(pipe.get("codel_limit") or pipe.get("queue")),
+                    target=_selected(pipe.get("codel_target")),
+                    interval=_selected(pipe.get("codel_interval")),
+                    ecn=_as_bool(pipe.get("codel_ecn_enable")),
+                    flows=_as_int(pipe.get("codel_flows") or pipe.get("flows")),
+                    queues=_as_int(pipe.get("queue")),
+                    scheduler=scheduler,
+                    extra={
+                        "uuid": uuid,
+                        "description": _selected(pipe.get("description")),
+                        "enabled": _as_bool(pipe.get("enabled")),
+                        "mask": _selected(pipe.get("mask")),
+                    },
+                )
+            )
+
+        if not configs:
+            log.warning("OPNsense discover() found no shaper pipes")
+        return configs
+
+    def snapshot(self) -> dict:
+        data = self._get(_SETTINGS_GET)
+        return {"provider": self.name, "base_url": self.base_url, "trafficshaper": data}
+
+    def health(self) -> dict:
+        try:
+            self._get(_SETTINGS_GET)
+            return {"provider": self.name, "ok": True, "base_url": self.base_url}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "provider": self.name,
+                "ok": False,
+                "base_url": self.base_url,
+                "error": f"{type(exc).__name__}: {exc}",
+            }

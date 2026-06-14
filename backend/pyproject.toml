@@ -1,0 +1,13 @@
+[project]
+name = "pathbrain"
+version = "0.1.0"
+description = "AI-driven Network Optimization and SD-WAN Intelligence Platform"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+include = ["pathbrain*"]

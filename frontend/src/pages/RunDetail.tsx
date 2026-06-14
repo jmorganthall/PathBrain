@@ -1,0 +1,251 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useParams, Link as RouterLink } from "react-router-dom";
+import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Card from "@mui/material/Card";
+import CardContent from "@mui/material/CardContent";
+import Chip from "@mui/material/Chip";
+import Divider from "@mui/material/Divider";
+import LinearProgress from "@mui/material/LinearProgress";
+import Stack from "@mui/material/Stack";
+import Table from "@mui/material/Table";
+import TableBody from "@mui/material/TableBody";
+import TableCell from "@mui/material/TableCell";
+import TableRow from "@mui/material/TableRow";
+import Typography from "@mui/material/Typography";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import ErrorIcon from "@mui/icons-material/Error";
+
+import { api } from "../api/client";
+import type { RunDetail as RunDetailType } from "../api/types";
+import ScoreGauge from "../components/ScoreGauge";
+import SubscoreBreakdown from "../components/SubscoreBreakdown";
+import StatusChip from "../components/StatusChip";
+import JsonViewer from "../components/JsonViewer";
+import Loading from "../components/Loading";
+import { fmtDateTime, metricValue } from "../utils/format";
+
+const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
+
+export default function RunDetail() {
+  const { id } = useParams<{ id: string }>();
+  const runId = Number(id);
+  const [run, setRun] = useState<RunDetailType | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const pollRef = useRef<number | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api.result(runId);
+      setRun(d);
+      setError(null);
+      return d;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load run");
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, [runId]);
+
+  useEffect(() => {
+    if (Number.isNaN(runId)) {
+      setError("Invalid run id");
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    load().then((d) => {
+      if (d && isRunning(d.status)) {
+        pollRef.current = window.setInterval(async () => {
+          const updated = await load();
+          if (updated && !isRunning(updated.status) && pollRef.current) {
+            window.clearInterval(pollRef.current);
+            pollRef.current = null;
+          }
+        }, 2000);
+      }
+    });
+    return () => {
+      if (pollRef.current) window.clearInterval(pollRef.current);
+    };
+  }, [runId, load]);
+
+  if (loading) return <Loading label="Loading run…" />;
+
+  if (!run) {
+    return (
+      <Box>
+        <Button component={RouterLink} to="/history" startIcon={<ArrowBackIcon />} sx={{ mb: 2 }}>
+          Back to History
+        </Button>
+        <Alert severity="error">{error ?? "Run not found"}</Alert>
+      </Box>
+    );
+  }
+
+  return (
+    <Box>
+      <Button component={RouterLink} to="/history" startIcon={<ArrowBackIcon />} sx={{ mb: 2 }}>
+        Back to History
+      </Button>
+
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        justifyContent="space-between"
+        alignItems={{ xs: "flex-start", sm: "center" }}
+        spacing={1}
+        sx={{ mb: 2 }}
+      >
+        <Typography variant="h4">Run #{run.id}</Typography>
+        <StatusChip status={run.status} />
+      </Stack>
+
+      {isRunning(run.status) && (
+        <Box sx={{ mb: 2 }}>
+          <LinearProgress />
+          <Typography variant="caption" color="text.secondary">
+            Run in progress — auto-refreshing…
+          </Typography>
+        </Box>
+      )}
+
+      {run.error && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {run.error}
+        </Alert>
+      )}
+
+      <Box
+        sx={{
+          display: "grid",
+          gap: 2,
+          gridTemplateColumns: { xs: "1fr", md: "minmax(260px, 340px) 1fr" },
+          mb: 2,
+        }}
+      >
+        <Card>
+          <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+            <ScoreGauge value={run.score?.sops ?? null} />
+            <Stack spacing={0.5} alignItems="center">
+              {run.label && <Chip size="small" label={run.label} />}
+              <Typography variant="caption" color="text.secondary">
+                Created {fmtDateTime(run.created_at)}
+              </Typography>
+              {run.finished_at && (
+                <Typography variant="caption" color="text.secondary">
+                  Finished {fmtDateTime(run.finished_at)}
+                </Typography>
+              )}
+            </Stack>
+            {run.notes && (
+              <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
+                {run.notes}
+              </Typography>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Score Breakdown
+            </Typography>
+            {run.score ? (
+              <SubscoreBreakdown score={run.score} />
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                No score computed for this run.
+              </Typography>
+            )}
+          </CardContent>
+        </Card>
+      </Box>
+
+      <Typography variant="h6" sx={{ mb: 1.5 }}>
+        Plugin Results
+      </Typography>
+
+      {run.results.length === 0 ? (
+        <Typography variant="body2" color="text.secondary">
+          No plugin results recorded.
+        </Typography>
+      ) : (
+        <Box
+          sx={{
+            display: "grid",
+            gap: 2,
+            gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+          }}
+        >
+          {run.results.map((res) => {
+            const metricKeys = Object.keys(res.metrics);
+            return (
+              <Card key={res.id}>
+                <CardContent>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      {res.success ? (
+                        <CheckCircleIcon color="success" fontSize="small" />
+                      ) : (
+                        <ErrorIcon color="error" fontSize="small" />
+                      )}
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                        {res.plugin}
+                      </Typography>
+                    </Stack>
+                    {res.duration_ms != null && (
+                      <Chip size="small" variant="outlined" label={`${res.duration_ms.toFixed(0)} ms`} />
+                    )}
+                  </Stack>
+
+                  {res.error && (
+                    <Alert severity="error" sx={{ mb: 1 }}>
+                      {res.error}
+                    </Alert>
+                  )}
+
+                  {metricKeys.length > 0 && (
+                    <Table size="small" sx={{ mb: 1 }}>
+                      <TableBody>
+                        {metricKeys.map((k) => (
+                          <TableRow key={k}>
+                            <TableCell sx={{ border: 0, py: 0.5, color: "text.secondary" }}>{k}</TableCell>
+                            <TableCell align="right" sx={{ border: 0, py: 0.5, fontWeight: 600 }}>
+                              {metricValue(res.metrics[k])}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+
+                  {res.details != null && (
+                    <>
+                      <Divider sx={{ my: 1 }} />
+                      <JsonViewer data={res.details} label="raw details" />
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
+        </Box>
+      )}
+
+      {run.config_used && (
+        <Card sx={{ mt: 2 }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Config Used
+            </Typography>
+            <JsonViewer data={run.config_used} label="config" />
+          </CardContent>
+        </Card>
+      )}
+    </Box>
+  );
+}
