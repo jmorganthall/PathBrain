@@ -15,6 +15,7 @@ from . import (  # noqa: E402,F401
     benchmark_tcp,
     benchmark_tls,
     benchmark_http,
+    benchmark_browser,
 )
 
 __all__ = [

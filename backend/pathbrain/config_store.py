@@ -23,7 +23,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "tcp": 15,
     "tls": 20,
     "ttfb": 20,
-    "render": 25,  # reserved for the Playwright browser engine (Phase 2)
+    "render": 25,  # browser engine total render (benchmark_browser)
     "jitter": 5,
     "packet_loss": 5,
 }
@@ -83,6 +83,21 @@ DEFAULT_CONFIG: dict = {
             "https://www.cloudflare.com/",
         ],
         "timeout_s": 15.0,
+    },
+    "browser": {
+        # Headless-Chromium page loads (Playwright). Emits `total_render_ms`,
+        # which activates the `render` SOPS weight automatically. Requires
+        # Playwright + Chromium (bundled in the Docker image); degrades
+        # gracefully where unavailable.
+        "urls": [
+            "https://www.google.com/",
+            "https://github.com/",
+        ],
+        "timeout_s": 30.0,
+        "wait_until": "load",
+        "headless": True,
+        "screenshot": True,
+        "har": True,
     },
     "weights": DEFAULT_WEIGHTS,
     "thresholds": DEFAULT_THRESHOLDS,

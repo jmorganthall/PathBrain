@@ -223,6 +223,61 @@ export default function RunDetail() {
                     </Table>
                   )}
 
+                  {res.plugin === "browser" && res.details != null && (() => {
+                    const perUrl = ((res.details as Record<string, unknown>).per_url ??
+                      {}) as Record<string, { screenshot_url?: string | null; har_url?: string | null }>;
+                    const shots = Object.entries(perUrl)
+                      .map(([url, m]) => ({ url, src: m?.screenshot_url, har: m?.har_url }))
+                      .filter((s) => s.src);
+                    if (shots.length === 0) return null;
+                    return (
+                      <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", mb: 1 }}>
+                        {shots.map((s) => (
+                          <Box key={s.url} sx={{ width: 160 }}>
+                            <Box
+                              component="a"
+                              href={s.src as string}
+                              target="_blank"
+                              rel="noreferrer"
+                              sx={{ display: "block" }}
+                            >
+                              <Box
+                                component="img"
+                                src={s.src as string}
+                                alt={s.url}
+                                loading="lazy"
+                                sx={{
+                                  width: "100%",
+                                  height: 100,
+                                  objectFit: "cover",
+                                  objectPosition: "top",
+                                  borderRadius: 1,
+                                  border: "1px solid",
+                                  borderColor: "divider",
+                                  display: "block",
+                                }}
+                              />
+                            </Box>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              noWrap
+                              title={s.url}
+                              sx={{ display: "block" }}
+                            >
+                              {s.url}
+                            </Typography>
+                            {s.har && (
+                              <Typography variant="caption" component="a" href={s.har} target="_blank" rel="noreferrer">
+                                download HAR
+                              </Typography>
+                            )}
+                          </Box>
+                        ))}
+                      </Box>
+                    );
+                  })()}
+
                   {res.details != null && (
                     <>
                       <Divider sx={{ my: 1 }} />

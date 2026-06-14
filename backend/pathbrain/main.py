@@ -67,6 +67,12 @@ def health() -> dict:
     return {"status": "ok", "version": __version__}
 
 
+# -- Browser-engine artifacts (screenshots, HAR) --------------------------
+_artifact_dir = os.path.abspath(settings.artifact_dir)
+os.makedirs(_artifact_dir, exist_ok=True)
+app.mount("/artifacts", StaticFiles(directory=_artifact_dir), name="artifacts")
+
+
 # -- Static frontend (production) -----------------------------------------
 def _mount_frontend() -> None:
     dist = os.path.abspath(FRONTEND_DIST)

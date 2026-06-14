@@ -1,9 +1,10 @@
 <h1 align="center">PathBrain</h1>
 
 <p align="center">
-  <b>An empirical tuner for OPNsense SQM &amp; traffic shaping (FQ-CoDel).</b><br>
+  <b>A Seat of Pants Score engine for your Internet connection.</b><br>
   It doesn't ask "is your ping low?" — it asks <i>"does the Internet actually <b>feel</b> faster?"</i><br>
-  …then helps you tune your shaper to maximize exactly that.
+  …then tracks that score over time and correlates it with your network settings
+  (OPNsense FQ-CoDel / SQM being the first-class integration).
 </p>
 
 <p align="center">
@@ -20,36 +21,32 @@
 
 ## What is PathBrain?
 
-PathBrain is purpose-built for one job: **dialing in the SQM / traffic-shaping
-settings on an [OPNsense](https://opnsense.org/) firewall** so the Internet *feels*
-as responsive as possible.
+PathBrain measures the one thing common tools don't: **how responsive your
+Internet connection actually *feels*.** It runs real benchmark suites, distills
+them into a single **Seat of Pants Score (SOPS)** that models **human-perceived
+responsiveness**, and tracks that score over time — so you can finally answer
+*"when was the Internet fastest?"* and *"did that change make it feel better or
+worse?"* with data instead of folklore.
 
-If you run **SQM (Smart Queue Management)** — FQ-CoDel on an OPNsense traffic
-shaper pipe — you've probably faced the hard question: *what bandwidth, quantum,
-limit, target, interval, ECN, and flow settings are actually best?* The usual
-answer is folklore and guesswork, because the common tools only measure **ping**,
-**throughput**, or synthetic scores. None of those reliably answer what a human
-actually cares about: *when I click something, how fast does it feel?*
+Most tools optimize for **ping**, **throughput**, or synthetic scores. None of
+those reliably answer what a human cares about: *when I click something, how fast
+does it feel?* SOPS is built for exactly that — and deliberately keeps raw ping
+from dominating.
 
-PathBrain answers that empirically. It:
+Where it gets powerful: PathBrain can **correlate your score with the network
+settings that were live when each run ran.** Its first-class integration is the
+**[OPNsense](https://opnsense.org/) API**, which it uses to discover your
+**FQ-CoDel / SQM** traffic-shaper configuration (bandwidth, quantum, limit,
+target, interval, ECN, flows, …). That turns the eternal SQM question — *what
+settings are actually best?* — into an empirical, measured answer.
 
-1. **Discovers** your current FQ-CoDel / shaper configuration straight from the
-   **OPNsense API** (bandwidth, quantum, limit, target, interval, ECN, flows, …).
-2. **Benchmarks** your real path — DNS, TCP, TLS, HTTP (and browser render, soon)
-   — not just ICMP.
-3. **Scores** each run with a proprietary **Seat of Pants Score (SOPS)** that
-   models **human-perceived responsiveness**, deliberately keeping raw ping from
-   dominating.
-4. **Tracks history** so you can prove which shaper settings actually made things
-   feel faster, and when performance regressed.
+- **No firewall?** It's still a first-class **SOPS tracker** for your connection.
+- **Running OPNsense SQM?** You also get settings-vs-responsiveness correlation
+  and (on the roadmap) closed-loop autonomous tuning — apply a candidate,
+  benchmark, keep it if SOPS improved, roll back if not, always snapshot-first.
 
-The roadmap takes this all the way to **closed-loop, autonomous shaper tuning** —
-apply a candidate setting, benchmark it, keep it if SOPS improved, roll back if
-not — always snapshot-first for safety.
-
-> **Focus:** OPNsense + FQ-CoDel SQM today. The provider layer is pluggable, so
-> pfSense / Linux `tc` can be added later — but OPNsense traffic shaping is the
-> first-class target.
+> The provider layer is pluggable (pfSense / Linux `tc` can follow), with OPNsense
+> traffic shaping as the first-class integration.
 
 > **Philosophy:** Empirical. Never assume. Never rely on folklore. Every
 > optimization is tested, measured, scored, and historically tracked.
@@ -62,7 +59,7 @@ higher score), then combined by weight:
 
 | Metric | Source | Default weight | Why |
 | --- | --- | ---: | --- |
-| Render | Browser (Playwright, *Phase 2*) | 25% | What the user literally watches load |
+| Render | Browser (headless Chromium) | 25% | What the user literally watches load |
 | TTFB | HTTP | 20% | First sign the page is responding |
 | TLS | TLS handshake | 20% | Felt on every new secure connection |
 | TCP | TCP connect | 15% | Connection setup latency |
@@ -90,9 +87,10 @@ explore it in the dashboard.**
 
 **Implemented**
 
-- 🔌 **Plugin benchmark engine** — five independent, registered benchmarks:
+- 🔌 **Plugin benchmark engine** — six independent, registered benchmarks:
   `icmp` (latency / jitter / loss), `dns` (per-resolver lookup), `tcp` (connect),
-  `tls` (handshake), `http` (TTFB / download / transfer speed).
+  `tls` (handshake), `http` (TTFB / download / transfer speed), and `browser`
+  (headless-Chromium page-load timing + **total render**, with screenshot & HAR).
 - 🧮 **SOPS scoring engine** — weighted, normalized, with proportional weight
   redistribution.
 - 🔍 **Configuration discovery** — pluggable providers: a real **OPNsense API**
@@ -104,9 +102,10 @@ explore it in the dashboard.**
 - 💾 **SQLite persistence** with background run execution and status tracking.
 
 **Planned (next phases)** — scaffolding and scoring hooks already in place:
-Playwright **browser engine** (the `render` weight activates automatically),
-real-world test profiles, speed test, bufferbloat test, **experiment engine**
-(apply → benchmark → keep/rollback), **autonomous closed-loop optimization**, and
+**continuous monitoring** (scheduled runs + settings-vs-responsiveness
+correlation), real-world test profiles, speed test, bufferbloat test,
+**experiment engine** (apply → benchmark → keep/rollback),
+**autonomous closed-loop optimization**, and
 **routing intelligence / SD-WAN** with hysteresis.
 
 ---
@@ -301,10 +300,12 @@ docker-compose.yml   Single-container deployment
 
 - [x] **Phase 1 — Foundation:** benchmark engine, SOPS scoring, history, config
       discovery, REST API, dashboard.
-- [ ] **Phase 2 — Browser engine:** headless Chromium via Playwright (navigation
+- [x] **Phase 2 — Browser engine:** headless Chromium via Playwright (navigation
       timing, DOMContentLoaded, load, network idle, total render, screenshot +
       HAR). The `render` SOPS weight activates automatically.
-- [ ] **Phase 2 — Real-world profiles, speed test, bufferbloat test.**
+- [ ] **Continuous monitoring:** scheduled recurring runs, windowed averages, and
+      settings-vs-responsiveness correlation.
+- [ ] **Real-world profiles, speed test, bufferbloat test.**
 - [ ] **Phase 3 — Experiment engine:** apply candidate → wait → benchmark →
       keep/rollback, always snapshot-first.
 - [ ] **Phase 4 — Autonomous closed-loop optimization.**
