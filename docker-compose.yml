@@ -10,6 +10,10 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    # Allow the ICMP benchmark to send unprivileged ping (SOCK_DGRAM) sockets.
+    # Without this, the icmp plugin reports 100% packet loss inside Docker.
+    sysctls:
+      - net.ipv4.ping_group_range=0 2147483647
     environment:
       # Storage (SQLite on the persistent volume)
       PATHBRAIN_DATABASE_URL: "sqlite:////data/pathbrain.db"
