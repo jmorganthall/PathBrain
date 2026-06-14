@@ -1,11 +1,14 @@
 <h1 align="center">PathBrain</h1>
 
 <p align="center">
-  <b>An AI-driven Network Optimization &amp; SD-WAN Intelligence Platform.</b><br>
-  It doesn't ask "is your ping low?" — it asks <i>"does the Internet actually <b>feel</b> faster?"</i>
+  <b>An empirical tuner for OPNsense SQM &amp; traffic shaping (FQ-CoDel).</b><br>
+  It doesn't ask "is your ping low?" — it asks <i>"does the Internet actually <b>feel</b> faster?"</i><br>
+  …then helps you tune your shaper to maximize exactly that.
 </p>
 
 <p align="center">
+  <img alt="OPNsense" src="https://img.shields.io/badge/firewall-OPNsense-D94F00?logo=opnsense&logoColor=white">
+  <img alt="SQM" src="https://img.shields.io/badge/SQM-FQ--CoDel-blueviolet">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/UI-React%20%2B%20MUI-61DAFB?logo=react&logoColor=black">
@@ -17,16 +20,36 @@
 
 ## What is PathBrain?
 
-Most network tools optimize for **ping**, **throughput**, or synthetic benchmark
-numbers. None of those reliably answer the only question a human actually cares
-about: *when I click something, how fast does it feel?*
+PathBrain is purpose-built for one job: **dialing in the SQM / traffic-shaping
+settings on an [OPNsense](https://opnsense.org/) firewall** so the Internet *feels*
+as responsive as possible.
 
-PathBrain optimizes for that directly. It runs real benchmark suites, scores them
-against a proprietary **Seat of Pants Score (SOPS)** that models **human-perceived
-responsiveness**, stores every run, and lets you compare configurations over time.
-The long-term goal is a self-tuning home SD-WAN controller that empirically
-discovers the settings that make the Internet *feel* fastest — safely, with
-snapshots and rollback.
+If you run **SQM (Smart Queue Management)** — FQ-CoDel on an OPNsense traffic
+shaper pipe — you've probably faced the hard question: *what bandwidth, quantum,
+limit, target, interval, ECN, and flow settings are actually best?* The usual
+answer is folklore and guesswork, because the common tools only measure **ping**,
+**throughput**, or synthetic scores. None of those reliably answer what a human
+actually cares about: *when I click something, how fast does it feel?*
+
+PathBrain answers that empirically. It:
+
+1. **Discovers** your current FQ-CoDel / shaper configuration straight from the
+   **OPNsense API** (bandwidth, quantum, limit, target, interval, ECN, flows, …).
+2. **Benchmarks** your real path — DNS, TCP, TLS, HTTP (and browser render, soon)
+   — not just ICMP.
+3. **Scores** each run with a proprietary **Seat of Pants Score (SOPS)** that
+   models **human-perceived responsiveness**, deliberately keeping raw ping from
+   dominating.
+4. **Tracks history** so you can prove which shaper settings actually made things
+   feel faster, and when performance regressed.
+
+The roadmap takes this all the way to **closed-loop, autonomous shaper tuning** —
+apply a candidate setting, benchmark it, keep it if SOPS improved, roll back if
+not — always snapshot-first for safety.
+
+> **Focus:** OPNsense + FQ-CoDel SQM today. The provider layer is pluggable, so
+> pfSense / Linux `tc` can be added later — but OPNsense traffic shaping is the
+> first-class target.
 
 > **Philosophy:** Empirical. Never assume. Never rely on folklore. Every
 > optimization is tested, measured, scored, and historically tracked.

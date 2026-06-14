@@ -43,7 +43,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="PathBrain",
     version=__version__,
-    description="AI-driven Network Optimization and SD-WAN Intelligence Platform",
+    description="Empirical tuner for OPNsense SQM / FQ-CoDel traffic shaping, "
+    "scored by human-perceived responsiveness (Seat of Pants Score).",
     lifespan=lifespan,
 )
 
