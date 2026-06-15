@@ -1,24 +1,43 @@
 # CLAUDE.md — PathBrain developer guide
 
-PathBrain is an AI-driven network optimization platform that maximizes a
+PathBrain is an empirical network-optimization platform that maximizes a
 **Seat of Pants Score (SOPS)** — a measure of *human-perceived responsiveness*,
-not raw ping/throughput. See `README.md` for the product overview.
+not raw ping/throughput. The optimizer is classical (deterministic sweep +
+hysteresis), not LLM-based. See `README.md` for the product overview.
 
 ## Layout
 
 - `backend/pathbrain/` — FastAPI app (the core). Key modules:
-  - `plugins/` — independent benchmark plugins; `base.py` defines the contract +
-    registry. Add a benchmark by subclassing `BenchmarkPlugin` and `@register`.
-  - `providers/` — firewall config discovery (`opnsense.py`, `mock.py`); pick via
-    `PATHBRAIN_CONFIG_PROVIDER`.
-  - `scoring/engine.py` — SOPS computation (weighted, normalized, redistributes
-    missing-metric weight). Metric→plugin mapping is `METRIC_SOURCES`.
-  - `config_store.py` — persisted runtime config + defaults (targets, weights,
-    thresholds).
-  - `runner.py` — orchestrates a run across plugins, stores results + score.
+  - `plugins/` — independent benchmark plugins (`icmp/dns/tcp/tls/http/browser`);
+    `base.py` defines the contract + registry. Add one by subclassing
+    `BenchmarkPlugin` and `@register`.
+  - `providers/` — firewall config discovery + **apply** (`opnsense.py`,
+    `mock.py`); pick via `PATHBRAIN_CONFIG_PROVIDER`. OPNsense reads/writes
+    fq_codel fields (`fqcodel_quantum/limit/flows`, `codel_target/interval/ecn`);
+    `apply()` does `setPipe` + `reconfigure` and is the **only firewall-write path**.
+  - `scoring/engine.py` — SOPS computation (weighted, perception-calibrated log
+    curve, redistributes missing-metric weight). Metric→plugin map = `METRIC_SOURCES`.
+  - `config_store.py` — DB-backed runtime config + defaults (targets, weights,
+    thresholds, `iterations`, `monitoring`, `correlation`, `experiment`,
+    `rubric_version`).
+  - `runner.py` — orchestrates a run across plugins (median-aggregated over
+    iterations, per-run SOPS confidence band), captures the firewall settings +
+    fingerprint per run, and holds run-lifecycle safety
+    (`reconcile_interrupted_runs`, `fail_stale_runs`, `rescore_run`).
+  - `scheduler.py` — daemon thread: watchdog → experiment step → monitoring run
+    (serialized so they never overlap).
+  - `experiment.py` — autonomous window-gated single-parameter shaper sweep
+    (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline).
+  - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
+    settings-vs-responsiveness correlation (`/api/settings/*`).
+  - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
+    columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.
-- `frontend/` — React + TS + Vite + MUI dashboard (dark mode).
-- `Dockerfile` / `docker-compose.yml` — single-container deploy (API serves UI).
+- `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
+  History, Compare, Settings Impact, Experiments, Config, Plugins, Run Detail.
+- `Dockerfile` (Playwright base image) / `docker-compose.yml` +
+  `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
+  `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`.
 
 ## Commands
 
@@ -50,6 +69,20 @@ docker compose up --build   # -> http://localhost:8000
   rubric (weights+thresholds+`rubric_version`) is versioned; changing it should be
   followed by `POST /api/score/rescore` to re-grade history from stored raw
   measurements (runs keep `metric_values` + per-iteration metrics for this).
+- A run repeats the suite `iterations` times; the headline SOPS is the **median**
+  over iterations, with a confidence band (`sops_stdev/min/max`). The Dashboard
+  shows a windowed **rolling** score (`/api/score/rolling`, 24h median + IQR).
+- Each run captures the live firewall settings + a stable **fingerprint** at start
+  (best-effort). Runs group into **profiles**; `/api/settings/impact` flags a
+  change significant only with ≥ `correlation.min_runs` per side. `/api/settings/
+  backfill` stamps current settings onto unstamped historical runs.
+- **Run lifecycle safety:** `reconcile_interrupted_runs()` (startup) + scheduler
+  watchdog `fail_stale_runs()` (`monitoring.run_timeout_minutes`, default 30) +
+  manual `POST /api/runs/{id}/cancel` resolve orphaned/hung runs. These mark the
+  DB row FAILED; a live benchmark thread can't be force-killed mid-call.
+- Timestamps are stored UTC (naive in SQLite); the frontend (`parseApiDate`)
+  treats them as UTC so they render in the viewer's local zone. Experiment-window
+  hours use the container `TZ`.
 - Every action should be logged (`logging_config.get_logger`).
 
 ## Phase map
