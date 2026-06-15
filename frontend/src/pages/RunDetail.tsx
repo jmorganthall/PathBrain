@@ -19,7 +19,7 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ErrorIcon from "@mui/icons-material/Error";
 
 import { api } from "../api/client";
-import type { RunDetail as RunDetailType } from "../api/types";
+import type { RunDetail as RunDetailType, RunEstimate } from "../api/types";
 import ScoreGauge from "../components/ScoreGauge";
 import SubscoreBreakdown from "../components/SubscoreBreakdown";
 import StatusChip from "../components/StatusChip";
@@ -35,6 +35,8 @@ export default function RunDetail() {
   const [run, setRun] = useState<RunDetailType | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [estimate, setEstimate] = useState<RunEstimate | null>(null);
+  const [now, setNow] = useState<number>(Date.now());
   const pollRef = useRef<number | null>(null);
 
   const load = useCallback(async () => {
@@ -74,6 +76,19 @@ export default function RunDetail() {
     };
   }, [runId, load]);
 
+  // Fetch the per-iteration estimate once, to drive the live ETA.
+  useEffect(() => {
+    api.runEstimate().then(setEstimate).catch(() => {});
+  }, []);
+
+  // Tick a 1s clock while the run is in progress so the ETA counts down.
+  useEffect(() => {
+    if (!run || !isRunning(run.status)) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [run?.status, run?.started_at]);
+
   if (loading) return <Loading label="Loading run…" />;
 
   if (!run) {
@@ -104,14 +119,47 @@ export default function RunDetail() {
         <StatusChip status={run.status} />
       </Stack>
 
-      {isRunning(run.status) && (
-        <Box sx={{ mb: 2 }}>
-          <LinearProgress />
-          <Typography variant="caption" color="text.secondary">
-            Run in progress — auto-refreshing…
-          </Typography>
-        </Box>
-      )}
+      {isRunning(run.status) && (() => {
+        const started = run.started_at ? new Date(run.started_at).getTime() : null;
+        const elapsedMs = started != null ? Math.max(now - started, 0) : null;
+        const estTotalMs =
+          estimate?.per_iteration_ms != null
+            ? estimate.per_iteration_ms * (run.iterations || 1)
+            : null;
+        const haveEta = elapsedMs != null && estTotalMs != null;
+        const overdue = haveEta && elapsedMs >= estTotalMs;
+        const pct = haveEta ? Math.min((elapsedMs / estTotalMs) * 100, 100) : null;
+        const remainingMs = haveEta ? Math.max(estTotalMs - elapsedMs, 0) : null;
+        const iterInfo =
+          run.iterations > 1
+            ? ` · iteration ${Math.min(run.iterations_completed + 1, run.iterations)} of ${run.iterations}`
+            : "";
+
+        let caption: string;
+        if (!haveEta) {
+          caption =
+            elapsedMs != null
+              ? `Running for ${fmtDuration(elapsedMs)} — auto-refreshing…`
+              : "Run in progress — auto-refreshing…";
+        } else if (overdue) {
+          caption = `Any second now… (${fmtDuration(elapsedMs)} elapsed, est. ${fmtDuration(estTotalMs)})`;
+        } else {
+          caption = `${fmtDuration(elapsedMs)} elapsed · ~${fmtDuration(remainingMs)} remaining (est. ${fmtDuration(estTotalMs)})`;
+        }
+
+        return (
+          <Box sx={{ mb: 2 }}>
+            <LinearProgress
+              variant={haveEta && !overdue ? "determinate" : "indeterminate"}
+              value={haveEta && !overdue ? (pct as number) : undefined}
+            />
+            <Typography variant="caption" color="text.secondary">
+              {caption}
+              {iterInfo}
+            </Typography>
+          </Box>
+        );
+      })()}
 
       {run.error && (
         <Alert severity="error" sx={{ mb: 2 }}>
