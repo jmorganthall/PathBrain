@@ -121,6 +121,10 @@ export default function Dashboard() {
     etaMs != null
       ? `ETA ~${fmtDuration(etaMs)}`
       : "ETA available after the first run";
+  const latestDurationMs =
+    latest?.started_at && latest?.finished_at
+      ? new Date(latest.finished_at).getTime() - new Date(latest.started_at).getTime()
+      : null;
 
   return (
     <Box>
@@ -241,6 +245,14 @@ export default function Dashboard() {
                 {latest.label ? `${latest.label} · ` : ""}
                 {fmtDateTime(latest.finished_at ?? latest.created_at)}
               </Typography>
+              {latestDurationMs != null && (
+                <Typography variant="caption" color="text.secondary">
+                  Took {fmtDuration(latestDurationMs)}
+                  {latest.iterations > 1 && latest.per_iteration_ms != null
+                    ? ` · ${latest.iterations} iterations (~${fmtDuration(latest.per_iteration_ms)} each)`
+                    : ""}
+                </Typography>
+              )}
               {latest.error && (
                 <Alert severity="error" sx={{ width: "100%" }}>
                   {latest.error}
