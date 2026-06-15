@@ -3,6 +3,7 @@ import type {
   BenchmarkConfig,
   ConfigSnapshot,
   DiscoverResponse,
+  ExperimentDetail,
   ExperimentsResponse,
   Health,
   MonitoringStatus,
@@ -102,7 +103,11 @@ export const api = {
   discover: () => request<DiscoverResponse>("/config/discover", { method: "POST" }),
   snapshots: () => request<ConfigSnapshot[]>("/config/snapshots"),
 
-  // Plugins & experiments
+  // Plugins
   plugins: () => request<PluginInfo[]>("/plugins"),
+
+  // Experiment engine
   experiments: () => request<ExperimentsResponse>("/experiments"),
+  experiment: (id: number) => request<ExperimentDetail>(`/experiments/${id}`),
+  abortExperiment: () => request<{ aborted: boolean }>("/experiments/abort", { method: "POST" }),
 };

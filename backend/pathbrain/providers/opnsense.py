@@ -21,6 +21,20 @@ from .base import ConfigProvider, FqCodelConfig
 log = get_logger("providers.opnsense")
 
 _SETTINGS_GET = "/api/trafficshaper/settings/get"
+_SET_PIPE = "/api/trafficshaper/settings/setPipe"
+_RECONFIGURE = "/api/trafficshaper/service/reconfigure"
+
+# Map PathBrain's normalized parameter names to OPNsense pipe field names.
+_PARAM_FIELD = {
+    "quantum": "fqcodel_quantum",
+    "limit": "fqcodel_limit",
+    "flows": "fqcodel_flows",
+    "target": "codel_target",
+    "interval": "codel_interval",
+    "ecn": "codel_ecn_enable",
+    "bandwidth": "bandwidth",
+    "download_bandwidth": "bandwidth",
+}
 
 
 def _selected(field: object) -> str | None:
@@ -130,6 +144,38 @@ class OPNsenseProvider(ConfigProvider):
     def snapshot(self) -> dict:
         data = self._get(_SETTINGS_GET)
         return {"provider": self.name, "base_url": self.base_url, "trafficshaper": data}
+
+    def apply(self, changes: dict) -> dict:
+        """Set one pipe field and reconfigure the shaper.
+
+        NOTE: written against the documented OPNsense API but not yet exercised
+        against live hardware — validate with the experiment engine's dry-run mode
+        before arming it for real.
+        """
+        param = changes.get("param")
+        value = changes.get("value")
+        field = _PARAM_FIELD.get(param or "")
+        if not field:
+            raise ValueError(f"Unknown/unsupported param '{param}'")
+
+        data = self._get(_SETTINGS_GET)
+        pipes = (((data or {}).get("ts") or {}).get("pipes") or {}).get("pipe") or {}
+        uuid = changes.get("pipe_uuid") or (next(iter(pipes)) if pipes else None)
+        if not uuid or uuid not in pipes:
+            raise RuntimeError("Target shaper pipe not found")
+
+        pipe = pipes[uuid]
+        # Flatten OPNsense's select fields ({key:{selected}}) to settable scalars.
+        payload = {k: (_selected(v) if isinstance(v, dict) else v) or "" for k, v in pipe.items()}
+        payload[field] = str(value)
+
+        with self._client() as client:
+            resp = client.post(f"{_SET_PIPE}/{uuid}", json={"pipe": payload})
+            resp.raise_for_status()
+            rc = client.post(_RECONFIGURE, json={})
+            rc.raise_for_status()
+        log.info("OPNsense applied %s=%s to pipe %s", field, value, uuid)
+        return {"provider": self.name, "ok": True, "uuid": uuid, "applied": {field: value}}
 
     def health(self) -> dict:
         try:

@@ -71,6 +71,14 @@ def _loop(stop: threading.Event) -> None:
     log.info("Scheduler thread started")
     while not stop.is_set():
         try:
+            # Experiments take priority; if one did work this tick, skip monitoring
+            # so the two never overlap or pollute each other's measurements.
+            from . import experiment
+
+            if experiment.step():
+                stop.wait(_TICK_SECONDS)
+                continue
+
             enabled, interval_min = _monitoring_config()
             interval_s = max(interval_min * 60.0, 30.0)
             last = _state["last_run_at"]

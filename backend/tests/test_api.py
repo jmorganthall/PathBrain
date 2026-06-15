@@ -68,10 +68,12 @@ def test_discover_provider_failure_returns_502(client, monkeypatch):
     assert "connect timeout" in resp.json()["detail"]
 
 
-def test_experiments_stub(client):
+def test_experiments_status(client):
     resp = client.get("/api/experiments")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "not_implemented"
+    body = resp.json()
+    assert "status" in body and "experiments" in body
+    assert body["status"]["enabled"] is False  # disarmed by default
 
 
 def test_history_empty_ok(client):
