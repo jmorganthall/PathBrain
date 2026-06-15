@@ -23,7 +23,7 @@ import SeriesChart from "../components/SeriesChart";
 import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
-import { fmtDateTime, fmtDuration } from "../utils/format";
+import { fmtDateTime, fmtDuration, parseApiDate } from "../utils/format";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
 
@@ -123,7 +123,7 @@ export default function Dashboard() {
       : "ETA available after the first run";
   const latestDurationMs =
     latest?.started_at && latest?.finished_at
-      ? new Date(latest.finished_at).getTime() - new Date(latest.started_at).getTime()
+      ? parseApiDate(latest.finished_at).getTime() - parseApiDate(latest.started_at).getTime()
       : null;
 
   return (
