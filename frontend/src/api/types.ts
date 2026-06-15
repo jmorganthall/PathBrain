@@ -33,6 +33,9 @@ export interface RollingScore {
   p75: number | null;
   min: number | null;
   max: number | null;
+  subscores: Record<string, number>;
+  metric_values: Record<string, number>;
+  weights: Record<string, number>;
 }
 
 export interface MonitoringStatus {
