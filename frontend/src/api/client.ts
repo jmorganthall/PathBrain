@@ -82,6 +82,8 @@ export const api = {
   // Settings correlation
   settingsProfiles: () => request<SettingsProfilesResponse>("/settings/profiles"),
   settingsImpact: () => request<SettingsImpact>("/settings/impact"),
+  settingsBackfill: () =>
+    request<{ updated: number; fingerprint: string }>("/settings/backfill", { method: "POST" }),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),

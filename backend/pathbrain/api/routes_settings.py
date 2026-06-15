@@ -8,16 +8,23 @@ from __future__ import annotations
 
 from statistics import median, quantiles
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config_store import get_config
 from ..database import get_session
+from ..logging_config import get_logger
 from ..models import Run, RunStatus, ScoreResult
-from ..settings_profile import summarize
+from ..providers import get_provider
+from ..settings_profile import fingerprint, normalize, summarize
 
 router = APIRouter()
+log = get_logger("api.settings")
+
+
+def _min_runs(session: Session) -> int:
+    return int((get_config(session).get("correlation", {}) or {}).get("min_runs", 5) or 5)
 
 
 def _spread(vals: list[float]) -> dict:
@@ -47,9 +54,38 @@ def _completed_runs_with_scores(session: Session):
     ).all()
 
 
+@router.post("/settings/backfill")
+def backfill_settings(session: Session = Depends(get_session)) -> dict:
+    """Stamp the *current* firewall settings onto completed runs that have none.
+
+    Use when historical runs predate settings-capture (or ran while discovery was
+    failing) AND the firewall hasn't changed since — they then aggregate into the
+    current profile. Only touches runs with no captured settings.
+    """
+    provider = get_provider()
+    try:
+        normalized = normalize(provider.discover())
+        fp = fingerprint(normalized)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Backfill discovery failed")
+        raise HTTPException(
+            status_code=502, detail=f"{provider.name} discovery failed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    runs = session.scalars(
+        select(Run).where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint.is_(None))
+    ).all()
+    for run in runs:
+        run.settings = normalized
+        run.settings_fingerprint = fp
+    session.commit()
+    return {"updated": len(runs), "fingerprint": fp}
+
+
 @router.get("/settings/profiles")
 def settings_profiles(session: Session = Depends(get_session)) -> dict:
     """One row per distinct settings profile, with its SOPS distribution."""
+    min_runs = _min_runs(session)
     rows = _completed_runs_with_scores(session)
     groups: dict[str, dict] = {}
     for run, sops in rows:
@@ -69,27 +105,29 @@ def settings_profiles(session: Session = Depends(get_session)) -> dict:
 
     profiles = []
     for g in groups.values():
+        count = len(g["sops"])
         profiles.append(
             {
                 "fingerprint": g["fingerprint"],
                 "label": summarize(g["settings"]),
                 "settings": g["settings"],
-                "count": len(g["sops"]),
+                "count": count,
+                "confident": count >= min_runs,
                 "first_seen": g["first_seen"].isoformat(),
                 "last_seen": g["last_seen"].isoformat(),
                 **_spread(g["sops"]),
             }
         )
     profiles.sort(key=lambda p: p["median"], reverse=True)
-    return {"profiles": profiles, "count": len(profiles)}
+    return {"profiles": profiles, "count": len(profiles), "min_runs": min_runs}
 
 
 @router.get("/settings/impact")
 def settings_impact(session: Session = Depends(get_session)) -> dict:
     """Compare the current settings profile to the one before the last change."""
-    threshold = float(
-        (get_config(session).get("correlation", {}) or {}).get("significant_change_pct", 5) or 5
-    )
+    cfg = get_config(session).get("correlation", {}) or {}
+    threshold = float(cfg.get("significant_change_pct", 5) or 5)
+    min_runs = int(cfg.get("min_runs", 5) or 5)
     rows = _completed_runs_with_scores(session)
 
     # Build contiguous segments of runs sharing a fingerprint (chronological).
@@ -103,7 +141,7 @@ def settings_impact(session: Session = Depends(get_session)) -> dict:
         segments[-1]["sops"].append(sops)
         segments[-1]["settings"] = run.settings
 
-    base = {"changed": False, "threshold_pct": threshold}
+    base = {"changed": False, "threshold_pct": threshold, "min_runs": min_runs}
     if len(segments) < 2:
         return base
 
@@ -112,11 +150,15 @@ def settings_impact(session: Session = Depends(get_session)) -> dict:
     after = round(median(cur["sops"]), 2)
     delta_abs = round(after - before, 2)
     delta_pct = round((delta_abs / before) * 100, 1) if before else None
-    significant = delta_pct is not None and abs(delta_pct) >= threshold
+    # Don't make significance calls until both profiles have enough runs.
+    enough_data = len(prev["sops"]) >= min_runs and len(cur["sops"]) >= min_runs
+    significant = enough_data and delta_pct is not None and abs(delta_pct) >= threshold
     return {
         "changed": True,
         "changed_at": cur["changed_at"].isoformat(),
         "threshold_pct": threshold,
+        "min_runs": min_runs,
+        "enough_data": enough_data,
         "delta_abs": delta_abs,
         "delta_pct": delta_pct,
         "significant": significant,

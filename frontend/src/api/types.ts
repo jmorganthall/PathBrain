@@ -48,6 +48,7 @@ export interface SettingsProfile {
   label: string;
   settings: Array<Record<string, unknown>> | null;
   count: number;
+  confident: boolean;
   first_seen: string;
   last_seen: string;
   median: number;
@@ -60,6 +61,7 @@ export interface SettingsProfile {
 export interface SettingsProfilesResponse {
   profiles: SettingsProfile[];
   count: number;
+  min_runs: number;
 }
 
 export interface ImpactSide {
@@ -72,6 +74,8 @@ export interface ImpactSide {
 export interface SettingsImpact {
   changed: boolean;
   threshold_pct: number;
+  min_runs?: number;
+  enough_data?: boolean;
   changed_at?: string;
   delta_abs?: number;
   delta_pct?: number | null;
