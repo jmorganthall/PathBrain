@@ -66,6 +66,43 @@ def _as_int(field: object) -> int | None:
         return None
 
 
+def _pick(pipe: dict, *keys: str) -> object:
+    """Return the first present key's value (field names vary by scheduler)."""
+    for k in keys:
+        if k in pipe:
+            return pipe[k]
+    return None
+
+
+def _pipe_to_config(uuid: str, pipe: dict) -> FqCodelConfig:
+    """Parse one OPNsense dnpipe into a normalized FqCodelConfig.
+
+    fq_codel pipes expose quantum/limit/flows as ``fqcodel_*`` and the CoDel
+    knobs as ``codel_*`` — read those first, with fallbacks for other schedulers.
+    """
+    bandwidth = _selected(pipe.get("bandwidth"))
+    metric = _selected(pipe.get("bandwidthMetric")) or ""
+    bw = f"{bandwidth}{metric}" if bandwidth else None
+    return FqCodelConfig(
+        download_bandwidth=bw,
+        upload_bandwidth=None,  # OPNsense pipes are directional via rules
+        quantum=_as_int(_pick(pipe, "fqcodel_quantum", "codel_quantum", "quantum")),
+        limit=_as_int(_pick(pipe, "fqcodel_limit", "codel_limit", "queue")),
+        target=_selected(pipe.get("codel_target")),
+        interval=_selected(pipe.get("codel_interval")),
+        ecn=_as_bool(pipe.get("codel_ecn_enable")),
+        flows=_as_int(_pick(pipe, "fqcodel_flows", "codel_flows", "flows")),
+        queues=_as_int(pipe.get("queue")),
+        scheduler=_selected(pipe.get("scheduler")),
+        extra={
+            "uuid": uuid,
+            "description": _selected(pipe.get("description")),
+            "enabled": _as_bool(pipe.get("enabled")),
+            "mask": _selected(pipe.get("mask")),
+        },
+    )
+
+
 class OPNsenseProvider(ConfigProvider):
     name = "opnsense"
 
@@ -107,36 +144,11 @@ class OPNsenseProvider(ConfigProvider):
         data = self._get(_SETTINGS_GET)
         pipes = (((data or {}).get("ts") or {}).get("pipes") or {}).get("pipe") or {}
 
-        configs: list[FqCodelConfig] = []
-        for uuid, pipe in pipes.items():
-            if not isinstance(pipe, dict):
-                continue
-            bandwidth = _selected(pipe.get("bandwidth"))
-            metric = _selected(pipe.get("bandwidthMetric")) or ""
-            bw = f"{bandwidth}{metric}" if bandwidth else None
-            scheduler = _selected(pipe.get("scheduler"))
-
-            configs.append(
-                FqCodelConfig(
-                    download_bandwidth=bw,
-                    upload_bandwidth=None,  # OPNsense pipes are directional via rules
-                    quantum=_as_int(pipe.get("codel_quantum") or pipe.get("quantum")),
-                    limit=_as_int(pipe.get("codel_limit") or pipe.get("queue")),
-                    target=_selected(pipe.get("codel_target")),
-                    interval=_selected(pipe.get("codel_interval")),
-                    ecn=_as_bool(pipe.get("codel_ecn_enable")),
-                    flows=_as_int(pipe.get("codel_flows") or pipe.get("flows")),
-                    queues=_as_int(pipe.get("queue")),
-                    scheduler=scheduler,
-                    extra={
-                        "uuid": uuid,
-                        "description": _selected(pipe.get("description")),
-                        "enabled": _as_bool(pipe.get("enabled")),
-                        "mask": _selected(pipe.get("mask")),
-                    },
-                )
-            )
-
+        configs = [
+            _pipe_to_config(uuid, pipe)
+            for uuid, pipe in pipes.items()
+            if isinstance(pipe, dict)
+        ]
         if not configs:
             log.warning("OPNsense discover() found no shaper pipes")
         return configs
