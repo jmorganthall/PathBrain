@@ -1,7 +1,7 @@
 """Config endpoints: benchmark config + firewall discovery/snapshots."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -48,8 +48,15 @@ def provider_health() -> dict:
 def discover(session: Session = Depends(get_session)) -> DiscoverOut:
     """Discover FQ-CoDel settings from the firewall and store a snapshot."""
     provider = get_provider()
-    configs = provider.discover()
-    snapshot_data = provider.snapshot()
+    try:
+        configs = provider.discover()
+        snapshot_data = provider.snapshot()
+    except Exception as exc:  # noqa: BLE001 — surface provider failures clearly
+        log.exception("Discovery failed via provider '%s'", provider.name)
+        raise HTTPException(
+            status_code=502,
+            detail=f"{provider.name} discovery failed: {type(exc).__name__}: {exc}",
+        ) from exc
 
     snapshot = ConfigSnapshot(
         provider=provider.name,

@@ -48,6 +48,26 @@ def test_provider_health(client):
     assert resp.json()["ok"] is True
 
 
+def test_discover_provider_failure_returns_502(client, monkeypatch):
+    """A failing provider should yield a 502 with a useful message, not a 500."""
+
+    class BoomProvider:
+        name = "opnsense"
+
+        def discover(self):
+            raise RuntimeError("connect timeout to 192.168.1.1")
+
+        def snapshot(self):
+            return {}
+
+    monkeypatch.setattr(
+        "pathbrain.api.routes_config.get_provider", lambda: BoomProvider()
+    )
+    resp = client.post("/api/config/discover")
+    assert resp.status_code == 502
+    assert "connect timeout" in resp.json()["detail"]
+
+
 def test_experiments_stub(client):
     resp = client.get("/api/experiments")
     assert resp.status_code == 200

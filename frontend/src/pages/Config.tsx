@@ -631,6 +631,15 @@ export default function Config() {
                   />
                 </Stack>
               )}
+              {provider && !provider.ok && provider.error != null && (
+                <Typography
+                  variant="caption"
+                  color="error"
+                  sx={{ display: "block", mt: 0.5, maxWidth: 560, wordBreak: "break-word" }}
+                >
+                  {String(provider.error)}
+                </Typography>
+              )}
             </Box>
             <Button
               variant="contained"
