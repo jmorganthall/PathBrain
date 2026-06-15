@@ -51,6 +51,7 @@ export interface SettingsProfile {
   label: string;
   settings: Array<Record<string, unknown>> | null;
   count: number;
+  iterations: number;
   confident: boolean;
   first_seen: string;
   last_seen: string;
@@ -61,10 +62,35 @@ export interface SettingsProfile {
   max: number;
 }
 
+export interface ProfileFieldChange {
+  pipe: string;
+  field: string;
+  field_label: string;
+  from_value: string | number | boolean | null;
+  to_value: string | number | boolean | null;
+  direction: "higher" | "lower" | "changed";
+}
+
+export interface ProfileDiffSide {
+  fingerprint: string;
+  label: string;
+  median: number;
+  confident: boolean;
+}
+
+export interface ProfileDiff {
+  best: ProfileDiffSide;
+  comparison: ProfileDiffSide;
+  delta_abs: number;
+  delta_pct: number | null;
+  changes: ProfileFieldChange[];
+}
+
 export interface SettingsProfilesResponse {
   profiles: SettingsProfile[];
   count: number;
   min_runs: number;
+  best_diff: ProfileDiff | null;
 }
 
 export interface ImpactSide {

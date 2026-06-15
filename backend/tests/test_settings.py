@@ -5,8 +5,27 @@ from datetime import datetime, timedelta, timezone
 
 from pathbrain.database import session_scope
 from pathbrain.models import Run, RunStatus, ScoreResult
-from pathbrain.settings_profile import fingerprint, normalize, summarize
+from pathbrain.settings_profile import diff_profiles, fingerprint, normalize, summarize
 from pathbrain.providers.mock import MockProvider
+
+
+def test_diff_profiles_reports_direction():
+    a = [{"label": "wan", "target": "10ms", "quantum": 1514, "download_bandwidth": "880Mbit", "ecn": False}]
+    b = [{"label": "wan", "target": "5ms", "quantum": 2640, "download_bandwidth": "1Gbit", "ecn": True}]
+    changes = {c["field"]: c for c in diff_profiles(a, b)}
+    # CoDel target lowered 10ms -> 5ms (the kind of win that should seed experiments)
+    assert changes["target"]["direction"] == "lower"
+    assert changes["target"]["from_value"] == "10ms"
+    assert changes["target"]["to_value"] == "5ms"
+    assert changes["quantum"]["direction"] == "higher"  # 1514 -> 2640
+    assert changes["download_bandwidth"]["direction"] == "higher"  # 880Mbit -> 1Gbit
+    assert changes["ecn"]["direction"] == "higher"  # off -> on
+    assert "scheduler" not in changes  # unchanged fields are omitted
+
+
+def test_diff_profiles_identical_is_empty():
+    a = [{"label": "wan", "target": "5ms", "quantum": 1514}]
+    assert diff_profiles(a, a) == []
 
 
 def test_fingerprint_stable_and_distinct():
@@ -53,6 +72,17 @@ def test_profiles_and_impact(client):
     assert profiles[0]["fingerprint"] == "bbbbbbbbbbbb"  # higher median first
     assert all(p["confident"] for p in profiles)  # 6 runs each >= min_runs
     assert body["min_runs"] == 5
+    # Each profile tracks total iterations (default 1 per run here -> 6).
+    assert all(p["iterations"] == 6 for p in profiles)
+
+    # best_diff compares the best profile to the next-ranked one.
+    bd = body["best_diff"]
+    assert bd is not None
+    assert bd["best"]["fingerprint"] == "bbbbbbbbbbbb"
+    assert bd["comparison"]["fingerprint"] == "aaaaaaaaaaaa"
+    assert bd["delta_abs"] > 0
+    # These two profiles use identical seeded settings, so no field changes.
+    assert bd["changes"] == []
 
     impact = client.get("/api/settings/impact").json()
     assert impact["changed"] is True
