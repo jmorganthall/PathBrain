@@ -273,9 +273,32 @@ export default function RunDetail() {
         Hover or tap a metric name for what it means.
         {baseline && baseline.run_count > 0 && (
           <>
-            {" "}Arrows compare this run to the{" "}
-            {baseline.scope === "profile" ? "profile" : "recent"} average over{" "}
-            {baseline.run_count} run{baseline.run_count === 1 ? "" : "s"} —{" "}
+            {" "}
+            {baseline.scope === "all" ? (
+              <>
+                Arrows compare this run to the recent average over {baseline.run_count} run
+                {baseline.run_count === 1 ? "" : "s"}
+              </>
+            ) : baseline.is_best_profile ? (
+              <>
+                This run is on your <strong>best-scoring profile</strong>
+                {baseline.profile_median_sops != null && ` (SOPS ${Math.round(baseline.profile_median_sops)})`}
+                ; arrows compare it to that profile's own average over {baseline.run_count} run
+                {baseline.run_count === 1 ? "" : "s"}
+              </>
+            ) : (
+              <>
+                Arrows compare this run to your <strong>best-scoring profile</strong>
+                {baseline.profile_label ? ` (${baseline.profile_label}` : ""}
+                {baseline.profile_label && baseline.profile_median_sops != null
+                  ? `, SOPS ${Math.round(baseline.profile_median_sops)})`
+                  : baseline.profile_label
+                  ? ")"
+                  : ""}{" "}
+                over {baseline.run_count} run{baseline.run_count === 1 ? "" : "s"}
+              </>
+            )}{" "}
+            —{" "}
             <Box component="span" sx={{ color: "success.main", fontWeight: 700 }}>▲ better</Box>,{" "}
             <Box component="span" sx={{ color: "error.main", fontWeight: 700 }}>▼ worse</Box>.
           </>
@@ -375,7 +398,11 @@ export default function RunDetail() {
                                     unit={meta.unit}
                                     runCount={baseline?.run_count ?? 0}
                                     scopeLabel={
-                                      baseline?.scope === "profile" ? "profile average" : "recent average"
+                                      baseline?.scope !== "best_profile"
+                                        ? "recent average"
+                                        : baseline?.is_best_profile
+                                        ? "best-profile average"
+                                        : "best profile"
                                     }
                                   />
                                 )}

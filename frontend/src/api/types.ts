@@ -122,11 +122,14 @@ export interface BenchmarkResult {
 
 export interface RunBaseline {
   run_id: number;
-  // "profile" = averaged over runs with the same settings fingerprint;
+  // "best_profile" = averaged over the profile with the highest median SOPS;
   // "all" = averaged over the most recent completed runs (fallback).
-  scope: "profile" | "all";
+  scope: "best_profile" | "all";
   profile_fingerprint: string | null;
   profile_label: string | null;
+  profile_median_sops: number | null;
+  // True when the viewed run already belongs to the best-scoring profile.
+  is_best_profile: boolean;
   run_count: number;
   // plugin name -> { metric_key: mean_value }
   metrics: Record<string, Record<string, number>>;

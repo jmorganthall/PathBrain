@@ -83,18 +83,22 @@ class RunDetail(BaseModel):
 
 
 class RunBaselineOut(BaseModel):
-    """Average plugin metrics across the run's settings profile, for comparison.
+    """Average plugin metrics for the best-scoring settings profile, for comparison.
 
-    ``metrics`` maps plugin name -> {metric_key: mean_value} over the other
-    completed runs that share this run's settings fingerprint (or, when none are
-    available, the most recent completed runs). The frontend uses it to render
-    improved/worse arrows next to each measurement.
+    ``metrics`` maps plugin name -> {metric_key: mean_value} across the runs of the
+    profile with the highest median SOPS (or, when no profile is usable, the most
+    recent completed runs). The frontend uses it to render improved/worse arrows
+    showing how far this run is from the best-known configuration.
     """
 
     run_id: int
-    scope: str  # "profile" (same settings fingerprint) or "all" (recent runs)
+    scope: str  # "best_profile" (highest-median-SOPS profile) or "all" (recent runs)
     profile_fingerprint: str | None = None
     profile_label: str | None = None
+    profile_median_sops: float | None = None
+    # True when the viewed run already belongs to the best profile (so the
+    # comparison is against that profile's own average rather than a better one).
+    is_best_profile: bool = False
     run_count: int
     metrics: dict[str, dict[str, float]] = {}
 
