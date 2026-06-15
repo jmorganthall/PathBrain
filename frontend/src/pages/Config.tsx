@@ -18,6 +18,8 @@ import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
 import SaveIcon from "@mui/icons-material/Save";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
@@ -46,6 +48,8 @@ import {
 } from "../utils/validate";
 
 const WAIT_UNTIL = ["load", "domcontentloaded", "networkidle", "commit"];
+const EXP_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const EXP_PARAMS = ["quantum", "limit", "target", "interval", "flows", "bandwidth"];
 
 function NumberField(props: {
   label: string;
@@ -339,6 +343,170 @@ export default function Config() {
             When enabled, PathBrain runs the suite automatically on this interval — building the
             history that powers the rolling "Current Responsiveness" score on the Dashboard. Takes
             effect after saving (no restart needed).
+          </Typography>
+        </CardContent>
+      </Card>
+
+      {/* Experiment Engine */}
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>
+            Experiment Engine
+          </Typography>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            When <b>armed</b> and not in dry-run, PathBrain will change your firewall's traffic shaper
+            during the window. The pre-window config is restored when the window closes unless
+            auto-promote is on. Start in dry-run to validate.
+          </Alert>
+          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center">
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={d.experiment.enabled}
+                  onChange={(e) =>
+                    setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, enabled: e.target.checked } } : p))
+                  }
+                />
+              }
+              label="Armed"
+            />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={d.experiment.dry_run}
+                  onChange={(e) =>
+                    setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, dry_run: e.target.checked } } : p))
+                  }
+                />
+              }
+              label="Dry-run (no changes applied)"
+            />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={d.experiment.auto_promote}
+                  onChange={(e) =>
+                    setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, auto_promote: e.target.checked } } : p))
+                  }
+                />
+              }
+              label="Auto-promote winner"
+            />
+          </Stack>
+          <Stack direction="row" spacing={2} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
+            <TextField
+              select
+              size="small"
+              label="Parameter"
+              value={d.experiment.param}
+              onChange={(e) =>
+                setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, param: e.target.value } } : p))
+              }
+              sx={{ width: 160 }}
+            >
+              {EXP_PARAMS.map((pm) => (
+                <MenuItem key={pm} value={pm}>
+                  {pm}
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField
+              size="small"
+              label="Candidate values (comma-separated)"
+              value={d.experiment.candidates.join(", ")}
+              onChange={(e) => {
+                const vals = e.target.value
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+                  .map((s) => (s !== "" && Number.isFinite(Number(s)) ? Number(s) : s));
+                setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, candidates: vals } } : p));
+              }}
+              sx={{ minWidth: 260, flex: 1 }}
+            />
+            <TextField
+              size="small"
+              label="Pipe UUID (optional)"
+              value={d.experiment.pipe_uuid}
+              onChange={(e) =>
+                setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, pipe_uuid: e.target.value } } : p))
+              }
+              sx={{ width: 220 }}
+            />
+          </Stack>
+          <Stack direction="row" spacing={2} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
+            <NumberField
+              label="Dwell (min)"
+              value={d.experiment.dwell_minutes}
+              min={0}
+              onChange={(v) =>
+                setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, dwell_minutes: v } } : p))
+              }
+            />
+            <NumberField
+              label="Min trials / value"
+              value={d.experiment.min_trials_per_value}
+              min={1}
+              onChange={(v) =>
+                setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, min_trials_per_value: v } } : p))
+              }
+            />
+            <NumberField
+              label="Improve % to promote"
+              value={d.experiment.improve_pct}
+              min={0}
+              step={0.5}
+              onChange={(v) =>
+                setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, improve_pct: v } } : p))
+              }
+            />
+          </Stack>
+          <Typography variant="subtitle2" sx={{ mt: 2 }}>
+            Experimentation window (local time)
+          </Typography>
+          <ToggleButtonGroup
+            size="small"
+            sx={{ mt: 1, flexWrap: "wrap" }}
+            value={d.experiment.window.days}
+            onChange={(_e, days: number[]) =>
+              setDraft((p) =>
+                p ? { ...p, experiment: { ...p.experiment, window: { ...p.experiment.window, days } } } : p
+              )
+            }
+          >
+            {EXP_DAYS.map((lbl, idx) => (
+              <ToggleButton key={idx} value={idx}>
+                {lbl}
+              </ToggleButton>
+            ))}
+          </ToggleButtonGroup>
+          <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
+            <NumberField
+              label="Start hour"
+              value={d.experiment.window.start_hour}
+              min={0}
+              max={24}
+              onChange={(v) =>
+                setDraft((p) =>
+                  p ? { ...p, experiment: { ...p.experiment, window: { ...p.experiment.window, start_hour: v } } } : p
+                )
+              }
+            />
+            <NumberField
+              label="End hour"
+              value={d.experiment.window.end_hour}
+              min={0}
+              max={24}
+              onChange={(v) =>
+                setDraft((p) =>
+                  p ? { ...p, experiment: { ...p.experiment, window: { ...p.experiment.window, end_hour: v } } } : p
+                )
+              }
+            />
+          </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+            Hours use the container's local time — set the <code>TZ</code> env var to your timezone.
+            Start &gt; end means an overnight window. Manage running experiments on the Experiments page.
           </Typography>
         </CardContent>
       </Card>

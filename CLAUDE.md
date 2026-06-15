@@ -59,9 +59,20 @@ docker compose up --build   # -> http://localhost:8000
 - **Phase 2 (done):** Playwright browser engine — `benchmark_browser` emits
   `total_render_ms` (+ nav timings), captures screenshot/HAR to the artifact dir,
   served at `/artifacts`. The `render` SOPS weight (25%) activates automatically.
-- **Next:** continuous monitoring (scheduled runs + settings-vs-responsiveness
-  correlation), real-world profiles, speed test, bufferbloat, experiment engine,
-  autonomous closed-loop optimization, routing intelligence / SD-WAN.
+- **Phase 3 (done):** continuous monitoring (`scheduler.py`) + rolling score;
+  settings-vs-responsiveness correlation (`settings_profile.py`, `/api/settings/*`);
+  perception-calibrated rubric (Weber–Fechner) with versioned re-scoring; and the
+  **experiment engine** (`experiment.py`): window-gated single-parameter sweep
+  that writes to the firewall via `provider.apply()`, disarmed + dry-run by
+  default, restoring the pre-window baseline at window close. Experiments run in
+  the scheduler thread (priority over monitoring).
+- **Next:** real-world profiles, speed test, bufferbloat, multi-parameter
+  Bayesian search + interleaved A/B with effect-size/CI + hysteresis, routing
+  intelligence / SD-WAN.
+
+⚠️ The experiment engine is the only path that *writes* to the firewall. Keep it
+disarmed (`experiment.enabled=false`) / dry-run by default; always snapshot the
+baseline and restore it at window close.
 
 The browser engine imports Playwright lazily, so the plugin registry still loads
 where Playwright/Chromium isn't installed (it returns `success=False` and the

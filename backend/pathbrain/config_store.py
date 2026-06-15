@@ -130,6 +130,25 @@ DEFAULT_CONFIG: dict = {
         "min_runs": 5,
     },
     "rubric_version": DEFAULT_RUBRIC_VERSION,
+    # Autonomous experiment engine. Disarmed by default; it never writes to the
+    # firewall unless `enabled` is true, and `dry_run` logs intended changes
+    # without applying. Window hours use the container's local time (set TZ).
+    "experiment": {
+        "enabled": False,       # master arm switch
+        "dry_run": True,        # log intended changes, do not apply
+        "auto_promote": False,  # keep the winner at window close (else restore baseline)
+        "window": {
+            "days": [1, 3],     # weekdays allowed: 0=Mon … 6=Sun
+            "start_hour": 2,    # local hour (inclusive)
+            "end_hour": 5,      # local hour (exclusive); start>end means overnight
+        },
+        "pipe_uuid": "",        # target shaper pipe (blank = first discovered)
+        "param": "quantum",     # which FQ-CoDel param to sweep
+        "candidates": [],       # values to try, e.g. [1514, 2000, 3000]
+        "dwell_minutes": 10,    # hold each value this long before benchmarking it
+        "min_trials_per_value": 3,
+        "improve_pct": 5,       # winner must beat baseline by this % to auto-promote
+    },
     "weights": DEFAULT_WEIGHTS,
     "thresholds": DEFAULT_THRESHOLDS,
 }

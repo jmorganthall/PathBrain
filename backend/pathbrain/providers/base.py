@@ -48,6 +48,12 @@ class ConfigProvider(ABC):
         """Lightweight connectivity / configuration check."""
         return {"provider": self.name, "ok": True}
 
-    def apply(self, changes: dict) -> dict:  # pragma: no cover - Phase 3+
-        """Apply configuration changes. Not implemented in the foundation."""
-        raise NotImplementedError("Applying changes is not enabled in this phase")
+    def apply(self, changes: dict) -> dict:
+        """Apply a single shaper parameter change and reconfigure.
+
+        ``changes`` = ``{"pipe_uuid": str|None, "param": str, "value": Any}``.
+        ``pipe_uuid`` blank → the first discovered pipe. Returns a small status
+        dict. Used by the experiment engine; always snapshot-before per the
+        engine's safety flow.
+        """
+        raise NotImplementedError("This provider cannot apply changes")

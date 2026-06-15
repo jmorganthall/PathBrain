@@ -265,7 +265,10 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 | `POST /api/config/discover` | Discover FQ-CoDel settings + store a snapshot |
 | `GET /api/config/snapshots` | List stored config snapshots |
 | `GET /api/plugins` | List registered benchmark plugins |
-| `GET /api/experiments` | Experiment engine (stub, Phase 3) |
+| `GET /api/settings/profiles` | Per-settings-profile SOPS distribution |
+| `GET /api/settings/impact` | Significance of the latest settings change |
+| `GET /api/experiments` | Experiment-engine status + history |
+| `POST /api/experiments/abort` | Abort the running experiment, restore baseline |
 | `GET /api/health` | Liveness / version |
 
 ---
@@ -342,9 +345,13 @@ docker-compose.yml   Single-container deployment
 - [ ] **Settings-vs-responsiveness correlation** (group runs by firewall/SQM
       profile) — pending OPNsense discovery.
 - [ ] **Real-world profiles, speed test, bufferbloat test.**
-- [ ] **Phase 3 — Experiment engine:** apply candidate → wait → benchmark →
-      keep/rollback, always snapshot-first.
-- [ ] **Phase 4 — Autonomous closed-loop optimization.**
+- [x] **Experiment engine:** within an experimentation window, sweep one shaper
+      parameter across candidates (interleaved), benchmark each, and **restore the
+      pre-window baseline** when the window closes (or auto-promote a clear
+      winner). Disarmed + dry-run by default; manual abort restores baseline.
+      *Requires OPNsense write (apply) access; window uses the container `TZ`.*
+- [ ] **Phase 4 — Fuller autonomy:** Bayesian search over multiple parameters,
+      interleaved A/B with effect-size + CI, hysteresis across windows.
 - [ ] **Phase 5 — Routing intelligence / SD-WAN** with hysteresis (no route
       flapping; require sustained, meaningful wins before re-routing).
 - [ ] Postgres / InfluxDB backends, OAuth/OIDC auth.

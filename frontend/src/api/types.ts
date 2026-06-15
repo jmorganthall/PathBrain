@@ -201,6 +201,7 @@ export interface BenchmarkConfig {
   browser: BrowserConfig;
   iterations: number;
   monitoring: { enabled: boolean; interval_minutes: number };
+  experiment: ExperimentConfig;
   rubric_version: string;
   weights: Record<string, number>;
   thresholds: Record<string, Threshold>;
@@ -232,8 +233,73 @@ export interface PluginInfo {
   description: string;
 }
 
-export interface ExperimentsResponse {
-  experiments: unknown[];
+export interface ExperimentWindow {
+  days: number[];
+  start_hour: number;
+  end_hour: number;
+}
+
+export interface ExperimentConfig {
+  enabled: boolean;
+  dry_run: boolean;
+  auto_promote: boolean;
+  window: ExperimentWindow;
+  pipe_uuid: string;
+  param: string;
+  candidates: Array<number | string>;
+  dwell_minutes: number;
+  min_trials_per_value: number;
+  improve_pct: number;
+}
+
+export interface ExperimentResult {
+  medians: Record<string, number>;
+  baseline_value: string;
+  baseline_median: number | null;
+  winner: string | null;
+  winner_median: number | null;
+  action: string;
+  final_value: string;
+}
+
+export interface ExperimentSummary {
+  id: number;
+  created_at: string;
+  finished_at: string | null;
   status: string;
-  message: string;
+  param: string;
+  candidates: Array<number | string>;
+  dry_run: boolean;
+  baseline_value: string | null;
+  trial_count: number;
+  result: ExperimentResult | null;
+}
+
+export interface ExperimentTrial {
+  id: number;
+  created_at: string;
+  value: string;
+  sops: number | null;
+  run_id: number | null;
+  applied: boolean;
+}
+
+export interface ExperimentDetail extends ExperimentSummary {
+  trials: ExperimentTrial[];
+}
+
+export interface ExperimentStatusInfo {
+  enabled: boolean;
+  dry_run: boolean;
+  auto_promote: boolean;
+  in_window: boolean;
+  window: ExperimentWindow;
+  param: string;
+  candidates: Array<number | string>;
+  active_experiment_id: number | null;
+}
+
+export interface ExperimentsResponse {
+  status: ExperimentStatusInfo;
+  experiments: ExperimentSummary[];
 }

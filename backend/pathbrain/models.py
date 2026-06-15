@@ -133,6 +133,57 @@ class ConfigSnapshot(Base):
     data: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class ExperimentStatus(str, enum.Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    ABORTED = "aborted"
+
+
+class Experiment(Base):
+    """An autonomous sweep of one shaper parameter across candidate values."""
+
+    __tablename__ = "experiments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[ExperimentStatus] = mapped_column(
+        Enum(ExperimentStatus), default=ExperimentStatus.RUNNING
+    )
+
+    param: Mapped[str] = mapped_column(String(64))
+    pipe_uuid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    candidates: Mapped[list] = mapped_column(JSON, default=list)
+    dry_run: Mapped[bool] = mapped_column(default=True)
+
+    baseline_value: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Full pre-experiment settings snapshot, restored at window close by default.
+    baseline_settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Outcome: per-value medians, winner, and whether we promoted or restored.
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    trials: Mapped[list["ExperimentTrial"]] = relationship(
+        back_populates="experiment", cascade="all, delete-orphan", order_by="ExperimentTrial.id"
+    )
+
+
+class ExperimentTrial(Base):
+    """One measured sample of a candidate value within an experiment."""
+
+    __tablename__ = "experiment_trials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    experiment_id: Mapped[int] = mapped_column(ForeignKey("experiments.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    value: Mapped[str] = mapped_column(String(64))
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    sops: Mapped[float | None] = mapped_column(Float, nullable=True)
+    applied: Mapped[bool] = mapped_column(default=False)
+
+    experiment: Mapped["Experiment"] = relationship(back_populates="trials")
+
+
 class AppConfig(Base):
     """Singleton-ish key/value store for persisted runtime configuration."""
 
