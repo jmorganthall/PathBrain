@@ -14,6 +14,7 @@ import type {
   RunSummary,
   ScoreOut,
   SeriesResponse,
+  SettingsDiagnostics,
   SettingsImpact,
   SettingsProfilesResponse,
   WeightsResponse,
@@ -84,6 +85,7 @@ export const api = {
   settingsImpact: () => request<SettingsImpact>("/settings/impact"),
   settingsBackfill: () =>
     request<{ updated: number; fingerprint: string }>("/settings/backfill", { method: "POST" }),
+  settingsDiagnostics: () => request<SettingsDiagnostics>("/settings/diagnostics"),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),

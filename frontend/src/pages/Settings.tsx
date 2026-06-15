@@ -17,7 +17,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
 import { api } from "../api/client";
-import type { SettingsImpact, SettingsProfile } from "../api/types";
+import type { SettingsDiagnostics, SettingsImpact, SettingsProfile } from "../api/types";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
 import InsightsIcon from "@mui/icons-material/Insights";
@@ -54,6 +54,7 @@ export function ImpactBanner({ impact }: { impact: SettingsImpact }) {
 export default function Settings() {
   const [profiles, setProfiles] = useState<SettingsProfile[] | null>(null);
   const [impact, setImpact] = useState<SettingsImpact | null>(null);
+  const [diag, setDiag] = useState<SettingsDiagnostics | null>(null);
   const [minRuns, setMinRuns] = useState(5);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -62,10 +63,15 @@ export default function Settings() {
 
   const load = useCallback(async () => {
     try {
-      const [p, i] = await Promise.all([api.settingsProfiles(), api.settingsImpact()]);
+      const [p, i, d] = await Promise.all([
+        api.settingsProfiles(),
+        api.settingsImpact(),
+        api.settingsDiagnostics(),
+      ]);
       setProfiles(p.profiles);
       setMinRuns(p.min_runs);
       setImpact(i);
+      setDiag(d);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load settings analysis");
@@ -131,6 +137,64 @@ export default function Settings() {
       )}
 
       {impact && <ImpactBanner impact={impact} />}
+
+      {diag && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Typography variant="subtitle1" gutterBottom>
+              Capture diagnostics
+            </Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+              <Chip size="small" label={`completed: ${diag.total_completed}`} />
+              <Chip
+                size="small"
+                color={diag.stamped > 0 ? "success" : "default"}
+                label={`stamped: ${diag.stamped}`}
+              />
+              <Chip
+                size="small"
+                variant="outlined"
+                color={diag.unstamped > 0 ? "warning" : "default"}
+                label={`unstamped: ${diag.unstamped}`}
+              />
+              <Chip size="small" label={`distinct profiles: ${diag.distinct_profiles}`} />
+            </Stack>
+            <Typography variant="caption" color="text.secondary">
+              {diag.stamped > 1 && diag.distinct_profiles >= diag.stamped
+                ? "⚠ Every stamped run has a different fingerprint — the firewall config is being read inconsistently each run (a bug to fix), not your settings changing."
+                : diag.unstamped > 0
+                  ? "Some completed runs captured no settings (they ran before capture existed or while discovery was failing). Use “Attribute unstamped runs” if the firewall is unchanged since."
+                  : "Recent runs and the profile fingerprint captured for each:"}
+            </Typography>
+            <TableContainer sx={{ mt: 1 }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Run</TableCell>
+                    <TableCell>When</TableCell>
+                    <TableCell>Fingerprint</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {diag.recent.map((r) => (
+                    <TableRow key={r.id}>
+                      <TableCell>#{r.id}</TableCell>
+                      <TableCell>{fmtDateTime(r.created_at)}</TableCell>
+                      <TableCell>
+                        {r.fingerprint ?? (
+                          <Typography component="span" variant="caption" color="text.secondary">
+                            — none —
+                          </Typography>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </CardContent>
+        </Card>
+      )}
 
       {!profiles || profiles.length === 0 ? (
         <Card>
