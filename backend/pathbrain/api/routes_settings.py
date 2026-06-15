@@ -54,6 +54,37 @@ def _completed_runs_with_scores(session: Session):
     ).all()
 
 
+@router.get("/settings/diagnostics")
+def settings_diagnostics(session: Session = Depends(get_session)) -> dict:
+    """Visibility into settings capture: how many runs are stamped, how many
+    distinct fingerprints, and the most recent runs with their fingerprints.
+
+    Lets us tell apart "old runs never captured" (lots of nulls) from "fingerprint
+    changes every run" (lots of distinct fingerprints).
+    """
+    completed = session.scalars(
+        select(Run).where(Run.status == RunStatus.COMPLETE).order_by(Run.created_at.desc())
+    ).all()
+    stamped = [r for r in completed if r.settings_fingerprint]
+    distinct = {r.settings_fingerprint for r in stamped}
+    recent = [
+        {
+            "id": r.id,
+            "created_at": r.created_at.isoformat(),
+            "label": r.label,
+            "fingerprint": r.settings_fingerprint,
+        }
+        for r in completed[:15]
+    ]
+    return {
+        "total_completed": len(completed),
+        "stamped": len(stamped),
+        "unstamped": len(completed) - len(stamped),
+        "distinct_profiles": len(distinct),
+        "recent": recent,
+    }
+
+
 @router.post("/settings/backfill")
 def backfill_settings(session: Session = Depends(get_session)) -> dict:
     """Stamp the *current* firewall settings onto completed runs that have none.

@@ -71,6 +71,19 @@ export interface ImpactSide {
   count: number;
 }
 
+export interface SettingsDiagnostics {
+  total_completed: number;
+  stamped: number;
+  unstamped: number;
+  distinct_profiles: number;
+  recent: Array<{
+    id: number;
+    created_at: string;
+    label?: string | null;
+    fingerprint: string | null;
+  }>;
+}
+
 export interface SettingsImpact {
   changed: boolean;
   threshold_pct: number;
