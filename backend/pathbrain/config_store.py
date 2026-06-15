@@ -120,6 +120,8 @@ DEFAULT_CONFIG: dict = {
     "monitoring": {
         "enabled": False,
         "interval_minutes": 15,
+        # Watchdog: fail any run still in progress after this many minutes.
+        "run_timeout_minutes": 30,
     },
     # Settings-vs-responsiveness correlation: flag a settings change as
     # significant when the median SOPS moves by at least this percent.

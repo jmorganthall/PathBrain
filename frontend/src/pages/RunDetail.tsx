@@ -37,7 +37,19 @@ export default function RunDetail() {
   const [error, setError] = useState<string | null>(null);
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [now, setNow] = useState<number>(Date.now());
+  const [cancelling, setCancelling] = useState(false);
   const pollRef = useRef<number | null>(null);
+
+  const cancelRun = useCallback(async () => {
+    setCancelling(true);
+    try {
+      setRun(await api.cancelRun(runId));
+    } catch {
+      /* ignore; poll will refresh */
+    } finally {
+      setCancelling(false);
+    }
+  }, [runId]);
 
   const load = useCallback(async () => {
     try {
@@ -116,7 +128,14 @@ export default function RunDetail() {
         sx={{ mb: 2 }}
       >
         <Typography variant="h4">Run #{run.id}</Typography>
-        <StatusChip status={run.status} />
+        <Stack direction="row" spacing={1} alignItems="center">
+          {isRunning(run.status) && (
+            <Button size="small" color="error" variant="outlined" onClick={cancelRun} disabled={cancelling}>
+              {cancelling ? "Cancelling…" : "Cancel run"}
+            </Button>
+          )}
+          <StatusChip status={run.status} />
+        </Stack>
       </Stack>
 
       {isRunning(run.status) && (() => {

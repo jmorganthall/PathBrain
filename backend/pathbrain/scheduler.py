@@ -25,7 +25,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .models import Run, RunStatus
-from .runner import create_run, execute_run
+from .runner import create_run, execute_run, fail_stale_runs
 
 log = get_logger("scheduler")
 
@@ -71,6 +71,13 @@ def _loop(stop: threading.Event) -> None:
     log.info("Scheduler thread started")
     while not stop.is_set():
         try:
+            # Watchdog: fail hung/orphaned runs before doing anything else.
+            with session_scope() as session:
+                timeout_min = float(
+                    (get_config(session).get("monitoring", {}) or {}).get("run_timeout_minutes", 30) or 30
+                )
+            fail_stale_runs(timeout_min)
+
             # Experiments take priority; if one did work this tick, skip monitoring
             # so the two never overlap or pollute each other's measurements.
             from . import experiment

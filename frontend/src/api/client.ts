@@ -58,6 +58,7 @@ export const api = {
   triggerRun: (body: { label?: string; notes?: string; iterations?: number }) =>
     request<RunDetail>("/run", { method: "POST", body: JSON.stringify(body) }),
   runEstimate: () => request<RunEstimate>("/runs/estimate"),
+  cancelRun: (id: number) => request<RunDetail>(`/runs/${id}/cancel`, { method: "POST" }),
 
   // Results
   latestResult: () => request<RunDetail>("/results/latest"),

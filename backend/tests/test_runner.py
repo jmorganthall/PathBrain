@@ -1,8 +1,52 @@
 """Tests for multi-iteration aggregation and the run-estimate endpoint."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
+from pathbrain.database import session_scope
+from pathbrain.models import Run, RunStatus
 from pathbrain.plugins.base import PluginResult
-from pathbrain.runner import _aggregate, _plugin_metrics_from_values
+from pathbrain.runner import (
+    _aggregate,
+    _plugin_metrics_from_values,
+    fail_stale_runs,
+    reconcile_interrupted_runs,
+)
+
+
+def _make_run(status: RunStatus, started_at=None) -> int:
+    with session_scope() as s:
+        run = Run(status=status, started_at=started_at)
+        s.add(run)
+        s.flush()
+        return run.id
+
+
+def test_reconcile_interrupted_runs():
+    rid = _make_run(RunStatus.RUNNING)
+    reconcile_interrupted_runs()
+    with session_scope() as s:
+        run = s.get(Run, rid)
+        assert run.status == RunStatus.FAILED
+        assert "Interrupted" in run.error
+
+
+def test_watchdog_fails_stale_runs():
+    old = datetime.now(timezone.utc) - timedelta(minutes=45)
+    rid = _make_run(RunStatus.RUNNING, started_at=old)
+    fresh = _make_run(RunStatus.RUNNING, started_at=datetime.now(timezone.utc))
+    fail_stale_runs(30)
+    with session_scope() as s:
+        assert s.get(Run, rid).status == RunStatus.FAILED
+        assert s.get(Run, fresh).status == RunStatus.RUNNING  # within limit
+
+
+def test_cancel_run_endpoint(client):
+    rid = _make_run(RunStatus.RUNNING)
+    resp = client.post(f"/api/runs/{rid}/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "failed"
+    assert "Cancelled" in (resp.json()["error"] or "")
 
 
 def test_aggregate_averages_metrics_with_stats():
