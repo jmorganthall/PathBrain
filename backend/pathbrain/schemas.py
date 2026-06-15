@@ -38,6 +38,9 @@ class ScoreOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     sops: float
+    sops_stdev: float | None = None
+    sops_min: float | None = None
+    sops_max: float | None = None
     subscores: dict[str, float]
     weights_used: dict[str, float]
     metric_values: dict[str, float]

@@ -230,6 +230,11 @@ export default function Dashboard() {
                 );
               })()}
               <ScoreGauge value={latest.score?.sops ?? null} />
+              {latest.score && latest.score.sops_stdev != null && latest.iterations > 1 && (
+                <Typography variant="caption" color="text.secondary">
+                  ± {latest.score.sops_stdev} (range {latest.score.sops_min}–{latest.score.sops_max})
+                </Typography>
+              )}
               <Stack direction="row" spacing={1} alignItems="center">
                 <StatusChip status={latest.status} />
                 <Chip

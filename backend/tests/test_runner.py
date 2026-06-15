@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathbrain.plugins.base import PluginResult
-from pathbrain.runner import _aggregate
+from pathbrain.runner import _aggregate, _plugin_metrics_from_values
 
 
 def test_aggregate_averages_metrics_with_stats():
@@ -58,6 +58,27 @@ def test_aggregate_handles_missing_metric_key():
     agg = _aggregate(results)
     assert agg["metrics"]["latency_ms"] == 11.0
     assert agg["metrics"]["jitter_ms"] == 2.0  # averaged over the one sample
+
+
+def test_aggregate_uses_robust_median_central_value():
+    # A single huge outlier iteration must not drag the central value up.
+    results = [
+        PluginResult("http", success=True, metrics={"ttfb_ms": 100.0}),
+        PluginResult("http", success=True, metrics={"ttfb_ms": 100.0}),
+        PluginResult("http", success=True, metrics={"ttfb_ms": 1000.0}),
+    ]
+    agg = _aggregate(results)
+    assert agg["metrics"]["ttfb_ms"] == 100.0  # median, not the 400 mean
+    stats = agg["details"]["metric_stats"]["ttfb_ms"]
+    assert stats["median"] == 100.0
+    assert stats["mean"] == 400.0  # still reported for reference
+
+
+def test_plugin_metrics_from_values_reverse_maps():
+    pm = _plugin_metrics_from_values({"dns": 12.0, "ttfb": 80.0, "jitter": 1.5})
+    assert pm["dns"]["lookup_ms"] == 12.0
+    assert pm["http"]["ttfb_ms"] == 80.0
+    assert pm["icmp"]["jitter_ms"] == 1.5
 
 
 def test_estimate_endpoint_shape(client):
