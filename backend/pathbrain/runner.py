@@ -10,7 +10,7 @@ thread so the API returns immediately with a run id the UI polls; the run's
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from statistics import mean, pstdev
+from statistics import mean, median, pstdev
 from time import perf_counter
 
 from .config_store import get_config
@@ -18,7 +18,7 @@ from .database import session_scope
 from .logging_config import get_logger
 from .models import BenchmarkResult, Run, RunStatus, ScoreResult
 from .plugins import BenchmarkPlugin, PluginResult, iter_plugins
-from .scoring import compute_score
+from .scoring import METRIC_SOURCES, compute_score
 
 log = get_logger("runner")
 
@@ -50,12 +50,24 @@ def create_run(
 def _metric_stats(values: list[float]) -> dict:
     n = len(values)
     return {
+        "median": round(median(values), 3),
         "mean": round(mean(values), 3),
         "stdev": round(pstdev(values), 3) if n > 1 else 0.0,
         "min": round(min(values), 3),
         "max": round(max(values), 3),
         "n": n,
     }
+
+
+def _plugin_metrics_from_values(metric_values: dict[str, float]) -> dict[str, dict]:
+    """Map SOPS metric values back to a plugin->metrics dict for scoring."""
+    out: dict[str, dict] = {}
+    for metric, value in metric_values.items():
+        src = METRIC_SOURCES.get(metric)
+        if src and value is not None:
+            plugin, key = src
+            out.setdefault(plugin, {})[key] = value
+    return out
 
 
 def _aggregate(results: list[PluginResult]) -> dict:
@@ -91,7 +103,8 @@ def _aggregate(results: list[PluginResult]) -> dict:
         if values:
             stats = _metric_stats(values)
             metric_stats[key] = stats
-            mean_metrics[key] = stats["mean"]
+            # Use the median as the central value (robust to outlier iterations).
+            mean_metrics[key] = stats["median"]
         else:
             mean_metrics[key] = None
 
@@ -137,24 +150,37 @@ def execute_run(run_id: int) -> None:
             plugins: list[BenchmarkPlugin] = iter_plugins()
             per_plugin: dict[str, list[PluginResult]] = {p.name: [] for p in plugins}
             iteration_durations: list[float] = []
+            weights = config.get("weights", {})
+            thresholds = config.get("thresholds", {})
+
+            # Score every iteration independently so we can report a robust
+            # central SOPS and a confidence band, instead of a single noisy value.
+            iteration_scores: list[float] = []
+            iteration_metric_values: list[dict] = []
 
             for i in range(iterations):
                 it_start = perf_counter()
                 log.info("Run %s: iteration %s/%s", run_id, i + 1, iterations)
+                iter_metrics: dict[str, dict] = {}
                 for plugin in plugins:
                     section = config.get(plugin.name, {})
                     result = plugin.run(section)
                     per_plugin[plugin.name].append(result)
-                    if not result.success:
+                    if result.success:
+                        iter_metrics[plugin.name] = result.metrics
+                    else:
                         log.warning(
                             "Run %s iter %s: plugin '%s' failed: %s",
                             run_id, i + 1, plugin.name, result.error,
                         )
+                b = compute_score(iter_metrics, weights=weights, thresholds=thresholds)
+                iteration_scores.append(b.sops)
+                iteration_metric_values.append(b.metric_values)
                 iteration_durations.append((perf_counter() - it_start) * 1000.0)
                 run.iterations_completed = i + 1
                 session.commit()  # surface progress to pollers
 
-            plugin_metrics: dict[str, dict] = {}
+            # Per-plugin display aggregation (median central value + per-metric stats).
             for plugin in plugins:
                 agg = _aggregate(per_plugin[plugin.name])
                 session.add(
@@ -168,20 +194,33 @@ def execute_run(run_id: int) -> None:
                         details=agg["details"],
                     )
                 )
-                if agg["success"]:
-                    plugin_metrics[plugin.name] = {
-                        k: v for k, v in agg["metrics"].items() if v is not None
-                    }
+
+            # Robust headline: score the median of each metric across iterations.
+            metric_keys: set[str] = set()
+            for mv in iteration_metric_values:
+                metric_keys.update(mv.keys())
+            median_values: dict[str, float] = {}
+            for k in metric_keys:
+                vals = [mv[k] for mv in iteration_metric_values if mv.get(k) is not None]
+                if vals:
+                    median_values[k] = round(median(vals), 3)
 
             breakdown = compute_score(
-                plugin_metrics,
-                weights=config.get("weights", {}),
-                thresholds=config.get("thresholds", {}),
+                _plugin_metrics_from_values(median_values),
+                weights=weights,
+                thresholds=thresholds,
             )
+            sops_stdev = round(pstdev(iteration_scores), 2) if len(iteration_scores) > 1 else 0.0
+            sops_min = round(min(iteration_scores), 2) if iteration_scores else None
+            sops_max = round(max(iteration_scores), 2) if iteration_scores else None
+
             session.add(
                 ScoreResult(
                     run_id=run_id,
                     sops=breakdown.sops,
+                    sops_stdev=sops_stdev,
+                    sops_min=sops_min,
+                    sops_max=sops_max,
                     subscores=breakdown.subscores,
                     weights_used=breakdown.weights_used,
                     metric_values=breakdown.metric_values,
@@ -195,8 +234,8 @@ def execute_run(run_id: int) -> None:
             run.finished_at = datetime.now(timezone.utc)
             session.commit()
             log.info(
-                "Run %s complete: SOPS=%.2f (%s iteration(s))",
-                run_id, breakdown.sops, iterations,
+                "Run %s complete: SOPS=%.2f ±%.2f (%s iteration(s))",
+                run_id, breakdown.sops, sops_stdev, iterations,
             )
     except Exception as exc:  # noqa: BLE001 — never let a background task crash silently
         log.exception("Run %s failed", run_id)

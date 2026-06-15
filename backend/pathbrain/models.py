@@ -97,7 +97,12 @@ class ScoreResult(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"), unique=True)
-    sops: Mapped[float] = mapped_column(Float)  # 0..100
+    sops: Mapped[float] = mapped_column(Float)  # 0..100 (robust central value)
+
+    # Spread of the per-iteration SOPS, for a confidence band on the headline.
+    sops_stdev: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sops_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sops_max: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Per-metric subscores and the (possibly redistributed) weights used.
     subscores: Mapped[dict] = mapped_column(JSON, default=dict)

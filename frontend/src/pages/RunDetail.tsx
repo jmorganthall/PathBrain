@@ -178,6 +178,12 @@ export default function RunDetail() {
         <Card>
           <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
             <ScoreGauge value={run.score?.sops ?? null} />
+            {run.score && run.score.sops_stdev != null && run.iterations > 1 && (
+              <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
+                ± {run.score.sops_stdev} · range {run.score.sops_min}–{run.score.sops_max} over{" "}
+                {run.iterations} iterations
+              </Typography>
+            )}
             <Stack spacing={0.5} alignItems="center">
               {run.label && <Chip size="small" label={run.label} />}
               <Typography variant="caption" color="text.secondary">

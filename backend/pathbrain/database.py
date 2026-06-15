@@ -64,6 +64,11 @@ def _migrate() -> None:
             "iterations_completed": "INTEGER DEFAULT 0",
             "per_iteration_ms": "FLOAT",
         },
+        "score_results": {
+            "sops_stdev": "FLOAT",
+            "sops_min": "FLOAT",
+            "sops_max": "FLOAT",
+        },
     }
     with engine.begin() as conn:
         for table, columns in new_columns.items():

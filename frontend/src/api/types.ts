@@ -27,6 +27,9 @@ export interface RunEstimate {
 
 export interface ScoreOut {
   sops: number;
+  sops_stdev?: number | null;
+  sops_min?: number | null;
+  sops_max?: number | null;
   subscores: Record<string, number>;
   weights_used: Record<string, number>;
   metric_values: Record<string, number>;
