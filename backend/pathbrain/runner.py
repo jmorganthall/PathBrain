@@ -145,6 +145,19 @@ def execute_run(run_id: int) -> None:
             run.started_at = datetime.now(timezone.utc)
             config = run.config_used or get_config(session)
             iterations = run.iterations or 1
+
+            # Capture the firewall/SQM settings in effect, so this run's score is
+            # attributable to a configuration profile. Best-effort: never fail the
+            # run if discovery is unavailable.
+            try:
+                from .providers import get_provider
+                from .settings_profile import fingerprint, normalize
+
+                normalized = normalize(get_provider().discover())
+                run.settings = normalized
+                run.settings_fingerprint = fingerprint(normalized)
+            except Exception:  # noqa: BLE001
+                log.warning("Run %s: could not capture firewall settings", run_id, exc_info=True)
             session.commit()
 
             plugins: list[BenchmarkPlugin] = iter_plugins()

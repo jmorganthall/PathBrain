@@ -108,6 +108,11 @@ DEFAULT_CONFIG: dict = {
         "enabled": False,
         "interval_minutes": 15,
     },
+    # Settings-vs-responsiveness correlation: flag a settings change as
+    # significant when the median SOPS moves by at least this percent.
+    "correlation": {
+        "significant_change_pct": 5,
+    },
     "weights": DEFAULT_WEIGHTS,
     "thresholds": DEFAULT_THRESHOLDS,
 }

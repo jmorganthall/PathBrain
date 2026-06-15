@@ -25,6 +25,8 @@ def _serialize_run(run: Run) -> RunDetail:
         iterations=run.iterations,
         iterations_completed=run.iterations_completed,
         per_iteration_ms=run.per_iteration_ms,
+        settings_fingerprint=run.settings_fingerprint,
+        settings=run.settings,
         config_used=run.config_used,
         results=[BenchmarkResultOut.model_validate(r) for r in run.results],
         score=ScoreOut.model_validate(run.score) if run.score else None,

@@ -75,6 +75,8 @@ class RunDetail(BaseModel):
     iterations: int = 1
     iterations_completed: int = 0
     per_iteration_ms: float | None = None
+    settings_fingerprint: str | None = None
+    settings: list[dict[str, Any]] | None = None
     config_used: dict[str, Any] | None = None
     results: list[BenchmarkResultOut] = []
     score: ScoreOut | None = None

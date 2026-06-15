@@ -22,7 +22,9 @@ import type {
   RunDetail,
   RunEstimate,
   SeriesPoint,
+  SettingsImpact,
 } from "../api/types";
+import { ImpactBanner } from "./Settings";
 import ScoreGauge from "../components/ScoreGauge";
 import SubscoreBreakdown from "../components/SubscoreBreakdown";
 import SeriesChart from "../components/SeriesChart";
@@ -43,6 +45,7 @@ export default function Dashboard() {
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [rolling, setRolling] = useState<RollingScore | null>(null);
   const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
+  const [impact, setImpact] = useState<SettingsImpact | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const loadLatest = useCallback(async () => {
@@ -69,6 +72,7 @@ export default function Dashboard() {
         api.runEstimate().then((e) => setEstimate(e)).catch(() => {}),
         api.rollingScore(24).then((r) => setRolling(r)).catch(() => {}),
         api.monitoring().then((m) => setMonitoring(m)).catch(() => {}),
+        api.settingsImpact().then((i) => setImpact(i)).catch(() => {}),
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load dashboard");
@@ -188,6 +192,10 @@ export default function Dashboard() {
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
           {error}
         </Alert>
+      )}
+
+      {!loading && impact && impact.changed && impact.significant && (
+        <ImpactBanner impact={impact} />
       )}
 
       {!loading && rolling && rolling.count > 0 && (

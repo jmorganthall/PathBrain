@@ -43,6 +43,43 @@ export interface MonitoringStatus {
   next_run_at: string | null;
 }
 
+export interface SettingsProfile {
+  fingerprint: string;
+  label: string;
+  settings: Array<Record<string, unknown>> | null;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+  median: number;
+  p25: number;
+  p75: number;
+  min: number;
+  max: number;
+}
+
+export interface SettingsProfilesResponse {
+  profiles: SettingsProfile[];
+  count: number;
+}
+
+export interface ImpactSide {
+  label: string;
+  fingerprint: string;
+  median: number;
+  count: number;
+}
+
+export interface SettingsImpact {
+  changed: boolean;
+  threshold_pct: number;
+  changed_at?: string;
+  delta_abs?: number;
+  delta_pct?: number | null;
+  significant?: boolean;
+  before?: ImpactSide;
+  after?: ImpactSide;
+}
+
 export interface ScoreOut {
   sops: number;
   sops_stdev?: number | null;
@@ -66,6 +103,8 @@ export interface BenchmarkResult {
 export interface RunDetail extends RunSummary {
   notes?: string | null;
   error?: string | null;
+  settings_fingerprint?: string | null;
+  settings?: Array<Record<string, unknown>> | null;
   config_used?: Record<string, unknown> | null;
   results: BenchmarkResult[];
   score: ScoreOut | null;
