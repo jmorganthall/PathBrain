@@ -251,6 +251,8 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 | `GET /api/history/series` | Time-series of SOPS + metrics for charts |
 | `GET /api/score/{id}` | Score breakdown for a run |
 | `GET /api/score/weights` | Current weights + thresholds |
+| `GET /api/score/rolling` | Windowed median SOPS + IQR (stable "current responsiveness") |
+| `GET /api/monitoring` | Continuous-monitoring scheduler status |
 | `POST /api/score/preview` | Score ad-hoc metrics with current weights |
 | `GET /api/config` | Effective benchmark config |
 | `PUT /api/config` | Update (deep-merge) benchmark config |
@@ -331,8 +333,10 @@ docker-compose.yml   Single-container deployment
 - [x] **Phase 2 — Browser engine:** headless Chromium via Playwright (navigation
       timing, DOMContentLoaded, load, network idle, total render, screenshot +
       HAR). The `render` SOPS weight activates automatically.
-- [ ] **Continuous monitoring:** scheduled recurring runs, windowed averages, and
-      settings-vs-responsiveness correlation.
+- [x] **Continuous monitoring:** scheduled recurring runs + a windowed rolling
+      score (median + IQR) for stable "current responsiveness."
+- [ ] **Settings-vs-responsiveness correlation** (group runs by firewall/SQM
+      profile) — pending OPNsense discovery.
 - [ ] **Real-world profiles, speed test, bufferbloat test.**
 - [ ] **Phase 3 — Experiment engine:** apply candidate → wait → benchmark →
       keep/rollback, always snapshot-first.

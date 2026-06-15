@@ -102,6 +102,12 @@ DEFAULT_CONFIG: dict = {
     # Default number of full-suite iterations to run and average per benchmark.
     # Averaging across iterations reduces per-run variability. Editable per run.
     "iterations": 3,
+    # Continuous monitoring: when enabled, the scheduler runs the suite on an
+    # interval so a stable windowed "rolling" score can be computed over time.
+    "monitoring": {
+        "enabled": False,
+        "interval_minutes": 15,
+    },
     "weights": DEFAULT_WEIGHTS,
     "thresholds": DEFAULT_THRESHOLDS,
 }

@@ -103,6 +103,9 @@ function countErrors(d: BenchmarkConfig): number {
   d.browser.urls.forEach((u) => bad(vHttpUrl(u)));
   bad(vPositive(d.browser.timeout_s));
   if (!(Number.isInteger(d.iterations) && d.iterations >= 1 && d.iterations <= 20)) n += 1;
+  if (d.monitoring && !(Number.isInteger(d.monitoring.interval_minutes) && d.monitoring.interval_minutes >= 1)) {
+    n += 1;
+  }
   return n;
 }
 
@@ -267,6 +270,51 @@ export default function Config() {
           />
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
             How many times each run repeats the suite and averages (also selectable per run on the Dashboard).
+          </Typography>
+        </CardContent>
+      </Card>
+
+      {/* Monitoring */}
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>
+            Continuous Monitoring
+          </Typography>
+          <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={d.monitoring.enabled}
+                  onChange={(e) =>
+                    setDraft((p) =>
+                      p ? { ...p, monitoring: { ...p.monitoring, enabled: e.target.checked } } : p
+                    )
+                  }
+                />
+              }
+              label="Enable scheduled runs"
+            />
+            <NumberField
+              label="Interval (minutes)"
+              width={180}
+              value={d.monitoring.interval_minutes}
+              min={1}
+              onChange={(v) =>
+                setDraft((p) =>
+                  p ? { ...p, monitoring: { ...p.monitoring, interval_minutes: v } } : p
+                )
+              }
+              error={
+                Number.isInteger(d.monitoring.interval_minutes) && d.monitoring.interval_minutes >= 1
+                  ? null
+                  : "≥ 1"
+              }
+            />
+          </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+            When enabled, PathBrain runs the suite automatically on this interval — building the
+            history that powers the rolling "Current Responsiveness" score on the Dashboard. Takes
+            effect after saving (no restart needed).
           </Typography>
         </CardContent>
       </Card>

@@ -1,16 +1,64 @@
 """Score endpoints: fetch a run's score, preview scoring, inspect weights."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from datetime import datetime, timedelta, timezone
+from statistics import median, quantiles
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config_store import get_config
 from ..database import get_session
-from ..models import Run
+from ..models import Run, RunStatus, ScoreResult
 from ..schemas import ScoreOut
 from ..scoring import compute_score
 
 router = APIRouter()
+
+
+@router.get("/score/rolling")
+def rolling_score(
+    hours: int = Query(24, ge=1, le=720),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Windowed SOPS over completed runs in the last ``hours`` hours.
+
+    This is the stable "current responsiveness" figure: a median over many runs,
+    with an interquartile band, so it doesn't swing on point-in-time noise.
+    """
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
+    rows = session.execute(
+        select(ScoreResult.sops)
+        .join(Run, Run.id == ScoreResult.run_id)
+        .where(Run.status == RunStatus.COMPLETE, Run.created_at >= cutoff)
+    ).all()
+    vals = sorted(r[0] for r in rows)
+    if not vals:
+        return {
+            "window_hours": hours,
+            "count": 0,
+            "median": None,
+            "p25": None,
+            "p75": None,
+            "min": None,
+            "max": None,
+        }
+    med = round(median(vals), 2)
+    if len(vals) >= 2:
+        q = quantiles(vals, n=4)  # [p25, p50, p75]
+        p25, p75 = round(q[0], 2), round(q[2], 2)
+    else:
+        p25 = p75 = med
+    return {
+        "window_hours": hours,
+        "count": len(vals),
+        "median": med,
+        "p25": p25,
+        "p75": p75,
+        "min": round(min(vals), 2),
+        "max": round(max(vals), 2),
+    }
 
 
 @router.get("/score/weights")

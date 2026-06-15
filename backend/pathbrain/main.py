@@ -36,7 +36,11 @@ async def lifespan(app: FastAPI):
     log.info("PathBrain %s starting up", __version__)
     init_db()
     log.info("Database initialized (%s)", settings.database_url)
+    from .scheduler import start_scheduler, stop_scheduler
+
+    start_scheduler()
     yield
+    stop_scheduler()
     log.info("PathBrain shutting down")
 
 
