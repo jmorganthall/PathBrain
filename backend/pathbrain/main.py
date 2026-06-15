@@ -36,6 +36,9 @@ async def lifespan(app: FastAPI):
     log.info("PathBrain %s starting up", __version__)
     init_db()
     log.info("Database initialized (%s)", settings.database_url)
+    from .runner import reconcile_interrupted_runs
+
+    reconcile_interrupted_runs()  # fail any runs orphaned by a previous restart
     from .scheduler import start_scheduler, stop_scheduler
 
     start_scheduler()

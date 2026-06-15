@@ -1,6 +1,8 @@
 """Run endpoints: trigger a benchmark suite."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,6 +15,20 @@ from ..schemas import RunCreate, RunDetail
 from .routes_results import _serialize_run
 
 router = APIRouter()
+
+
+@router.post("/runs/{run_id}/cancel", response_model=RunDetail)
+def cancel_run(run_id: int, session: Session = Depends(get_session)) -> RunDetail:
+    """Mark an in-progress run as failed (manual stop / unstick a hung run)."""
+    run = session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    if run.status in (RunStatus.RUNNING, RunStatus.PENDING):
+        run.status = RunStatus.FAILED
+        run.error = "Cancelled by user."
+        run.finished_at = datetime.now(timezone.utc)
+        session.commit()
+    return _serialize_run(run)
 
 
 @router.post("/run", response_model=RunDetail, status_code=202)

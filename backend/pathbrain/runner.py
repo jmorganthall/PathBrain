@@ -9,9 +9,11 @@ thread so the API returns immediately with a run id the UI polls; the run's
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from statistics import mean, median, pstdev
 from time import perf_counter
+
+from sqlalchemy import select
 
 from .config_store import get_config
 from .database import session_scope
@@ -170,6 +172,54 @@ def rescore_run(run, weights: dict, thresholds: dict, rubric_version: str | None
     score.metric_values = breakdown.metric_values
     score.rubric_version = rubric_version
     return True
+
+
+def reconcile_interrupted_runs() -> int:
+    """Mark runs left RUNNING/PENDING by a previous process as failed.
+
+    Their executing thread is gone (e.g. the container was restarted), so they
+    can never complete. Called once at startup.
+    """
+    with session_scope() as session:
+        runs = session.scalars(
+            select(Run).where(Run.status.in_([RunStatus.RUNNING, RunStatus.PENDING]))
+        ).all()
+        for run in runs:
+            run.status = RunStatus.FAILED
+            run.error = "Interrupted — service restarted while the run was in progress."
+            run.finished_at = datetime.now(timezone.utc)
+        if runs:
+            log.warning("Reconciled %s interrupted run(s) to FAILED", len(runs))
+        return len(runs)
+
+
+def fail_stale_runs(timeout_minutes: float) -> int:
+    """Fail runs that have been RUNNING/PENDING longer than ``timeout_minutes``.
+
+    A watchdog for hung or orphaned jobs. Compares against ``started_at`` (or
+    ``created_at`` for never-started runs), normalizing to naive UTC since SQLite
+    drops tzinfo.
+    """
+    cutoff_s = max(timeout_minutes, 1.0) * 60.0
+    now = datetime.utcnow()
+    failed = 0
+    with session_scope() as session:
+        runs = session.scalars(
+            select(Run).where(Run.status.in_([RunStatus.RUNNING, RunStatus.PENDING]))
+        ).all()
+        for run in runs:
+            ref = run.started_at or run.created_at
+            if ref is None:
+                continue
+            ref = ref.replace(tzinfo=None) if ref.tzinfo else ref
+            if (now - ref).total_seconds() > cutoff_s:
+                run.status = RunStatus.FAILED
+                run.error = f"Timed out — exceeded {timeout_minutes:.0f} min watchdog limit."
+                run.finished_at = datetime.now(timezone.utc)
+                failed += 1
+        if failed:
+            log.warning("Watchdog failed %s stale run(s)", failed)
+    return failed
 
 
 def execute_run(run_id: int) -> None:
