@@ -17,7 +17,13 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
 import { api } from "../api/client";
-import type { SettingsDiagnostics, SettingsImpact, SettingsProfile } from "../api/types";
+import type {
+  ProfileDiff,
+  ProfileFieldChange,
+  SettingsDiagnostics,
+  SettingsImpact,
+  SettingsProfile,
+} from "../api/types";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
 import InsightsIcon from "@mui/icons-material/Insights";
@@ -51,8 +57,87 @@ export function ImpactBanner({ impact }: { impact: SettingsImpact }) {
   );
 }
 
+function fmtFieldValue(v: string | number | boolean | null): string {
+  if (v == null) return "—";
+  if (typeof v === "boolean") return v ? "on" : "off";
+  return String(v);
+}
+
+function dirArrow(d: ProfileFieldChange["direction"]): string {
+  return d === "higher" ? "↑" : d === "lower" ? "↓" : "≠";
+}
+
+// "Higher/lower" is a neutral, numeric fact (the score chip carries good/bad).
+function dirColor(d: ProfileFieldChange["direction"]): string {
+  return d === "changed" ? "text.secondary" : "info.main";
+}
+
+// At-a-glance "what the best profile changed" vs the next-ranked one, with the
+// resulting SOPS delta — the seed for experiment suggestions.
+export function ProfileDiffCard({ diff }: { diff: ProfileDiff }) {
+  const improved = diff.delta_abs >= 0;
+  const distinctPipes = new Set(diff.changes.map((c) => c.pipe)).size;
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
+          <Typography variant="subtitle1">What the best profile changed</Typography>
+          <Chip
+            size="small"
+            color={improved ? "success" : "warning"}
+            label={`SOPS ${improved ? "▲" : "▼"} ${diff.delta_abs >= 0 ? "+" : ""}${diff.delta_abs}${
+              diff.delta_pct != null
+                ? ` (${diff.delta_pct >= 0 ? "+" : ""}${diff.delta_pct}%)`
+                : ""
+            }`}
+          />
+        </Stack>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+          Best profile <b>{diff.best.label}</b> ({diff.best.fingerprint}) vs next‑best{" "}
+          <b>{diff.comparison.label}</b> ({diff.comparison.fingerprint}). Shaper fields that differ —
+          candidates to push further in experiments.
+        </Typography>
+        {diff.changes.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            No shaper fields differ between these two profiles — the score gap is from other factors
+            or noise.
+          </Typography>
+        ) : (
+          <Stack spacing={1}>
+            {diff.changes.map((c, i) => (
+              <Box key={i} sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                <Typography variant="body2" sx={{ minWidth: 150, fontWeight: 600 }}>
+                  {c.field_label}
+                </Typography>
+                <Chip size="small" variant="outlined" label={fmtFieldValue(c.from_value)} />
+                <Typography component="span" sx={{ color: "text.secondary" }}>
+                  →
+                </Typography>
+                <Chip size="small" color="primary" variant="outlined" label={fmtFieldValue(c.to_value)} />
+                <Typography
+                  component="span"
+                  variant="caption"
+                  sx={{ color: dirColor(c.direction), fontWeight: 700 }}
+                >
+                  {dirArrow(c.direction)} {c.direction}
+                </Typography>
+                {distinctPipes > 1 && !c.pipe.startsWith("pipe") && (
+                  <Typography component="span" variant="caption" color="text.secondary">
+                    {c.pipe}
+                  </Typography>
+                )}
+              </Box>
+            ))}
+          </Stack>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Settings() {
   const [profiles, setProfiles] = useState<SettingsProfile[] | null>(null);
+  const [bestDiff, setBestDiff] = useState<ProfileDiff | null>(null);
   const [impact, setImpact] = useState<SettingsImpact | null>(null);
   const [diag, setDiag] = useState<SettingsDiagnostics | null>(null);
   const [minRuns, setMinRuns] = useState(5);
@@ -69,6 +154,7 @@ export default function Settings() {
         api.settingsDiagnostics(),
       ]);
       setProfiles(p.profiles);
+      setBestDiff(p.best_diff);
       setMinRuns(p.min_runs);
       setImpact(i);
       setDiag(d);
@@ -138,6 +224,82 @@ export default function Settings() {
 
       {impact && <ImpactBanner impact={impact} />}
 
+      {bestDiff && <ProfileDiffCard diff={bestDiff} />}
+
+      {!profiles || profiles.length === 0 ? (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <EmptyState
+              icon={<InsightsIcon fontSize="inherit" />}
+              title="No settings profiles yet"
+              description="Once runs capture your firewall settings (OPNsense provider with traffic-shaper access), each distinct configuration appears here with its score distribution. If you have older runs from before capture, use 'Attribute unstamped runs'."
+            />
+          </CardContent>
+        </Card>
+      ) : (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Profiles ({profiles.length})
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Ranked by median SOPS (higher is better). "Best" is only awarded to a confident profile.
+              Iterations count every measurement sweep — a 15‑iteration run carries far more signal
+              than a single‑iteration one.
+            </Typography>
+            <TableContainer sx={{ mt: 1 }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Profile</TableCell>
+                    <TableCell align="right">Runs</TableCell>
+                    <TableCell align="right">Iterations</TableCell>
+                    <TableCell align="right">Median</TableCell>
+                    <TableCell align="right">IQR</TableCell>
+                    <TableCell align="right">Min–Max</TableCell>
+                    <TableCell>Last seen</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {profiles.map((p) => (
+                    <TableRow key={p.fingerprint}>
+                      <TableCell sx={{ maxWidth: 360 }}>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                          <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
+                            {p.label}
+                          </Typography>
+                          {p.fingerprint === bestFingerprint && (
+                            <Chip size="small" color="success" label="best" />
+                          )}
+                          {!p.confident && (
+                            <Chip size="small" variant="outlined" color="warning" label="limited data" />
+                          )}
+                        </Box>
+                        <Typography variant="caption" color="text.secondary">
+                          {p.fingerprint}
+                        </Typography>
+                      </TableCell>
+                      <TableCell align="right">{p.count}</TableCell>
+                      <TableCell align="right">{p.iterations}</TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 700 }}>
+                        {p.median}
+                      </TableCell>
+                      <TableCell align="right">
+                        {p.p25}–{p.p75}
+                      </TableCell>
+                      <TableCell align="right">
+                        {p.min}–{p.max}
+                      </TableCell>
+                      <TableCell>{fmtDateTime(p.last_seen)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </CardContent>
+        </Card>
+      )}
+
       {diag && (
         <Card sx={{ mb: 2 }}>
           <CardContent>
@@ -187,76 +349,6 @@ export default function Settings() {
                           </Typography>
                         )}
                       </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </CardContent>
-        </Card>
-      )}
-
-      {!profiles || profiles.length === 0 ? (
-        <Card>
-          <CardContent>
-            <EmptyState
-              icon={<InsightsIcon fontSize="inherit" />}
-              title="No settings profiles yet"
-              description="Once runs capture your firewall settings (OPNsense provider with traffic-shaper access), each distinct configuration appears here with its score distribution. If you have older runs from before capture, use 'Attribute unstamped runs'."
-            />
-          </CardContent>
-        </Card>
-      ) : (
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              Profiles ({profiles.length})
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              Ranked by median SOPS (higher is better). "Best" is only awarded to a confident profile.
-            </Typography>
-            <TableContainer sx={{ mt: 1 }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Profile</TableCell>
-                    <TableCell align="right">Runs</TableCell>
-                    <TableCell align="right">Median</TableCell>
-                    <TableCell align="right">IQR</TableCell>
-                    <TableCell align="right">Min–Max</TableCell>
-                    <TableCell>Last seen</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {profiles.map((p) => (
-                    <TableRow key={p.fingerprint}>
-                      <TableCell sx={{ maxWidth: 360 }}>
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                          <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
-                            {p.label}
-                          </Typography>
-                          {p.fingerprint === bestFingerprint && (
-                            <Chip size="small" color="success" label="best" />
-                          )}
-                          {!p.confident && (
-                            <Chip size="small" variant="outlined" color="warning" label="limited data" />
-                          )}
-                        </Box>
-                        <Typography variant="caption" color="text.secondary">
-                          {p.fingerprint}
-                        </Typography>
-                      </TableCell>
-                      <TableCell align="right">{p.count}</TableCell>
-                      <TableCell align="right" sx={{ fontWeight: 700 }}>
-                        {p.median}
-                      </TableCell>
-                      <TableCell align="right">
-                        {p.p25}–{p.p75}
-                      </TableCell>
-                      <TableCell align="right">
-                        {p.min}–{p.max}
-                      </TableCell>
-                      <TableCell>{fmtDateTime(p.last_seen)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

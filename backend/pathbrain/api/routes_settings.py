@@ -17,7 +17,7 @@ from ..database import get_session
 from ..logging_config import get_logger
 from ..models import Run, RunStatus, ScoreResult
 from ..providers import get_provider
-from ..settings_profile import fingerprint, normalize, summarize
+from ..settings_profile import diff_profiles, fingerprint, normalize, summarize
 
 router = APIRouter()
 log = get_logger("api.settings")
@@ -115,7 +115,12 @@ def backfill_settings(session: Session = Depends(get_session)) -> dict:
 
 @router.get("/settings/profiles")
 def settings_profiles(session: Session = Depends(get_session)) -> dict:
-    """One row per distinct settings profile, with its SOPS distribution."""
+    """One row per distinct settings profile, with its SOPS distribution.
+
+    Also returns ``best_diff``: how the best (top confident) profile differs from
+    the next-ranked one — the at-a-glance "what changed and did it help" view that
+    will later seed experiment suggestions.
+    """
     min_runs = _min_runs(session)
     rows = _completed_runs_with_scores(session)
     groups: dict[str, dict] = {}
@@ -126,11 +131,14 @@ def settings_profiles(session: Session = Depends(get_session)) -> dict:
                 "fingerprint": run.settings_fingerprint,
                 "settings": run.settings,
                 "sops": [],
+                "iterations": 0,
                 "first_seen": run.created_at,
                 "last_seen": run.created_at,
             },
         )
         g["sops"].append(sops)
+        # A run with more iterations is more data; track the total alongside runs.
+        g["iterations"] += int(run.iterations or 1)
         g["settings"] = run.settings
         g["last_seen"] = run.created_at
 
@@ -143,6 +151,7 @@ def settings_profiles(session: Session = Depends(get_session)) -> dict:
                 "label": summarize(g["settings"]),
                 "settings": g["settings"],
                 "count": count,
+                "iterations": g["iterations"],
                 "confident": count >= min_runs,
                 "first_seen": g["first_seen"].isoformat(),
                 "last_seen": g["last_seen"].isoformat(),
@@ -150,7 +159,48 @@ def settings_profiles(session: Session = Depends(get_session)) -> dict:
             }
         )
     profiles.sort(key=lambda p: p["median"], reverse=True)
-    return {"profiles": profiles, "count": len(profiles), "min_runs": min_runs}
+
+    return {
+        "profiles": profiles,
+        "count": len(profiles),
+        "min_runs": min_runs,
+        "best_diff": _best_diff(profiles),
+    }
+
+
+def _best_diff(profiles: list[dict]) -> dict | None:
+    """Diff the best (top confident) profile against the next-ranked profile.
+
+    Returns ``None`` until there are two profiles to compare. ``changes`` describe
+    what the *best* profile did relative to the comparison one (e.g. CoDel target
+    10ms → 5ms, direction "lower"), with the resulting SOPS delta.
+    """
+    best_idx = next((i for i, p in enumerate(profiles) if p["confident"]), None)
+    if best_idx is None or best_idx + 1 >= len(profiles):
+        return None
+    best = profiles[best_idx]
+    comparison = profiles[best_idx + 1]
+    delta_abs = round(best["median"] - comparison["median"], 2)
+    delta_pct = (
+        round((delta_abs / comparison["median"]) * 100, 1) if comparison["median"] else None
+    )
+    return {
+        "best": {
+            "fingerprint": best["fingerprint"],
+            "label": best["label"],
+            "median": best["median"],
+            "confident": best["confident"],
+        },
+        "comparison": {
+            "fingerprint": comparison["fingerprint"],
+            "label": comparison["label"],
+            "median": comparison["median"],
+            "confident": comparison["confident"],
+        },
+        "delta_abs": delta_abs,
+        "delta_pct": delta_pct,
+        "changes": diff_profiles(comparison["settings"], best["settings"]),
+    }
 
 
 @router.get("/settings/impact")
