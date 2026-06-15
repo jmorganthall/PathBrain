@@ -125,6 +125,9 @@ DEFAULT_CONFIG: dict = {
     # significant when the median SOPS moves by at least this percent.
     "correlation": {
         "significant_change_pct": 5,
+        # A profile needs at least this many runs before it's treated as
+        # confident (eligible for a "best" badge / significance calls).
+        "min_runs": 5,
     },
     "rubric_version": DEFAULT_RUBRIC_VERSION,
     "weights": DEFAULT_WEIGHTS,

@@ -39,21 +39,51 @@ def _seed_run(fp: str, sops: float, when: datetime) -> None:
 
 def test_profiles_and_impact(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # Older profile "aaa" ~70, then a change to "bbb" ~85.
-    for i, s in enumerate([70, 72, 68]):
-        _seed_run("aaaaaaaaaaaa", s, t0 - timedelta(minutes=60 - i))
-    for i, s in enumerate([84, 86, 85]):
-        _seed_run("bbbbbbbbbbbb", s, t0 - timedelta(minutes=10 - i))
+    # Older profile "aaa" ~70 (6 runs), then a change to "bbb" ~85 (6 runs) so
+    # both clear the default min_runs=5 confidence threshold.
+    for i, s in enumerate([70, 72, 68, 71, 69, 70]):
+        _seed_run("aaaaaaaaaaaa", s, t0 - timedelta(minutes=120 - i))
+    for i, s in enumerate([84, 86, 85, 83, 87, 85]):
+        _seed_run("bbbbbbbbbbbb", s, t0 - timedelta(minutes=30 - i))
 
-    profiles = client.get("/api/settings/profiles").json()["profiles"]
+    body = client.get("/api/settings/profiles").json()
+    profiles = body["profiles"]
     fps = {p["fingerprint"] for p in profiles}
     assert {"aaaaaaaaaaaa", "bbbbbbbbbbbb"} <= fps
-    # Best profile (higher median) is sorted first.
-    assert profiles[0]["fingerprint"] == "bbbbbbbbbbbb"
+    assert profiles[0]["fingerprint"] == "bbbbbbbbbbbb"  # higher median first
+    assert all(p["confident"] for p in profiles)  # 6 runs each >= min_runs
+    assert body["min_runs"] == 5
 
     impact = client.get("/api/settings/impact").json()
     assert impact["changed"] is True
+    assert impact["enough_data"] is True
     assert impact["before"]["fingerprint"] == "aaaaaaaaaaaa"
     assert impact["after"]["fingerprint"] == "bbbbbbbbbbbb"
     assert impact["delta_abs"] > 0
-    assert impact["significant"] is True  # ~70 -> ~85 is well over 5%
+    assert impact["significant"] is True  # ~70 -> ~85 over 5%, both confident
+
+
+def test_impact_not_significant_without_enough_runs(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    _seed_run("cccccccccccc", 60, t0 - timedelta(minutes=20))
+    _seed_run("dddddddddddd", 90, t0 - timedelta(minutes=5))  # only 1 run each
+    impact = client.get("/api/settings/impact").json()
+    # A change is detected, but it must NOT be flagged significant on 1+1 runs.
+    assert impact["changed"] is True
+    assert impact["enough_data"] is False
+    assert impact["significant"] is False
+
+
+def test_backfill_stamps_null_runs(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # A run with no captured settings (NULL fingerprint).
+    with session_scope() as session:
+        run = Run(status=RunStatus.COMPLETE, created_at=t0)
+        session.add(run)
+        session.flush()
+        session.add(ScoreResult(run_id=run.id, sops=77, subscores={}, weights_used={}, metric_values={}))
+
+    resp = client.post("/api/settings/backfill")
+    assert resp.status_code == 200
+    assert resp.json()["updated"] >= 1
+    assert resp.json()["fingerprint"]  # mock provider yields a stable fingerprint
