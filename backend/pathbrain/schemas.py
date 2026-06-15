@@ -82,6 +82,27 @@ class RunDetail(BaseModel):
     score: ScoreOut | None = None
 
 
+class RunBaselineOut(BaseModel):
+    """Average plugin metrics for the best-scoring settings profile, for comparison.
+
+    ``metrics`` maps plugin name -> {metric_key: mean_value} across the runs of the
+    profile with the highest median SOPS (or, when no profile is usable, the most
+    recent completed runs). The frontend uses it to render improved/worse arrows
+    showing how far this run is from the best-known configuration.
+    """
+
+    run_id: int
+    scope: str  # "best_profile" (highest-median-SOPS profile) or "all" (recent runs)
+    profile_fingerprint: str | None = None
+    profile_label: str | None = None
+    profile_median_sops: float | None = None
+    # True when the viewed run already belongs to the best profile (so the
+    # comparison is against that profile's own average rather than a better one).
+    is_best_profile: bool = False
+    run_count: int
+    metrics: dict[str, dict[str, float]] = {}
+
+
 class PluginInfo(BaseModel):
     name: str
     description: str
