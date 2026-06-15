@@ -43,16 +43,22 @@ def rolling_score(
     """Windowed SOPS over completed runs in the last ``hours`` hours.
 
     This is the stable "current responsiveness" figure: a median over many runs,
-    with an interquartile band, so it doesn't swing on point-in-time noise.
+    with an interquartile band, so it doesn't swing on point-in-time noise. Also
+    returns the median per-metric subscore + metric value over the window (and the
+    most recent weights) so the dashboard can show an aggregated breakdown.
     """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
-    rows = session.execute(
-        select(ScoreResult.sops)
-        .join(Run, Run.id == ScoreResult.run_id)
-        .where(Run.status == RunStatus.COMPLETE, Run.created_at >= cutoff)
-    ).all()
-    vals = sorted(r[0] for r in rows)
-    if not vals:
+    rows = (
+        session.execute(
+            select(ScoreResult)
+            .join(Run, Run.id == ScoreResult.run_id)
+            .where(Run.status == RunStatus.COMPLETE, Run.created_at >= cutoff)
+            .order_by(Run.created_at)
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
         return {
             "window_hours": hours,
             "count": 0,
@@ -61,7 +67,23 @@ def rolling_score(
             "p75": None,
             "min": None,
             "max": None,
+            "subscores": {},
+            "metric_values": {},
+            "weights": {},
         }
+
+    def median_by_key(dicts: list[dict]) -> dict:
+        keys: set[str] = set()
+        for d in dicts:
+            keys.update((d or {}).keys())
+        out: dict[str, float] = {}
+        for k in keys:
+            vals = [d[k] for d in dicts if (d or {}).get(k) is not None]
+            if vals:
+                out[k] = round(median(vals), 2)
+        return out
+
+    vals = sorted(r.sops for r in rows)
     med = round(median(vals), 2)
     if len(vals) >= 2:
         q = quantiles(vals, n=4)  # [p25, p50, p75]
@@ -76,6 +98,9 @@ def rolling_score(
         "p75": p75,
         "min": round(min(vals), 2),
         "max": round(max(vals), 2),
+        "subscores": median_by_key([r.subscores or {} for r in rows]),
+        "metric_values": median_by_key([r.metric_values or {} for r in rows]),
+        "weights": rows[-1].weights_used or {},
     }
 
 

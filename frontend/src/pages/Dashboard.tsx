@@ -140,6 +140,15 @@ export default function Dashboard() {
     latest?.started_at && latest?.finished_at
       ? parseApiDate(latest.finished_at).getTime() - parseApiDate(latest.started_at).getTime()
       : null;
+  // Prefer the windowed median breakdown; fall back to the latest run's.
+  const aggBreakdown =
+    rolling && rolling.count > 0 && Object.keys(rolling.subscores).length > 0
+      ? {
+          subscores: rolling.subscores,
+          weights_used: rolling.weights,
+          metric_values: rolling.metric_values,
+        }
+      : null;
 
   return (
     <Box>
@@ -280,6 +289,9 @@ export default function Dashboard() {
         >
           <Card>
             <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+              <Typography variant="overline" color="text.secondary" sx={{ alignSelf: "flex-start" }}>
+                Latest run
+              </Typography>
               {activeRun && (() => {
                 const total = latest?.iterations ?? iterations;
                 const done = latest?.iterations_completed ?? 0;
@@ -337,14 +349,19 @@ export default function Dashboard() {
 
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Subscore Breakdown
+              <Typography variant="h6">Responsiveness by Metric</Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+                {aggBreakdown
+                  ? `Median per metric · last ${rolling?.window_hours ?? 24}h · ${rolling?.count} run${rolling?.count === 1 ? "" : "s"}`
+                  : "Latest run"}
               </Typography>
-              {latest.score ? (
+              {aggBreakdown ? (
+                <SubscoreBreakdown score={aggBreakdown} />
+              ) : latest.score ? (
                 <SubscoreBreakdown score={latest.score} />
               ) : (
                 <Typography variant="body2" color="text.secondary">
-                  Score not available for this run yet.
+                  Score not available yet.
                 </Typography>
               )}
             </CardContent>

@@ -2,11 +2,40 @@ import Box from "@mui/material/Box";
 import LinearProgress from "@mui/material/LinearProgress";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import type { ScoreOut } from "../api/types";
 import { sopsColor } from "../theme";
 import { fmtScore } from "../utils/format";
 
-export default function SubscoreBreakdown({ score }: { score: ScoreOut }) {
+interface ScoreLike {
+  subscores: Record<string, number>;
+  weights_used: Record<string, number>;
+  metric_values?: Record<string, number>;
+}
+
+// Lower-is-better raw metric units, for the small value annotation.
+const UNIT: Record<string, string> = {
+  dns: "ms",
+  tcp: "ms",
+  tls: "ms",
+  ttfb: "ms",
+  render: "ms",
+  jitter: "ms",
+  packet_loss: "%",
+};
+
+function fmtWeight(w: number | undefined): string {
+  if (w == null) return "";
+  // weights_used are fractions that sum to 1 — show as a percentage.
+  return `${Math.round(w * 100)}%`;
+}
+
+function fmtValue(metric: string, v: number | undefined): string {
+  if (v == null) return "";
+  const unit = UNIT[metric] ?? "";
+  const n = Number.isInteger(v) ? v.toString() : v.toFixed(1);
+  return `${n}${unit ? " " + unit : ""}`;
+}
+
+export default function SubscoreBreakdown({ score }: { score: ScoreLike }) {
   const keys = Object.keys(score.subscores).sort(
     (a, b) => (score.weights_used[b] ?? 0) - (score.weights_used[a] ?? 0)
   );
@@ -24,20 +53,28 @@ export default function SubscoreBreakdown({ score }: { score: ScoreOut }) {
       {keys.map((k) => {
         const value = score.subscores[k];
         const weight = score.weights_used[k];
+        const raw = score.metric_values?.[k];
         return (
           <Box key={k}>
-            <Box sx={{ display: "flex", justifyContent: "space-between", mb: 0.5 }}>
+            <Box sx={{ display: "flex", justifyContent: "space-between", mb: 0.5, alignItems: "baseline" }}>
               <Typography variant="body2" sx={{ textTransform: "uppercase", letterSpacing: 0.5 }}>
                 {k}
                 {weight != null && (
                   <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                    weight {fmtScore(weight)}
+                    weight {fmtWeight(weight)}
                   </Typography>
                 )}
               </Typography>
-              <Typography variant="body2" sx={{ fontWeight: 600, color: sopsColor(value) }}>
-                {fmtScore(value)}
-              </Typography>
+              <Box sx={{ display: "flex", alignItems: "baseline", gap: 1 }}>
+                {raw != null && (
+                  <Typography component="span" variant="caption" color="text.secondary">
+                    {fmtValue(k, raw)}
+                  </Typography>
+                )}
+                <Typography variant="body2" sx={{ fontWeight: 600, color: sopsColor(value) }}>
+                  {fmtScore(value)}
+                </Typography>
+              </Box>
             </Box>
             <LinearProgress
               variant="determinate"
