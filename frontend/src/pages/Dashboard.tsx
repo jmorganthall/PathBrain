@@ -16,7 +16,13 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import SpeedIcon from "@mui/icons-material/Speed";
 
 import { api, ApiError } from "../api/client";
-import type { RunDetail, RunEstimate, SeriesPoint } from "../api/types";
+import type {
+  MonitoringStatus,
+  RollingScore,
+  RunDetail,
+  RunEstimate,
+  SeriesPoint,
+} from "../api/types";
 import ScoreGauge from "../components/ScoreGauge";
 import SubscoreBreakdown from "../components/SubscoreBreakdown";
 import SeriesChart from "../components/SeriesChart";
@@ -35,6 +41,8 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [iterations, setIterations] = useState(3);
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
+  const [rolling, setRolling] = useState<RollingScore | null>(null);
+  const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const loadLatest = useCallback(async () => {
@@ -59,6 +67,8 @@ export default function Dashboard() {
         loadLatest(),
         api.historySeries(100).then((r) => setSeries(r.points)),
         api.runEstimate().then((e) => setEstimate(e)).catch(() => {}),
+        api.rollingScore(24).then((r) => setRolling(r)).catch(() => {}),
+        api.monitoring().then((m) => setMonitoring(m)).catch(() => {}),
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load dashboard");
@@ -86,6 +96,7 @@ export default function Dashboard() {
             pollRef.current = null;
             setRunning(false);
             api.historySeries(100).then((r) => setSeries(r.points)).catch(() => {});
+            api.rollingScore(24).then((r) => setRolling(r)).catch(() => {});
           }
         } catch {
           /* keep polling */
@@ -177,6 +188,56 @@ export default function Dashboard() {
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
           {error}
         </Alert>
+      )}
+
+      {!loading && rolling && rolling.count > 0 && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={3}
+              alignItems={{ xs: "flex-start", sm: "center" }}
+            >
+              <ScoreGauge value={rolling.median} />
+              <Box>
+                <Typography variant="h6">Current Responsiveness</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Median SOPS over the last {rolling.window_hours}h · {rolling.count} run
+                  {rolling.count === 1 ? "" : "s"}
+                </Typography>
+                <Typography variant="body2" sx={{ mt: 1 }}>
+                  Typical range (IQR): <b>{rolling.p25}–{rolling.p75}</b>
+                  <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                    (min {rolling.min} · max {rolling.max})
+                  </Typography>
+                </Typography>
+                <Box sx={{ mt: 1.5 }}>
+                  {monitoring?.enabled ? (
+                    <Chip
+                      size="small"
+                      color="success"
+                      label={`Auto-monitoring every ${monitoring.interval_minutes}m`}
+                    />
+                  ) : (
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      component={RouterLink}
+                      to="/config"
+                      clickable
+                      label="Monitoring off — enable in Config"
+                    />
+                  )}
+                  {monitoring?.enabled && monitoring.next_run_at && (
+                    <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                      next ~{fmtDateTime(monitoring.next_run_at)}
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
+            </Stack>
+          </CardContent>
+        </Card>
       )}
 
       {loading ? (

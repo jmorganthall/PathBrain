@@ -25,6 +25,24 @@ export interface RunEstimate {
   max_iterations: number;
 }
 
+export interface RollingScore {
+  window_hours: number;
+  count: number;
+  median: number | null;
+  p25: number | null;
+  p75: number | null;
+  min: number | null;
+  max: number | null;
+}
+
+export interface MonitoringStatus {
+  enabled: boolean;
+  interval_minutes: number;
+  active: boolean;
+  last_run_at: string | null;
+  next_run_at: string | null;
+}
+
 export interface ScoreOut {
   sops: number;
   sops_stdev?: number | null;
@@ -121,6 +139,7 @@ export interface BenchmarkConfig {
   http: { urls: string[]; timeout_s: number };
   browser: BrowserConfig;
   iterations: number;
+  monitoring: { enabled: boolean; interval_minutes: number };
   weights: Record<string, number>;
   thresholds: Record<string, Threshold>;
   [key: string]: unknown;

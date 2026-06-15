@@ -5,8 +5,10 @@ import type {
   DiscoverResponse,
   ExperimentsResponse,
   Health,
+  MonitoringStatus,
   PluginInfo,
   ProviderHealth,
+  RollingScore,
   RunDetail,
   RunEstimate,
   RunSummary,
@@ -70,6 +72,10 @@ export const api = {
       body: JSON.stringify(body),
     }),
   score: (id: number) => request<ScoreOut>(`/score/${id}`),
+  rollingScore: (hours = 24) => request<RollingScore>(`/score/rolling?hours=${hours}`),
+
+  // Monitoring
+  monitoring: () => request<MonitoringStatus>("/monitoring"),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),

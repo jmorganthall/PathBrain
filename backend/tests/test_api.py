@@ -78,3 +78,19 @@ def test_history_empty_ok(client):
     resp = client.get("/api/history")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
+
+
+def test_rolling_score_shape(client):
+    resp = client.get("/api/score/rolling?hours=24")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["window_hours"] == 24
+    assert "median" in body and "count" in body and "p25" in body and "p75" in body
+
+
+def test_monitoring_status_shape(client):
+    resp = client.get("/api/monitoring")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["enabled"] is False
+    assert "interval_minutes" in body and "next_run_at" in body
