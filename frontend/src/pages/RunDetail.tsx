@@ -202,6 +202,14 @@ export default function RunDetail() {
                   (run.per_iteration_ms != null ? ` · ~${fmtDuration(run.per_iteration_ms)} each` : "")
                 }
               />
+              {run.settings_fingerprint && (
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`SQM profile ${run.settings_fingerprint}`}
+                  title="Firewall/SQM settings profile in effect during this run"
+                />
+              )}
             </Stack>
             {run.notes && (
               <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>

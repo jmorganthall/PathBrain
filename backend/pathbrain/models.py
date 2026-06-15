@@ -58,6 +58,12 @@ class Run(Base):
     # Mean wall-clock duration of a single full iteration, for ETA estimates.
     per_iteration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # Firewall/SQM settings in effect during this run, for settings-vs-score
+    # attribution. ``settings`` is the normalized pipe list; ``settings_fingerprint``
+    # is a stable hash so runs can be grouped by configuration profile.
+    settings_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     # The benchmark config used for this run (snapshot for reproducibility).
     config_used: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # The firewall config snapshot id associated with this run, if any.

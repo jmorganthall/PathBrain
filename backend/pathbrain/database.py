@@ -63,6 +63,8 @@ def _migrate() -> None:
             "iterations": "INTEGER DEFAULT 1",
             "iterations_completed": "INTEGER DEFAULT 0",
             "per_iteration_ms": "FLOAT",
+            "settings_fingerprint": "VARCHAR(40)",
+            "settings": "JSON",
         },
         "score_results": {
             "sops_stdev": "FLOAT",

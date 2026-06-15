@@ -14,6 +14,8 @@ import type {
   RunSummary,
   ScoreOut,
   SeriesResponse,
+  SettingsImpact,
+  SettingsProfilesResponse,
   WeightsResponse,
 } from "./types";
 
@@ -76,6 +78,10 @@ export const api = {
 
   // Monitoring
   monitoring: () => request<MonitoringStatus>("/monitoring"),
+
+  // Settings correlation
+  settingsProfiles: () => request<SettingsProfilesResponse>("/settings/profiles"),
+  settingsImpact: () => request<SettingsImpact>("/settings/impact"),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),

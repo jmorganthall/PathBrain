@@ -219,9 +219,13 @@ PATHBRAIN_OPNSENSE_API_SECRET=your_api_secret_here
 PATHBRAIN_OPNSENSE_VERIFY_TLS=false
 ```
 
-> Create the API key/secret in OPNsense under **System → Access → Users → (your
-> user) → API keys**. PathBrain Phase 1 only *reads* configuration; applying
-> changes arrives with the experiment engine and is always preceded by a snapshot.
+> **OPNsense permissions.** Create the API key/secret under **System → Access →
+> Users → (your user) → API keys**. The user must have privileges to **read the
+> traffic shaper** — assign the page privilege **"Firewall: Shaper"** (and/or
+> **"System: Settings: Traffic Shaper"**) via a group, or use an admin account.
+> Without it the API returns 403 and discovery fails. PathBrain only *reads*
+> configuration today; applying changes arrives with the experiment engine and is
+> always preceded by a snapshot.
 
 ### Runtime (benchmark targets, weights, thresholds)
 

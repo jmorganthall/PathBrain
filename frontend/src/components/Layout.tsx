@@ -20,6 +20,7 @@ import DashboardIcon from "@mui/icons-material/SpaceDashboard";
 import HistoryIcon from "@mui/icons-material/Timeline";
 import CompareIcon from "@mui/icons-material/CompareArrows";
 import SettingsIcon from "@mui/icons-material/Tune";
+import InsightsIcon from "@mui/icons-material/Insights";
 import ExtensionIcon from "@mui/icons-material/Extension";
 
 import type { ReactNode } from "react";
@@ -36,6 +37,7 @@ const NAV: NavItem[] = [
   { label: "Dashboard", to: "/", icon: <DashboardIcon /> },
   { label: "History", to: "/history", icon: <HistoryIcon /> },
   { label: "Compare", to: "/compare", icon: <CompareIcon /> },
+  { label: "Settings Impact", to: "/settings", icon: <InsightsIcon /> },
   { label: "Config", to: "/config", icon: <SettingsIcon /> },
   { label: "Plugins", to: "/plugins", icon: <ExtensionIcon /> },
 ];
