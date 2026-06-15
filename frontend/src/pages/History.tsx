@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -9,6 +9,7 @@ import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
 import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
+import TablePagination from "@mui/material/TablePagination";
 import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
 
@@ -24,25 +25,50 @@ import { sopsColor } from "../theme";
 export default function History() {
   const navigate = useNavigate();
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [total, setTotal] = useState(0);
   const [series, setSeries] = useState<SeriesPoint[]>([]);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const loadPage = useCallback(async (p: number, rpp: number) => {
+    try {
+      const rows = await api.history(rpp, p * rpp);
+      setRuns(rows);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load history");
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
-      setError(null);
       try {
-        const [h, s] = await Promise.all([api.history(50), api.historySeries(100)]);
-        setRuns(h);
+        const [c, s] = await Promise.all([api.historyCount(), api.historySeries(100)]);
+        setTotal(c.count);
         setSeries(s.points);
+        await loadPage(0, rowsPerPage);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load history");
       } finally {
         setLoading(false);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handlePage = (_e: unknown, next: number) => {
+    setPage(next);
+    loadPage(next, rowsPerPage);
+  };
+  const handleRowsPerPage = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rpp = parseInt(e.target.value, 10);
+    setRowsPerPage(rpp);
+    setPage(0);
+    loadPage(0, rpp);
+  };
 
   if (loading) return <Loading label="Loading history…" />;
 
@@ -58,7 +84,7 @@ export default function History() {
         </Alert>
       )}
 
-      {runs.length === 0 ? (
+      {total === 0 ? (
         <Card>
           <CardContent>
             <EmptyState
@@ -69,47 +95,7 @@ export default function History() {
         </Card>
       ) : (
         <Box sx={{ display: "grid", gap: 2 }}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Runs
-              </Typography>
-              <TableContainer>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>ID</TableCell>
-                      <TableCell>Time</TableCell>
-                      <TableCell>Label</TableCell>
-                      <TableCell>Status</TableCell>
-                      <TableCell align="right">SOPS</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {runs.map((r) => (
-                      <TableRow
-                        key={r.id}
-                        hover
-                        sx={{ cursor: "pointer" }}
-                        onClick={() => navigate(`/runs/${r.id}`)}
-                      >
-                        <TableCell>#{r.id}</TableCell>
-                        <TableCell>{fmtDateTime(r.created_at)}</TableCell>
-                        <TableCell>{r.label ?? "—"}</TableCell>
-                        <TableCell>
-                          <StatusChip status={r.status} />
-                        </TableCell>
-                        <TableCell align="right" sx={{ fontWeight: 600, color: sopsColor(r.sops) }}>
-                          {fmtScore(r.sops)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-            </CardContent>
-          </Card>
-
+          {/* Charts first */}
           <Box
             sx={{
               display: "grid",
@@ -163,6 +149,57 @@ export default function History() {
               </CardContent>
             </Card>
           </Box>
+
+          {/* Runs list (paginated) below the graphs */}
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Runs ({total})
+              </Typography>
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>ID</TableCell>
+                      <TableCell>Time</TableCell>
+                      <TableCell>Label</TableCell>
+                      <TableCell>Status</TableCell>
+                      <TableCell align="right">SOPS</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {runs.map((r) => (
+                      <TableRow
+                        key={r.id}
+                        hover
+                        sx={{ cursor: "pointer" }}
+                        onClick={() => navigate(`/runs/${r.id}`)}
+                      >
+                        <TableCell>#{r.id}</TableCell>
+                        <TableCell>{fmtDateTime(r.created_at)}</TableCell>
+                        <TableCell>{r.label ?? "—"}</TableCell>
+                        <TableCell>
+                          <StatusChip status={r.status} />
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontWeight: 600, color: sopsColor(r.sops) }}>
+                          {fmtScore(r.sops)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+              <TablePagination
+                component="div"
+                count={total}
+                page={page}
+                onPageChange={handlePage}
+                rowsPerPage={rowsPerPage}
+                onRowsPerPageChange={handleRowsPerPage}
+                rowsPerPageOptions={[10, 25, 50, 100]}
+              />
+            </CardContent>
+          </Card>
         </Box>
       )}
     </Box>
