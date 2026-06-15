@@ -80,33 +80,39 @@ All weights and thresholds are editable at runtime from the UI or `PUT /api/conf
 
 ---
 
-## Status — Phase 1 (Foundation) ✅
-
-The core end-to-end loop works today: **run a suite → score it → store history →
-explore it in the dashboard.**
-
-**Implemented**
+## Status — what works today ✅
 
 - 🔌 **Plugin benchmark engine** — six independent, registered benchmarks:
   `icmp` (latency / jitter / loss), `dns` (per-resolver lookup), `tcp` (connect),
   `tls` (handshake), `http` (TTFB / download / transfer speed), and `browser`
   (headless-Chromium page-load timing + **total render**, with screenshot & HAR).
-- 🧮 **SOPS scoring engine** — weighted, normalized, with proportional weight
-  redistribution.
-- 🔍 **Configuration discovery** — pluggable providers: a real **OPNsense API**
-  provider (FQ-CoDel / traffic shaper) and a **mock** provider for offline dev.
-- 🌐 **REST API** — `/run`, `/results`, `/history`, `/config`, `/score`,
-  `/plugins`, `/experiments`, plus discovery & chart-series endpoints.
-- 📊 **Web dashboard** — React + MUI, dark mode: trigger runs, watch SOPS over
-  time, drill into a run, compare two runs, edit config, discover the firewall.
-- 💾 **SQLite persistence** with background run execution and status tracking.
+- 🧮 **SOPS scoring** — perception-calibrated **log curve** (Weber–Fechner;
+  thresholds anchored to Nielsen / RAIL), proportional weight redistribution for
+  missing metrics, and a **versioned rubric** with `POST /api/score/rescore` to
+  re-grade history after a calibration change.
+- 🔁 **Multi-iteration runs** — repeat the suite N times and take the **median**,
+  with a per-run **confidence band** (± / range) and an **ETA**.
+- 📈 **Continuous monitoring + rolling score** — optional scheduler runs the suite
+  on an interval; the Dashboard shows a windowed **median (24h) + IQR** so
+  "current responsiveness" is stable, not point-in-time noise.
+- 🔍 **OPNsense discovery + settings correlation** — each run captures the live
+  FQ-CoDel/SQM settings + a **fingerprint**; runs group into **profiles** with
+  their SOPS distribution, and a **significant-change** banner (effect ≥ threshold,
+  with a min-runs confidence guard). Mock provider for offline dev.
+- 🧪 **Experiment engine** — within a configurable **window**, sweep one shaper
+  parameter across candidates, benchmark each, and **restore the pre-window
+  baseline** at close (or auto-promote a clear winner). **Disarmed + dry-run by
+  default.** The only path that *writes* to the firewall.
+- 🛡️ **Run-lifecycle safety** — startup reconciliation + a watchdog timeout +
+  manual cancel so a restart/hang never leaves a zombie "running" job.
+- 📊 **Web dashboard** — React + MUI, dark mode: Dashboard (rolling score +
+  aggregated metric breakdown + trend), History (charts + paginated runs),
+  Compare, Settings Impact, Experiments, Config, Run Detail.
+- 💾 **SQLite persistence** with additive auto-migrations; background execution.
 
-**Planned (next phases)** — scaffolding and scoring hooks already in place:
-**continuous monitoring** (scheduled runs + settings-vs-responsiveness
-correlation), real-world test profiles, speed test, bufferbloat test,
-**experiment engine** (apply → benchmark → keep/rollback),
-**autonomous closed-loop optimization**, and
-**routing intelligence / SD-WAN** with hysteresis.
+**Next:** real-world test profiles, speed test, bufferbloat, multi-parameter
+Bayesian search + interleaved A/B with effect-size/CI + hysteresis, routing
+intelligence / SD-WAN.
 
 ---
 
@@ -189,15 +195,16 @@ benchmark config (DB-backed, editable live).
 
 ### Infrastructure (environment variables)
 
-Copy [`.env.example`](.env.example) to `.env` and edit. All variables are prefixed
-`PATHBRAIN_`.
+Copy [`.env.example`](.env.example) to `.env` and edit. Most are prefixed
+`PATHBRAIN_` (plus the standard `TZ`).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PATHBRAIN_DATABASE_URL` | `sqlite:///./data/pathbrain.db` | SQLAlchemy DB URL (Postgres later) |
-| `PATHBRAIN_HOST` | `0.0.0.0` | Bind address |
-| `PATHBRAIN_PORT` | `8000` | Bind port |
+| `PATHBRAIN_ARTIFACT_DIR` | `./data/artifacts` | Browser screenshots / HAR files |
+| `PATHBRAIN_HOST` / `PATHBRAIN_PORT` | `0.0.0.0` / `8000` | Bind address / port |
 | `PATHBRAIN_LOG_LEVEL` | `INFO` | Log verbosity |
+| `TZ` | `UTC` | Local timezone for the experiment **window** hours (and logs) |
 | `PATHBRAIN_CONFIG_PROVIDER` | `mock` | `mock` or `opnsense` |
 | `PATHBRAIN_OPNSENSE_URL` | — | OPNsense base URL, e.g. `https://192.168.1.1` |
 | `PATHBRAIN_OPNSENSE_API_KEY` | — | OPNsense API key |
@@ -220,24 +227,30 @@ PATHBRAIN_OPNSENSE_VERIFY_TLS=false
 ```
 
 > **OPNsense permissions.** Create the API key/secret under **System → Access →
-> Users → (your user) → API keys**. The user must have privileges to **read the
-> traffic shaper** — assign the page privilege **"Firewall: Shaper"** (and/or
-> **"System: Settings: Traffic Shaper"**) via a group, or use an admin account.
-> Without it the API returns 403 and discovery fails. PathBrain only *reads*
-> configuration today; applying changes arrives with the experiment engine and is
-> always preceded by a snapshot.
+> Users → (your user) → API keys**. The user needs **traffic-shaper read** access
+> (page privilege **"Firewall: Shaper"**, and/or **"System: Settings: Traffic
+> Shaper"**), or use an admin account — without it discovery returns 403. The
+> **experiment engine additionally writes** to the shaper (`setPipe` +
+> `reconfigure`), so arming it for real needs write access; it's **disarmed +
+> dry-run by default** and always snapshots/restores the baseline.
 
-### Runtime (benchmark targets, weights, thresholds)
+### Runtime (DB-backed, edit on the Config page or `PUT /api/config`)
 
-ICMP/DNS/TCP/TLS/HTTP/browser targets, the default `iterations` count, SOPS
-weights, and normalization thresholds are stored in the database and editable at
-runtime via the **Config** page or `PUT /api/config`. Sensible defaults
-(Cloudflare/Google/Quad9, common sites, 3 iterations) are seeded automatically —
-no config required to take the first run.
+All of this is stored in the database and deep-merged over defaults, so the first
+run needs no setup:
 
-Each run can repeat the whole suite N times (chosen on the Dashboard) and
-**average the metrics** to cut variability; per-metric mean ± standard deviation
-is shown on the Run Detail page, and an ETA is estimated from recent runs.
+- **Benchmark targets** — ICMP/DNS/TCP/TLS/HTTP/browser hosts & URLs.
+- **`iterations`** — suite repeats per run; the headline SOPS is the **median**.
+- **`monitoring`** — `enabled`, `interval_minutes`, `run_timeout_minutes` (watchdog).
+- **`correlation`** — `significant_change_pct`, `min_runs` (settings-impact guards).
+- **`rubric_version` / `weights` / `thresholds`** — the scoring rubric (perception
+  curve). After editing, **Save → Re-score history** to keep the timeline comparable.
+- **`experiment`** — `enabled`, `dry_run`, `auto_promote`, `param`, `candidates`,
+  `window` (days/hours, container `TZ`), `dwell_minutes`, `min_trials_per_value`,
+  `improve_pct`. Disarmed + dry-run by default.
+
+Run results show per-metric **median ± stdev** and a SOPS confidence band; an ETA
+is estimated from recent runs.
 
 ---
 
@@ -247,28 +260,30 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 
 | Method & path | Description |
 | --- | --- |
-| `POST /api/run` | Trigger a benchmark suite (body: optional `iterations` to run & average) |
-| `GET /api/runs/estimate` | Mean per-iteration duration from recent runs (powers the ETA) |
-| `GET /api/results/latest` | Latest completed run with metrics + score |
-| `GET /api/results/{id}` | Full detail for one run (poll while running) |
-| `GET /api/history` | List recent runs (id, time, label, status, SOPS) |
+| `POST /api/run` | Trigger a benchmark suite (body: optional `iterations`) |
+| `POST /api/runs/{id}/cancel` | Cancel an in-progress run (manual stop / unstick) |
+| `GET /api/runs/estimate` | Mean per-iteration duration from recent runs (ETA) |
+| `GET /api/results/latest` / `…/{id}` | Latest / specific run detail (poll while running) |
+| `GET /api/history` | Paginated runs list (`limit`, `offset`) |
+| `GET /api/history/count` | Total run count (for pagination) |
 | `GET /api/history/series` | Time-series of SOPS + metrics for charts |
-| `GET /api/score/{id}` | Score breakdown for a run |
-| `GET /api/score/weights` | Current weights + thresholds |
-| `GET /api/score/rolling` | Windowed median SOPS + IQR (stable "current responsiveness") |
-| `GET /api/monitoring` | Continuous-monitoring scheduler status |
+| `GET /api/score/{id}` / `…/weights` | Run score / current weights + thresholds |
+| `GET /api/score/rolling` | Windowed median SOPS + IQR + aggregated subscores |
+| `POST /api/score/rescore` | Re-grade all history with the current rubric |
 | `POST /api/score/preview` | Score ad-hoc metrics with current weights |
-| `GET /api/config` | Effective benchmark config |
-| `PUT /api/config` | Update (deep-merge) benchmark config |
-| `POST /api/config/reset` | Reset config to defaults |
-| `GET /api/config/provider` | Discovery provider health |
+| `GET /api/monitoring` | Continuous-monitoring scheduler status |
+| `GET /api/config` / `PUT` / `POST …/reset` | Read / update / reset benchmark config |
+| `POST /api/config/adopt-rubric` | Load perception-calibrated default rubric |
+| `GET /api/config/provider` | Discovery provider health (cause shown if down) |
 | `POST /api/config/discover` | Discover FQ-CoDel settings + store a snapshot |
 | `GET /api/config/snapshots` | List stored config snapshots |
-| `GET /api/plugins` | List registered benchmark plugins |
 | `GET /api/settings/profiles` | Per-settings-profile SOPS distribution |
 | `GET /api/settings/impact` | Significance of the latest settings change |
-| `GET /api/experiments` | Experiment-engine status + history |
+| `POST /api/settings/backfill` | Stamp current settings onto unattributed runs |
+| `GET /api/settings/diagnostics` | Settings-capture diagnostics (stamped/unstamped) |
+| `GET /api/experiments` / `…/{id}` | Experiment status + history / one experiment's trials |
 | `POST /api/experiments/abort` | Abort the running experiment, restore baseline |
+| `GET /api/plugins` | List registered benchmark plugins |
 | `GET /api/health` | Liveness / version |
 
 ---
@@ -306,21 +321,26 @@ python -m pytest
 
 ```
 backend/pathbrain/
-  main.py            FastAPI app + serves the built frontend
+  main.py            FastAPI app (serves UI; startup reconcile; /artifacts)
   config.py          Env-driven infrastructure settings
-  database.py        SQLAlchemy engine/session (SQLite)
-  models.py          ORM: Run, BenchmarkResult, ScoreResult, ConfigSnapshot, AppConfig
+  database.py        SQLAlchemy engine/session + additive SQLite migrations
+  models.py          ORM: Run, BenchmarkResult, ScoreResult, ConfigSnapshot,
+                     AppConfig, Experiment, ExperimentTrial
   schemas.py         Pydantic request/response models
-  runner.py          Orchestrates a run across plugins; stores results + score
+  runner.py          Run orchestration; median aggregation; reconcile/watchdog/rescore
+  scheduler.py       Daemon thread: watchdog → experiment step → monitoring run
+  experiment.py      Window-gated autonomous shaper sweep (writes via provider.apply)
+  settings_profile.py  Normalize/fingerprint/summarize firewall profiles
   config_store.py    DB-backed runtime config + defaults
   logging_config.py  Structured logging
   api/               REST routers (one module per resource)
   plugins/           Benchmark plugins + registry (base.py)
-  providers/         Config discovery (opnsense.py, mock.py)
-  scoring/           SOPS engine (engine.py)
+  providers/         Config discovery + apply (opnsense.py, mock.py)
+  scoring/           SOPS engine (engine.py, perception-calibrated)
 frontend/            React + TS + Vite + MUI dashboard (dark mode)
-Dockerfile           Multi-stage: build UI, serve from API
-docker-compose.yml   Single-container deployment
+Dockerfile           Playwright base image; build UI, serve from API
+docker-compose*.yml  Build (.yml) and pull-from-GHCR (.ghcr.yml) deploys
+.github/workflows/   docker-publish.yml → ghcr.io/jmorganthall/pathbrain:latest
 ```
 
 ### Extending PathBrain
@@ -329,7 +349,7 @@ docker-compose.yml   Single-container deployment
   decorate with `@register`, and return a `PluginResult`. Plugins must never
   raise for measurement failures — return `success=False` with an `error`.
 - **New firewall:** subclass `ConfigProvider` in `providers/` and implement
-  `discover()` / `snapshot()`.
+  `discover()` / `snapshot()` (and `apply()` to support the experiment engine).
 
 ---
 
@@ -342,8 +362,9 @@ docker-compose.yml   Single-container deployment
       HAR). The `render` SOPS weight activates automatically.
 - [x] **Continuous monitoring:** scheduled recurring runs + a windowed rolling
       score (median + IQR) for stable "current responsiveness."
-- [ ] **Settings-vs-responsiveness correlation** (group runs by firewall/SQM
-      profile) — pending OPNsense discovery.
+- [x] **Settings-vs-responsiveness correlation:** each run is fingerprinted with
+      the live FQ-CoDel/SQM settings; runs group into profiles with their SOPS
+      distribution, and a significant-change banner (with a min-runs guard).
 - [ ] **Real-world profiles, speed test, bufferbloat test.**
 - [x] **Experiment engine:** within an experimentation window, sweep one shaper
       parameter across candidates (interleaved), benchmark each, and **restore the
