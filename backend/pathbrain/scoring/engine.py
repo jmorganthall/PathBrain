@@ -16,6 +16,7 @@ Key design choices:
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 # Maps a SOPS metric name -> (plugin name, metric key within that plugin).
@@ -39,7 +40,14 @@ class ScoreBreakdown:
 
 
 def _normalize(value: float, best: float, worst: float) -> float:
-    """Map a lower-is-better value to a 0..100 subscore, clamped."""
+    """Map a lower-is-better value to a 0..100 subscore, clamped.
+
+    For lower-is-better metrics with positive bounds we interpolate on a
+    *logarithmic* scale (Weber–Fechner: perceived magnitude grows with the log of
+    the stimulus). Equal *ratios* of latency cost equal score — e.g. 20→40ms drops
+    the same as 200→400ms — which models human perception far better than a linear
+    ramp where 900→1000ms would matter as much as 20→120ms.
+    """
     if worst == best:
         return 100.0 if value <= best else 0.0
     if worst > best:  # normal: smaller is better
@@ -47,8 +55,11 @@ def _normalize(value: float, best: float, worst: float) -> float:
             return 100.0
         if value >= worst:
             return 0.0
+        if best > 0 and worst > 0 and value > 0:
+            score = (math.log(worst) - math.log(value)) / (math.log(worst) - math.log(best)) * 100.0
+            return round(score, 2)
         return round((worst - value) / (worst - best) * 100.0, 2)
-    # Inverted thresholds (higher is better) — supports future metrics.
+    # Inverted thresholds (higher is better) — linear; supports future metrics.
     if value >= best:
         return 100.0
     if value <= worst:

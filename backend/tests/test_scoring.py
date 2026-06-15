@@ -55,12 +55,28 @@ def test_ping_does_not_dominate():
     assert result.sops > 85.0
 
 
-def test_midpoint_normalization():
-    # dns best=5, worst=200 -> midpoint ~102.5 should score ~50.
-    thresholds = {"dns": {"best": 5.0, "worst": 205.0}}
+def test_log_curve_geometric_midpoint():
+    # Perceptual (log) curve: the 50-point is the *geometric* mean of best/worst.
+    thresholds = {"dns": {"best": 10.0, "worst": 1000.0}}  # geo mean = 100
     weights = {"dns": 10}
-    result = compute_score({"dns": {"lookup_ms": 105.0}}, weights, thresholds)
-    assert 49.0 <= result.subscores["dns"] <= 51.0
+    mid = compute_score({"dns": {"lookup_ms": 100.0}}, weights, thresholds)
+    assert 48.0 <= mid.subscores["dns"] <= 52.0
+    # The arithmetic midpoint (505ms) scores well below 50 — early latency hurts more.
+    arith = compute_score({"dns": {"lookup_ms": 505.0}}, weights, thresholds)
+    assert arith.subscores["dns"] < 30
+
+
+def test_equal_ratios_equal_score_drops():
+    # Weber–Fechner: 20->40ms costs the same as 200->400ms.
+    thr = {"dns": {"best": 10.0, "worst": 1000.0}}
+    w = {"dns": 10}
+
+    def sub(v: float) -> float:
+        return compute_score({"dns": {"lookup_ms": v}}, w, thr).subscores["dns"]
+
+    drop_low = sub(20) - sub(40)
+    drop_high = sub(200) - sub(400)
+    assert abs(drop_low - drop_high) < 0.5
 
 
 def test_empty_metrics_score_zero():

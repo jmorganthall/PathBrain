@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..config_store import get_config, reset_config, save_config
+from ..config_store import default_rubric, get_config, reset_config, save_config
 from ..database import get_session
 from ..logging_config import get_logger
 from ..models import ConfigSnapshot
@@ -35,6 +35,13 @@ def update_config(
 def reset(session: Session = Depends(get_session)) -> dict:
     """Reset benchmark configuration to defaults."""
     return reset_config(session)
+
+
+@router.post("/config/adopt-rubric")
+def adopt_rubric(session: Session = Depends(get_session)) -> dict:
+    """Adopt the latest default scoring rubric (perception-calibrated weights +
+    thresholds + version), leaving targets/monitoring untouched."""
+    return save_config(session, default_rubric())
 
 
 @router.get("/config/provider")

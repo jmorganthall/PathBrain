@@ -45,7 +45,11 @@ docker compose up --build   # -> http://localhost:8000
   with `success=False` and an `error`. Use the `timed()` helper.
 - All runtime config (targets/weights/thresholds) is DB-backed and editable via
   `/api/config`; infra config (DB URL, OPNsense creds) is env-only (`config.py`).
-- Lower-is-better for all current SOPS metrics; thresholds define best/worst.
+- Lower-is-better for all current SOPS metrics; thresholds define best/worst and
+  are interpolated on a perception-calibrated log curve (Weber–Fechner). The
+  rubric (weights+thresholds+`rubric_version`) is versioned; changing it should be
+  followed by `POST /api/score/rescore` to re-grade history from stored raw
+  measurements (runs keep `metric_values` + per-iteration metrics for this).
 - Every action should be logged (`logging_config.get_logger`).
 
 ## Phase map

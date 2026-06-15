@@ -28,17 +28,30 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "packet_loss": 5,
 }
 
-# Normalization thresholds: the metric value at which a metric scores 100 (best)
-# and the value at which it scores 0 (worst). Linear interpolation, clamped.
-# Lower-is-better for all of these.
+# Identifier for the active scoring rubric (curve + thresholds). Bump when the
+# calibration changes so historical scores can be tracked/re-graded.
+DEFAULT_RUBRIC_VERSION = "perceptual-v1"
+
+# Normalization thresholds: the value at which a metric scores 100 (best) and the
+# value at which it scores 0 (worst). Lower-is-better; interpolated on a log
+# (Weber–Fechner) curve. These are calibrated to human-perception research rather
+# than guessed — anchored to Nielsen's response-time limits (0.1s feels instant,
+# 1s keeps flow, 10s loses attention) and Google's RAIL (~100ms = instant).
 DEFAULT_THRESHOLDS: dict[str, dict[str, float]] = {
-    "dns": {"best": 5.0, "worst": 200.0},          # ms lookup
-    "tcp": {"best": 5.0, "worst": 300.0},          # ms connect
-    "tls": {"best": 20.0, "worst": 500.0},         # ms handshake
-    "ttfb": {"best": 50.0, "worst": 1000.0},       # ms time-to-first-byte
-    "render": {"best": 300.0, "worst": 5000.0},    # ms total render
-    "jitter": {"best": 0.5, "worst": 50.0},        # ms
-    "packet_loss": {"best": 0.0, "worst": 5.0},    # percent
+    # DNS is invisible under a few ms; painful past ~150ms.
+    "dns": {"best": 10.0, "worst": 150.0},         # ms lookup
+    # Connection setup is ~1 RTT; LAN-fast vs clearly laggy.
+    "tcp": {"best": 10.0, "worst": 250.0},         # ms connect
+    # TLS adds 1–2 RTT on top of TCP.
+    "tls": {"best": 30.0, "worst": 500.0},         # ms handshake
+    # Nielsen: 100ms feels instant, ~1s is the edge of "flowing".
+    "ttfb": {"best": 100.0, "worst": 1000.0},      # ms time-to-first-byte
+    # RAIL/Nielsen: ~1s page feels good, several seconds feels slow.
+    "render": {"best": 1000.0, "worst": 6000.0},   # ms total render
+    # Interactive media: a few ms imperceptible, tens of ms disruptive.
+    "jitter": {"best": 1.0, "worst": 30.0},        # ms
+    # Loss hurts interactivity quickly (retransmits/stalls).
+    "packet_loss": {"best": 0.0, "worst": 2.5},    # percent
 }
 
 DEFAULT_CONFIG: dict = {
@@ -113,9 +126,19 @@ DEFAULT_CONFIG: dict = {
     "correlation": {
         "significant_change_pct": 5,
     },
+    "rubric_version": DEFAULT_RUBRIC_VERSION,
     "weights": DEFAULT_WEIGHTS,
     "thresholds": DEFAULT_THRESHOLDS,
 }
+
+
+def default_rubric() -> dict:
+    """The scoring rubric portion of the defaults (weights + thresholds + version)."""
+    return {
+        "rubric_version": DEFAULT_RUBRIC_VERSION,
+        "weights": copy.deepcopy(DEFAULT_WEIGHTS),
+        "thresholds": copy.deepcopy(DEFAULT_THRESHOLDS),
+    }
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

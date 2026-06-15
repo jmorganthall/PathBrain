@@ -195,6 +195,30 @@ export default function Config() {
     }
   }, []);
 
+  const handleAdoptRubric = useCallback(async () => {
+    setSaving(true);
+    try {
+      setDraft(await api.adoptRubric());
+      setToast("Adopted perception-calibrated rubric — Re-score history to apply to past runs");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to adopt rubric");
+    } finally {
+      setSaving(false);
+    }
+  }, []);
+
+  const handleRescore = useCallback(async () => {
+    setSaving(true);
+    try {
+      const r = await api.rescoreHistory();
+      setToast(`Re-scored ${r.rescored} run(s) with rubric "${r.rubric_version}"`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to re-score history");
+    } finally {
+      setSaving(false);
+    }
+  }, []);
+
   const handleDiscover = useCallback(async () => {
     setDiscovering(true);
     setError(null);
@@ -546,8 +570,28 @@ export default function Config() {
       {/* Scoring */}
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Typography variant="h6" gutterBottom>
-            Scoring
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            justifyContent="space-between"
+            alignItems={{ xs: "flex-start", sm: "center" }}
+            spacing={1}
+            sx={{ mb: 1 }}
+          >
+            <Typography variant="h6">Scoring</Typography>
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Chip size="small" variant="outlined" label={`rubric: ${String(d.rubric_version ?? "—")}`} />
+              <Button size="small" onClick={handleAdoptRubric} disabled={saving}>
+                Adopt perceptual defaults
+              </Button>
+              <Button size="small" onClick={handleRescore} disabled={saving}>
+                Re-score history
+              </Button>
+            </Stack>
+          </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+            Thresholds use a perception-calibrated log curve (Weber–Fechner). After editing weights
+            or thresholds, click <b>Save</b>, then <b>Re-score history</b> to re-grade past runs so the
+            timeline stays comparable.
           </Typography>
           <Typography variant="subtitle2" sx={{ mt: 1 }}>
             Weights

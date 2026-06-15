@@ -128,6 +128,50 @@ def _aggregate(results: list[PluginResult]) -> dict:
     }
 
 
+def rescore_run(run, weights: dict, thresholds: dict, rubric_version: str | None) -> bool:
+    """Re-grade an existing run from its stored raw measurements.
+
+    Recomputes the headline SOPS from the stored median metric values and the
+    confidence band from the stored per-iteration metrics, using the given
+    (current) rubric. Mutates ``run.score`` in place; the caller commits. This is
+    what keeps history comparable after the scoring rubric changes.
+    """
+    score = run.score
+    if score is None:
+        return False
+
+    breakdown = compute_score(
+        _plugin_metrics_from_values(score.metric_values or {}), weights, thresholds
+    )
+
+    # Rebuild per-iteration SOPS from the raw iteration metrics for the band.
+    iters = 0
+    for r in run.results:
+        im = (r.details or {}).get("iteration_metrics") if r.details else None
+        if im:
+            iters = max(iters, len(im))
+    per_iter: list[float] = []
+    for i in range(iters):
+        iter_metrics: dict[str, dict] = {}
+        for r in run.results:
+            im = (r.details or {}).get("iteration_metrics") if r.details else None
+            if im and i < len(im) and im[i]:
+                iter_metrics[r.plugin] = im[i]
+        per_iter.append(compute_score(iter_metrics, weights, thresholds).sops)
+
+    if per_iter:
+        score.sops_stdev = round(pstdev(per_iter), 2) if len(per_iter) > 1 else 0.0
+        score.sops_min = round(min(per_iter), 2)
+        score.sops_max = round(max(per_iter), 2)
+
+    score.sops = breakdown.sops
+    score.subscores = breakdown.subscores
+    score.weights_used = breakdown.weights_used
+    score.metric_values = breakdown.metric_values
+    score.rubric_version = rubric_version
+    return True
+
+
 def execute_run(run_id: int) -> None:
     """Execute all plugins for ``run_id`` across iterations, store + score.
 
@@ -237,6 +281,7 @@ def execute_run(run_id: int) -> None:
                     subscores=breakdown.subscores,
                     weights_used=breakdown.weights_used,
                     metric_values=breakdown.metric_values,
+                    rubric_version=config.get("rubric_version"),
                 )
             )
 

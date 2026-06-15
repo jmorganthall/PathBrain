@@ -1,8 +1,9 @@
 import {
+  Area,
   CartesianGrid,
+  ComposedChart,
   Legend,
   Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -18,32 +19,44 @@ export interface SeriesLine {
   color: string;
 }
 
+export interface SeriesBand {
+  lowKey: keyof SeriesPoint;
+  highKey: keyof SeriesPoint;
+  color: string;
+  name?: string;
+}
+
 interface Props {
   data: SeriesPoint[];
   lines: SeriesLine[];
   height?: number;
   yDomain?: [number | "auto", number | "auto"];
   unit?: string;
+  /** Optional shaded range (e.g. per-run SOPS min/max) drawn behind the lines. */
+  band?: SeriesBand;
 }
 
-export default function SeriesChart({ data, lines, height = 280, yDomain, unit }: Props) {
+export default function SeriesChart({ data, lines, height = 280, yDomain, unit, band }: Props) {
   const theme = useTheme();
   const grid = "rgba(255,255,255,0.08)";
   const axis = theme.palette.text.secondary;
 
-  const formatted = data.map((p) => ({ ...p, _t: fmtTimeShort(p.timestamp) }));
+  const formatted = data.map((p) => {
+    const row: Record<string, unknown> = { ...p, _t: fmtTimeShort(p.timestamp) };
+    if (band) {
+      const low = p[band.lowKey] as number | null | undefined;
+      const high = p[band.highKey] as number | null | undefined;
+      row._band = low != null && high != null ? [low, high] : null;
+    }
+    return row;
+  });
 
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <LineChart data={formatted} margin={{ top: 8, right: 16, bottom: 8, left: -8 }}>
+      <ComposedChart data={formatted} margin={{ top: 8, right: 16, bottom: 8, left: -8 }}>
         <CartesianGrid stroke={grid} strokeDasharray="3 3" />
         <XAxis dataKey="_t" stroke={axis} fontSize={12} tickMargin={8} />
-        <YAxis
-          stroke={axis}
-          fontSize={12}
-          domain={yDomain ?? ["auto", "auto"]}
-          unit={unit}
-        />
+        <YAxis stroke={axis} fontSize={12} domain={yDomain ?? ["auto", "auto"]} unit={unit} />
         <Tooltip
           contentStyle={{
             background: theme.palette.background.paper,
@@ -53,6 +66,19 @@ export default function SeriesChart({ data, lines, height = 280, yDomain, unit }
           labelStyle={{ color: theme.palette.text.secondary }}
         />
         <Legend wrapperStyle={{ fontSize: 12 }} />
+        {band && (
+          <Area
+            type="monotone"
+            dataKey="_band"
+            name={band.name ?? "variance"}
+            stroke="none"
+            fill={band.color}
+            fillOpacity={0.18}
+            connectNulls
+            isAnimationActive={false}
+            activeDot={false}
+          />
+        )}
         {lines.map((l) => (
           <Line
             key={String(l.key)}
@@ -66,7 +92,7 @@ export default function SeriesChart({ data, lines, height = 280, yDomain, unit }
             isAnimationActive={false}
           />
         ))}
-      </LineChart>
+      </ComposedChart>
     </ResponsiveContainer>
   );
 }
