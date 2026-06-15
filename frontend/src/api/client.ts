@@ -10,6 +10,7 @@ import type {
   PluginInfo,
   ProviderHealth,
   RollingScore,
+  RunBaseline,
   RunDetail,
   RunEstimate,
   RunSummary,
@@ -63,6 +64,7 @@ export const api = {
   // Results
   latestResult: () => request<RunDetail>("/results/latest"),
   result: (id: number) => request<RunDetail>(`/results/${id}`),
+  resultBaseline: (id: number) => request<RunBaseline>(`/results/${id}/baseline`),
 
   // History
   history: (limit = 50, offset = 0) =>

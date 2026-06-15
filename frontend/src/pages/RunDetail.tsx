@@ -13,18 +13,22 @@ import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
 import TableRow from "@mui/material/TableRow";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ErrorIcon from "@mui/icons-material/Error";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 
 import { api } from "../api/client";
-import type { RunDetail as RunDetailType, RunEstimate } from "../api/types";
+import type { RunBaseline, RunDetail as RunDetailType, RunEstimate } from "../api/types";
 import ScoreGauge from "../components/ScoreGauge";
 import SubscoreBreakdown from "../components/SubscoreBreakdown";
 import StatusChip from "../components/StatusChip";
 import JsonViewer from "../components/JsonViewer";
 import Loading from "../components/Loading";
+import MetricDelta from "../components/MetricDelta";
+import { getMetricMeta } from "../utils/metrics";
 import { fmtDateTime, fmtDuration, metricValue, parseApiDate } from "../utils/format";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
@@ -33,6 +37,7 @@ export default function RunDetail() {
   const { id } = useParams<{ id: string }>();
   const runId = Number(id);
   const [run, setRun] = useState<RunDetailType | null>(null);
+  const [baseline, setBaseline] = useState<RunBaseline | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
@@ -92,6 +97,13 @@ export default function RunDetail() {
   useEffect(() => {
     api.runEstimate().then(setEstimate).catch(() => {});
   }, []);
+
+  // Once the run is finished, fetch the profile-average baseline so we can show
+  // improved/worse arrows next to each metric.
+  useEffect(() => {
+    if (!run || isRunning(run.status)) return;
+    api.resultBaseline(runId).then(setBaseline).catch(() => setBaseline(null));
+  }, [runId, run?.status]);
 
   // Tick a 1s clock while the run is in progress so the ETA counts down.
   useEffect(() => {
@@ -254,8 +266,20 @@ export default function RunDetail() {
         </Card>
       </Box>
 
-      <Typography variant="h6" sx={{ mb: 1.5 }}>
+      <Typography variant="h6" sx={{ mb: 0.5 }}>
         Plugin Results
+      </Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+        Hover or tap a metric name for what it means.
+        {baseline && baseline.run_count > 0 && (
+          <>
+            {" "}Arrows compare this run to the{" "}
+            {baseline.scope === "profile" ? "profile" : "recent"} average over{" "}
+            {baseline.run_count} run{baseline.run_count === 1 ? "" : "s"} —{" "}
+            <Box component="span" sx={{ color: "success.main", fontWeight: 700 }}>▲ better</Box>,{" "}
+            <Box component="span" sx={{ color: "error.main", fontWeight: 700 }}>▼ worse</Box>.
+          </>
+        )}
       </Typography>
 
       {run.results.length === 0 ? (
@@ -305,15 +329,55 @@ export default function RunDetail() {
                         {metricKeys.map((k) => {
                           const st = metricStats[k];
                           const showStdev = st && (st.n ?? 0) > 1 && (st.stdev ?? 0) > 0;
+                          const meta = getMetricMeta(k);
+                          const baseValue = baseline?.metrics?.[res.plugin]?.[k];
                           return (
                             <TableRow key={k}>
-                              <TableCell sx={{ border: 0, py: 0.5, color: "text.secondary" }}>{k}</TableCell>
+                              <TableCell sx={{ border: 0, py: 0.5, color: "text.secondary" }}>
+                                <Tooltip
+                                  arrow
+                                  enterTouchDelay={0}
+                                  leaveTouchDelay={6000}
+                                  title={
+                                    <>
+                                      <strong>{meta.label}</strong>
+                                      <br />
+                                      {meta.description}
+                                    </>
+                                  }
+                                >
+                                  <Box
+                                    component="span"
+                                    sx={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 0.5,
+                                      cursor: "help",
+                                    }}
+                                  >
+                                    {k}
+                                    <InfoOutlinedIcon sx={{ fontSize: "0.9rem", opacity: 0.5 }} />
+                                  </Box>
+                                </Tooltip>
+                              </TableCell>
                               <TableCell align="right" sx={{ border: 0, py: 0.5, fontWeight: 600 }}>
                                 {metricValue(res.metrics[k])}
                                 {showStdev && (
                                   <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
                                     ± {st.stdev}
                                   </Typography>
+                                )}
+                                {res.success && baseValue != null && (
+                                  <MetricDelta
+                                    current={res.metrics[k]}
+                                    baseline={baseValue}
+                                    higherIsBetter={meta.higherIsBetter}
+                                    unit={meta.unit}
+                                    runCount={baseline?.run_count ?? 0}
+                                    scopeLabel={
+                                      baseline?.scope === "profile" ? "profile average" : "recent average"
+                                    }
+                                  />
                                 )}
                               </TableCell>
                             </TableRow>

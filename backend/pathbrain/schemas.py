@@ -82,6 +82,23 @@ class RunDetail(BaseModel):
     score: ScoreOut | None = None
 
 
+class RunBaselineOut(BaseModel):
+    """Average plugin metrics across the run's settings profile, for comparison.
+
+    ``metrics`` maps plugin name -> {metric_key: mean_value} over the other
+    completed runs that share this run's settings fingerprint (or, when none are
+    available, the most recent completed runs). The frontend uses it to render
+    improved/worse arrows next to each measurement.
+    """
+
+    run_id: int
+    scope: str  # "profile" (same settings fingerprint) or "all" (recent runs)
+    profile_fingerprint: str | None = None
+    profile_label: str | None = None
+    run_count: int
+    metrics: dict[str, dict[str, float]] = {}
+
+
 class PluginInfo(BaseModel):
     name: str
     description: str

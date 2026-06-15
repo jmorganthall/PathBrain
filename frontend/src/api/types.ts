@@ -120,6 +120,18 @@ export interface BenchmarkResult {
   details?: Record<string, unknown> | null;
 }
 
+export interface RunBaseline {
+  run_id: number;
+  // "profile" = averaged over runs with the same settings fingerprint;
+  // "all" = averaged over the most recent completed runs (fallback).
+  scope: "profile" | "all";
+  profile_fingerprint: string | null;
+  profile_label: string | null;
+  run_count: number;
+  // plugin name -> { metric_key: mean_value }
+  metrics: Record<string, Record<string, number>>;
+}
+
 export interface RunDetail extends RunSummary {
   notes?: string | null;
   error?: string | null;
