@@ -13,6 +13,16 @@ export interface RunSummary {
   status: string;
   label?: string | null;
   sops?: number | null;
+  iterations: number;
+  iterations_completed: number;
+  per_iteration_ms?: number | null;
+}
+
+export interface RunEstimate {
+  per_iteration_ms: number | null;
+  based_on_runs: number;
+  default_iterations: number;
+  max_iterations: number;
 }
 
 export interface ScoreOut {

@@ -225,10 +225,15 @@ PATHBRAIN_OPNSENSE_VERIFY_TLS=false
 
 ### Runtime (benchmark targets, weights, thresholds)
 
-ICMP/DNS/TCP/TLS/HTTP targets, SOPS weights, and normalization thresholds are
-stored in the database and editable at runtime via the **Config** page or
-`PUT /api/config`. Sensible defaults (Cloudflare/Google/Quad9, common sites) are
-seeded automatically — no config required to take the first run.
+ICMP/DNS/TCP/TLS/HTTP/browser targets, the default `iterations` count, SOPS
+weights, and normalization thresholds are stored in the database and editable at
+runtime via the **Config** page or `PUT /api/config`. Sensible defaults
+(Cloudflare/Google/Quad9, common sites, 3 iterations) are seeded automatically —
+no config required to take the first run.
+
+Each run can repeat the whole suite N times (chosen on the Dashboard) and
+**average the metrics** to cut variability; per-metric mean ± standard deviation
+is shown on the Run Detail page, and an ETA is estimated from recent runs.
 
 ---
 
@@ -238,7 +243,8 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 
 | Method & path | Description |
 | --- | --- |
-| `POST /api/run` | Trigger a benchmark suite (runs in background) |
+| `POST /api/run` | Trigger a benchmark suite (body: optional `iterations` to run & average) |
+| `GET /api/runs/estimate` | Mean per-iteration duration from recent runs (powers the ETA) |
 | `GET /api/results/latest` | Latest completed run with metrics + score |
 | `GET /api/results/{id}` | Full detail for one run (poll while running) |
 | `GET /api/history` | List recent runs (id, time, label, status, SOPS) |

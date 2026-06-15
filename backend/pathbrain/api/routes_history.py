@@ -29,6 +29,9 @@ def list_history(
             status=run.status.value if hasattr(run.status, "value") else str(run.status),
             label=run.label,
             sops=run.score.sops if run.score else None,
+            iterations=run.iterations,
+            iterations_completed=run.iterations_completed,
+            per_iteration_ms=run.per_iteration_ms,
         )
         for run in runs
     ]

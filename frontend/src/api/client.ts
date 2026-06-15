@@ -8,6 +8,7 @@ import type {
   PluginInfo,
   ProviderHealth,
   RunDetail,
+  RunEstimate,
   RunSummary,
   ScoreOut,
   SeriesResponse,
@@ -48,8 +49,9 @@ export const api = {
   health: () => request<Health>("/health"),
 
   // Runs
-  triggerRun: (body: { label?: string; notes?: string }) =>
+  triggerRun: (body: { label?: string; notes?: string; iterations?: number }) =>
     request<RunDetail>("/run", { method: "POST", body: JSON.stringify(body) }),
+  runEstimate: () => request<RunEstimate>("/runs/estimate"),
 
   // Results
   latestResult: () => request<RunDetail>("/results/latest"),

@@ -99,6 +99,9 @@ DEFAULT_CONFIG: dict = {
         "screenshot": True,
         "har": True,
     },
+    # Default number of full-suite iterations to run and average per benchmark.
+    # Averaging across iterations reduces per-run variability. Editable per run.
+    "iterations": 3,
     "weights": DEFAULT_WEIGHTS,
     "thresholds": DEFAULT_THRESHOLDS,
 }

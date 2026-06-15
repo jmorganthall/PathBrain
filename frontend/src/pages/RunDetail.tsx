@@ -25,7 +25,7 @@ import SubscoreBreakdown from "../components/SubscoreBreakdown";
 import StatusChip from "../components/StatusChip";
 import JsonViewer from "../components/JsonViewer";
 import Loading from "../components/Loading";
-import { fmtDateTime, metricValue } from "../utils/format";
+import { fmtDateTime, fmtDuration, metricValue } from "../utils/format";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
 
@@ -140,6 +140,14 @@ export default function RunDetail() {
                   Finished {fmtDateTime(run.finished_at)}
                 </Typography>
               )}
+              <Chip
+                size="small"
+                variant="outlined"
+                label={
+                  `${run.iterations} iteration${run.iterations === 1 ? "" : "s"}` +
+                  (run.per_iteration_ms != null ? ` · ~${fmtDuration(run.per_iteration_ms)} each` : "")
+                }
+              />
             </Stack>
             {run.notes && (
               <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center" }}>
@@ -183,6 +191,8 @@ export default function RunDetail() {
         >
           {run.results.map((res) => {
             const metricKeys = Object.keys(res.metrics);
+            const metricStats = ((res.details as Record<string, unknown> | null)
+              ?.metric_stats ?? {}) as Record<string, { stdev?: number; n?: number }>;
             return (
               <Card key={res.id}>
                 <CardContent>
@@ -211,14 +221,23 @@ export default function RunDetail() {
                   {metricKeys.length > 0 && (
                     <Table size="small" sx={{ mb: 1 }}>
                       <TableBody>
-                        {metricKeys.map((k) => (
-                          <TableRow key={k}>
-                            <TableCell sx={{ border: 0, py: 0.5, color: "text.secondary" }}>{k}</TableCell>
-                            <TableCell align="right" sx={{ border: 0, py: 0.5, fontWeight: 600 }}>
-                              {metricValue(res.metrics[k])}
-                            </TableCell>
-                          </TableRow>
-                        ))}
+                        {metricKeys.map((k) => {
+                          const st = metricStats[k];
+                          const showStdev = st && (st.n ?? 0) > 1 && (st.stdev ?? 0) > 0;
+                          return (
+                            <TableRow key={k}>
+                              <TableCell sx={{ border: 0, py: 0.5, color: "text.secondary" }}>{k}</TableCell>
+                              <TableCell align="right" sx={{ border: 0, py: 0.5, fontWeight: 600 }}>
+                                {metricValue(res.metrics[k])}
+                                {showStdev && (
+                                  <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+                                    ± {st.stdev}
+                                  </Typography>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
                       </TableBody>
                     </Table>
                   )}

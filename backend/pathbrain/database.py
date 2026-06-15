@@ -43,6 +43,36 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _migrate()
+
+
+def _migrate() -> None:
+    """Lightweight additive migrations for SQLite.
+
+    ``create_all`` never alters existing tables, so columns added after a
+    database already exists (e.g. on a deployed volume) must be added by hand.
+    This adds any missing columns; it is idempotent and data-preserving.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    from sqlalchemy import text
+
+    new_columns: dict[str, dict[str, str]] = {
+        "runs": {
+            "iterations": "INTEGER DEFAULT 1",
+            "iterations_completed": "INTEGER DEFAULT 0",
+            "per_iteration_ms": "FLOAT",
+        },
+    }
+    with engine.begin() as conn:
+        for table, columns in new_columns.items():
+            existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            if not existing:
+                continue  # table doesn't exist yet; create_all handles it
+            for name, ddl in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
 
 
 def get_session() -> Iterator[Session]:
