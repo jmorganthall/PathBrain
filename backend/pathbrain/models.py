@@ -52,6 +52,12 @@ class Run(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Multi-iteration support: run the whole suite `iterations` times and average.
+    iterations: Mapped[int] = mapped_column(Integer, default=1)
+    iterations_completed: Mapped[int] = mapped_column(Integer, default=0)
+    # Mean wall-clock duration of a single full iteration, for ETA estimates.
+    per_iteration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # The benchmark config used for this run (snapshot for reproducibility).
     config_used: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # The firewall config snapshot id associated with this run, if any.

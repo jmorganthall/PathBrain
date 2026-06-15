@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict
 class RunCreate(BaseModel):
     label: str | None = None
     notes: str | None = None
+    # Number of full-suite iterations to run and average. None -> config default.
+    iterations: int | None = None
 
 
 class ConfigUpdate(BaseModel):
@@ -51,6 +53,9 @@ class RunSummary(BaseModel):
     status: str
     label: str | None = None
     sops: float | None = None
+    iterations: int = 1
+    iterations_completed: int = 0
+    per_iteration_ms: float | None = None
 
 
 class RunDetail(BaseModel):
@@ -64,6 +69,9 @@ class RunDetail(BaseModel):
     label: str | None = None
     notes: str | None = None
     error: str | None = None
+    iterations: int = 1
+    iterations_completed: int = 0
+    per_iteration_ms: float | None = None
     config_used: dict[str, Any] | None = None
     results: list[BenchmarkResultOut] = []
     score: ScoreOut | None = None

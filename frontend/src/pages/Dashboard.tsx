@@ -8,20 +8,22 @@ import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
 import LinearProgress from "@mui/material/LinearProgress";
 import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import SpeedIcon from "@mui/icons-material/Speed";
 
 import { api, ApiError } from "../api/client";
-import type { RunDetail, SeriesPoint } from "../api/types";
+import type { RunDetail, RunEstimate, SeriesPoint } from "../api/types";
 import ScoreGauge from "../components/ScoreGauge";
 import SubscoreBreakdown from "../components/SubscoreBreakdown";
 import SeriesChart from "../components/SeriesChart";
 import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
-import { fmtDateTime } from "../utils/format";
+import { fmtDateTime, fmtDuration } from "../utils/format";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
 
@@ -31,6 +33,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [iterations, setIterations] = useState(3);
+  const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const loadLatest = useCallback(async () => {
@@ -51,11 +55,11 @@ export default function Dashboard() {
     setLoading(true);
     setError(null);
     try {
-      const [, s] = await Promise.all([
+      await Promise.all([
         loadLatest(),
         api.historySeries(100).then((r) => setSeries(r.points)),
+        api.runEstimate().then((e) => setEstimate(e)).catch(() => {}),
       ]);
-      void s;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load dashboard");
     } finally {
@@ -95,7 +99,7 @@ export default function Dashboard() {
     setRunning(true);
     setError(null);
     try {
-      const d = await api.triggerRun({});
+      const d = await api.triggerRun({ iterations });
       setLatest(d);
       if (isRunning(d.status)) {
         poll(d.id);
@@ -107,9 +111,16 @@ export default function Dashboard() {
       setRunning(false);
       setError(e instanceof Error ? e.message : "Failed to start benchmark");
     }
-  }, [poll]);
+  }, [poll, iterations]);
 
   const activeRun = running || (latest != null && isRunning(latest.status));
+  const maxIterations = estimate?.max_iterations ?? 20;
+  const etaMs =
+    estimate?.per_iteration_ms != null ? estimate.per_iteration_ms * iterations : null;
+  const etaLabel =
+    etaMs != null
+      ? `ETA ~${fmtDuration(etaMs)}`
+      : "ETA available after the first run";
 
   return (
     <Box>
@@ -121,18 +132,40 @@ export default function Dashboard() {
         sx={{ mb: 3 }}
       >
         <Typography variant="h4">Dashboard</Typography>
-        <Stack direction="row" spacing={1}>
-          <Button startIcon={<RefreshIcon />} onClick={loadAll} disabled={loading}>
-            Refresh
-          </Button>
-          <Button
-            variant="contained"
-            startIcon={<PlayArrowIcon />}
-            onClick={handleRun}
-            disabled={activeRun}
-          >
-            {activeRun ? "Running…" : "Run Benchmark"}
-          </Button>
+        <Stack spacing={0.5} alignItems={{ xs: "flex-start", sm: "flex-end" }}>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Tooltip
+              title={`How many times to run the full suite and average the results (1–${maxIterations}). More iterations = steadier score, longer run.`}
+            >
+              <TextField
+                label="Iterations"
+                type="number"
+                size="small"
+                value={iterations}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 10);
+                  setIterations(Number.isNaN(n) ? 1 : Math.max(1, Math.min(n, maxIterations)));
+                }}
+                inputProps={{ min: 1, max: maxIterations }}
+                disabled={activeRun}
+                sx={{ width: 110 }}
+              />
+            </Tooltip>
+            <Button startIcon={<RefreshIcon />} onClick={loadAll} disabled={loading}>
+              Refresh
+            </Button>
+            <Button
+              variant="contained"
+              startIcon={<PlayArrowIcon />}
+              onClick={handleRun}
+              disabled={activeRun}
+            >
+              {activeRun ? "Running…" : "Run Benchmark"}
+            </Button>
+          </Stack>
+          <Typography variant="caption" color="text.secondary">
+            {etaLabel}
+          </Typography>
         </Stack>
       </Stack>
 
@@ -174,14 +207,24 @@ export default function Dashboard() {
         >
           <Card>
             <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-              {activeRun && (
-                <Box sx={{ width: "100%" }}>
-                  <LinearProgress />
-                  <Typography variant="caption" color="text.secondary">
-                    Benchmark in progress…
-                  </Typography>
-                </Box>
-              )}
+              {activeRun && (() => {
+                const total = latest?.iterations ?? iterations;
+                const done = latest?.iterations_completed ?? 0;
+                const determinate = done > 0 && total > 0;
+                return (
+                  <Box sx={{ width: "100%" }}>
+                    <LinearProgress
+                      variant={determinate ? "determinate" : "indeterminate"}
+                      value={determinate ? (done / total) * 100 : undefined}
+                    />
+                    <Typography variant="caption" color="text.secondary">
+                      {total > 1
+                        ? `Iteration ${Math.min(done + 1, total)} of ${total}…`
+                        : "Benchmark in progress…"}
+                    </Typography>
+                  </Box>
+                );
+              })()}
               <ScoreGauge value={latest.score?.sops ?? null} />
               <Stack direction="row" spacing={1} alignItems="center">
                 <StatusChip status={latest.status} />

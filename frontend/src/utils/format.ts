@@ -44,3 +44,14 @@ export function metricValue(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v)) return "—";
   return Number.isInteger(v) ? v.toString() : v.toFixed(1);
 }
+
+// Human-friendly duration from milliseconds, e.g. "850 ms", "12s", "2m 05s".
+export function fmtDuration(ms: number | null | undefined): string {
+  if (ms == null || Number.isNaN(ms)) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(totalSeconds < 10 ? 1 : 0)}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+}
