@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_session
@@ -12,13 +12,20 @@ from ..schemas import RunSummary
 router = APIRouter()
 
 
+@router.get("/history/count")
+def history_count(session: Session = Depends(get_session)) -> dict:
+    """Total number of runs, for paginating the history list."""
+    return {"count": session.scalar(select(func.count()).select_from(Run)) or 0}
+
+
 @router.get("/history", response_model=list[RunSummary])
 def list_history(
     limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     session: Session = Depends(get_session),
 ) -> list[RunSummary]:
     runs = session.scalars(
-        select(Run).order_by(Run.created_at.desc()).limit(limit)
+        select(Run).order_by(Run.created_at.desc()).limit(limit).offset(offset)
     ).all()
     return [
         RunSummary(

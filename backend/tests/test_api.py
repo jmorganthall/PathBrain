@@ -82,6 +82,16 @@ def test_history_empty_ok(client):
     assert isinstance(resp.json(), list)
 
 
+def test_history_pagination(client):
+    count = client.get("/api/history/count")
+    assert count.status_code == 200
+    assert isinstance(count.json()["count"], int)
+
+    page = client.get("/api/history?limit=2&offset=0")
+    assert page.status_code == 200
+    assert len(page.json()) <= 2
+
+
 def test_rolling_score_shape(client):
     resp = client.get("/api/score/rolling?hours=24")
     assert resp.status_code == 200

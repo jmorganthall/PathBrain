@@ -65,7 +65,9 @@ export const api = {
   result: (id: number) => request<RunDetail>(`/results/${id}`),
 
   // History
-  history: (limit = 50) => request<RunSummary[]>(`/history?limit=${limit}`),
+  history: (limit = 50, offset = 0) =>
+    request<RunSummary[]>(`/history?limit=${limit}&offset=${offset}`),
+  historyCount: () => request<{ count: number }>("/history/count"),
   historySeries: (limit = 100) =>
     request<SeriesResponse>(`/history/series?limit=${limit}`),
 
