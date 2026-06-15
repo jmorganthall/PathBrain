@@ -15,9 +15,17 @@ export function fmtScore(value: number | null | undefined): string {
   return Math.round(value).toString();
 }
 
+// Backend timestamps are UTC but may arrive without a timezone designator
+// (SQLite drops tzinfo). Treat a bare timestamp as UTC so the browser renders it
+// in the viewer's own local timezone instead of assuming it's already local.
+export function parseApiDate(iso: string): Date {
+  const hasTz = /([zZ])$|([+-]\d{2}:?\d{2})$/.test(iso.trim());
+  return new Date(hasTz ? iso : `${iso}Z`);
+}
+
 export function fmtDateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
-  const d = new Date(iso);
+  const d = parseApiDate(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString(undefined, {
     year: "numeric",
@@ -30,7 +38,7 @@ export function fmtDateTime(iso: string | null | undefined): string {
 
 export function fmtTimeShort(iso: string | null | undefined): string {
   if (!iso) return "—";
-  const d = new Date(iso);
+  const d = parseApiDate(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString(undefined, {
     month: "short",

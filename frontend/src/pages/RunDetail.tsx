@@ -25,7 +25,7 @@ import SubscoreBreakdown from "../components/SubscoreBreakdown";
 import StatusChip from "../components/StatusChip";
 import JsonViewer from "../components/JsonViewer";
 import Loading from "../components/Loading";
-import { fmtDateTime, fmtDuration, metricValue } from "../utils/format";
+import { fmtDateTime, fmtDuration, metricValue, parseApiDate } from "../utils/format";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
 
@@ -120,7 +120,7 @@ export default function RunDetail() {
       </Stack>
 
       {isRunning(run.status) && (() => {
-        const started = run.started_at ? new Date(run.started_at).getTime() : null;
+        const started = run.started_at ? parseApiDate(run.started_at).getTime() : null;
         const elapsedMs = started != null ? Math.max(now - started, 0) : null;
         const estTotalMs =
           estimate?.per_iteration_ms != null
