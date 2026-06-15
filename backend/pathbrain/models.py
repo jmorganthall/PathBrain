@@ -109,6 +109,8 @@ class ScoreResult(Base):
     sops_stdev: Mapped[float | None] = mapped_column(Float, nullable=True)
     sops_min: Mapped[float | None] = mapped_column(Float, nullable=True)
     sops_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The scoring rubric (curve/thresholds) version that produced this score.
+    rubric_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     # Per-metric subscores and the (possibly redistributed) weights used.
     subscores: Mapped[dict] = mapped_column(JSON, default=dict)

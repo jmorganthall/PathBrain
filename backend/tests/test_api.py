@@ -88,6 +88,17 @@ def test_rolling_score_shape(client):
     assert "median" in body and "count" in body and "p25" in body and "p75" in body
 
 
+def test_adopt_rubric_and_rescore(client):
+    adopted = client.post("/api/config/adopt-rubric")
+    assert adopted.status_code == 200
+    assert adopted.json()["rubric_version"] == "perceptual-v1"
+
+    resp = client.post("/api/score/rescore")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "rescored" in body and body["rubric_version"] == "perceptual-v1"
+
+
 def test_monitoring_status_shape(client):
     resp = client.get("/api/monitoring")
     assert resp.status_code == 200

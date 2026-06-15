@@ -11,10 +11,28 @@ from sqlalchemy.orm import Session
 from ..config_store import get_config
 from ..database import get_session
 from ..models import Run, RunStatus, ScoreResult
+from ..runner import rescore_run
 from ..schemas import ScoreOut
 from ..scoring import compute_score
 
 router = APIRouter()
+
+
+@router.post("/score/rescore")
+def rescore_history(session: Session = Depends(get_session)) -> dict:
+    """Re-grade every completed run with the current scoring rubric.
+
+    Run this after changing thresholds/weights so historical scores stay
+    comparable (no discontinuity in the SOPS timeline at the change).
+    """
+    cfg = get_config(session)
+    weights = cfg.get("weights", {})
+    thresholds = cfg.get("thresholds", {})
+    rubric_version = cfg.get("rubric_version")
+    runs = session.scalars(select(Run).where(Run.status == RunStatus.COMPLETE)).all()
+    rescored = sum(1 for run in runs if rescore_run(run, weights, thresholds, rubric_version))
+    session.commit()
+    return {"rescored": rescored, "rubric_version": rubric_version}
 
 
 @router.get("/score/rolling")

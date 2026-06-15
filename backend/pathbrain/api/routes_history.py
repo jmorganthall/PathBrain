@@ -60,6 +60,8 @@ def history_series(
                 "timestamp": run.created_at.isoformat(),
                 "label": run.label,
                 "sops": score.sops,
+                "sops_min": score.sops_min,
+                "sops_max": score.sops_max,
                 "dns_ms": values.get("dns"),
                 "tcp_ms": values.get("tcp"),
                 "tls_ms": values.get("tls"),

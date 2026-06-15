@@ -91,6 +91,9 @@ export const api = {
       body: JSON.stringify(partial),
     }),
   resetConfig: () => request<BenchmarkConfig>("/config/reset", { method: "POST" }),
+  adoptRubric: () => request<BenchmarkConfig>("/config/adopt-rubric", { method: "POST" }),
+  rescoreHistory: () =>
+    request<{ rescored: number; rubric_version: string }>("/score/rescore", { method: "POST" }),
   providerHealth: () => request<ProviderHealth>("/config/provider"),
   discover: () => request<DiscoverResponse>("/config/discover", { method: "POST" }),
   snapshots: () => request<ConfigSnapshot[]>("/config/snapshots"),

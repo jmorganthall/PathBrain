@@ -126,6 +126,7 @@ export default function History() {
                   data={series}
                   yDomain={[0, 100]}
                   lines={[{ key: "sops", name: "SOPS", color: "#4dd0e1" }]}
+                  band={{ lowKey: "sops_min", highKey: "sops_max", color: "#4dd0e1", name: "± range" }}
                 />
               </CardContent>
             </Card>

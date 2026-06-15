@@ -70,6 +70,7 @@ def _migrate() -> None:
             "sops_stdev": "FLOAT",
             "sops_min": "FLOAT",
             "sops_max": "FLOAT",
+            "rubric_version": "VARCHAR(40)",
         },
     }
     with engine.begin() as conn:

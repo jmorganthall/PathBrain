@@ -115,6 +115,8 @@ export interface SeriesPoint {
   timestamp: string;
   label?: string | null;
   sops: number | null;
+  sops_min?: number | null;
+  sops_max?: number | null;
   dns_ms: number | null;
   tcp_ms: number | null;
   tls_ms: number | null;
@@ -179,6 +181,7 @@ export interface BenchmarkConfig {
   browser: BrowserConfig;
   iterations: number;
   monitoring: { enabled: boolean; interval_minutes: number };
+  rubric_version: string;
   weights: Record<string, number>;
   thresholds: Record<string, Threshold>;
   [key: string]: unknown;
