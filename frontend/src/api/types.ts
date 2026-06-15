@@ -101,12 +101,23 @@ export interface HostPort {
   port: number;
 }
 
+export interface BrowserConfig {
+  urls: string[];
+  timeout_s: number;
+  wait_until: string;
+  headless: boolean;
+  screenshot: boolean;
+  har: boolean;
+}
+
 export interface BenchmarkConfig {
   icmp: { targets: string[]; count: number; interval_s: number; timeout_s: number };
   dns: { providers: DnsProvider[]; hostnames: string[]; timeout_s: number };
   tcp: { targets: HostPort[]; timeout_s: number };
   tls: { targets: HostPort[]; timeout_s: number };
   http: { urls: string[]; timeout_s: number };
+  browser: BrowserConfig;
+  iterations: number;
   weights: Record<string, number>;
   thresholds: Record<string, Threshold>;
   [key: string]: unknown;
