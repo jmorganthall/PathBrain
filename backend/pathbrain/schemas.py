@@ -45,6 +45,16 @@ class ScoreOut(BaseModel):
     weights_used: dict[str, float]
     metric_values: dict[str, float]
 
+    # Perceptual axis (Responsiveness Score) — separate from SOPS. None when the
+    # run captured no paint metrics.
+    responsiveness: float | None = None
+    responsiveness_stdev: float | None = None
+    responsiveness_min: float | None = None
+    responsiveness_max: float | None = None
+    perceptual_subscores: dict[str, float] | None = None
+    perceptual_weights_used: dict[str, float] | None = None
+    perceptual_metric_values: dict[str, float] | None = None
+
 
 class RunSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)

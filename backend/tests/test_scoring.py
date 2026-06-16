@@ -1,12 +1,47 @@
 """Tests for the SOPS scoring engine."""
 from __future__ import annotations
 
-from pathbrain.config_store import DEFAULT_THRESHOLDS, DEFAULT_WEIGHTS
-from pathbrain.scoring import compute_score
+from pathbrain.config_store import (
+    DEFAULT_PERCEPTUAL_THRESHOLDS,
+    DEFAULT_PERCEPTUAL_WEIGHTS,
+    DEFAULT_THRESHOLDS,
+    DEFAULT_WEIGHTS,
+)
+from pathbrain.scoring import compute_responsiveness, compute_score
 
 
 def _score(metrics):
     return compute_score(metrics, DEFAULT_WEIGHTS, DEFAULT_THRESHOLDS)
+
+
+def _resp(metrics):
+    return compute_responsiveness(
+        metrics, DEFAULT_PERCEPTUAL_WEIGHTS, DEFAULT_PERCEPTUAL_THRESHOLDS
+    )
+
+
+def test_responsiveness_is_separate_from_sops():
+    # Paint metrics drive responsiveness but NOT sops; latency drives sops but not
+    # responsiveness — the two axes are independent.
+    metrics = {"browser": {"fcp_ms": 1000.0, "lcp_ms": 1500.0, "inp_ms": 100.0}}
+    resp = _resp(metrics)
+    assert resp.sops == 100.0  # all at "best" thresholds
+    assert set(resp.subscores) == {"fcp", "lcp", "inp"}
+    # The same metrics produce no SOPS (no completion metrics present).
+    assert compute_score(metrics, DEFAULT_WEIGHTS, DEFAULT_THRESHOLDS).subscores == {}
+
+
+def test_responsiveness_empty_without_paint_metrics():
+    # No browser paint metrics -> no responsiveness subscores (caller stores NULL).
+    resp = _resp({"dns": {"lookup_ms": 1.0}})
+    assert resp.subscores == {}
+
+
+def test_responsiveness_partial_metrics_redistribute():
+    # Only FCP present, at worst -> responsiveness 0 with weight redistributed.
+    resp = _resp({"browser": {"fcp_ms": 9999.0}})
+    assert set(resp.weights_used) == {"fcp"}
+    assert resp.sops == 0.0
 
 
 def test_perfect_metrics_score_100():

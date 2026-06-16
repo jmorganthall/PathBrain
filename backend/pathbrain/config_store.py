@@ -28,6 +28,25 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "packet_loss": 5,
 }
 
+# Perceptual axis weights/thresholds — the Responsiveness Score. Scored entirely
+# separately from SOPS (never folded in) so completion vs. responsiveness can pull
+# apart. FCP/LCP dominate (when content starts/finishes appearing); INP carries
+# less and is best-effort.
+DEFAULT_PERCEPTUAL_WEIGHTS: dict[str, float] = {
+    "fcp": 40,  # First Contentful Paint
+    "lcp": 40,  # Largest Contentful Paint
+    "inp": 20,  # Interaction to Next Paint
+}
+
+# Anchored to Google Web Vitals "good/poor" bands (FCP good ≤1.8s/poor >3s;
+# LCP good ≤2.5s/poor >4s; INP good ≤200ms/poor >500ms), spread a little so the
+# log curve has headroom.
+DEFAULT_PERCEPTUAL_THRESHOLDS: dict[str, dict[str, float]] = {
+    "fcp": {"best": 1000.0, "worst": 4000.0},  # ms first contentful paint
+    "lcp": {"best": 1500.0, "worst": 6000.0},  # ms largest contentful paint
+    "inp": {"best": 100.0, "worst": 500.0},    # ms interaction-to-next-paint
+}
+
 # Identifier for the active scoring rubric (curve + thresholds). Bump when the
 # calibration changes so historical scores can be tracked/re-graded.
 DEFAULT_RUBRIC_VERSION = "perceptual-v1"
@@ -153,6 +172,9 @@ DEFAULT_CONFIG: dict = {
     },
     "weights": DEFAULT_WEIGHTS,
     "thresholds": DEFAULT_THRESHOLDS,
+    # Perceptual (Responsiveness Score) rubric — a separate axis from SOPS.
+    "perceptual_weights": DEFAULT_PERCEPTUAL_WEIGHTS,
+    "perceptual_thresholds": DEFAULT_PERCEPTUAL_THRESHOLDS,
 }
 
 
@@ -162,6 +184,8 @@ def default_rubric() -> dict:
         "rubric_version": DEFAULT_RUBRIC_VERSION,
         "weights": copy.deepcopy(DEFAULT_WEIGHTS),
         "thresholds": copy.deepcopy(DEFAULT_THRESHOLDS),
+        "perceptual_weights": copy.deepcopy(DEFAULT_PERCEPTUAL_WEIGHTS),
+        "perceptual_thresholds": copy.deepcopy(DEFAULT_PERCEPTUAL_THRESHOLDS),
     }
 
 

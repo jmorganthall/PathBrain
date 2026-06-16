@@ -43,7 +43,13 @@ def test_summarize_is_human_readable():
     assert "q" in s and ":" in s
 
 
-def _seed_run(fp: str, sops: float, when: datetime) -> None:
+def _seed_run(
+    fp: str,
+    sops: float,
+    when: datetime,
+    responsiveness: float | None = None,
+    perceptual: dict | None = None,
+) -> None:
     with session_scope() as session:
         run = Run(
             status=RunStatus.COMPLETE,
@@ -53,7 +59,17 @@ def _seed_run(fp: str, sops: float, when: datetime) -> None:
         )
         session.add(run)
         session.flush()
-        session.add(ScoreResult(run_id=run.id, sops=sops, subscores={}, weights_used={}, metric_values={}))
+        session.add(
+            ScoreResult(
+                run_id=run.id,
+                sops=sops,
+                subscores={},
+                weights_used={},
+                metric_values={},
+                responsiveness=responsiveness,
+                perceptual_metric_values=perceptual,
+            )
+        )
 
 
 def test_profiles_and_impact(client):
@@ -117,3 +133,26 @@ def test_backfill_stamps_null_runs(client):
     assert resp.status_code == 200
     assert resp.json()["updated"] >= 1
     assert resp.json()["fingerprint"]  # mock provider yields a stable fingerprint
+
+
+# Kept last: seeds a distinct profile and only queries by its own fingerprint, so
+# it can't perturb the order-sensitive profile/impact assertions above.
+def test_profiles_expose_perceptual_axis(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(6):
+        _seed_run(
+            "perceptualfp1",
+            80 + i,
+            t0 - timedelta(minutes=60 - i),
+            responsiveness=70 + i,
+            perceptual={"fcp": 900.0, "lcp": 1500.0, "inp": 50.0},
+        )
+    body = client.get("/api/settings/profiles").json()
+    prof = next(p for p in body["profiles"] if p["fingerprint"] == "perceptualfp1")
+    # Responsiveness aggregates as its own axis, gated like SOPS.
+    assert prof["responsiveness"] is not None
+    assert prof["responsiveness"]["count"] == 6
+    assert prof["responsiveness"]["confident"] is True  # 6 >= min_runs (5)
+    # Raw paint metric medians are exposed per profile.
+    assert prof["perceptual_metrics"]["lcp"]["median"] == 1500.0
+    assert prof["perceptual_metrics"]["fcp"]["count"] == 6

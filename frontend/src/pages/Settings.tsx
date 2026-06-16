@@ -63,6 +63,15 @@ function fmtFieldValue(v: string | number | boolean | null): string {
   return String(v);
 }
 
+const PAINT_LABELS: Record<string, string> = { fcp: "FCP", lcp: "LCP", inp: "INP" };
+
+function perceptualSummary(p: SettingsProfile): string {
+  const parts = Object.entries(p.perceptual_metrics).map(
+    ([k, v]) => `${PAINT_LABELS[k] ?? k} ${v.median}ms`
+  );
+  return parts.length ? parts.join(" · ") : "no paint metrics captured";
+}
+
 function dirArrow(d: ProfileFieldChange["direction"]): string {
   return d === "higher" ? "↑" : d === "lower" ? "↓" : "≠";
 }
@@ -91,6 +100,14 @@ export function ProfileDiffCard({ diff }: { diff: ProfileDiff }) {
                 : ""
             }`}
           />
+          {diff.responsiveness_delta != null && (
+            <Chip
+              size="small"
+              variant="outlined"
+              color={diff.responsiveness_delta >= 0 ? "success" : "warning"}
+              label={`Responsiveness ${diff.responsiveness_delta >= 0 ? "▲ +" : "▼ "}${diff.responsiveness_delta}`}
+            />
+          )}
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
           Best profile <b>{diff.best.label}</b> ({diff.best.fingerprint}) vs next‑best{" "}
@@ -245,7 +262,8 @@ export default function Settings() {
             <Typography variant="caption" color="text.secondary">
               Ranked by median SOPS (higher is better). "Best" is only awarded to a confident profile.
               Iterations count every measurement sweep — a 15‑iteration run carries far more signal
-              than a single‑iteration one.
+              than a single‑iteration one. <b>Resp.</b> is the perceptual Responsiveness Score (paint
+              timing), gated the same way — it can move opposite to SOPS.
             </Typography>
             <TableContainer sx={{ mt: 1 }}>
               <Table size="small">
@@ -254,9 +272,10 @@ export default function Settings() {
                     <TableCell>Profile</TableCell>
                     <TableCell align="right">Runs</TableCell>
                     <TableCell align="right">Iterations</TableCell>
-                    <TableCell align="right">Median</TableCell>
+                    <TableCell align="right">SOPS</TableCell>
                     <TableCell align="right">IQR</TableCell>
                     <TableCell align="right">Min–Max</TableCell>
+                    <TableCell align="right">Resp.</TableCell>
                     <TableCell>Last seen</TableCell>
                   </TableRow>
                 </TableHead>
@@ -289,6 +308,44 @@ export default function Settings() {
                       </TableCell>
                       <TableCell align="right">
                         {p.min}–{p.max}
+                      </TableCell>
+                      <TableCell align="right">
+                        {p.responsiveness ? (
+                          <Tooltip
+                            arrow
+                            title={`${perceptualSummary(p)} — median Responsiveness over ${
+                              p.responsiveness.count
+                            } run${p.responsiveness.count === 1 ? "" : "s"}${
+                              p.responsiveness.confident ? "" : ` (need ${minRuns} to confirm)`
+                            }`}
+                          >
+                            <Box component="span" sx={{ cursor: "help" }}>
+                              <Typography
+                                component="span"
+                                sx={{
+                                  fontWeight: 700,
+                                  opacity: p.responsiveness.confident ? 1 : 0.55,
+                                }}
+                              >
+                                {p.responsiveness.median}
+                              </Typography>
+                              {!p.responsiveness.confident && (
+                                <Typography
+                                  component="span"
+                                  variant="caption"
+                                  color="warning.main"
+                                  sx={{ ml: 0.5 }}
+                                >
+                                  {p.responsiveness.count}/{minRuns}
+                                </Typography>
+                              )}
+                            </Box>
+                          </Tooltip>
+                        ) : (
+                          <Typography component="span" variant="caption" color="text.secondary">
+                            —
+                          </Typography>
+                        )}
                       </TableCell>
                       <TableCell>{fmtDateTime(p.last_seen)}</TableCell>
                     </TableRow>

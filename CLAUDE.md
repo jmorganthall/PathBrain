@@ -17,6 +17,11 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     `apply()` does `setPipe` + `reconfigure` and is the **only firewall-write path**.
   - `scoring/engine.py` — SOPS computation (weighted, perception-calibrated log
     curve, redistributes missing-metric weight). Metric→plugin map = `METRIC_SOURCES`.
+    A second **perceptual axis** (Responsiveness Score, `compute_responsiveness`
+    over `PERCEPTUAL_METRIC_SOURCES` = browser FCP/LCP/INP) is scored *separately*
+    and never folded into SOPS, so completion-optimal vs. responsiveness-optimal
+    settings can pull apart. Persisted on `ScoreResult.responsiveness` (+ perceptual
+    sub/weights/values); aggregated per profile by `/api/settings/profiles`.
   - `config_store.py` — DB-backed runtime config + defaults (targets, weights,
     thresholds, `iterations`, `monitoring`, `correlation`, `experiment`,
     `rubric_version`).

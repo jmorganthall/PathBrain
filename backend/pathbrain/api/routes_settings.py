@@ -17,6 +17,7 @@ from ..database import get_session
 from ..logging_config import get_logger
 from ..models import Run, RunStatus, ScoreResult
 from ..providers import get_provider
+from ..scoring import PERCEPTUAL_METRIC_SOURCES
 from ..settings_profile import diff_profiles, fingerprint, normalize, summarize
 
 router = APIRouter()
@@ -122,9 +123,14 @@ def settings_profiles(session: Session = Depends(get_session)) -> dict:
     will later seed experiment suggestions.
     """
     min_runs = _min_runs(session)
-    rows = _completed_runs_with_scores(session)
+    rows = session.execute(
+        select(Run, ScoreResult)
+        .join(ScoreResult, ScoreResult.run_id == Run.id)
+        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint.is_not(None))
+        .order_by(Run.created_at)
+    ).all()
     groups: dict[str, dict] = {}
-    for run, sops in rows:
+    for run, score in rows:
         g = groups.setdefault(
             run.settings_fingerprint,
             {
@@ -132,19 +138,28 @@ def settings_profiles(session: Session = Depends(get_session)) -> dict:
                 "settings": run.settings,
                 "sops": [],
                 "iterations": 0,
+                "responsiveness": [],
+                "perceptual": {m: [] for m in PERCEPTUAL_METRIC_SOURCES},
                 "first_seen": run.created_at,
                 "last_seen": run.created_at,
             },
         )
-        g["sops"].append(sops)
+        g["sops"].append(score.sops)
         # A run with more iterations is more data; track the total alongside runs.
         g["iterations"] += int(run.iterations or 1)
+        if score.responsiveness is not None:
+            g["responsiveness"].append(score.responsiveness)
+        pv = score.perceptual_metric_values or {}
+        for m in PERCEPTUAL_METRIC_SOURCES:
+            if pv.get(m) is not None:
+                g["perceptual"][m].append(float(pv[m]))
         g["settings"] = run.settings
         g["last_seen"] = run.created_at
 
     profiles = []
     for g in groups.values():
         count = len(g["sops"])
+        resp = g["responsiveness"]
         profiles.append(
             {
                 "fingerprint": g["fingerprint"],
@@ -156,6 +171,22 @@ def settings_profiles(session: Session = Depends(get_session)) -> dict:
                 "first_seen": g["first_seen"].isoformat(),
                 "last_seen": g["last_seen"].isoformat(),
                 **_spread(g["sops"]),
+                # Perceptual axis, gated like SOPS: only confident with enough runs
+                # that actually captured paint metrics.
+                "responsiveness": (
+                    {
+                        "count": len(resp),
+                        "confident": len(resp) >= min_runs,
+                        **_spread(resp),
+                    }
+                    if resp
+                    else None
+                ),
+                "perceptual_metrics": {
+                    m: {"median": round(median(v), 1), "count": len(v)}
+                    for m, v in g["perceptual"].items()
+                    if v
+                },
             }
         )
     profiles.sort(key=lambda p: p["median"], reverse=True)
@@ -184,21 +215,37 @@ def _best_diff(profiles: list[dict]) -> dict | None:
     delta_pct = (
         round((delta_abs / comparison["median"]) * 100, 1) if comparison["median"] else None
     )
+
+    def _resp_median(p: dict) -> float | None:
+        r = p.get("responsiveness")
+        return r["median"] if r else None
+
+    best_resp, comp_resp = _resp_median(best), _resp_median(comparison)
+    resp_delta = (
+        round(best_resp - comp_resp, 2)
+        if best_resp is not None and comp_resp is not None
+        else None
+    )
     return {
         "best": {
             "fingerprint": best["fingerprint"],
             "label": best["label"],
             "median": best["median"],
+            "responsiveness": best_resp,
             "confident": best["confident"],
         },
         "comparison": {
             "fingerprint": comparison["fingerprint"],
             "label": comparison["label"],
             "median": comparison["median"],
+            "responsiveness": comp_resp,
             "confident": comparison["confident"],
         },
         "delta_abs": delta_abs,
         "delta_pct": delta_pct,
+        # Perceptual axis can move opposite to SOPS — surfacing it here is the
+        # whole point (completion vs. responsiveness pulling apart).
+        "responsiveness_delta": resp_delta,
         "changes": diff_profiles(comparison["settings"], best["settings"]),
     }
 

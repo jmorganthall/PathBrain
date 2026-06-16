@@ -71,6 +71,13 @@ def _migrate() -> None:
             "sops_min": "FLOAT",
             "sops_max": "FLOAT",
             "rubric_version": "VARCHAR(40)",
+            "responsiveness": "FLOAT",
+            "responsiveness_stdev": "FLOAT",
+            "responsiveness_min": "FLOAT",
+            "responsiveness_max": "FLOAT",
+            "perceptual_subscores": "JSON",
+            "perceptual_weights_used": "JSON",
+            "perceptual_metric_values": "JSON",
         },
     }
     with engine.begin() as conn:

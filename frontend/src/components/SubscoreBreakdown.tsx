@@ -20,6 +20,10 @@ const UNIT: Record<string, string> = {
   render: "ms",
   jitter: "ms",
   packet_loss: "%",
+  // Perceptual axis (Responsiveness Score)
+  fcp: "ms",
+  lcp: "ms",
+  inp: "ms",
 };
 
 function fmtWeight(w: number | undefined): string {

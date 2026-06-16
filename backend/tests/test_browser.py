@@ -8,7 +8,10 @@ from __future__ import annotations
 import importlib.util
 
 from pathbrain.plugins import get_plugin
-from pathbrain.plugins.benchmark_browser import compute_navigation_metrics
+from pathbrain.plugins.benchmark_browser import (
+    compute_navigation_metrics,
+    extract_paint_metrics,
+)
 
 _HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
 
@@ -58,6 +61,23 @@ def test_navigation_metrics_empty():
     assert m["dns_ms"] is None
     assert m["tls_ms"] == 0.0
     assert m["load_event_ms"] is None
+
+
+def test_extract_paint_metrics_typical():
+    m = extract_paint_metrics({"fcp": 812.5, "lcp": 1340.0, "inp": 48.0})
+    assert m == {"fcp_ms": 812.5, "lcp_ms": 1340.0, "inp_ms": 48.0}
+
+
+def test_extract_paint_metrics_missing_inp():
+    # No interaction observed -> INP is None, FCP/LCP still captured.
+    m = extract_paint_metrics({"fcp": 900.0, "lcp": 1500.0, "inp": None})
+    assert m["fcp_ms"] == 900.0 and m["lcp_ms"] == 1500.0
+    assert m["inp_ms"] is None
+
+
+def test_extract_paint_metrics_empty():
+    m = extract_paint_metrics(None)
+    assert m == {"fcp_ms": None, "lcp_ms": None, "inp_ms": None}
 
 
 def test_browser_plugin_registered():

@@ -46,6 +46,16 @@ export interface MonitoringStatus {
   next_run_at: string | null;
 }
 
+export interface ProfileSpread {
+  count: number;
+  confident: boolean;
+  median: number;
+  p25: number;
+  p75: number;
+  min: number;
+  max: number;
+}
+
 export interface SettingsProfile {
   fingerprint: string;
   label: string;
@@ -60,6 +70,11 @@ export interface SettingsProfile {
   p75: number;
   min: number;
   max: number;
+  // Perceptual axis (Responsiveness Score) distribution; null until any run in
+  // the profile captured paint metrics.
+  responsiveness: ProfileSpread | null;
+  // Per paint-metric medians, e.g. { fcp: { median, count }, lcp: {...} }.
+  perceptual_metrics: Record<string, { median: number; count: number }>;
 }
 
 export interface ProfileFieldChange {
@@ -75,6 +90,7 @@ export interface ProfileDiffSide {
   fingerprint: string;
   label: string;
   median: number;
+  responsiveness: number | null;
   confident: boolean;
 }
 
@@ -83,6 +99,8 @@ export interface ProfileDiff {
   comparison: ProfileDiffSide;
   delta_abs: number;
   delta_pct: number | null;
+  // Responsiveness median delta (best − comparison); can move opposite to SOPS.
+  responsiveness_delta: number | null;
   changes: ProfileFieldChange[];
 }
 
@@ -134,6 +152,16 @@ export interface ScoreOut {
   subscores: Record<string, number>;
   weights_used: Record<string, number>;
   metric_values: Record<string, number>;
+
+  // Perceptual axis (Responsiveness Score) — separate from SOPS. null when the
+  // run captured no paint metrics.
+  responsiveness?: number | null;
+  responsiveness_stdev?: number | null;
+  responsiveness_min?: number | null;
+  responsiveness_max?: number | null;
+  perceptual_subscores?: Record<string, number> | null;
+  perceptual_weights_used?: Record<string, number> | null;
+  perceptual_metric_values?: Record<string, number> | null;
 }
 
 export interface BenchmarkResult {

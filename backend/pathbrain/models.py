@@ -117,6 +117,17 @@ class ScoreResult(Base):
     weights_used: Mapped[dict] = mapped_column(JSON, default=dict)
     metric_values: Mapped[dict] = mapped_column(JSON, default=dict)
 
+    # The perceptual Responsiveness Score — a *separate* axis from SOPS (paint
+    # timing, not completion). NULL when no paint metrics were captured for the
+    # run (e.g. browser engine unavailable).
+    responsiveness: Mapped[float | None] = mapped_column(Float, nullable=True)
+    responsiveness_stdev: Mapped[float | None] = mapped_column(Float, nullable=True)
+    responsiveness_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    responsiveness_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    perceptual_subscores: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    perceptual_weights_used: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    perceptual_metric_values: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     run: Mapped["Run"] = relationship(back_populates="score")
 
 

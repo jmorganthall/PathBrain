@@ -20,7 +20,12 @@ from .database import session_scope
 from .logging_config import get_logger
 from .models import BenchmarkResult, Run, RunStatus, ScoreResult
 from .plugins import BenchmarkPlugin, PluginResult, iter_plugins
-from .scoring import METRIC_SOURCES, compute_score
+from .scoring import (
+    METRIC_SOURCES,
+    PERCEPTUAL_METRIC_SOURCES,
+    compute_responsiveness,
+    compute_score,
+)
 
 log = get_logger("runner")
 
@@ -61,14 +66,30 @@ def _metric_stats(values: list[float]) -> dict:
     }
 
 
-def _plugin_metrics_from_values(metric_values: dict[str, float]) -> dict[str, dict]:
-    """Map SOPS metric values back to a plugin->metrics dict for scoring."""
+def _plugin_metrics_from_values(
+    metric_values: dict[str, float],
+    metric_sources: dict[str, tuple[str, str]] = METRIC_SOURCES,
+) -> dict[str, dict]:
+    """Map axis metric values back to a plugin->metrics dict for scoring."""
     out: dict[str, dict] = {}
     for metric, value in metric_values.items():
-        src = METRIC_SOURCES.get(metric)
+        src = metric_sources.get(metric)
         if src and value is not None:
             plugin, key = src
             out.setdefault(plugin, {})[key] = value
+    return out
+
+
+def _median_values(per_iteration_values: list[dict]) -> dict[str, float]:
+    """Median of each metric across iterations (skipping missing samples)."""
+    keys: set[str] = set()
+    for mv in per_iteration_values:
+        keys.update(mv.keys())
+    out: dict[str, float] = {}
+    for k in keys:
+        vals = [mv[k] for mv in per_iteration_values if mv.get(k) is not None]
+        if vals:
+            out[k] = round(median(vals), 3)
     return out
 
 
@@ -130,13 +151,38 @@ def _aggregate(results: list[PluginResult]) -> dict:
     }
 
 
-def rescore_run(run, weights: dict, thresholds: dict, rubric_version: str | None) -> bool:
+def _iteration_metrics(run) -> list[dict[str, dict]]:
+    """Reconstruct per-iteration ``plugin -> metrics`` from stored raw results."""
+    iters = 0
+    for r in run.results:
+        im = (r.details or {}).get("iteration_metrics") if r.details else None
+        if im:
+            iters = max(iters, len(im))
+    out: list[dict[str, dict]] = []
+    for i in range(iters):
+        iter_metrics: dict[str, dict] = {}
+        for r in run.results:
+            im = (r.details or {}).get("iteration_metrics") if r.details else None
+            if im and i < len(im) and im[i]:
+                iter_metrics[r.plugin] = im[i]
+        out.append(iter_metrics)
+    return out
+
+
+def rescore_run(
+    run,
+    weights: dict,
+    thresholds: dict,
+    rubric_version: str | None,
+    perceptual_weights: dict | None = None,
+    perceptual_thresholds: dict | None = None,
+) -> bool:
     """Re-grade an existing run from its stored raw measurements.
 
-    Recomputes the headline SOPS from the stored median metric values and the
-    confidence band from the stored per-iteration metrics, using the given
-    (current) rubric. Mutates ``run.score`` in place; the caller commits. This is
-    what keeps history comparable after the scoring rubric changes.
+    Recomputes the headline SOPS *and* the perceptual Responsiveness Score from
+    the stored metric values, plus each axis's confidence band from the stored
+    per-iteration metrics, using the given (current) rubric. Mutates ``run.score``
+    in place; the caller commits. Keeps history comparable after a rubric change.
     """
     score = run.score
     if score is None:
@@ -145,22 +191,9 @@ def rescore_run(run, weights: dict, thresholds: dict, rubric_version: str | None
     breakdown = compute_score(
         _plugin_metrics_from_values(score.metric_values or {}), weights, thresholds
     )
+    iter_metrics_list = _iteration_metrics(run)
 
-    # Rebuild per-iteration SOPS from the raw iteration metrics for the band.
-    iters = 0
-    for r in run.results:
-        im = (r.details or {}).get("iteration_metrics") if r.details else None
-        if im:
-            iters = max(iters, len(im))
-    per_iter: list[float] = []
-    for i in range(iters):
-        iter_metrics: dict[str, dict] = {}
-        for r in run.results:
-            im = (r.details or {}).get("iteration_metrics") if r.details else None
-            if im and i < len(im) and im[i]:
-                iter_metrics[r.plugin] = im[i]
-        per_iter.append(compute_score(iter_metrics, weights, thresholds).sops)
-
+    per_iter = [compute_score(m, weights, thresholds).sops for m in iter_metrics_list]
     if per_iter:
         score.sops_stdev = round(pstdev(per_iter), 2) if len(per_iter) > 1 else 0.0
         score.sops_min = round(min(per_iter), 2)
@@ -171,6 +204,32 @@ def rescore_run(run, weights: dict, thresholds: dict, rubric_version: str | None
     score.weights_used = breakdown.weights_used
     score.metric_values = breakdown.metric_values
     score.rubric_version = rubric_version
+
+    # Perceptual axis (Responsiveness). Recompute from the stored paint metric
+    # values; leave it NULL if this run never captured any.
+    if perceptual_weights is not None and perceptual_thresholds is not None:
+        pv = score.perceptual_metric_values or {}
+        pb = compute_responsiveness(
+            _plugin_metrics_from_values(pv, PERCEPTUAL_METRIC_SOURCES),
+            perceptual_weights,
+            perceptual_thresholds,
+        )
+        if pb.subscores:
+            p_iter = [
+                compute_responsiveness(m, perceptual_weights, perceptual_thresholds)
+                for m in iter_metrics_list
+            ]
+            p_scores = [b.sops for b in p_iter if b.subscores]
+            score.responsiveness = pb.sops
+            score.perceptual_subscores = pb.subscores
+            score.perceptual_weights_used = pb.weights_used
+            score.perceptual_metric_values = pb.metric_values
+            if p_scores:
+                score.responsiveness_stdev = (
+                    round(pstdev(p_scores), 2) if len(p_scores) > 1 else 0.0
+                )
+                score.responsiveness_min = round(min(p_scores), 2)
+                score.responsiveness_max = round(max(p_scores), 2)
     return True
 
 
@@ -259,11 +318,16 @@ def execute_run(run_id: int) -> None:
             iteration_durations: list[float] = []
             weights = config.get("weights", {})
             thresholds = config.get("thresholds", {})
+            perceptual_weights = config.get("perceptual_weights", {})
+            perceptual_thresholds = config.get("perceptual_thresholds", {})
 
             # Score every iteration independently so we can report a robust
-            # central SOPS and a confidence band, instead of a single noisy value.
+            # central value and a confidence band, instead of a single noisy
+            # value — for both the completion (SOPS) and perceptual axes.
             iteration_scores: list[float] = []
             iteration_metric_values: list[dict] = []
+            perceptual_scores: list[float] = []
+            perceptual_metric_values: list[dict] = []
 
             for i in range(iterations):
                 it_start = perf_counter()
@@ -283,6 +347,10 @@ def execute_run(run_id: int) -> None:
                 b = compute_score(iter_metrics, weights=weights, thresholds=thresholds)
                 iteration_scores.append(b.sops)
                 iteration_metric_values.append(b.metric_values)
+                pb = compute_responsiveness(iter_metrics, perceptual_weights, perceptual_thresholds)
+                if pb.subscores:  # only when paint metrics were captured
+                    perceptual_scores.append(pb.sops)
+                perceptual_metric_values.append(pb.metric_values)
                 iteration_durations.append((perf_counter() - it_start) * 1000.0)
                 run.iterations_completed = i + 1
                 session.commit()  # surface progress to pollers
@@ -303,23 +371,28 @@ def execute_run(run_id: int) -> None:
                 )
 
             # Robust headline: score the median of each metric across iterations.
-            metric_keys: set[str] = set()
-            for mv in iteration_metric_values:
-                metric_keys.update(mv.keys())
-            median_values: dict[str, float] = {}
-            for k in metric_keys:
-                vals = [mv[k] for mv in iteration_metric_values if mv.get(k) is not None]
-                if vals:
-                    median_values[k] = round(median(vals), 3)
-
             breakdown = compute_score(
-                _plugin_metrics_from_values(median_values),
+                _plugin_metrics_from_values(_median_values(iteration_metric_values)),
                 weights=weights,
                 thresholds=thresholds,
             )
             sops_stdev = round(pstdev(iteration_scores), 2) if len(iteration_scores) > 1 else 0.0
             sops_min = round(min(iteration_scores), 2) if iteration_scores else None
             sops_max = round(max(iteration_scores), 2) if iteration_scores else None
+
+            # Perceptual headline (Responsiveness Score) — separate axis. NULL when
+            # no paint metrics were captured this run.
+            p_breakdown = compute_responsiveness(
+                _plugin_metrics_from_values(
+                    _median_values(perceptual_metric_values), PERCEPTUAL_METRIC_SOURCES
+                ),
+                perceptual_weights,
+                perceptual_thresholds,
+            )
+            has_perceptual = bool(p_breakdown.subscores)
+            resp_stdev = (
+                round(pstdev(perceptual_scores), 2) if len(perceptual_scores) > 1 else 0.0
+            ) if perceptual_scores else None
 
             session.add(
                 ScoreResult(
@@ -332,6 +405,17 @@ def execute_run(run_id: int) -> None:
                     weights_used=breakdown.weights_used,
                     metric_values=breakdown.metric_values,
                     rubric_version=config.get("rubric_version"),
+                    responsiveness=p_breakdown.sops if has_perceptual else None,
+                    responsiveness_stdev=resp_stdev if has_perceptual else None,
+                    responsiveness_min=(
+                        round(min(perceptual_scores), 2) if perceptual_scores else None
+                    ),
+                    responsiveness_max=(
+                        round(max(perceptual_scores), 2) if perceptual_scores else None
+                    ),
+                    perceptual_subscores=p_breakdown.subscores if has_perceptual else None,
+                    perceptual_weights_used=p_breakdown.weights_used if has_perceptual else None,
+                    perceptual_metric_values=p_breakdown.metric_values if has_perceptual else None,
                 )
             )
 
