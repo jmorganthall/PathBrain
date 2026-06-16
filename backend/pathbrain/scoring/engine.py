@@ -55,26 +55,8 @@ class ScoreBreakdown:
     metric_values: dict[str, float] = field(default_factory=dict)
 
 
-# The score curve approaches 100 asymptotically but never reaches it for any real
-# measurement: there is always headroom ("everything can be better"). Below this
-# knee the mapping is the exact log-ratio line (Weber–Fechner); above it the line
-# is squashed toward — but never onto — 100. So the `best` threshold means
-# "excellent" (~92), not a perfect/unbeatable 100.
-_CEIL_KNEE = 85.0   # raw score above which we start squashing toward 100
-_CEIL_TAU = 25.0    # gentleness of the approach (larger = slower, more headroom)
-
-
-def _soft_ceiling(raw: float) -> float:
-    """Squash a raw 0..∞ log-ratio score so it approaches but never reaches 100."""
-    if raw <= 0.0:
-        return 0.0
-    if raw <= _CEIL_KNEE:
-        return round(raw, 2)
-    return round(100.0 - (100.0 - _CEIL_KNEE) * math.exp(-(raw - _CEIL_KNEE) / _CEIL_TAU), 2)
-
-
 def _normalize(value: float, best: float, worst: float) -> float:
-    """Map a lower-is-better value to a 0..100 subscore.
+    """Map a lower-is-better value to a 0..100 subscore, clamped.
 
     For lower-is-better metrics with positive bounds we interpolate on a
     *logarithmic* scale (Weber–Fechner: perceived magnitude grows with the log of
@@ -82,21 +64,22 @@ def _normalize(value: float, best: float, worst: float) -> float:
     the same as 200→400ms — which models human perception far better than a linear
     ramp where 900→1000ms would matter as much as 20→120ms.
 
-    The top of the scale is **asymptotic**: a value at ``best`` scores ~92, and
-    scores only approach 100 as the value approaches zero, so a real measurement
-    never earns a perfect score — there is always room to improve. The bottom
-    stays hard: at/beyond ``worst`` the subscore is 0 (unusable).
+    100 is the genuinely-ideal end of the scale and is reachable, but only by
+    hitting ``best`` — which is calibrated to near-physical-floor conditions (e.g.
+    a low-latency link right next to the origin). So a good-but-ordinary setup
+    lands well below 100 because of where the thresholds sit, not any cap.
     """
     if worst == best:
-        return _soft_ceiling(100.0) if value <= best else 0.0
+        return 100.0 if value <= best else 0.0
     if worst > best:  # normal: smaller is better
+        if value <= best:
+            return 100.0
         if value >= worst:
             return 0.0
         if best > 0 and worst > 0 and value > 0:
-            raw = (math.log(worst) - math.log(value)) / (math.log(worst) - math.log(best)) * 100.0
-        else:
-            raw = (worst - value) / (worst - best) * 100.0
-        return _soft_ceiling(raw)
+            score = (math.log(worst) - math.log(value)) / (math.log(worst) - math.log(best)) * 100.0
+            return round(score, 2)
+        return round((worst - value) / (worst - best) * 100.0, 2)
     # Inverted thresholds (higher is better) — linear; supports future metrics.
     if value >= best:
         return 100.0

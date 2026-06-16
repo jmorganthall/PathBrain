@@ -31,39 +31,34 @@ def _completion(metrics):
     return compute_completion(metrics, DEFAULT_COMPLETION_WEIGHTS, DEFAULT_COMPLETION_THRESHOLDS)
 
 
-def test_near_ideal_metrics_approach_100():
-    # Sub-millisecond (physically-impossible) inputs approach the 100 asymptote.
-    assert _score(PERFECT_SOPS).sops >= 99.0
+def test_ideal_metrics_score_100():
+    # 100 is reachable — but only by hitting the near-ideal `best` thresholds.
+    assert _score(PERFECT_SOPS).sops == 100.0
 
 
-def test_no_perfect_score_for_realistic_values():
-    # A genuinely good real load (the kind that used to pin at 100) now leaves
-    # clear headroom — nothing is ever perfect.
+def test_good_but_ordinary_setup_is_well_below_100():
+    # The flagged run: good, not perfect. The scale (not a cap) keeps it down, and
+    # no individual metric pins at 100.
     good = {
         "browser": {"fcp_ms": 489.0, "lcp_ms": 561.0, "inp_ms": 98.7, "total_render_ms": 1540.0},
         "http": {"ttfb_ms": 209.0},
     }
     result = _score(good)
-    assert result.sops < 95.0
+    assert result.sops < 85.0
     assert all(v < 100.0 for v in result.subscores.values())
 
 
-def test_best_threshold_is_excellent_not_perfect():
-    # A value exactly at `best` scores high but never a perfect 100.
-    thr = {"ttfb": {"best": 100.0, "worst": 1000.0}}
-    sub = compute_score({"http": {"ttfb_ms": 100.0}}, {"ttfb": 10}, thr).subscores["ttfb"]
-    assert 88.0 <= sub < 100.0
-
-
-def test_score_is_monotonic_and_asymptotic():
-    thr = {"ttfb": {"best": 100.0, "worst": 1000.0}}
+def test_only_near_floor_values_reach_100():
+    # A value worse than `best` scores below 100; at/under `best` it's 100.
+    thr = {"ttfb": {"best": 30.0, "worst": 1000.0}}
     w = {"ttfb": 10}
 
     def sub(v: float) -> float:
         return compute_score({"http": {"ttfb_ms": v}}, w, thr).subscores["ttfb"]
 
-    # Faster is always better, and the score stays below 100 even far past `best`.
-    assert sub(200) < sub(100) < sub(20) < 100.0
+    assert sub(200) < sub(60) < 100.0  # ordinary values leave headroom
+    assert sub(30) == 100.0            # hitting the near-ideal floor scores 100
+    assert sub(200) < sub(60)          # monotonic: faster is better
 
 
 def test_worst_metrics_score_0():
@@ -83,23 +78,28 @@ def test_sops_is_perception_led_not_infra():
 
 
 def test_completion_axis_scores_infra():
-    result = _completion(PERFECT_COMPLETION)
-    assert 95.0 <= result.sops < 100.0  # excellent, but never a perfect 100
-    assert set(result.subscores) == {"dns", "tcp", "tls", "jitter", "packet_loss"}
+    assert _completion(PERFECT_COMPLETION).sops == 100.0
+    assert set(_completion(PERFECT_COMPLETION).subscores) == {
+        "dns",
+        "tcp",
+        "tls",
+        "jitter",
+        "packet_loss",
+    }
 
 
 def test_missing_metrics_redistribute_weights():
-    # Only TTFB present (a SOPS metric); weight is redistributed to it alone.
+    # Only TTFB present (a SOPS metric), at the ideal floor -> 100, weight to it.
     result = _score({"http": {"ttfb_ms": 1.0}})
-    assert result.sops >= 99.0  # near-ideal value approaches the asymptote
+    assert result.sops == 100.0
     assert set(result.weights_used) == {"ttfb"}
     assert abs(sum(result.weights_used.values()) - 1.0) < 1e-9
 
 
 def test_sops_survives_without_browser():
     # No browser engine -> SOPS falls back to TTFB only (never blank when http ran).
-    result = _score({"http": {"ttfb_ms": 100.0}})  # 100ms == ttfb "best"
-    assert 88.0 <= result.sops < 100.0
+    result = _score({"http": {"ttfb_ms": 80.0}})  # ordinary-good TTFB
+    assert 0.0 < result.sops < 100.0
     assert set(result.subscores) == {"ttfb"}
 
 

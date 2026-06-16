@@ -47,19 +47,17 @@ DEFAULT_RUBRIC_VERSION = "perceptual-v2"
 # (Weber–Fechner) curve. These are calibrated to human-perception research rather
 # than guessed — anchored to Nielsen's response-time limits (0.1s feels instant,
 # 1s keeps flow, 10s loses attention) and Google's RAIL (~100ms = instant).
-# SOPS thresholds. `best` is the *aspirational excellent* anchor (it scores ~92,
-# not a perfect 100 — the curve approaches 100 only as the value approaches zero,
-# so there's always headroom). Paint anchors sit a notch tighter than Google Web
-# Vitals "good" so a genuinely good real load lands in the 80s, not pinned at the
-# top; `worst` ≈ Web Vitals "poor". TTFB/render follow Nielsen/RAIL.
+# SOPS thresholds. `best` (= subscore 100) is anchored to *near-physical-floor*
+# conditions — what you'd only see on a low-latency link sitting right next to the
+# origin, with a fast client. That makes 100 reachable but genuinely hard, so a
+# good-but-ordinary setup lands well below it; `worst` (= 0) ≈ Web Vitals "poor".
+# Paint floors account for unavoidable client parse/paint; TTFB is mostly network.
 DEFAULT_THRESHOLDS: dict[str, dict[str, float]] = {
-    "fcp": {"best": 300.0, "worst": 4000.0},       # ms first contentful paint
-    "lcp": {"best": 400.0, "worst": 6000.0},       # ms largest contentful paint
-    "inp": {"best": 60.0, "worst": 500.0},         # ms interaction-to-next-paint
-    # Nielsen: 100ms feels instant, ~1s is the edge of "flowing".
-    "ttfb": {"best": 100.0, "worst": 1000.0},      # ms time-to-first-byte
-    # RAIL/Nielsen: ~1s page feels good, several seconds feels slow.
-    "render": {"best": 1000.0, "worst": 6000.0},   # ms total render
+    "fcp": {"best": 150.0, "worst": 4000.0},       # ms first contentful paint
+    "lcp": {"best": 250.0, "worst": 6000.0},       # ms largest contentful paint
+    "inp": {"best": 40.0, "worst": 500.0},         # ms interaction-to-next-paint
+    "ttfb": {"best": 30.0, "worst": 1000.0},       # ms time-to-first-byte
+    "render": {"best": 500.0, "worst": 6000.0},    # ms total render
 }
 
 # Completion thresholds — pure-infrastructure timing.
