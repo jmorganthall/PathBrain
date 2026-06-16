@@ -208,29 +208,29 @@ export default function RunDetail() {
       >
         <Card>
           <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-            <ScoreGauge value={run.score?.sops ?? null} label="Seat of Pants Score (completion)" />
+            <ScoreGauge value={run.score?.sops ?? null} label="Seat of Pants Score (how it feels)" />
             {run.score && run.score.sops_stdev != null && run.iterations > 1 && (
               <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
                 ± {run.score.sops_stdev} · range {run.score.sops_min}–{run.score.sops_max} over{" "}
                 {run.iterations} iterations
               </Typography>
             )}
-            {run.score?.responsiveness != null && (
+            {run.score?.completion != null && (
               <>
                 <Divider flexItem />
                 <ScoreGauge
-                  value={run.score.responsiveness}
+                  value={run.score.completion}
                   size={150}
-                  label="Responsiveness Score (perceptual)"
+                  label="Completion Score (infra timing)"
                 />
-                {run.score.responsiveness_stdev != null && run.iterations > 1 && (
+                {run.score.completion_stdev != null && run.iterations > 1 && (
                   <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
-                    ± {run.score.responsiveness_stdev} · range {run.score.responsiveness_min}–
-                    {run.score.responsiveness_max}
+                    ± {run.score.completion_stdev} · range {run.score.completion_min}–
+                    {run.score.completion_max}
                   </Typography>
                 )}
                 <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
-                  Paint timing (FCP/LCP/INP), scored separately from SOPS.
+                  Raw connection timing (DNS/TCP/TLS/jitter/loss), separate from SOPS.
                 </Typography>
               </>
             )}
@@ -277,22 +277,22 @@ export default function RunDetail() {
             {run.score ? (
               <>
                 <Typography variant="overline" color="text.secondary">
-                  Completion · SOPS {Math.round(run.score.sops)}
+                  Seat of Pants · how it feels {Math.round(run.score.sops)}
                 </Typography>
                 <SubscoreBreakdown score={run.score} />
-                {run.score.perceptual_subscores &&
-                  Object.keys(run.score.perceptual_subscores).length > 0 && (
+                {run.score.completion_subscores &&
+                  Object.keys(run.score.completion_subscores).length > 0 && (
                     <>
                       <Divider sx={{ my: 2 }} />
                       <Typography variant="overline" color="text.secondary">
-                        Responsiveness · paint{" "}
-                        {run.score.responsiveness != null ? Math.round(run.score.responsiveness) : "—"}
+                        Completion · infra{" "}
+                        {run.score.completion != null ? Math.round(run.score.completion) : "—"}
                       </Typography>
                       <SubscoreBreakdown
                         score={{
-                          subscores: run.score.perceptual_subscores,
-                          weights_used: run.score.perceptual_weights_used ?? {},
-                          metric_values: run.score.perceptual_metric_values ?? {},
+                          subscores: run.score.completion_subscores,
+                          weights_used: run.score.completion_weights_used ?? {},
+                          metric_values: run.score.completion_metric_values ?? {},
                         }}
                       />
                     </>

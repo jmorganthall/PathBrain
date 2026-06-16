@@ -1,15 +1,15 @@
 from .engine import (
+    COMPLETION_METRIC_SOURCES,
     METRIC_SOURCES,
-    PERCEPTUAL_METRIC_SOURCES,
     ScoreBreakdown,
-    compute_responsiveness,
+    compute_completion,
     compute_score,
 )
 
 __all__ = [
     "compute_score",
-    "compute_responsiveness",
+    "compute_completion",
     "ScoreBreakdown",
     "METRIC_SOURCES",
-    "PERCEPTUAL_METRIC_SOURCES",
+    "COMPLETION_METRIC_SOURCES",
 ]

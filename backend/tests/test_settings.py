@@ -47,8 +47,8 @@ def _seed_run(
     fp: str,
     sops: float,
     when: datetime,
-    responsiveness: float | None = None,
-    perceptual: dict | None = None,
+    completion: float | None = None,
+    completion_metrics: dict | None = None,
 ) -> None:
     with session_scope() as session:
         run = Run(
@@ -66,8 +66,8 @@ def _seed_run(
                 subscores={},
                 weights_used={},
                 metric_values={},
-                responsiveness=responsiveness,
-                perceptual_metric_values=perceptual,
+                completion=completion,
+                completion_metric_values=completion_metrics,
             )
         )
 
@@ -137,22 +137,22 @@ def test_backfill_stamps_null_runs(client):
 
 # Kept last: seeds a distinct profile and only queries by its own fingerprint, so
 # it can't perturb the order-sensitive profile/impact assertions above.
-def test_profiles_expose_perceptual_axis(client):
+def test_profiles_expose_completion_axis(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     for i in range(6):
         _seed_run(
-            "perceptualfp1",
+            "completionfp1",
             80 + i,
             t0 - timedelta(minutes=60 - i),
-            responsiveness=70 + i,
-            perceptual={"fcp": 900.0, "lcp": 1500.0, "inp": 50.0},
+            completion=70 + i,
+            completion_metrics={"dns": 12.0, "tcp": 30.0, "tls": 40.0},
         )
     body = client.get("/api/settings/profiles").json()
-    prof = next(p for p in body["profiles"] if p["fingerprint"] == "perceptualfp1")
-    # Responsiveness aggregates as its own axis, gated like SOPS.
-    assert prof["responsiveness"] is not None
-    assert prof["responsiveness"]["count"] == 6
-    assert prof["responsiveness"]["confident"] is True  # 6 >= min_runs (5)
-    # Raw paint metric medians are exposed per profile.
-    assert prof["perceptual_metrics"]["lcp"]["median"] == 1500.0
-    assert prof["perceptual_metrics"]["fcp"]["count"] == 6
+    prof = next(p for p in body["profiles"] if p["fingerprint"] == "completionfp1")
+    # Completion aggregates as its own axis, gated like SOPS.
+    assert prof["completion"] is not None
+    assert prof["completion"]["count"] == 6
+    assert prof["completion"]["confident"] is True  # 6 >= min_runs (5)
+    # Raw infra metric medians are exposed per profile.
+    assert prof["completion_metrics"]["tls"]["median"] == 40.0
+    assert prof["completion_metrics"]["dns"]["count"] == 6

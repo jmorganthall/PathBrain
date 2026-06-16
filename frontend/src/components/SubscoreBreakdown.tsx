@@ -20,7 +20,7 @@ const UNIT: Record<string, string> = {
   render: "ms",
   jitter: "ms",
   packet_loss: "%",
-  // Perceptual axis (Responsiveness Score)
+  // SOPS paint metrics (human-feel)
   fcp: "ms",
   lcp: "ms",
   inp: "ms",

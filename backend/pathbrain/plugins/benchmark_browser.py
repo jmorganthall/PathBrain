@@ -82,8 +82,8 @@ _NAV_JS = (
 )
 
 # Installed (via add_init_script) before any page script runs, so the observers
-# are buffering from the very start. We read `window.__paint` after load. These
-# feed the perceptual Responsiveness Score (FCP/LCP/INP), kept separate from SOPS.
+# are buffering from the very start. We read `window.__paint` after load. FCP/LCP/
+# INP are the core of the perception-led SOPS (Seat of Pants) score.
 _PAINT_INIT_JS = """
 (() => {
   window.__paint = { fcp: null, lcp: null, inp: null };

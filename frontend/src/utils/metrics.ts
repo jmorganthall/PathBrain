@@ -74,7 +74,7 @@ export const METRIC_META: Record<string, MetricMeta> = {
       "Throughput while downloading, in megabits per second. This is the one measure where HIGHER is better.",
     higherIsBetter: true,
   },
-  // Browser — perceptual / paint timing (the Responsiveness axis)
+  // Browser — paint timing (the core of SOPS, the human-feel score)
   fcp_ms: {
     label: "First Contentful Paint",
     unit: "ms",

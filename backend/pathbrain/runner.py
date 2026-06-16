@@ -21,9 +21,9 @@ from .logging_config import get_logger
 from .models import BenchmarkResult, Run, RunStatus, ScoreResult
 from .plugins import BenchmarkPlugin, PluginResult, iter_plugins
 from .scoring import (
+    COMPLETION_METRIC_SOURCES,
     METRIC_SOURCES,
-    PERCEPTUAL_METRIC_SOURCES,
-    compute_responsiveness,
+    compute_completion,
     compute_score,
 )
 
@@ -174,22 +174,27 @@ def rescore_run(
     weights: dict,
     thresholds: dict,
     rubric_version: str | None,
-    perceptual_weights: dict | None = None,
-    perceptual_thresholds: dict | None = None,
+    completion_weights: dict | None = None,
+    completion_thresholds: dict | None = None,
 ) -> bool:
     """Re-grade an existing run from its stored raw measurements.
 
-    Recomputes the headline SOPS *and* the perceptual Responsiveness Score from
+    Recomputes the headline SOPS (perception-led) *and* the Completion score from
     the stored metric values, plus each axis's confidence band from the stored
     per-iteration metrics, using the given (current) rubric. Mutates ``run.score``
     in place; the caller commits. Keeps history comparable after a rubric change.
+
+    The stored metric values are merged across both axes' slots before re-mapping,
+    so runs from before the SOPS/Completion split (whose infra metrics live in the
+    old SOPS ``metric_values``) still backfill both axes.
     """
     score = run.score
     if score is None:
         return False
 
+    merged_values = {**(score.completion_metric_values or {}), **(score.metric_values or {})}
     breakdown = compute_score(
-        _plugin_metrics_from_values(score.metric_values or {}), weights, thresholds
+        _plugin_metrics_from_values(merged_values, METRIC_SOURCES), weights, thresholds
     )
     iter_metrics_list = _iteration_metrics(run)
 
@@ -205,31 +210,30 @@ def rescore_run(
     score.metric_values = breakdown.metric_values
     score.rubric_version = rubric_version
 
-    # Perceptual axis (Responsiveness). Recompute from the stored paint metric
-    # values; leave it NULL if this run never captured any.
-    if perceptual_weights is not None and perceptual_thresholds is not None:
-        pv = score.perceptual_metric_values or {}
-        pb = compute_responsiveness(
-            _plugin_metrics_from_values(pv, PERCEPTUAL_METRIC_SOURCES),
-            perceptual_weights,
-            perceptual_thresholds,
+    # Completion axis. Recompute from the same stored values; leave NULL if none
+    # of its metrics were captured.
+    if completion_weights is not None and completion_thresholds is not None:
+        cb = compute_completion(
+            _plugin_metrics_from_values(merged_values, COMPLETION_METRIC_SOURCES),
+            completion_weights,
+            completion_thresholds,
         )
-        if pb.subscores:
-            p_iter = [
-                compute_responsiveness(m, perceptual_weights, perceptual_thresholds)
+        if cb.subscores:
+            c_iter = [
+                compute_completion(m, completion_weights, completion_thresholds)
                 for m in iter_metrics_list
             ]
-            p_scores = [b.sops for b in p_iter if b.subscores]
-            score.responsiveness = pb.sops
-            score.perceptual_subscores = pb.subscores
-            score.perceptual_weights_used = pb.weights_used
-            score.perceptual_metric_values = pb.metric_values
-            if p_scores:
-                score.responsiveness_stdev = (
-                    round(pstdev(p_scores), 2) if len(p_scores) > 1 else 0.0
+            c_scores = [b.sops for b in c_iter if b.subscores]
+            score.completion = cb.sops
+            score.completion_subscores = cb.subscores
+            score.completion_weights_used = cb.weights_used
+            score.completion_metric_values = cb.metric_values
+            if c_scores:
+                score.completion_stdev = (
+                    round(pstdev(c_scores), 2) if len(c_scores) > 1 else 0.0
                 )
-                score.responsiveness_min = round(min(p_scores), 2)
-                score.responsiveness_max = round(max(p_scores), 2)
+                score.completion_min = round(min(c_scores), 2)
+                score.completion_max = round(max(c_scores), 2)
     return True
 
 
@@ -318,16 +322,16 @@ def execute_run(run_id: int) -> None:
             iteration_durations: list[float] = []
             weights = config.get("weights", {})
             thresholds = config.get("thresholds", {})
-            perceptual_weights = config.get("perceptual_weights", {})
-            perceptual_thresholds = config.get("perceptual_thresholds", {})
+            completion_weights = config.get("completion_weights", {})
+            completion_thresholds = config.get("completion_thresholds", {})
 
             # Score every iteration independently so we can report a robust
             # central value and a confidence band, instead of a single noisy
-            # value — for both the completion (SOPS) and perceptual axes.
+            # value — for both the SOPS (human-feel) and Completion axes.
             iteration_scores: list[float] = []
             iteration_metric_values: list[dict] = []
-            perceptual_scores: list[float] = []
-            perceptual_metric_values: list[dict] = []
+            completion_scores: list[float] = []
+            completion_metric_values: list[dict] = []
 
             for i in range(iterations):
                 it_start = perf_counter()
@@ -347,10 +351,10 @@ def execute_run(run_id: int) -> None:
                 b = compute_score(iter_metrics, weights=weights, thresholds=thresholds)
                 iteration_scores.append(b.sops)
                 iteration_metric_values.append(b.metric_values)
-                pb = compute_responsiveness(iter_metrics, perceptual_weights, perceptual_thresholds)
-                if pb.subscores:  # only when paint metrics were captured
-                    perceptual_scores.append(pb.sops)
-                perceptual_metric_values.append(pb.metric_values)
+                cb = compute_completion(iter_metrics, completion_weights, completion_thresholds)
+                if cb.subscores:  # only when completion metrics were captured
+                    completion_scores.append(cb.sops)
+                completion_metric_values.append(cb.metric_values)
                 iteration_durations.append((perf_counter() - it_start) * 1000.0)
                 run.iterations_completed = i + 1
                 session.commit()  # surface progress to pollers
@@ -380,19 +384,19 @@ def execute_run(run_id: int) -> None:
             sops_min = round(min(iteration_scores), 2) if iteration_scores else None
             sops_max = round(max(iteration_scores), 2) if iteration_scores else None
 
-            # Perceptual headline (Responsiveness Score) — separate axis. NULL when
-            # no paint metrics were captured this run.
-            p_breakdown = compute_responsiveness(
+            # Completion headline — separate axis. NULL when no completion metrics
+            # were captured this run.
+            c_breakdown = compute_completion(
                 _plugin_metrics_from_values(
-                    _median_values(perceptual_metric_values), PERCEPTUAL_METRIC_SOURCES
+                    _median_values(completion_metric_values), COMPLETION_METRIC_SOURCES
                 ),
-                perceptual_weights,
-                perceptual_thresholds,
+                completion_weights,
+                completion_thresholds,
             )
-            has_perceptual = bool(p_breakdown.subscores)
-            resp_stdev = (
-                round(pstdev(perceptual_scores), 2) if len(perceptual_scores) > 1 else 0.0
-            ) if perceptual_scores else None
+            has_completion = bool(c_breakdown.subscores)
+            comp_stdev = (
+                round(pstdev(completion_scores), 2) if len(completion_scores) > 1 else 0.0
+            ) if completion_scores else None
 
             session.add(
                 ScoreResult(
@@ -405,17 +409,17 @@ def execute_run(run_id: int) -> None:
                     weights_used=breakdown.weights_used,
                     metric_values=breakdown.metric_values,
                     rubric_version=config.get("rubric_version"),
-                    responsiveness=p_breakdown.sops if has_perceptual else None,
-                    responsiveness_stdev=resp_stdev if has_perceptual else None,
-                    responsiveness_min=(
-                        round(min(perceptual_scores), 2) if perceptual_scores else None
+                    completion=c_breakdown.sops if has_completion else None,
+                    completion_stdev=comp_stdev if has_completion else None,
+                    completion_min=(
+                        round(min(completion_scores), 2) if completion_scores else None
                     ),
-                    responsiveness_max=(
-                        round(max(perceptual_scores), 2) if perceptual_scores else None
+                    completion_max=(
+                        round(max(completion_scores), 2) if completion_scores else None
                     ),
-                    perceptual_subscores=p_breakdown.subscores if has_perceptual else None,
-                    perceptual_weights_used=p_breakdown.weights_used if has_perceptual else None,
-                    perceptual_metric_values=p_breakdown.metric_values if has_perceptual else None,
+                    completion_subscores=c_breakdown.subscores if has_completion else None,
+                    completion_weights_used=c_breakdown.weights_used if has_completion else None,
+                    completion_metric_values=c_breakdown.metric_values if has_completion else None,
                 )
             )
 

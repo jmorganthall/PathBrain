@@ -29,13 +29,13 @@ def rescore_history(session: Session = Depends(get_session)) -> dict:
     weights = cfg.get("weights", {})
     thresholds = cfg.get("thresholds", {})
     rubric_version = cfg.get("rubric_version")
-    p_weights = cfg.get("perceptual_weights", {})
-    p_thresholds = cfg.get("perceptual_thresholds", {})
+    c_weights = cfg.get("completion_weights", {})
+    c_thresholds = cfg.get("completion_thresholds", {})
     runs = session.scalars(select(Run).where(Run.status == RunStatus.COMPLETE)).all()
     rescored = sum(
         1
         for run in runs
-        if rescore_run(run, weights, thresholds, rubric_version, p_weights, p_thresholds)
+        if rescore_run(run, weights, thresholds, rubric_version, c_weights, c_thresholds)
     )
     session.commit()
     return {"rescored": rescored, "rubric_version": rubric_version}

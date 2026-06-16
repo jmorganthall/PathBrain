@@ -60,7 +60,9 @@ def history_series(
 
     points = []
     for run, score in rows:
-        values = score.metric_values or {}
+        # SOPS now carries paint/ttfb/render; the infra metrics (dns/tcp/tls/
+        # jitter/loss) live in the Completion slot. Merge so the chart keeps all.
+        values = {**(score.completion_metric_values or {}), **(score.metric_values or {})}
         points.append(
             {
                 "run_id": run.id,
