@@ -4,7 +4,9 @@ import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
+import Checkbox from "@mui/material/Checkbox";
 import Chip from "@mui/material/Chip";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
@@ -172,6 +174,9 @@ export default function Settings() {
   // Completion (infra) is a secondary diagnostic — hidden by default so SOPS is
   // unmistakably the headline metric. Opt in via the toggle on the Profiles card.
   const [showCompletion, setShowCompletion] = useState(false);
+  // Default to runs scored under the latest (paint) rubric so legacy data — which
+  // scores its SOPS off a thinner metric set and reads high — doesn't skew things.
+  const [completeOnly, setCompleteOnly] = useState(true);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -180,8 +185,8 @@ export default function Settings() {
   const load = useCallback(async () => {
     try {
       const [p, i, d] = await Promise.all([
-        api.settingsProfiles(),
-        api.settingsImpact(),
+        api.settingsProfiles(completeOnly),
+        api.settingsImpact(completeOnly),
         api.settingsDiagnostics(),
       ]);
       setProfiles(p.profiles);
@@ -195,7 +200,7 @@ export default function Settings() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [completeOnly]);
 
   useEffect(() => {
     load();
@@ -241,11 +246,28 @@ export default function Settings() {
           </span>
         </Tooltip>
       </Stack>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
         How your firewall/SQM configuration profiles correlate with the Seat of Pants Score. Each run
         is stamped with the settings live when it ran; a new profile appears whenever settings change.
         A profile needs ≥ {minRuns} runs before it's treated as confident.
       </Typography>
+      <FormControlLabel
+        sx={{ mb: 2 }}
+        control={
+          <Checkbox
+            size="small"
+            checked={completeOnly}
+            onChange={(e) => setCompleteOnly(e.target.checked)}
+          />
+        }
+        label={
+          <Typography variant="body2" color="text.secondary">
+            Only runs with the latest metrics (full paint data)
+            {diag ? ` — ${diag.with_latest_metrics} of ${diag.total_completed} runs qualify` : ""}.
+            Legacy runs score SOPS off a thinner set and read artificially high.
+          </Typography>
+        }
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -260,11 +282,19 @@ export default function Settings() {
       {!profiles || profiles.length === 0 ? (
         <Card sx={{ mb: 2 }}>
           <CardContent>
-            <EmptyState
-              icon={<InsightsIcon fontSize="inherit" />}
-              title="No settings profiles yet"
-              description="Once runs capture your firewall settings (OPNsense provider with traffic-shaper access), each distinct configuration appears here with its score distribution. If you have older runs from before capture, use 'Attribute unstamped runs'."
-            />
+            {completeOnly && diag && diag.legacy_metrics > 0 ? (
+              <EmptyState
+                icon={<InsightsIcon fontSize="inherit" />}
+                title="No profiles with the latest metrics yet"
+                description={`Your ${diag.legacy_metrics} run(s) predate paint capture, so they're filtered out as not comparable. Run a few benchmarks on the new build, or uncheck "Only runs with the latest metrics" above to include legacy data.`}
+              />
+            ) : (
+              <EmptyState
+                icon={<InsightsIcon fontSize="inherit" />}
+                title="No settings profiles yet"
+                description="Once runs capture your firewall settings (OPNsense provider with traffic-shaper access), each distinct configuration appears here with its score distribution. If you have older runs from before capture, use 'Attribute unstamped runs'."
+              />
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -411,6 +441,15 @@ export default function Settings() {
                 label={`unstamped: ${diag.unstamped}`}
               />
               <Chip size="small" label={`distinct profiles: ${diag.distinct_profiles}`} />
+              <Chip
+                size="small"
+                color={diag.with_latest_metrics > 0 ? "primary" : "default"}
+                variant="outlined"
+                label={`latest metrics: ${diag.with_latest_metrics}`}
+              />
+              {diag.legacy_metrics > 0 && (
+                <Chip size="small" variant="outlined" label={`legacy: ${diag.legacy_metrics}`} />
+              )}
             </Stack>
             <Typography variant="caption" color="text.secondary">
               {diag.stamped > 1 && diag.distinct_profiles >= diag.stamped

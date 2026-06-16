@@ -87,8 +87,10 @@ export const api = {
   monitoring: () => request<MonitoringStatus>("/monitoring"),
 
   // Settings correlation
-  settingsProfiles: () => request<SettingsProfilesResponse>("/settings/profiles"),
-  settingsImpact: () => request<SettingsImpact>("/settings/impact"),
+  settingsProfiles: (completeOnly = true) =>
+    request<SettingsProfilesResponse>(`/settings/profiles?complete_only=${completeOnly}`),
+  settingsImpact: (completeOnly = true) =>
+    request<SettingsImpact>(`/settings/impact?complete_only=${completeOnly}`),
   settingsBackfill: () =>
     request<{ updated: number; fingerprint: string }>("/settings/backfill", { method: "POST" }),
   settingsDiagnostics: () => request<SettingsDiagnostics>("/settings/diagnostics"),

@@ -49,6 +49,7 @@ def _seed_run(
     when: datetime,
     completion: float | None = None,
     completion_metrics: dict | None = None,
+    metric_values: dict | None = None,
 ) -> None:
     with session_scope() as session:
         run = Run(
@@ -65,7 +66,10 @@ def _seed_run(
                 sops=sops,
                 subscores={},
                 weights_used={},
-                metric_values={},
+                # Default to the latest (paint) metric set so runs aren't filtered
+                # out by the complete_only default; pass {} for a legacy run.
+                metric_values=metric_values if metric_values is not None
+                else {"fcp": 500.0, "lcp": 800.0},
                 completion=completion,
                 completion_metric_values=completion_metrics,
             )
@@ -156,3 +160,30 @@ def test_profiles_expose_completion_axis(client):
     # Raw infra metric medians are exposed per profile.
     assert prof["completion_metrics"]["tls"]["median"] == 40.0
     assert prof["completion_metrics"]["dns"]["count"] == 6
+
+
+# Kept last: only queries by its own fingerprints, so it can't perturb the
+# order-sensitive profile/impact assertions above.
+def test_complete_only_filters_legacy_runs(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # 6 legacy runs (no paint metrics) that read artificially high...
+    for i in range(6):
+        _seed_run("legacyonly9x", 95 + (i % 2), t0 - timedelta(minutes=90 - i), metric_values={})
+    # ...and 6 latest-rubric runs with paint metrics.
+    for i in range(6):
+        _seed_run(
+            "latestdata0x",
+            70 + i,
+            t0 - timedelta(minutes=40 - i),
+            metric_values={"fcp": 480.0, "lcp": 600.0, "ttfb": 200.0},
+        )
+
+    default = client.get("/api/settings/profiles").json()  # complete_only defaults true
+    fps = {p["fingerprint"] for p in default["profiles"]}
+    assert default["complete_only"] is True
+    assert "latestdata0x" in fps
+    assert "legacyonly9x" not in fps  # legacy excluded so it can't skew
+
+    allruns = client.get("/api/settings/profiles?complete_only=false").json()
+    fps_all = {p["fingerprint"] for p in allruns["profiles"]}
+    assert {"latestdata0x", "legacyonly9x"} <= fps_all

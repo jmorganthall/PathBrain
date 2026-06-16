@@ -108,6 +108,7 @@ export interface SettingsProfilesResponse {
   profiles: SettingsProfile[];
   count: number;
   min_runs: number;
+  complete_only: boolean;
   best_diff: ProfileDiff | null;
 }
 
@@ -123,6 +124,8 @@ export interface SettingsDiagnostics {
   stamped: number;
   unstamped: number;
   distinct_profiles: number;
+  with_latest_metrics: number;
+  legacy_metrics: number;
   recent: Array<{
     id: number;
     created_at: string;
