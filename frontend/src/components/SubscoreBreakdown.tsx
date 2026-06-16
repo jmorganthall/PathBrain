@@ -4,6 +4,7 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { sopsColor } from "../theme";
 import { fmtScore } from "../utils/format";
+import { useMetricMeta } from "../utils/metrics";
 
 interface ScoreLike {
   subscores: Record<string, number>;
@@ -11,35 +12,23 @@ interface ScoreLike {
   metric_values?: Record<string, number>;
 }
 
-// Lower-is-better raw metric units, for the small value annotation.
-const UNIT: Record<string, string> = {
-  dns: "ms",
-  tcp: "ms",
-  tls: "ms",
-  ttfb: "ms",
-  render: "ms",
-  jitter: "ms",
-  packet_loss: "%",
-  // SOPS paint metrics (human-feel)
-  fcp: "ms",
-  lcp: "ms",
-  inp: "ms",
-};
-
 function fmtWeight(w: number | undefined): string {
   if (w == null) return "";
   // weights_used are fractions that sum to 1 — show as a percentage.
   return `${Math.round(w * 100)}%`;
 }
 
-function fmtValue(metric: string, v: number | undefined): string {
-  if (v == null) return "";
-  const unit = UNIT[metric] ?? "";
-  const n = Number.isInteger(v) ? v.toString() : v.toFixed(1);
-  return `${n}${unit ? " " + unit : ""}`;
-}
-
 export default function SubscoreBreakdown({ score }: { score: ScoreLike }) {
+  const metricMeta = useMetricMeta();
+
+  // Units come from the metric registry (single source of truth).
+  const fmtValue = (metric: string, v: number | undefined): string => {
+    if (v == null) return "";
+    const unit = metricMeta(metric).unit ?? "";
+    const n = Number.isInteger(v) ? v.toString() : v.toFixed(1);
+    return `${n}${unit ? " " + unit : ""}`;
+  };
+
   const keys = Object.keys(score.subscores).sort(
     (a, b) => (score.weights_used[b] ?? 0) - (score.weights_used[a] ?? 0)
   );

@@ -7,6 +7,7 @@ from . import (
     routes_config,
     routes_experiments,
     routes_history,
+    routes_metrics,
     routes_monitoring,
     routes_plugins,
     routes_results,
@@ -24,4 +25,5 @@ api_router.include_router(routes_config.router, tags=["config"])
 api_router.include_router(routes_settings.router, tags=["settings"])
 api_router.include_router(routes_monitoring.router, tags=["monitoring"])
 api_router.include_router(routes_plugins.router, tags=["plugins"])
+api_router.include_router(routes_metrics.router, tags=["metrics"])
 api_router.include_router(routes_experiments.router, tags=["experiments"])

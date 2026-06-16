@@ -15,6 +15,12 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     `mock.py`); pick via `PATHBRAIN_CONFIG_PROVIDER`. OPNsense reads/writes
     fq_codel fields (`fqcodel_quantum/limit/flows`, `codel_target/interval/ecn`);
     `apply()` does `setPipe` + `reconfigure` and is the **only firewall-write path**.
+  - `metrics.py` — **single source of truth for metrics.** Each `MetricDef` (key,
+    plugin+source_key, axis, default weight/thresholds, label/description/unit/
+    direction, `marks_latest`) is defined once; `METRIC_SOURCES`, the config
+    weights/thresholds, `LATEST_METRIC_KEYS`, and the `/api/metrics` catalog (which
+    the frontend's `MetricCatalogProvider`/`useMetricMeta` consume) are all derived
+    from it. Adding a measurement = one entry here (+ the plugin emitting it).
   - `scoring/engine.py` — score computation (weighted, perception-calibrated log
     curve, redistributes missing-metric weight). **Two axes, never blended:**
     **SOPS** is the headline *human-feel* score — perception-led: paint timing

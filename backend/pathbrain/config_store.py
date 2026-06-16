@@ -12,67 +12,23 @@ import copy
 
 from sqlalchemy.orm import Session
 
+from .metrics import COMPLETION, SOPS, default_thresholds, default_weights
 from .models import AppConfig
 
 CONFIG_KEY = "benchmark"
 
-# Default SOPS weights — the headline *human-feel* score. SOPS is perception-led:
-# paint timing (when content actually appears/responds) plus the most perceptual
-# completion metrics (TTFB, render). Raw infra latency lives in the Completion
-# axis below, not here. Weights need not sum to 100; the engine normalizes them.
-DEFAULT_WEIGHTS: dict[str, float] = {
-    "render": 25,  # wall-clock full render (closest to "felt slow")
-    "lcp": 25,     # Largest Contentful Paint — main content visible
-    "fcp": 20,     # First Contentful Paint — "it's responding"
-    "ttfb": 15,    # time-to-first-byte — when the page starts
-    "inp": 15,     # Interaction to Next Paint — responsiveness to input
-}
-
-# Completion axis weights — pure-infrastructure timing (connection setup + ICMP).
-# A diagnostic secondary axis, deliberately NOT folded into SOPS.
-DEFAULT_COMPLETION_WEIGHTS: dict[str, float] = {
-    "dns": 10,
-    "tcp": 15,
-    "tls": 20,
-    "jitter": 5,
-    "packet_loss": 5,
-}
+# Scoring rubric defaults are derived from the single metric registry
+# (``pathbrain.metrics``) — weights, thresholds, axis membership and calibration
+# all live there, so a new metric is a one-place change. These names are kept for
+# back-compat with existing importers.
+DEFAULT_WEIGHTS: dict[str, float] = default_weights(SOPS)
+DEFAULT_COMPLETION_WEIGHTS: dict[str, float] = default_weights(COMPLETION)
+DEFAULT_THRESHOLDS: dict[str, dict[str, float]] = default_thresholds(SOPS)
+DEFAULT_COMPLETION_THRESHOLDS: dict[str, dict[str, float]] = default_thresholds(COMPLETION)
 
 # Identifier for the active scoring rubric (curve + thresholds). Bump when the
 # calibration changes so historical scores can be tracked/re-graded.
 DEFAULT_RUBRIC_VERSION = "perceptual-v2"
-
-# Normalization thresholds: the value at which a metric scores 100 (best) and the
-# value at which it scores 0 (worst). Lower-is-better; interpolated on a log
-# (Weber–Fechner) curve. These are calibrated to human-perception research rather
-# than guessed — anchored to Nielsen's response-time limits (0.1s feels instant,
-# 1s keeps flow, 10s loses attention) and Google's RAIL (~100ms = instant).
-# SOPS thresholds. `best` (= subscore 100) is anchored to *near-physical-floor*
-# conditions — what you'd only see on a low-latency link sitting right next to the
-# origin, with a fast client. That makes 100 reachable but genuinely hard, so a
-# good-but-ordinary setup lands well below it; `worst` (= 0) ≈ Web Vitals "poor".
-# Paint floors account for unavoidable client parse/paint; TTFB is mostly network.
-DEFAULT_THRESHOLDS: dict[str, dict[str, float]] = {
-    "fcp": {"best": 150.0, "worst": 4000.0},       # ms first contentful paint
-    "lcp": {"best": 250.0, "worst": 6000.0},       # ms largest contentful paint
-    "inp": {"best": 40.0, "worst": 500.0},         # ms interaction-to-next-paint
-    "ttfb": {"best": 30.0, "worst": 1000.0},       # ms time-to-first-byte
-    "render": {"best": 500.0, "worst": 6000.0},    # ms total render
-}
-
-# Completion thresholds — pure-infrastructure timing.
-DEFAULT_COMPLETION_THRESHOLDS: dict[str, dict[str, float]] = {
-    # DNS is invisible under a few ms; painful past ~150ms.
-    "dns": {"best": 10.0, "worst": 150.0},         # ms lookup
-    # Connection setup is ~1 RTT; LAN-fast vs clearly laggy.
-    "tcp": {"best": 10.0, "worst": 250.0},         # ms connect
-    # TLS adds 1–2 RTT on top of TCP.
-    "tls": {"best": 30.0, "worst": 500.0},         # ms handshake
-    # Interactive media: a few ms imperceptible, tens of ms disruptive.
-    "jitter": {"best": 1.0, "worst": 30.0},        # ms
-    # Loss hurts interactivity quickly (retransmits/stalls).
-    "packet_loss": {"best": 0.0, "worst": 2.5},    # percent
-}
 
 DEFAULT_CONFIG: dict = {
     "icmp": {

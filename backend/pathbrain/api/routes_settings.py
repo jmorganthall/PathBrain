@@ -17,18 +17,18 @@ from ..database import get_session
 from ..logging_config import get_logger
 from ..models import Run, RunStatus, ScoreResult
 from ..providers import get_provider
+from ..metrics import latest_metric_keys
 from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import diff_profiles, fingerprint, normalize, summarize
 
 router = APIRouter()
 log = get_logger("api.settings")
 
-# A run is "latest-rubric complete" once it carries the browser paint metrics that
-# the perception-led SOPS leans on (FCP/LCP — the reliably-captured ones; INP is
-# best-effort and not required). Older runs predate paint capture, so their SOPS
-# comes from a thinner metric set and reads artificially high — not comparable.
-# Default the analysis to these runs only so old data doesn't skew the picture.
-LATEST_METRIC_KEYS = ("fcp", "lcp")
+# A run is "latest-rubric complete" once it carries the metrics flagged in the
+# registry as marking the current rubric (the browser paint metrics FCP/LCP).
+# Older runs predate paint capture, so their SOPS comes from a thinner metric set
+# and reads artificially high — not comparable.
+LATEST_METRIC_KEYS = latest_metric_keys()
 
 
 def _has_latest_metrics(score: ScoreResult) -> bool:

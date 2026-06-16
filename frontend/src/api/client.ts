@@ -6,6 +6,7 @@ import type {
   ExperimentDetail,
   ExperimentsResponse,
   Health,
+  MetricsCatalog,
   MonitoringStatus,
   PluginInfo,
   ProviderHealth,
@@ -112,6 +113,9 @@ export const api = {
 
   // Plugins
   plugins: () => request<PluginInfo[]>("/plugins"),
+
+  // Metric registry (single source of truth for metric metadata)
+  metrics: () => request<MetricsCatalog>("/metrics"),
 
   // Experiment engine
   experiments: () => request<ExperimentsResponse>("/experiments"),

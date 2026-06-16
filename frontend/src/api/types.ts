@@ -305,6 +305,26 @@ export interface PluginInfo {
   description: string;
 }
 
+// One entry from the backend metric registry — the single source for display
+// metadata (label/description/unit/direction), axis membership and rubric.
+export interface MetricCatalogEntry {
+  key: string;
+  source_key: string;
+  plugin: string;
+  label: string;
+  description: string;
+  unit: string;
+  axis: "sops" | "completion" | null;
+  weight: number;
+  best: number | null;
+  worst: number | null;
+  higher_is_better: boolean;
+}
+
+export interface MetricsCatalog {
+  metrics: MetricCatalogEntry[];
+}
+
 export interface ExperimentWindow {
   days: number[];
   start_hour: number;
