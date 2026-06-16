@@ -40,20 +40,22 @@ DEFAULT_COMPLETION_WEIGHTS: dict[str, float] = {
 
 # Identifier for the active scoring rubric (curve + thresholds). Bump when the
 # calibration changes so historical scores can be tracked/re-graded.
-DEFAULT_RUBRIC_VERSION = "perceptual-v1"
+DEFAULT_RUBRIC_VERSION = "perceptual-v2"
 
 # Normalization thresholds: the value at which a metric scores 100 (best) and the
 # value at which it scores 0 (worst). Lower-is-better; interpolated on a log
 # (Weber–Fechner) curve. These are calibrated to human-perception research rather
 # than guessed — anchored to Nielsen's response-time limits (0.1s feels instant,
 # 1s keeps flow, 10s loses attention) and Google's RAIL (~100ms = instant).
-# SOPS thresholds. Paint metrics anchored to Google Web Vitals "good/poor" bands
-# (FCP good ≤1.8s/poor >3s; LCP good ≤2.5s/poor >4s; INP good ≤200ms/poor >500ms),
-# spread a little so the log curve has headroom; TTFB/render to Nielsen/RAIL.
+# SOPS thresholds. `best` is the *aspirational excellent* anchor (it scores ~92,
+# not a perfect 100 — the curve approaches 100 only as the value approaches zero,
+# so there's always headroom). Paint anchors sit a notch tighter than Google Web
+# Vitals "good" so a genuinely good real load lands in the 80s, not pinned at the
+# top; `worst` ≈ Web Vitals "poor". TTFB/render follow Nielsen/RAIL.
 DEFAULT_THRESHOLDS: dict[str, dict[str, float]] = {
-    "fcp": {"best": 1000.0, "worst": 4000.0},      # ms first contentful paint
-    "lcp": {"best": 1500.0, "worst": 6000.0},      # ms largest contentful paint
-    "inp": {"best": 100.0, "worst": 500.0},        # ms interaction-to-next-paint
+    "fcp": {"best": 300.0, "worst": 4000.0},       # ms first contentful paint
+    "lcp": {"best": 400.0, "worst": 6000.0},       # ms largest contentful paint
+    "inp": {"best": 60.0, "worst": 500.0},         # ms interaction-to-next-paint
     # Nielsen: 100ms feels instant, ~1s is the edge of "flowing".
     "ttfb": {"best": 100.0, "worst": 1000.0},      # ms time-to-first-byte
     # RAIL/Nielsen: ~1s page feels good, several seconds feels slow.
