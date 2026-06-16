@@ -88,8 +88,15 @@ function dirColor(d: ProfileFieldChange["direction"]): string {
 }
 
 // At-a-glance "what the best profile changed" vs the next-ranked one, with the
-// resulting SOPS delta — the seed for experiment suggestions.
-export function ProfileDiffCard({ diff }: { diff: ProfileDiff }) {
+// resulting SOPS delta — the seed for experiment suggestions. SOPS is the headline;
+// the Completion delta is an opt-in diagnostic (shown only when `showCompletion`).
+export function ProfileDiffCard({
+  diff,
+  showCompletion,
+}: {
+  diff: ProfileDiff;
+  showCompletion: boolean;
+}) {
   const improved = diff.delta_abs >= 0;
   const distinctPipes = new Set(diff.changes.map((c) => c.pipe)).size;
   return (
@@ -106,13 +113,11 @@ export function ProfileDiffCard({ diff }: { diff: ProfileDiff }) {
                 : ""
             }`}
           />
-          {diff.completion_delta != null && (
-            <Chip
-              size="small"
-              variant="outlined"
-              color={diff.completion_delta >= 0 ? "success" : "warning"}
-              label={`Completion ${diff.completion_delta >= 0 ? "▲ +" : "▼ "}${diff.completion_delta}`}
-            />
+          {showCompletion && diff.completion_delta != null && (
+            <Typography variant="caption" color="text.secondary">
+              completion {diff.completion_delta >= 0 ? "▲ +" : "▼ "}
+              {diff.completion_delta}
+            </Typography>
           )}
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
@@ -164,6 +169,9 @@ export default function Settings() {
   const [impact, setImpact] = useState<SettingsImpact | null>(null);
   const [diag, setDiag] = useState<SettingsDiagnostics | null>(null);
   const [minRuns, setMinRuns] = useState(5);
+  // Completion (infra) is a secondary diagnostic — hidden by default so SOPS is
+  // unmistakably the headline metric. Opt in via the toggle on the Profiles card.
+  const [showCompletion, setShowCompletion] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -247,7 +255,7 @@ export default function Settings() {
 
       {impact && <ImpactBanner impact={impact} />}
 
-      {bestDiff && <ProfileDiffCard diff={bestDiff} />}
+      {bestDiff && <ProfileDiffCard diff={bestDiff} showCompletion={showCompletion} />}
 
       {!profiles || profiles.length === 0 ? (
         <Card sx={{ mb: 2 }}>
@@ -262,15 +270,34 @@ export default function Settings() {
       ) : (
         <Card sx={{ mb: 2 }}>
           <CardContent>
-            <Typography variant="h6" gutterBottom>
-              Profiles ({profiles.length})
-            </Typography>
+            <Stack
+              direction="row"
+              justifyContent="space-between"
+              alignItems="center"
+              spacing={1}
+              sx={{ mb: 0.5 }}
+            >
+              <Typography variant="h6">Profiles ({profiles.length})</Typography>
+              <Chip
+                size="small"
+                variant={showCompletion ? "filled" : "outlined"}
+                color={showCompletion ? "primary" : "default"}
+                onClick={() => setShowCompletion((v) => !v)}
+                label={showCompletion ? "Hide completion detail" : "Show completion detail"}
+              />
+            </Stack>
             <Typography variant="caption" color="text.secondary">
-              Ranked by median <b>SOPS</b> — the human-feel score (paint timing + TTFB/render); higher
-              is better. "Best" is only awarded to a confident profile. Iterations count every
-              measurement sweep — a 15‑iteration run carries far more signal than a single‑iteration
-              one. <b>Compl.</b> is the Completion score (raw DNS/TCP/TLS/jitter/loss), gated the same
-              way — it can move opposite to SOPS (that divergence is the point).
+              Ranked by median <b>SOPS</b> — the Seat of Pants, human-feel score (paint timing +
+              TTFB/render); higher is better, and it's the metric that decides "best". "Best" is only
+              awarded to a confident profile. Iterations count every measurement sweep — a 15‑iteration
+              run carries far more signal than a single‑iteration one.
+              {showCompletion && (
+                <>
+                  {" "}
+                  <b>Compl.</b> is the secondary Completion score (raw DNS/TCP/TLS/jitter/loss) — a
+                  diagnostic only; it doesn't decide ranking and can move opposite to SOPS.
+                </>
+              )}
             </Typography>
             <TableContainer sx={{ mt: 1 }}>
               <Table size="small">
@@ -282,7 +309,7 @@ export default function Settings() {
                     <TableCell align="right">SOPS</TableCell>
                     <TableCell align="right">IQR</TableCell>
                     <TableCell align="right">Min–Max</TableCell>
-                    <TableCell align="right">Compl.</TableCell>
+                    {showCompletion && <TableCell align="right">Compl.</TableCell>}
                     <TableCell>Last seen</TableCell>
                   </TableRow>
                 </TableHead>
@@ -316,44 +343,44 @@ export default function Settings() {
                       <TableCell align="right">
                         {p.min}–{p.max}
                       </TableCell>
-                      <TableCell align="right">
-                        {p.completion ? (
-                          <Tooltip
-                            arrow
-                            title={`${completionSummary(p)} — median Completion over ${
-                              p.completion.count
-                            } run${p.completion.count === 1 ? "" : "s"}${
-                              p.completion.confident ? "" : ` (need ${minRuns} to confirm)`
-                            }`}
-                          >
-                            <Box component="span" sx={{ cursor: "help" }}>
-                              <Typography
-                                component="span"
-                                sx={{
-                                  fontWeight: 700,
-                                  opacity: p.completion.confident ? 1 : 0.55,
-                                }}
-                              >
-                                {p.completion.median}
-                              </Typography>
-                              {!p.completion.confident && (
+                      {showCompletion && (
+                        <TableCell align="right">
+                          {p.completion ? (
+                            <Tooltip
+                              arrow
+                              title={`${completionSummary(p)} — median Completion over ${
+                                p.completion.count
+                              } run${p.completion.count === 1 ? "" : "s"}${
+                                p.completion.confident ? "" : ` (need ${minRuns} to confirm)`
+                              }`}
+                            >
+                              <Box component="span" sx={{ cursor: "help" }}>
                                 <Typography
                                   component="span"
-                                  variant="caption"
-                                  color="warning.main"
-                                  sx={{ ml: 0.5 }}
+                                  color="text.secondary"
+                                  sx={{ opacity: p.completion.confident ? 1 : 0.55 }}
                                 >
-                                  {p.completion.count}/{minRuns}
+                                  {p.completion.median}
                                 </Typography>
-                              )}
-                            </Box>
-                          </Tooltip>
-                        ) : (
-                          <Typography component="span" variant="caption" color="text.secondary">
-                            —
-                          </Typography>
-                        )}
-                      </TableCell>
+                                {!p.completion.confident && (
+                                  <Typography
+                                    component="span"
+                                    variant="caption"
+                                    color="warning.main"
+                                    sx={{ ml: 0.5 }}
+                                  >
+                                    {p.completion.count}/{minRuns}
+                                  </Typography>
+                                )}
+                              </Box>
+                            </Tooltip>
+                          ) : (
+                            <Typography component="span" variant="caption" color="text.secondary">
+                              —
+                            </Typography>
+                          )}
+                        </TableCell>
+                      )}
                       <TableCell>{fmtDateTime(p.last_seen)}</TableCell>
                     </TableRow>
                   ))}
