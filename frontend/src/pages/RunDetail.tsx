@@ -28,7 +28,7 @@ import StatusChip from "../components/StatusChip";
 import JsonViewer from "../components/JsonViewer";
 import Loading from "../components/Loading";
 import MetricDelta from "../components/MetricDelta";
-import { getMetricMeta } from "../utils/metrics";
+import { useMetricMeta } from "../utils/metrics";
 import { fmtDateTime, fmtDuration, metricValue, parseApiDate } from "../utils/format";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
@@ -36,6 +36,7 @@ const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toL
 export default function RunDetail() {
   const { id } = useParams<{ id: string }>();
   const runId = Number(id);
+  const metricMeta = useMetricMeta();
   const [run, setRun] = useState<RunDetailType | null>(null);
   const [baseline, setBaseline] = useState<RunBaseline | null>(null);
   const [loading, setLoading] = useState(true);
@@ -393,7 +394,7 @@ export default function RunDetail() {
                         {metricKeys.map((k) => {
                           const st = metricStats[k];
                           const showStdev = st && (st.n ?? 0) > 1 && (st.stdev ?? 0) > 0;
-                          const meta = getMetricMeta(k);
+                          const meta = metricMeta(k);
                           const baseValue = baseline?.metrics?.[res.plugin]?.[k];
                           return (
                             <TableRow key={k}>

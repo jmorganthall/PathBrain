@@ -22,29 +22,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-# SOPS — the "Seat of Pants" score: the headline *human-feel* measure. This is
-# perception-led: when content actually starts/finishes appearing (paint timing)
-# plus the most perceptual completion metrics (TTFB, total render). It is what we
-# rank profiles by, chart, and have experiments optimize.
-METRIC_SOURCES: dict[str, tuple[str, str]] = {
-    "fcp": ("browser", "fcp_ms"),               # First Contentful Paint
-    "lcp": ("browser", "lcp_ms"),               # Largest Contentful Paint
-    "inp": ("browser", "inp_ms"),               # Interaction to Next Paint (best-effort)
-    "ttfb": ("http", "ttfb_ms"),                # time-to-first-byte (start of response)
-    "render": ("browser", "total_render_ms"),   # wall-clock full render
-}
+# Metric→plugin maps come from the single metric registry (``pathbrain.metrics``).
+# SOPS is the headline human-feel axis (paint timing + TTFB/render); Completion is
+# the secondary pure-infrastructure axis, kept *separate* so latency-optimal vs.
+# feels-fast settings can visibly pull apart.
+from ..metrics import COMPLETION_METRIC_SOURCES, SOPS_METRIC_SOURCES
 
-# Completion — pure-infrastructure timing (connection setup + ICMP). A diagnostic
-# secondary axis kept *separate* from SOPS, so latency-optimal vs. feels-fast
-# settings can visibly pull apart. Raw metrics don't move the human sense of
-# speed much on their own, which is exactly why they're not in SOPS.
-COMPLETION_METRIC_SOURCES: dict[str, tuple[str, str]] = {
-    "dns": ("dns", "lookup_ms"),
-    "tcp": ("tcp", "connect_ms"),
-    "tls": ("tls", "handshake_ms"),
-    "jitter": ("icmp", "jitter_ms"),
-    "packet_loss": ("icmp", "packet_loss_pct"),
-}
+METRIC_SOURCES = SOPS_METRIC_SOURCES
 
 
 @dataclass
