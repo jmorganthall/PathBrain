@@ -81,6 +81,56 @@ _NAV_JS = (
     " return n ? n.toJSON() : null; }"
 )
 
+# Installed (via add_init_script) before any page script runs, so the observers
+# are buffering from the very start. We read `window.__paint` after load. FCP/LCP/
+# INP are the core of the perception-led SOPS (Seat of Pants) score.
+_PAINT_INIT_JS = """
+(() => {
+  window.__paint = { fcp: null, lcp: null, inp: null };
+  try {
+    new PerformanceObserver((l) => {
+      for (const e of l.getEntries())
+        if (e.name === 'first-contentful-paint') window.__paint.fcp = e.startTime;
+    }).observe({ type: 'paint', buffered: true });
+  } catch (e) {}
+  try {
+    new PerformanceObserver((l) => {
+      for (const e of l.getEntries())
+        window.__paint.lcp = e.startTime || e.renderTime || e.loadTime;
+    }).observe({ type: 'largest-contentful-paint', buffered: true });
+  } catch (e) {}
+  try {
+    new PerformanceObserver((l) => {
+      for (const e of l.getEntries()) {
+        const d = e.duration || 0;
+        if (window.__paint.inp == null || d > window.__paint.inp) window.__paint.inp = d;
+      }
+    }).observe({ type: 'event', durationThreshold: 16, buffered: true });
+  } catch (e) {}
+})()
+"""
+
+_PAINT_READ_JS = "() => window.__paint || null"
+
+
+def extract_paint_metrics(paint: dict | None) -> dict:
+    """Normalize the captured ``window.__paint`` into perceptual metric values.
+
+    Returns ``fcp_ms`` (First Contentful Paint), ``lcp_ms`` (Largest Contentful
+    Paint) and ``inp_ms`` (Interaction to Next Paint — best-effort, ``None`` when
+    no interaction was observed). All in milliseconds; ``None`` for any missing.
+    """
+    paint = paint or {}
+
+    def ms(v) -> float | None:
+        return round(float(v), 3) if isinstance(v, (int, float)) and v >= 0 else None
+
+    return {
+        "fcp_ms": ms(paint.get("fcp")),
+        "lcp_ms": ms(paint.get("lcp")),
+        "inp_ms": ms(paint.get("inp")),
+    }
+
 
 @register
 class BrowserBenchmark(BenchmarkPlugin):
@@ -118,6 +168,9 @@ class BrowserBenchmark(BenchmarkPlugin):
             ttfbs: list[float] = []
             dcls: list[float] = []
             loads: list[float] = []
+            fcps: list[float] = []
+            lcps: list[float] = []
+            inps: list[float] = []
 
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=headless)
@@ -127,6 +180,8 @@ class BrowserBenchmark(BenchmarkPlugin):
                         har_path = os.path.join(run_dir, f"{slug}.har") if want_har else None
                         shot_path = os.path.join(run_dir, f"{slug}.png") if want_screenshot else None
                         context = browser.new_context(record_har_path=har_path)
+                        # Buffer paint/LCP/interaction timing from the very start.
+                        context.add_init_script(_PAINT_INIT_JS)
                         page = context.new_page()
                         try:
                             from time import perf_counter
@@ -140,11 +195,29 @@ class BrowserBenchmark(BenchmarkPlugin):
                             total_render_ms = round((perf_counter() - t0) * 1000.0, 3)
 
                             nav = page.evaluate(_NAV_JS)
+
+                            # Best-effort INP: drive a few synthetic interactions and
+                            # let event-timing settle before reading the observers.
+                            try:
+                                page.mouse.click(5, 5)
+                                page.keyboard.press("Tab")
+                                page.mouse.wheel(0, 400)
+                                page.wait_for_timeout(200)
+                            except Exception:  # noqa: BLE001 — interaction is optional
+                                pass
+
+                            paint = None
+                            try:
+                                paint = page.evaluate(_PAINT_READ_JS)
+                            except Exception:  # noqa: BLE001 — paint capture is optional
+                                pass
+
                             if want_screenshot and shot_path:
                                 page.screenshot(path=shot_path)
 
                             metrics = compute_navigation_metrics(nav)
                             metrics["total_render_ms"] = total_render_ms
+                            metrics.update(extract_paint_metrics(paint))
                             metrics["screenshot_url"] = (
                                 f"/artifacts/{stamp}/{os.path.basename(shot_path)}"
                                 if shot_path
@@ -164,6 +237,12 @@ class BrowserBenchmark(BenchmarkPlugin):
                                 dcls.append(metrics["dom_content_loaded_ms"])
                             if metrics.get("load_event_ms") is not None:
                                 loads.append(metrics["load_event_ms"])
+                            if metrics.get("fcp_ms") is not None:
+                                fcps.append(metrics["fcp_ms"])
+                            if metrics.get("lcp_ms") is not None:
+                                lcps.append(metrics["lcp_ms"])
+                            if metrics.get("inp_ms") is not None:
+                                inps.append(metrics["inp_ms"])
                         except Exception as exc:  # noqa: BLE001 — per-URL boundary
                             per_url[url] = {"error": f"{type(exc).__name__}: {exc}"}
                         finally:
@@ -176,6 +255,9 @@ class BrowserBenchmark(BenchmarkPlugin):
                 "ttfb_ms": round(mean(ttfbs), 3) if ttfbs else None,
                 "dom_content_loaded_ms": round(mean(dcls), 3) if dcls else None,
                 "load_event_ms": round(mean(loads), 3) if loads else None,
+                "fcp_ms": round(mean(fcps), 3) if fcps else None,
+                "lcp_ms": round(mean(lcps), 3) if lcps else None,
+                "inp_ms": round(mean(inps), 3) if inps else None,
             }
             return {
                 "metrics": metrics,

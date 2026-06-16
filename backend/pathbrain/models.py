@@ -117,6 +117,32 @@ class ScoreResult(Base):
     weights_used: Mapped[dict] = mapped_column(JSON, default=dict)
     metric_values: Mapped[dict] = mapped_column(JSON, default=dict)
 
+    # The Completion score — a *separate* axis from SOPS (pure-infrastructure
+    # timing, not human-feel). NULL when none of its metrics were captured.
+    # Stored in the legacy ``responsiveness``/``perceptual_*`` columns: SOPS is now
+    # the perception-led headline, so this axis was relabeled to "completion" at
+    # the attribute/API layer while reusing the existing columns (no migration;
+    # a deeper column rename is deferred).
+    completion: Mapped[float | None] = mapped_column("responsiveness", Float, nullable=True)
+    completion_stdev: Mapped[float | None] = mapped_column(
+        "responsiveness_stdev", Float, nullable=True
+    )
+    completion_min: Mapped[float | None] = mapped_column(
+        "responsiveness_min", Float, nullable=True
+    )
+    completion_max: Mapped[float | None] = mapped_column(
+        "responsiveness_max", Float, nullable=True
+    )
+    completion_subscores: Mapped[dict | None] = mapped_column(
+        "perceptual_subscores", JSON, nullable=True
+    )
+    completion_weights_used: Mapped[dict | None] = mapped_column(
+        "perceptual_weights_used", JSON, nullable=True
+    )
+    completion_metric_values: Mapped[dict | None] = mapped_column(
+        "perceptual_metric_values", JSON, nullable=True
+    )
+
     run: Mapped["Run"] = relationship(back_populates="score")
 
 

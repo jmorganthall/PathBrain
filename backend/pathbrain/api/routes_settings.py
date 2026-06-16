@@ -17,6 +17,7 @@ from ..database import get_session
 from ..logging_config import get_logger
 from ..models import Run, RunStatus, ScoreResult
 from ..providers import get_provider
+from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import diff_profiles, fingerprint, normalize, summarize
 
 router = APIRouter()
@@ -122,9 +123,14 @@ def settings_profiles(session: Session = Depends(get_session)) -> dict:
     will later seed experiment suggestions.
     """
     min_runs = _min_runs(session)
-    rows = _completed_runs_with_scores(session)
+    rows = session.execute(
+        select(Run, ScoreResult)
+        .join(ScoreResult, ScoreResult.run_id == Run.id)
+        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint.is_not(None))
+        .order_by(Run.created_at)
+    ).all()
     groups: dict[str, dict] = {}
-    for run, sops in rows:
+    for run, score in rows:
         g = groups.setdefault(
             run.settings_fingerprint,
             {
@@ -132,19 +138,28 @@ def settings_profiles(session: Session = Depends(get_session)) -> dict:
                 "settings": run.settings,
                 "sops": [],
                 "iterations": 0,
+                "completion": [],
+                "completion_metrics": {m: [] for m in COMPLETION_METRIC_SOURCES},
                 "first_seen": run.created_at,
                 "last_seen": run.created_at,
             },
         )
-        g["sops"].append(sops)
+        g["sops"].append(score.sops)
         # A run with more iterations is more data; track the total alongside runs.
         g["iterations"] += int(run.iterations or 1)
+        if score.completion is not None:
+            g["completion"].append(score.completion)
+        cv = score.completion_metric_values or {}
+        for m in COMPLETION_METRIC_SOURCES:
+            if cv.get(m) is not None:
+                g["completion_metrics"][m].append(float(cv[m]))
         g["settings"] = run.settings
         g["last_seen"] = run.created_at
 
     profiles = []
     for g in groups.values():
         count = len(g["sops"])
+        comp = g["completion"]
         profiles.append(
             {
                 "fingerprint": g["fingerprint"],
@@ -155,7 +170,24 @@ def settings_profiles(session: Session = Depends(get_session)) -> dict:
                 "confident": count >= min_runs,
                 "first_seen": g["first_seen"].isoformat(),
                 "last_seen": g["last_seen"].isoformat(),
+                # Primary ranking is SOPS (human-feel).
                 **_spread(g["sops"]),
+                # Completion axis, gated like SOPS: only confident with enough runs
+                # that actually captured its metrics.
+                "completion": (
+                    {
+                        "count": len(comp),
+                        "confident": len(comp) >= min_runs,
+                        **_spread(comp),
+                    }
+                    if comp
+                    else None
+                ),
+                "completion_metrics": {
+                    m: {"median": round(median(v), 1), "count": len(v)}
+                    for m, v in g["completion_metrics"].items()
+                    if v
+                },
             }
         )
     profiles.sort(key=lambda p: p["median"], reverse=True)
@@ -184,21 +216,37 @@ def _best_diff(profiles: list[dict]) -> dict | None:
     delta_pct = (
         round((delta_abs / comparison["median"]) * 100, 1) if comparison["median"] else None
     )
+
+    def _comp_median(p: dict) -> float | None:
+        c = p.get("completion")
+        return c["median"] if c else None
+
+    best_comp, comp_comp = _comp_median(best), _comp_median(comparison)
+    completion_delta = (
+        round(best_comp - comp_comp, 2)
+        if best_comp is not None and comp_comp is not None
+        else None
+    )
     return {
         "best": {
             "fingerprint": best["fingerprint"],
             "label": best["label"],
             "median": best["median"],
+            "completion": best_comp,
             "confident": best["confident"],
         },
         "comparison": {
             "fingerprint": comparison["fingerprint"],
             "label": comparison["label"],
             "median": comparison["median"],
+            "completion": comp_comp,
             "confident": comparison["confident"],
         },
         "delta_abs": delta_abs,
         "delta_pct": delta_pct,
+        # Completion can move opposite to SOPS — surfacing it here is the whole
+        # point (feels-fast vs. raw-completion pulling apart).
+        "completion_delta": completion_delta,
         "changes": diff_profiles(comparison["settings"], best["settings"]),
     }
 

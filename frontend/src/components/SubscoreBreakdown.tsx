@@ -20,6 +20,10 @@ const UNIT: Record<string, string> = {
   render: "ms",
   jitter: "ms",
   packet_loss: "%",
+  // SOPS paint metrics (human-feel)
+  fcp: "ms",
+  lcp: "ms",
+  inp: "ms",
 };
 
 function fmtWeight(w: number | undefined): string {

@@ -119,10 +119,11 @@ def test_aggregate_uses_robust_median_central_value():
 
 
 def test_plugin_metrics_from_values_reverse_maps():
-    pm = _plugin_metrics_from_values({"dns": 12.0, "ttfb": 80.0, "jitter": 1.5})
-    assert pm["dns"]["lookup_ms"] == 12.0
+    # Default mapping is the SOPS (perception-led) metric set.
+    pm = _plugin_metrics_from_values({"ttfb": 80.0, "fcp": 900.0, "render": 1500.0})
     assert pm["http"]["ttfb_ms"] == 80.0
-    assert pm["icmp"]["jitter_ms"] == 1.5
+    assert pm["browser"]["fcp_ms"] == 900.0
+    assert pm["browser"]["total_render_ms"] == 1500.0
 
 
 def test_estimate_endpoint_shape(client):

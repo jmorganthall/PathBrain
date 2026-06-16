@@ -28,7 +28,8 @@ def test_config_roundtrip(client):
 
 
 def test_score_preview(client):
-    resp = client.post("/api/score/preview", json={"dns": {"lookup_ms": 1.0}})
+    # SOPS is perception-led; TTFB at "best" scores 100.
+    resp = client.post("/api/score/preview", json={"http": {"ttfb_ms": 1.0}})
     assert resp.status_code == 200
     assert resp.json()["sops"] == 100.0
 

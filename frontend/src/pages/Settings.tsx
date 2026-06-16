@@ -63,6 +63,21 @@ function fmtFieldValue(v: string | number | boolean | null): string {
   return String(v);
 }
 
+const INFRA_LABELS: Record<string, string> = {
+  dns: "DNS",
+  tcp: "TCP",
+  tls: "TLS",
+  jitter: "jitter",
+  packet_loss: "loss",
+};
+
+function completionSummary(p: SettingsProfile): string {
+  const parts = Object.entries(p.completion_metrics).map(
+    ([k, v]) => `${INFRA_LABELS[k] ?? k} ${v.median}${k === "packet_loss" ? "%" : "ms"}`
+  );
+  return parts.length ? parts.join(" · ") : "no completion metrics captured";
+}
+
 function dirArrow(d: ProfileFieldChange["direction"]): string {
   return d === "higher" ? "↑" : d === "lower" ? "↓" : "≠";
 }
@@ -91,6 +106,14 @@ export function ProfileDiffCard({ diff }: { diff: ProfileDiff }) {
                 : ""
             }`}
           />
+          {diff.completion_delta != null && (
+            <Chip
+              size="small"
+              variant="outlined"
+              color={diff.completion_delta >= 0 ? "success" : "warning"}
+              label={`Completion ${diff.completion_delta >= 0 ? "▲ +" : "▼ "}${diff.completion_delta}`}
+            />
+          )}
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
           Best profile <b>{diff.best.label}</b> ({diff.best.fingerprint}) vs next‑best{" "}
@@ -243,9 +266,11 @@ export default function Settings() {
               Profiles ({profiles.length})
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Ranked by median SOPS (higher is better). "Best" is only awarded to a confident profile.
-              Iterations count every measurement sweep — a 15‑iteration run carries far more signal
-              than a single‑iteration one.
+              Ranked by median <b>SOPS</b> — the human-feel score (paint timing + TTFB/render); higher
+              is better. "Best" is only awarded to a confident profile. Iterations count every
+              measurement sweep — a 15‑iteration run carries far more signal than a single‑iteration
+              one. <b>Compl.</b> is the Completion score (raw DNS/TCP/TLS/jitter/loss), gated the same
+              way — it can move opposite to SOPS (that divergence is the point).
             </Typography>
             <TableContainer sx={{ mt: 1 }}>
               <Table size="small">
@@ -254,9 +279,10 @@ export default function Settings() {
                     <TableCell>Profile</TableCell>
                     <TableCell align="right">Runs</TableCell>
                     <TableCell align="right">Iterations</TableCell>
-                    <TableCell align="right">Median</TableCell>
+                    <TableCell align="right">SOPS</TableCell>
                     <TableCell align="right">IQR</TableCell>
                     <TableCell align="right">Min–Max</TableCell>
+                    <TableCell align="right">Compl.</TableCell>
                     <TableCell>Last seen</TableCell>
                   </TableRow>
                 </TableHead>
@@ -289,6 +315,44 @@ export default function Settings() {
                       </TableCell>
                       <TableCell align="right">
                         {p.min}–{p.max}
+                      </TableCell>
+                      <TableCell align="right">
+                        {p.completion ? (
+                          <Tooltip
+                            arrow
+                            title={`${completionSummary(p)} — median Completion over ${
+                              p.completion.count
+                            } run${p.completion.count === 1 ? "" : "s"}${
+                              p.completion.confident ? "" : ` (need ${minRuns} to confirm)`
+                            }`}
+                          >
+                            <Box component="span" sx={{ cursor: "help" }}>
+                              <Typography
+                                component="span"
+                                sx={{
+                                  fontWeight: 700,
+                                  opacity: p.completion.confident ? 1 : 0.55,
+                                }}
+                              >
+                                {p.completion.median}
+                              </Typography>
+                              {!p.completion.confident && (
+                                <Typography
+                                  component="span"
+                                  variant="caption"
+                                  color="warning.main"
+                                  sx={{ ml: 0.5 }}
+                                >
+                                  {p.completion.count}/{minRuns}
+                                </Typography>
+                              )}
+                            </Box>
+                          </Tooltip>
+                        ) : (
+                          <Typography component="span" variant="caption" color="text.secondary">
+                            —
+                          </Typography>
+                        )}
                       </TableCell>
                       <TableCell>{fmtDateTime(p.last_seen)}</TableCell>
                     </TableRow>

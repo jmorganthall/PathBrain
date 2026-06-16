@@ -46,6 +46,16 @@ export interface MonitoringStatus {
   next_run_at: string | null;
 }
 
+export interface ProfileSpread {
+  count: number;
+  confident: boolean;
+  median: number;
+  p25: number;
+  p75: number;
+  min: number;
+  max: number;
+}
+
 export interface SettingsProfile {
   fingerprint: string;
   label: string;
@@ -60,6 +70,11 @@ export interface SettingsProfile {
   p75: number;
   min: number;
   max: number;
+  // Completion axis distribution; null until any run in the profile captured its
+  // (infra) metrics.
+  completion: ProfileSpread | null;
+  // Per infra-metric medians, e.g. { dns: { median, count }, tcp: {...} }.
+  completion_metrics: Record<string, { median: number; count: number }>;
 }
 
 export interface ProfileFieldChange {
@@ -75,6 +90,7 @@ export interface ProfileDiffSide {
   fingerprint: string;
   label: string;
   median: number;
+  completion: number | null;
   confident: boolean;
 }
 
@@ -83,6 +99,8 @@ export interface ProfileDiff {
   comparison: ProfileDiffSide;
   delta_abs: number;
   delta_pct: number | null;
+  // Completion median delta (best − comparison); can move opposite to SOPS.
+  completion_delta: number | null;
   changes: ProfileFieldChange[];
 }
 
@@ -134,6 +152,16 @@ export interface ScoreOut {
   subscores: Record<string, number>;
   weights_used: Record<string, number>;
   metric_values: Record<string, number>;
+
+  // Completion axis (pure-infra timing) — separate from SOPS. null when the run
+  // captured none of its metrics.
+  completion?: number | null;
+  completion_stdev?: number | null;
+  completion_min?: number | null;
+  completion_max?: number | null;
+  completion_subscores?: Record<string, number> | null;
+  completion_weights_used?: Record<string, number> | null;
+  completion_metric_values?: Record<string, number> | null;
 }
 
 export interface BenchmarkResult {

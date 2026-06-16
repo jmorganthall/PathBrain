@@ -15,8 +15,18 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     `mock.py`); pick via `PATHBRAIN_CONFIG_PROVIDER`. OPNsense reads/writes
     fq_codel fields (`fqcodel_quantum/limit/flows`, `codel_target/interval/ecn`);
     `apply()` does `setPipe` + `reconfigure` and is the **only firewall-write path**.
-  - `scoring/engine.py` — SOPS computation (weighted, perception-calibrated log
-    curve, redistributes missing-metric weight). Metric→plugin map = `METRIC_SOURCES`.
+  - `scoring/engine.py` — score computation (weighted, perception-calibrated log
+    curve, redistributes missing-metric weight). **Two axes, never blended:**
+    **SOPS** is the headline *human-feel* score — perception-led: paint timing
+    (FCP/LCP/INP) + TTFB + render (`METRIC_SOURCES`); it's what we rank/chart/
+    optimize. **Completion** is the secondary infra axis (DNS/TCP/TLS/jitter/loss,
+    `COMPLETION_METRIC_SOURCES`, `compute_completion`) — raw timing that barely
+    moves human feel, so it's kept out of SOPS. Completion persists on
+    `ScoreResult.completion` (+ sub/weights/values), reusing the legacy
+    `responsiveness`/`perceptual_*` DB columns via attribute mapping (no migration;
+    deeper column rename deferred). Aggregated per profile by `/api/settings/
+    profiles`. Rubric keys: `weights`/`thresholds` (SOPS) + `completion_weights`/
+    `completion_thresholds`.
   - `config_store.py` — DB-backed runtime config + defaults (targets, weights,
     thresholds, `iterations`, `monitoring`, `correlation`, `experiment`,
     `rubric_version`).

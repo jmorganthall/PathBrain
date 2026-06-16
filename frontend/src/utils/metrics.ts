@@ -74,6 +74,25 @@ export const METRIC_META: Record<string, MetricMeta> = {
       "Throughput while downloading, in megabits per second. This is the one measure where HIGHER is better.",
     higherIsBetter: true,
   },
+  // Browser — paint timing (the core of SOPS, the human-feel score)
+  fcp_ms: {
+    label: "First Contentful Paint",
+    unit: "ms",
+    description:
+      "When the first real content (text/image) paints — the 'it's responding' moment. Perceptual, not completion: how soon you see *something*. Lower is better.",
+  },
+  lcp_ms: {
+    label: "Largest Contentful Paint",
+    unit: "ms",
+    description:
+      "When the main content becomes visible. Google's core 'is it usefully loaded' signal (good ≤2.5s). Lower is better.",
+  },
+  inp_ms: {
+    label: "Interaction to Next Paint",
+    unit: "ms",
+    description:
+      "How quickly the page paints a response to input — responsiveness to taps/keys (good ≤200ms). Best-effort here (synthetic interaction); may be blank. Lower is better.",
+  },
   // Browser (Playwright)
   total_render_ms: {
     label: "Total render",

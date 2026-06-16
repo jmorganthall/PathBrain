@@ -208,12 +208,31 @@ export default function RunDetail() {
       >
         <Card>
           <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-            <ScoreGauge value={run.score?.sops ?? null} />
+            <ScoreGauge value={run.score?.sops ?? null} label="Seat of Pants Score (how it feels)" />
             {run.score && run.score.sops_stdev != null && run.iterations > 1 && (
               <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
                 ± {run.score.sops_stdev} · range {run.score.sops_min}–{run.score.sops_max} over{" "}
                 {run.iterations} iterations
               </Typography>
+            )}
+            {run.score?.completion != null && (
+              <>
+                <Divider flexItem />
+                <ScoreGauge
+                  value={run.score.completion}
+                  size={150}
+                  label="Completion Score (infra timing)"
+                />
+                {run.score.completion_stdev != null && run.iterations > 1 && (
+                  <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
+                    ± {run.score.completion_stdev} · range {run.score.completion_min}–
+                    {run.score.completion_max}
+                  </Typography>
+                )}
+                <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
+                  Raw connection timing (DNS/TCP/TLS/jitter/loss), separate from SOPS.
+                </Typography>
+              </>
             )}
             <Stack spacing={0.5} alignItems="center">
               {run.label && <Chip size="small" label={run.label} />}
@@ -256,7 +275,29 @@ export default function RunDetail() {
               Score Breakdown
             </Typography>
             {run.score ? (
-              <SubscoreBreakdown score={run.score} />
+              <>
+                <Typography variant="overline" color="text.secondary">
+                  Seat of Pants · how it feels {Math.round(run.score.sops)}
+                </Typography>
+                <SubscoreBreakdown score={run.score} />
+                {run.score.completion_subscores &&
+                  Object.keys(run.score.completion_subscores).length > 0 && (
+                    <>
+                      <Divider sx={{ my: 2 }} />
+                      <Typography variant="overline" color="text.secondary">
+                        Completion · infra{" "}
+                        {run.score.completion != null ? Math.round(run.score.completion) : "—"}
+                      </Typography>
+                      <SubscoreBreakdown
+                        score={{
+                          subscores: run.score.completion_subscores,
+                          weights_used: run.score.completion_weights_used ?? {},
+                          metric_values: run.score.completion_metric_values ?? {},
+                        }}
+                      />
+                    </>
+                  )}
+              </>
             ) : (
               <Typography variant="body2" color="text.secondary">
                 No score computed for this run.

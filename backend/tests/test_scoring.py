@@ -1,78 +1,99 @@
-"""Tests for the SOPS scoring engine."""
+"""Tests for the scoring engine — SOPS (perception-led) and Completion axes."""
 from __future__ import annotations
 
-from pathbrain.config_store import DEFAULT_THRESHOLDS, DEFAULT_WEIGHTS
-from pathbrain.scoring import compute_score
+from pathbrain.config_store import (
+    DEFAULT_COMPLETION_THRESHOLDS,
+    DEFAULT_COMPLETION_WEIGHTS,
+    DEFAULT_THRESHOLDS,
+    DEFAULT_WEIGHTS,
+)
+from pathbrain.scoring import compute_completion, compute_score
+
+# All SOPS (perception-led) metrics at their "best" threshold.
+PERFECT_SOPS = {
+    "browser": {"fcp_ms": 1.0, "lcp_ms": 1.0, "inp_ms": 1.0, "total_render_ms": 1.0},
+    "http": {"ttfb_ms": 1.0},
+}
+# All Completion (infra) metrics perfect.
+PERFECT_COMPLETION = {
+    "dns": {"lookup_ms": 1.0},
+    "tcp": {"connect_ms": 1.0},
+    "tls": {"handshake_ms": 1.0},
+    "icmp": {"jitter_ms": 0.0, "packet_loss_pct": 0.0},
+}
 
 
 def _score(metrics):
     return compute_score(metrics, DEFAULT_WEIGHTS, DEFAULT_THRESHOLDS)
 
 
+def _completion(metrics):
+    return compute_completion(metrics, DEFAULT_COMPLETION_WEIGHTS, DEFAULT_COMPLETION_THRESHOLDS)
+
+
 def test_perfect_metrics_score_100():
-    metrics = {
-        "dns": {"lookup_ms": 1.0},
-        "tcp": {"connect_ms": 1.0},
-        "tls": {"handshake_ms": 1.0},
-        "http": {"ttfb_ms": 1.0},
-        "icmp": {"jitter_ms": 0.0, "packet_loss_pct": 0.0},
-    }
-    result = _score(metrics)
-    assert result.sops == 100.0
+    assert _score(PERFECT_SOPS).sops == 100.0
 
 
 def test_worst_metrics_score_0():
     metrics = {
-        "dns": {"lookup_ms": 9999},
-        "tcp": {"connect_ms": 9999},
-        "tls": {"handshake_ms": 9999},
+        "browser": {"fcp_ms": 9999, "lcp_ms": 9999, "inp_ms": 9999, "total_render_ms": 9999},
         "http": {"ttfb_ms": 9999},
-        "icmp": {"jitter_ms": 9999, "packet_loss_pct": 100},
     }
-    result = _score(metrics)
-    assert result.sops == 0.0
+    assert _score(metrics).sops == 0.0
+
+
+def test_sops_is_perception_led_not_infra():
+    # Pure infra metrics don't move SOPS at all (they're the Completion axis).
+    assert _score(PERFECT_COMPLETION).subscores == {}
+    assert _score(PERFECT_COMPLETION).sops == 0.0
+    # Paint metrics don't move Completion.
+    assert _completion(PERFECT_SOPS).subscores == {}
+
+
+def test_completion_axis_scores_infra():
+    assert _completion(PERFECT_COMPLETION).sops == 100.0
+    assert set(_completion(PERFECT_COMPLETION).subscores) == {
+        "dns",
+        "tcp",
+        "tls",
+        "jitter",
+        "packet_loss",
+    }
 
 
 def test_missing_metrics_redistribute_weights():
-    # Only DNS present, perfect -> SOPS should be 100 (weight redistributed).
-    result = _score({"dns": {"lookup_ms": 1.0}})
+    # Only TTFB present (a SOPS metric), perfect -> SOPS 100, weight redistributed.
+    result = _score({"http": {"ttfb_ms": 1.0}})
     assert result.sops == 100.0
-    assert set(result.weights_used) == {"dns"}
+    assert set(result.weights_used) == {"ttfb"}
     assert abs(sum(result.weights_used.values()) - 1.0) < 1e-9
 
 
-def test_ping_does_not_dominate():
-    # Terrible jitter/packet loss, but everything else perfect.
-    good = {
-        "dns": {"lookup_ms": 1.0},
-        "tcp": {"connect_ms": 1.0},
-        "tls": {"handshake_ms": 1.0},
-        "http": {"ttfb_ms": 1.0},
-        "icmp": {"jitter_ms": 9999, "packet_loss_pct": 100},
-    }
-    result = _score(good)
-    # Jitter+packet_loss are only 10/75 of available weight -> score stays high.
-    assert result.sops > 85.0
+def test_sops_survives_without_browser():
+    # No browser engine -> SOPS falls back to TTFB only (never blank when http ran).
+    result = _score({"http": {"ttfb_ms": 100.0}})
+    assert result.sops == 100.0  # 100ms == ttfb "best"
+    assert set(result.subscores) == {"ttfb"}
 
 
 def test_log_curve_geometric_midpoint():
     # Perceptual (log) curve: the 50-point is the *geometric* mean of best/worst.
-    thresholds = {"dns": {"best": 10.0, "worst": 1000.0}}  # geo mean = 100
-    weights = {"dns": 10}
-    mid = compute_score({"dns": {"lookup_ms": 100.0}}, weights, thresholds)
-    assert 48.0 <= mid.subscores["dns"] <= 52.0
-    # The arithmetic midpoint (505ms) scores well below 50 — early latency hurts more.
-    arith = compute_score({"dns": {"lookup_ms": 505.0}}, weights, thresholds)
-    assert arith.subscores["dns"] < 30
+    thresholds = {"ttfb": {"best": 10.0, "worst": 1000.0}}  # geo mean = 100
+    weights = {"ttfb": 10}
+    mid = compute_score({"http": {"ttfb_ms": 100.0}}, weights, thresholds)
+    assert 48.0 <= mid.subscores["ttfb"] <= 52.0
+    arith = compute_score({"http": {"ttfb_ms": 505.0}}, weights, thresholds)
+    assert arith.subscores["ttfb"] < 30
 
 
 def test_equal_ratios_equal_score_drops():
     # Weber–Fechner: 20->40ms costs the same as 200->400ms.
-    thr = {"dns": {"best": 10.0, "worst": 1000.0}}
-    w = {"dns": 10}
+    thr = {"ttfb": {"best": 10.0, "worst": 1000.0}}
+    w = {"ttfb": 10}
 
     def sub(v: float) -> float:
-        return compute_score({"dns": {"lookup_ms": v}}, w, thr).subscores["dns"]
+        return compute_score({"http": {"ttfb_ms": v}}, w, thr).subscores["ttfb"]
 
     drop_low = sub(20) - sub(40)
     drop_high = sub(200) - sub(400)

@@ -7,10 +7,13 @@ higher score).
 
 Key design choices:
 
-* **Ping does not dominate.** Latency-derived metrics (jitter, packet loss) carry
-  small weight by default; perceptual metrics (TTFB, render, TLS) carry the most.
-* **Missing metrics don't penalize.** If a metric isn't available (e.g. render
-  before the Playwright engine ships, or a failed probe), its weight is
+* **Two axes, never blended.** SOPS (``METRIC_SOURCES``) is perception-led — when
+  content actually appears/responds (paint timing) plus TTFB and render. Raw
+  infrastructure timing (DNS/TCP/TLS/jitter/loss) is the separate *Completion*
+  axis (``COMPLETION_METRIC_SOURCES``), because it barely moves the human sense of
+  speed. Both use the identical math below; only the metric set + rubric differ.
+* **Missing metrics don't penalize.** If a metric isn't available (e.g. paint
+  timing where the browser engine didn't run, or a failed probe), its weight is
   redistributed proportionally across the metrics that *are* present, so the
   score stays on a stable 0..100 scale and remains comparable.
 """
@@ -19,13 +22,26 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-# Maps a SOPS metric name -> (plugin name, metric key within that plugin).
+# SOPS — the "Seat of Pants" score: the headline *human-feel* measure. This is
+# perception-led: when content actually starts/finishes appearing (paint timing)
+# plus the most perceptual completion metrics (TTFB, total render). It is what we
+# rank profiles by, chart, and have experiments optimize.
 METRIC_SOURCES: dict[str, tuple[str, str]] = {
+    "fcp": ("browser", "fcp_ms"),               # First Contentful Paint
+    "lcp": ("browser", "lcp_ms"),               # Largest Contentful Paint
+    "inp": ("browser", "inp_ms"),               # Interaction to Next Paint (best-effort)
+    "ttfb": ("http", "ttfb_ms"),                # time-to-first-byte (start of response)
+    "render": ("browser", "total_render_ms"),   # wall-clock full render
+}
+
+# Completion — pure-infrastructure timing (connection setup + ICMP). A diagnostic
+# secondary axis kept *separate* from SOPS, so latency-optimal vs. feels-fast
+# settings can visibly pull apart. Raw metrics don't move the human sense of
+# speed much on their own, which is exactly why they're not in SOPS.
+COMPLETION_METRIC_SOURCES: dict[str, tuple[str, str]] = {
     "dns": ("dns", "lookup_ms"),
     "tcp": ("tcp", "connect_ms"),
     "tls": ("tls", "handshake_ms"),
-    "ttfb": ("http", "ttfb_ms"),
-    "render": ("browser", "total_render_ms"),  # reserved for Phase 2 (Playwright)
     "jitter": ("icmp", "jitter_ms"),
     "packet_loss": ("icmp", "packet_loss_pct"),
 }
@@ -67,10 +83,13 @@ def _normalize(value: float, best: float, worst: float) -> float:
     return round((value - worst) / (best - worst) * 100.0, 2)
 
 
-def _collect_metric_values(plugin_metrics: dict[str, dict]) -> dict[str, float]:
-    """Pull each SOPS metric's raw value out of the per-plugin metrics."""
+def _collect_metric_values(
+    plugin_metrics: dict[str, dict],
+    metric_sources: dict[str, tuple[str, str]],
+) -> dict[str, float]:
+    """Pull each axis metric's raw value out of the per-plugin metrics."""
     values: dict[str, float] = {}
-    for metric, (plugin, key) in METRIC_SOURCES.items():
+    for metric, (plugin, key) in metric_sources.items():
         metrics = plugin_metrics.get(plugin) or {}
         value = metrics.get(key)
         if value is not None:
@@ -82,13 +101,18 @@ def compute_score(
     plugin_metrics: dict[str, dict],
     weights: dict[str, float],
     thresholds: dict[str, dict[str, float]],
+    metric_sources: dict[str, tuple[str, str]] | None = None,
 ) -> ScoreBreakdown:
-    """Compute SOPS from per-plugin metrics.
+    """Compute a 0..100 weighted score from per-plugin metrics.
 
     ``plugin_metrics`` maps plugin name -> its flat metrics dict, e.g.
     ``{"dns": {"lookup_ms": 12.0}, "icmp": {"jitter_ms": 1.1, ...}}``.
+
+    ``metric_sources`` selects which axis is scored: SOPS (the perception-led
+    human-feel score, the default) or Completion (``COMPLETION_METRIC_SOURCES``).
+    The math is identical; only the metric set and rubric differ.
     """
-    values = _collect_metric_values(plugin_metrics)
+    values = _collect_metric_values(plugin_metrics, metric_sources or METRIC_SOURCES)
 
     subscores: dict[str, float] = {}
     available_weights: dict[str, float] = {}
@@ -113,4 +137,21 @@ def compute_score(
         subscores=subscores,
         weights_used={m: round(w, 4) for m, w in weights_used.items()},
         metric_values=values,
+    )
+
+
+def compute_completion(
+    plugin_metrics: dict[str, dict],
+    weights: dict[str, float],
+    thresholds: dict[str, dict[str, float]],
+) -> ScoreBreakdown:
+    """Compute the Completion score (pure-infrastructure timing).
+
+    A sibling of :func:`compute_score` over ``COMPLETION_METRIC_SOURCES``. Kept
+    distinct from SOPS so the two axes are never blended. ``subscores`` is empty
+    when none of its metrics were captured, which the caller treats as "no
+    completion score" rather than a zero.
+    """
+    return compute_score(
+        plugin_metrics, weights, thresholds, metric_sources=COMPLETION_METRIC_SOURCES
     )

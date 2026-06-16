@@ -20,7 +20,12 @@ from .database import session_scope
 from .logging_config import get_logger
 from .models import BenchmarkResult, Run, RunStatus, ScoreResult
 from .plugins import BenchmarkPlugin, PluginResult, iter_plugins
-from .scoring import METRIC_SOURCES, compute_score
+from .scoring import (
+    COMPLETION_METRIC_SOURCES,
+    METRIC_SOURCES,
+    compute_completion,
+    compute_score,
+)
 
 log = get_logger("runner")
 
@@ -61,14 +66,30 @@ def _metric_stats(values: list[float]) -> dict:
     }
 
 
-def _plugin_metrics_from_values(metric_values: dict[str, float]) -> dict[str, dict]:
-    """Map SOPS metric values back to a plugin->metrics dict for scoring."""
+def _plugin_metrics_from_values(
+    metric_values: dict[str, float],
+    metric_sources: dict[str, tuple[str, str]] = METRIC_SOURCES,
+) -> dict[str, dict]:
+    """Map axis metric values back to a plugin->metrics dict for scoring."""
     out: dict[str, dict] = {}
     for metric, value in metric_values.items():
-        src = METRIC_SOURCES.get(metric)
+        src = metric_sources.get(metric)
         if src and value is not None:
             plugin, key = src
             out.setdefault(plugin, {})[key] = value
+    return out
+
+
+def _median_values(per_iteration_values: list[dict]) -> dict[str, float]:
+    """Median of each metric across iterations (skipping missing samples)."""
+    keys: set[str] = set()
+    for mv in per_iteration_values:
+        keys.update(mv.keys())
+    out: dict[str, float] = {}
+    for k in keys:
+        vals = [mv[k] for mv in per_iteration_values if mv.get(k) is not None]
+        if vals:
+            out[k] = round(median(vals), 3)
     return out
 
 
@@ -130,37 +151,54 @@ def _aggregate(results: list[PluginResult]) -> dict:
     }
 
 
-def rescore_run(run, weights: dict, thresholds: dict, rubric_version: str | None) -> bool:
-    """Re-grade an existing run from its stored raw measurements.
-
-    Recomputes the headline SOPS from the stored median metric values and the
-    confidence band from the stored per-iteration metrics, using the given
-    (current) rubric. Mutates ``run.score`` in place; the caller commits. This is
-    what keeps history comparable after the scoring rubric changes.
-    """
-    score = run.score
-    if score is None:
-        return False
-
-    breakdown = compute_score(
-        _plugin_metrics_from_values(score.metric_values or {}), weights, thresholds
-    )
-
-    # Rebuild per-iteration SOPS from the raw iteration metrics for the band.
+def _iteration_metrics(run) -> list[dict[str, dict]]:
+    """Reconstruct per-iteration ``plugin -> metrics`` from stored raw results."""
     iters = 0
     for r in run.results:
         im = (r.details or {}).get("iteration_metrics") if r.details else None
         if im:
             iters = max(iters, len(im))
-    per_iter: list[float] = []
+    out: list[dict[str, dict]] = []
     for i in range(iters):
         iter_metrics: dict[str, dict] = {}
         for r in run.results:
             im = (r.details or {}).get("iteration_metrics") if r.details else None
             if im and i < len(im) and im[i]:
                 iter_metrics[r.plugin] = im[i]
-        per_iter.append(compute_score(iter_metrics, weights, thresholds).sops)
+        out.append(iter_metrics)
+    return out
 
+
+def rescore_run(
+    run,
+    weights: dict,
+    thresholds: dict,
+    rubric_version: str | None,
+    completion_weights: dict | None = None,
+    completion_thresholds: dict | None = None,
+) -> bool:
+    """Re-grade an existing run from its stored raw measurements.
+
+    Recomputes the headline SOPS (perception-led) *and* the Completion score from
+    the stored metric values, plus each axis's confidence band from the stored
+    per-iteration metrics, using the given (current) rubric. Mutates ``run.score``
+    in place; the caller commits. Keeps history comparable after a rubric change.
+
+    The stored metric values are merged across both axes' slots before re-mapping,
+    so runs from before the SOPS/Completion split (whose infra metrics live in the
+    old SOPS ``metric_values``) still backfill both axes.
+    """
+    score = run.score
+    if score is None:
+        return False
+
+    merged_values = {**(score.completion_metric_values or {}), **(score.metric_values or {})}
+    breakdown = compute_score(
+        _plugin_metrics_from_values(merged_values, METRIC_SOURCES), weights, thresholds
+    )
+    iter_metrics_list = _iteration_metrics(run)
+
+    per_iter = [compute_score(m, weights, thresholds).sops for m in iter_metrics_list]
     if per_iter:
         score.sops_stdev = round(pstdev(per_iter), 2) if len(per_iter) > 1 else 0.0
         score.sops_min = round(min(per_iter), 2)
@@ -171,6 +209,31 @@ def rescore_run(run, weights: dict, thresholds: dict, rubric_version: str | None
     score.weights_used = breakdown.weights_used
     score.metric_values = breakdown.metric_values
     score.rubric_version = rubric_version
+
+    # Completion axis. Recompute from the same stored values; leave NULL if none
+    # of its metrics were captured.
+    if completion_weights is not None and completion_thresholds is not None:
+        cb = compute_completion(
+            _plugin_metrics_from_values(merged_values, COMPLETION_METRIC_SOURCES),
+            completion_weights,
+            completion_thresholds,
+        )
+        if cb.subscores:
+            c_iter = [
+                compute_completion(m, completion_weights, completion_thresholds)
+                for m in iter_metrics_list
+            ]
+            c_scores = [b.sops for b in c_iter if b.subscores]
+            score.completion = cb.sops
+            score.completion_subscores = cb.subscores
+            score.completion_weights_used = cb.weights_used
+            score.completion_metric_values = cb.metric_values
+            if c_scores:
+                score.completion_stdev = (
+                    round(pstdev(c_scores), 2) if len(c_scores) > 1 else 0.0
+                )
+                score.completion_min = round(min(c_scores), 2)
+                score.completion_max = round(max(c_scores), 2)
     return True
 
 
@@ -259,11 +322,16 @@ def execute_run(run_id: int) -> None:
             iteration_durations: list[float] = []
             weights = config.get("weights", {})
             thresholds = config.get("thresholds", {})
+            completion_weights = config.get("completion_weights", {})
+            completion_thresholds = config.get("completion_thresholds", {})
 
             # Score every iteration independently so we can report a robust
-            # central SOPS and a confidence band, instead of a single noisy value.
+            # central value and a confidence band, instead of a single noisy
+            # value — for both the SOPS (human-feel) and Completion axes.
             iteration_scores: list[float] = []
             iteration_metric_values: list[dict] = []
+            completion_scores: list[float] = []
+            completion_metric_values: list[dict] = []
 
             for i in range(iterations):
                 it_start = perf_counter()
@@ -283,6 +351,10 @@ def execute_run(run_id: int) -> None:
                 b = compute_score(iter_metrics, weights=weights, thresholds=thresholds)
                 iteration_scores.append(b.sops)
                 iteration_metric_values.append(b.metric_values)
+                cb = compute_completion(iter_metrics, completion_weights, completion_thresholds)
+                if cb.subscores:  # only when completion metrics were captured
+                    completion_scores.append(cb.sops)
+                completion_metric_values.append(cb.metric_values)
                 iteration_durations.append((perf_counter() - it_start) * 1000.0)
                 run.iterations_completed = i + 1
                 session.commit()  # surface progress to pollers
@@ -303,23 +375,28 @@ def execute_run(run_id: int) -> None:
                 )
 
             # Robust headline: score the median of each metric across iterations.
-            metric_keys: set[str] = set()
-            for mv in iteration_metric_values:
-                metric_keys.update(mv.keys())
-            median_values: dict[str, float] = {}
-            for k in metric_keys:
-                vals = [mv[k] for mv in iteration_metric_values if mv.get(k) is not None]
-                if vals:
-                    median_values[k] = round(median(vals), 3)
-
             breakdown = compute_score(
-                _plugin_metrics_from_values(median_values),
+                _plugin_metrics_from_values(_median_values(iteration_metric_values)),
                 weights=weights,
                 thresholds=thresholds,
             )
             sops_stdev = round(pstdev(iteration_scores), 2) if len(iteration_scores) > 1 else 0.0
             sops_min = round(min(iteration_scores), 2) if iteration_scores else None
             sops_max = round(max(iteration_scores), 2) if iteration_scores else None
+
+            # Completion headline — separate axis. NULL when no completion metrics
+            # were captured this run.
+            c_breakdown = compute_completion(
+                _plugin_metrics_from_values(
+                    _median_values(completion_metric_values), COMPLETION_METRIC_SOURCES
+                ),
+                completion_weights,
+                completion_thresholds,
+            )
+            has_completion = bool(c_breakdown.subscores)
+            comp_stdev = (
+                round(pstdev(completion_scores), 2) if len(completion_scores) > 1 else 0.0
+            ) if completion_scores else None
 
             session.add(
                 ScoreResult(
@@ -332,6 +409,17 @@ def execute_run(run_id: int) -> None:
                     weights_used=breakdown.weights_used,
                     metric_values=breakdown.metric_values,
                     rubric_version=config.get("rubric_version"),
+                    completion=c_breakdown.sops if has_completion else None,
+                    completion_stdev=comp_stdev if has_completion else None,
+                    completion_min=(
+                        round(min(completion_scores), 2) if completion_scores else None
+                    ),
+                    completion_max=(
+                        round(max(completion_scores), 2) if completion_scores else None
+                    ),
+                    completion_subscores=c_breakdown.subscores if has_completion else None,
+                    completion_weights_used=c_breakdown.weights_used if has_completion else None,
+                    completion_metric_values=c_breakdown.metric_values if has_completion else None,
                 )
             )
 

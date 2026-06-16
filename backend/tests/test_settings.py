@@ -43,7 +43,13 @@ def test_summarize_is_human_readable():
     assert "q" in s and ":" in s
 
 
-def _seed_run(fp: str, sops: float, when: datetime) -> None:
+def _seed_run(
+    fp: str,
+    sops: float,
+    when: datetime,
+    completion: float | None = None,
+    completion_metrics: dict | None = None,
+) -> None:
     with session_scope() as session:
         run = Run(
             status=RunStatus.COMPLETE,
@@ -53,7 +59,17 @@ def _seed_run(fp: str, sops: float, when: datetime) -> None:
         )
         session.add(run)
         session.flush()
-        session.add(ScoreResult(run_id=run.id, sops=sops, subscores={}, weights_used={}, metric_values={}))
+        session.add(
+            ScoreResult(
+                run_id=run.id,
+                sops=sops,
+                subscores={},
+                weights_used={},
+                metric_values={},
+                completion=completion,
+                completion_metric_values=completion_metrics,
+            )
+        )
 
 
 def test_profiles_and_impact(client):
@@ -117,3 +133,26 @@ def test_backfill_stamps_null_runs(client):
     assert resp.status_code == 200
     assert resp.json()["updated"] >= 1
     assert resp.json()["fingerprint"]  # mock provider yields a stable fingerprint
+
+
+# Kept last: seeds a distinct profile and only queries by its own fingerprint, so
+# it can't perturb the order-sensitive profile/impact assertions above.
+def test_profiles_expose_completion_axis(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(6):
+        _seed_run(
+            "completionfp1",
+            80 + i,
+            t0 - timedelta(minutes=60 - i),
+            completion=70 + i,
+            completion_metrics={"dns": 12.0, "tcp": 30.0, "tls": 40.0},
+        )
+    body = client.get("/api/settings/profiles").json()
+    prof = next(p for p in body["profiles"] if p["fingerprint"] == "completionfp1")
+    # Completion aggregates as its own axis, gated like SOPS.
+    assert prof["completion"] is not None
+    assert prof["completion"]["count"] == 6
+    assert prof["completion"]["confident"] is True  # 6 >= min_runs (5)
+    # Raw infra metric medians are exposed per profile.
+    assert prof["completion_metrics"]["tls"]["median"] == 40.0
+    assert prof["completion_metrics"]["dns"]["count"] == 6

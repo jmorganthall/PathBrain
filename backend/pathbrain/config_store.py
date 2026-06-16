@@ -16,14 +16,24 @@ from .models import AppConfig
 
 CONFIG_KEY = "benchmark"
 
-# Default SOPS weights, straight from the PRD. They need not sum to 100; the
-# scoring engine normalizes whatever weights are present for available metrics.
+# Default SOPS weights — the headline *human-feel* score. SOPS is perception-led:
+# paint timing (when content actually appears/responds) plus the most perceptual
+# completion metrics (TTFB, render). Raw infra latency lives in the Completion
+# axis below, not here. Weights need not sum to 100; the engine normalizes them.
 DEFAULT_WEIGHTS: dict[str, float] = {
+    "render": 25,  # wall-clock full render (closest to "felt slow")
+    "lcp": 25,     # Largest Contentful Paint — main content visible
+    "fcp": 20,     # First Contentful Paint — "it's responding"
+    "ttfb": 15,    # time-to-first-byte — when the page starts
+    "inp": 15,     # Interaction to Next Paint — responsiveness to input
+}
+
+# Completion axis weights — pure-infrastructure timing (connection setup + ICMP).
+# A diagnostic secondary axis, deliberately NOT folded into SOPS.
+DEFAULT_COMPLETION_WEIGHTS: dict[str, float] = {
     "dns": 10,
     "tcp": 15,
     "tls": 20,
-    "ttfb": 20,
-    "render": 25,  # browser engine total render (benchmark_browser)
     "jitter": 5,
     "packet_loss": 5,
 }
@@ -37,17 +47,27 @@ DEFAULT_RUBRIC_VERSION = "perceptual-v1"
 # (Weber–Fechner) curve. These are calibrated to human-perception research rather
 # than guessed — anchored to Nielsen's response-time limits (0.1s feels instant,
 # 1s keeps flow, 10s loses attention) and Google's RAIL (~100ms = instant).
+# SOPS thresholds. Paint metrics anchored to Google Web Vitals "good/poor" bands
+# (FCP good ≤1.8s/poor >3s; LCP good ≤2.5s/poor >4s; INP good ≤200ms/poor >500ms),
+# spread a little so the log curve has headroom; TTFB/render to Nielsen/RAIL.
 DEFAULT_THRESHOLDS: dict[str, dict[str, float]] = {
+    "fcp": {"best": 1000.0, "worst": 4000.0},      # ms first contentful paint
+    "lcp": {"best": 1500.0, "worst": 6000.0},      # ms largest contentful paint
+    "inp": {"best": 100.0, "worst": 500.0},        # ms interaction-to-next-paint
+    # Nielsen: 100ms feels instant, ~1s is the edge of "flowing".
+    "ttfb": {"best": 100.0, "worst": 1000.0},      # ms time-to-first-byte
+    # RAIL/Nielsen: ~1s page feels good, several seconds feels slow.
+    "render": {"best": 1000.0, "worst": 6000.0},   # ms total render
+}
+
+# Completion thresholds — pure-infrastructure timing.
+DEFAULT_COMPLETION_THRESHOLDS: dict[str, dict[str, float]] = {
     # DNS is invisible under a few ms; painful past ~150ms.
     "dns": {"best": 10.0, "worst": 150.0},         # ms lookup
     # Connection setup is ~1 RTT; LAN-fast vs clearly laggy.
     "tcp": {"best": 10.0, "worst": 250.0},         # ms connect
     # TLS adds 1–2 RTT on top of TCP.
     "tls": {"best": 30.0, "worst": 500.0},         # ms handshake
-    # Nielsen: 100ms feels instant, ~1s is the edge of "flowing".
-    "ttfb": {"best": 100.0, "worst": 1000.0},      # ms time-to-first-byte
-    # RAIL/Nielsen: ~1s page feels good, several seconds feels slow.
-    "render": {"best": 1000.0, "worst": 6000.0},   # ms total render
     # Interactive media: a few ms imperceptible, tens of ms disruptive.
     "jitter": {"best": 1.0, "worst": 30.0},        # ms
     # Loss hurts interactivity quickly (retransmits/stalls).
@@ -153,6 +173,9 @@ DEFAULT_CONFIG: dict = {
     },
     "weights": DEFAULT_WEIGHTS,
     "thresholds": DEFAULT_THRESHOLDS,
+    # Completion rubric — the secondary infra axis, separate from SOPS.
+    "completion_weights": DEFAULT_COMPLETION_WEIGHTS,
+    "completion_thresholds": DEFAULT_COMPLETION_THRESHOLDS,
 }
 
 
@@ -162,6 +185,8 @@ def default_rubric() -> dict:
         "rubric_version": DEFAULT_RUBRIC_VERSION,
         "weights": copy.deepcopy(DEFAULT_WEIGHTS),
         "thresholds": copy.deepcopy(DEFAULT_THRESHOLDS),
+        "completion_weights": copy.deepcopy(DEFAULT_COMPLETION_WEIGHTS),
+        "completion_thresholds": copy.deepcopy(DEFAULT_COMPLETION_THRESHOLDS),
     }
 
 

@@ -45,6 +45,16 @@ class ScoreOut(BaseModel):
     weights_used: dict[str, float]
     metric_values: dict[str, float]
 
+    # Completion axis (pure-infra timing) — separate from SOPS. None when the run
+    # captured none of its metrics.
+    completion: float | None = None
+    completion_stdev: float | None = None
+    completion_min: float | None = None
+    completion_max: float | None = None
+    completion_subscores: dict[str, float] | None = None
+    completion_weights_used: dict[str, float] | None = None
+    completion_metric_values: dict[str, float] | None = None
+
 
 class RunSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
