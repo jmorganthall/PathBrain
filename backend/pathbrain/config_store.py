@@ -40,24 +40,24 @@ DEFAULT_COMPLETION_WEIGHTS: dict[str, float] = {
 
 # Identifier for the active scoring rubric (curve + thresholds). Bump when the
 # calibration changes so historical scores can be tracked/re-graded.
-DEFAULT_RUBRIC_VERSION = "perceptual-v1"
+DEFAULT_RUBRIC_VERSION = "perceptual-v2"
 
 # Normalization thresholds: the value at which a metric scores 100 (best) and the
 # value at which it scores 0 (worst). Lower-is-better; interpolated on a log
 # (Weber–Fechner) curve. These are calibrated to human-perception research rather
 # than guessed — anchored to Nielsen's response-time limits (0.1s feels instant,
 # 1s keeps flow, 10s loses attention) and Google's RAIL (~100ms = instant).
-# SOPS thresholds. Paint metrics anchored to Google Web Vitals "good/poor" bands
-# (FCP good ≤1.8s/poor >3s; LCP good ≤2.5s/poor >4s; INP good ≤200ms/poor >500ms),
-# spread a little so the log curve has headroom; TTFB/render to Nielsen/RAIL.
+# SOPS thresholds. `best` (= subscore 100) is anchored to *near-physical-floor*
+# conditions — what you'd only see on a low-latency link sitting right next to the
+# origin, with a fast client. That makes 100 reachable but genuinely hard, so a
+# good-but-ordinary setup lands well below it; `worst` (= 0) ≈ Web Vitals "poor".
+# Paint floors account for unavoidable client parse/paint; TTFB is mostly network.
 DEFAULT_THRESHOLDS: dict[str, dict[str, float]] = {
-    "fcp": {"best": 1000.0, "worst": 4000.0},      # ms first contentful paint
-    "lcp": {"best": 1500.0, "worst": 6000.0},      # ms largest contentful paint
-    "inp": {"best": 100.0, "worst": 500.0},        # ms interaction-to-next-paint
-    # Nielsen: 100ms feels instant, ~1s is the edge of "flowing".
-    "ttfb": {"best": 100.0, "worst": 1000.0},      # ms time-to-first-byte
-    # RAIL/Nielsen: ~1s page feels good, several seconds feels slow.
-    "render": {"best": 1000.0, "worst": 6000.0},   # ms total render
+    "fcp": {"best": 150.0, "worst": 4000.0},       # ms first contentful paint
+    "lcp": {"best": 250.0, "worst": 6000.0},       # ms largest contentful paint
+    "inp": {"best": 40.0, "worst": 500.0},         # ms interaction-to-next-paint
+    "ttfb": {"best": 30.0, "worst": 1000.0},       # ms time-to-first-byte
+    "render": {"best": 500.0, "worst": 6000.0},    # ms total render
 }
 
 # Completion thresholds — pure-infrastructure timing.

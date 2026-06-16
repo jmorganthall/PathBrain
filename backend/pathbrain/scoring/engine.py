@@ -63,6 +63,11 @@ def _normalize(value: float, best: float, worst: float) -> float:
     the stimulus). Equal *ratios* of latency cost equal score — e.g. 20→40ms drops
     the same as 200→400ms — which models human perception far better than a linear
     ramp where 900→1000ms would matter as much as 20→120ms.
+
+    100 is the genuinely-ideal end of the scale and is reachable, but only by
+    hitting ``best`` — which is calibrated to near-physical-floor conditions (e.g.
+    a low-latency link right next to the origin). So a good-but-ordinary setup
+    lands well below 100 because of where the thresholds sit, not any cap.
     """
     if worst == best:
         return 100.0 if value <= best else 0.0

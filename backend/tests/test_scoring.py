@@ -31,8 +31,34 @@ def _completion(metrics):
     return compute_completion(metrics, DEFAULT_COMPLETION_WEIGHTS, DEFAULT_COMPLETION_THRESHOLDS)
 
 
-def test_perfect_metrics_score_100():
+def test_ideal_metrics_score_100():
+    # 100 is reachable — but only by hitting the near-ideal `best` thresholds.
     assert _score(PERFECT_SOPS).sops == 100.0
+
+
+def test_good_but_ordinary_setup_is_well_below_100():
+    # The flagged run: good, not perfect. The scale (not a cap) keeps it down, and
+    # no individual metric pins at 100.
+    good = {
+        "browser": {"fcp_ms": 489.0, "lcp_ms": 561.0, "inp_ms": 98.7, "total_render_ms": 1540.0},
+        "http": {"ttfb_ms": 209.0},
+    }
+    result = _score(good)
+    assert result.sops < 85.0
+    assert all(v < 100.0 for v in result.subscores.values())
+
+
+def test_only_near_floor_values_reach_100():
+    # A value worse than `best` scores below 100; at/under `best` it's 100.
+    thr = {"ttfb": {"best": 30.0, "worst": 1000.0}}
+    w = {"ttfb": 10}
+
+    def sub(v: float) -> float:
+        return compute_score({"http": {"ttfb_ms": v}}, w, thr).subscores["ttfb"]
+
+    assert sub(200) < sub(60) < 100.0  # ordinary values leave headroom
+    assert sub(30) == 100.0            # hitting the near-ideal floor scores 100
+    assert sub(200) < sub(60)          # monotonic: faster is better
 
 
 def test_worst_metrics_score_0():
@@ -63,7 +89,7 @@ def test_completion_axis_scores_infra():
 
 
 def test_missing_metrics_redistribute_weights():
-    # Only TTFB present (a SOPS metric), perfect -> SOPS 100, weight redistributed.
+    # Only TTFB present (a SOPS metric), at the ideal floor -> 100, weight to it.
     result = _score({"http": {"ttfb_ms": 1.0}})
     assert result.sops == 100.0
     assert set(result.weights_used) == {"ttfb"}
@@ -72,8 +98,8 @@ def test_missing_metrics_redistribute_weights():
 
 def test_sops_survives_without_browser():
     # No browser engine -> SOPS falls back to TTFB only (never blank when http ran).
-    result = _score({"http": {"ttfb_ms": 100.0}})
-    assert result.sops == 100.0  # 100ms == ttfb "best"
+    result = _score({"http": {"ttfb_ms": 80.0}})  # ordinary-good TTFB
+    assert 0.0 < result.sops < 100.0
     assert set(result.subscores) == {"ttfb"}
 
 
