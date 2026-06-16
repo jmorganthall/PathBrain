@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_session
+from ..metrics import has_latest_metrics
 from ..models import Run, ScoreResult
 from ..schemas import RunSummary
 
@@ -36,6 +37,7 @@ def list_history(
             status=run.status.value if hasattr(run.status, "value") else str(run.status),
             label=run.label,
             sops=run.score.sops if run.score else None,
+            legacy=bool(run.score and not has_latest_metrics(run.score.metric_values)),
             iterations=run.iterations,
             iterations_completed=run.iterations_completed,
             per_iteration_ms=run.per_iteration_ms,
@@ -47,9 +49,16 @@ def list_history(
 @router.get("/history/series")
 def history_series(
     limit: int = Query(100, ge=1, le=1000),
+    include_legacy: bool = Query(
+        False, description="Include runs scored before the current rubric (legacy)."
+    ),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Time-series of SOPS and key metrics for charting (oldest → newest)."""
+    """Time-series of SOPS and key metrics for charting (oldest → newest).
+
+    Legacy runs (scored before the current rubric) are excluded by default so the
+    trend isn't built on non-comparable scores.
+    """
     rows = session.execute(
         select(Run, ScoreResult)
         .join(ScoreResult, ScoreResult.run_id == Run.id)
@@ -60,6 +69,8 @@ def history_series(
 
     points = []
     for run, score in rows:
+        if not include_legacy and not has_latest_metrics(score.metric_values):
+            continue
         # SOPS now carries paint/ttfb/render; the infra metrics (dns/tcp/tls/
         # jitter/loss) live in the Completion slot. Merge so the chart keeps all.
         values = {**(score.completion_metric_values or {}), **(score.metric_values or {})}

@@ -71,8 +71,8 @@ export const api = {
   history: (limit = 50, offset = 0) =>
     request<RunSummary[]>(`/history?limit=${limit}&offset=${offset}`),
   historyCount: () => request<{ count: number }>("/history/count"),
-  historySeries: (limit = 100) =>
-    request<SeriesResponse>(`/history/series?limit=${limit}`),
+  historySeries: (limit = 100, includeLegacy = false) =>
+    request<SeriesResponse>(`/history/series?limit=${limit}&include_legacy=${includeLegacy}`),
 
   // Score
   weights: () => request<WeightsResponse>("/score/weights"),

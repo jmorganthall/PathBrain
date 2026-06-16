@@ -194,6 +194,13 @@ export default function Compare() {
             </FormControl>
           </Box>
 
+          {(aRun?.score?.legacy || bRun?.score?.legacy) && (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+              One of these runs uses <strong>legacy scoring</strong> (predates the current metrics),
+              so the SOPS comparison isn't meaningful. Pick two current runs to compare like-for-like.
+            </Alert>
+          )}
+
           <Card>
             <CardContent>
               {rows.length === 0 ? (

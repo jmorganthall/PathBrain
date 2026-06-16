@@ -199,6 +199,14 @@ export default function RunDetail() {
         </Alert>
       )}
 
+      {run.score?.legacy && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <strong>Legacy scoring.</strong> This run predates the current metrics (no paint data), so
+          its SOPS was computed from a thinner set and isn't comparable to current runs — shown for
+          reference only.
+        </Alert>
+      )}
+
       <Box
         sx={{
           display: "grid",

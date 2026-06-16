@@ -44,6 +44,9 @@ class ScoreOut(BaseModel):
     subscores: dict[str, float]
     weights_used: dict[str, float]
     metric_values: dict[str, float]
+    # True when this score predates the current rubric's metrics (no paint data),
+    # so its SOPS isn't comparable — the UI quarantines it as "legacy".
+    legacy: bool = False
 
     # Completion axis (pure-infra timing) — separate from SOPS. None when the run
     # captured none of its metrics.
@@ -66,6 +69,9 @@ class RunSummary(BaseModel):
     status: str
     label: str | None = None
     sops: float | None = None
+    # True when this run's score predates the current rubric's metrics (legacy,
+    # not comparable). False for runs with no score yet (running/failed).
+    legacy: bool = False
     iterations: int = 1
     iterations_completed: int = 0
     per_iteration_ms: float | None = None

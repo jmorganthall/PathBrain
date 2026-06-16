@@ -177,6 +177,16 @@ def latest_metric_keys() -> tuple[str, ...]:
     return tuple(m.key for m in METRICS if m.marks_latest)
 
 
+def has_latest_metrics(metric_values: dict | None) -> bool:
+    """True if a score's metric values include the current-rubric markers.
+
+    Runs missing them predate the latest scoring (e.g. before paint capture), so
+    their SOPS isn't comparable — callers quarantine these as "legacy".
+    """
+    mv = metric_values or {}
+    return all(mv.get(k) is not None for k in latest_metric_keys())
+
+
 def catalog() -> list[dict]:
     """Serializable metric definitions for the API / UI (the single metadata source)."""
     return [

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..config_store import get_config
 from ..database import get_session
+from ..metrics import has_latest_metrics
 from ..models import Run, RunStatus, ScoreResult
 from ..runner import rescore_run
 from ..schemas import ScoreOut
@@ -64,6 +65,8 @@ def rolling_score(
         .scalars()
         .all()
     )
+    # The headline must be trustworthy: drop legacy scores (pre-current-rubric).
+    rows = [r for r in rows if has_latest_metrics(r.metric_values)]
     if not rows:
         return {
             "window_hours": hours,
@@ -140,4 +143,6 @@ def get_score(run_id: int, session: Session = Depends(get_session)) -> ScoreOut:
     run = session.get(Run, run_id)
     if run is None or run.score is None:
         raise HTTPException(status_code=404, detail=f"No score for run {run_id}")
-    return ScoreOut.model_validate(run.score)
+    out = ScoreOut.model_validate(run.score)
+    out.legacy = not has_latest_metrics(run.score.metric_values)
+    return out
