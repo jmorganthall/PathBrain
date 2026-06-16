@@ -17,23 +17,18 @@ from ..database import get_session
 from ..logging_config import get_logger
 from ..models import Run, RunStatus, ScoreResult
 from ..providers import get_provider
-from ..metrics import latest_metric_keys
+from ..metrics import has_latest_metrics
 from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import diff_profiles, fingerprint, normalize, summarize
 
 router = APIRouter()
 log = get_logger("api.settings")
 
-# A run is "latest-rubric complete" once it carries the metrics flagged in the
-# registry as marking the current rubric (the browser paint metrics FCP/LCP).
-# Older runs predate paint capture, so their SOPS comes from a thinner metric set
-# and reads artificially high — not comparable.
-LATEST_METRIC_KEYS = latest_metric_keys()
-
 
 def _has_latest_metrics(score: ScoreResult) -> bool:
-    mv = score.metric_values or {}
-    return all(mv.get(k) is not None for k in LATEST_METRIC_KEYS)
+    # A run is "current" once its SOPS carries the latest-rubric markers (paint
+    # metrics). Older runs predate them, so their score isn't comparable — legacy.
+    return has_latest_metrics(score.metric_values)
 
 
 def _min_runs(session: Session) -> int:

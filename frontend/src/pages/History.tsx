@@ -4,6 +4,9 @@ import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
+import Chip from "@mui/material/Chip";
+import Stack from "@mui/material/Stack";
+import Tooltip from "@mui/material/Tooltip";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
@@ -31,6 +34,9 @@ export default function History() {
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Legacy runs (scored before the current rubric) aren't comparable — hide them
+  // by default; the toggle reveals the archive.
+  const [hideLegacy, setHideLegacy] = useState(true);
 
   const loadPage = useCallback(async (p: number, rpp: number) => {
     try {
@@ -70,7 +76,21 @@ export default function History() {
     loadPage(0, rpp);
   };
 
+  const toggleLegacy = async () => {
+    const next = !hideLegacy;
+    setHideLegacy(next);
+    try {
+      const s = await api.historySeries(100, !next); // includeLegacy = !hideLegacy
+      setSeries(s.points);
+    } catch {
+      /* keep existing series on failure */
+    }
+  };
+
   if (loading) return <Loading label="Loading history…" />;
+
+  const shownRuns = hideLegacy ? runs.filter((r) => !r.legacy) : runs;
+  const hiddenCount = runs.length - shownRuns.length;
 
   return (
     <Box>
@@ -153,9 +173,28 @@ export default function History() {
           {/* Runs list (paginated) below the graphs */}
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Runs ({total})
-              </Typography>
+              <Stack
+                direction="row"
+                justifyContent="space-between"
+                alignItems="center"
+                spacing={1}
+                sx={{ mb: 1 }}
+              >
+                <Typography variant="h6">Runs ({total})</Typography>
+                <Chip
+                  size="small"
+                  variant={hideLegacy ? "outlined" : "filled"}
+                  color={hideLegacy ? "default" : "primary"}
+                  onClick={toggleLegacy}
+                  label={hideLegacy ? "Show legacy (archive)" : "Hide legacy"}
+                />
+              </Stack>
+              {hideLegacy && hiddenCount > 0 && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                  {hiddenCount} legacy run{hiddenCount === 1 ? "" : "s"} on this page hidden — scored
+                  before the current rubric, not comparable.
+                </Typography>
+              )}
               <TableContainer>
                 <Table size="small">
                   <TableHead>
@@ -168,11 +207,11 @@ export default function History() {
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {runs.map((r) => (
+                    {shownRuns.map((r) => (
                       <TableRow
                         key={r.id}
                         hover
-                        sx={{ cursor: "pointer" }}
+                        sx={{ cursor: "pointer", opacity: r.legacy ? 0.6 : 1 }}
                         onClick={() => navigate(`/runs/${r.id}`)}
                       >
                         <TableCell>#{r.id}</TableCell>
@@ -181,8 +220,19 @@ export default function History() {
                         <TableCell>
                           <StatusChip status={r.status} />
                         </TableCell>
-                        <TableCell align="right" sx={{ fontWeight: 600, color: sopsColor(r.sops) }}>
-                          {fmtScore(r.sops)}
+                        <TableCell align="right">
+                          {r.legacy ? (
+                            <Tooltip title="Scored before the current rubric — not comparable.">
+                              <Chip size="small" variant="outlined" label="legacy" />
+                            </Tooltip>
+                          ) : (
+                            <Typography
+                              component="span"
+                              sx={{ fontWeight: 600, color: sopsColor(r.sops) }}
+                            >
+                              {fmtScore(r.sops)}
+                            </Typography>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}

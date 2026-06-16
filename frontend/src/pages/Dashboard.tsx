@@ -326,6 +326,11 @@ export default function Dashboard() {
                   clickable
                   label={`Run #${latest.id}`}
                 />
+                {latest.score?.legacy && (
+                  <Tooltip title="Scored before the current rubric — not comparable to current runs.">
+                    <Chip size="small" variant="outlined" color="warning" label="legacy" />
+                  </Tooltip>
+                )}
               </Stack>
               <Typography variant="caption" color="text.secondary">
                 {latest.label ? `${latest.label} · ` : ""}

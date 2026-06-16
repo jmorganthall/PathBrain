@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..config_store import get_config
 from ..database import get_session
+from ..metrics import has_latest_metrics
 from ..models import Run, RunStatus, ScoreResult
 from ..schemas import BenchmarkResultOut, RunBaselineOut, RunDetail, ScoreOut
 from ..settings_profile import summarize
@@ -18,6 +19,14 @@ router = APIRouter()
 # How many recent runs to average into a baseline. Keeps the comparison anchored
 # to recent typical behavior rather than a profile's entire history.
 BASELINE_RUN_LIMIT = 50
+
+
+def _serialize_score(score: ScoreResult | None) -> ScoreOut | None:
+    if score is None:
+        return None
+    out = ScoreOut.model_validate(score)
+    out.legacy = not has_latest_metrics(score.metric_values)
+    return out
 
 
 def _serialize_run(run: Run) -> RunDetail:
@@ -37,7 +46,7 @@ def _serialize_run(run: Run) -> RunDetail:
         settings=run.settings,
         config_used=run.config_used,
         results=[BenchmarkResultOut.model_validate(r) for r in run.results],
-        score=ScoreOut.model_validate(run.score) if run.score else None,
+        score=_serialize_score(run.score),
     )
 
 

@@ -13,6 +13,8 @@ export interface RunSummary {
   status: string;
   label?: string | null;
   sops?: number | null;
+  // True when this run's score predates the current rubric (legacy, not comparable).
+  legacy?: boolean;
   iterations: number;
   iterations_completed: number;
   per_iteration_ms?: number | null;
@@ -155,6 +157,8 @@ export interface ScoreOut {
   subscores: Record<string, number>;
   weights_used: Record<string, number>;
   metric_values: Record<string, number>;
+  // True when this score predates the current rubric's metrics (legacy).
+  legacy?: boolean;
 
   // Completion axis (pure-infra timing) — separate from SOPS. null when the run
   // captured none of its metrics.
