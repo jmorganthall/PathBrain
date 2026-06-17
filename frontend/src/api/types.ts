@@ -323,6 +323,8 @@ export interface MetricCatalogEntry {
   best: number | null;
   worst: number | null;
   higher_is_better: boolean;
+  // Chronological/logical display rank (lower = earlier in a page load).
+  order: number;
 }
 
 export interface MetricsCatalog {

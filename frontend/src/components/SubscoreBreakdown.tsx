@@ -4,7 +4,7 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { sopsColor } from "../theme";
 import { fmtScore } from "../utils/format";
-import { useMetricMeta } from "../utils/metrics";
+import { useMetricMeta, useMetricOrder } from "../utils/metrics";
 
 interface ScoreLike {
   subscores: Record<string, number>;
@@ -20,6 +20,7 @@ function fmtWeight(w: number | undefined): string {
 
 export default function SubscoreBreakdown({ score }: { score: ScoreLike }) {
   const metricMeta = useMetricMeta();
+  const metricOrder = useMetricOrder();
 
   // Units come from the metric registry (single source of truth).
   const fmtValue = (metric: string, v: number | undefined): string => {
@@ -29,9 +30,8 @@ export default function SubscoreBreakdown({ score }: { score: ScoreLike }) {
     return `${n}${unit ? " " + unit : ""}`;
   };
 
-  const keys = Object.keys(score.subscores).sort(
-    (a, b) => (score.weights_used[b] ?? 0) - (score.weights_used[a] ?? 0)
-  );
+  // Order by when each metric happens in a page load (chronological), not weight.
+  const keys = Object.keys(score.subscores).sort((a, b) => metricOrder(a) - metricOrder(b));
 
   if (keys.length === 0) {
     return (

@@ -28,7 +28,7 @@ import StatusChip from "../components/StatusChip";
 import JsonViewer from "../components/JsonViewer";
 import Loading from "../components/Loading";
 import MetricDelta from "../components/MetricDelta";
-import { useMetricMeta } from "../utils/metrics";
+import { useMetricMeta, useMetricOrder } from "../utils/metrics";
 import { fmtDateTime, fmtDuration, metricValue, parseApiDate, runRemainingMs } from "../utils/format";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
@@ -57,6 +57,7 @@ export default function RunDetail() {
   const { id } = useParams<{ id: string }>();
   const runId = Number(id);
   const metricMeta = useMetricMeta();
+  const metricOrder = useMetricOrder();
   const [run, setRun] = useState<RunDetailType | null>(null);
   const [baseline, setBaseline] = useState<RunBaseline | null>(null);
   const [loading, setLoading] = useState(true);
@@ -396,7 +397,9 @@ export default function RunDetail() {
           }}
         >
           {run.results.map((res) => {
-            const metricKeys = Object.keys(res.metrics);
+            const metricKeys = Object.keys(res.metrics).sort(
+              (a, b) => metricOrder(a) - metricOrder(b),
+            );
             const metricStats = ((res.details as Record<string, unknown> | null)
               ?.metric_stats ?? {}) as Record<string, MetricStat>;
             return (
