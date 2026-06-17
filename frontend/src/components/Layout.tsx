@@ -20,6 +20,7 @@ import DashboardIcon from "@mui/icons-material/SpaceDashboard";
 import HistoryIcon from "@mui/icons-material/Timeline";
 import CompareIcon from "@mui/icons-material/CompareArrows";
 import SettingsIcon from "@mui/icons-material/Tune";
+import TuneFilledIcon from "@mui/icons-material/SettingsInputComponent";
 import InsightsIcon from "@mui/icons-material/Insights";
 import ScienceIcon from "@mui/icons-material/Science";
 import ExtensionIcon from "@mui/icons-material/Extension";
@@ -38,6 +39,7 @@ const NAV: NavItem[] = [
   { label: "Dashboard", to: "/", icon: <DashboardIcon /> },
   { label: "History", to: "/history", icon: <HistoryIcon /> },
   { label: "Compare", to: "/compare", icon: <CompareIcon /> },
+  { label: "Manual Settings", to: "/manual-settings", icon: <TuneFilledIcon /> },
   { label: "Settings Impact", to: "/settings", icon: <InsightsIcon /> },
   { label: "Experiments", to: "/experiments", icon: <ScienceIcon /> },
   { label: "Config", to: "/config", icon: <SettingsIcon /> },

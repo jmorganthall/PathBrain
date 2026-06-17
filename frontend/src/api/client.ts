@@ -6,6 +6,7 @@ import type {
   ExperimentDetail,
   ExperimentsResponse,
   Health,
+  ManualApplyResponse,
   MetricsCatalog,
   MonitoringStatus,
   PluginInfo,
@@ -110,6 +111,14 @@ export const api = {
   providerHealth: () => request<ProviderHealth>("/config/provider"),
   discover: () => request<DiscoverResponse>("/config/discover", { method: "POST" }),
   snapshots: () => request<ConfigSnapshot[]>("/config/snapshots"),
+  applyPipeChanges: (body: {
+    pipe_uuid?: string | null;
+    changes: Record<string, unknown>;
+  }) =>
+    request<ManualApplyResponse>("/config/apply", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   // Plugins
   plugins: () => request<PluginInfo[]>("/plugins"),

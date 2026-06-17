@@ -21,6 +21,17 @@ class ConfigUpdate(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class ManualApplyIn(BaseModel):
+    """Manual firewall shaper edit for one pipe.
+
+    ``changes`` maps normalized param names (bandwidth/quantum/limit/flows/
+    target/interval/ecn) to their new values. ``pipe_uuid`` blank → first pipe.
+    """
+
+    pipe_uuid: str | None = None
+    changes: dict[str, Any]
+
+
 # -- Responses ------------------------------------------------------------
 class BenchmarkResultOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -138,3 +149,17 @@ class DiscoverOut(BaseModel):
     provider: str
     pipes: list[dict[str, Any]]
     snapshot_id: int | None = None
+
+
+class ManualApplyResult(BaseModel):
+    param: str
+    value: Any
+    ok: bool
+    detail: str | None = None
+
+
+class ManualApplyOut(BaseModel):
+    provider: str
+    snapshot_id: int | None = None
+    applied: int
+    results: list[ManualApplyResult]
