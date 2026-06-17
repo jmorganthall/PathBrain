@@ -29,7 +29,7 @@ import JsonViewer from "../components/JsonViewer";
 import Loading from "../components/Loading";
 import MetricDelta from "../components/MetricDelta";
 import { useMetricMeta } from "../utils/metrics";
-import { fmtDateTime, fmtDuration, metricValue, parseApiDate } from "../utils/format";
+import { fmtDateTime, fmtDuration, metricValue, parseApiDate, runRemainingMs } from "../utils/format";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
 
@@ -147,7 +147,14 @@ export default function RunDetail() {
               {cancelling ? "Cancelling…" : "Cancel run"}
             </Button>
           )}
-          <StatusChip status={run.status} />
+          <StatusChip
+            status={run.status}
+            etaMs={
+              isRunning(run.status)
+                ? runRemainingMs(run.started_at, run.iterations, estimate?.per_iteration_ms, now)
+                : null
+            }
+          />
         </Stack>
       </Stack>
 
