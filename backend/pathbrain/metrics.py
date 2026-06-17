@@ -155,6 +155,22 @@ METRICS: list[MetricDef] = [
 ]
 
 
+# The order metrics happen / make sense to read in: connection setup → response →
+# paint → load → interaction → network quality. Drives the UI ordering (score
+# breakdown + plugin results) so the sequence reads chronologically, not by weight.
+DISPLAY_ORDER = [
+    "dns", "tcp", "tls",                                  # connection setup
+    "ttfb", "download", "transfer",                       # response
+    "fcp", "dom_content_loaded", "lcp", "load_event", "render",  # paint → load
+    "inp",                                                # interaction (after load)
+    "latency", "jitter", "packet_loss",                   # network quality (continuous)
+]
+
+
+def _order(key: str) -> int:
+    return DISPLAY_ORDER.index(key) if key in DISPLAY_ORDER else len(DISPLAY_ORDER)
+
+
 def _by_axis(axis: str) -> list[MetricDef]:
     return [m for m in METRICS if m.axis == axis]
 
@@ -202,6 +218,7 @@ def catalog() -> list[dict]:
             "best": m.best,
             "worst": m.worst,
             "higher_is_better": m.higher_is_better,
+            "order": _order(m.key),
         }
         for m in METRICS
     ]

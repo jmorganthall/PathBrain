@@ -28,15 +28,36 @@ import StatusChip from "../components/StatusChip";
 import JsonViewer from "../components/JsonViewer";
 import Loading from "../components/Loading";
 import MetricDelta from "../components/MetricDelta";
-import { useMetricMeta } from "../utils/metrics";
+import { useMetricMeta, useMetricOrder } from "../utils/metrics";
 import { fmtDateTime, fmtDuration, metricValue, parseApiDate, runRemainingMs } from "../utils/format";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
+
+interface MetricStat {
+  n?: number;
+  mean?: number;
+  median?: number;
+  min?: number;
+  max?: number;
+  stdev?: number;
+}
+
+// Explains what the displayed value is: the median across iterations (what SOPS
+// is scored on), with the mean, range and spread for context.
+function statsTooltip(st?: MetricStat): string {
+  if (!st || !st.n) return "";
+  const f = (x?: number) => (x == null ? "—" : Number.isInteger(x) ? String(x) : x.toFixed(1));
+  if (st.n <= 1) return "Single iteration — no spread.";
+  return `Median across ${st.n} iterations · mean ${f(st.mean)} · range ${f(st.min)}–${f(
+    st.max,
+  )} · ±${f(st.stdev)} stdev`;
+}
 
 export default function RunDetail() {
   const { id } = useParams<{ id: string }>();
   const runId = Number(id);
   const metricMeta = useMetricMeta();
+  const metricOrder = useMetricOrder();
   const [run, setRun] = useState<RunDetailType | null>(null);
   const [baseline, setBaseline] = useState<RunBaseline | null>(null);
   const [loading, setLoading] = useState(true);
@@ -327,7 +348,8 @@ export default function RunDetail() {
         Plugin Results
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-        Hover or tap a metric name for what it means.
+        Each value is the <strong>median across this run's iterations</strong> (± stdev) — hover a
+        value for mean/range, or a metric name for what it means.
         {baseline && baseline.run_count > 0 && (
           <>
             {" "}
@@ -375,9 +397,11 @@ export default function RunDetail() {
           }}
         >
           {run.results.map((res) => {
-            const metricKeys = Object.keys(res.metrics);
+            const metricKeys = Object.keys(res.metrics).sort(
+              (a, b) => metricOrder(a) - metricOrder(b),
+            );
             const metricStats = ((res.details as Record<string, unknown> | null)
-              ?.metric_stats ?? {}) as Record<string, { stdev?: number; n?: number }>;
+              ?.metric_stats ?? {}) as Record<string, MetricStat>;
             return (
               <Card key={res.id}>
                 <CardContent>
@@ -441,12 +465,16 @@ export default function RunDetail() {
                                 </Tooltip>
                               </TableCell>
                               <TableCell align="right" sx={{ border: 0, py: 0.5, fontWeight: 600 }}>
-                                {metricValue(res.metrics[k])}
-                                {showStdev && (
-                                  <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
-                                    ± {st.stdev}
-                                  </Typography>
-                                )}
+                                <Tooltip arrow enterTouchDelay={0} leaveTouchDelay={6000} title={statsTooltip(st)}>
+                                  <Box component="span" sx={{ cursor: st?.n ? "help" : "default" }}>
+                                    {metricValue(res.metrics[k])}
+                                    {showStdev && (
+                                      <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+                                        ± {st.stdev}
+                                      </Typography>
+                                    )}
+                                  </Box>
+                                </Tooltip>
                                 {res.success && baseValue != null && (
                                   <MetricDelta
                                     current={res.metrics[k]}
