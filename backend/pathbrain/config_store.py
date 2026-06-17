@@ -87,6 +87,14 @@ DEFAULT_CONFIG: dict = {
         "headless": True,
         "screenshot": True,
         "har": True,
+        # HTTP/3 (QUIC) testing. Off by default (Chromium negotiates HTTP/2 over
+        # TCP). When enabled, QUIC is turned on and *forced* onto the target
+        # origins so loads actually use HTTP/3 — without forcing, the per-URL
+        # context teardown means Alt-Svc discovery never carries to a second
+        # connection and every load stays on HTTP/2. `force_quic_origins` is an
+        # optional list of `host:port`; when empty it's derived from `urls`.
+        "http3": False,
+        "force_quic_origins": [],
     },
     # Default number of full-suite iterations to run and average per benchmark.
     # Averaging across iterations reduces per-run variability. Editable per run.

@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from statistics import mean
+from urllib.parse import urlsplit
 
 from ..config import get_settings
 from ..logging_config import get_logger
@@ -74,6 +75,46 @@ def compute_navigation_metrics(nav: dict | None) -> dict:
         "dom_content_loaded_ms": since_origin("domContentLoadedEventEnd"),
         "load_event_ms": since_origin("loadEventEnd"),
     }
+
+
+def _origins_from_urls(urls: list[str]) -> list[str]:
+    """Derive ``host:port`` origins (deduped, ordered) from configured URLs."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in urls:
+        parts = urlsplit(url)
+        host = parts.hostname
+        if not host:
+            continue
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        origin = f"{host}:{port}"
+        if origin not in seen:
+            seen.add(origin)
+            out.append(origin)
+    return out
+
+
+def build_chromium_args(config: dict) -> list[str]:
+    """Build Chromium launch flags from browser config.
+
+    By default this is empty (Chromium's normal behavior). When ``http3`` is
+    enabled we turn QUIC on and *force* it onto specific origins so the browser
+    skips Alt-Svc discovery. This is required for meaningful HTTP/3 measurement:
+    PathBrain uses a fresh context per URL and tears it down after one load, so
+    the Alt-Svc cache (which is what normally lets Chromium upgrade TCP→QUIC on a
+    *subsequent* connection) never survives to be used — every load would
+    otherwise stay on HTTP/2. ``force_quic_origins`` (a list of ``host:port``)
+    overrides the origins; when empty they're derived from the configured URLs.
+    """
+    if not config.get("http3"):
+        return []
+    args = ["--enable-quic"]
+    origins = config.get("force_quic_origins") or _origins_from_urls(
+        config.get("urls", [])
+    )
+    if origins:
+        args.append("--origin-to-force-quic-on=" + ",".join(origins))
+    return args
 
 
 _NAV_JS = (
@@ -173,7 +214,9 @@ class BrowserBenchmark(BenchmarkPlugin):
             inps: list[float] = []
 
             with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=headless)
+                browser = pw.chromium.launch(
+                    headless=headless, args=build_chromium_args(config)
+                )
                 try:
                     for idx, url in enumerate(urls):
                         slug = _slug(url, idx)

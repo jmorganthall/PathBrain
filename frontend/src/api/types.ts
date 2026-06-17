@@ -266,6 +266,8 @@ export interface BrowserConfig {
   headless: boolean;
   screenshot: boolean;
   har: boolean;
+  http3: boolean;
+  force_quic_origins: string[];
 }
 
 export interface BenchmarkConfig {
