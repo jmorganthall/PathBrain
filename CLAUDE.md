@@ -88,6 +88,14 @@ docker compose up --build   # -> http://localhost:8000
 - A run repeats the suite `iterations` times; the headline SOPS is the **median**
   over iterations, with a confidence band (`sops_stdev/min/max`). The Dashboard
   shows a windowed **rolling** score (`/api/score/rolling`, 24h median + IQR).
+- **Current vs. legacy scoring (no dual-score machinery).** A run scored before
+  the current rubric's paint metrics (FCP/LCP absent — `metrics.has_latest_metrics`,
+  keyed off `marks_latest`) isn't comparable, so it's **quarantined**, not
+  reconciled: Dashboard rolling + History trend exclude legacy; the History list
+  hides it behind a "Show legacy" toggle; Run Detail/Compare flag it
+  (`ScoreOut.legacy`/`RunSummary.legacy`); Settings Impact aggregates `complete_only`
+  (default true). Legacy runs are kept for their *settings* history, not their score.
+  SOPS is the sole ranked headline everywhere; Completion is an opt-in diagnostic.
 - Each run captures the live firewall settings + a stable **fingerprint** at start
   (best-effort). Runs group into **profiles**; `/api/settings/impact` flags a
   change significant only with ≥ `correlation.min_runs` per side. `/api/settings/
@@ -106,8 +114,10 @@ docker compose up --build   # -> http://localhost:8000
 - **Phase 1 (done):** benchmark engine (ICMP/DNS/TCP/TLS/HTTP), SOPS scoring,
   history, config discovery (OPNsense/mock), REST API, dashboard.
 - **Phase 2 (done):** Playwright browser engine — `benchmark_browser` emits
-  `total_render_ms` (+ nav timings), captures screenshot/HAR to the artifact dir,
-  served at `/artifacts`. The `render` SOPS weight (25%) activates automatically.
+  `total_render_ms`, **paint timing** (`fcp_ms`/`lcp_ms`/`inp_ms` — the core of
+  the perception-led SOPS; INP is best-effort via a synthetic interaction), and
+  nav timings; captures screenshot/HAR to the artifact dir, served at
+  `/artifacts`. (Speed Index is the first deferred perceptual metric.)
 - **Phase 3 (done):** continuous monitoring (`scheduler.py`) + rolling score;
   settings-vs-responsiveness correlation (`settings_profile.py`, `/api/settings/*`);
   perception-calibrated rubric (Weber–Fechner) with versioned re-scoring; and the
