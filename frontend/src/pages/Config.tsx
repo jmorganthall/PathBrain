@@ -129,7 +129,11 @@ function buildPayload(d: BenchmarkConfig): BenchmarkConfig {
     tcp: { ...d.tcp, targets: d.tcp.targets.map((t) => ({ ...t, host: t.host.trim() })) },
     tls: { ...d.tls, targets: d.tls.targets.map((t) => ({ ...t, host: t.host.trim() })) },
     http: { ...d.http, urls: d.http.urls.map(s).filter(Boolean) },
-    browser: { ...d.browser, urls: d.browser.urls.map(s).filter(Boolean) },
+    browser: {
+      ...d.browser,
+      urls: d.browser.urls.map(s).filter(Boolean),
+      force_quic_origins: d.browser.force_quic_origins.map(s).filter(Boolean),
+    },
   };
 }
 
@@ -731,7 +735,32 @@ export default function Config() {
               }
               label="HAR"
             />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={d.browser.http3}
+                  onChange={(e) =>
+                    setDraft((p) => (p ? { ...p, browser: { ...p.browser, http3: e.target.checked } } : p))
+                  }
+                />
+              }
+              label="HTTP/3 (QUIC)"
+            />
           </Stack>
+          {d.browser.http3 && (
+            <Box sx={{ mt: 2 }}>
+              <StringListEditor
+                label="Force-QUIC origins"
+                helperText="host:port origins forced onto HTTP/3 (Alt-Svc discovery is skipped). Leave empty to derive from the URLs above."
+                items={d.browser.force_quic_origins}
+                onChange={(force_quic_origins) =>
+                  setDraft((p) => (p ? { ...p, browser: { ...p.browser, force_quic_origins } } : p))
+                }
+                placeholder="example.com:443"
+                addLabel="Add origin"
+              />
+            </Box>
+          )}
         </CardContent>
       </Card>
 

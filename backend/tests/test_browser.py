@@ -9,6 +9,7 @@ import importlib.util
 
 from pathbrain.plugins import get_plugin
 from pathbrain.plugins.benchmark_browser import (
+    build_chromium_args,
     compute_navigation_metrics,
     extract_paint_metrics,
 )
@@ -78,6 +79,52 @@ def test_extract_paint_metrics_missing_inp():
 def test_extract_paint_metrics_empty():
     m = extract_paint_metrics(None)
     assert m == {"fcp_ms": None, "lcp_ms": None, "inp_ms": None}
+
+
+def test_build_chromium_args_default_empty():
+    # HTTP/3 off by default -> no special flags, plain Chromium behavior.
+    assert build_chromium_args({"urls": ["https://example.com/"]}) == []
+    assert build_chromium_args({}) == []
+
+
+def test_build_chromium_args_http3_derives_origins():
+    args = build_chromium_args(
+        {
+            "http3": True,
+            "urls": ["https://www.google.com/", "https://github.com/path"],
+        }
+    )
+    assert "--enable-quic" in args
+    assert (
+        "--origin-to-force-quic-on=www.google.com:443,github.com:443" in args
+    )
+
+
+def test_build_chromium_args_http3_explicit_origins():
+    args = build_chromium_args(
+        {
+            "http3": True,
+            "urls": ["https://example.com/"],
+            "force_quic_origins": ["cloudflare.com:443"],
+        }
+    )
+    assert "--origin-to-force-quic-on=cloudflare.com:443" in args
+
+
+def test_build_chromium_args_http3_dedupes_and_handles_ports():
+    args = build_chromium_args(
+        {
+            "http3": True,
+            "urls": [
+                "https://example.com/a",
+                "https://example.com/b",
+                "http://plain.test:8080/",
+            ],
+        }
+    )
+    assert (
+        "--origin-to-force-quic-on=example.com:443,plain.test:8080" in args
+    )
 
 
 def test_browser_plugin_registered():
