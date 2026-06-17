@@ -31,7 +31,8 @@ import SeriesChart from "../components/SeriesChart";
 import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
-import { fmtDateTime, fmtDuration, parseApiDate } from "../utils/format";
+import { fmtDateTime, fmtDuration, parseApiDate, runRemainingMs } from "../utils/format";
+import { useNow } from "../utils/useNow";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
 
@@ -129,6 +130,11 @@ export default function Dashboard() {
   }, [poll, iterations]);
 
   const activeRun = running || (latest != null && isRunning(latest.status));
+  const now = useNow(activeRun);
+  const latestEtaMs =
+    latest && isRunning(latest.status)
+      ? runRemainingMs(latest.started_at, latest.iterations, estimate?.per_iteration_ms, now)
+      : null;
   const maxIterations = estimate?.max_iterations ?? 20;
   const etaMs =
     estimate?.per_iteration_ms != null ? estimate.per_iteration_ms * iterations : null;
@@ -317,7 +323,7 @@ export default function Dashboard() {
                 </Typography>
               )}
               <Stack direction="row" spacing={1} alignItems="center">
-                <StatusChip status={latest.status} />
+                <StatusChip status={latest.status} etaMs={latestEtaMs} />
                 <Chip
                   size="small"
                   variant="outlined"

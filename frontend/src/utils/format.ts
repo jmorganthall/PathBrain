@@ -63,3 +63,19 @@ export function fmtDuration(ms: number | null | undefined): string {
   const seconds = Math.round(totalSeconds % 60);
   return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
 }
+
+// Estimated time remaining for an in-progress run, in ms (may be negative when
+// the run is overdue). Uses the run's own measured per-iteration time once it has
+// one, else the supplied estimate. Returns null when we can't estimate.
+export function runRemainingMs(
+  startedAt: string | null | undefined,
+  iterations: number | null | undefined,
+  perIterationMs: number | null | undefined,
+  now: number,
+): number | null {
+  if (!startedAt || perIterationMs == null) return null;
+  const started = parseApiDate(startedAt).getTime();
+  if (Number.isNaN(started)) return null;
+  const total = perIterationMs * Math.max(iterations || 1, 1);
+  return total - (now - started);
+}

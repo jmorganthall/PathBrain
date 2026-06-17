@@ -17,19 +17,23 @@ import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
 
 import { api } from "../api/client";
-import type { RunSummary, SeriesPoint } from "../api/types";
+import type { RunEstimate, RunSummary, SeriesPoint } from "../api/types";
 import StatusChip from "../components/StatusChip";
 import SeriesChart from "../components/SeriesChart";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
-import { fmtDateTime, fmtScore } from "../utils/format";
+import { fmtDateTime, fmtScore, runRemainingMs } from "../utils/format";
+import { useNow } from "../utils/useNow";
 import { sopsColor } from "../theme";
+
+const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
 
 export default function History() {
   const navigate = useNavigate();
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [series, setSeries] = useState<SeriesPoint[]>([]);
+  const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [loading, setLoading] = useState(true);
@@ -55,6 +59,7 @@ export default function History() {
         const [c, s] = await Promise.all([api.historyCount(), api.historySeries(100)]);
         setTotal(c.count);
         setSeries(s.points);
+        api.runEstimate().then(setEstimate).catch(() => {});
         await loadPage(0, rowsPerPage);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load history");
@@ -86,6 +91,9 @@ export default function History() {
       /* keep existing series on failure */
     }
   };
+
+  // Tick a clock only while something on the page is in progress, to drive ETAs.
+  const now = useNow(runs.some((r) => isRunning(r.status)));
 
   if (loading) return <Loading label="Loading history…" />;
 
@@ -218,7 +226,19 @@ export default function History() {
                         <TableCell>{fmtDateTime(r.created_at)}</TableCell>
                         <TableCell>{r.label ?? "—"}</TableCell>
                         <TableCell>
-                          <StatusChip status={r.status} />
+                          <StatusChip
+                            status={r.status}
+                            etaMs={
+                              isRunning(r.status)
+                                ? runRemainingMs(
+                                    r.started_at,
+                                    r.iterations,
+                                    estimate?.per_iteration_ms,
+                                    now,
+                                  )
+                                : null
+                            }
+                          />
                         </TableCell>
                         <TableCell align="right">
                           {r.legacy ? (
