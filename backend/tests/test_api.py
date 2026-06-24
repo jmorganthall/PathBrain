@@ -43,6 +43,44 @@ def test_discover_with_mock_provider(client):
     assert body["snapshot_id"] is not None
 
 
+def test_manual_apply_with_mock_provider(client):
+    """Applying valid params returns per-param success and a pre-change snapshot."""
+    resp = client.post(
+        "/api/config/apply",
+        json={"pipe_uuid": "mock-download", "changes": {"quantum": 2000, "target": "8ms"}},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["provider"] == "mock"
+    assert body["applied"] == 2
+    assert all(r["ok"] for r in body["results"])
+    assert body["snapshot_id"] is not None
+    # The mock persists overrides, so discovery should reflect the new quantum.
+    disc = client.post("/api/config/discover").json()
+    assert disc["pipes"][0]["quantum"] == 2000
+
+
+def test_manual_apply_rejects_unknown_param(client):
+    resp = client.post("/api/config/apply", json={"changes": {"bogus": 1}})
+    assert resp.status_code == 400
+    assert "Unsupported" in resp.json()["detail"]
+
+
+def test_manual_apply_rejects_empty_changes(client):
+    resp = client.post("/api/config/apply", json={"changes": {}})
+    assert resp.status_code == 400
+
+
+def test_manual_apply_blocked_during_experiment(client, monkeypatch):
+    """Manual writes are refused (409) while an experiment owns the firewall."""
+    monkeypatch.setattr(
+        "pathbrain.api.routes_config.is_experiment_running", lambda: True
+    )
+    resp = client.post("/api/config/apply", json={"changes": {"quantum": 1514}})
+    assert resp.status_code == 409
+    assert "experiment" in resp.json()["detail"].lower()
+
+
 def test_provider_health(client):
     resp = client.get("/api/config/provider")
     assert resp.status_code == 200

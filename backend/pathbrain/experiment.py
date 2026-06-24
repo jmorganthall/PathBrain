@@ -214,6 +214,19 @@ def _abort(session, exp: Experiment, cfg: dict) -> None:
     log.info("Experiment %s aborted; baseline restored", exp.id)
 
 
+def is_experiment_running() -> bool:
+    """True if an experiment is actively driving the firewall right now.
+
+    Used to block manual firewall writes so the two write paths can't fight."""
+    with session_scope() as session:
+        return (
+            session.scalars(
+                select(Experiment).where(Experiment.status == ExperimentStatus.RUNNING)
+            ).first()
+            is not None
+        )
+
+
 def abort_active() -> bool:
     """Manually abort the running experiment and restore baseline. Returns True
     if one was aborted."""

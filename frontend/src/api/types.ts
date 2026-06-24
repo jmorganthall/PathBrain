@@ -298,6 +298,20 @@ export interface DiscoverResponse {
   snapshot_id: number | null;
 }
 
+export interface ManualApplyResult {
+  param: string;
+  value: unknown;
+  ok: boolean;
+  detail: string | null;
+}
+
+export interface ManualApplyResponse {
+  provider: string;
+  snapshot_id: number | null;
+  applied: number;
+  results: ManualApplyResult[];
+}
+
 export interface ConfigSnapshot {
   id: number;
   created_at: string;
