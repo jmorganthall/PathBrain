@@ -157,6 +157,54 @@ def at_measure_comparability(metric_values: dict | None) -> tuple[str, list[str]
     return "incomparable", missing
 
 
+def comparability(definition: dict, metric_values: dict | None) -> tuple[str, list[str]]:
+    """Can a run's raw reproduce this methodology's metrics? (the at-present check)
+
+    ``exact`` (every scored metric present), ``partial`` (some optional metrics
+    missing → redistributed; ``missing`` lists them), or ``incomparable`` (a
+    ``required`` metric the raw never captured — a new instrument added after this
+    run). Drives the RTINGS-style "scored under v4; under current v6: N (exact)" vs
+    "not comparable — needs metric X"."""
+    metrics = (definition or {}).get("metrics", [])
+    required = [m["key"] for m in metrics if m.get("required")]
+    scored = [m["key"] for m in metrics if m.get("axis")]
+    mv = metric_values or {}
+    missing_required = [k for k in required if mv.get(k) is None]
+    if missing_required:
+        return "incomparable", missing_required
+    missing = [k for k in scored if mv.get(k) is None]
+    if missing:
+        return "partial", missing
+    return "exact", []
+
+
+def rubric_from_definition(definition: dict, axis: str) -> tuple[dict, dict]:
+    """Reconstruct an axis's ``(weights, thresholds)`` from a frozen methodology
+    definition — so a run can be re-scored under *that* methodology's rubric, not
+    whatever the live config happens to be."""
+    metrics = [m for m in (definition or {}).get("metrics", []) if m.get("axis") == axis]
+    weights = {m["key"]: m["weight"] for m in metrics}
+    thresholds = {m["key"]: {"best": m["best"], "worst": m["worst"]} for m in metrics}
+    return weights, thresholds
+
+
+def serialize_score(row: Score) -> dict:
+    """A (run × methodology) Score for the API."""
+    return {
+        "run_id": row.run_id,
+        "methodology_version": row.methodology_version,
+        "is_at_measure": row.is_at_measure,
+        "comparability": row.comparability,
+        "missing_metrics": row.missing_metrics or [],
+        "axis_scores": row.axis_scores or {},
+        "subscores": row.subscores or {},
+        "weights_used": row.weights_used or {},
+        "metric_values": row.metric_values or {},
+        "bands": row.bands or {},
+        "computed_at": row.computed_at.isoformat() if row.computed_at else None,
+    }
+
+
 def _band(stdev, lo, hi) -> dict | None:
     band = {"stdev": stdev, "min": lo, "max": hi}
     return band if any(v is not None for v in band.values()) else None

@@ -298,6 +298,114 @@ def rederive_run(
     )
 
 
+def _iteration_plugin_metrics_from_raw(run, artifact_base: str | None) -> list[dict[str, dict]]:
+    """Re-derive each iteration's ``plugin -> metrics`` from the run's stored raw."""
+    by_plugin: dict[str, list[dict]] = {}
+    n_iters = 0
+    for res in run.results:
+        raws = (res.raw or {}).get("iterations") or []
+        per_iter = [derive(res.plugin, r or {}, artifact_base) for r in raws]
+        by_plugin[res.plugin] = per_iter
+        n_iters = max(n_iters, len(per_iter))
+    return [
+        {p: pi[i] for p, pi in by_plugin.items() if i < len(pi) and pi[i]}
+        for i in range(n_iters)
+    ]
+
+
+def score_run_under(session, run, methodology, artifact_base: str | None = None):
+    """Score a run from its preserved raw under a given methodology, writing a Score
+    row (the at-present record). Never mutates a different version's at-measure row.
+
+    Re-derives metrics from raw (current derivation), scores under the methodology's
+    *frozen* rubric, and tags comparability (exact/partial/incomparable). Returns the
+    Score, or ``None`` when the methodology has no recorded definition or the run has
+    no derivable raw. Caller commits.
+    """
+    from statistics import pstdev as _pstdev
+
+    from .metrics import COMPLETION, SOPS
+    from .methodology import comparability, rubric_from_definition, upsert_score
+
+    definition = methodology.definition or {}
+    if not definition.get("metrics"):
+        return None  # pre-foundation methodology — definition not recorded
+    sw, st = rubric_from_definition(definition, SOPS)
+    cw, ct = rubric_from_definition(definition, COMPLETION)
+
+    iter_metrics = _iteration_plugin_metrics_from_raw(run, artifact_base)
+    if not iter_metrics:
+        return None  # no raw to interpret
+
+    sops_iter = [compute_score(im, sw, st) for im in iter_metrics]
+    comp_iter = [compute_completion(im, cw, ct) for im in iter_metrics]
+    head_s = compute_score(
+        _plugin_metrics_from_values(_median_values([b.metric_values for b in sops_iter])), sw, st
+    )
+    head_c = compute_completion(
+        _plugin_metrics_from_values(
+            _median_values([b.metric_values for b in comp_iter]), COMPLETION_METRIC_SOURCES
+        ),
+        cw,
+        ct,
+    )
+
+    def _band(scores: list[float]) -> dict:
+        return {
+            "stdev": round(_pstdev(scores), 2) if len(scores) > 1 else 0.0,
+            "min": round(min(scores), 2),
+            "max": round(max(scores), 2),
+        }
+
+    axis_scores: dict[str, float] = {"sops": head_s.sops}
+    bands: dict[str, dict] = {"sops": _band([b.sops for b in sops_iter])}
+    has_completion = bool(head_c.subscores)
+    if has_completion:
+        axis_scores["completion"] = head_c.sops
+        c_scores = [b.sops for b in comp_iter if b.subscores]
+        if c_scores:
+            bands["completion"] = _band(c_scores)
+
+    metric_values = {**head_c.metric_values, **head_s.metric_values}
+    comp_tag, missing = comparability(definition, metric_values)
+    return upsert_score(
+        session,
+        run.id,
+        methodology.version,
+        is_at_measure=(run.methodology_version == methodology.version),
+        axis_scores=axis_scores,
+        subscores={**head_s.subscores, **head_c.subscores},
+        weights_used={**head_s.weights_used, **head_c.weights_used},
+        metric_values=metric_values,
+        bands=bands,
+        comparability=comp_tag,
+        missing_metrics=missing or None,
+    )
+
+
+def score_history_under_current(session) -> dict:
+    """Score every completed run from raw under the current methodology (Phase 3
+    re-grade). Writes new/refreshed Score rows; leaves other versions' at-measure
+    rows untouched. Returns a comparability summary."""
+    from .config_store import get_config
+    from .methodology import ensure_current_methodology
+
+    methodology = ensure_current_methodology(session, get_config(session))
+    artifact_base = os.path.abspath(get_settings().artifact_dir)
+    runs = session.scalars(select(Run).where(Run.status == RunStatus.COMPLETE)).all()
+    counts = {"exact": 0, "partial": 0, "incomparable": 0, "scored": 0, "skipped": 0}
+    for run in runs:
+        score = score_run_under(session, run, methodology, artifact_base)
+        if score is None:
+            counts["skipped"] += 1
+            continue
+        counts["scored"] += 1
+        counts[score.comparability] = counts.get(score.comparability, 0) + 1
+    session.commit()
+    log.info("Re-graded %s run(s) under %s: %s", counts["scored"], methodology.version, counts)
+    return {"methodology": methodology.version, "total": len(runs), **counts}
+
+
 def reconcile_interrupted_runs() -> int:
     """Mark runs left RUNNING/PENDING by a previous process as failed.
 
