@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
+import Trends from "./pages/Trends";
 import RunDetail from "./pages/RunDetail";
 import Compare from "./pages/Compare";
 import Config from "./pages/Config";
@@ -15,6 +16,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/history" element={<History />} />
+        <Route path="/trends" element={<Trends />} />
         <Route path="/runs/:id" element={<RunDetail />} />
         <Route path="/compare" element={<Compare />} />
         <Route path="/settings" element={<Settings />} />

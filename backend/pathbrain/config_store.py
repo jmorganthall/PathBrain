@@ -115,6 +115,15 @@ DEFAULT_CONFIG: dict = {
         # confident (eligible for a "best" badge / significance calls).
         "min_runs": 5,
     },
+    # Historical trends: baseline a metric over this many days of history, judge a
+    # run against the median over the last `window_hours`, and require at least
+    # `min_samples` runs in a (weekday, hour) bucket before trusting its baseline
+    # (otherwise the relative reading widens to a coarser time context).
+    "trends": {
+        "lookback_days": 90,
+        "window_hours": 2,
+        "min_samples": 3,
+    },
     "rubric_version": DEFAULT_RUBRIC_VERSION,
     # Autonomous experiment engine. Disarmed by default; it never writes to the
     # firewall unless `enabled` is true, and `dry_run` logs intended changes
