@@ -466,8 +466,7 @@ def execute_run(run_id: int) -> None:
                 round(pstdev(completion_scores), 2) if len(completion_scores) > 1 else 0.0
             ) if completion_scores else None
 
-            session.add(
-                ScoreResult(
+            score_result = ScoreResult(
                     run_id=run_id,
                     sops=breakdown.sops,
                     sops_stdev=sops_stdev,
@@ -489,8 +488,15 @@ def execute_run(run_id: int) -> None:
                     completion_subscores=c_breakdown.subscores if has_completion else None,
                     completion_weights_used=c_breakdown.weights_used if has_completion else None,
                     completion_metric_values=c_breakdown.metric_values if has_completion else None,
-                )
             )
+            session.add(score_result)
+
+            # Record the at-measure score in the (run × methodology) table and stamp
+            # the run with the methodology it was interpreted under at capture.
+            from .methodology import ensure_current_methodology, record_at_measure
+
+            methodology = ensure_current_methodology(session, config)
+            record_at_measure(session, run, score_result, methodology.version)
 
             run.per_iteration_ms = (
                 round(mean(iteration_durations), 3) if iteration_durations else None

@@ -17,8 +17,8 @@ from .config_store import get_config
 from .database import session_scope
 from .interpret import DERIVATION_VERSION
 from .logging_config import get_logger
-from .metrics import COMPLETION, SOPS
-from .models import Methodology
+from .metrics import COMPLETION, SOPS, has_latest_metrics, latest_metric_keys
+from .models import Methodology, Run, Score, ScoreResult
 
 log = get_logger("methodology")
 
@@ -141,3 +141,81 @@ def summarize(row: Methodology) -> dict:
 def serialize(row: Methodology) -> dict:
     """Full methodology including the frozen definition."""
     return {**summarize(row), "definition": row.definition or {}}
+
+
+# ── (run × methodology) scores ───────────────────────────────────────────────
+
+
+def at_measure_comparability(metric_values: dict | None) -> tuple[str, list[str]]:
+    """Comparability of a run's at-measure score: ``exact`` once it carries the
+    current-rubric markers, else ``incomparable`` (the legacy case — a required
+    metric the run never captured). The cross-methodology ``partial`` tier is a
+    Phase-3 concern (re-grading onto a *different* methodology)."""
+    if has_latest_metrics(metric_values):
+        return "exact", []
+    missing = [k for k in latest_metric_keys() if (metric_values or {}).get(k) is None]
+    return "incomparable", missing
+
+
+def _band(stdev, lo, hi) -> dict | None:
+    band = {"stdev": stdev, "min": lo, "max": hi}
+    return band if any(v is not None for v in band.values()) else None
+
+
+def score_fields_from_score_result(sr: ScoreResult) -> dict:
+    """Translate a legacy ``ScoreResult`` into the unified (run × methodology) Score
+    fields, merging the SOPS and Completion axes into one record."""
+    metric_values = {**(sr.completion_metric_values or {}), **(sr.metric_values or {})}
+    axis_scores: dict[str, float] = {"sops": sr.sops}
+    if sr.completion is not None:
+        axis_scores["completion"] = sr.completion
+    bands: dict[str, dict] = {}
+    sb = _band(sr.sops_stdev, sr.sops_min, sr.sops_max)
+    if sb:
+        bands["sops"] = sb
+    cb = _band(sr.completion_stdev, sr.completion_min, sr.completion_max)
+    if cb:
+        bands["completion"] = cb
+    comparability, missing = at_measure_comparability(sr.metric_values)
+    return {
+        "axis_scores": axis_scores,
+        "subscores": {**(sr.subscores or {}), **(sr.completion_subscores or {})},
+        "weights_used": {**(sr.weights_used or {}), **(sr.completion_weights_used or {})},
+        "metric_values": metric_values,
+        "bands": bands or None,
+        "comparability": comparability,
+        "missing_metrics": missing or None,
+    }
+
+
+def upsert_score(session: Session, run_id: int, version: str, *, is_at_measure: bool, **fields) -> Score:
+    """Create or refresh the Score row for ``(run, methodology)``.
+
+    Used both at capture (at-measure) and, later, by re-grading (at-present). The
+    UNIQUE(run_id, methodology_version) constraint guarantees one row per pairing."""
+    row = session.scalar(
+        select(Score).where(Score.run_id == run_id, Score.methodology_version == version)
+    )
+    if row is None:
+        row = Score(run_id=run_id, methodology_version=version)
+        session.add(row)
+    row.is_at_measure = is_at_measure
+    for k, v in fields.items():
+        setattr(row, k, v)
+    return row
+
+
+def record_at_measure(session: Session, run: Run, sr: ScoreResult, version: str) -> Score:
+    """Write a run's at-measure Score (its capture-time interpretation) and stamp
+    the run with the methodology it was scored under. Caller commits."""
+    run.methodology_version = version
+    return upsert_score(
+        session, sr.run_id, version, is_at_measure=True, **score_fields_from_score_result(sr)
+    )
+
+
+# Note: there is deliberately no migration of historical ScoreResults into the
+# Score table. The raw observations ("state of the internet") are the only thing
+# worth preserving; because raw + methodology → score is deterministic, historical
+# runs are (re)scored from their preserved raw under whatever methodology we choose
+# (Phase 3's rederive), rather than carrying forward churny pre-foundation scores.
