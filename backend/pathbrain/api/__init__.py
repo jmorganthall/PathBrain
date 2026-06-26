@@ -14,6 +14,7 @@ from . import (
     routes_run,
     routes_score,
     routes_settings,
+    routes_trends,
 )
 
 api_router = APIRouter(prefix="/api")
@@ -27,3 +28,4 @@ api_router.include_router(routes_monitoring.router, tags=["monitoring"])
 api_router.include_router(routes_plugins.router, tags=["plugins"])
 api_router.include_router(routes_metrics.router, tags=["metrics"])
 api_router.include_router(routes_experiments.router, tags=["experiments"])
+api_router.include_router(routes_trends.router, tags=["trends"])

@@ -23,10 +23,12 @@ import type {
   RunEstimate,
   SeriesPoint,
   SettingsImpact,
+  TrendRelativeResponse,
 } from "../api/types";
 import { ImpactBanner } from "./Settings";
 import ScoreGauge from "../components/ScoreGauge";
 import SubscoreBreakdown from "../components/SubscoreBreakdown";
+import RelativeDelta from "../components/RelativeDelta";
 import SeriesChart from "../components/SeriesChart";
 import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
@@ -47,6 +49,7 @@ export default function Dashboard() {
   const [rolling, setRolling] = useState<RollingScore | null>(null);
   const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
   const [impact, setImpact] = useState<SettingsImpact | null>(null);
+  const [trendRel, setTrendRel] = useState<TrendRelativeResponse | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const loadLatest = useCallback(async () => {
@@ -74,6 +77,7 @@ export default function Dashboard() {
         api.rollingScore(24).then((r) => setRolling(r)).catch(() => {}),
         api.monitoring().then((m) => setMonitoring(m)).catch(() => {}),
         api.settingsImpact().then((i) => setImpact(i)).catch(() => {}),
+        api.trendsRelative().then((t) => setTrendRel(t)).catch(() => {}),
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load dashboard");
@@ -102,6 +106,7 @@ export default function Dashboard() {
             setRunning(false);
             api.historySeries(100).then((r) => setSeries(r.points)).catch(() => {});
             api.rollingScore(24).then((r) => setRolling(r)).catch(() => {});
+            api.trendsRelative().then((t) => setTrendRel(t)).catch(() => {});
           }
         } catch {
           /* keep polling */
@@ -234,6 +239,16 @@ export default function Dashboard() {
                     (min {rolling.min} · max {rolling.max})
                   </Typography>
                 </Typography>
+                {trendRel?.metrics.sops && (
+                  <Box sx={{ mt: 1.5 }}>
+                    <RelativeDelta
+                      reading={trendRel.metrics.sops}
+                      weekday={trendRel.weekday}
+                      hour={trendRel.hour}
+                      compact
+                    />
+                  </Box>
+                )}
                 <Box sx={{ mt: 1.5 }}>
                   {monitoring?.enabled ? (
                     <Chip

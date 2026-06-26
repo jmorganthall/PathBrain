@@ -20,8 +20,14 @@ import type {
   SettingsDiagnostics,
   SettingsImpact,
   SettingsProfilesResponse,
+  TrendHeatmapResponse,
+  TrendRelativeResponse,
   WeightsResponse,
 } from "./types";
+
+// Minutes to add to UTC to reach the viewer's local time. getTimezoneOffset()
+// returns local-behind-UTC minutes, so negate it.
+export const tzOffsetMinutes = () => -new Date().getTimezoneOffset();
 
 const BASE = "/api";
 
@@ -116,6 +122,19 @@ export const api = {
 
   // Metric registry (single source of truth for metric metadata)
   metrics: () => request<MetricsCatalog>("/metrics"),
+
+  // Historical trends (day-of-week × hour-of-day baselines + relative reading)
+  trendsHeatmap: (metric: string, days?: number) =>
+    request<TrendHeatmapResponse>(
+      `/trends/heatmap?metric=${encodeURIComponent(metric)}&tz_offset=${tzOffsetMinutes()}` +
+        (days != null ? `&days=${days}` : "")
+    ),
+  trendsRelative: (windowHours?: number, days?: number) =>
+    request<TrendRelativeResponse>(
+      `/trends/relative?tz_offset=${tzOffsetMinutes()}` +
+        (windowHours != null ? `&window_hours=${windowHours}` : "") +
+        (days != null ? `&days=${days}` : "")
+    ),
 
   // Experiment engine
   experiments: () => request<ExperimentsResponse>("/experiments"),

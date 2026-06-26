@@ -18,6 +18,7 @@ import MenuIcon from "@mui/icons-material/Menu";
 import HubIcon from "@mui/icons-material/Hub";
 import DashboardIcon from "@mui/icons-material/SpaceDashboard";
 import HistoryIcon from "@mui/icons-material/Timeline";
+import TrendsIcon from "@mui/icons-material/CalendarMonth";
 import CompareIcon from "@mui/icons-material/CompareArrows";
 import SettingsIcon from "@mui/icons-material/Tune";
 import InsightsIcon from "@mui/icons-material/Insights";
@@ -37,6 +38,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { label: "Dashboard", to: "/", icon: <DashboardIcon /> },
   { label: "History", to: "/history", icon: <HistoryIcon /> },
+  { label: "Trends", to: "/trends", icon: <TrendsIcon /> },
   { label: "Compare", to: "/compare", icon: <CompareIcon /> },
   { label: "Settings Impact", to: "/settings", icon: <InsightsIcon /> },
   { label: "Experiments", to: "/experiments", icon: <ScienceIcon /> },

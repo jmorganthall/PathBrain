@@ -225,6 +225,72 @@ export interface SeriesResponse {
   points: SeriesPoint[];
 }
 
+// ── Historical trends (day-of-week × hour-of-day baselines) ──────────────────
+export interface TrendCell {
+  weekday: number; // 0 = Mon … 6 = Sun
+  hour: number; // 0–23, viewer-local
+  median: number;
+  p25: number;
+  p75: number;
+  count: number;
+}
+
+export interface TrendHourCell {
+  hour: number;
+  median: number;
+  p25: number;
+  p75: number;
+  count: number;
+}
+
+export interface TrendWeekdayCell {
+  weekday: number;
+  median: number;
+  p25: number;
+  p75: number;
+  count: number;
+}
+
+export interface TrendHeatmapResponse {
+  metric: string;
+  label: string;
+  unit: string;
+  higher_is_better: boolean;
+  total: number;
+  window_days: number;
+  cells: TrendCell[];
+  by_hour: TrendHourCell[];
+  by_weekday: TrendWeekdayCell[];
+}
+
+export interface TrendRelative {
+  metric: string;
+  label: string;
+  unit: string;
+  higher_is_better: boolean;
+  current: number | null;
+  baseline: number;
+  p25: number;
+  p75: number;
+  count: number;
+  baseline_source: "exact" | "hour" | "weekday" | "global";
+  delta: number | null;
+  delta_pct: number | null;
+  z: number | null;
+  percentile: number | null;
+  better: boolean | null;
+  band: "typical" | "mild" | "strong" | "unknown";
+}
+
+export interface TrendRelativeResponse {
+  weekday: number;
+  hour: number;
+  window_hours: number;
+  window_days: number;
+  min_samples: number;
+  metrics: Record<string, TrendRelative>;
+}
+
 export interface Threshold {
   best: number;
   worst: number;
