@@ -33,6 +33,24 @@ def test_generate_variants_none_enabled():
     assert sweep_mod.generate_variants({"quantum": {"enabled": False}, "target": {"enabled": False}}) == []
 
 
+def test_generate_variants_across_multiple_pipes():
+    # 3 quantum values × 2 pipes = 6 variants, each tagged with its pipe.
+    spec = {
+        "quantum": {"enabled": True, "min": 1500, "max": 3000, "step": 750},
+        "target": {"enabled": False},
+        "pipes": [
+            {"uuid": "dl", "label": "wan-download"},
+            {"uuid": "ul", "label": "wan-upload"},
+        ],
+    }
+    v = sweep_mod.generate_variants(spec)
+    assert len(v) == 6
+    assert {"quantum": 1500, "pipe_uuid": "dl", "pipe_label": "wan-download"} in v
+    assert {"quantum": 3000, "pipe_uuid": "ul", "pipe_label": "wan-upload"} in v
+    # Every variant carries a pipe; both pipes are represented.
+    assert {x["pipe_uuid"] for x in v} == {"dl", "ul"}
+
+
 def test_estimate_eta():
     variants = [{"quantum": 1}, {"quantum": 2}]
     est = sweep_mod.estimate(variants, iterations=2, dwell_s=60, per_iteration_ms=1000)
@@ -121,3 +139,27 @@ def test_sweep_current_empty_or_shaped(client):
     resp = client.get("/api/sweep/current")
     assert resp.status_code == 200
     assert "sweep" in resp.json()
+
+
+def test_sweep_pipes_endpoint_lists_uuid_pipes(client):
+    resp = client.get("/api/sweep/pipes")
+    assert resp.status_code == 200
+    pipes = resp.json()["pipes"]
+    # The mock provider's download pipe has a uuid; only uuid pipes are selectable.
+    assert any(p["uuid"] == "mock-download" for p in pipes)
+    assert all(p["uuid"] for p in pipes)
+
+
+def test_sweep_preview_multiplies_by_pipes(client):
+    resp = client.post(
+        "/api/sweep/preview",
+        json={
+            "spec": {
+                "quantum": {"enabled": True, "min": 1500, "max": 3000, "step": 750},
+                "pipes": [{"uuid": "dl", "label": "download"}, {"uuid": "ul", "label": "upload"}],
+            },
+            "iterations": 2,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["total_variants"] == 6  # 3 quantum × 2 pipes
