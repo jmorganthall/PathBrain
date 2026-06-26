@@ -43,13 +43,13 @@ class MetricDef:
 METRICS: list[MetricDef] = [
     # ── SOPS: the human-feel score (paint timing + the most perceptual completion) ──
     MetricDef(
-        "speed_index", "browser", "speed_index_ms", "Speed Index", unit="ms",
-        axis=SOPS, weight=30, best=1000.0, worst=8000.0, marks_latest=True,
+        "byte_earliness", "browser", "byte_earliness_ms", "Byte earliness", unit="ms",
+        axis=SOPS, weight=25, best=300.0, worst=5000.0,
         description=(
-            "The average time at which visible content is displayed — the area over the "
-            "page's visual-completeness curve. Rewards painting *early and progressively*, "
-            "so a page that fills in smoothly beats one that stalls then dumps, even if the "
-            "latter technically finishes sooner. The core seat-of-the-pants metric. Lower is better."
+            "Area above the cumulative-bytes-delivered curve — a Speed-Index analog in bytes, "
+            "not pixels. Rewards delivering bytes *early and progressively* rather than in a "
+            "late burst, isolating the byte-arrival layer that network shaping actually moves. "
+            "The core seat-of-the-pants delivery metric. Lower is better."
         ),
     ),
     MetricDef(
@@ -61,12 +61,21 @@ METRICS: list[MetricDef] = [
         ),
     ),
     MetricDef(
-        "paint_cadence", "browser", "paint_cadence", "Paint smoothness",
-        axis=SOPS, weight=10, best=0.1, worst=0.8,
+        "longest_stall", "browser", "longest_stall_ms", "Longest stall", unit="ms",
+        axis=SOPS, weight=10, best=50.0, worst=2000.0, marks_latest=True,
         description=(
-            "The largest single jump in visual completeness between filmstrip frames (0–1). "
-            "Low means the page filled in steadily; high means it stalled then painted "
-            "everything at once. Captures 'smoothness', not speed. Lower is better."
+            "The longest stretch where nothing finished loading — the field-measurable "
+            "'standing at the carousel seeing nothing'. The single signal most tied to a load "
+            "feeling chunky, computed from Resource Timing (no pixels). Lower is smoother."
+        ),
+    ),
+    MetricDef(
+        "perceived_time", "browser", "perceived_time_ms", "Perceived time", unit="ms",
+        axis=SOPS, weight=5, best=500.0, worst=8000.0,
+        description=(
+            "Weighted load time where stalls (unoccupied waiting) cost more than time with "
+            "visible progress (occupied) — so a smoother-but-slightly-slower load can score "
+            "better. Weights are calibratable to subjective ratings. Lower is better perceived."
         ),
     ),
     MetricDef(
@@ -180,19 +189,9 @@ METRICS: list[MetricDef] = [
             "Lower is better."
         ),
     ),
-    # ── Perceived load smoothness: the *shape* of the delivery curve over time ──
-    # Display-only (measurement, not scored): these isolate byte-arrival cadence
-    # from Resource Timing — the exact layer network shaping touches — and travel
-    # alongside the speed-side finish metrics so the smoothness-vs-speed tradeoff
-    # is visible per load. No pixel/video/Speed-Index-visual capture is involved.
-    MetricDef(
-        "longest_stall", "browser", "longest_stall_ms", "Longest stall", unit="ms",
-        description=(
-            "The longest stretch where nothing finished loading — the field-measurable "
-            "'standing at the carousel seeing nothing'. The single signal most tied to a "
-            "load feeling chunky. Lower is smoother."
-        ),
-    ),
+    # ── Perceived load smoothness (display-only diagnostics) ──
+    # The scored smoothness metrics (byte_earliness, longest_stall, perceived_time)
+    # live in the SOPS block above; these are the supporting shape statistics.
     MetricDef(
         "cadence_cov", "browser", "cadence_cov", "Delivery cadence",
         description=(
@@ -201,26 +200,10 @@ METRICS: list[MetricDef] = [
         ),
     ),
     MetricDef(
-        "byte_earliness", "browser", "byte_earliness_ms", "Byte earliness", unit="ms",
-        description=(
-            "Area above the cumulative-bytes-delivered curve — a Speed-Index analog in bytes, "
-            "not pixels. Rewards delivering bytes early and progressively rather than in a late "
-            "burst. Lower means bytes arrived earlier."
-        ),
-    ),
-    MetricDef(
         "delivery_gini", "browser", "delivery_gini", "Delivery evenness",
         description=(
             "Gini coefficient of bytes delivered across the load window (0–1). High = bytes "
             "arrived very unevenly (chunky); low = evenly (smooth). Lower is smoother."
-        ),
-    ),
-    MetricDef(
-        "perceived_time", "browser", "perceived_time_ms", "Perceived time", unit="ms",
-        description=(
-            "Weighted load time where stalls (unoccupied waiting) cost more than time with "
-            "visible progress (occupied). Captures that a smoother-but-slightly-slower load can "
-            "feel faster. Weights are calibratable. Lower is better perceived."
         ),
     ),
     MetricDef(
@@ -235,6 +218,26 @@ METRICS: list[MetricDef] = [
         description=(
             "Total stall time overlapped by a long main-thread task — render-bound, so network "
             "config changes should not be expected to move it. Lower is better."
+        ),
+    ),
+    # ── Pixel-based visual metrics (display-only; require the opt-in filmstrip) ──
+    # Demoted from SOPS in favor of the byte-arrival smoothness metrics, which
+    # isolate the network layer without the CPU cost of per-frame screencast.
+    # Still derived as diagnostics when `browser.filmstrip` is enabled.
+    MetricDef(
+        "speed_index", "browser", "speed_index_ms", "Speed Index", unit="ms",
+        description=(
+            "The average time at which visible content is displayed — area over the visual-"
+            "completeness curve, from the screencast filmstrip. A pixel-based diagnostic; the "
+            "scored delivery signal is now byte_earliness. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "paint_cadence", "browser", "paint_cadence", "Paint smoothness",
+        description=(
+            "The largest single jump in visual completeness between filmstrip frames (0–1). "
+            "Low = filled in steadily; high = stalled then painted at once. Pixel-based "
+            "diagnostic (filmstrip only); the scored stall signal is now longest_stall. Lower is better."
         ),
     ),
 ]

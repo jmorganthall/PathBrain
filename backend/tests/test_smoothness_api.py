@@ -54,7 +54,7 @@ def _seed_browser_run(fp: str, *, longest_stall: float, load_event: float) -> in
         ))
         # latest-rubric marker so complete_only keeps it.
         s.add(ScoreResult(run_id=run.id, sops=70.0, subscores={}, weights_used={},
-                          metric_values={"speed_index": 1500.0}))
+                          metric_values={"longest_stall": 1500.0}))
         s.flush()
         return run.id
 

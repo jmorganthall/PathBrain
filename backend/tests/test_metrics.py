@@ -14,29 +14,31 @@ from pathbrain.scoring import COMPLETION_METRIC_SOURCES, METRIC_SOURCES
 def test_registry_derives_scoring_sources():
     assert METRIC_SOURCES == metrics.metric_sources(metrics.SOPS)
     assert COMPLETION_METRIC_SOURCES == metrics.metric_sources(metrics.COMPLETION)
-    # SOPS is perception-led (now incl. trajectory metrics); Completion is pure infra.
+    # SOPS is perception-led; the byte-arrival smoothness metrics now carry the
+    # delivery signal (the pixel Speed Index / paint cadence are display-only).
     assert set(METRIC_SOURCES) == {
-        "speed_index", "fcp", "paint_cadence", "cls", "lcp", "inp", "ttfb", "render"
+        "byte_earliness", "fcp", "longest_stall", "perceived_time",
+        "cls", "lcp", "inp", "ttfb", "render",
     }
     assert set(COMPLETION_METRIC_SOURCES) == {"dns", "tcp", "tls", "jitter", "packet_loss"}
 
 
 def test_registry_derives_config_defaults():
-    # Trajectory-aware rubric: Speed Index + FCP lead; completion (LCP/render) trails.
+    # Byte-arrival rubric: byte_earliness + FCP lead; completion (LCP/render) trails.
     assert DEFAULT_WEIGHTS == {
-        "speed_index": 30, "fcp": 20, "paint_cadence": 10, "cls": 5,
-        "lcp": 10, "inp": 10, "ttfb": 10, "render": 5,
+        "byte_earliness": 25, "fcp": 20, "longest_stall": 10, "perceived_time": 5,
+        "cls": 5, "lcp": 10, "inp": 10, "ttfb": 10, "render": 5,
     }
     assert DEFAULT_THRESHOLDS["fcp"] == {"best": 150.0, "worst": 4000.0}
     assert DEFAULT_THRESHOLDS["ttfb"] == {"best": 30.0, "worst": 1000.0}
-    assert DEFAULT_THRESHOLDS["speed_index"] == {"best": 1000.0, "worst": 8000.0}
+    assert DEFAULT_THRESHOLDS["byte_earliness"] == {"best": 300.0, "worst": 5000.0}
     assert DEFAULT_COMPLETION_WEIGHTS["tls"] == 20
     assert DEFAULT_COMPLETION_THRESHOLDS["packet_loss"] == {"best": 0.0, "worst": 2.5}
 
 
 def test_latest_metric_keys():
-    # Speed Index is the marker of the trajectory-aware rubric.
-    assert set(metrics.latest_metric_keys()) == {"speed_index"}
+    # Longest stall (byte-arrival, always captured) marks the current rubric.
+    assert set(metrics.latest_metric_keys()) == {"longest_stall"}
 
 
 def test_catalog_covers_every_metric_with_metadata():

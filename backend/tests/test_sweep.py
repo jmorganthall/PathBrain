@@ -53,7 +53,7 @@ def _fake_execute(run_id: int) -> None:
         s.add(
             ScoreResult(
                 run_id=run_id, sops=80.0, subscores={}, weights_used={},
-                metric_values={"speed_index": 1500.0},
+                metric_values={"longest_stall": 1500.0},
             )
         )
 
