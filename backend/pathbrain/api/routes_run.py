@@ -7,14 +7,24 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import coordinator
 from ..config_store import get_config
 from ..database import get_session
+from ..logging_config import get_logger
 from ..models import Run, RunStatus
 from ..runner import MAX_ITERATIONS, create_run, execute_run
 from ..schemas import RunCreate, RunDetail
 from .routes_results import _serialize_run
 
 router = APIRouter()
+log = get_logger("api.run")
+
+
+def _locked_execute(run_id: int) -> None:
+    """Execute a run holding the coordination lock, so a manual run queues behind
+    (and never overlaps) any other firewall/benchmark session."""
+    with coordinator.hold(f"run#{run_id}"):
+        execute_run(run_id)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunDetail)
@@ -41,7 +51,7 @@ def trigger_run(
     run_id = create_run(
         label=payload.label, notes=payload.notes, iterations=payload.iterations
     )
-    background.add_task(execute_run, run_id)
+    background.add_task(_locked_execute, run_id)
     run = session.get(Run, run_id)
     if run is None:  # pragma: no cover - defensive
         raise HTTPException(status_code=500, detail="Run could not be created")

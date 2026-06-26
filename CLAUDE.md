@@ -180,11 +180,22 @@ docker compose up --build   # -> http://localhost:8000
   search + interleaved A/B with effect-size/CI + hysteresis, routing intelligence /
   SD-WAN.
 
-⚠️ Firewall **writes** go only through `provider.apply()`. Four callers use it, all
+⚠️ Firewall **writes** go only through `provider.apply()`. Five callers use it, all
 snapshot/restore or are reversible: the experiment engine (disarmed + dry-run by
 default), the Shotgun Sweep (restores baseline at end + on startup), config
-test-apply (+1 then revert), and sweep apply-best (explicit, supervised). Keep new
-write paths to `provider.apply()` and always snapshot/restore.
+test-apply (+1 then revert), sweep apply-best (explicit, supervised), and the
+profile test (`profile_test.py`: apply → benchmark → restore, baseline persisted +
+reconciled on startup). Keep new write paths to `provider.apply()` and always
+snapshot/restore.
+
+⚠️ Any **apply-firewall + benchmark** session must hold the `coordinator.py` lock so
+two never overlap (user-triggered ones — sweep, profile test, manual `/api/run` —
+`hold` and queue; periodic ones — monitoring, experiment — `try_hold` and defer).
+`runner.execute_run` independently re-reads the firewall fingerprint **after** the
+run and FAILs it on drift (the read-before/read-after integrity check), so "what we
+tested" always matches "what we thought". A profile is **confident** once its runs
+total ≥ `correlation.min_iterations` (default 15) — iterations, not run count, are
+the unit of signal.
 
 The browser engine imports Playwright lazily, so the plugin registry still loads
 where Playwright/Chromium isn't installed (it returns `success=False` and the

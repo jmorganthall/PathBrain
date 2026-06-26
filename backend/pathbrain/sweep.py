@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
+from . import coordinator
 from .database import session_scope
 from .logging_config import get_logger
 from .models import Run, RunStatus, Sweep, SweepStatus
@@ -269,59 +270,67 @@ def _drive(sweep_id: int) -> None:
     final_status = SweepStatus.COMPLETE
     err: str | None = None
     try:
-        _wait_for_idle(cancel_evt)
-        with session_scope() as session:
-            sw = session.get(Sweep, sweep_id)
-            sw.status = SweepStatus.RUNNING
-            sw.started_at = datetime.now(timezone.utc)
-            variants = list((sw.spec or {}).get("variants") or [])
-            iterations, dwell_s, dry_run, pipe_uuid = sw.iterations, sw.dwell_s, sw.dry_run, sw.pipe_uuid
-            baseline = dict(sw.baseline or {})
-            results = list(sw.results or [])
+        # Hold the coordination lock for the whole sweep (apply → benchmark →
+        # restore) so no other firewall/benchmark session overlaps it. Queues
+        # behind any in-progress session.
+        with coordinator.hold(f"sweep#{sweep_id}"):
+            try:
+                _wait_for_idle(cancel_evt)
+                with session_scope() as session:
+                    sw = session.get(Sweep, sweep_id)
+                    sw.status = SweepStatus.RUNNING
+                    sw.started_at = datetime.now(timezone.utc)
+                    variants = list((sw.spec or {}).get("variants") or [])
+                    iterations, dwell_s, dry_run, pipe_uuid = (
+                        sw.iterations, sw.dwell_s, sw.dry_run, sw.pipe_uuid
+                    )
+                    baseline = dict(sw.baseline or {})
+                    results = list(sw.results or [])
 
-        last_pipe: str | None = None
-        for idx, variant in enumerate(variants):
-            if cancel_evt.is_set():
-                final_status = SweepStatus.CANCELLED
-                break
-            quantum, target = variant.get("quantum"), variant.get("target")
-            # Each variant varies ONE pipe; reset the previously-varied pipe to its
-            # baseline first so only this variant's pipe is off-baseline.
-            pipe = variant.get("pipe_uuid") or pipe_uuid
-            pipe_label = variant.get("pipe_label")
-            if last_pipe is not None and last_pipe != pipe:
-                _restore_pipe(provider, baseline, last_pipe, dry_run)
-            _apply(provider, pipe, "quantum", quantum, dry_run)
-            _apply(provider, pipe, "target", target, dry_run)
-            last_pipe = pipe
-            # Let the change settle (and serve as a cancel checkpoint).
-            if dwell_s > 0 and cancel_evt.wait(dwell_s):
-                final_status = SweepStatus.CANCELLED
-                break
+                last_pipe: str | None = None
+                for idx, variant in enumerate(variants):
+                    if cancel_evt.is_set():
+                        final_status = SweepStatus.CANCELLED
+                        break
+                    quantum, target = variant.get("quantum"), variant.get("target")
+                    # Each variant varies ONE pipe; reset the previously-varied pipe to
+                    # its baseline first so only this variant's pipe is off-baseline.
+                    pipe = variant.get("pipe_uuid") or pipe_uuid
+                    pipe_label = variant.get("pipe_label")
+                    if last_pipe is not None and last_pipe != pipe:
+                        _restore_pipe(provider, baseline, last_pipe, dry_run)
+                    _apply(provider, pipe, "quantum", quantum, dry_run)
+                    _apply(provider, pipe, "target", target, dry_run)
+                    last_pipe = pipe
+                    # Let the change settle (and serve as a cancel checkpoint).
+                    if dwell_s > 0 and cancel_evt.wait(dwell_s):
+                        final_status = SweepStatus.CANCELLED
+                        break
 
-            run_id = create_run(
-                label=_label(quantum, target, pipe_label),
-                notes=f"Shotgun sweep #{sweep_id} variant {idx + 1}/{len(variants)}",
-                iterations=iterations,
-            )
-            execute_run(run_id)  # blocking; captures the just-applied settings onto the run
-            results.append(
-                {
-                    "index": idx, "quantum": quantum, "target": target,
-                    "pipe_uuid": pipe, "pipe_label": pipe_label,
-                    "run_id": run_id, "sops": _run_sops(run_id),
-                }
-            )
-            with session_scope() as session:
-                sw = session.get(Sweep, sweep_id)
-                sw.completed_variants = idx + 1
-                sw.results = results
-    except Exception as exc:  # noqa: BLE001 — record + restore, never crash the thread
-        log.exception("Sweep %s failed", sweep_id)
-        final_status = SweepStatus.FAILED
-        err = f"{type(exc).__name__}: {exc}"
+                    run_id = create_run(
+                        label=_label(quantum, target, pipe_label),
+                        notes=f"Shotgun sweep #{sweep_id} variant {idx + 1}/{len(variants)}",
+                        iterations=iterations,
+                    )
+                    execute_run(run_id)  # blocking; captures the applied settings onto the run
+                    results.append(
+                        {
+                            "index": idx, "quantum": quantum, "target": target,
+                            "pipe_uuid": pipe, "pipe_label": pipe_label,
+                            "run_id": run_id, "sops": _run_sops(run_id),
+                        }
+                    )
+                    with session_scope() as session:
+                        sw = session.get(Sweep, sweep_id)
+                        sw.completed_variants = idx + 1
+                        sw.results = results
+            except Exception as exc:  # noqa: BLE001 — record + restore, never crash the thread
+                log.exception("Sweep %s failed", sweep_id)
+                final_status = SweepStatus.FAILED
+                err = f"{type(exc).__name__}: {exc}"
+            finally:
+                _restore(provider, sweep_id)
     finally:
-        _restore(provider, sweep_id)
         with session_scope() as session:
             sw = session.get(Sweep, sweep_id)
             if sw is not None:

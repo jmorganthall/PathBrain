@@ -119,8 +119,13 @@ DEFAULT_CONFIG: dict = {
     "correlation": {
         "significant_change_pct": 5,
         # A profile needs at least this many runs before it's treated as
-        # confident (eligible for a "best" badge / significance calls).
+        # confident (legacy; superseded by min_iterations below).
         "min_runs": 5,
+        # A profile needs at least this many *total iterations* (summed across its
+        # runs) before it's treated as confident. Iterations — not run count — are
+        # the unit of signal: a 15-iteration run carries far more than a 1-iteration
+        # one. Eligible for a "best" badge / significance calls once met.
+        "min_iterations": 15,
     },
     # Historical trends: baseline a metric over this many days of history, judge a
     # run against the median over the last `window_hours`, and require at least

@@ -45,6 +45,9 @@ async def lifespan(app: FastAPI):
     from .sweep import reconcile_interrupted_sweeps
 
     reconcile_interrupted_sweeps()  # restore the firewall if a sweep was interrupted
+    from .profile_test import reconcile_interrupted_profile_tests
+
+    reconcile_interrupted_profile_tests()  # restore the firewall if a profile test was interrupted
     from .scheduler import start_scheduler, stop_scheduler
 
     start_scheduler()

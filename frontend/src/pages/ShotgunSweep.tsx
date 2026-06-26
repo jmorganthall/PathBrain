@@ -130,7 +130,7 @@ function VsTypical({ r }: { r: SweepResult }) {
 
 export default function ShotgunSweep() {
   const [mtu, setMtu] = useState(1500);
-  const [quantum, setQuantum] = useState<SweepParamRange>({ enabled: true, min: 1514, max: 3014, step: 750 });
+  const [quantum, setQuantum] = useState<SweepParamRange>({ enabled: true, min: 300, max: 10000, step: 757 });
   const [target, setTarget] = useState<SweepParamRange>({ enabled: false, min: 3, max: 8, step: 1 });
   const [iterations, setIterations] = useState(2);
   const [dwellMinutes, setDwellMinutes] = useState(0);
