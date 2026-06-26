@@ -30,7 +30,7 @@ def test_build_definition_snapshots_effective_rubric():
 def test_ensure_current_is_idempotent_and_immutable():
     # Use a throwaway version so we don't disturb the real current methodology that
     # other tests rely on. ensure() takes an explicit config.
-    fake = {"rubric_version": "test-immutable-v0", "weights": {}, "thresholds": {},
+    fake = {"methodology_version": "test-immutable-v0", "weights": {}, "thresholds": {},
             "completion_weights": {}, "completion_thresholds": {}}
     with session_scope() as s:
         first = ensure_current_methodology(s, fake)

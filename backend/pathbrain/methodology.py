@@ -28,6 +28,92 @@ AXIS_META: dict[str, dict] = {
     COMPLETION: {"label": "Completion", "role": "secondary"},
 }
 
+# ── Methodology registry ─────────────────────────────────────────────────────
+# Published methodology versions, declared explicitly (append-only). A version
+# names its axes and assigns each metric an axis + weight + thresholds; metric
+# *metadata* (plugin/source_key/unit/label/description) comes from metrics.py, so a
+# version is just the rubric, not a re-statement of the catalog. Publishing a new
+# weight/threshold/metric = a new entry here. Weights are relative within an axis
+# (the engine normalizes them), so each axis can sum to whatever is readable.
+
+SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
+
+# The version new runs are scored under (the "published now" methodology).
+CURRENT_METHODOLOGY = "speed-smoothness-v1"
+
+METHODOLOGY_REGISTRY: dict[str, dict] = {
+    "speed-smoothness-v1": {
+        "derivation_version": DERIVATION_VERSION,
+        "notes": (
+            "Split the single SOPS headline into Speed (when content arrives) and "
+            "Smoothness (how steady delivery was); CLS+INP become Stability & "
+            "Interactivity. Thresholds anchored to CWV/Nielsen (perceptual-v5)."
+        ),
+        "axes": [
+            {"key": SPEED, "label": "Speed", "role": "headline"},
+            {"key": SMOOTHNESS, "label": "Smoothness", "role": "headline"},
+            {"key": STABILITY, "label": "Stability & Interactivity", "role": "secondary"},
+            {"key": COMPLETION, "label": "Completion", "role": "secondary"},
+        ],
+        # metric_key -> {axis, weight, best, worst, required?}
+        "assignments": {
+            # Speed — when content arrives.
+            "ttfb": {"axis": SPEED, "weight": 15, "best": 800.0, "worst": 1800.0},
+            "fcp": {"axis": SPEED, "weight": 25, "best": 1800.0, "worst": 3000.0},
+            "lcp": {"axis": SPEED, "weight": 20, "best": 2500.0, "worst": 4000.0},
+            "byte_earliness": {"axis": SPEED, "weight": 30, "best": 300.0, "worst": 5000.0},
+            "render": {"axis": SPEED, "weight": 10, "best": 1000.0, "worst": 8000.0},
+            # Smoothness — how steady delivery was (the reason this project exists).
+            "longest_stall": {"axis": SMOOTHNESS, "weight": 40, "best": 50.0, "worst": 2000.0,
+                              "required": True},
+            "perceived_time": {"axis": SMOOTHNESS, "weight": 30, "best": 500.0, "worst": 8000.0},
+            "cadence_cov": {"axis": SMOOTHNESS, "weight": 15, "best": 0.5, "worst": 2.5},
+            "delivery_gini": {"axis": SMOOTHNESS, "weight": 15, "best": 0.2, "worst": 0.7},
+            # Stability & interactivity — kept off the speed/smoothness axes.
+            "cls": {"axis": STABILITY, "weight": 50, "best": 0.1, "worst": 0.25},
+            "inp": {"axis": STABILITY, "weight": 50, "best": 200.0, "worst": 500.0},
+            # Completion — pure infrastructure timing (unchanged).
+            "dns": {"axis": COMPLETION, "weight": 10, "best": 10.0, "worst": 150.0},
+            "tcp": {"axis": COMPLETION, "weight": 15, "best": 10.0, "worst": 250.0},
+            "tls": {"axis": COMPLETION, "weight": 20, "best": 30.0, "worst": 500.0},
+            "jitter": {"axis": COMPLETION, "weight": 5, "best": 1.0, "worst": 30.0},
+            "packet_loss": {"axis": COMPLETION, "weight": 5, "best": 0.0, "worst": 2.5},
+        },
+    },
+}
+
+
+def build_definition_from_spec(spec: dict) -> dict:
+    """Build a full frozen definition from a registry spec + the metric catalog."""
+    catalog = {m.key: m for m in metrics_mod.METRICS}
+    assignments = spec.get("assignments", {})
+    out_metrics: list[dict] = []
+    for m in metrics_mod.METRICS:
+        a = assignments.get(m.key)
+        if a is not None:
+            out_metrics.append(
+                {
+                    "key": m.key, "axis": a["axis"], "plugin": m.plugin,
+                    "source_key": m.source_key, "label": m.label,
+                    "description": m.description, "unit": m.unit,
+                    "weight": a["weight"], "best": a.get("best"), "worst": a.get("worst"),
+                    "higher_is_better": m.higher_is_better,
+                    "required": a.get("required", False), "order": metrics_mod._order(m.key),
+                }
+            )
+        else:  # not scored under this version — carried as a display-only diagnostic
+            out_metrics.append(
+                {
+                    "key": m.key, "axis": None, "plugin": m.plugin,
+                    "source_key": m.source_key, "label": m.label,
+                    "description": m.description, "unit": m.unit, "weight": 0.0,
+                    "best": m.best, "worst": m.worst, "higher_is_better": m.higher_is_better,
+                    "required": False, "order": metrics_mod._order(m.key),
+                }
+            )
+    out_metrics.sort(key=lambda x: x["order"])
+    return {"axes": spec["axes"], "metrics": out_metrics}
+
 
 def _effective(m: metrics_mod.MetricDef, config: dict) -> tuple[float, float | None, float | None]:
     """A metric's weight + best/worst thresholds, with stored config overriding the
@@ -76,29 +162,36 @@ def build_definition(config: dict) -> dict:
 
 
 def current_version(config: dict) -> str:
-    """The methodology version id scores reference (the rubric version)."""
-    return str(config.get("rubric_version") or "unversioned")
+    """The methodology version id new runs are scored under.
+
+    Defaults to ``CURRENT_METHODOLOGY``; an explicit ``methodology_version`` in config
+    overrides it (lets an instance pin a version, and keeps tests isolated)."""
+    return str((config or {}).get("methodology_version") or CURRENT_METHODOLOGY)
 
 
 def ensure_current_methodology(session: Session, config: dict, notes: str | None = None) -> Methodology:
     """Record the current methodology if not already stored, and mark it current.
 
-    Snapshots the definition the *first* time a version is seen and never edits it
-    afterward (append-only). Flips ``is_current`` so exactly one row is the
-    published-now methodology. Idempotent."""
+    Snapshots the definition the *first* time a version is seen — from the registry
+    spec when one exists, else from the live catalog+config (legacy bootstrap) — and
+    never edits it afterward (append-only). Flips ``is_current`` so exactly one row is
+    the published-now methodology. Idempotent."""
     version = current_version(config)
     row = session.get(Methodology, version)
     if row is None:
+        spec = METHODOLOGY_REGISTRY.get(version)
+        definition = build_definition_from_spec(spec) if spec else build_definition(config)
+        derivation = spec["derivation_version"] if spec else DERIVATION_VERSION
         row = Methodology(
             version=version,
             rubric_version=version,
-            derivation_version=DERIVATION_VERSION,
-            notes=notes,
-            definition=build_definition(config),
+            derivation_version=derivation,
+            notes=spec.get("notes") if spec else notes,
+            definition=definition,
             is_current=True,
         )
         session.add(row)
-        log.info("Recorded methodology %s (derivation %s)", version, DERIVATION_VERSION)
+        log.info("Recorded methodology %s (derivation %s)", version, derivation)
     # Exactly one current: clear the flag on every other version.
     for other in session.scalars(select(Methodology).where(Methodology.version != version)):
         other.is_current = False
@@ -186,6 +279,22 @@ def rubric_from_definition(definition: dict, axis: str) -> tuple[dict, dict]:
     weights = {m["key"]: m["weight"] for m in metrics}
     thresholds = {m["key"]: {"best": m["best"], "worst": m["worst"]} for m in metrics}
     return weights, thresholds
+
+
+def scored_axes(definition: dict) -> list[dict]:
+    """The axes that actually carry scored metrics, in definition order."""
+    have = {m["axis"] for m in (definition or {}).get("metrics", []) if m.get("axis")}
+    return [a for a in (definition or {}).get("axes", []) if a["key"] in have]
+
+
+def axis_rubric(definition: dict, axis: str) -> tuple[dict, dict, dict]:
+    """An axis's ``(metric_sources, weights, thresholds)`` for generic scoring —
+    enough to call ``compute_score`` for *any* axis the methodology defines."""
+    metrics = [m for m in (definition or {}).get("metrics", []) if m.get("axis") == axis]
+    sources = {m["key"]: (m["plugin"], m["source_key"]) for m in metrics}
+    weights = {m["key"]: m["weight"] for m in metrics}
+    thresholds = {m["key"]: {"best": m["best"], "worst": m["worst"]} for m in metrics}
+    return sources, weights, thresholds
 
 
 def serialize_score(row: Score) -> dict:

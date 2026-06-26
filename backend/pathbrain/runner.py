@@ -313,74 +313,85 @@ def _iteration_plugin_metrics_from_raw(run, artifact_base: str | None) -> list[d
     ]
 
 
-def score_run_under(session, run, methodology, artifact_base: str | None = None):
-    """Score a run from its preserved raw under a given methodology, writing a Score
-    row (the at-present record). Never mutates a different version's at-measure row.
+def score_metrics_under(session, run_id, run_methodology_version, methodology, iter_metrics):
+    """Score per-iteration ``{plugin: metrics}`` under a methodology's frozen rubric,
+    across every axis it defines, and upsert the (run × methodology) Score.
 
-    Re-derives metrics from raw (current derivation), scores under the methodology's
-    *frozen* rubric, and tags comparability (exact/partial/incomparable). Returns the
-    Score, or ``None`` when the methodology has no recorded definition or the run has
-    no derivable raw. Caller commits.
+    Generic multi-axis: each axis is scored with ``compute_score`` over its own
+    metric sources/weights/thresholds, so Speed/Smoothness/Stability/Completion (or
+    any future axes) all fall out of the definition. ``is_at_measure`` is set when the
+    methodology matches the run's capture-time version. Returns the Score, or ``None``
+    when nothing was scorable. Caller commits.
     """
     from statistics import pstdev as _pstdev
 
-    from .metrics import COMPLETION, SOPS
-    from .methodology import comparability, rubric_from_definition, upsert_score
+    from .methodology import axis_rubric, comparability, scored_axes, upsert_score
 
     definition = methodology.definition or {}
-    if not definition.get("metrics"):
-        return None  # pre-foundation methodology — definition not recorded
-    sw, st = rubric_from_definition(definition, SOPS)
-    cw, ct = rubric_from_definition(definition, COMPLETION)
+    axes = scored_axes(definition)
+    if not axes or not iter_metrics:
+        return None
 
-    iter_metrics = _iteration_plugin_metrics_from_raw(run, artifact_base)
-    if not iter_metrics:
-        return None  # no raw to interpret
+    axis_scores: dict[str, float] = {}
+    bands: dict[str, dict] = {}
+    subscores: dict[str, float] = {}
+    weights_used: dict[str, float] = {}
+    metric_values: dict[str, float] = {}
 
-    sops_iter = [compute_score(im, sw, st) for im in iter_metrics]
-    comp_iter = [compute_completion(im, cw, ct) for im in iter_metrics]
-    head_s = compute_score(
-        _plugin_metrics_from_values(_median_values([b.metric_values for b in sops_iter])), sw, st
-    )
-    head_c = compute_completion(
-        _plugin_metrics_from_values(
-            _median_values([b.metric_values for b in comp_iter]), COMPLETION_METRIC_SOURCES
-        ),
-        cw,
-        ct,
-    )
+    for axis in axes:
+        sources, weights, thresholds = axis_rubric(definition, axis["key"])
+        per_iter = [compute_score(im, weights, thresholds, sources) for im in iter_metrics]
+        head = compute_score(
+            _plugin_metrics_from_values(
+                _median_values([b.metric_values for b in per_iter]), sources
+            ),
+            weights,
+            thresholds,
+            sources,
+        )
+        metric_values.update(head.metric_values)
+        if not head.subscores:
+            continue  # this axis captured none of its metrics on this run
+        axis_scores[axis["key"]] = head.sops
+        subscores.update(head.subscores)
+        weights_used.update(head.weights_used)
+        scores = [b.sops for b in per_iter if b.subscores]
+        if scores:
+            bands[axis["key"]] = {
+                "stdev": round(_pstdev(scores), 2) if len(scores) > 1 else 0.0,
+                "min": round(min(scores), 2),
+                "max": round(max(scores), 2),
+            }
 
-    def _band(scores: list[float]) -> dict:
-        return {
-            "stdev": round(_pstdev(scores), 2) if len(scores) > 1 else 0.0,
-            "min": round(min(scores), 2),
-            "max": round(max(scores), 2),
-        }
-
-    axis_scores: dict[str, float] = {"sops": head_s.sops}
-    bands: dict[str, dict] = {"sops": _band([b.sops for b in sops_iter])}
-    has_completion = bool(head_c.subscores)
-    if has_completion:
-        axis_scores["completion"] = head_c.sops
-        c_scores = [b.sops for b in comp_iter if b.subscores]
-        if c_scores:
-            bands["completion"] = _band(c_scores)
-
-    metric_values = {**head_c.metric_values, **head_s.metric_values}
     comp_tag, missing = comparability(definition, metric_values)
     return upsert_score(
         session,
-        run.id,
+        run_id,
         methodology.version,
-        is_at_measure=(run.methodology_version == methodology.version),
+        is_at_measure=(run_methodology_version == methodology.version),
         axis_scores=axis_scores,
-        subscores={**head_s.subscores, **head_c.subscores},
-        weights_used={**head_s.weights_used, **head_c.weights_used},
+        subscores=subscores,
+        weights_used=weights_used,
         metric_values=metric_values,
         bands=bands,
         comparability=comp_tag,
         missing_metrics=missing or None,
     )
+
+
+def score_run_under(session, run, methodology, artifact_base: str | None = None):
+    """Score a run from its preserved raw under a methodology, writing a Score row
+    (the at-present record). Never mutates a different version's at-measure row.
+
+    Re-derives metrics from raw (current derivation), then scores every axis the
+    methodology defines (Speed/Smoothness/…). Returns the Score, or ``None`` when the
+    methodology has no recorded definition or the run has no derivable raw."""
+    if not (methodology.definition or {}).get("metrics"):
+        return None  # pre-foundation methodology — definition not recorded
+    iter_metrics = _iteration_plugin_metrics_from_raw(run, artifact_base)
+    if not iter_metrics:
+        return None  # no raw to interpret
+    return score_metrics_under(session, run.id, run.methodology_version, methodology, iter_metrics)
 
 
 def score_history_under_current(session) -> dict:
@@ -502,6 +513,9 @@ def execute_run(run_id: int) -> None:
             iteration_metric_values: list[dict] = []
             completion_scores: list[float] = []
             completion_metric_values: list[dict] = []
+            # Per-iteration {plugin: metrics}, fed to the methodology-aware scorer for
+            # the at-measure Score row (the new (run × methodology) record).
+            iteration_plugin_metrics: list[dict] = []
 
             for i in range(iterations):
                 it_start = perf_counter()
@@ -521,6 +535,7 @@ def execute_run(run_id: int) -> None:
                             "Run %s iter %s: plugin '%s' failed: %s",
                             run_id, i + 1, plugin.name, result.error,
                         )
+                iteration_plugin_metrics.append(iter_metrics)
                 b = compute_score(iter_metrics, weights=weights, thresholds=thresholds)
                 iteration_scores.append(b.sops)
                 iteration_metric_values.append(b.metric_values)
@@ -599,12 +614,16 @@ def execute_run(run_id: int) -> None:
             )
             session.add(score_result)
 
-            # Record the at-measure score in the (run × methodology) table and stamp
-            # the run with the methodology it was interpreted under at capture.
-            from .methodology import ensure_current_methodology, record_at_measure
+            # Record the at-measure score in the (run × methodology) table under the
+            # current methodology, scored across all its axes (Speed/Smoothness/…),
+            # and stamp the run with the methodology it was interpreted under.
+            from .methodology import ensure_current_methodology
 
             methodology = ensure_current_methodology(session, config)
-            record_at_measure(session, run, score_result, methodology.version)
+            run.methodology_version = methodology.version
+            score_metrics_under(
+                session, run_id, methodology.version, methodology, iteration_plugin_metrics
+            )
 
             run.per_iteration_ms = (
                 round(mean(iteration_durations), 3) if iteration_durations else None

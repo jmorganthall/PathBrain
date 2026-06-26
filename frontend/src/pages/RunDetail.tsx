@@ -387,8 +387,7 @@ export default function RunDetail() {
                   <TableRow>
                     <TableCell>Methodology</TableCell>
                     <TableCell>When</TableCell>
-                    <TableCell align="right">SOPS</TableCell>
-                    <TableCell align="right">Completion</TableCell>
+                    <TableCell>Scores</TableCell>
                     <TableCell>Comparability</TableCell>
                   </TableRow>
                 </TableHead>
@@ -397,14 +396,28 @@ export default function RunDetail() {
                     <TableRow key={s.methodology_version}>
                       <TableCell>{s.methodology_version}</TableCell>
                       <TableCell>{s.is_at_measure ? "At measure" : "At present"}</TableCell>
-                      <TableCell
-                        align="right"
-                        sx={{ color: sopsColor(s.axis_scores.sops), fontWeight: 600 }}
-                      >
-                        {s.axis_scores.sops != null ? Math.round(s.axis_scores.sops) : "—"}
-                      </TableCell>
-                      <TableCell align="right">
-                        {s.axis_scores.completion != null ? Math.round(s.axis_scores.completion) : "—"}
+                      <TableCell>
+                        <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
+                          {Object.entries(s.axis_scores).length === 0 && "—"}
+                          {Object.entries(s.axis_scores).map(([axis, val]) => (
+                            <Box component="span" key={axis}>
+                              <Typography
+                                component="span"
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{ textTransform: "capitalize", mr: 0.5 }}
+                              >
+                                {axis}
+                              </Typography>
+                              <Typography
+                                component="span"
+                                sx={{ fontWeight: 600, color: sopsColor(val) }}
+                              >
+                                {Math.round(val)}
+                              </Typography>
+                            </Box>
+                          ))}
+                        </Stack>
                       </TableCell>
                       <TableCell>
                         <Tooltip arrow title={comparabilityTip(s)}>

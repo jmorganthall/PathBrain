@@ -5,7 +5,12 @@ from sqlalchemy import select
 
 from pathbrain.config_store import get_config
 from pathbrain.database import session_scope
-from pathbrain.methodology import comparability, ensure_current_methodology, rubric_from_definition
+from pathbrain.methodology import (
+    CURRENT_METHODOLOGY,
+    comparability,
+    ensure_current_methodology,
+    rubric_from_definition,
+)
 from pathbrain.models import BenchmarkResult, Run, RunStatus, Score
 from pathbrain.runner import score_history_under_current, score_run_under
 
@@ -84,7 +89,8 @@ def test_score_run_under_rederives_from_raw():
         assert score is not None
         # longest_stall was re-derived from the raw resource series (required metric present).
         assert score.metric_values.get("longest_stall") is not None
-        assert "sops" in score.axis_scores
+        # Current methodology is Speed/Smoothness — multi-axis, not a single SOPS.
+        assert "speed" in score.axis_scores and "smoothness" in score.axis_scores
         assert score.is_at_measure is False  # run had no capture methodology → at-present
         # Completion metrics (dns/tcp/tls) weren't collected → partial, not exact.
         assert score.comparability in ("partial", "exact")
@@ -119,18 +125,13 @@ def test_regrade_endpoint_writes_scores(client):
     rid = _seed_run_with_raw(resources_present=True)
     summary = client.post("/api/score/regrade").json()
     assert summary["scored"] >= 1
-    assert summary["methodology"] == get_config_version()
+    assert summary["methodology"] == CURRENT_METHODOLOGY
 
     body = client.get(f"/api/score/{rid}/methodologies").json()
     assert body["scores"]
     s0 = body["scores"][0]
-    assert "sops" in s0["axis_scores"]
+    assert "speed" in s0["axis_scores"] and "smoothness" in s0["axis_scores"]
     assert s0["comparability"] in ("exact", "partial", "incomparable")
-
-
-def get_config_version() -> str:
-    with session_scope() as s:
-        return get_config(s)["rubric_version"]
 
 
 def test_regrade_does_not_mutate_other_versions_at_measure():
