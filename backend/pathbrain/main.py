@@ -39,6 +39,9 @@ async def lifespan(app: FastAPI):
     from .runner import reconcile_interrupted_runs
 
     reconcile_interrupted_runs()  # fail any runs orphaned by a previous restart
+    from .methodology import seed_current_methodology
+
+    seed_current_methodology()  # record the interpretation methodology in play
     from .sweep import reconcile_interrupted_sweeps
 
     reconcile_interrupted_sweeps()  # restore the firewall if a sweep was interrupted

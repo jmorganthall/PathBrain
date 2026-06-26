@@ -272,3 +272,31 @@ class AppConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class Methodology(Base):
+    """An immutable, append-only snapshot of *how raw becomes a score* at a point in time.
+
+    A methodology bundles a **derivation** (raw → metric scalars) with a **rubric**
+    (metric scalars → axis scores: the metric set, weights, thresholds, axes). The
+    ``definition`` JSON is a self-contained snapshot of that whole interpretation —
+    everything needed to read or reproduce a score with no reference to current code,
+    so a historical run can always be shown "scored under this methodology" (see
+    ``docs/methodology.md``). You never edit a methodology; a new weight, threshold,
+    or metric is published as a new version.
+    """
+
+    __tablename__ = "methodologies"
+
+    # The bundle id scores reference (the rubric version, e.g. "perceptual-v5").
+    version: Mapped[str] = mapped_column(String(64), primary_key=True)
+    rubric_version: Mapped[str] = mapped_column(String(64))
+    derivation_version: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # Human changelog, e.g. "re-anchored thresholds to CWV good/poor boundaries".
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Exactly one row is the published-now methodology.
+    is_current: Mapped[bool] = mapped_column(default=False)
+    # The full frozen catalog + rubric: {axes:[...], metrics:[{key, axis, weight,
+    # best, worst, unit, label, required, ...}]}. See methodology.build_definition.
+    definition: Mapped[dict] = mapped_column(JSON, default=dict)
