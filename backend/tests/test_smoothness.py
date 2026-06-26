@@ -107,6 +107,21 @@ def test_perceived_time_penalizes_unoccupied_stalls():
     assert pt_chunky > pt_smooth
 
 
+def test_recalibrated_perceived_time_keeps_stall_loads_out_of_green():
+    # 5c recalibration (w_unoccupied=4 default + the v2 400/8000 threshold): a load
+    # that is mostly one dead stall must not score green, and must score below a
+    # steadily-delivered load of the same span.
+    from pathbrain.scoring.engine import _normalize
+
+    smooth = completion_series([_res(t) for t in range(100, 1000, 100)])
+    chunky = completion_series([_res(t) for t in (50, 60, 70, 760, 800)])
+    pt_smooth = perceived_time(smooth, 0, 900)  # uses the new w_unoccupied=4 default
+    pt_chunky = perceived_time(chunky, 0, 900)
+    best, worst = 400.0, 8000.0  # speed-smoothness-v2 perceived_time threshold
+    assert _normalize(pt_chunky, best, worst) < 80.0  # mostly-stall → not green
+    assert _normalize(pt_chunky, best, worst) < _normalize(pt_smooth, best, worst)
+
+
 def test_perceived_time_weight_ratio_controls_penalty():
     events = completion_series(CHUNKY)
     flat = perceived_time(events, 0, 900, w_occupied=1.0, w_unoccupied=1.0)
@@ -190,7 +205,7 @@ def test_smoothness_record_carries_speed_side_and_attribution():
     assert rec["load_event_ms"] == 900.0 and rec["lcp_ms"] == 400.0
     assert rec["longest_stall_attribution"] == "network"
     assert rec["protocol_mix"] == {"h2": 8}
-    assert rec["perceived_time_params"]["w_unoccupied"] == 3.0
+    assert rec["perceived_time_params"]["w_unoccupied"] == 4.0
 
 
 def test_smoothness_handles_empty_and_cross_origin_zeroed_input():

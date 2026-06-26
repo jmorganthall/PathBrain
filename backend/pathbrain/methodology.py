@@ -39,46 +39,64 @@ AXIS_META: dict[str, dict] = {
 SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v1"
+CURRENT_METHODOLOGY = "speed-smoothness-v2"
+
+# Shared axis layout + per-metric rubric for the speed/smoothness family.
+_SS_AXES = [
+    {"key": SPEED, "label": "Speed", "role": "headline"},
+    {"key": SMOOTHNESS, "label": "Smoothness", "role": "headline"},
+    {"key": STABILITY, "label": "Stability & Interactivity", "role": "secondary"},
+    {"key": COMPLETION, "label": "Completion", "role": "secondary"},
+]
+
+
+def _ss_assignments(perceived_threshold: dict) -> dict:
+    return {
+        # Speed — when content arrives.
+        "ttfb": {"axis": SPEED, "weight": 15, "best": 800.0, "worst": 1800.0},
+        "fcp": {"axis": SPEED, "weight": 25, "best": 1800.0, "worst": 3000.0},
+        "lcp": {"axis": SPEED, "weight": 20, "best": 2500.0, "worst": 4000.0},
+        "byte_earliness": {"axis": SPEED, "weight": 30, "best": 300.0, "worst": 5000.0},
+        "render": {"axis": SPEED, "weight": 10, "best": 1000.0, "worst": 8000.0},
+        # Smoothness — how steady delivery was (the reason this project exists).
+        "longest_stall": {"axis": SMOOTHNESS, "weight": 40, "best": 50.0, "worst": 2000.0,
+                          "required": True},
+        "perceived_time": {"axis": SMOOTHNESS, "weight": 30, **perceived_threshold},
+        "cadence_cov": {"axis": SMOOTHNESS, "weight": 15, "best": 0.5, "worst": 2.5},
+        "delivery_gini": {"axis": SMOOTHNESS, "weight": 15, "best": 0.2, "worst": 0.7},
+        # Stability & interactivity — kept off the speed/smoothness axes.
+        "cls": {"axis": STABILITY, "weight": 50, "best": 0.1, "worst": 0.25},
+        "inp": {"axis": STABILITY, "weight": 50, "best": 200.0, "worst": 500.0},
+        # Completion — pure infrastructure timing.
+        "dns": {"axis": COMPLETION, "weight": 10, "best": 10.0, "worst": 150.0},
+        "tcp": {"axis": COMPLETION, "weight": 15, "best": 10.0, "worst": 250.0},
+        "tls": {"axis": COMPLETION, "weight": 20, "best": 30.0, "worst": 500.0},
+        "jitter": {"axis": COMPLETION, "weight": 5, "best": 1.0, "worst": 30.0},
+        "packet_loss": {"axis": COMPLETION, "weight": 5, "best": 0.0, "worst": 2.5},
+    }
+
 
 METHODOLOGY_REGISTRY: dict[str, dict] = {
     "speed-smoothness-v1": {
-        "derivation_version": DERIVATION_VERSION,
+        "derivation_version": "derive-v2",
         "notes": (
             "Split the single SOPS headline into Speed (when content arrives) and "
             "Smoothness (how steady delivery was); CLS+INP become Stability & "
             "Interactivity. Thresholds anchored to CWV/Nielsen (perceptual-v5)."
         ),
-        "axes": [
-            {"key": SPEED, "label": "Speed", "role": "headline"},
-            {"key": SMOOTHNESS, "label": "Smoothness", "role": "headline"},
-            {"key": STABILITY, "label": "Stability & Interactivity", "role": "secondary"},
-            {"key": COMPLETION, "label": "Completion", "role": "secondary"},
-        ],
-        # metric_key -> {axis, weight, best, worst, required?}
-        "assignments": {
-            # Speed — when content arrives.
-            "ttfb": {"axis": SPEED, "weight": 15, "best": 800.0, "worst": 1800.0},
-            "fcp": {"axis": SPEED, "weight": 25, "best": 1800.0, "worst": 3000.0},
-            "lcp": {"axis": SPEED, "weight": 20, "best": 2500.0, "worst": 4000.0},
-            "byte_earliness": {"axis": SPEED, "weight": 30, "best": 300.0, "worst": 5000.0},
-            "render": {"axis": SPEED, "weight": 10, "best": 1000.0, "worst": 8000.0},
-            # Smoothness — how steady delivery was (the reason this project exists).
-            "longest_stall": {"axis": SMOOTHNESS, "weight": 40, "best": 50.0, "worst": 2000.0,
-                              "required": True},
-            "perceived_time": {"axis": SMOOTHNESS, "weight": 30, "best": 500.0, "worst": 8000.0},
-            "cadence_cov": {"axis": SMOOTHNESS, "weight": 15, "best": 0.5, "worst": 2.5},
-            "delivery_gini": {"axis": SMOOTHNESS, "weight": 15, "best": 0.2, "worst": 0.7},
-            # Stability & interactivity — kept off the speed/smoothness axes.
-            "cls": {"axis": STABILITY, "weight": 50, "best": 0.1, "worst": 0.25},
-            "inp": {"axis": STABILITY, "weight": 50, "best": 200.0, "worst": 500.0},
-            # Completion — pure infrastructure timing (unchanged).
-            "dns": {"axis": COMPLETION, "weight": 10, "best": 10.0, "worst": 150.0},
-            "tcp": {"axis": COMPLETION, "weight": 15, "best": 10.0, "worst": 250.0},
-            "tls": {"axis": COMPLETION, "weight": 20, "best": 30.0, "worst": 500.0},
-            "jitter": {"axis": COMPLETION, "weight": 5, "best": 1.0, "worst": 30.0},
-            "packet_loss": {"axis": COMPLETION, "weight": 5, "best": 0.0, "worst": 2.5},
-        },
+        "axes": _SS_AXES,
+        "assignments": _ss_assignments({"axis": SMOOTHNESS, "best": 500.0, "worst": 8000.0}),
+    },
+    "speed-smoothness-v2": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v3: perceived-time w_unoccupied 3→4
+        "notes": (
+            "Recalibrate perceived-time so a mostly-stall load can't score green: the "
+            "unoccupied/stall weight rose 3→4 (derive-v3) and the perceived-time "
+            "threshold tightened to 400/8000ms. A reasoned default — the calibration "
+            "harness fits the exact ratio to subjective ratings."
+        ),
+        "axes": _SS_AXES,
+        "assignments": _ss_assignments({"axis": SMOOTHNESS, "best": 400.0, "worst": 8000.0}),
     },
 }
 
