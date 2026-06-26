@@ -292,6 +292,10 @@ class BrowserBenchmark(BenchmarkPlugin):
         headless = bool(config.get("headless", True))
         want_screenshot = bool(config.get("screenshot", True))
         want_har = bool(config.get("har", True))
+        # The CDP screencast filmstrip (per-frame JPEG) is CPU-intensive and only
+        # feeds the pixel-based Speed Index / paint-cadence diagnostics. Off by
+        # default — scored SOPS smoothness now comes from the byte-arrival metrics.
+        want_filmstrip = bool(config.get("filmstrip", False))
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         base_dir = os.path.abspath(get_settings().artifact_dir)
@@ -326,7 +330,11 @@ class BrowserBenchmark(BenchmarkPlugin):
 
                             t0 = perf_counter()
                             frames: list[dict] = []
-                            cdp = _start_screencast(context, page, frames, run_dir, stamp, slug, t0)
+                            cdp = (
+                                _start_screencast(context, page, frames, run_dir, stamp, slug, t0)
+                                if want_filmstrip
+                                else None
+                            )
 
                             page.goto(url, wait_until=wait_until, timeout=timeout_ms)
                             try:

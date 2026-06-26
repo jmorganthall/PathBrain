@@ -12,13 +12,17 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     **pure sensors: they emit raw observations only** (`PluginResult.raw`) and never
     interpret. `base.py` defines the contract + registry. Add one by subclassing
     `BenchmarkPlugin` and `@register`. (icmp emits per-ping RTT series, http emits
-    bytes+timing, browser emits raw nav/paint/CLS/long-task entries + a filmstrip.)
+    bytes+timing, browser emits raw nav/paint/CLS/long-task + Resource Timing/LoAF
+    entries, and an optional filmstrip.)
   - `interpret/` — **the interpretation layer** (`derive.py`, versioned
     `DERIVATION_VERSION`). Turns raw observations → scoreable metric values:
-    `jitter`=stddev(RTTs), `latency`=mean, `transfer`=bytes·8/dl, and the trajectory
-    metrics (Speed Index / paint cadence / CLS from the filmstrip); `fcp`/`lcp` are
-    identity pass-throughs. This is the **only** place interpretation lives, so a new
-    metric or changed formula can be re-derived over history without re-collecting.
+    `jitter`=stddev(RTTs), `latency`=mean, `transfer`=bytes·8/dl, the **byte-arrival
+    smoothness** metrics (`smoothness.py`: longest stall / cadence CoV / byte
+    earliness / delivery Gini / perceived time / network-vs-render stall attribution,
+    all from Resource Timing + LoAF — no pixels), and the pixel diagnostics (Speed
+    Index / paint cadence / CLS from the optional filmstrip); `fcp`/`lcp` are identity
+    pass-throughs. This is the **only** place interpretation lives, so a new metric or
+    changed formula can be re-derived over history without re-collecting.
   - `providers/` — firewall config discovery + **apply** (`opnsense.py`,
     `mock.py`); pick via `PATHBRAIN_CONFIG_PROVIDER`. OPNsense reads/writes
     fq_codel fields (`fqcodel_quantum/limit/flows`, `codel_target/interval/ecn`);
@@ -31,11 +35,14 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     from it. Adding a measurement = one entry here (+ the plugin emitting it).
   - `scoring/engine.py` — score computation (weighted, perception-calibrated log
     curve, redistributes missing-metric weight). **Two axes, never blended:**
-    **SOPS** is the headline *human-feel* score — perception-led and **trajectory-
-    aware**: Speed Index (30) + FCP (20) + paint cadence (10) + CLS (5) lead;
-    LCP (10) + INP (10) + TTFB (10) + render-to-networkidle (5) trail
-    (`METRIC_SOURCES`, rubric `perceptual-v3`). It rewards painting *early and
-    steadily*, not finishing first. **Completion** is the secondary infra axis
+    **SOPS** is the headline *human-feel* score — perception-led and **delivery-
+    aware**: byte earliness (25) + FCP (20) + longest stall (10) + perceived time (5)
+    lead; LCP (10) + INP (10) + TTFB (10) + render-to-networkidle (5) trail
+    (`METRIC_SOURCES`, rubric `perceptual-v4`). The byte-arrival smoothness metrics
+    isolate the network layer (the tunable one) without the CPU cost of the pixel
+    screencast; Speed Index / paint cadence are now display-only diagnostics (require
+    the opt-in `browser.filmstrip`). It rewards delivering *early and steadily*, not
+    finishing first. **Completion** is the secondary infra axis
     (DNS/TCP/TLS/jitter/loss,
     `COMPLETION_METRIC_SOURCES`, `compute_completion`) — raw timing that barely
     moves human feel, so it's kept out of SOPS. Completion persists on
@@ -116,8 +123,9 @@ docker compose up --build   # -> http://localhost:8000
   shows a windowed **rolling** score (`/api/score/rolling`, 24h median + IQR) plus
   a **"vs typical"** delta vs the day/hour historical baseline (`trends.py`).
 - **Current vs. legacy scoring (no dual-score machinery).** A run scored before
-  the current rubric (no Speed Index — `metrics.has_latest_metrics`, keyed off
-  `marks_latest`, now `speed_index`) isn't comparable, so it's **quarantined**, not
+  the current rubric (no longest-stall / byte-arrival metrics —
+  `metrics.has_latest_metrics`, keyed off `marks_latest`, now `longest_stall`) isn't
+  comparable, so it's **quarantined**, not
   reconciled: Dashboard rolling + History trend exclude legacy; the History list
   hides it behind a "Show legacy" toggle; Run Detail/Compare flag it
   (`ScoreOut.legacy`/`RunSummary.legacy`); Settings Impact aggregates `complete_only`
@@ -141,8 +149,10 @@ docker compose up --build   # -> http://localhost:8000
 - **Phase 1 (done):** benchmark engine (ICMP/DNS/TCP/TLS/HTTP), SOPS scoring,
   history, config discovery (OPNsense/mock), REST API, dashboard.
 - **Phase 2 (done):** Playwright browser engine — `benchmark_browser` emits raw
-  nav timings, **paint events** (`fcp`/`lcp`/`inp`), and a **filmstrip** (CDP
-  screencast); captures screenshot/HAR to the artifact dir, served at `/artifacts`.
+  nav timings, **paint events** (`fcp`/`lcp`/`inp`), **Resource Timing + LoAF** (for
+  smoothness), and an **optional filmstrip** (CDP screencast, gated by
+  `browser.filmstrip`, off by default — it only feeds the pixel Speed Index/cadence
+  diagnostics); captures screenshot/HAR to the artifact dir, served at `/artifacts`.
 - **Phase 3 (done):** continuous monitoring (`scheduler.py`) + rolling score;
   settings-vs-responsiveness correlation (`settings_profile.py`, `/api/settings/*`);
   perception-calibrated rubric (Weber–Fechner) with versioned re-scoring; and the
@@ -158,9 +168,17 @@ docker compose up --build   # -> http://localhost:8000
   and the **Shotgun Sweep** (`sweep.py`, `/api/sweep/*`) — an on-demand grid sweep
   that applies each variant, benchmarks it, ranks by SOPS + "vs typical", and
   restores the baseline.
-- **Next:** speed test / bufferbloat (latency-under-load), A/B weight calibration
-  from blind ratings, multi-parameter Bayesian search + interleaved A/B with
-  effect-size/CI + hysteresis, routing intelligence / SD-WAN.
+- **Phase 5 (done):** **perceived load-smoothness instrument** — byte-arrival
+  smoothness metrics from Resource Timing + LoAF (`interpret/smoothness.py`), with
+  network-vs-render stall attribution and protocol mix. Promoted into SOPS (rubric
+  `perceptual-v4`): byte earliness / longest stall / perceived time replace the
+  pixel Speed Index / paint cadence (now opt-in diagnostics). Per-run records +
+  two-config comparison at `/api/smoothness/*` (keyed on `settings_fingerprint`);
+  an offline **calibration harness** (`calibration/`) fits the perceived-time
+  weight ratio to subjective 1–10 ratings.
+- **Next:** speed test / bufferbloat (latency-under-load), multi-parameter Bayesian
+  search + interleaved A/B with effect-size/CI + hysteresis, routing intelligence /
+  SD-WAN.
 
 ⚠️ Firewall **writes** go only through `provider.apply()`. Four callers use it, all
 snapshot/restore or are reversible: the experiment engine (disarmed + dry-run by
@@ -170,5 +188,6 @@ write paths to `provider.apply()` and always snapshot/restore.
 
 The browser engine imports Playwright lazily, so the plugin registry still loads
 where Playwright/Chromium isn't installed (it returns `success=False` and the
-browser metrics' weight is redistributed). Filmstrip/Speed Index also degrade
+browser metrics' weight is redistributed). The byte-arrival smoothness metrics need
+only Resource Timing (always present); the opt-in filmstrip/Speed Index degrade
 gracefully without CDP screencast or Pillow. Chromium is installed in the Docker image.

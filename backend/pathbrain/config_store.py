@@ -28,7 +28,7 @@ DEFAULT_COMPLETION_THRESHOLDS: dict[str, dict[str, float]] = default_thresholds(
 
 # Identifier for the active scoring rubric (curve + thresholds). Bump when the
 # calibration changes so historical scores can be tracked/re-graded.
-DEFAULT_RUBRIC_VERSION = "perceptual-v3"
+DEFAULT_RUBRIC_VERSION = "perceptual-v4"
 
 DEFAULT_CONFIG: dict = {
     "icmp": {
@@ -87,6 +87,13 @@ DEFAULT_CONFIG: dict = {
         "headless": True,
         "screenshot": True,
         "har": True,
+        # CPU-intensive CDP screencast that captures a per-frame JPEG filmstrip,
+        # used only to derive the *pixel-based* Speed Index / paint-cadence
+        # diagnostics. Off by default: the scored SOPS smoothness now comes from
+        # the byte-arrival metrics (byte_earliness/longest_stall/perceived_time),
+        # which isolate the network layer without the screencast cost. Enable to
+        # also capture the visual filmstrip + Speed Index.
+        "filmstrip": False,
         # HTTP/3 (QUIC) testing. Off by default (Chromium negotiates HTTP/2 over
         # TCP). When enabled, QUIC is turned on and *forced* onto the target
         # origins so loads actually use HTTP/3 — without forcing, the per-URL

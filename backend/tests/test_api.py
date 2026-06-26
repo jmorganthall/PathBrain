@@ -123,12 +123,12 @@ def test_rolling_score_shape(client):
 def test_adopt_rubric_and_rescore(client):
     adopted = client.post("/api/config/adopt-rubric")
     assert adopted.status_code == 200
-    assert adopted.json()["rubric_version"] == "perceptual-v3"
+    assert adopted.json()["rubric_version"] == "perceptual-v4"
 
     resp = client.post("/api/score/rescore")
     assert resp.status_code == 200
     body = resp.json()
-    assert "rescored" in body and body["rubric_version"] == "perceptual-v3"
+    assert "rescored" in body and body["rubric_version"] == "perceptual-v4"
 
 
 def test_monitoring_status_shape(client):

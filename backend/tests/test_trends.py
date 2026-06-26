@@ -31,7 +31,7 @@ def test_run_metric_values_pulls_axes_and_registry_metrics():
     score = SimpleNamespace(
         sops=82.0,
         completion=70.0,
-        metric_values={"speed_index": 1500, "fcp": 200, "lcp": 400},  # latest-rubric markers
+        metric_values={"longest_stall": 200, "fcp": 200, "lcp": 400},  # latest-rubric markers
     )
     results = {
         "icmp": SimpleNamespace(metrics={"latency_ms": 12.0, "jitter_ms": 1.5}),
