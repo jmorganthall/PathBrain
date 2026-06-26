@@ -36,16 +36,19 @@ def test_ideal_metrics_score_100():
     assert _score(PERFECT_SOPS).sops == 100.0
 
 
-def test_good_but_ordinary_setup_is_well_below_100():
-    # The flagged run: good, not perfect. The scale (not a cap) keeps it down, and
-    # no individual metric pins at 100.
+def test_values_inside_good_score_green():
+    # Rubric perceptual-v5: thresholds anchor to CWV/Nielsen "good" boundaries, so a
+    # run comfortably inside good reads green — paint metrics pin at 100, only the
+    # deprioritized render tail (1540ms, above its 1000ms "flow" best) leaves headroom.
     good = {
         "browser": {"fcp_ms": 489.0, "lcp_ms": 561.0, "inp_ms": 98.7, "total_render_ms": 1540.0},
         "http": {"ttfb_ms": 209.0},
     }
     result = _score(good)
-    assert result.sops < 85.0
-    assert all(v < 100.0 for v in result.subscores.values())
+    assert result.sops >= 90.0  # comfortably-good load → green headline
+    assert result.subscores["fcp"] == 100.0  # 489ms is well inside the 1800ms good line
+    assert result.subscores["inp"] == 100.0  # 98.7ms is well under the 200ms good line
+    assert result.subscores["render"] < 100.0  # the tail is the only thing with headroom
 
 
 def test_only_near_floor_values_reach_100():
@@ -98,7 +101,9 @@ def test_missing_metrics_redistribute_weights():
 
 def test_sops_survives_without_browser():
     # No browser engine -> SOPS falls back to TTFB only (never blank when http ran).
-    result = _score({"http": {"ttfb_ms": 80.0}})  # ordinary-good TTFB
+    # 1200ms sits in the needs-improvement band (800ms good → 1800ms poor), so it
+    # scores between 0 and 100 — proving the fallback computes a real score.
+    result = _score({"http": {"ttfb_ms": 1200.0}})
     assert 0.0 < result.sops < 100.0
     assert set(result.subscores) == {"ttfb"}
 

@@ -28,7 +28,7 @@ DEFAULT_COMPLETION_THRESHOLDS: dict[str, dict[str, float]] = default_thresholds(
 
 # Identifier for the active scoring rubric (curve + thresholds). Bump when the
 # calibration changes so historical scores can be tracked/re-graded.
-DEFAULT_RUBRIC_VERSION = "perceptual-v4"
+DEFAULT_RUBRIC_VERSION = "perceptual-v5"
 
 DEFAULT_CONFIG: dict = {
     "icmp": {

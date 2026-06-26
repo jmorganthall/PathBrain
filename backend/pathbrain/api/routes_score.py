@@ -13,12 +13,35 @@ from ..database import get_session
 from ..metrics import has_latest_metrics
 from ..config import get_settings
 from ..interpret import DERIVATION_VERSION
-from ..models import Run, RunStatus, ScoreResult
+from ..models import BenchmarkResult, Run, RunStatus, ScoreResult
 from ..runner import rederive_run, rescore_run
 from ..schemas import ScoreOut
 from ..scoring import compute_score
 
 router = APIRouter()
+
+
+def _attribution(network_ms: float | None, render_ms: float | None, unknown_ms: float | None) -> dict | None:
+    """Summarize where the window's stall time came from (PRD R7).
+
+    Returns the per-source median stall time plus a ``dominant`` tag
+    (``network`` | ``render`` | ``mixed`` | ``unknown``), or ``None`` when no
+    meaningful stall time was recorded. ``dominant`` is ``mixed`` unless one source
+    accounts for ≥60% of attributed stall time — so a clearly network-bound stall
+    reads "network" (tunable) and a main-thread one reads "render" (not tunable)."""
+    n, r, u = network_ms or 0.0, render_ms or 0.0, unknown_ms or 0.0
+    total = n + r + u
+    if total < 1.0:  # under a millisecond of stall — nothing worth attributing
+        return None
+    parts = {"network": n, "render": r, "unknown": u}
+    top = max(parts, key=parts.get)
+    dominant = top if parts[top] / total >= 0.6 else "mixed"
+    return {
+        "network_ms": round(n, 1),
+        "render_ms": round(r, 1),
+        "unknown_ms": round(u, 1),
+        "dominant": dominant,
+    }
 
 
 @router.post("/score/rescore")
@@ -111,6 +134,7 @@ def rolling_score(
             "subscores": {},
             "metric_values": {},
             "weights": {},
+            "attribution": None,
         }
 
     def median_by_key(dicts: list[dict]) -> dict:
@@ -131,6 +155,30 @@ def rolling_score(
         p25, p75 = round(q[0], 2), round(q[2], 2)
     else:
         p25 = p75 = med
+
+    # Stall attribution: the network/render split lives on the browser plugin's
+    # (display-only) metrics, not in the score row, so pull it for the same runs.
+    run_ids = [r.run_id for r in rows]
+    browser_metrics = (
+        session.execute(
+            select(BenchmarkResult.metrics).where(
+                BenchmarkResult.run_id.in_(run_ids), BenchmarkResult.plugin == "browser"
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    def _med_metric(key: str) -> float | None:
+        vals = [m[key] for m in browser_metrics if (m or {}).get(key) is not None]
+        return median(vals) if vals else None
+
+    attribution = _attribution(
+        _med_metric("network_stall_ms"),
+        _med_metric("render_stall_ms"),
+        _med_metric("unknown_stall_ms"),
+    )
+
     return {
         "window_hours": hours,
         "count": len(vals),
@@ -142,6 +190,7 @@ def rolling_score(
         "subscores": median_by_key([r.subscores or {} for r in rows]),
         "metric_values": median_by_key([r.metric_values or {} for r in rows]),
         "weights": rows[-1].weights_used or {},
+        "attribution": attribution,
     }
 
 

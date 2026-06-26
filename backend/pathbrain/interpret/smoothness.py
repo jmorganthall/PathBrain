@@ -364,6 +364,9 @@ def smoothness_metrics(
         attr = stall_attribution_times(series, loaf, loaf_source)
         out["network_stall_ms"] = attr["network_ms"]
         out["render_stall_ms"] = attr["render_ms"]
+        # Stall time we can't attribute (no LoAF/longtask support). Kept so the
+        # network/render split isn't silently overcounted as "no stall".
+        out["unknown_stall_ms"] = attr["unknown_ms"]
     return {k: v for k, v in out.items() if v is not None}
 
 

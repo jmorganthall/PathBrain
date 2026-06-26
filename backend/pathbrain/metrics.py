@@ -37,9 +37,13 @@ class MetricDef:
     marks_latest: bool = False      # presence flags a run as scored under the latest rubric
 
 
-# NOTE: thresholds/weights below reproduce the previously-hardcoded calibration.
-# SOPS `best` is anchored to near-physical-floor conditions (so 100 is reachable
-# but genuinely hard); `worst` ≈ Web Vitals "poor" / Nielsen-RAIL "slow".
+# Threshold anchoring (rubric perceptual-v5): `best`/`worst` are anchored to
+# established perception thresholds so a value "comfortably inside good" reads green.
+# For the Core Web Vitals metrics `best` = the CWV "good" boundary and `worst` = the
+# "poor" boundary (FCP 1.8s/3s, LCP 2.5s/4s, INP 200/500ms, CLS 0.1/0.25); TTFB uses
+# Google's 800ms/1800ms; render uses Nielsen's ~1s "flow" up to a long tail. The
+# byte-arrival smoothness metrics (byte_earliness/longest_stall) keep their tuned
+# bounds — they're the signal this tool exists to surface, not a CWV restatement.
 METRICS: list[MetricDef] = [
     # ── SOPS: the human-feel score (paint timing + the most perceptual completion) ──
     MetricDef(
@@ -54,7 +58,7 @@ METRICS: list[MetricDef] = [
     ),
     MetricDef(
         "fcp", "browser", "fcp_ms", "First Contentful Paint", unit="ms",
-        axis=SOPS, weight=20, best=150.0, worst=4000.0,
+        axis=SOPS, weight=20, best=1800.0, worst=3000.0,
         description=(
             "When the first real content (text/image) paints — the 'it's responding' "
             "moment. Perceptual, not completion: how soon you see *something*. Lower is better."
@@ -80,7 +84,7 @@ METRICS: list[MetricDef] = [
     ),
     MetricDef(
         "cls", "browser", "cls", "Layout stability",
-        axis=SOPS, weight=5, best=0.0, worst=0.5,
+        axis=SOPS, weight=5, best=0.1, worst=0.25,
         description=(
             "Cumulative Layout Shift — how much visible content jumps around as the page "
             "loads. Janky reflow feels worse even when timings are identical. Lower is better."
@@ -88,7 +92,7 @@ METRICS: list[MetricDef] = [
     ),
     MetricDef(
         "lcp", "browser", "lcp_ms", "Largest Contentful Paint", unit="ms",
-        axis=SOPS, weight=10, best=250.0, worst=6000.0,
+        axis=SOPS, weight=10, best=2500.0, worst=4000.0,
         description=(
             "When the main content becomes visible. Google's core 'is it usefully loaded' "
             "signal. A completion milestone — weighted below the trajectory metrics. Lower is better."
@@ -96,7 +100,7 @@ METRICS: list[MetricDef] = [
     ),
     MetricDef(
         "inp", "browser", "inp_ms", "Interaction to Next Paint", unit="ms",
-        axis=SOPS, weight=10, best=40.0, worst=500.0,
+        axis=SOPS, weight=10, best=200.0, worst=500.0,
         description=(
             "How quickly the page paints a response to input — responsiveness to taps/keys "
             "(good ≤200ms). Best-effort here (synthetic interaction); may be blank. Lower is better."
@@ -104,7 +108,7 @@ METRICS: list[MetricDef] = [
     ),
     MetricDef(
         "ttfb", "http", "ttfb_ms", "Time to First Byte", unit="ms",
-        axis=SOPS, weight=10, best=30.0, worst=1000.0,
+        axis=SOPS, weight=10, best=800.0, worst=1800.0,
         description=(
             "From sending the request to the first byte of the response arriving — how long "
             "until a page begins to appear. Lower is better."
@@ -112,7 +116,7 @@ METRICS: list[MetricDef] = [
     ),
     MetricDef(
         "render", "browser", "total_render_ms", "Total render", unit="ms",
-        axis=SOPS, weight=5, best=500.0, worst=6000.0,
+        axis=SOPS, weight=5, best=1000.0, worst=8000.0,
         description=(
             "Wall-clock time to fully render to network-idle — a pure *completion* time. "
             "Deliberately low-weighted: it rewards finishing fast on an empty pipe, which is "
@@ -220,6 +224,13 @@ METRICS: list[MetricDef] = [
             "config changes should not be expected to move it. Lower is better."
         ),
     ),
+    MetricDef(
+        "unknown_stall", "browser", "unknown_stall_ms", "Unattributed stall time", unit="ms",
+        description=(
+            "Stall time that couldn't be attributed to network or render because the browser "
+            "exposed no Long Animation Frame / long-task data. Lower is better."
+        ),
+    ),
     # ── Pixel-based visual metrics (display-only; require the opt-in filmstrip) ──
     # Demoted from SOPS in favor of the byte-arrival smoothness metrics, which
     # isolate the network layer without the CPU cost of per-frame screencast.
@@ -254,7 +265,7 @@ DISPLAY_ORDER = [
     "inp",                                                # interaction (after load)
     # perceived load smoothness (delivery-curve shape, byte-arrival)
     "perceived_time", "longest_stall", "cadence_cov",
-    "byte_earliness", "delivery_gini", "network_stall", "render_stall",
+    "byte_earliness", "delivery_gini", "network_stall", "render_stall", "unknown_stall",
     "latency", "jitter", "packet_loss",                   # network quality (continuous)
 ]
 
