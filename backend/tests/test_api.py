@@ -49,6 +49,25 @@ def test_provider_health(client):
     assert resp.json()["ok"] is True
 
 
+def test_config_test_apply_round_trips(client):
+    """The write-path test nudges quantum +1 then restores it, verifying each step."""
+    resp = client.post("/api/config/test-apply")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["changed"] is True and body["restored"] is True
+    assert body["test_value"] == body["original"] + 1
+    assert body["error"] is None
+    # Every step recorded and successful on the mock provider.
+    assert [s["step"] for s in body["steps"]] == [
+        "discover", "apply +1", "verify change", "restore", "verify restore"
+    ]
+    assert all(s["ok"] for s in body["steps"])
+    # And the firewall is genuinely back to the original value afterwards.
+    after = client.post("/api/config/discover").json()
+    assert any(p.get("quantum") == body["original"] for p in after["pipes"])
+
+
 def test_discover_provider_failure_returns_502(client, monkeypatch):
     """A failing provider should yield a 502 with a useful message, not a 500."""
 
