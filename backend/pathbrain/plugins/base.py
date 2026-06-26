@@ -21,7 +21,12 @@ class PluginResult:
     success: bool = True
     error: str | None = None
     duration_ms: float | None = None
-    # Flat, scoreable metrics, e.g. {"latency_ms": 12.3}.
+    # Immutable raw observations this probe captured (the source of truth). Plugins
+    # are pure sensors: they emit raw only and never interpret. Derived, scoreable
+    # metrics are computed from this by the interpretation layer (``pathbrain.interpret``).
+    raw: dict | None = None
+    # Derived, scoreable metrics, e.g. {"latency_ms": 12.3}. Populated by the
+    # interpretation layer from ``raw`` — not by the plugin.
     metrics: dict[str, float] = field(default_factory=dict)
     # Arbitrary per-target detail for the UI / debugging.
     details: dict | None = None
@@ -46,7 +51,12 @@ class BenchmarkPlugin(ABC):
 
     # -- helpers -----------------------------------------------------------
     def timed(self, fn: Callable[[], dict]) -> PluginResult:
-        """Run ``fn`` returning (metrics, details) and wrap it with timing."""
+        """Run ``fn`` returning ``{"raw": ..., "details": ...}`` and wrap with timing.
+
+        Plugins emit ``raw`` (observations); the interpretation layer derives the
+        scoreable ``metrics`` later. ``metrics`` is still accepted for backward
+        compatibility but new plugins should leave it empty.
+        """
         start = time.perf_counter()
         try:
             payload = fn()
@@ -55,6 +65,7 @@ class BenchmarkPlugin(ABC):
                 plugin=self.name,
                 success=True,
                 duration_ms=duration,
+                raw=payload.get("raw"),
                 metrics=payload.get("metrics", {}),
                 details=payload.get("details"),
             )

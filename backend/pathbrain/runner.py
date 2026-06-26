@@ -9,14 +9,17 @@ thread so the API returns immediately with a run id the UI polls; the run's
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from statistics import mean, median, pstdev
 from time import perf_counter
 
 from sqlalchemy import select
 
+from .config import get_settings
 from .config_store import get_config
 from .database import session_scope
+from .interpret import DERIVATION_VERSION, derive
 from .logging_config import get_logger
 from .models import BenchmarkResult, Run, RunStatus, ScoreResult
 from .plugins import BenchmarkPlugin, PluginResult, iter_plugins
@@ -237,6 +240,64 @@ def rescore_run(
     return True
 
 
+def rederive_run(
+    run,
+    weights: dict,
+    thresholds: dict,
+    rubric_version: str | None,
+    completion_weights: dict | None = None,
+    completion_thresholds: dict | None = None,
+    artifact_base: str | None = None,
+) -> bool:
+    """Re-derive a run's metrics from its stored *raw* observations, then re-score.
+
+    Unlike :func:`rescore_run` (which re-grades the cached metric scalars under a new
+    rubric), this re-runs the whole interpretation: raw → derived metrics → score.
+    Use it after a derivation formula changes or a new metric is added, so history
+    reflects it without re-collecting. Runs whose raw lacks a signal (e.g. legacy
+    runs with no filmstrip) simply don't gain that metric.
+    """
+    if run.score is None:
+        return False
+
+    derived_by_plugin: dict[str, list[dict]] = {}
+    n_iters = 0
+    for res in run.results:
+        raws = (res.raw or {}).get("iterations") or []
+        per_iter = [derive(res.plugin, r or {}, artifact_base) for r in raws]
+        derived_by_plugin[res.plugin] = per_iter
+        n_iters = max(n_iters, len(per_iter))
+        # Refresh the per-plugin cache + per-iteration metrics from the re-derivation.
+        res.metrics = _median_values(per_iter) if per_iter else {}
+        details = dict(res.details or {})
+        details["iteration_metrics"] = per_iter
+        res.details = details
+
+    iter_metrics_list = [
+        {p: pi[i] for p, pi in derived_by_plugin.items() if i < len(pi) and pi[i]}
+        for i in range(n_iters)
+    ]
+    # Refresh the cached scalar metric values (median across iterations) on both
+    # axes, then let rescore_run produce the headline + bands from them.
+    if iter_metrics_list:
+        run.score.metric_values = _median_values(
+            [compute_score(im, weights, thresholds).metric_values for im in iter_metrics_list]
+        )
+        run.score.completion_metric_values = (
+            _median_values(
+                [
+                    compute_completion(im, completion_weights or {}, completion_thresholds or {}).metric_values
+                    for im in iter_metrics_list
+                ]
+            )
+            or None
+        )
+    run.score.derivation_version = DERIVATION_VERSION
+    return rescore_run(
+        run, weights, thresholds, rubric_version, completion_weights, completion_thresholds
+    )
+
+
 def reconcile_interrupted_runs() -> int:
     """Mark runs left RUNNING/PENDING by a previous process as failed.
 
@@ -319,6 +380,7 @@ def execute_run(run_id: int) -> None:
 
             plugins: list[BenchmarkPlugin] = iter_plugins()
             per_plugin: dict[str, list[PluginResult]] = {p.name: [] for p in plugins}
+            artifact_base = os.path.abspath(get_settings().artifact_dir)
             iteration_durations: list[float] = []
             weights = config.get("weights", {})
             thresholds = config.get("thresholds", {})
@@ -342,6 +404,9 @@ def execute_run(run_id: int) -> None:
                     result = plugin.run(section)
                     per_plugin[plugin.name].append(result)
                     if result.success:
+                        # Interpret raw → scoreable metrics (the cache); raw is kept
+                        # as the source of truth so this can be re-derived later.
+                        result.metrics = derive(plugin.name, result.raw, artifact_base)
                         iter_metrics[plugin.name] = result.metrics
                     else:
                         log.warning(
@@ -360,8 +425,10 @@ def execute_run(run_id: int) -> None:
                 session.commit()  # surface progress to pollers
 
             # Per-plugin display aggregation (median central value + per-metric stats).
+            # Store the raw observations per iteration as the immutable source of truth.
             for plugin in plugins:
-                agg = _aggregate(per_plugin[plugin.name])
+                results = per_plugin[plugin.name]
+                agg = _aggregate(results)
                 session.add(
                     BenchmarkResult(
                         run_id=run_id,
@@ -371,6 +438,7 @@ def execute_run(run_id: int) -> None:
                         duration_ms=agg["duration_ms"],
                         metrics=agg["metrics"],
                         details=agg["details"],
+                        raw={"iterations": [r.raw for r in results]},
                     )
                 )
 
@@ -409,6 +477,7 @@ def execute_run(run_id: int) -> None:
                     weights_used=breakdown.weights_used,
                     metric_values=breakdown.metric_values,
                     rubric_version=config.get("rubric_version"),
+                    derivation_version=DERIVATION_VERSION,
                     completion=c_breakdown.sops if has_completion else None,
                     completion_stdev=comp_stdev if has_completion else None,
                     completion_min=(

@@ -1,13 +1,12 @@
-"""DNS benchmark: lookup time across resolvers.
+"""DNS probe: raw A-record lookup times across resolvers.
 
 Measures how long each configured resolver takes to answer A-record queries for
-a set of hostnames, averaged into a single ``lookup_ms`` metric with a
-per-provider breakdown.
+a set of hostnames. A pure sensor: it emits the raw per-lookup time samples; the
+aggregate ``lookup_ms`` metric is derived later (``pathbrain.interpret.derive``).
 """
 from __future__ import annotations
 
 import time
-from statistics import mean
 
 import dns.message
 import dns.query
@@ -50,8 +49,9 @@ class DnsBenchmark(BenchmarkPlugin):
             )
 
         def work() -> dict:
+            # Raw observations only: per-provider list of per-hostname lookup times.
+            providers_raw: list[dict] = []
             per_provider: dict[str, dict] = {}
-            all_times: list[float] = []
 
             for provider in providers:
                 label = provider.get("name", provider.get("server", "?"))
@@ -64,19 +64,22 @@ class DnsBenchmark(BenchmarkPlugin):
                             elapsed = _query_local(hostname, timeout)
                         else:
                             elapsed = _query_server(server, hostname, timeout)
-                        times.append(elapsed)
+                        times.append(round(elapsed, 3))
                     except Exception as exc:  # noqa: BLE001
                         errors.append(f"{hostname}: {type(exc).__name__}")
 
+                providers_raw.append(
+                    {"label": label, "server": server, "lookups_ms": times, "errors": errors or None}
+                )
                 per_provider[label] = {
                     "server": server,
-                    "lookup_ms": round(mean(times), 3) if times else None,
                     "samples": len(times),
                     "errors": errors or None,
                 }
-                all_times.extend(times)
 
-            metrics = {"lookup_ms": round(mean(all_times), 3) if all_times else None}
-            return {"metrics": metrics, "details": {"per_provider": per_provider}}
+            return {
+                "raw": {"providers": providers_raw},
+                "details": {"per_provider": per_provider},
+            }
 
         return self.timed(work)

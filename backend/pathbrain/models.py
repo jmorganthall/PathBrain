@@ -90,10 +90,17 @@ class BenchmarkResult(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # Flat, plugin-defined metrics, e.g. {"latency_ms": 12.3, "jitter_ms": 1.1}.
+    # Derived, scoreable metrics — a *materialized cache* of the current
+    # interpretation, e.g. {"latency_ms": 12.3, "jitter_ms": 1.1}. Rebuildable from
+    # ``raw`` at any time; never the source of truth.
     metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     # Per-target / detailed breakdown.
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Immutable raw observations the plugin captured, per iteration:
+    # ``{"iterations": [<plugin-specific raw payload>, ...]}``. The source of truth —
+    # every value in ``metrics`` is derived from here, so a new metric or a changed
+    # formula can be re-derived across history without re-collecting.
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     run: Mapped["Run"] = relationship(back_populates="results")
 
@@ -111,6 +118,10 @@ class ScoreResult(Base):
     sops_max: Mapped[float | None] = mapped_column(Float, nullable=True)
     # The scoring rubric (curve/thresholds) version that produced this score.
     rubric_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # The derivation (raw -> metric values) version behind the cached metric_values.
+    # Lets us tell when a run's cache predates the current derivation and needs a
+    # re-derive (vs. a cheaper rubric-only rescore).
+    derivation_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     # Per-metric subscores and the (possibly redistributed) weights used.
     subscores: Mapped[dict] = mapped_column(JSON, default=dict)

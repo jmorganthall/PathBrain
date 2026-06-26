@@ -14,22 +14,29 @@ from pathbrain.scoring import COMPLETION_METRIC_SOURCES, METRIC_SOURCES
 def test_registry_derives_scoring_sources():
     assert METRIC_SOURCES == metrics.metric_sources(metrics.SOPS)
     assert COMPLETION_METRIC_SOURCES == metrics.metric_sources(metrics.COMPLETION)
-    # SOPS is perception-led; Completion is pure infra.
-    assert set(METRIC_SOURCES) == {"fcp", "lcp", "inp", "ttfb", "render"}
+    # SOPS is perception-led (now incl. trajectory metrics); Completion is pure infra.
+    assert set(METRIC_SOURCES) == {
+        "speed_index", "fcp", "paint_cadence", "cls", "lcp", "inp", "ttfb", "render"
+    }
     assert set(COMPLETION_METRIC_SOURCES) == {"dns", "tcp", "tls", "jitter", "packet_loss"}
 
 
 def test_registry_derives_config_defaults():
-    # The previously-hardcoded calibration is reproduced from the registry.
-    assert DEFAULT_WEIGHTS == {"fcp": 20, "lcp": 25, "inp": 15, "ttfb": 15, "render": 25}
+    # Trajectory-aware rubric: Speed Index + FCP lead; completion (LCP/render) trails.
+    assert DEFAULT_WEIGHTS == {
+        "speed_index": 30, "fcp": 20, "paint_cadence": 10, "cls": 5,
+        "lcp": 10, "inp": 10, "ttfb": 10, "render": 5,
+    }
     assert DEFAULT_THRESHOLDS["fcp"] == {"best": 150.0, "worst": 4000.0}
     assert DEFAULT_THRESHOLDS["ttfb"] == {"best": 30.0, "worst": 1000.0}
+    assert DEFAULT_THRESHOLDS["speed_index"] == {"best": 1000.0, "worst": 8000.0}
     assert DEFAULT_COMPLETION_WEIGHTS["tls"] == 20
     assert DEFAULT_COMPLETION_THRESHOLDS["packet_loss"] == {"best": 0.0, "worst": 2.5}
 
 
 def test_latest_metric_keys():
-    assert set(metrics.latest_metric_keys()) == {"fcp", "lcp"}
+    # Speed Index is the marker of the trajectory-aware rubric.
+    assert set(metrics.latest_metric_keys()) == {"speed_index"}
 
 
 def test_catalog_covers_every_metric_with_metadata():

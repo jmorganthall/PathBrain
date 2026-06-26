@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 from ..config_store import get_config
 from ..database import get_session
 from ..metrics import has_latest_metrics
+from ..config import get_settings
+from ..interpret import DERIVATION_VERSION
 from ..models import Run, RunStatus, ScoreResult
-from ..runner import rescore_run
+from ..runner import rederive_run, rescore_run
 from ..schemas import ScoreOut
 from ..scoring import compute_score
 
@@ -40,6 +42,36 @@ def rescore_history(session: Session = Depends(get_session)) -> dict:
     )
     session.commit()
     return {"rescored": rescored, "rubric_version": rubric_version}
+
+
+@router.post("/score/rederive")
+def rederive_history(session: Session = Depends(get_session)) -> dict:
+    """Re-derive *and* re-grade every completed run from its stored raw observations.
+
+    Heavier than ``/score/rescore`` (which only re-applies the rubric to cached
+    metric scalars): this re-runs the full interpretation, so a new metric or a
+    changed derivation formula (e.g. a better Speed Index) lands on history without
+    re-collecting. Runs whose raw lacks a signal just don't gain that metric.
+    """
+    import os
+
+    cfg = get_config(session)
+    weights = cfg.get("weights", {})
+    thresholds = cfg.get("thresholds", {})
+    rubric_version = cfg.get("rubric_version")
+    c_weights = cfg.get("completion_weights", {})
+    c_thresholds = cfg.get("completion_thresholds", {})
+    artifact_base = os.path.abspath(get_settings().artifact_dir)
+    runs = session.scalars(select(Run).where(Run.status == RunStatus.COMPLETE)).all()
+    rederived = sum(
+        1
+        for run in runs
+        if rederive_run(
+            run, weights, thresholds, rubric_version, c_weights, c_thresholds, artifact_base
+        )
+    )
+    session.commit()
+    return {"rederived": rederived, "derivation_version": DERIVATION_VERSION}
 
 
 @router.get("/score/rolling")

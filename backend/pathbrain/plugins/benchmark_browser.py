@@ -16,9 +16,9 @@ returns ``success=False`` with guidance and the ``render`` weight is redistribut
 """
 from __future__ import annotations
 
+import base64
 import os
 from datetime import datetime, timezone
-from statistics import mean
 from urllib.parse import urlsplit
 
 from ..config import get_settings
@@ -127,7 +127,7 @@ _NAV_JS = (
 # INP are the core of the perception-led SOPS (Seat of Pants) score.
 _PAINT_INIT_JS = """
 (() => {
-  window.__paint = { fcp: null, lcp: null, inp: null };
+  window.__paint = { fcp: null, lcp: null, inp: null, cls_entries: [], long_tasks: [] };
   try {
     new PerformanceObserver((l) => {
       for (const e of l.getEntries())
@@ -147,6 +147,19 @@ _PAINT_INIT_JS = """
         if (window.__paint.inp == null || d > window.__paint.inp) window.__paint.inp = d;
       }
     }).observe({ type: 'event', durationThreshold: 16, buffered: true });
+  } catch (e) {}
+  // Layout instability (CLS): raw per-shift values, excluding input-driven shifts.
+  try {
+    new PerformanceObserver((l) => {
+      for (const e of l.getEntries())
+        if (!e.hadRecentInput) window.__paint.cls_entries.push(e.value);
+    }).observe({ type: 'layout-shift', buffered: true });
+  } catch (e) {}
+  // Main-thread blocking: raw long-task durations (>50ms by spec).
+  try {
+    new PerformanceObserver((l) => {
+      for (const e of l.getEntries()) window.__paint.long_tasks.push(e.duration);
+    }).observe({ type: 'longtask', buffered: true });
   } catch (e) {}
 })()
 """
@@ -171,6 +184,49 @@ def extract_paint_metrics(paint: dict | None) -> dict:
         "lcp_ms": ms(paint.get("lcp")),
         "inp_ms": ms(paint.get("inp")),
     }
+
+
+def _start_screencast(context, page, frames: list, run_dir: str, stamp: str, slug: str, t0) -> object | None:
+    """Begin a CDP screencast, appending ``{t_ms, frame}`` per frame to ``frames``.
+
+    Best-effort filmstrip capture: frames are written as JPEGs into the artifact
+    dir, and the visual-completeness curve / Speed Index are *derived* from them
+    later. Returns the CDP session (so the caller can stop it) or ``None`` if
+    screencast isn't available, in which case Speed Index simply won't be derivable
+    and its weight redistributes — same graceful-degradation model as the rest of
+    the plugin.
+    """
+    from time import perf_counter
+
+    try:
+        cdp = context.new_cdp_session(page)
+    except Exception:  # noqa: BLE001 — CDP unavailable
+        return None
+
+    counter = {"n": 0}
+
+    def _on_frame(params: dict) -> None:
+        try:
+            n = counter["n"]
+            counter["n"] = n + 1
+            fname = f"{slug}-f{n:03d}.jpg"
+            with open(os.path.join(run_dir, fname), "wb") as fh:
+                fh.write(base64.b64decode(params["data"]))
+            frames.append(
+                {"t_ms": round((perf_counter() - t0) * 1000.0, 1), "frame": f"{stamp}/{fname}"}
+            )
+            cdp.send("Page.screencastFrameAck", {"sessionId": params["sessionId"]})
+        except Exception:  # noqa: BLE001 — frame handling must never break the load
+            pass
+
+    try:
+        cdp.on("Page.screencastFrame", _on_frame)
+        cdp.send(
+            "Page.startScreencast", {"format": "jpeg", "quality": 60, "everyNthFrame": 1}
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    return cdp
 
 
 @register
@@ -204,14 +260,10 @@ class BrowserBenchmark(BenchmarkPlugin):
             return f"{idx:02d}-{safe or 'page'}"
 
         def work() -> dict:
-            per_url: dict[str, dict] = {}
-            renders: list[float] = []
-            ttfbs: list[float] = []
-            dcls: list[float] = []
-            loads: list[float] = []
-            fcps: list[float] = []
-            lcps: list[float] = []
-            inps: list[float] = []
+            # Raw observations only: per-URL nav timing, paint/CLS/long-task entries,
+            # total render, and the filmstrip. All metric derivation happens later.
+            urls_raw: dict[str, dict] = {}
+            per_url_display: dict[str, dict] = {}
 
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(
@@ -223,19 +275,27 @@ class BrowserBenchmark(BenchmarkPlugin):
                         har_path = os.path.join(run_dir, f"{slug}.har") if want_har else None
                         shot_path = os.path.join(run_dir, f"{slug}.png") if want_screenshot else None
                         context = browser.new_context(record_har_path=har_path)
-                        # Buffer paint/LCP/interaction timing from the very start.
+                        # Buffer paint/LCP/CLS/long-task timing from the very start.
                         context.add_init_script(_PAINT_INIT_JS)
                         page = context.new_page()
                         try:
                             from time import perf_counter
 
                             t0 = perf_counter()
+                            frames: list[dict] = []
+                            cdp = _start_screencast(context, page, frames, run_dir, stamp, slug, t0)
+
                             page.goto(url, wait_until=wait_until, timeout=timeout_ms)
                             try:
                                 page.wait_for_load_state("networkidle", timeout=timeout_ms)
                             except Exception:  # noqa: BLE001 — idle may never settle
                                 pass
                             total_render_ms = round((perf_counter() - t0) * 1000.0, 3)
+                            if cdp is not None:
+                                try:
+                                    cdp.send("Page.stopScreencast")
+                                except Exception:  # noqa: BLE001
+                                    pass
 
                             nav = page.evaluate(_NAV_JS)
 
@@ -258,53 +318,39 @@ class BrowserBenchmark(BenchmarkPlugin):
                             if want_screenshot and shot_path:
                                 page.screenshot(path=shot_path)
 
-                            metrics = compute_navigation_metrics(nav)
-                            metrics["total_render_ms"] = total_render_ms
-                            metrics.update(extract_paint_metrics(paint))
-                            metrics["screenshot_url"] = (
-                                f"/artifacts/{stamp}/{os.path.basename(shot_path)}"
-                                if shot_path
-                                else None
-                            )
-                            metrics["har_url"] = (
-                                f"/artifacts/{stamp}/{os.path.basename(har_path)}"
-                                if har_path
-                                else None
-                            )
-                            per_url[url] = metrics
-
-                            renders.append(total_render_ms)
-                            if metrics.get("ttfb_ms") is not None:
-                                ttfbs.append(metrics["ttfb_ms"])
-                            if metrics.get("dom_content_loaded_ms") is not None:
-                                dcls.append(metrics["dom_content_loaded_ms"])
-                            if metrics.get("load_event_ms") is not None:
-                                loads.append(metrics["load_event_ms"])
-                            if metrics.get("fcp_ms") is not None:
-                                fcps.append(metrics["fcp_ms"])
-                            if metrics.get("lcp_ms") is not None:
-                                lcps.append(metrics["lcp_ms"])
-                            if metrics.get("inp_ms") is not None:
-                                inps.append(metrics["inp_ms"])
+                            urls_raw[url] = {
+                                "nav": nav,
+                                "paint": paint,
+                                "total_render_ms": total_render_ms,
+                                "filmstrip": frames,
+                            }
+                            per_url_display[url] = {
+                                "screenshot_url": (
+                                    f"/artifacts/{stamp}/{os.path.basename(shot_path)}"
+                                    if shot_path
+                                    else None
+                                ),
+                                "har_url": (
+                                    f"/artifacts/{stamp}/{os.path.basename(har_path)}"
+                                    if har_path
+                                    else None
+                                ),
+                                "filmstrip_urls": [
+                                    {"t_ms": f["t_ms"], "url": f"/artifacts/{f['frame']}"}
+                                    for f in frames
+                                ],
+                            }
                         except Exception as exc:  # noqa: BLE001 — per-URL boundary
-                            per_url[url] = {"error": f"{type(exc).__name__}: {exc}"}
+                            urls_raw[url] = {"error": f"{type(exc).__name__}: {exc}"}
+                            per_url_display[url] = {"error": f"{type(exc).__name__}: {exc}"}
                         finally:
                             context.close()  # flushes the HAR file
                 finally:
                     browser.close()
 
-            metrics = {
-                "total_render_ms": round(mean(renders), 3) if renders else None,
-                "ttfb_ms": round(mean(ttfbs), 3) if ttfbs else None,
-                "dom_content_loaded_ms": round(mean(dcls), 3) if dcls else None,
-                "load_event_ms": round(mean(loads), 3) if loads else None,
-                "fcp_ms": round(mean(fcps), 3) if fcps else None,
-                "lcp_ms": round(mean(lcps), 3) if lcps else None,
-                "inp_ms": round(mean(inps), 3) if inps else None,
-            }
             return {
-                "metrics": metrics,
-                "details": {"per_url": per_url, "artifact_dir": run_dir},
+                "raw": {"urls": urls_raw},
+                "details": {"per_url": per_url_display, "artifact_dir": run_dir},
             }
 
         return self.timed(work)

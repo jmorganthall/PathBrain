@@ -66,11 +66,15 @@ def _migrate() -> None:
             "settings_fingerprint": "VARCHAR(40)",
             "settings": "JSON",
         },
+        "benchmark_results": {
+            "raw": "JSON",
+        },
         "score_results": {
             "sops_stdev": "FLOAT",
             "sops_min": "FLOAT",
             "sops_max": "FLOAT",
             "rubric_version": "VARCHAR(40)",
+            "derivation_version": "VARCHAR(40)",
             "responsiveness": "FLOAT",
             "responsiveness_stdev": "FLOAT",
             "responsiveness_min": "FLOAT",

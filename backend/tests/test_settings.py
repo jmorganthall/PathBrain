@@ -66,10 +66,10 @@ def _seed_run(
                 sops=sops,
                 subscores={},
                 weights_used={},
-                # Default to the latest (paint) metric set so runs aren't filtered
-                # out by the complete_only default; pass {} for a legacy run.
+                # Default to the latest (trajectory) metric set so runs aren't
+                # filtered out by the complete_only default; pass {} for a legacy run.
                 metric_values=metric_values if metric_values is not None
-                else {"fcp": 500.0, "lcp": 800.0},
+                else {"speed_index": 1500.0, "fcp": 500.0, "lcp": 800.0},
                 completion=completion,
                 completion_metric_values=completion_metrics,
             )
@@ -175,7 +175,7 @@ def test_complete_only_filters_legacy_runs(client):
             "latestdata0x",
             70 + i,
             t0 - timedelta(minutes=40 - i),
-            metric_values={"fcp": 480.0, "lcp": 600.0, "ttfb": 200.0},
+            metric_values={"speed_index": 1500.0, "fcp": 480.0, "lcp": 600.0, "ttfb": 200.0},
         )
 
     default = client.get("/api/settings/profiles").json()  # complete_only defaults true
