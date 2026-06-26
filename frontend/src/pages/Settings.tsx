@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -21,6 +22,7 @@ import TableCell from "@mui/material/TableCell";
 import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
+import TableSortLabel from "@mui/material/TableSortLabel";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
@@ -235,6 +237,84 @@ export function ProfileDiffCard({
   );
 }
 
+// Columns the Profiles table can be sorted by. Each maps to a comparable scalar
+// (numbers compared numerically, the label/last_seen compared as strings — ISO
+// dates sort lexicographically). Nulls always sort last regardless of direction.
+type SortKey =
+  | "label"
+  | "count"
+  | "iterations"
+  | "median"
+  | "speed"
+  | "relative_sops"
+  | "p25"
+  | "min"
+  | "completion"
+  | "last_seen";
+
+type SortDir = "asc" | "desc";
+
+function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
+  switch (key) {
+    case "label":
+      return p.label.toLowerCase();
+    case "count":
+      return p.count;
+    case "iterations":
+      return p.iterations;
+    case "median":
+      return p.median;
+    case "speed":
+      return p.speed?.median ?? null;
+    case "relative_sops":
+      return p.relative_sops?.delta_median ?? null;
+    case "p25":
+      return p.p25;
+    case "min":
+      return p.min;
+    case "completion":
+      return p.completion?.median ?? null;
+    case "last_seen":
+      return p.last_seen;
+  }
+}
+
+function compareProfiles(a: SettingsProfile, b: SettingsProfile, key: SortKey, order: SortDir): number {
+  const va = sortValue(a, key);
+  const vb = sortValue(b, key);
+  if (va == null && vb == null) return 0;
+  if (va == null) return 1; // nulls last
+  if (vb == null) return -1;
+  const cmp =
+    typeof va === "string" && typeof vb === "string" ? va.localeCompare(vb) : (va as number) - (vb as number);
+  return order === "asc" ? cmp : -cmp;
+}
+
+function SortHeader({
+  id,
+  label,
+  align,
+  orderBy,
+  order,
+  onSort,
+}: {
+  id: SortKey;
+  label: ReactNode;
+  align?: "right";
+  orderBy: SortKey;
+  order: SortDir;
+  onSort: (key: SortKey) => void;
+}) {
+  const active = orderBy === id;
+  return (
+    <TableCell align={align} sortDirection={active ? order : false}>
+      <TableSortLabel active={active} direction={active ? order : "asc"} onClick={() => onSort(id)}>
+        {label}
+      </TableSortLabel>
+    </TableCell>
+  );
+}
+
 export default function Settings() {
   const [profiles, setProfiles] = useState<SettingsProfile[] | null>(null);
   const [bestDiff, setBestDiff] = useState<ProfileDiff | null>(null);
@@ -256,6 +336,26 @@ export default function Settings() {
   const [previewFp, setPreviewFp] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ApplyConfirm | null>(null);
   const [applying, setApplying] = useState(false);
+  // Profiles table sort. Defaults to median Smoothness descending — the ranking
+  // axis the server already orders by, so the initial view is unchanged.
+  const [orderBy, setOrderBy] = useState<SortKey>("median");
+  const [order, setOrder] = useState<SortDir>("desc");
+
+  const handleSort = useCallback((key: SortKey) => {
+    setOrderBy((prev) => {
+      if (prev === key) {
+        setOrder((o) => (o === "asc" ? "desc" : "asc"));
+        return prev;
+      }
+      setOrder("desc");
+      return key;
+    });
+  }, []);
+
+  const sortedProfiles = useMemo(
+    () => (profiles ? [...profiles].sort((a, b) => compareProfiles(a, b, orderBy, order)) : profiles),
+    [profiles, orderBy, order]
+  );
 
   const load = useCallback(async () => {
     try {
@@ -452,21 +552,85 @@ export default function Settings() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell>Profile</TableCell>
-                    <TableCell align="right">Runs</TableCell>
-                    <TableCell align="right">Iterations</TableCell>
-                    <TableCell align="right">Smoothness</TableCell>
-                    <TableCell align="right">Speed</TableCell>
-                    <TableCell align="right">vs typical</TableCell>
-                    <TableCell align="right">IQR</TableCell>
-                    <TableCell align="right">Min–Max</TableCell>
-                    {showCompletion && <TableCell align="right">Compl.</TableCell>}
-                    <TableCell>Last seen</TableCell>
+                    <SortHeader id="label" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} />
+                    <SortHeader
+                      id="count"
+                      label="Runs"
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    <SortHeader
+                      id="iterations"
+                      label="Iterations"
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    <SortHeader
+                      id="median"
+                      label="Smoothness"
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    <SortHeader
+                      id="speed"
+                      label="Speed"
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    <SortHeader
+                      id="relative_sops"
+                      label="vs typical"
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    <SortHeader
+                      id="p25"
+                      label="IQR"
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    <SortHeader
+                      id="min"
+                      label="Min–Max"
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    {showCompletion && (
+                      <SortHeader
+                        id="completion"
+                        label="Compl."
+                        align="right"
+                        orderBy={orderBy}
+                        order={order}
+                        onSort={handleSort}
+                      />
+                    )}
+                    <SortHeader
+                      id="last_seen"
+                      label="Last seen"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
                     <TableCell align="right">Apply</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {profiles.map((p) => (
+                  {(sortedProfiles ?? []).map((p) => (
                     <TableRow key={p.fingerprint}>
                       <TableCell sx={{ maxWidth: 360 }}>
                         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
