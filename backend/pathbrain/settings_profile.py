@@ -132,6 +132,74 @@ def diff_profiles(from_norm: list[dict] | None, to_norm: list[dict] | None) -> l
     return changes
 
 
+# Normalized fields that can be written back to the firewall. These match the
+# provider ``apply()`` param names 1:1 (see opnsense ``_PARAM_FIELD``); the other
+# CANON_FIELDS (upload_bandwidth/queues/scheduler) have no writable mapping.
+WRITABLE_PARAMS = ["quantum", "limit", "flows", "target", "interval", "ecn", "download_bandwidth"]
+
+
+def _same_value(a, b) -> bool:
+    """Loosely equal? Compares scalars by normalized string so '5ms' == '5ms' and
+    1514 == '1514' don't read as changes."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return bool(a) == bool(b)
+    if a is None or b is None:
+        return a is b
+    return str(a).strip().lower() == str(b).strip().lower()
+
+
+def plan_apply(target: list[dict] | None, live: list[FqCodelConfig]) -> tuple[list[dict], list[str]]:
+    """Plan the writes to make the live firewall match a target profile.
+
+    Matches each target pipe to a live pipe by label (falling back to position when
+    the pipe counts line up), then for every writable field that differs emits a
+    change ``{pipe_uuid, param, value, label, field, from, to}`` ready for
+    ``provider.apply()``. Fields already at the target value are skipped, so an
+    apply is a no-op when the firewall is already on this profile. Returns
+    ``(changes, warnings)``; warnings flag target pipes with no live match or uuid.
+    """
+    target_list = target or []
+    warnings: list[str] = []
+    by_label: dict = {}
+    for cfg in live:
+        extra = cfg.extra or {}
+        lbl = extra.get("description") or extra.get("pipe") or extra.get("direction")
+        by_label.setdefault(lbl, cfg)
+
+    changes: list[dict] = []
+    for i, pipe in enumerate(target_list):
+        label = pipe.get("label")
+        match = by_label.get(label)
+        if match is None and len(target_list) == len(live):
+            match = live[i]  # positional fallback when the topology lines up
+        if match is None:
+            warnings.append(f"No live pipe matches '{label or 'pipe'}' — skipped")
+            continue
+        uuid = (match.extra or {}).get("uuid")
+        if not uuid:
+            warnings.append(f"Live pipe '{label or 'pipe'}' has no uuid — skipped")
+            continue
+        current = match.to_dict()
+        for param in WRITABLE_PARAMS:
+            desired = pipe.get(param)
+            if desired is None or _same_value(current.get(param), desired):
+                continue
+            value = (1 if desired else 0) if param == "ecn" else desired
+            changes.append(
+                {
+                    "pipe_uuid": uuid,
+                    "param": param,
+                    "value": value,
+                    "label": label or "pipe",
+                    "field": param,
+                    "field_label": FIELD_LABELS.get(param, param),
+                    "from": current.get(param),
+                    "to": desired,
+                }
+            )
+    return changes, warnings
+
+
 def summarize(normalized: list[dict] | None) -> str:
     """Short, human description of a profile, e.g. 'wan: 900Mbit q1514 t5ms'."""
     if not normalized:

@@ -187,3 +187,85 @@ def test_complete_only_filters_legacy_runs(client):
     allruns = client.get("/api/settings/profiles?complete_only=false").json()
     fps_all = {p["fingerprint"] for p in allruns["profiles"]}
     assert {"latestdata0x", "legacyonly9x"} <= fps_all
+
+
+# ── one-click "Apply this profile" (firewall write) ──────────────────────────
+
+
+def _apply_target_profile():
+    """A normalized profile that differs from the mock firewall's current state:
+    the download pipe wants quantum 4000 / target 3ms; the upload pipe (no uuid)
+    asks for a change too, to exercise the unwritable-pipe warning."""
+    return [
+        {
+            "download_bandwidth": "900Mbit", "upload_bandwidth": "40Mbit",
+            "quantum": 4000, "limit": 10240, "target": "3ms", "interval": "100ms",
+            "ecn": True, "flows": 1024, "queues": 1, "scheduler": "fq_codel",
+            "label": "wan-download",
+        },
+        {
+            "download_bandwidth": "40Mbit", "upload_bandwidth": "40Mbit",
+            "quantum": 999, "limit": 10240, "target": "5ms", "interval": "100ms",
+            "ecn": True, "flows": 1024, "queues": 1, "scheduler": "fq_codel",
+            "label": "wan-upload",
+        },
+    ]
+
+
+def _seed_profile_run(fp: str, settings: list[dict]) -> None:
+    with session_scope() as session:
+        session.add(Run(status=RunStatus.COMPLETE, settings_fingerprint=fp, settings=settings))
+
+
+def test_apply_profile_preview_lists_exact_changes(client):
+    from pathbrain.providers.mock import _OVERRIDES
+
+    _OVERRIDES.clear()  # back to mock defaults (quantum 1514, target 5ms)
+    _seed_profile_run("applyfp01", _apply_target_profile())
+
+    resp = client.post("/api/settings/apply-profile", json={"fingerprint": "applyfp01", "preview": True})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["preview"] is True and body["already_applied"] is False
+    by_field = {(c["label"], c["param"]): c for c in body["changes"]}
+    # The writable download pipe shows from→to for the two differing fields...
+    assert by_field[("wan-download", "quantum")]["from"] == 1514
+    assert by_field[("wan-download", "quantum")]["to"] == 4000
+    assert by_field[("wan-download", "target")]["to"] == "3ms"
+    # ...and nothing was written (preview only).
+    assert _OVERRIDES == {}
+    # The upload pipe has no uuid in the mock → flagged, not applied.
+    assert any("wan-upload" in w for w in body["warnings"])
+    assert not any(c["label"] == "wan-upload" for c in body["changes"])
+
+
+def test_apply_profile_writes_to_firewall(client):
+    from pathbrain.providers.mock import _OVERRIDES
+
+    _OVERRIDES.clear()
+    _seed_profile_run("applyfp02", _apply_target_profile())
+
+    resp = client.post("/api/settings/apply-profile", json={"fingerprint": "applyfp02"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    # The write went through the provider apply path.
+    assert _OVERRIDES.get("quantum") == 4000
+    assert _OVERRIDES.get("target") == "3ms"
+    applied_fields = {a["field_label"] for a in body["applied"]}
+    assert {"Quantum", "CoDel target"} <= applied_fields
+
+    # Re-applying the same profile is now a no-op (firewall already matches).
+    again = client.post("/api/settings/apply-profile", json={"fingerprint": "applyfp02"}).json()
+    assert again["already_applied"] is True and again["applied"] == []
+    _OVERRIDES.clear()
+
+
+def test_apply_profile_unknown_fingerprint_404(client):
+    resp = client.post("/api/settings/apply-profile", json={"fingerprint": "does-not-exist-xyz"})
+    assert resp.status_code == 404
+
+
+def test_apply_profile_requires_fingerprint(client):
+    resp = client.post("/api/settings/apply-profile", json={})
+    assert resp.status_code == 400
