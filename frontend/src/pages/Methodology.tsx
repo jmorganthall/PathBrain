@@ -1,0 +1,251 @@
+import { useCallback, useEffect, useState } from "react";
+import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Card from "@mui/material/Card";
+import CardContent from "@mui/material/CardContent";
+import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
+import Snackbar from "@mui/material/Snackbar";
+import Stack from "@mui/material/Stack";
+import Table from "@mui/material/Table";
+import TableBody from "@mui/material/TableBody";
+import TableCell from "@mui/material/TableCell";
+import TableContainer from "@mui/material/TableContainer";
+import TableHead from "@mui/material/TableHead";
+import TableRow from "@mui/material/TableRow";
+import Tooltip from "@mui/material/Tooltip";
+import Typography from "@mui/material/Typography";
+import RestartAltIcon from "@mui/icons-material/RestartAlt";
+
+import { api } from "../api/client";
+import type {
+  MethodologyDetail,
+  MethodologyMetric,
+  MethodologySummary,
+} from "../api/types";
+import Loading from "../components/Loading";
+import { fmtDateTime } from "../utils/format";
+
+function fmtBound(v: number | null, unit: string): string {
+  if (v == null) return "—";
+  const n = Number.isInteger(v) ? v.toString() : v.toFixed(2);
+  return `${n}${unit ? " " + unit : ""}`;
+}
+
+// The frozen metric table for one methodology, grouped by axis (display-only last).
+function MetricTable({ metrics }: { metrics: MethodologyMetric[] }) {
+  const axes = Array.from(new Set(metrics.map((m) => m.axis ?? "display")));
+  return (
+    <TableContainer sx={{ mt: 1 }}>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell>Metric</TableCell>
+            <TableCell>Axis</TableCell>
+            <TableCell align="right">Weight</TableCell>
+            <TableCell align="right">Best</TableCell>
+            <TableCell align="right">Worst</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {axes.flatMap((axis) =>
+            metrics
+              .filter((m) => (m.axis ?? "display") === axis)
+              .map((m) => (
+                <TableRow key={m.key}>
+                  <TableCell>
+                    <Tooltip arrow title={m.description}>
+                      <Box component="span" sx={{ cursor: "help" }}>
+                        {m.label}
+                        {m.required && (
+                          <Chip
+                            size="small"
+                            label="required"
+                            color="info"
+                            variant="outlined"
+                            sx={{ ml: 1, height: 18, fontSize: "0.6rem" }}
+                          />
+                        )}
+                      </Box>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="caption" color="text.secondary">
+                      {m.axis ?? "display-only"}
+                    </Typography>
+                  </TableCell>
+                  <TableCell align="right">{m.axis ? m.weight : "—"}</TableCell>
+                  <TableCell align="right">{fmtBound(m.best, m.unit)}</TableCell>
+                  <TableCell align="right">{fmtBound(m.worst, m.unit)}</TableCell>
+                </TableRow>
+              )),
+          )}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+}
+
+function VersionRow({ m }: { m: MethodologySummary }) {
+  const recorded = m.metric_count > 0;
+  return (
+    <Box sx={{ py: 1 }}>
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Typography variant="subtitle2">{m.version}</Typography>
+        {m.is_current && <Chip size="small" color="success" label="current" />}
+        {!recorded && (
+          <Tooltip title="This version predates the methodology layer, so its full rubric wasn't recorded. Its scores survive; its definition can't be reconstructed.">
+            <Chip size="small" variant="outlined" color="warning" label="definition not recorded" />
+          </Tooltip>
+        )}
+        <Typography variant="caption" color="text.secondary">
+          derivation {m.derivation_version} · {m.created_at ? fmtDateTime(m.created_at) : "—"}
+        </Typography>
+      </Stack>
+      {recorded && (
+        <Typography variant="caption" color="text.secondary">
+          {m.scored_metric_count} scored metric(s) across {m.axes.map((a) => a.label).join(" + ")}
+          {m.required_metrics.length > 0 && <> · requires {m.required_metrics.join(", ")}</>}
+        </Typography>
+      )}
+      {m.notes && (
+        <Typography variant="body2" sx={{ mt: 0.5 }}>
+          {m.notes}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
+export default function Methodology() {
+  const [current, setCurrent] = useState<MethodologyDetail | null>(null);
+  const [versions, setVersions] = useState<MethodologySummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [regrading, setRegrading] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [cur, list] = await Promise.all([api.methodologyCurrent(), api.methodologies()]);
+      setCurrent(cur);
+      setVersions(list.methodologies);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load methodologies");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleRegrade = useCallback(async () => {
+    setRegrading(true);
+    try {
+      const r = await api.regradeHistory();
+      setToast(
+        `Re-graded ${r.scored} run(s) under ${r.methodology}: ` +
+          `${r.exact} exact · ${r.partial} partial · ${r.incomparable} incomparable` +
+          (r.skipped ? ` · ${r.skipped} skipped (no raw)` : ""),
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Re-grade failed");
+    } finally {
+      setRegrading(false);
+    }
+  }, []);
+
+  if (loading) return <Loading label="Loading methodology…" />;
+
+  const others = versions.filter((v) => v.version !== current?.version);
+
+  return (
+    <Box>
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        justifyContent="space-between"
+        alignItems={{ xs: "flex-start", sm: "center" }}
+        spacing={1}
+        sx={{ mb: 1 }}
+      >
+        <Typography variant="h4">Methodology</Typography>
+        <Tooltip title="Score every run from its preserved raw observations under the current methodology. Never changes a run's at-measure (capture-time) score; writes the at-present score.">
+          <span>
+            <Button
+              variant="outlined"
+              startIcon={regrading ? <CircularProgress size={16} /> : <RestartAltIcon />}
+              onClick={handleRegrade}
+              disabled={regrading}
+            >
+              {regrading ? "Re-grading…" : "Re-grade history under current"}
+            </Button>
+          </span>
+        </Tooltip>
+      </Stack>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        How raw observations become a score, versioned. Raw data is the instrumented truth; the
+        methodology is the interpretation applied to it. Changing a weight, threshold, or metric
+        publishes a new version — old scores keep the methodology they were measured under, and any
+        run can be re-scored from its preserved raw under the current one (when comparable).
+      </Typography>
+
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
+
+      {current && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Typography variant="h6">{current.version}</Typography>
+              <Chip size="small" color="success" label="current" />
+              {current.axes.map((a) => (
+                <Chip key={a.key} size="small" variant="outlined" label={a.label} />
+              ))}
+            </Stack>
+            <Typography variant="caption" color="text.secondary">
+              derivation {current.derivation_version}
+              {current.created_at ? ` · recorded ${fmtDateTime(current.created_at)}` : ""}
+            </Typography>
+            {current.notes && (
+              <Typography variant="body2" sx={{ mt: 0.5 }}>
+                {current.notes}
+              </Typography>
+            )}
+            <MetricTable metrics={current.definition.metrics} />
+          </CardContent>
+        </Card>
+      )}
+
+      {others.length > 0 && (
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Other versions ({others.length})
+            </Typography>
+            {others.map((m, i) => (
+              <Box key={m.version}>
+                {i > 0 && <Box sx={{ borderTop: "1px solid", borderColor: "divider" }} />}
+                <VersionRow m={m} />
+              </Box>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      <Snackbar
+        open={toast != null}
+        autoHideDuration={6000}
+        onClose={() => setToast(null)}
+        message={toast ?? ""}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      />
+    </Box>
+  );
+}

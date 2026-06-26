@@ -19,6 +19,10 @@ import type {
   SeriesResponse,
   SettingsDiagnostics,
   ApplyProfileResult,
+  MethodologiesResponse,
+  MethodologyDetail,
+  RegradeSummary,
+  RunScoresResponse,
   SettingsImpact,
   SettingsProfilesResponse,
   Sweep,
@@ -94,6 +98,13 @@ export const api = {
     }),
   score: (id: number) => request<ScoreOut>(`/score/${id}`),
   rollingScore: (hours = 24) => request<RollingScore>(`/score/rolling?hours=${hours}`),
+  // Methodology layer (versioned interpretation)
+  methodologies: () => request<MethodologiesResponse>("/methodologies"),
+  methodologyCurrent: () => request<MethodologyDetail>("/methodologies/current"),
+  methodology: (version: string) =>
+    request<MethodologyDetail>(`/methodologies/${encodeURIComponent(version)}`),
+  runScores: (id: number) => request<RunScoresResponse>(`/score/${id}/methodologies`),
+  regradeHistory: () => request<RegradeSummary>("/score/regrade", { method: "POST" }),
 
   // Monitoring
   monitoring: () => request<MonitoringStatus>("/monitoring"),

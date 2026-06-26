@@ -8,6 +8,7 @@ import RunDetail from "./pages/RunDetail";
 import Compare from "./pages/Compare";
 import Config from "./pages/Config";
 import Plugins from "./pages/Plugins";
+import Methodology from "./pages/Methodology";
 import Settings from "./pages/Settings";
 import Experiments from "./pages/Experiments";
 
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="/experiments" element={<Experiments />} />
         <Route path="/sweep" element={<ShotgunSweep />} />
         <Route path="/config" element={<Config />} />
+        <Route path="/methodology" element={<Methodology />} />
         <Route path="/plugins" element={<Plugins />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
