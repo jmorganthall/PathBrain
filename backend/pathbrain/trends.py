@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from statistics import median
 
-from .metrics import METRICS, has_latest_metrics
+from .metrics import METRICS
 
 # Robust σ ≈ IQR / 1.349 (the IQR of a normal distribution spans 1.349σ).
 _IQR_TO_SIGMA = 1.349
@@ -42,15 +42,21 @@ class TrendMetric:
 
 
 def _trend_metrics() -> dict[str, TrendMetric]:
-    # The two score axes are synthetic (not in the metric registry); everything
-    # else is derived straight from the single source of truth in ``metrics.py``.
+    # The score axes are synthetic (not in the metric registry); everything else is
+    # derived straight from the single source of truth in ``metrics.py``.
     out: dict[str, TrendMetric] = {
-        "sops": TrendMetric("sops", "SOPS", "", higher_is_better=True),
+        "speed": TrendMetric("speed", "Speed", "", higher_is_better=True),
+        "smoothness": TrendMetric("smoothness", "Smoothness", "", higher_is_better=True),
+        "stability": TrendMetric("stability", "Stability & Interactivity", "", higher_is_better=True),
         "completion": TrendMetric("completion", "Completion", "", higher_is_better=True),
     }
     for m in METRICS:
         out[m.key] = TrendMetric(m.key, m.label, m.unit, m.higher_is_better)
     return out
+
+
+# The methodology score axes (synthetic, not registry metrics).
+AXIS_KEYS = ("speed", "smoothness", "stability", "completion")
 
 
 TREND_METRICS: dict[str, TrendMetric] = _trend_metrics()
@@ -64,21 +70,19 @@ class RunPoint:
     values: dict[str, float | None] = field(default_factory=dict)
 
 
-def run_metric_values(score, results_by_plugin: dict) -> dict[str, float | None]:
-    """Pull every trendable metric for one run.
+def run_metric_values(score, results_by_plugin: dict, axis_scores: dict | None = None) -> dict[str, float | None]:
+    """Pull every trendable metric for one run: the methodology axis scores (Speed/
+    Smoothness/Stability/Completion) plus the infra metrics from the plugin results.
 
-    ``score`` is a ``ScoreResult`` (or None); ``results_by_plugin`` maps plugin
-    name → that run's ``BenchmarkResult``. Only attribute/dict access — no queries —
-    so it's cheap and easily stubbed in tests. SOPS is nulled for legacy runs
-    (scored before the current rubric) so the baseline isn't built on
-    non-comparable scores; the infra metrics remain valid regardless.
+    ``axis_scores`` is the run's axis-score dict under the current methodology (empty
+    for runs not comparable, so the baseline isn't built on non-comparable scores).
+    ``score`` is accepted for call-site compatibility but no longer read. Only
+    attribute/dict access — no queries — so it's cheap and easily stubbed in tests.
     """
     vals: dict[str, float | None] = {}
-    if score is not None and has_latest_metrics(getattr(score, "metric_values", None)):
-        vals["sops"] = score.sops
-    else:
-        vals["sops"] = None
-    vals["completion"] = getattr(score, "completion", None) if score is not None else None
+    axes = axis_scores or {}
+    for axis in AXIS_KEYS:
+        vals[axis] = axes.get(axis)
     for m in METRICS:
         res = results_by_plugin.get(m.plugin)
         metrics = getattr(res, "metrics", None) if res is not None else None

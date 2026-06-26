@@ -28,30 +28,26 @@ def test_local_bucket_shifts_into_viewer_timezone():
 
 
 def test_run_metric_values_pulls_axes_and_registry_metrics():
-    score = SimpleNamespace(
-        sops=82.0,
-        completion=70.0,
-        metric_values={"longest_stall": 200, "fcp": 200, "lcp": 400},  # latest-rubric markers
-    )
+    axes = {"speed": 88.0, "smoothness": 54.0, "stability": 90.0, "completion": 70.0}
     results = {
         "icmp": SimpleNamespace(metrics={"latency_ms": 12.0, "jitter_ms": 1.5}),
         "http": SimpleNamespace(metrics={"transfer_mbps": 300.0}),
     }
-    vals = run_metric_values(score, results)
-    assert vals["sops"] == 82.0
-    assert vals["completion"] == 70.0
+    vals = run_metric_values(None, results, axes)
+    assert vals["speed"] == 88.0 and vals["smoothness"] == 54.0
+    assert vals["stability"] == 90.0 and vals["completion"] == 70.0
     assert vals["latency"] == 12.0       # display-only, from icmp
     assert vals["jitter"] == 1.5
     assert vals["transfer"] == 300.0     # display-only, from http
     assert vals["dns"] is None           # no dns result this run
 
 
-def test_run_metric_values_nulls_legacy_sops():
-    # Missing the fcp/lcp markers => legacy => SOPS excluded from the baseline.
-    score = SimpleNamespace(sops=50.0, completion=60.0, metric_values={"ttfb": 100})
-    vals = run_metric_values(score, {})
-    assert vals["sops"] is None
-    assert vals["completion"] == 60.0
+def test_run_metric_values_no_axes_when_not_comparable():
+    # No axis scores (run not comparable under current methodology) => axes are None,
+    # so they're excluded from the baseline; infra metrics remain.
+    vals = run_metric_values(None, {"icmp": SimpleNamespace(metrics={"jitter_ms": 2.0})}, None)
+    assert vals["speed"] is None and vals["smoothness"] is None
+    assert vals["jitter"] == 2.0
 
 
 def test_metric_grid_buckets_and_marginals():
@@ -86,10 +82,10 @@ def test_relative_reading_lower_is_better_direction():
 
 def test_relative_reading_higher_is_better_direction():
     mon14 = datetime(2024, 1, 1, 14, 0)
-    points = [_pt(mon14, sops=v) for v in (60.0, 62.0, 64.0, 66.0, 68.0)]
-    r = relative_reading(points, "sops", 72.0, 0, weekday=0, hour=14, min_samples=3)
+    points = [_pt(mon14, speed=v) for v in (60.0, 62.0, 64.0, 66.0, 68.0)]
+    r = relative_reading(points, "speed", 72.0, 0, weekday=0, hour=14, min_samples=3)
     assert r["delta"] == 8.0
-    assert r["better"] is True       # higher SOPS than typical = better
+    assert r["better"] is True       # higher Speed than typical = better
     assert r["percentile"] == 100
 
 

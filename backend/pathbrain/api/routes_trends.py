@@ -21,7 +21,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..config_store import get_config
 from ..database import get_session
-from ..models import Run, RunStatus, ScoreResult
+from ..methodology import ensure_current_methodology
+from ..models import Run, RunStatus, Score
 from ..trends import (
     TREND_METRICS,
     RunPoint,
@@ -42,25 +43,39 @@ def _trends_cfg(session: Session) -> dict:
 
 
 def _load_points(session: Session, days: int) -> list[RunPoint]:
-    """All completed runs in the lookback window as ``RunPoint`` records."""
+    """All completed runs in the lookback window as ``RunPoint`` records.
+
+    Axis scores (Speed/Smoothness/…) come from the (run × methodology) Score under
+    the current methodology; infra metrics come from the runs' plugin results.
+    """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
     runs = (
         session.execute(
             select(Run)
-            .options(selectinload(Run.results), selectinload(Run.score))
+            .options(selectinload(Run.results))
             .where(Run.status == RunStatus.COMPLETE, Run.created_at >= cutoff)
             .order_by(Run.created_at)
         )
         .scalars()
         .all()
     )
+    methodology = ensure_current_methodology(session, get_config(session))
+    score_rows = session.scalars(
+        select(Score).where(
+            Score.run_id.in_([r.id for r in runs]),
+            Score.methodology_version == methodology.version,
+        )
+    ).all()
+    axes_by_run = {
+        s.run_id: (s.axis_scores or {}) for s in score_rows if s.comparability != "incomparable"
+    }
     points: list[RunPoint] = []
     for run in runs:
         results_by_plugin = {r.plugin: r for r in run.results}
         points.append(
             RunPoint(
                 created_at=run.created_at,
-                values=run_metric_values(run.score, results_by_plugin),
+                values=run_metric_values(None, results_by_plugin, axes_by_run.get(run.id)),
             )
         )
     return points
@@ -68,7 +83,7 @@ def _load_points(session: Session, days: int) -> list[RunPoint]:
 
 @router.get("/trends/heatmap")
 def trends_heatmap(
-    metric: str = Query("sops", description="Metric key, e.g. sops/latency/jitter/transfer."),
+    metric: str = Query("smoothness", description="Metric key, e.g. speed/smoothness/latency/jitter."),
     tz_offset: int = Query(0, description="Minutes to add to UTC for viewer-local time."),
     days: int | None = Query(None, ge=1, le=365, description="Lookback window (days)."),
     session: Session = Depends(get_session),

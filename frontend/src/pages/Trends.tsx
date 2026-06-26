@@ -36,13 +36,16 @@ const METRIC_OPTIONS: { key: string; label: string }[] = [
   { key: "tcp", label: "TCP connect" },
   { key: "tls", label: "TLS handshake" },
   { key: "ttfb", label: "Time to First Byte" },
-  { key: "sops", label: "SOPS" },
+  { key: "speed", label: "Speed" },
+  { key: "smoothness", label: "Smoothness" },
+  { key: "stability", label: "Stability & Interactivity" },
   { key: "completion", label: "Completion" },
 ];
 
-// Which metrics to surface in the "right now vs typical" panel (env first + SOPS).
+// Which metrics to surface in the "right now vs typical" panel (score axes first).
 const RELATIVE_KEYS = [
-  "sops",
+  "speed",
+  "smoothness",
   "latency",
   "jitter",
   "packet_loss",
