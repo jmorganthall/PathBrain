@@ -15,9 +15,9 @@ from sqlalchemy.orm import Session
 from ..config_store import get_config
 from ..database import get_session
 from ..logging_config import get_logger
-from ..models import Run, RunStatus, ScoreResult
+from ..methodology import ensure_current_methodology
+from ..models import Run, RunStatus, Score
 from ..providers import get_provider
-from ..metrics import has_latest_metrics
 from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import diff_profiles, fingerprint, normalize, plan_apply, summarize
 from ..trends import RunPoint, profile_relative
@@ -26,10 +26,10 @@ router = APIRouter()
 log = get_logger("api.settings")
 
 
-def _has_latest_metrics(score: ScoreResult) -> bool:
-    # A run is "current" once its SOPS carries the latest-rubric markers (paint
-    # metrics). Older runs predate them, so their score isn't comparable — legacy.
-    return has_latest_metrics(score.metric_values)
+def _comparable(score: Score) -> bool:
+    # A run is comparable once it has a Score under the current methodology that
+    # isn't "incomparable" (i.e. its raw can supply the required metrics).
+    return score.comparability != "incomparable"
 
 
 def _min_runs(session: Session) -> int:
@@ -54,11 +54,17 @@ def _spread(vals: list[float]) -> dict:
 
 
 def _completed_runs_with_scores(session: Session):
-    """Chronological (Run, ScoreResult) for completed runs that captured settings."""
+    """Chronological (Run, Score) for completed runs with settings, scored under the
+    current methodology."""
+    methodology = ensure_current_methodology(session, get_config(session))
     return session.execute(
-        select(Run, ScoreResult)
-        .join(ScoreResult, ScoreResult.run_id == Run.id)
-        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint.is_not(None))
+        select(Run, Score)
+        .join(Score, Score.run_id == Run.id)
+        .where(
+            Run.status == RunStatus.COMPLETE,
+            Run.settings_fingerprint.is_not(None),
+            Score.methodology_version == methodology.version,
+        )
         .order_by(Run.created_at)
     ).all()
 
@@ -76,15 +82,19 @@ def settings_diagnostics(session: Session = Depends(get_session)) -> dict:
     ).all()
     stamped = [r for r in completed if r.settings_fingerprint]
     distinct = {r.settings_fingerprint for r in stamped}
-    # How many completed runs were scored under the latest (paint) rubric.
+    # How many completed runs are comparable under the current methodology.
+    methodology = ensure_current_methodology(session, get_config(session))
     with_latest = sum(
         1
         for score in session.scalars(
-            select(ScoreResult).join(Run, Run.id == ScoreResult.run_id).where(
-                Run.status == RunStatus.COMPLETE
+            select(Score)
+            .join(Run, Run.id == Score.run_id)
+            .where(
+                Run.status == RunStatus.COMPLETE,
+                Score.methodology_version == methodology.version,
             )
         )
-        if _has_latest_metrics(score)
+        if _comparable(score)
     )
     recent = [
         {
@@ -168,18 +178,21 @@ def settings_profiles(
     baseline_points: list[RunPoint] = []
     groups: dict[str, dict] = {}
     for run, score in rows:
-        if complete_only and not _has_latest_metrics(score):
+        comparable = _comparable(score)
+        if complete_only and not comparable:
             continue
-        # Legacy SOPS isn't comparable, so keep it out of the time baseline.
-        sops_val = score.sops if _has_latest_metrics(score) else None
-        point = RunPoint(created_at=run.created_at, values={"sops": sops_val})
+        axes = (score.axis_scores or {}) if comparable else {}
+        smooth, speed, comp_axis = axes.get("smoothness"), axes.get("speed"), axes.get("completion")
+        # Smoothness is the primary ranking; the time baseline is built on it.
+        point = RunPoint(created_at=run.created_at, values={"smoothness": smooth})
         baseline_points.append(point)
         g = groups.setdefault(
             run.settings_fingerprint,
             {
                 "fingerprint": run.settings_fingerprint,
                 "settings": run.settings,
-                "sops": [],
+                "smoothness": [],
+                "speed": [],
                 "points": [],
                 "iterations": 0,
                 "completion": [],
@@ -188,22 +201,27 @@ def settings_profiles(
                 "last_seen": run.created_at,
             },
         )
-        g["sops"].append(score.sops)
+        if smooth is not None:
+            g["smoothness"].append(smooth)
+        if speed is not None:
+            g["speed"].append(speed)
         g["points"].append(point)
         # A run with more iterations is more data; track the total alongside runs.
         g["iterations"] += int(run.iterations or 1)
-        if score.completion is not None:
-            g["completion"].append(score.completion)
-        cv = score.completion_metric_values or {}
+        if comp_axis is not None:
+            g["completion"].append(comp_axis)
+        mv = score.metric_values or {}
         for m in COMPLETION_METRIC_SOURCES:
-            if cv.get(m) is not None:
-                g["completion_metrics"][m].append(float(cv[m]))
+            if mv.get(m) is not None:
+                g["completion_metrics"][m].append(float(mv[m]))
         g["settings"] = run.settings
         g["last_seen"] = run.created_at
 
     profiles = []
     for g in groups.values():
-        count = len(g["sops"])
+        count = len(g["smoothness"])
+        if count == 0:
+            continue  # nothing comparable to rank
         comp = g["completion"]
         profiles.append(
             {
@@ -215,11 +233,13 @@ def settings_profiles(
                 "confident": count >= min_runs,
                 "first_seen": g["first_seen"].isoformat(),
                 "last_seen": g["last_seen"].isoformat(),
-                # Primary ranking is SOPS (human-feel).
-                **_spread(g["sops"]),
-                # Time-adjusted SOPS: above/below the day×hour historical norm.
+                # Primary ranking is Smoothness (top-level median/p25/p75/min/max).
+                **_spread(g["smoothness"]),
+                # Speed shown alongside (the other headline axis).
+                "speed": _spread(g["speed"]) if g["speed"] else None,
+                # Time-adjusted Smoothness: above/below the day×hour historical norm.
                 "relative_sops": profile_relative(
-                    baseline_points, g["points"], "sops", tz_offset, min_samples
+                    baseline_points, g["points"], "smoothness", tz_offset, min_samples
                 ),
                 # Completion axis, gated like SOPS: only confident with enough runs
                 # that actually captured its metrics.
@@ -431,16 +451,20 @@ def settings_impact(
     rows = _completed_runs_with_scores(session)
 
     # Build contiguous segments of runs sharing a fingerprint (chronological).
+    # Before/after medians are Smoothness (the headline this view ranks on).
     segments: list[dict] = []
     for run, score in rows:
-        if complete_only and not _has_latest_metrics(score):
+        if complete_only and not _comparable(score):
+            continue
+        smooth = (score.axis_scores or {}).get("smoothness")
+        if smooth is None:
             continue
         fp = run.settings_fingerprint
         if not segments or segments[-1]["fingerprint"] != fp:
             segments.append(
                 {"fingerprint": fp, "settings": run.settings, "sops": [], "changed_at": run.created_at}
             )
-        segments[-1]["sops"].append(score.sops)
+        segments[-1]["sops"].append(smooth)
         segments[-1]["settings"] = run.settings
 
     base = {"changed": False, "threshold_pct": threshold, "min_runs": min_runs}
