@@ -15,6 +15,7 @@ from . import (
     routes_score,
     routes_settings,
     routes_smoothness,
+    routes_sweep,
     routes_trends,
 )
 
@@ -31,3 +32,4 @@ api_router.include_router(routes_plugins.router, tags=["plugins"])
 api_router.include_router(routes_metrics.router, tags=["metrics"])
 api_router.include_router(routes_experiments.router, tags=["experiments"])
 api_router.include_router(routes_trends.router, tags=["trends"])
+api_router.include_router(routes_sweep.router, tags=["sweep"])

@@ -8,9 +8,17 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
 ## Layout
 
 - `backend/pathbrain/` — FastAPI app (the core). Key modules:
-  - `plugins/` — independent benchmark plugins (`icmp/dns/tcp/tls/http/browser`);
-    `base.py` defines the contract + registry. Add one by subclassing
-    `BenchmarkPlugin` and `@register`.
+  - `plugins/` — benchmark plugins (`icmp/dns/tcp/tls/http/browser`) that are
+    **pure sensors: they emit raw observations only** (`PluginResult.raw`) and never
+    interpret. `base.py` defines the contract + registry. Add one by subclassing
+    `BenchmarkPlugin` and `@register`. (icmp emits per-ping RTT series, http emits
+    bytes+timing, browser emits raw nav/paint/CLS/long-task entries + a filmstrip.)
+  - `interpret/` — **the interpretation layer** (`derive.py`, versioned
+    `DERIVATION_VERSION`). Turns raw observations → scoreable metric values:
+    `jitter`=stddev(RTTs), `latency`=mean, `transfer`=bytes·8/dl, and the trajectory
+    metrics (Speed Index / paint cadence / CLS from the filmstrip); `fcp`/`lcp` are
+    identity pass-throughs. This is the **only** place interpretation lives, so a new
+    metric or changed formula can be re-derived over history without re-collecting.
   - `providers/` — firewall config discovery + **apply** (`opnsense.py`,
     `mock.py`); pick via `PATHBRAIN_CONFIG_PROVIDER`. OPNsense reads/writes
     fq_codel fields (`fqcodel_quantum/limit/flows`, `codel_target/interval/ecn`);
@@ -23,9 +31,12 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     from it. Adding a measurement = one entry here (+ the plugin emitting it).
   - `scoring/engine.py` — score computation (weighted, perception-calibrated log
     curve, redistributes missing-metric weight). **Two axes, never blended:**
-    **SOPS** is the headline *human-feel* score — perception-led: paint timing
-    (FCP/LCP/INP) + TTFB + render (`METRIC_SOURCES`); it's what we rank/chart/
-    optimize. **Completion** is the secondary infra axis (DNS/TCP/TLS/jitter/loss,
+    **SOPS** is the headline *human-feel* score — perception-led and **trajectory-
+    aware**: Speed Index (30) + FCP (20) + paint cadence (10) + CLS (5) lead;
+    LCP (10) + INP (10) + TTFB (10) + render-to-networkidle (5) trail
+    (`METRIC_SOURCES`, rubric `perceptual-v3`). It rewards painting *early and
+    steadily*, not finishing first. **Completion** is the secondary infra axis
+    (DNS/TCP/TLS/jitter/loss,
     `COMPLETION_METRIC_SOURCES`, `compute_completion`) — raw timing that barely
     moves human feel, so it's kept out of SOPS. Completion persists on
     `ScoreResult.completion` (+ sub/weights/values), reusing the legacy
@@ -34,14 +45,24 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     profiles`. Rubric keys: `weights`/`thresholds` (SOPS) + `completion_weights`/
     `completion_thresholds`.
   - `config_store.py` — DB-backed runtime config + defaults (targets, weights,
-    thresholds, `iterations`, `monitoring`, `correlation`, `experiment`,
+    thresholds, `iterations`, `monitoring`, `correlation`, `trends`, `experiment`,
     `rubric_version`).
-  - `runner.py` — orchestrates a run across plugins (median-aggregated over
-    iterations, per-run SOPS confidence band), captures the firewall settings +
-    fingerprint per run, and holds run-lifecycle safety
-    (`reconcile_interrupted_runs`, `fail_stale_runs`, `rescore_run`).
-  - `scheduler.py` — daemon thread: watchdog → experiment step → monitoring run
-    (serialized so they never overlap).
+  - `runner.py` — orchestrates a run across plugins (derives metrics from raw via
+    `interpret`, median-aggregated over iterations, per-run SOPS confidence band),
+    stores `BenchmarkResult.raw` as the source of truth, captures the firewall
+    settings + fingerprint per run, and holds run-lifecycle safety
+    (`reconcile_interrupted_runs`, `fail_stale_runs`, `rescore_run` = re-grade cached
+    scalars under a new rubric, `rederive_run` = re-run derivation+scoring from raw).
+  - `trends.py` — historical baselines by day-of-week × hour-of-day (viewer-local);
+    `relative_reading`/`profile_relative` give a time-adjusted "vs typical" delta
+    ("wins above replacement"). Powers `/api/trends/*`, the Dashboard delta chip,
+    and the Settings-Impact "vs typical" column.
+  - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a quantum ×
+    target grid. Applies each variant for real, benchmarks it, **restores the
+    baseline at the end** (`reconcile_interrupted_sweeps` restores on startup too).
+    Runs in its own thread; the scheduler yields while `sweep.active()`.
+  - `scheduler.py` — daemon thread: watchdog → (yield if a sweep is active) →
+    experiment step → monitoring run (serialized so benchmark runs never overlap).
   - `experiment.py` — autonomous window-gated single-parameter shaper sweep
     (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline).
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
@@ -50,7 +71,8 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.
 - `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
-  History, Compare, Settings Impact, Experiments, Config, Plugins, Run Detail.
+  History, Trends, Compare, Settings Impact, Experiments, Shotgun Sweep, Config,
+  Plugins, Run Detail.
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`.
@@ -77,20 +99,25 @@ docker compose up --build   # -> http://localhost:8000
 ## Conventions
 
 - Plugins must never raise for *measurement* failures — return a `PluginResult`
-  with `success=False` and an `error`. Use the `timed()` helper.
+  with `success=False` and an `error`. Use the `timed()` helper. Plugins emit
+  **raw observations only** (`raw=…`); the `interpret` layer derives metrics — keep
+  statistics/aggregation out of the probe.
 - All runtime config (targets/weights/thresholds) is DB-backed and editable via
   `/api/config`; infra config (DB URL, OPNsense creds) is env-only (`config.py`).
 - Lower-is-better for all current SOPS metrics; thresholds define best/worst and
   are interpolated on a perception-calibrated log curve (Weber–Fechner). The
-  rubric (weights+thresholds+`rubric_version`) is versioned; changing it should be
-  followed by `POST /api/score/rescore` to re-grade history from stored raw
-  measurements (runs keep `metric_values` + per-iteration metrics for this).
+  rubric (weights+thresholds+`rubric_version`) is versioned. **Two re-grade paths:**
+  `POST /api/score/rescore` re-applies the rubric to cached metric scalars (after a
+  weight/threshold change); `POST /api/score/rederive` re-runs the whole
+  interpretation from stored `BenchmarkResult.raw` (after a new metric or changed
+  `DERIVATION_VERSION`), so history reflects it without re-collecting.
 - A run repeats the suite `iterations` times; the headline SOPS is the **median**
   over iterations, with a confidence band (`sops_stdev/min/max`). The Dashboard
-  shows a windowed **rolling** score (`/api/score/rolling`, 24h median + IQR).
+  shows a windowed **rolling** score (`/api/score/rolling`, 24h median + IQR) plus
+  a **"vs typical"** delta vs the day/hour historical baseline (`trends.py`).
 - **Current vs. legacy scoring (no dual-score machinery).** A run scored before
-  the current rubric's paint metrics (FCP/LCP absent — `metrics.has_latest_metrics`,
-  keyed off `marks_latest`) isn't comparable, so it's **quarantined**, not
+  the current rubric (no Speed Index — `metrics.has_latest_metrics`, keyed off
+  `marks_latest`, now `speed_index`) isn't comparable, so it's **quarantined**, not
   reconciled: Dashboard rolling + History trend exclude legacy; the History list
   hides it behind a "Show legacy" toggle; Run Detail/Compare flag it
   (`ScoreOut.legacy`/`RunSummary.legacy`); Settings Impact aggregates `complete_only`
@@ -113,26 +140,35 @@ docker compose up --build   # -> http://localhost:8000
 
 - **Phase 1 (done):** benchmark engine (ICMP/DNS/TCP/TLS/HTTP), SOPS scoring,
   history, config discovery (OPNsense/mock), REST API, dashboard.
-- **Phase 2 (done):** Playwright browser engine — `benchmark_browser` emits
-  `total_render_ms`, **paint timing** (`fcp_ms`/`lcp_ms`/`inp_ms` — the core of
-  the perception-led SOPS; INP is best-effort via a synthetic interaction), and
-  nav timings; captures screenshot/HAR to the artifact dir, served at
-  `/artifacts`. (Speed Index is the first deferred perceptual metric.)
+- **Phase 2 (done):** Playwright browser engine — `benchmark_browser` emits raw
+  nav timings, **paint events** (`fcp`/`lcp`/`inp`), and a **filmstrip** (CDP
+  screencast); captures screenshot/HAR to the artifact dir, served at `/artifacts`.
 - **Phase 3 (done):** continuous monitoring (`scheduler.py`) + rolling score;
   settings-vs-responsiveness correlation (`settings_profile.py`, `/api/settings/*`);
   perception-calibrated rubric (Weber–Fechner) with versioned re-scoring; and the
   **experiment engine** (`experiment.py`): window-gated single-parameter sweep
   that writes to the firewall via `provider.apply()`, disarmed + dry-run by
-  default, restoring the pre-window baseline at window close. Experiments run in
-  the scheduler thread (priority over monitoring).
-- **Next:** real-world profiles, speed test, bufferbloat, multi-parameter
-  Bayesian search + interleaved A/B with effect-size/CI + hysteresis, routing
-  intelligence / SD-WAN.
+  default, restoring the pre-window baseline at window close.
+- **Phase 4 (done):** **historical trends + relative SOPS** (`trends.py`,
+  `/api/trends/*`) and time-adjusted Settings-Impact ("vs typical"); **raw-only
+  collection + a re-runnable interpretation layer** (`interpret/derive.py`,
+  `BenchmarkResult.raw`, `/api/score/rederive`); **trajectory-aware scoring**
+  (Speed Index / paint cadence / CLS from the filmstrip; rubric `perceptual-v3`,
+  Pillow dep); a reversible **config write-test** (`POST /api/config/test-apply`);
+  and the **Shotgun Sweep** (`sweep.py`, `/api/sweep/*`) — an on-demand grid sweep
+  that applies each variant, benchmarks it, ranks by SOPS + "vs typical", and
+  restores the baseline.
+- **Next:** speed test / bufferbloat (latency-under-load), A/B weight calibration
+  from blind ratings, multi-parameter Bayesian search + interleaved A/B with
+  effect-size/CI + hysteresis, routing intelligence / SD-WAN.
 
-⚠️ The experiment engine is the only path that *writes* to the firewall. Keep it
-disarmed (`experiment.enabled=false`) / dry-run by default; always snapshot the
-baseline and restore it at window close.
+⚠️ Firewall **writes** go only through `provider.apply()`. Four callers use it, all
+snapshot/restore or are reversible: the experiment engine (disarmed + dry-run by
+default), the Shotgun Sweep (restores baseline at end + on startup), config
+test-apply (+1 then revert), and sweep apply-best (explicit, supervised). Keep new
+write paths to `provider.apply()` and always snapshot/restore.
 
 The browser engine imports Playwright lazily, so the plugin registry still loads
 where Playwright/Chromium isn't installed (it returns `success=False` and the
-`render` weight is redistributed). Chromium is installed in the Docker image.
+browser metrics' weight is redistributed). Filmstrip/Speed Index also degrade
+gracefully without CDP screencast or Pillow. Chromium is installed in the Docker image.

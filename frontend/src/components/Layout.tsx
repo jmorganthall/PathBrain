@@ -23,6 +23,7 @@ import CompareIcon from "@mui/icons-material/CompareArrows";
 import SettingsIcon from "@mui/icons-material/Tune";
 import InsightsIcon from "@mui/icons-material/Insights";
 import ScienceIcon from "@mui/icons-material/Science";
+import ScatterPlotIcon from "@mui/icons-material/ScatterPlot";
 import ExtensionIcon from "@mui/icons-material/Extension";
 
 import type { ReactNode } from "react";
@@ -42,6 +43,7 @@ const NAV: NavItem[] = [
   { label: "Compare", to: "/compare", icon: <CompareIcon /> },
   { label: "Settings Impact", to: "/settings", icon: <InsightsIcon /> },
   { label: "Experiments", to: "/experiments", icon: <ScienceIcon /> },
+  { label: "Shotgun Sweep", to: "/sweep", icon: <ScatterPlotIcon /> },
   { label: "Config", to: "/config", icon: <SettingsIcon /> },
   { label: "Plugins", to: "/plugins", icon: <ExtensionIcon /> },
 ];

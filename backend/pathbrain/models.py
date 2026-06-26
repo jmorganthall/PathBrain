@@ -221,6 +221,47 @@ class ExperimentTrial(Base):
     experiment: Mapped["Experiment"] = relationship(back_populates="trials")
 
 
+class SweepStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class Sweep(Base):
+    """A fast, supervised foreground sweep across shaper parameter values.
+
+    Unlike the autonomous Experiment (window-gated, dry-run-by-default), a sweep is
+    kicked off on demand: it applies each variant for real, benchmarks it, and
+    restores the original config at the end. The row persists the baseline so a
+    crash mid-sweep can still restore the firewall on startup.
+    """
+
+    __tablename__ = "sweeps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[SweepStatus] = mapped_column(Enum(SweepStatus), default=SweepStatus.PENDING)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    dry_run: Mapped[bool] = mapped_column(default=False)
+    iterations: Mapped[int] = mapped_column(Integer, default=2)
+    dwell_s: Mapped[float] = mapped_column(Float, default=0.0)
+    pipe_uuid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # The sweep definition: per-param {min,max,step} ranges + the generated variants.
+    spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Pre-sweep baseline to restore: {quantum, target, settings:[...]}.
+    baseline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    total_variants: Mapped[int] = mapped_column(Integer, default=0)
+    completed_variants: Mapped[int] = mapped_column(Integer, default=0)
+    # Per-variant outcomes: [{index, quantum, target, run_id, sops}].
+    results: Mapped[list] = mapped_column(JSON, default=list)
+
+
 class AppConfig(Base):
     """Singleton-ish key/value store for persisted runtime configuration."""
 

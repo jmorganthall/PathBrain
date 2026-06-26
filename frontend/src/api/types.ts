@@ -239,6 +239,55 @@ export interface TestApplyStep {
   detail: string;
 }
 
+// ── Shotgun Sweep ────────────────────────────────────────────────────────────
+export interface SweepParamRange {
+  enabled: boolean;
+  min: number;
+  max: number;
+  step: number;
+}
+
+export interface SweepSpec {
+  quantum: SweepParamRange;
+  target: SweepParamRange;
+}
+
+export interface SweepResult {
+  index: number;
+  quantum: number | null;
+  target: string | null;
+  run_id: number | null;
+  sops: number | null;
+  created_at: string | null;
+  relative: TrendRelative | null;
+}
+
+export interface Sweep {
+  id: number;
+  status: "pending" | "running" | "complete" | "cancelled" | "failed";
+  dry_run: boolean;
+  iterations: number;
+  dwell_s: number;
+  pipe_uuid: string | null;
+  total_variants: number;
+  completed_variants: number;
+  baseline: { quantum: number | null; target: string | null } | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  active: boolean;
+  results: SweepResult[];
+}
+
+export interface SweepPreview {
+  variants: { quantum?: number; target?: string }[];
+  total_variants: number;
+  eta_ms: number | null;
+  per_iteration_ms: number | null;
+  cap: number;
+}
+
 export interface TestApplyResult {
   provider: string;
   pipe_uuid: string | null;
