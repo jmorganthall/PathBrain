@@ -582,3 +582,85 @@ export interface ExperimentsResponse {
   status: ExperimentStatusInfo;
   experiments: ExperimentSummary[];
 }
+
+// ── Methodology layer (versioned interpretation) ──
+export interface MethodologyAxis {
+  key: string;
+  label: string;
+  role: string;
+}
+
+export interface MethodologyMetric {
+  key: string;
+  axis: string | null;
+  plugin: string;
+  source_key: string;
+  label: string;
+  description: string;
+  unit: string;
+  weight: number;
+  best: number | null;
+  worst: number | null;
+  higher_is_better: boolean;
+  required: boolean;
+  order: number;
+}
+
+export interface MethodologyDefinition {
+  axes: MethodologyAxis[];
+  metrics: MethodologyMetric[];
+}
+
+export interface MethodologySummary {
+  version: string;
+  rubric_version: string;
+  derivation_version: string;
+  created_at: string | null;
+  notes: string | null;
+  is_current: boolean;
+  axes: MethodologyAxis[];
+  metric_count: number;
+  scored_metric_count: number;
+  required_metrics: string[];
+}
+
+export interface MethodologyDetail extends MethodologySummary {
+  definition: MethodologyDefinition;
+}
+
+export interface MethodologiesResponse {
+  methodologies: MethodologySummary[];
+  count: number;
+}
+
+export type Comparability = "exact" | "partial" | "incomparable";
+
+export interface RunScore {
+  run_id: number;
+  methodology_version: string;
+  is_at_measure: boolean;
+  comparability: Comparability;
+  missing_metrics: string[];
+  axis_scores: Record<string, number>;
+  subscores: Record<string, number>;
+  weights_used: Record<string, number>;
+  metric_values: Record<string, number>;
+  bands: Record<string, { stdev?: number; min?: number; max?: number }>;
+  computed_at: string | null;
+}
+
+export interface RunScoresResponse {
+  run_id: number;
+  at_measure_version: string | null;
+  scores: RunScore[];
+}
+
+export interface RegradeSummary {
+  methodology: string;
+  total: number;
+  scored: number;
+  exact: number;
+  partial: number;
+  incomparable: number;
+  skipped: number;
+}

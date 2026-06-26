@@ -25,6 +25,7 @@ import InsightsIcon from "@mui/icons-material/Insights";
 import ScienceIcon from "@mui/icons-material/Science";
 import ScatterPlotIcon from "@mui/icons-material/ScatterPlot";
 import ExtensionIcon from "@mui/icons-material/Extension";
+import RuleIcon from "@mui/icons-material/Rule";
 
 import type { ReactNode } from "react";
 
@@ -45,6 +46,7 @@ const NAV: NavItem[] = [
   { label: "Experiments", to: "/experiments", icon: <ScienceIcon /> },
   { label: "Shotgun Sweep", to: "/sweep", icon: <ScatterPlotIcon /> },
   { label: "Config", to: "/config", icon: <SettingsIcon /> },
+  { label: "Methodology", to: "/methodology", icon: <RuleIcon /> },
   { label: "Plugins", to: "/plugins", icon: <ExtensionIcon /> },
 ];
 

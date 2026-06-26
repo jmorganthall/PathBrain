@@ -12,6 +12,8 @@ import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
+import TableContainer from "@mui/material/TableContainer";
+import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
@@ -21,7 +23,14 @@ import ErrorIcon from "@mui/icons-material/Error";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 
 import { api } from "../api/client";
-import type { RunBaseline, RunDetail as RunDetailType, RunEstimate } from "../api/types";
+import type {
+  Comparability,
+  RunBaseline,
+  RunDetail as RunDetailType,
+  RunEstimate,
+  RunScore,
+} from "../api/types";
+import { sopsColor } from "../theme";
 import ScoreGauge from "../components/ScoreGauge";
 import SubscoreBreakdown from "../components/SubscoreBreakdown";
 import StatusChip from "../components/StatusChip";
@@ -53,6 +62,20 @@ function statsTooltip(st?: MetricStat): string {
   )} · ±${f(st.stdev)} stdev`;
 }
 
+const COMPARABILITY_COLOR: Record<Comparability, "success" | "warning" | "default"> = {
+  exact: "success",
+  partial: "warning",
+  incomparable: "default",
+};
+
+function comparabilityTip(s: RunScore): string {
+  if (s.comparability === "incomparable")
+    return `Can't be scored under this methodology — its raw never captured: ${s.missing_metrics.join(", ")}.`;
+  if (s.comparability === "partial")
+    return `Some metrics weren't captured (${s.missing_metrics.join(", ")}); their weight was redistributed.`;
+  return "Every metric this methodology scores is reproducible from this run's raw.";
+}
+
 export default function RunDetail() {
   const { id } = useParams<{ id: string }>();
   const runId = Number(id);
@@ -63,6 +86,7 @@ export default function RunDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
+  const [runScores, setRunScores] = useState<RunScore[]>([]);
   const [now, setNow] = useState<number>(Date.now());
   const [cancelling, setCancelling] = useState(false);
   const pollRef = useRef<number | null>(null);
@@ -125,6 +149,7 @@ export default function RunDetail() {
   useEffect(() => {
     if (!run || isRunning(run.status)) return;
     api.resultBaseline(runId).then(setBaseline).catch(() => setBaseline(null));
+    api.runScores(runId).then((r) => setRunScores(r.scores)).catch(() => setRunScores([]));
   }, [runId, run?.status]);
 
   // Tick a 1s clock while the run is in progress so the ETA counts down.
@@ -343,6 +368,62 @@ export default function RunDetail() {
           </CardContent>
         </Card>
       </Box>
+
+      {runScores.length > 0 && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Methodology
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+              The same raw observations, scored under each methodology. <b>At measure</b> is the
+              interpretation in play when this run was collected; <b>at present</b> re-scores from
+              raw under the current methodology — possible only when the run's raw can supply its
+              metrics.
+            </Typography>
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Methodology</TableCell>
+                    <TableCell>When</TableCell>
+                    <TableCell align="right">SOPS</TableCell>
+                    <TableCell align="right">Completion</TableCell>
+                    <TableCell>Comparability</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {runScores.map((s) => (
+                    <TableRow key={s.methodology_version}>
+                      <TableCell>{s.methodology_version}</TableCell>
+                      <TableCell>{s.is_at_measure ? "At measure" : "At present"}</TableCell>
+                      <TableCell
+                        align="right"
+                        sx={{ color: sopsColor(s.axis_scores.sops), fontWeight: 600 }}
+                      >
+                        {s.axis_scores.sops != null ? Math.round(s.axis_scores.sops) : "—"}
+                      </TableCell>
+                      <TableCell align="right">
+                        {s.axis_scores.completion != null ? Math.round(s.axis_scores.completion) : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip arrow title={comparabilityTip(s)}>
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            label={s.comparability}
+                            color={COMPARABILITY_COLOR[s.comparability]}
+                          />
+                        </Tooltip>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </CardContent>
+        </Card>
+      )}
 
       <Typography variant="h6" sx={{ mb: 0.5 }}>
         Plugin Results
