@@ -233,6 +233,26 @@ export interface SeriesResponse {
   points: SeriesPoint[];
 }
 
+export interface TestApplyStep {
+  step: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface TestApplyResult {
+  provider: string;
+  pipe_uuid: string | null;
+  pipe_label: string | null;
+  param: string;
+  original: number;
+  test_value: number;
+  changed: boolean;
+  restored: boolean;
+  ok: boolean;
+  error: string | null;
+  steps: TestApplyStep[];
+}
+
 // ── Historical trends (day-of-week × hour-of-day baselines) ──────────────────
 export interface TrendCell {
   weekday: number; // 0 = Mon … 6 = Sun

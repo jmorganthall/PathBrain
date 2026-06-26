@@ -20,6 +20,7 @@ import type {
   SettingsDiagnostics,
   SettingsImpact,
   SettingsProfilesResponse,
+  TestApplyResult,
   TrendHeatmapResponse,
   TrendRelativeResponse,
   WeightsResponse,
@@ -119,6 +120,7 @@ export const api = {
     request<{ rederived: number; derivation_version: string }>("/score/rederive", { method: "POST" }),
   providerHealth: () => request<ProviderHealth>("/config/provider"),
   discover: () => request<DiscoverResponse>("/config/discover", { method: "POST" }),
+  testApply: () => request<TestApplyResult>("/config/test-apply", { method: "POST" }),
   snapshots: () => request<ConfigSnapshot[]>("/config/snapshots"),
 
   // Plugins

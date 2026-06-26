@@ -32,6 +32,7 @@ import type {
   ConfigSnapshot,
   FqCodelPipe,
   ProviderHealth,
+  TestApplyResult,
 } from "../api/types";
 import Loading from "../components/Loading";
 import JsonViewer from "../components/JsonViewer";
@@ -151,6 +152,8 @@ export default function Config() {
   const [pipes, setPipes] = useState<FqCodelPipe[] | null>(null);
   const [snapshots, setSnapshots] = useState<ConfigSnapshot[]>([]);
   const [discovering, setDiscovering] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestApplyResult | null>(null);
 
   const loadProvider = useCallback(async () => {
     try {
@@ -256,6 +259,25 @@ export default function Config() {
       setDiscovering(false);
     }
   }, [loadProvider]);
+
+  const handleTestApply = useCallback(async () => {
+    setTesting(true);
+    setError(null);
+    setTestResult(null);
+    try {
+      const res = await api.testApply();
+      setTestResult(res);
+      setToast(
+        res.ok
+          ? `Write test passed — quantum ${res.original}→${res.test_value}→${res.original}`
+          : "Write test did not fully pass — see details"
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Write test failed");
+    } finally {
+      setTesting(false);
+    }
+  }, []);
 
   if (loading || !draft) return <Loading label="Loading config…" />;
 
@@ -976,15 +998,62 @@ export default function Config() {
                 </Typography>
               )}
             </Box>
-            <Button
-              variant="contained"
-              startIcon={<TravelExploreIcon />}
-              onClick={handleDiscover}
-              disabled={discovering}
-            >
-              {discovering ? "Discovering…" : "Discover"}
-            </Button>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Tooltip title="Verify PathBrain can WRITE to the firewall: it nudges the first pipe's quantum by +1, confirms the change, then sets it straight back. Safe and reversible — proves the apply path before you arm an experiment.">
+                <span>
+                  <Button
+                    variant="outlined"
+                    startIcon={<RestartAltIcon />}
+                    onClick={handleTestApply}
+                    disabled={testing || discovering}
+                  >
+                    {testing ? "Testing write…" : "Test config write"}
+                  </Button>
+                </span>
+              </Tooltip>
+              <Button
+                variant="contained"
+                startIcon={<TravelExploreIcon />}
+                onClick={handleDiscover}
+                disabled={discovering || testing}
+              >
+                {discovering ? "Discovering…" : "Discover"}
+              </Button>
+            </Stack>
           </Stack>
+
+          {testResult && (
+            <Alert
+              severity={testResult.ok ? "success" : "warning"}
+              sx={{ mb: 2 }}
+              onClose={() => setTestResult(null)}
+            >
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                {testResult.ok
+                  ? `Write path works — ${testResult.provider} round-tripped ${testResult.param} ` +
+                    `${testResult.original} → ${testResult.test_value} → ${testResult.original}` +
+                    (testResult.pipe_label ? ` on ${testResult.pipe_label}` : "")
+                  : "Write test did not fully pass"}
+              </Typography>
+              {testResult.error && (
+                <Typography variant="caption" color="error" sx={{ display: "block", mt: 0.5 }}>
+                  {testResult.error}
+                </Typography>
+              )}
+              <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+                {testResult.steps.map((s, i) => (
+                  <Box component="li" key={i} sx={{ fontSize: 13 }}>
+                    {s.ok ? "✓" : "✗"} {s.step}: {s.detail}
+                  </Box>
+                ))}
+              </Box>
+              {!testResult.restored && (
+                <Typography variant="caption" color="error" sx={{ display: "block", mt: 0.5, fontWeight: 600 }}>
+                  ⚠ The original value may not have been restored — verify the firewall manually.
+                </Typography>
+              )}
+            </Alert>
+          )}
 
           {pipes && (
             <Box sx={{ mb: 3 }}>
