@@ -628,6 +628,37 @@ def execute_run(run_id: int) -> None:
             run.per_iteration_ms = (
                 round(mean(iteration_durations), 3) if iteration_durations else None
             )
+
+            # Read-after integrity check: confirm the firewall settings under test
+            # never changed mid-run. The start fingerprint was captured above; if a
+            # re-read now yields a *different* one, something (another tuner, or a
+            # direct OPNsense edit) moved the config while we were measuring, so what
+            # we tested isn't what we thought — discard the run. Best-effort: only a
+            # confirmed mismatch fails it (a failed re-read can't prove drift).
+            start_fp = run.settings_fingerprint
+            end_fp = None
+            try:
+                from .providers import get_provider
+                from .settings_profile import fingerprint, normalize
+
+                end_fp = fingerprint(normalize(get_provider().discover()))
+            except Exception:  # noqa: BLE001 — can't prove drift; don't punish the run
+                log.warning("Run %s: post-run settings re-read failed", run_id, exc_info=True)
+
+            if start_fp and end_fp and start_fp != end_fp:
+                run.status = RunStatus.FAILED
+                run.error = (
+                    f"Firewall settings changed mid-run ({start_fp} → {end_fp}); "
+                    "measurement discarded."
+                )
+                run.finished_at = datetime.now(timezone.utc)
+                session.commit()
+                log.warning(
+                    "Run %s failed integrity check: settings drifted %s → %s",
+                    run_id, start_fp, end_fp,
+                )
+                return
+
             run.status = RunStatus.COMPLETE
             run.finished_at = datetime.now(timezone.utc)
             session.commit()

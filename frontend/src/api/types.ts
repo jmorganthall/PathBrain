@@ -83,6 +83,8 @@ export interface MonitoringStatus {
 
 export interface ProfileSpread {
   count: number;
+  // Total iterations behind this spread (present on the completion axis).
+  iterations?: number;
   confident: boolean;
   median: number;
   p25: number;
@@ -180,8 +182,34 @@ export interface SettingsProfilesResponse {
   profiles: SettingsProfile[];
   count: number;
   min_runs: number;
+  // Total iterations a profile needs to be "confident" (the unit of signal).
+  min_iterations: number;
   complete_only: boolean;
   best_diff: ProfileDiff | null;
+}
+
+// One "Test this profile up to the minimum" session.
+export interface ProfileTest {
+  id: number;
+  status: "pending" | "running" | "complete" | "failed";
+  fingerprint: string;
+  label: string | null;
+  iterations: number;
+  run_id: number | null;
+  error: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  // Best-effort label of whatever holds the coordination lock (for queued tests).
+  lock_owner: string | null;
+}
+
+export interface ProfileTestStart {
+  id: number;
+  fingerprint: string;
+  iterations: number;
+  current_iterations: number;
+  min_iterations: number;
 }
 
 export interface ImpactSide {
@@ -189,6 +217,7 @@ export interface ImpactSide {
   fingerprint: string;
   median: number;
   count: number;
+  iterations?: number;
 }
 
 export interface SettingsDiagnostics {
@@ -210,6 +239,7 @@ export interface SettingsImpact {
   changed: boolean;
   threshold_pct: number;
   min_runs?: number;
+  min_iterations?: number;
   enough_data?: boolean;
   changed_at?: string;
   delta_abs?: number;
@@ -701,4 +731,25 @@ export interface RegradeSummary {
   partial: number;
   incomparable: number;
   skipped: number;
+}
+
+// Consolidated raw export (GET /history/dump). The shape is intentionally loose —
+// it's a debugging/analysis payload rendered as raw JSON, not a typed view model.
+export interface DataDumpRun {
+  id: number;
+  created_at: string | null;
+  status: string;
+  label: string | null;
+  iterations: number;
+  settings_fingerprint: string | null;
+  score: Record<string, unknown> | null;
+  results: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export interface DataDump {
+  generated_at: string;
+  count: number;
+  limit: number;
+  runs: DataDumpRun[];
 }

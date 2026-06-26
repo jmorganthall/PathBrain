@@ -31,15 +31,18 @@ import type {
   ApplyProfileChange,
   ProfileDiff,
   ProfileFieldChange,
+  ProfileTest,
   SettingsDiagnostics,
   SettingsImpact,
   SettingsProfile,
 } from "../api/types";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
+import ProfileQuadrant from "../components/ProfileQuadrant";
 import InsightsIcon from "@mui/icons-material/Insights";
 import PublishIcon from "@mui/icons-material/Publish";
 import RestorePageIcon from "@mui/icons-material/Restore";
+import ScienceIcon from "@mui/icons-material/Science";
 import { fmtDateTime } from "../utils/format";
 
 // State for the "Apply this profile" confirmation dialog: the previewed write
@@ -58,8 +61,9 @@ export function ImpactBanner({ impact }: { impact: SettingsImpact }) {
   const arrow = improved ? "▲" : "▼";
   const collecting = impact.enough_data === false;
   const severity = collecting ? "info" : !impact.significant ? "info" : improved ? "success" : "warning";
-  const nBefore = impact.before?.count ?? 0;
-  const nAfter = impact.after?.count ?? 0;
+  const iBefore = impact.before?.iterations ?? 0;
+  const iAfter = impact.after?.iterations ?? 0;
+  const need = impact.min_iterations ?? 15;
   return (
     <Alert severity={severity} icon={<InsightsIcon />} sx={{ mb: 2 }}>
       <Typography variant="body2">
@@ -67,7 +71,7 @@ export function ImpactBanner({ impact }: { impact: SettingsImpact }) {
         median Smoothness moved <b>{arrow} {Math.abs(impact.delta_pct)}%</b> (
         {impact.before?.median} → {impact.after?.median}).{" "}
         {collecting
-          ? `Collecting data before calling it — ${nBefore}/${nAfter} runs (need ${impact.min_runs} each).`
+          ? `Collecting data before calling it — ${iBefore}/${iAfter} iterations (need ${need} each).`
           : impact.significant
             ? "This exceeds your significance threshold."
             : `Below the ${impact.threshold_pct}% significance threshold.`}
@@ -320,7 +324,8 @@ export default function Settings() {
   const [bestDiff, setBestDiff] = useState<ProfileDiff | null>(null);
   const [impact, setImpact] = useState<SettingsImpact | null>(null);
   const [diag, setDiag] = useState<SettingsDiagnostics | null>(null);
-  const [minRuns, setMinRuns] = useState(5);
+  // Total iterations a profile needs before it's "confident" (the unit of signal).
+  const [minIterations, setMinIterations] = useState(15);
   // Completion (infra) is a secondary diagnostic — hidden by default so SOPS is
   // unmistakably the headline metric. Opt in via the toggle on the Profiles card.
   const [showCompletion, setShowCompletion] = useState(false);
@@ -336,6 +341,11 @@ export default function Settings() {
   const [previewFp, setPreviewFp] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ApplyConfirm | null>(null);
   const [applying, setApplying] = useState(false);
+  // "Test to minimum" flow: the pending confirmation (a limited-data profile + the
+  // exact firewall diff that would be written) and the in-progress test status.
+  const [testConfirm, setTestConfirm] = useState<ApplyConfirm | null>(null);
+  const [testPreviewFp, setTestPreviewFp] = useState<string | null>(null);
+  const [activeTest, setActiveTest] = useState<ProfileTest | null>(null);
   // Profiles table sort. Defaults to median Smoothness descending — the ranking
   // axis the server already orders by, so the initial view is unchanged.
   const [orderBy, setOrderBy] = useState<SortKey>("median");
@@ -366,7 +376,7 @@ export default function Settings() {
       ]);
       setProfiles(p.profiles);
       setBestDiff(p.best_diff);
-      setMinRuns(p.min_runs);
+      setMinIterations(p.min_iterations);
       setImpact(i);
       setDiag(d);
       setError(null);
@@ -435,6 +445,70 @@ export default function Settings() {
     }
   }, [confirm, load]);
 
+  // "Test to minimum" step 1: preview the exact firewall diff this test would write,
+  // and open the confirmation dialog.
+  const handleTestClick = useCallback(async (p: SettingsProfile) => {
+    setTestPreviewFp(p.fingerprint);
+    setError(null);
+    try {
+      const r = await api.applyProfile(p.fingerprint, true);
+      setTestConfirm({
+        fingerprint: p.fingerprint,
+        label: r.label || p.label,
+        changes: r.changes ?? [],
+        warnings: r.warnings ?? [],
+        alreadyApplied: r.already_applied,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not preview the profile changes");
+    } finally {
+      setTestPreviewFp(null);
+    }
+  }, []);
+
+  // "Test to minimum" step 2: kick off the test (applies → runs → restores). The
+  // run queues behind any other firewall operation via the coordination lock.
+  const handleConfirmTest = useCallback(async () => {
+    if (!testConfirm) return;
+    setError(null);
+    try {
+      const r = await api.testProfile(testConfirm.fingerprint);
+      setToast(
+        `Testing ${testConfirm.label}: running ${r.iterations} iteration(s) to reach the ${r.min_iterations}-iteration minimum`
+      );
+      setTestConfirm(null);
+      // Show the live status immediately; the poller below keeps it fresh.
+      const cur = await api.profileTestCurrent();
+      setActiveTest(cur.test);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start the profile test");
+    }
+  }, [testConfirm]);
+
+  // Poll the active profile test until it finishes, then reload + clear.
+  useEffect(() => {
+    if (!activeTest || (activeTest.status !== "running" && activeTest.status !== "pending")) return;
+    const t = setInterval(async () => {
+      try {
+        const cur = await api.profileTestCurrent();
+        setActiveTest(cur.test);
+        if (cur.test && (cur.test.status === "complete" || cur.test.status === "failed")) {
+          if (cur.test.status === "failed") {
+            setError(`Profile test failed: ${cur.test.error ?? "unknown error"}`);
+          } else {
+            setToast(`Profile test finished — ${cur.test.label ?? cur.test.fingerprint}`);
+          }
+          await load();
+        }
+      } catch {
+        /* transient; keep polling */
+      }
+    }, 2000);
+    return () => clearInterval(t);
+  }, [activeTest, load]);
+
+  const testRunning = activeTest != null && (activeTest.status === "running" || activeTest.status === "pending");
+
   if (loading) return <Loading label="Loading settings analysis…" />;
 
   const bestFingerprint = profiles?.find((p) => p.confident)?.fingerprint;
@@ -465,7 +539,9 @@ export default function Settings() {
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
         How your firewall/SQM configuration profiles correlate with the Seat of Pants Score. Each run
         is stamped with the settings live when it ran; a new profile appears whenever settings change.
-        A profile needs ≥ {minRuns} runs before it's treated as confident.
+        A profile needs ≥ {minIterations} total iterations before it's treated as confident — a
+        15-iteration run carries far more signal than a single-iteration one, so iterations (not run
+        count) are the bar.
       </Typography>
       <FormControlLabel
         sx={{ mb: 2 }}
@@ -491,9 +567,31 @@ export default function Settings() {
         </Alert>
       )}
 
+      {activeTest && (activeTest.status === "running" || activeTest.status === "pending") && (
+        <Alert severity="info" icon={<CircularProgress size={18} />} sx={{ mb: 2 }}>
+          Testing <b>{activeTest.label ?? activeTest.fingerprint}</b> — running {activeTest.iterations}{" "}
+          iteration(s){activeTest.run_id ? ` (run #${activeTest.run_id})` : ""}, then restoring your
+          current settings.
+          {activeTest.lock_owner && activeTest.lock_owner !== `profile-test#${activeTest.id}`
+            ? ` Waiting on ${activeTest.lock_owner} to finish first…`
+            : ""}
+        </Alert>
+      )}
+
       {impact && <ImpactBanner impact={impact} />}
 
       {bestDiff && <ProfileDiffCard diff={bestDiff} showCompletion={showCompletion} />}
+
+      {profiles && profiles.length >= 2 && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Typography variant="h6" sx={{ mb: 0.5 }}>
+              Speed vs Smoothness
+            </Typography>
+            <ProfileQuadrant profiles={profiles} minIterations={minIterations} />
+          </CardContent>
+        </Card>
+      )}
 
       {!profiles || profiles.length === 0 ? (
         <Card sx={{ mb: 2 }}>
@@ -671,7 +769,9 @@ export default function Settings() {
                               title={`${completionSummary(p)} — median Completion over ${
                                 p.completion.count
                               } run${p.completion.count === 1 ? "" : "s"}${
-                                p.completion.confident ? "" : ` (need ${minRuns} to confirm)`
+                                p.completion.confident
+                                  ? ""
+                                  : ` (need ${minIterations} iterations to confirm)`
                               }`}
                             >
                               <Box component="span" sx={{ cursor: "help" }}>
@@ -689,7 +789,7 @@ export default function Settings() {
                                     color="warning.main"
                                     sx={{ ml: 0.5 }}
                                   >
-                                    {p.completion.count}/{minRuns}
+                                    {p.completion.iterations ?? p.completion.count}/{minIterations}
                                   </Typography>
                                 )}
                               </Box>
@@ -703,25 +803,49 @@ export default function Settings() {
                       )}
                       <TableCell>{fmtDateTime(p.last_seen)}</TableCell>
                       <TableCell align="right">
-                        <Tooltip title="Write this profile's shaper settings to the firewall now. You'll see the exact changes and confirm first.">
-                          <span>
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              startIcon={
-                                previewFp === p.fingerprint ? (
-                                  <CircularProgress size={14} />
-                                ) : (
-                                  <PublishIcon />
-                                )
-                              }
-                              onClick={() => handleApplyClick(p)}
-                              disabled={previewFp != null || applying}
-                            >
-                              Apply
-                            </Button>
-                          </span>
-                        </Tooltip>
+                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                          {!p.confident && (
+                            <Tooltip title={`Apply this profile, run the iterations still needed to reach the ${minIterations}-iteration minimum, then restore your current settings. Queues behind any other firewall operation.`}>
+                              <span>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  color="secondary"
+                                  startIcon={
+                                    testPreviewFp === p.fingerprint ? (
+                                      <CircularProgress size={14} />
+                                    ) : (
+                                      <ScienceIcon />
+                                    )
+                                  }
+                                  onClick={() => handleTestClick(p)}
+                                  disabled={testPreviewFp != null || testRunning || applying}
+                                >
+                                  Test to min
+                                </Button>
+                              </span>
+                            </Tooltip>
+                          )}
+                          <Tooltip title="Write this profile's shaper settings to the firewall now. You'll see the exact changes and confirm first.">
+                            <span>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={
+                                  previewFp === p.fingerprint ? (
+                                    <CircularProgress size={14} />
+                                  ) : (
+                                    <PublishIcon />
+                                  )
+                                }
+                                onClick={() => handleApplyClick(p)}
+                                disabled={previewFp != null || applying || testRunning}
+                              >
+                                Apply
+                              </Button>
+                            </span>
+                          </Tooltip>
+                        </Stack>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -865,6 +989,75 @@ export default function Settings() {
             disabled={applying || (confirm?.alreadyApplied ?? false)}
           >
             {applying ? "Writing…" : "Write to firewall"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={testConfirm != null} onClose={() => setTestConfirm(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Test this profile up to the minimum</DialogTitle>
+        <DialogContent>
+          {testConfirm && (
+            <>
+              <DialogContentText sx={{ mb: 1 }}>
+                This will <b>temporarily</b> apply <b>{testConfirm.label}</b> to the firewall, run a
+                benchmark with the iterations still needed to reach the {minIterations}-iteration
+                minimum, then <b>restore your current settings</b>. The run queues behind any other
+                firewall operation, and its measurement is discarded if the settings change mid-run.
+              </DialogContentText>
+              {testConfirm.changes.length === 0 ? (
+                <Alert severity="info" sx={{ mb: 1 }}>
+                  The firewall already matches this profile — it'll benchmark in place, then leave
+                  settings unchanged.
+                </Alert>
+              ) : (
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Pipe</TableCell>
+                        <TableCell>Field</TableCell>
+                        <TableCell align="right">From</TableCell>
+                        <TableCell align="right">To (during test)</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {testConfirm.changes.map((c, i) => (
+                        <TableRow key={`${c.pipe_uuid}-${c.field}-${i}`}>
+                          <TableCell>{c.label}</TableCell>
+                          <TableCell>{c.field_label}</TableCell>
+                          <TableCell align="right">
+                            <Typography component="span" variant="body2" color="text.secondary">
+                              {String(c.from ?? "—")}
+                            </Typography>
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {String(c.to ?? "—")}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              )}
+              {testConfirm.warnings.length > 0 && (
+                <Alert severity="warning" sx={{ mt: 1 }}>
+                  {testConfirm.warnings.map((w, i) => (
+                    <div key={i}>{w}</div>
+                  ))}
+                </Alert>
+              )}
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTestConfirm(null)}>Cancel</Button>
+          <Button
+            variant="contained"
+            color="secondary"
+            startIcon={<ScienceIcon />}
+            onClick={handleConfirmTest}
+          >
+            Run test &amp; restore
           </Button>
         </DialogActions>
       </Dialog>

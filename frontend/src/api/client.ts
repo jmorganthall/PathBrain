@@ -24,6 +24,9 @@ import type {
   MethodologyDetail,
   RegradeSummary,
   RunScoresResponse,
+  DataDump,
+  ProfileTest,
+  ProfileTestStart,
   SettingsImpact,
   SettingsProfilesResponse,
   Sweep,
@@ -135,6 +138,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ fingerprint, preview }),
     }),
+  // Top a "limited data" profile up to the confidence minimum: applies it, runs the
+  // iterations still needed, then restores the prior settings.
+  testProfile: (fingerprint: string) =>
+    request<ProfileTestStart>("/settings/test-profile", {
+      method: "POST",
+      body: JSON.stringify({ fingerprint }),
+    }),
+  profileTestCurrent: () =>
+    request<{ test: ProfileTest | null }>("/settings/test-profile/current"),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),
@@ -178,6 +190,9 @@ export const api = {
       { method: "POST" }
     ),
   snapshots: () => request<ConfigSnapshot[]>("/config/snapshots"),
+
+  // Consolidated raw export of the last N runs.
+  dataDump: (limit: number) => request<DataDump>(`/history/dump?limit=${limit}`),
 
   // Plugins
   plugins: () => request<PluginInfo[]>("/plugins"),

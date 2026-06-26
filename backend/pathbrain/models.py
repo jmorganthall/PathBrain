@@ -345,3 +345,42 @@ class Score(Base):
     # Per-axis confidence bands: {axis: {stdev, min, max, ...}}.
     bands: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ProfileTestStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
+class ProfileTest(Base):
+    """An on-demand "test this profile up to the confidence minimum" session.
+
+    Applies a stored settings profile to the firewall, runs one benchmark with
+    exactly the iterations still needed to reach ``correlation.min_iterations``,
+    then restores the pre-test settings — always, in a ``finally``. Like
+    ``Sweep``, the row persists the baseline so a crash mid-test can still restore
+    the firewall on startup (``reconcile_interrupted_profile_tests``).
+    """
+
+    __tablename__ = "profile_tests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[ProfileTestStatus] = mapped_column(
+        Enum(ProfileTestStatus), default=ProfileTestStatus.PENDING
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # The profile being topped up + a short human label, for the status display.
+    fingerprint: Mapped[str] = mapped_column(String(40))
+    target_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # How many iterations this test runs (the gap to the minimum).
+    iterations: Mapped[int] = mapped_column(Integer, default=1)
+    # Pre-test live settings to restore: normalized pipe list.
+    baseline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The benchmark run this test produced (once it starts), for linking.
+    run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)

@@ -68,18 +68,28 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     target grid. Applies each variant for real, benchmarks it, **restores the
     baseline at the end** (`reconcile_interrupted_sweeps` restores on startup too).
     Runs in its own thread; the scheduler yields while `sweep.active()`.
-  - `scheduler.py` — daemon thread: watchdog → (yield if a sweep is active) →
-    experiment step → monitoring run (serialized so benchmark runs never overlap).
+  - `scheduler.py` — daemon thread: watchdog → (yield while the coordination lock is
+    held) → experiment step → monitoring run (serialized so benchmark runs never overlap).
   - `experiment.py` — autonomous window-gated single-parameter shaper sweep
     (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline).
+  - `coordinator.py` — process-wide lock that serializes any apply-firewall + benchmark
+    session (sweep, profile test, experiment, monitoring, manual run): user-triggered
+    ones `hold` (queue), periodic ones `try_hold` (defer). Pairs with the read-before/
+    read-after fingerprint check in `runner.execute_run` (FAILs a run on mid-run drift).
+  - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
+    iterations still needed to reach `correlation.min_iterations`, then **restore the
+    baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
+    restores on startup). `/api/settings/test-profile`.
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
-    settings-vs-responsiveness correlation (`/api/settings/*`).
+    settings-vs-responsiveness correlation (`/api/settings/*`). Profile confidence is
+    gated on **total iterations** (`correlation.min_iterations`, default 15).
   - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
     columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.
 - `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
-  History, Trends, Compare, Settings Impact, Experiments, Shotgun Sweep, Config,
-  Plugins, Run Detail.
+  History, Trends, Compare, Settings Impact (sortable table + Speed-vs-Smoothness
+  quadrant + "Test to minimum"), Experiments, Shotgun Sweep, Config, Methodology,
+  Plugins, Data Dump, Run Detail.
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`.
@@ -180,11 +190,22 @@ docker compose up --build   # -> http://localhost:8000
   search + interleaved A/B with effect-size/CI + hysteresis, routing intelligence /
   SD-WAN.
 
-⚠️ Firewall **writes** go only through `provider.apply()`. Four callers use it, all
+⚠️ Firewall **writes** go only through `provider.apply()`. Five callers use it, all
 snapshot/restore or are reversible: the experiment engine (disarmed + dry-run by
 default), the Shotgun Sweep (restores baseline at end + on startup), config
-test-apply (+1 then revert), and sweep apply-best (explicit, supervised). Keep new
-write paths to `provider.apply()` and always snapshot/restore.
+test-apply (+1 then revert), sweep apply-best (explicit, supervised), and the
+profile test (`profile_test.py`: apply → benchmark → restore, baseline persisted +
+reconciled on startup). Keep new write paths to `provider.apply()` and always
+snapshot/restore.
+
+⚠️ Any **apply-firewall + benchmark** session must hold the `coordinator.py` lock so
+two never overlap (user-triggered ones — sweep, profile test, manual `/api/run` —
+`hold` and queue; periodic ones — monitoring, experiment — `try_hold` and defer).
+`runner.execute_run` independently re-reads the firewall fingerprint **after** the
+run and FAILs it on drift (the read-before/read-after integrity check), so "what we
+tested" always matches "what we thought". A profile is **confident** once its runs
+total ≥ `correlation.min_iterations` (default 15) — iterations, not run count, are
+the unit of signal.
 
 The browser engine imports Playwright lazily, so the plugin registry still loads
 where Playwright/Chromium isn't installed (it returns `success=False` and the

@@ -11,6 +11,7 @@ import Plugins from "./pages/Plugins";
 import Methodology from "./pages/Methodology";
 import Settings from "./pages/Settings";
 import Experiments from "./pages/Experiments";
+import DataDump from "./pages/DataDump";
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="/config" element={<Config />} />
         <Route path="/methodology" element={<Methodology />} />
         <Route path="/plugins" element={<Plugins />} />
+        <Route path="/data-dump" element={<DataDump />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

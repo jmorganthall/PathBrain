@@ -261,7 +261,17 @@ def step() -> bool:
                 active = _start(session, cfg)
                 if active is None:
                     return False
-            _run_trial_step(session, active, cfg)
+            # Hold the coordination lock for the apply+benchmark sub-step. If another
+            # session (sweep, profile test, manual run) holds it, defer to the next
+            # tick rather than overlap — but still return True so monitoring stays
+            # suppressed throughout the experiment window.
+            from . import coordinator
+
+            try:
+                with coordinator.try_hold(f"experiment#{active.id}"):
+                    _run_trial_step(session, active, cfg)
+            except coordinator.CoordinatorBusy:
+                log.info("Experiment %s: deferring trial step; another session holds the lock", active.id)
             return True
     except Exception:  # noqa: BLE001 — never kill the scheduler
         log.exception("Experiment step failed")

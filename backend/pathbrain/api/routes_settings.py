@@ -12,12 +12,14 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import profile_test as profile_test_mod
 from ..config_store import get_config
 from ..database import get_session
 from ..logging_config import get_logger
 from ..methodology import ensure_current_methodology
 from ..models import Run, RunStatus, Score
 from ..providers import get_provider
+from ..runner import MAX_ITERATIONS
 from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import diff_profiles, fingerprint, normalize, plan_apply, summarize
 from ..trends import RunPoint, profile_relative
@@ -34,6 +36,12 @@ def _comparable(score: Score) -> bool:
 
 def _min_runs(session: Session) -> int:
     return int((get_config(session).get("correlation", {}) or {}).get("min_runs", 5) or 5)
+
+
+def _min_iterations(session: Session) -> int:
+    """Total iterations a profile needs before it counts as confident (the unit of
+    signal — a 15-iteration run is worth far more than a 1-iteration one)."""
+    return int((get_config(session).get("correlation", {}) or {}).get("min_iterations", 15) or 15)
 
 
 def _spread(vals: list[float]) -> dict:
@@ -171,6 +179,7 @@ def settings_profiles(
     the next-ranked one — the at-a-glance "what changed and did it help" view.
     """
     min_runs = _min_runs(session)
+    min_iterations = _min_iterations(session)
     min_samples = int((get_config(session).get("trends", {}) or {}).get("min_samples", 3) or 3)
     rows = _completed_runs_with_scores(session)
     # Config-blind baseline: every qualifying run, regardless of profile, defines
@@ -196,6 +205,7 @@ def settings_profiles(
                 "points": [],
                 "iterations": 0,
                 "completion": [],
+                "completion_iterations": 0,
                 "completion_metrics": {m: [] for m in COMPLETION_METRIC_SOURCES},
                 "first_seen": run.created_at,
                 "last_seen": run.created_at,
@@ -210,6 +220,7 @@ def settings_profiles(
         g["iterations"] += int(run.iterations or 1)
         if comp_axis is not None:
             g["completion"].append(comp_axis)
+            g["completion_iterations"] += int(run.iterations or 1)
         mv = score.metric_values or {}
         for m in COMPLETION_METRIC_SOURCES:
             if mv.get(m) is not None:
@@ -230,7 +241,9 @@ def settings_profiles(
                 "settings": g["settings"],
                 "count": count,
                 "iterations": g["iterations"],
-                "confident": count >= min_runs,
+                # Confidence is gated on total iterations (the unit of signal), not
+                # run count.
+                "confident": g["iterations"] >= min_iterations,
                 "first_seen": g["first_seen"].isoformat(),
                 "last_seen": g["last_seen"].isoformat(),
                 # Primary ranking is Smoothness (top-level median/p25/p75/min/max).
@@ -246,7 +259,8 @@ def settings_profiles(
                 "completion": (
                     {
                         "count": len(comp),
-                        "confident": len(comp) >= min_runs,
+                        "iterations": g["completion_iterations"],
+                        "confident": g["completion_iterations"] >= min_iterations,
                         **_spread(comp),
                     }
                     if comp
@@ -265,6 +279,7 @@ def settings_profiles(
         "profiles": profiles,
         "count": len(profiles),
         "min_runs": min_runs,
+        "min_iterations": min_iterations,
         "complete_only": complete_only,
         "best_diff": _best_diff(profiles),
     }
@@ -344,6 +359,22 @@ def _profile_settings(session: Session, fingerprint_: str) -> list[dict] | None:
         .order_by(Run.created_at.desc())
     ).first()
     return run.settings if run else None
+
+
+def _profile_iterations(session: Session, fingerprint_: str) -> int:
+    """Total iterations a profile has accumulated across its *comparable* completed
+    runs — the same count ``settings_profiles`` uses for the confidence flag."""
+    methodology = ensure_current_methodology(session, get_config(session))
+    rows = session.execute(
+        select(Run, Score)
+        .join(Score, Score.run_id == Run.id)
+        .where(
+            Run.status == RunStatus.COMPLETE,
+            Run.settings_fingerprint == fingerprint_,
+            Score.methodology_version == methodology.version,
+        )
+    ).all()
+    return sum(int(run.iterations or 1) for run, score in rows if _comparable(score))
 
 
 @router.post("/settings/apply-profile")
@@ -433,6 +464,63 @@ def apply_profile(
     }
 
 
+@router.post("/settings/test-profile")
+def test_profile(
+    body: dict = Body(...),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Top a "limited data" profile up to the confidence minimum.
+
+    Body: ``{"fingerprint": "<12-hex>"}``. Applies the profile to the firewall,
+    runs exactly the iterations still needed to reach ``correlation.min_iterations``
+    (capped at ``MAX_ITERATIONS``), then restores the pre-test settings. Returns the
+    started test's id; poll ``GET /settings/test-profile/current`` for status. The
+    run holds the coordination lock, so a test queues behind any other firewall
+    operation.
+    """
+    fp = (body or {}).get("fingerprint")
+    if not fp:
+        raise HTTPException(status_code=400, detail="fingerprint is required")
+
+    target = _profile_settings(session, fp)
+    if not target:
+        raise HTTPException(status_code=404, detail="No stored settings for that profile")
+
+    min_iterations = _min_iterations(session)
+    current_iters = _profile_iterations(session, fp)
+    needed = min(MAX_ITERATIONS, max(0, min_iterations - current_iters))
+    if needed <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Profile already has {current_iters} iteration(s) (minimum {min_iterations}).",
+        )
+
+    try:
+        test_id = profile_test_mod.start(fp, target, summarize(target), needed)
+    except RuntimeError as exc:  # a test is already running
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("test-profile start failed")
+        raise HTTPException(
+            status_code=502, detail=f"Could not start the profile test: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    log.info("Profile test %s started for %s: %s iteration(s)", test_id, fp, needed)
+    return {
+        "id": test_id,
+        "fingerprint": fp,
+        "iterations": needed,
+        "current_iterations": current_iters,
+        "min_iterations": min_iterations,
+    }
+
+
+@router.get("/settings/test-profile/current")
+def current_profile_test() -> dict:
+    """The most recent profile test, for status polling (``{test: {...} | null}``)."""
+    return {"test": profile_test_mod.current()}
+
+
 @router.get("/settings/impact")
 def settings_impact(
     session: Session = Depends(get_session),
@@ -448,6 +536,7 @@ def settings_impact(
     cfg = get_config(session).get("correlation", {}) or {}
     threshold = float(cfg.get("significant_change_pct", 5) or 5)
     min_runs = int(cfg.get("min_runs", 5) or 5)
+    min_iterations = _min_iterations(session)
     rows = _completed_runs_with_scores(session)
 
     # Build contiguous segments of runs sharing a fingerprint (chronological).
@@ -462,12 +551,24 @@ def settings_impact(
         fp = run.settings_fingerprint
         if not segments or segments[-1]["fingerprint"] != fp:
             segments.append(
-                {"fingerprint": fp, "settings": run.settings, "sops": [], "changed_at": run.created_at}
+                {
+                    "fingerprint": fp,
+                    "settings": run.settings,
+                    "sops": [],
+                    "iterations": 0,
+                    "changed_at": run.created_at,
+                }
             )
         segments[-1]["sops"].append(smooth)
+        segments[-1]["iterations"] += int(run.iterations or 1)
         segments[-1]["settings"] = run.settings
 
-    base = {"changed": False, "threshold_pct": threshold, "min_runs": min_runs}
+    base = {
+        "changed": False,
+        "threshold_pct": threshold,
+        "min_runs": min_runs,
+        "min_iterations": min_iterations,
+    }
     if len(segments) < 2:
         return base
 
@@ -476,14 +577,15 @@ def settings_impact(
     after = round(median(cur["sops"]), 2)
     delta_abs = round(after - before, 2)
     delta_pct = round((delta_abs / before) * 100, 1) if before else None
-    # Don't make significance calls until both profiles have enough runs.
-    enough_data = len(prev["sops"]) >= min_runs and len(cur["sops"]) >= min_runs
+    # Don't make significance calls until both profiles have enough iterations.
+    enough_data = prev["iterations"] >= min_iterations and cur["iterations"] >= min_iterations
     significant = enough_data and delta_pct is not None and abs(delta_pct) >= threshold
     return {
         "changed": True,
         "changed_at": cur["changed_at"].isoformat(),
         "threshold_pct": threshold,
         "min_runs": min_runs,
+        "min_iterations": min_iterations,
         "enough_data": enough_data,
         "delta_abs": delta_abs,
         "delta_pct": delta_pct,
@@ -493,11 +595,13 @@ def settings_impact(
             "fingerprint": prev["fingerprint"],
             "median": before,
             "count": len(prev["sops"]),
+            "iterations": prev["iterations"],
         },
         "after": {
             "label": summarize(cur["settings"]),
             "fingerprint": cur["fingerprint"],
             "median": after,
             "count": len(cur["sops"]),
+            "iterations": cur["iterations"],
         },
     }

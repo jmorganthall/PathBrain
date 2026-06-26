@@ -51,6 +51,7 @@ def _seed_run(
     completion: float | None = None,
     completion_metrics: dict | None = None,
     metric_values: dict | None = None,
+    iterations: int = 1,
 ) -> None:
     with session_scope() as session:
         run = Run(
@@ -58,6 +59,7 @@ def _seed_run(
             created_at=when,
             settings_fingerprint=fp,
             settings=[{"label": "wan", "quantum": 1514}],
+            iterations=iterations,
         )
         session.add(run)
         session.flush()
@@ -88,22 +90,23 @@ def _seed_run(
 
 def test_profiles_and_impact(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # Older profile "aaa" ~70 (6 runs), then a change to "bbb" ~85 (6 runs) so
-    # both clear the default min_runs=5 confidence threshold.
+    # Older profile "aaa" ~70, then a change to "bbb" ~85. 6 runs of 3 iterations
+    # each => 18 total iterations, so both clear the default min_iterations=15
+    # confidence threshold (confidence is iteration-based, not run-count-based).
     for i, s in enumerate([70, 72, 68, 71, 69, 70]):
-        _seed_run("aaaaaaaaaaaa", s, t0 - timedelta(minutes=120 - i))
+        _seed_run("aaaaaaaaaaaa", s, t0 - timedelta(minutes=120 - i), iterations=3)
     for i, s in enumerate([84, 86, 85, 83, 87, 85]):
-        _seed_run("bbbbbbbbbbbb", s, t0 - timedelta(minutes=30 - i))
+        _seed_run("bbbbbbbbbbbb", s, t0 - timedelta(minutes=30 - i), iterations=3)
 
     body = client.get("/api/settings/profiles").json()
     profiles = body["profiles"]
     fps = {p["fingerprint"] for p in profiles}
     assert {"aaaaaaaaaaaa", "bbbbbbbbbbbb"} <= fps
     assert profiles[0]["fingerprint"] == "bbbbbbbbbbbb"  # higher median first
-    assert all(p["confident"] for p in profiles)  # 6 runs each >= min_runs
-    assert body["min_runs"] == 5
-    # Each profile tracks total iterations (default 1 per run here -> 6).
-    assert all(p["iterations"] == 6 for p in profiles)
+    assert all(p["confident"] for p in profiles)  # 18 iterations each >= min_iterations
+    assert body["min_iterations"] == 15
+    # Each profile tracks total iterations (6 runs * 3 iterations -> 18).
+    assert all(p["iterations"] == 18 for p in profiles)
 
     # best_diff compares the best profile to the next-ranked one.
     bd = body["best_diff"]
@@ -121,6 +124,25 @@ def test_profiles_and_impact(client):
     assert impact["after"]["fingerprint"] == "bbbbbbbbbbbb"
     assert impact["delta_abs"] > 0
     assert impact["significant"] is True  # ~70 -> ~85 over 5%, both confident
+
+
+def test_confidence_is_iteration_based(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # 10 runs of 1 iteration => 10 total iterations (< min 15): NOT confident,
+    # even though it's many runs. Run-count would have called this confident.
+    for i in range(10):
+        _seed_run("itersmall0x", 80, t0 - timedelta(minutes=200 - i), iterations=1)
+    # 2 runs of 8 iterations => 16 total iterations (>= 15): confident, on far
+    # fewer runs.
+    for i in range(2):
+        _seed_run("iterbig000x", 80, t0 - timedelta(minutes=100 - i), iterations=8)
+
+    body = client.get("/api/settings/profiles").json()
+    by_fp = {p["fingerprint"]: p for p in body["profiles"]}
+    assert by_fp["itersmall0x"]["iterations"] == 10
+    assert by_fp["itersmall0x"]["confident"] is False
+    assert by_fp["iterbig000x"]["iterations"] == 16
+    assert by_fp["iterbig000x"]["confident"] is True
 
 
 def test_impact_not_significant_without_enough_runs(client):
@@ -160,13 +182,14 @@ def test_profiles_expose_completion_axis(client):
             t0 - timedelta(minutes=60 - i),
             completion=70 + i,
             completion_metrics={"dns": 12.0, "tcp": 30.0, "tls": 40.0},
+            iterations=3,
         )
     body = client.get("/api/settings/profiles").json()
     prof = next(p for p in body["profiles"] if p["fingerprint"] == "completionfp1")
-    # Completion aggregates as its own axis, gated like SOPS.
+    # Completion aggregates as its own axis, gated like SOPS (on iterations).
     assert prof["completion"] is not None
     assert prof["completion"]["count"] == 6
-    assert prof["completion"]["confident"] is True  # 6 >= min_runs (5)
+    assert prof["completion"]["confident"] is True  # 18 iterations >= min_iterations (15)
     # Raw infra metric medians are exposed per profile.
     assert prof["completion_metrics"]["tls"]["median"] == 40.0
     assert prof["completion_metrics"]["dns"]["count"] == 6

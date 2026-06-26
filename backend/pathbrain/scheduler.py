@@ -78,12 +78,12 @@ def _loop(stop: threading.Event) -> None:
                 )
             fail_stale_runs(timeout_min)
 
-            # A foreground Shotgun Sweep owns the benchmark pipeline while it runs
-            # (it drives execute_run from its own thread). Yield so monitoring and
-            # experiments never overlap its measurements.
-            from . import sweep
+            # Another firewall/benchmark session (sweep, profile test, manual run)
+            # owns the pipeline while it holds the coordination lock. Yield so
+            # monitoring and experiments never overlap its measurements.
+            from . import coordinator
 
-            if sweep.active():
+            if coordinator.busy():
                 stop.wait(_TICK_SECONDS)
                 continue
 
@@ -100,10 +100,16 @@ def _loop(stop: threading.Event) -> None:
             last = _state["last_run_at"]
             due = enabled and (last is None or (time.time() - last) >= interval_s)
             if due and not _active_run_exists():
-                run_id = create_run(label="scheduled")
-                _state["last_run_at"] = time.time()
-                log.info("Scheduler triggering run %s", run_id)
-                execute_run(run_id)  # blocking; runs sequentially in this thread
+                # Non-blocking: a periodic run should defer (try next tick) rather
+                # than queue behind a long session and stall the watchdog.
+                try:
+                    with coordinator.try_hold("monitoring"):
+                        run_id = create_run(label="scheduled")
+                        _state["last_run_at"] = time.time()
+                        log.info("Scheduler triggering run %s", run_id)
+                        execute_run(run_id)  # blocking; runs sequentially in this thread
+                except coordinator.CoordinatorBusy:
+                    pass  # someone grabbed the lock between busy() and here; next tick
         except Exception:  # noqa: BLE001 — never let the scheduler die
             log.exception("Scheduler tick failed")
         stop.wait(_TICK_SECONDS)
