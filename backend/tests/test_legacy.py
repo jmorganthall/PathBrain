@@ -5,13 +5,14 @@ import pytest
 
 from pathbrain.database import session_scope
 from pathbrain.metrics import has_latest_metrics
-from pathbrain.models import BenchmarkResult, Run, RunStatus, ScoreResult
+from pathbrain.models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
 
 
 @pytest.fixture(autouse=True)
 def _isolate_runs():
     def _wipe():
         with session_scope() as s:
+            s.query(Score).delete()
             s.query(ScoreResult).delete()
             s.query(BenchmarkResult).delete()
             s.query(Run).delete()
@@ -67,9 +68,23 @@ def test_series_excludes_legacy_by_default(client):
     assert len(allpts) == 2
 
 
-def test_rolling_excludes_legacy(client):
-    _seed({"longest_stall": 1500.0, "fcp": 400.0, "lcp": 600.0}, sops=90.0)
-    _seed({"ttfb": 200.0}, sops=40.0)  # legacy — must not drag the headline
+def test_rolling_excludes_incomparable(client):
+    # Rolling now reads the (run × methodology) Score table under the current
+    # methodology; incomparable runs (a required metric the raw can't supply) are
+    # excluded so they don't drag the per-axis headline.
+    from pathbrain.methodology import CURRENT_METHODOLOGY
+
+    with session_scope() as s:
+        for comp, speed in [("exact", 90.0), ("incomparable", 10.0)]:
+            run = Run(status=RunStatus.COMPLETE, methodology_version=CURRENT_METHODOLOGY)
+            s.add(run)
+            s.flush()
+            s.add(Score(
+                run_id=run.id, methodology_version=CURRENT_METHODOLOGY, is_at_measure=True,
+                comparability=comp,
+                axis_scores={"speed": speed} if comp == "exact" else {},
+                subscores={}, weights_used={}, metric_values={},
+            ))
     body = client.get("/api/score/rolling?hours=24").json()
-    assert body["count"] == 1
-    assert body["median"] == 90.0
+    assert body["count"] == 1  # the incomparable run is excluded
+    assert body["axis_scores"]["speed"]["median"] == 90.0

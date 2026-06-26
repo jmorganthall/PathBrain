@@ -17,30 +17,38 @@ import SpeedIcon from "@mui/icons-material/Speed";
 
 import { api, ApiError } from "../api/client";
 import type {
+  AxisSeriesResponse,
   MonitoringStatus,
   RollingScore,
   RunDetail,
   RunEstimate,
-  SeriesPoint,
   SettingsImpact,
-  TrendRelativeResponse,
 } from "../api/types";
 import { ImpactBanner } from "./Settings";
 import ScoreGauge from "../components/ScoreGauge";
 import SubscoreBreakdown from "../components/SubscoreBreakdown";
-import RelativeDelta from "../components/RelativeDelta";
 import SeriesChart from "../components/SeriesChart";
 import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
+import { sopsColor } from "../theme";
 import { fmtDateTime, fmtDuration, parseApiDate, runRemainingMs } from "../utils/format";
+
+// Colors for the headline axis lines/gauges (cyan = speed, violet = smoothness, …).
+const AXIS_COLORS: Record<string, string> = {
+  speed: "#4dd0e1",
+  smoothness: "#ab47bc",
+  stability: "#81c784",
+  completion: "#90a4ae",
+};
+const axisColor = (key: string) => AXIS_COLORS[key] ?? "#4dd0e1";
 import { useNow } from "../utils/useNow";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
 
 export default function Dashboard() {
   const [latest, setLatest] = useState<RunDetail | null>(null);
-  const [series, setSeries] = useState<SeriesPoint[]>([]);
+  const [axisSeries, setAxisSeries] = useState<AxisSeriesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +57,6 @@ export default function Dashboard() {
   const [rolling, setRolling] = useState<RollingScore | null>(null);
   const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
   const [impact, setImpact] = useState<SettingsImpact | null>(null);
-  const [trendRel, setTrendRel] = useState<TrendRelativeResponse | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const loadLatest = useCallback(async () => {
@@ -72,12 +79,11 @@ export default function Dashboard() {
     try {
       await Promise.all([
         loadLatest(),
-        api.historySeries(100).then((r) => setSeries(r.points)),
+        api.axisSeries(100).then((r) => setAxisSeries(r)).catch(() => {}),
         api.runEstimate().then((e) => setEstimate(e)).catch(() => {}),
         api.rollingScore(24).then((r) => setRolling(r)).catch(() => {}),
         api.monitoring().then((m) => setMonitoring(m)).catch(() => {}),
         api.settingsImpact().then((i) => setImpact(i)).catch(() => {}),
-        api.trendsRelative().then((t) => setTrendRel(t)).catch(() => {}),
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load dashboard");
@@ -104,9 +110,8 @@ export default function Dashboard() {
             if (pollRef.current) window.clearInterval(pollRef.current);
             pollRef.current = null;
             setRunning(false);
-            api.historySeries(100).then((r) => setSeries(r.points)).catch(() => {});
+            api.axisSeries(100).then((r) => setAxisSeries(r)).catch(() => {});
             api.rollingScore(24).then((r) => setRolling(r)).catch(() => {});
-            api.trendsRelative().then((t) => setTrendRel(t)).catch(() => {});
           }
         } catch {
           /* keep polling */
@@ -126,7 +131,7 @@ export default function Dashboard() {
         poll(d.id);
       } else {
         setRunning(false);
-        api.historySeries(100).then((r) => setSeries(r.points)).catch(() => {});
+        api.axisSeries(100).then((r) => setAxisSeries(r)).catch(() => {});
       }
     } catch (e) {
       setRunning(false);
@@ -221,35 +226,56 @@ export default function Dashboard() {
       {!loading && rolling && rolling.count > 0 && (
         <Card sx={{ mb: 2 }}>
           <CardContent>
+            <Typography variant="h6">Current Responsiveness</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Median over the last {rolling.window_hours}h · {rolling.count} run
+              {rolling.count === 1 ? "" : "s"} · methodology{" "}
+              <RouterLink to="/methodology" style={{ color: "inherit" }}>
+                {rolling.methodology}
+              </RouterLink>
+            </Typography>
             <Stack
               direction={{ xs: "column", sm: "row" }}
-              spacing={3}
+              spacing={4}
               alignItems={{ xs: "flex-start", sm: "center" }}
+              flexWrap="wrap"
+              useFlexGap
             >
-              <ScoreGauge value={rolling.median} />
-              <Box>
-                <Typography variant="h6">Current Responsiveness</Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Median SOPS over the last {rolling.window_hours}h · {rolling.count} run
-                  {rolling.count === 1 ? "" : "s"}
-                </Typography>
-                <Typography variant="body2" sx={{ mt: 1 }}>
-                  Typical range (IQR): <b>{rolling.p25}–{rolling.p75}</b>
-                  <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                    (min {rolling.min} · max {rolling.max})
-                  </Typography>
-                </Typography>
-                {trendRel?.metrics.sops && (
-                  <Box sx={{ mt: 1.5 }}>
-                    <RelativeDelta
-                      reading={trendRel.metrics.sops}
-                      weekday={trendRel.weekday}
-                      hour={trendRel.hour}
-                      compact
-                    />
-                  </Box>
-                )}
-                <Box sx={{ mt: 1.5 }}>
+              {rolling.axes
+                .filter((a) => a.role === "headline")
+                .map((a) => {
+                  const stat = rolling.axis_scores[a.key];
+                  return (
+                    <Box key={a.key} sx={{ textAlign: "center" }}>
+                      <ScoreGauge value={stat?.median ?? null} size={150} label={a.label} />
+                      {stat && (
+                        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                          IQR {stat.p25}–{stat.p75}
+                        </Typography>
+                      )}
+                    </Box>
+                  );
+                })}
+              <Stack spacing={1.5}>
+                {rolling.axes
+                  .filter((a) => a.role !== "headline")
+                  .map((a) => {
+                    const stat = rolling.axis_scores[a.key];
+                    return (
+                      <Box key={a.key}>
+                        <Typography variant="caption" color="text.secondary">
+                          {a.label}
+                        </Typography>{" "}
+                        <Typography
+                          component="span"
+                          sx={{ fontWeight: 700, color: sopsColor(stat?.median) }}
+                        >
+                          {stat ? Math.round(stat.median) : "—"}
+                        </Typography>
+                      </Box>
+                    );
+                  })}
+                <Box>
                   {monitoring?.enabled ? (
                     <Chip
                       size="small"
@@ -266,13 +292,8 @@ export default function Dashboard() {
                       label="Monitoring off — enable in Config"
                     />
                   )}
-                  {monitoring?.enabled && monitoring.next_run_at && (
-                    <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                      next ~{fmtDateTime(monitoring.next_run_at)}
-                    </Typography>
-                  )}
                 </Box>
-              </Box>
+              </Stack>
             </Stack>
           </CardContent>
         </Card>
@@ -396,14 +417,15 @@ export default function Dashboard() {
           <Card sx={{ gridColumn: { md: "1 / -1" } }}>
             <CardContent>
               <Typography variant="h6" gutterBottom>
-                SOPS Over Time
+                Scores Over Time
               </Typography>
-              {series.length > 0 ? (
+              {axisSeries && axisSeries.points.length > 0 ? (
                 <SeriesChart
-                  data={series}
+                  data={axisSeries.points}
                   yDomain={[0, 100]}
-                  lines={[{ key: "sops", name: "SOPS", color: "#4dd0e1" }]}
-                  band={{ lowKey: "sops_min", highKey: "sops_max", color: "#4dd0e1", name: "± range" }}
+                  lines={axisSeries.axes
+                    .filter((a) => a.role === "headline")
+                    .map((a) => ({ key: a.key, name: a.label, color: axisColor(a.key) }))}
                 />
               ) : (
                 <Typography variant="body2" color="text.secondary">

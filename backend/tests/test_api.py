@@ -117,7 +117,9 @@ def test_rolling_score_shape(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["window_hours"] == 24
-    assert "median" in body and "count" in body and "p25" in body and "p75" in body
+    # Methodology-aware shape: per-axis distributions, not a single SOPS median.
+    assert "count" in body and "axis_scores" in body and "axes" in body
+    assert body["methodology"]
 
 
 def test_adopt_rubric_and_rescore(client):
@@ -139,20 +141,23 @@ def test_monitoring_status_shape(client):
     assert "interval_minutes" in body and "next_run_at" in body
 
 
-def test_rolling_score_surfaces_stall_attribution(client):
-    """The 24h rolling breakdown exposes a network/render/mixed attribution badge
-    derived from the window's browser stall metrics (PRD R7)."""
+def test_rolling_score_axes_and_stall_attribution(client):
+    """The 24h rolling figure reports per-axis (Speed/Smoothness) medians under the
+    current methodology, plus the network/render attribution badge (PRD R7)."""
     from pathbrain.database import session_scope
-    from pathbrain.models import BenchmarkResult, Run, RunStatus, ScoreResult
+    from pathbrain.methodology import CURRENT_METHODOLOGY
+    from pathbrain.models import BenchmarkResult, Run, RunStatus, Score
 
     with session_scope() as s:
-        run = Run(status=RunStatus.COMPLETE)
+        run = Run(status=RunStatus.COMPLETE, methodology_version=CURRENT_METHODOLOGY)
         s.add(run)
         s.flush()
-        # Non-legacy score (carries the longest_stall marker so rolling keeps it).
-        s.add(ScoreResult(
-            run_id=run.id, sops=75.0, subscores={"longest_stall": 44.0},
-            weights_used={"longest_stall": 1.0}, metric_values={"longest_stall": 398.0},
+        # A Score under the current methodology with Speed/Smoothness axis scores.
+        s.add(Score(
+            run_id=run.id, methodology_version=CURRENT_METHODOLOGY, is_at_measure=True,
+            comparability="exact", axis_scores={"speed": 88.0, "smoothness": 54.0},
+            subscores={"longest_stall": 44.0}, weights_used={"longest_stall": 0.4},
+            metric_values={"longest_stall": 398.0},
         ))
         # A render-dominated stall: render_stall_ms >> network_stall_ms.
         s.add(BenchmarkResult(
@@ -161,6 +166,9 @@ def test_rolling_score_surfaces_stall_attribution(client):
         ))
 
     body = client.get("/api/score/rolling?hours=24").json()
+    assert body["methodology"] == CURRENT_METHODOLOGY
+    assert body["axis_scores"]["speed"]["median"] == 88.0
+    assert body["axis_scores"]["smoothness"]["median"] == 54.0
     attr = body["attribution"]
     assert attr is not None
     assert attr["dominant"] == "render"  # main-thread bound — not network-tunable

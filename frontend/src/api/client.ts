@@ -1,5 +1,6 @@
 // Small typed API client for the PathBrain backend. Uses plain fetch.
 import type {
+  AxisSeriesResponse,
   BenchmarkConfig,
   ConfigSnapshot,
   DiscoverResponse,
@@ -98,6 +99,7 @@ export const api = {
     }),
   score: (id: number) => request<ScoreOut>(`/score/${id}`),
   rollingScore: (hours = 24) => request<RollingScore>(`/score/rolling?hours=${hours}`),
+  axisSeries: (limit = 100) => request<AxisSeriesResponse>(`/score/axis-series?limit=${limit}`),
   // Methodology layer (versioned interpretation)
   methodologies: () => request<MethodologiesResponse>("/methodologies"),
   methodologyCurrent: () => request<MethodologyDetail>("/methodologies/current"),
