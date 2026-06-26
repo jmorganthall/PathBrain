@@ -43,24 +43,51 @@ class MetricDef:
 METRICS: list[MetricDef] = [
     # ── SOPS: the human-feel score (paint timing + the most perceptual completion) ──
     MetricDef(
+        "speed_index", "browser", "speed_index_ms", "Speed Index", unit="ms",
+        axis=SOPS, weight=30, best=1000.0, worst=8000.0, marks_latest=True,
+        description=(
+            "The average time at which visible content is displayed — the area over the "
+            "page's visual-completeness curve. Rewards painting *early and progressively*, "
+            "so a page that fills in smoothly beats one that stalls then dumps, even if the "
+            "latter technically finishes sooner. The core seat-of-the-pants metric. Lower is better."
+        ),
+    ),
+    MetricDef(
         "fcp", "browser", "fcp_ms", "First Contentful Paint", unit="ms",
-        axis=SOPS, weight=20, best=150.0, worst=4000.0, marks_latest=True,
+        axis=SOPS, weight=20, best=150.0, worst=4000.0,
         description=(
             "When the first real content (text/image) paints — the 'it's responding' "
             "moment. Perceptual, not completion: how soon you see *something*. Lower is better."
         ),
     ),
     MetricDef(
+        "paint_cadence", "browser", "paint_cadence", "Paint smoothness",
+        axis=SOPS, weight=10, best=0.1, worst=0.8,
+        description=(
+            "The largest single jump in visual completeness between filmstrip frames (0–1). "
+            "Low means the page filled in steadily; high means it stalled then painted "
+            "everything at once. Captures 'smoothness', not speed. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "cls", "browser", "cls", "Layout stability",
+        axis=SOPS, weight=5, best=0.0, worst=0.5,
+        description=(
+            "Cumulative Layout Shift — how much visible content jumps around as the page "
+            "loads. Janky reflow feels worse even when timings are identical. Lower is better."
+        ),
+    ),
+    MetricDef(
         "lcp", "browser", "lcp_ms", "Largest Contentful Paint", unit="ms",
-        axis=SOPS, weight=25, best=250.0, worst=6000.0, marks_latest=True,
+        axis=SOPS, weight=10, best=250.0, worst=6000.0,
         description=(
             "When the main content becomes visible. Google's core 'is it usefully loaded' "
-            "signal. Lower is better."
+            "signal. A completion milestone — weighted below the trajectory metrics. Lower is better."
         ),
     ),
     MetricDef(
         "inp", "browser", "inp_ms", "Interaction to Next Paint", unit="ms",
-        axis=SOPS, weight=15, best=40.0, worst=500.0,
+        axis=SOPS, weight=10, best=40.0, worst=500.0,
         description=(
             "How quickly the page paints a response to input — responsiveness to taps/keys "
             "(good ≤200ms). Best-effort here (synthetic interaction); may be blank. Lower is better."
@@ -68,7 +95,7 @@ METRICS: list[MetricDef] = [
     ),
     MetricDef(
         "ttfb", "http", "ttfb_ms", "Time to First Byte", unit="ms",
-        axis=SOPS, weight=15, best=30.0, worst=1000.0,
+        axis=SOPS, weight=10, best=30.0, worst=1000.0,
         description=(
             "From sending the request to the first byte of the response arriving — how long "
             "until a page begins to appear. Lower is better."
@@ -76,10 +103,11 @@ METRICS: list[MetricDef] = [
     ),
     MetricDef(
         "render", "browser", "total_render_ms", "Total render", unit="ms",
-        axis=SOPS, weight=25, best=500.0, worst=6000.0,
+        axis=SOPS, weight=5, best=500.0, worst=6000.0,
         description=(
-            "Wall-clock time for a real headless browser to fetch, parse and fully render the "
-            "page. The closest measure to how slow a site actually feels. Lower is better."
+            "Wall-clock time to fully render to network-idle — a pure *completion* time. "
+            "Deliberately low-weighted: it rewards finishing fast on an empty pipe, which is "
+            "not what smoothness feels like. Lower is better."
         ),
     ),
     # ── Completion: pure-infrastructure timing (diagnostic, never folded into SOPS) ──
@@ -161,7 +189,8 @@ METRICS: list[MetricDef] = [
 DISPLAY_ORDER = [
     "dns", "tcp", "tls",                                  # connection setup
     "ttfb", "download", "transfer",                       # response
-    "fcp", "dom_content_loaded", "lcp", "load_event", "render",  # paint → load
+    "fcp", "speed_index", "dom_content_loaded", "lcp",    # paint trajectory
+    "load_event", "render", "paint_cadence", "cls",       # completion + smoothness
     "inp",                                                # interaction (after load)
     "latency", "jitter", "packet_loss",                   # network quality (continuous)
 ]

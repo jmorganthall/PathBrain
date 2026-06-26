@@ -501,13 +501,63 @@ export default function RunDetail() {
 
                   {res.plugin === "browser" && res.details != null && (() => {
                     const perUrl = ((res.details as Record<string, unknown>).per_url ??
-                      {}) as Record<string, { screenshot_url?: string | null; har_url?: string | null }>;
-                    const shots = Object.entries(perUrl)
+                      {}) as Record<
+                        string,
+                        {
+                          screenshot_url?: string | null;
+                          har_url?: string | null;
+                          filmstrip_urls?: { t_ms: number; url: string }[];
+                        }
+                      >;
+                    const entries = Object.entries(perUrl);
+                    const shots = entries
                       .map(([url, m]) => ({ url, src: m?.screenshot_url, har: m?.har_url }))
                       .filter((s) => s.src);
-                    if (shots.length === 0) return null;
+                    const strips = entries
+                      .map(([url, m]) => ({ url, frames: m?.filmstrip_urls ?? [] }))
+                      .filter((s) => s.frames.length > 0);
+                    if (shots.length === 0 && strips.length === 0) return null;
                     return (
-                      <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", mb: 1 }}>
+                      <Box sx={{ mb: 1 }}>
+                      {strips.map((s) => (
+                        <Box key={s.url} sx={{ mb: 1 }}>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            noWrap
+                            title={s.url}
+                            sx={{ display: "block" }}
+                          >
+                            Filmstrip — how the page painted in · {s.url}
+                          </Typography>
+                          <Box sx={{ display: "flex", gap: 0.5, overflowX: "auto", pb: 0.5 }}>
+                            {s.frames.map((f, i) => (
+                              <Box key={i} sx={{ flex: "0 0 auto", textAlign: "center" }}>
+                                <Box
+                                  component="img"
+                                  src={f.url}
+                                  alt={`${f.t_ms}ms`}
+                                  loading="lazy"
+                                  sx={{
+                                    width: 72,
+                                    height: 48,
+                                    objectFit: "cover",
+                                    objectPosition: "top",
+                                    borderRadius: 0.5,
+                                    border: "1px solid",
+                                    borderColor: "divider",
+                                    display: "block",
+                                  }}
+                                />
+                                <Typography variant="caption" color="text.secondary" sx={{ fontSize: 9 }}>
+                                  {Math.round(f.t_ms)}ms
+                                </Typography>
+                              </Box>
+                            ))}
+                          </Box>
+                        </Box>
+                      ))}
+                      <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
                         {shots.map((s) => (
                           <Box key={s.url} sx={{ width: 160 }}>
                             <Box
@@ -550,6 +600,7 @@ export default function RunDetail() {
                             )}
                           </Box>
                         ))}
+                      </Box>
                       </Box>
                     );
                   })()}

@@ -115,6 +115,8 @@ export const api = {
   adoptRubric: () => request<BenchmarkConfig>("/config/adopt-rubric", { method: "POST" }),
   rescoreHistory: () =>
     request<{ rescored: number; rubric_version: string }>("/score/rescore", { method: "POST" }),
+  rederiveHistory: () =>
+    request<{ rederived: number; derivation_version: string }>("/score/rederive", { method: "POST" }),
   providerHealth: () => request<ProviderHealth>("/config/provider"),
   discover: () => request<DiscoverResponse>("/config/discover", { method: "POST" }),
   snapshots: () => request<ConfigSnapshot[]>("/config/snapshots"),

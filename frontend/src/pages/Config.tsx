@@ -227,6 +227,18 @@ export default function Config() {
     }
   }, []);
 
+  const handleRederive = useCallback(async () => {
+    setSaving(true);
+    try {
+      const r = await api.rederiveHistory();
+      setToast(`Re-derived ${r.rederived} run(s) from raw (derivation "${r.derivation_version}")`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to re-derive history");
+    } finally {
+      setSaving(false);
+    }
+  }, []);
+
   const handleDiscover = useCallback(async () => {
     setDiscovering(true);
     setError(null);
@@ -783,12 +795,17 @@ export default function Config() {
               <Button size="small" onClick={handleRescore} disabled={saving}>
                 Re-score history
               </Button>
+              <Button size="small" onClick={handleRederive} disabled={saving}>
+                Re-derive history
+              </Button>
             </Stack>
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
             Thresholds use a perception-calibrated log curve (Weber–Fechner). After editing weights
             or thresholds, click <b>Save</b>, then <b>Re-score history</b> to re-grade past runs so the
-            timeline stays comparable.
+            timeline stays comparable. <b>Re-derive history</b> goes further — it recomputes every
+            metric from each run's stored raw observations, so a new metric or a changed formula
+            (e.g. a better Speed Index) applies to past runs without re-collecting.
           </Typography>
           <Typography variant="subtitle2" sx={{ mt: 1 }}>
             Weights

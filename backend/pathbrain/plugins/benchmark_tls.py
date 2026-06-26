@@ -1,14 +1,15 @@
-"""TLS benchmark: handshake duration.
+"""TLS probe: raw handshake durations.
 
 Measures the time to complete a TLS handshake (after the TCP connection is
-established) to each configured host:port, averaged into ``handshake_ms``.
+established) to each configured host:port. A pure sensor: it emits the raw
+per-target handshake samples; ``handshake_ms`` is derived later
+(``pathbrain.interpret.derive``).
 """
 from __future__ import annotations
 
 import socket
 import ssl
 import time
-from statistics import mean
 
 from .base import BenchmarkPlugin, PluginResult, register
 
@@ -36,8 +37,8 @@ class TlsBenchmark(BenchmarkPlugin):
             return PluginResult(self.name, success=False, error="No TLS targets configured")
 
         def work() -> dict:
+            # Raw observations only: per-target handshake time (or error).
             per_target: dict[str, dict] = {}
-            times: list[float] = []
             for target in targets:
                 host = target.get("host")
                 port = int(target.get("port", 443))
@@ -48,11 +49,9 @@ class TlsBenchmark(BenchmarkPlugin):
                         "handshake_ms": round(elapsed, 3),
                         "tls_version": version,
                     }
-                    times.append(elapsed)
                 except Exception as exc:  # noqa: BLE001
                     per_target[key] = {"error": f"{type(exc).__name__}: {exc}"}
 
-            metrics = {"handshake_ms": round(mean(times), 3) if times else None}
-            return {"metrics": metrics, "details": {"per_target": per_target}}
+            return {"raw": {"targets": per_target}, "details": {"per_target": per_target}}
 
         return self.timed(work)
