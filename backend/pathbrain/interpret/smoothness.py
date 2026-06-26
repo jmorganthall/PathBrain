@@ -24,7 +24,10 @@ from statistics import mean, pstdev
 PERCEIVED_DEFAULTS = {
     "slice_ms": 100.0,
     "w_occupied": 1.0,
-    "w_unoccupied": 3.0,
+    # Stalls (unoccupied time) cost 4× time with visible progress. Raised from 3.0
+    # (reasoned recalibration: a mostly-stall load was scoring green); the exact
+    # ratio is what the calibration harness fits to subjective ratings.
+    "w_unoccupied": 4.0,
 }
 
 # A gap below this isn't a "stall" — normal back-to-back completions. Used by the

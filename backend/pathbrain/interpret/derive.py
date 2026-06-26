@@ -20,7 +20,7 @@ from statistics import mean, pstdev
 from ..plugins.benchmark_browser import compute_navigation_metrics, extract_paint_metrics
 from .smoothness import smoothness_metrics
 
-DERIVATION_VERSION = "derive-v2"
+DERIVATION_VERSION = "derive-v3"
 
 
 def _round(v: float | None, n: int = 3) -> float | None:
