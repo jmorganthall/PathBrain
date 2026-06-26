@@ -131,15 +131,30 @@ def run_scores(run_id: int, session: Session = Depends(get_session)) -> dict:
     }
 
 
+def _percentile(s: list[float], p: float) -> float:
+    """Linear-interpolated percentile (p in 0..1) over a sorted list."""
+    if len(s) == 1:
+        return s[0]
+    import math
+
+    k = (len(s) - 1) * p
+    f, c = math.floor(k), math.ceil(k)
+    if f == c:
+        return s[int(k)]
+    return s[f] * (c - k) + s[c] * (k - f)
+
+
 def _spread(vals: list[float]) -> dict:
     s = sorted(vals)
     med = round(median(s), 2)
     if len(s) >= 2:
-        q = quantiles(s, n=4)
-        p25, p75 = round(q[0], 2), round(q[2], 2)
+        p25, p75, p95 = (round(_percentile(s, q), 2) for q in (0.25, 0.75, 0.95))
     else:
-        p25 = p75 = med
-    return {"median": med, "p25": p25, "p75": p75, "min": round(s[0], 2), "max": round(s[-1], 2)}
+        p25 = p75 = p95 = med
+    return {
+        "median": med, "p25": p25, "p75": p75, "p95": p95,
+        "min": round(s[0], 2), "max": round(s[-1], 2),
+    }
 
 
 def _median_by_key(dicts: list[dict]) -> dict:
@@ -154,24 +169,25 @@ def _median_by_key(dicts: list[dict]) -> dict:
     return out
 
 
-def _window_scores(session: Session, hours: int) -> tuple:
+def _window_scores(session: Session, hours: int, fingerprint: str | None = None) -> tuple:
     """(methodology, Score rows) for completed runs in the window, scored under the
-    current methodology and comparable (incomparable runs carry no axis scores)."""
+    current methodology and comparable (incomparable runs carry no axis scores).
+    Optionally restricted to one settings profile (configTag)."""
     from ..methodology import ensure_current_methodology
 
     methodology = ensure_current_methodology(session, get_config(session))
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
+    conds = [
+        Run.status == RunStatus.COMPLETE,
+        Run.created_at >= cutoff,
+        Score.methodology_version == methodology.version,
+        Score.comparability != "incomparable",
+    ]
+    if fingerprint:
+        conds.append(Run.settings_fingerprint == fingerprint)
     rows = (
         session.execute(
-            select(Score)
-            .join(Run, Run.id == Score.run_id)
-            .where(
-                Run.status == RunStatus.COMPLETE,
-                Run.created_at >= cutoff,
-                Score.methodology_version == methodology.version,
-                Score.comparability != "incomparable",
-            )
-            .order_by(Run.created_at)
+            select(Score).join(Run, Run.id == Score.run_id).where(*conds).order_by(Run.created_at)
         )
         .scalars()
         .all()
@@ -182,6 +198,7 @@ def _window_scores(session: Session, hours: int) -> tuple:
 @router.get("/score/rolling")
 def rolling_score(
     hours: int = Query(24, ge=1, le=720),
+    fingerprint: str | None = Query(None, description="Restrict to one settings profile (configTag)."),
     session: Session = Depends(get_session),
 ) -> dict:
     """Windowed scores over completed runs in the last ``hours`` hours, under the
@@ -193,7 +210,7 @@ def rolling_score(
     """
     from ..methodology import scored_axes
 
-    methodology, rows = _window_scores(session, hours)
+    methodology, rows = _window_scores(session, hours, fingerprint)
     axes = scored_axes(methodology.definition or {})
     if not rows:
         return {
@@ -250,6 +267,7 @@ def rolling_score(
 @router.get("/score/axis-series")
 def axis_series(
     limit: int = Query(100, ge=1, le=1000),
+    fingerprint: str | None = Query(None, description="Restrict to one settings profile (configTag)."),
     session: Session = Depends(get_session),
 ) -> dict:
     """Per-run axis scores over time (current methodology), oldest→newest, for the
@@ -258,14 +276,15 @@ def axis_series(
 
     methodology = ensure_current_methodology(session, get_config(session))
     axes = scored_axes(methodology.definition or {})
+    conds = [
+        Run.status == RunStatus.COMPLETE,
+        Score.methodology_version == methodology.version,
+        Score.comparability != "incomparable",
+    ]
+    if fingerprint:
+        conds.append(Run.settings_fingerprint == fingerprint)
     rows = session.execute(
-        select(Score, Run)
-        .join(Run, Run.id == Score.run_id)
-        .where(
-            Run.status == RunStatus.COMPLETE,
-            Score.methodology_version == methodology.version,
-            Score.comparability != "incomparable",
-        )
+        select(Score, Run).join(Run, Run.id == Score.run_id).where(*conds)
         .order_by(Run.created_at.desc())
         .limit(limit)
     ).all()

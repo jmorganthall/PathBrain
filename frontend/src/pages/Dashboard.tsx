@@ -15,6 +15,9 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import SpeedIcon from "@mui/icons-material/Speed";
 
+import MenuItem from "@mui/material/MenuItem";
+import Select from "@mui/material/Select";
+
 import { api, ApiError } from "../api/client";
 import type {
   AxisSeriesResponse,
@@ -23,6 +26,7 @@ import type {
   RunDetail,
   RunEstimate,
   SettingsImpact,
+  SettingsProfile,
 } from "../api/types";
 import { ImpactBanner } from "./Settings";
 import ScoreGauge from "../components/ScoreGauge";
@@ -57,6 +61,8 @@ export default function Dashboard() {
   const [rolling, setRolling] = useState<RollingScore | null>(null);
   const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
   const [impact, setImpact] = useState<SettingsImpact | null>(null);
+  const [profiles, setProfiles] = useState<SettingsProfile[]>([]);
+  const [configFilter, setConfigFilter] = useState<string>(""); // "" = all configs
   const pollRef = useRef<number | null>(null);
 
   const loadLatest = useCallback(async () => {
@@ -73,17 +79,24 @@ export default function Dashboard() {
     }
   }, []);
 
+  // Rolling + over-time scores, scoped to the selected config (or all). Re-runs
+  // whenever the config filter changes.
+  const refreshScores = useCallback(() => {
+    const fp = configFilter || undefined;
+    api.rollingScore(24, fp).then((r) => setRolling(r)).catch(() => {});
+    api.axisSeries(100, fp).then((r) => setAxisSeries(r)).catch(() => {});
+  }, [configFilter]);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       await Promise.all([
         loadLatest(),
-        api.axisSeries(100).then((r) => setAxisSeries(r)).catch(() => {}),
         api.runEstimate().then((e) => setEstimate(e)).catch(() => {}),
-        api.rollingScore(24).then((r) => setRolling(r)).catch(() => {}),
         api.monitoring().then((m) => setMonitoring(m)).catch(() => {}),
         api.settingsImpact().then((i) => setImpact(i)).catch(() => {}),
+        api.settingsProfiles().then((p) => setProfiles(p.profiles)).catch(() => {}),
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load dashboard");
@@ -99,6 +112,11 @@ export default function Dashboard() {
     };
   }, [loadAll]);
 
+  // Fetch (and refetch on filter change) the windowed scores.
+  useEffect(() => {
+    refreshScores();
+  }, [refreshScores]);
+
   const poll = useCallback(
     (id: number) => {
       if (pollRef.current) window.clearInterval(pollRef.current);
@@ -110,15 +128,14 @@ export default function Dashboard() {
             if (pollRef.current) window.clearInterval(pollRef.current);
             pollRef.current = null;
             setRunning(false);
-            api.axisSeries(100).then((r) => setAxisSeries(r)).catch(() => {});
-            api.rollingScore(24).then((r) => setRolling(r)).catch(() => {});
+            refreshScores();
           }
         } catch {
           /* keep polling */
         }
       }, 2000);
     },
-    []
+    [refreshScores]
   );
 
   const handleRun = useCallback(async () => {
@@ -131,13 +148,13 @@ export default function Dashboard() {
         poll(d.id);
       } else {
         setRunning(false);
-        api.axisSeries(100).then((r) => setAxisSeries(r)).catch(() => {});
+        refreshScores();
       }
     } catch (e) {
       setRunning(false);
       setError(e instanceof Error ? e.message : "Failed to start benchmark");
     }
-  }, [poll, iterations]);
+  }, [poll, iterations, refreshScores]);
 
   const activeRun = running || (latest != null && isRunning(latest.status));
   const now = useNow(activeRun);
@@ -226,10 +243,34 @@ export default function Dashboard() {
       {!loading && rolling && rolling.count > 0 && (
         <Card sx={{ mb: 2 }}>
           <CardContent>
-            <Typography variant="h6">Current Responsiveness</Typography>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              justifyContent="space-between"
+              alignItems={{ xs: "flex-start", sm: "center" }}
+              spacing={1}
+            >
+              <Typography variant="h6">Current Responsiveness</Typography>
+              {profiles.length > 1 && (
+                <Select
+                  size="small"
+                  value={configFilter}
+                  displayEmpty
+                  onChange={(e) => setConfigFilter(e.target.value)}
+                  sx={{ minWidth: 200 }}
+                >
+                  <MenuItem value="">All configs</MenuItem>
+                  {profiles.map((p) => (
+                    <MenuItem key={p.fingerprint} value={p.fingerprint}>
+                      {p.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              )}
+            </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
               Median over the last {rolling.window_hours}h · {rolling.count} run
-              {rolling.count === 1 ? "" : "s"} · methodology{" "}
+              {rolling.count === 1 ? "" : "s"}
+              {configFilter && " · this config only"} · methodology{" "}
               <RouterLink to="/methodology" style={{ color: "inherit" }}>
                 {rolling.methodology}
               </RouterLink>
@@ -250,7 +291,7 @@ export default function Dashboard() {
                       <ScoreGauge value={stat?.median ?? null} size={150} label={a.label} />
                       {stat && (
                         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-                          IQR {stat.p25}–{stat.p75}
+                          IQR {stat.p25}–{stat.p75} · p95 {stat.p95}
                         </Typography>
                       )}
                     </Box>
