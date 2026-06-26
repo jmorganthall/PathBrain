@@ -115,18 +115,34 @@ weights and thresholds are editable at runtime from the UI or `PUT /api/config`.
   "current responsiveness" is stable, not point-in-time noise.
 - 🔍 **OPNsense discovery + settings correlation** — each run captures the live
   FQ-CoDel/SQM settings + a **fingerprint**; runs group into **profiles** with
-  their SOPS distribution, and a **significant-change** banner (effect ≥ threshold,
-  with a min-runs confidence guard). Mock provider for offline dev.
+  their SOPS distribution, a **Speed-vs-Smoothness quadrant** (top-right = smoothest
+  *and* fastest), and a **significant-change** banner (effect ≥ threshold). A profile
+  is **confident** once its runs total ≥ `correlation.min_iterations` (default **15**)
+  — iterations, not run count, are the unit of signal. A one-click **"Test to
+  minimum"** tops a limited-data profile up: it applies the profile, runs exactly the
+  iterations still needed, then **restores your prior settings**. Mock provider for
+  offline dev.
+- 🔒 **Firewall/benchmark coordination** — a single in-process lock (`coordinator.py`)
+  serializes every apply-firewall-and-benchmark session (sweep, profile test,
+  experiment, monitoring, manual run) so two never overlap. Each run also re-reads the
+  firewall fingerprint **before and after** measuring and is marked FAILED on drift —
+  so "what we tested" always matches "what we thought we tested".
+- 🧾 **Data Dump** — one consolidated JSON export of the last *N* runs, including each
+  plugin's **raw observations** per iteration (the per-run view omits raw); view, copy,
+  or download (`GET /api/history/dump`).
 - 🧪 **Experiment engine** — within a configurable **window**, sweep one shaper
   parameter across candidates, benchmark each, and **restore the pre-window
   baseline** at close (or auto-promote a clear winner). **Disarmed + dry-run by
   default.** Firewall writes go only through `provider.apply()` (experiment, Shotgun
-  Sweep, config write-test) — each reversible and snapshot/restore.
+  Sweep, config write-test, profile test, sweep apply-best) — each reversible and
+  snapshot/restore, and serialized by the coordination lock above.
 - 🛡️ **Run-lifecycle safety** — startup reconciliation + a watchdog timeout +
   manual cancel so a restart/hang never leaves a zombie "running" job.
 - 📊 **Web dashboard** — React + MUI, dark mode: Dashboard (rolling score + "vs
   typical" + metric breakdown), History, **Trends** (day/hour heatmaps), Compare,
-  Settings Impact, Experiments, **Shotgun Sweep**, Config, Run Detail (with filmstrip).
+  Settings Impact (sortable profiles table + Speed-vs-Smoothness quadrant + "Test to
+  minimum"), Experiments, **Shotgun Sweep**, Config, **Data Dump**, Run Detail (with
+  filmstrip).
 - 💾 **SQLite persistence** with additive auto-migrations; background execution.
 
 **Next:** speed test / bufferbloat (latency-under-load), A/B weight calibration from
@@ -249,10 +265,10 @@ PATHBRAIN_OPNSENSE_VERIFY_TLS=false
 > Users → (your user) → API keys**. The user needs **traffic-shaper read** access
 > (page privilege **"Firewall: Shaper"**, and/or **"System: Settings: Traffic
 > Shaper"**), or use an admin account — without it discovery returns 403. The
-> **experiment engine, Shotgun Sweep, and config write-test additionally write** to
-> the shaper (`setPipe` + `reconfigure`), so those need write access; each is
-> reversible and snapshots/restores the baseline (the experiment engine is also
-> disarmed + dry-run by default).
+> **experiment engine, Shotgun Sweep, config write-test, and profile "Test to
+> minimum" additionally write** to the shaper (`setPipe` + `reconfigure`), so those
+> need write access; each is reversible and snapshots/restores the baseline (the
+> experiment engine is also disarmed + dry-run by default).
 
 ### Runtime (DB-backed, edit on the Config page or `PUT /api/config`)
 
@@ -262,7 +278,8 @@ run needs no setup:
 - **Benchmark targets** — ICMP/DNS/TCP/TLS/HTTP/browser hosts & URLs.
 - **`iterations`** — suite repeats per run; the headline SOPS is the **median**.
 - **`monitoring`** — `enabled`, `interval_minutes`, `run_timeout_minutes` (watchdog).
-- **`correlation`** — `significant_change_pct`, `min_runs` (settings-impact guards).
+- **`correlation`** — `significant_change_pct`, `min_iterations` (default 15; the
+  total-iterations bar a profile must clear to count as confident), `min_runs` (legacy).
 - **`trends`** — `lookback_days`, `window_hours`, `min_samples` (historical baselines).
 - **`rubric_version` / `weights` / `thresholds`** — the scoring rubric (perception
   curve). After editing, **Save → Re-score history** to keep the timeline comparable.
@@ -288,6 +305,7 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 | `GET /api/history` | Paginated runs list (`limit`, `offset`) |
 | `GET /api/history/count` | Total run count (for pagination) |
 | `GET /api/history/series` | Time-series of SOPS + metrics for charts |
+| `GET /api/history/dump` | Consolidated JSON of the last `limit` runs incl. raw observations |
 | `GET /api/score/{id}` / `…/weights` | Run score / current weights + thresholds |
 | `GET /api/score/rolling` | Windowed median SOPS + IQR + aggregated subscores |
 | `POST /api/score/rescore` | Re-grade all history with the current rubric |
@@ -302,8 +320,10 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 | `POST /api/config/discover` | Discover FQ-CoDel settings + store a snapshot |
 | `POST /api/config/test-apply` | Reversible write-path test (nudge quantum +1, then restore) |
 | `GET /api/config/snapshots` | List stored config snapshots |
-| `GET /api/settings/profiles` | Per-settings-profile SOPS distribution |
+| `GET /api/settings/profiles` | Per-settings-profile SOPS distribution (+ confidence on iterations) |
 | `GET /api/settings/impact` | Significance of the latest settings change |
+| `POST /api/settings/apply-profile` | Write a stored profile to the firewall (`preview` for a dry diff) |
+| `POST /api/settings/test-profile` · `GET …/test-profile/current` | "Test to minimum": apply → run → restore / poll its status |
 | `POST /api/settings/backfill` | Stamp current settings onto unattributed runs |
 | `GET /api/settings/diagnostics` | Settings-capture diagnostics (stamped/unstamped) |
 | `GET /api/experiments` / `…/{id}` | Experiment status + history / one experiment's trials |
@@ -353,12 +373,17 @@ backend/pathbrain/
   config.py          Env-driven infrastructure settings
   database.py        SQLAlchemy engine/session + additive SQLite migrations
   models.py          ORM: Run, BenchmarkResult (+raw), ScoreResult, ConfigSnapshot,
-                     AppConfig, Experiment, ExperimentTrial, Sweep
+                     AppConfig, Methodology, Score, Experiment, ExperimentTrial,
+                     Sweep, ProfileTest
   schemas.py         Pydantic request/response models
-  runner.py          Run orchestration; median aggregation; reconcile/watchdog/rescore/rederive
-  scheduler.py       Daemon thread: watchdog → (yield to sweep) → experiment → monitoring
+  coordinator.py     Process-wide lock: serializes apply-firewall + benchmark sessions
+  runner.py          Run orchestration; median aggregation; read-before/after integrity;
+                     reconcile/watchdog/rescore/rederive
+  scheduler.py       Daemon thread: watchdog → (yield while a session holds the lock) →
+                     experiment → monitoring
   experiment.py      Window-gated autonomous shaper sweep (writes via provider.apply)
   sweep.py           Shotgun Sweep: on-demand grid sweep, applies + restores baseline
+  profile_test.py    "Test to minimum": apply a profile, run the needed iterations, restore
   trends.py          Day/hour historical baselines + time-adjusted "vs typical"
   settings_profile.py  Normalize/fingerprint/summarize firewall profiles
   config_store.py    DB-backed runtime config + defaults
@@ -396,7 +421,13 @@ docker-compose*.yml  Build (.yml) and pull-from-GHCR (.ghcr.yml) deploys
       score (median + IQR) for stable "current responsiveness."
 - [x] **Settings-vs-responsiveness correlation:** each run is fingerprinted with
       the live FQ-CoDel/SQM settings; runs group into profiles with their SOPS
-      distribution, and a significant-change banner (with a min-runs guard).
+      distribution (confidence gated on **total iterations**, default 15), a
+      Speed-vs-Smoothness quadrant, and a significant-change banner.
+- [x] **Firewall/benchmark coordination + integrity:** a single lock serializes every
+      apply-and-benchmark session, and each run re-reads the firewall before/after
+      measuring (FAILed on drift). A **"Test to minimum"** action tops a limited-data
+      profile up to the confidence bar, then restores the prior settings. Plus a
+      **Data Dump** export (last *N* runs incl. raw).
 - [x] **Trajectory-aware scoring:** raw-only collection + a versioned interpretation
       layer; **Speed Index**, paint cadence and CLS from a browser filmstrip lead the
       rubric (`perceptual-v3`); `rederive` re-applies new metrics to history.

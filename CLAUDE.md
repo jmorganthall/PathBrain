@@ -68,18 +68,28 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     target grid. Applies each variant for real, benchmarks it, **restores the
     baseline at the end** (`reconcile_interrupted_sweeps` restores on startup too).
     Runs in its own thread; the scheduler yields while `sweep.active()`.
-  - `scheduler.py` — daemon thread: watchdog → (yield if a sweep is active) →
-    experiment step → monitoring run (serialized so benchmark runs never overlap).
+  - `scheduler.py` — daemon thread: watchdog → (yield while the coordination lock is
+    held) → experiment step → monitoring run (serialized so benchmark runs never overlap).
   - `experiment.py` — autonomous window-gated single-parameter shaper sweep
     (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline).
+  - `coordinator.py` — process-wide lock that serializes any apply-firewall + benchmark
+    session (sweep, profile test, experiment, monitoring, manual run): user-triggered
+    ones `hold` (queue), periodic ones `try_hold` (defer). Pairs with the read-before/
+    read-after fingerprint check in `runner.execute_run` (FAILs a run on mid-run drift).
+  - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
+    iterations still needed to reach `correlation.min_iterations`, then **restore the
+    baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
+    restores on startup). `/api/settings/test-profile`.
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
-    settings-vs-responsiveness correlation (`/api/settings/*`).
+    settings-vs-responsiveness correlation (`/api/settings/*`). Profile confidence is
+    gated on **total iterations** (`correlation.min_iterations`, default 15).
   - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
     columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.
 - `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
-  History, Trends, Compare, Settings Impact, Experiments, Shotgun Sweep, Config,
-  Plugins, Run Detail.
+  History, Trends, Compare, Settings Impact (sortable table + Speed-vs-Smoothness
+  quadrant + "Test to minimum"), Experiments, Shotgun Sweep, Config, Methodology,
+  Plugins, Data Dump, Run Detail.
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`.
