@@ -36,18 +36,38 @@ export interface StallAttribution {
   dominant: "network" | "render" | "mixed" | "unknown";
 }
 
+export interface AxisStat {
+  median: number;
+  p25: number;
+  p75: number;
+  min: number;
+  max: number;
+}
+
+// Methodology-aware rolling window: per-axis distributions under the current
+// methodology (no single SOPS), plus the per-metric breakdown + attribution.
 export interface RollingScore {
   window_hours: number;
   count: number;
-  median: number | null;
-  p25: number | null;
-  p75: number | null;
-  min: number | null;
-  max: number | null;
+  methodology: string;
+  axes: MethodologyAxis[];
+  axis_scores: Record<string, AxisStat>;
   subscores: Record<string, number>;
   metric_values: Record<string, number>;
   weights: Record<string, number>;
   attribution?: StallAttribution | null;
+}
+
+export interface AxisSeriesPoint {
+  run_id: number;
+  timestamp: string;
+  [axis: string]: number | string | null;
+}
+
+export interface AxisSeriesResponse {
+  methodology: string;
+  axes: MethodologyAxis[];
+  points: AxisSeriesPoint[];
 }
 
 export interface MonitoringStatus {

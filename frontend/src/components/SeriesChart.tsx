@@ -10,24 +10,24 @@ import {
   YAxis,
 } from "recharts";
 import { useTheme } from "@mui/material/styles";
-import type { SeriesPoint } from "../api/types";
 import { fmtTimeShort } from "../utils/format";
 
 export interface SeriesLine {
-  key: keyof SeriesPoint;
+  key: string;
   name: string;
   color: string;
 }
 
 export interface SeriesBand {
-  lowKey: keyof SeriesPoint;
-  highKey: keyof SeriesPoint;
+  lowKey: string;
+  highKey: string;
   color: string;
   name?: string;
 }
 
-interface Props {
-  data: SeriesPoint[];
+// Generic over any time-stamped row (legacy SeriesPoint, methodology axis-series, …).
+interface Props<T extends { timestamp: string }> {
+  data: readonly T[];
   lines: SeriesLine[];
   height?: number;
   yDomain?: [number | "auto", number | "auto"];
@@ -36,16 +36,24 @@ interface Props {
   band?: SeriesBand;
 }
 
-export default function SeriesChart({ data, lines, height = 280, yDomain, unit, band }: Props) {
+export default function SeriesChart<T extends { timestamp: string }>({
+  data,
+  lines,
+  height = 280,
+  yDomain,
+  unit,
+  band,
+}: Props<T>) {
   const theme = useTheme();
   const grid = "rgba(255,255,255,0.08)";
   const axis = theme.palette.text.secondary;
 
   const formatted = data.map((p) => {
-    const row: Record<string, unknown> = { ...p, _t: fmtTimeShort(p.timestamp) };
+    const rec = p as Record<string, unknown>;
+    const row: Record<string, unknown> = { ...rec, _t: fmtTimeShort(p.timestamp) };
     if (band) {
-      const low = p[band.lowKey] as number | null | undefined;
-      const high = p[band.highKey] as number | null | undefined;
+      const low = rec[band.lowKey] as number | null | undefined;
+      const high = rec[band.highKey] as number | null | undefined;
       row._band = low != null && high != null ? [low, high] : null;
     }
     return row;

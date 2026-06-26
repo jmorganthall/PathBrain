@@ -131,67 +131,90 @@ def run_scores(run_id: int, session: Session = Depends(get_session)) -> dict:
     }
 
 
-@router.get("/score/rolling")
-def rolling_score(
-    hours: int = Query(24, ge=1, le=720),
-    session: Session = Depends(get_session),
-) -> dict:
-    """Windowed SOPS over completed runs in the last ``hours`` hours.
+def _spread(vals: list[float]) -> dict:
+    s = sorted(vals)
+    med = round(median(s), 2)
+    if len(s) >= 2:
+        q = quantiles(s, n=4)
+        p25, p75 = round(q[0], 2), round(q[2], 2)
+    else:
+        p25 = p75 = med
+    return {"median": med, "p25": p25, "p75": p75, "min": round(s[0], 2), "max": round(s[-1], 2)}
 
-    This is the stable "current responsiveness" figure: a median over many runs,
-    with an interquartile band, so it doesn't swing on point-in-time noise. Also
-    returns the median per-metric subscore + metric value over the window (and the
-    most recent weights) so the dashboard can show an aggregated breakdown.
-    """
+
+def _median_by_key(dicts: list[dict]) -> dict:
+    keys: set[str] = set()
+    for d in dicts:
+        keys.update((d or {}).keys())
+    out: dict[str, float] = {}
+    for k in keys:
+        vals = [d[k] for d in dicts if (d or {}).get(k) is not None]
+        if vals:
+            out[k] = round(median(vals), 2)
+    return out
+
+
+def _window_scores(session: Session, hours: int) -> tuple:
+    """(methodology, Score rows) for completed runs in the window, scored under the
+    current methodology and comparable (incomparable runs carry no axis scores)."""
+    from ..methodology import ensure_current_methodology
+
+    methodology = ensure_current_methodology(session, get_config(session))
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
     rows = (
         session.execute(
-            select(ScoreResult)
-            .join(Run, Run.id == ScoreResult.run_id)
-            .where(Run.status == RunStatus.COMPLETE, Run.created_at >= cutoff)
+            select(Score)
+            .join(Run, Run.id == Score.run_id)
+            .where(
+                Run.status == RunStatus.COMPLETE,
+                Run.created_at >= cutoff,
+                Score.methodology_version == methodology.version,
+                Score.comparability != "incomparable",
+            )
             .order_by(Run.created_at)
         )
         .scalars()
         .all()
     )
-    # The headline must be trustworthy: drop legacy scores (pre-current-rubric).
-    rows = [r for r in rows if has_latest_metrics(r.metric_values)]
+    return methodology, rows
+
+
+@router.get("/score/rolling")
+def rolling_score(
+    hours: int = Query(24, ge=1, le=720),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Windowed scores over completed runs in the last ``hours`` hours, under the
+    current methodology — the stable "current responsiveness" figure.
+
+    Per-axis (Speed/Smoothness/…) median + IQR band, plus the median per-metric
+    subscore/value/weight over the window for the breakdown, and the network/render
+    stall attribution. A median over many runs, so it doesn't swing on noise.
+    """
+    from ..methodology import scored_axes
+
+    methodology, rows = _window_scores(session, hours)
+    axes = scored_axes(methodology.definition or {})
     if not rows:
         return {
             "window_hours": hours,
             "count": 0,
-            "median": None,
-            "p25": None,
-            "p75": None,
-            "min": None,
-            "max": None,
+            "methodology": methodology.version,
+            "axes": axes,
+            "axis_scores": {},
             "subscores": {},
             "metric_values": {},
             "weights": {},
             "attribution": None,
         }
 
-    def median_by_key(dicts: list[dict]) -> dict:
-        keys: set[str] = set()
-        for d in dicts:
-            keys.update((d or {}).keys())
-        out: dict[str, float] = {}
-        for k in keys:
-            vals = [d[k] for d in dicts if (d or {}).get(k) is not None]
-            if vals:
-                out[k] = round(median(vals), 2)
-        return out
+    axis_scores: dict[str, dict] = {}
+    for a in axes:
+        vals = [r.axis_scores.get(a["key"]) for r in rows if (r.axis_scores or {}).get(a["key"]) is not None]
+        if vals:
+            axis_scores[a["key"]] = _spread(vals)
 
-    vals = sorted(r.sops for r in rows)
-    med = round(median(vals), 2)
-    if len(vals) >= 2:
-        q = quantiles(vals, n=4)  # [p25, p50, p75]
-        p25, p75 = round(q[0], 2), round(q[2], 2)
-    else:
-        p25 = p75 = med
-
-    # Stall attribution: the network/render split lives on the browser plugin's
-    # (display-only) metrics, not in the score row, so pull it for the same runs.
+    # Stall attribution from the browser plugin's (display-only) metrics for these runs.
     run_ids = [r.run_id for r in rows]
     browser_metrics = (
         session.execute(
@@ -207,25 +230,54 @@ def rolling_score(
         vals = [m[key] for m in browser_metrics if (m or {}).get(key) is not None]
         return median(vals) if vals else None
 
-    attribution = _attribution(
-        _med_metric("network_stall_ms"),
-        _med_metric("render_stall_ms"),
-        _med_metric("unknown_stall_ms"),
-    )
-
     return {
         "window_hours": hours,
-        "count": len(vals),
-        "median": med,
-        "p25": p25,
-        "p75": p75,
-        "min": round(min(vals), 2),
-        "max": round(max(vals), 2),
-        "subscores": median_by_key([r.subscores or {} for r in rows]),
-        "metric_values": median_by_key([r.metric_values or {} for r in rows]),
-        "weights": rows[-1].weights_used or {},
-        "attribution": attribution,
+        "count": len(rows),
+        "methodology": methodology.version,
+        "axes": axes,
+        "axis_scores": axis_scores,
+        "subscores": _median_by_key([r.subscores or {} for r in rows]),
+        "metric_values": _median_by_key([r.metric_values or {} for r in rows]),
+        "weights": _median_by_key([r.weights_used or {} for r in rows]),
+        "attribution": _attribution(
+            _med_metric("network_stall_ms"),
+            _med_metric("render_stall_ms"),
+            _med_metric("unknown_stall_ms"),
+        ),
     }
+
+
+@router.get("/score/axis-series")
+def axis_series(
+    limit: int = Query(100, ge=1, le=1000),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Per-run axis scores over time (current methodology), oldest→newest, for the
+    dashboard's over-time chart. Only comparable runs appear."""
+    from ..methodology import ensure_current_methodology, scored_axes
+
+    methodology = ensure_current_methodology(session, get_config(session))
+    axes = scored_axes(methodology.definition or {})
+    rows = session.execute(
+        select(Score, Run)
+        .join(Run, Run.id == Score.run_id)
+        .where(
+            Run.status == RunStatus.COMPLETE,
+            Score.methodology_version == methodology.version,
+            Score.comparability != "incomparable",
+        )
+        .order_by(Run.created_at.desc())
+        .limit(limit)
+    ).all()
+    points = [
+        {
+            "run_id": score.run_id,
+            "timestamp": run.created_at.isoformat(),
+            **{a["key"]: (score.axis_scores or {}).get(a["key"]) for a in axes},
+        }
+        for score, run in reversed(rows)
+    ]
+    return {"methodology": methodology.version, "axes": axes, "points": points}
 
 
 @router.get("/score/weights")
