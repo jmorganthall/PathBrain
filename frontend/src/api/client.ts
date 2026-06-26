@@ -27,6 +27,7 @@ import type {
   SettingsImpact,
   SettingsProfilesResponse,
   Sweep,
+  SweepPipe,
   SweepPreview,
   SweepSpec,
   TestApplyResult,
@@ -147,6 +148,7 @@ export const api = {
   testApply: () => request<TestApplyResult>("/config/test-apply", { method: "POST" }),
 
   // Shotgun Sweep
+  sweepPipes: () => request<{ pipes: SweepPipe[] }>("/sweep/pipes"),
   sweepPreview: (body: { spec: SweepSpec; iterations: number; dwell_minutes: number }) =>
     request<SweepPreview>("/sweep/preview", { method: "POST", body: JSON.stringify(body) }),
   startSweep: (body: {

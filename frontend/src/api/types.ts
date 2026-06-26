@@ -303,15 +303,26 @@ export interface SweepParamRange {
   step: number;
 }
 
+export interface SweepPipe {
+  uuid: string;
+  label: string;
+  direction?: string | null;
+}
+
 export interface SweepSpec {
   quantum: SweepParamRange;
   target: SweepParamRange;
+  // Pipes to sweep; the parameter grid runs on each (one pipe varied at a time).
+  // Omitted/empty = the single default pipe.
+  pipes?: SweepPipe[];
 }
 
 export interface SweepResult {
   index: number;
   quantum: number | null;
   target: string | null;
+  pipe_uuid?: string | null;
+  pipe_label?: string | null;
   run_id: number | null;
   sops: number | null;
   created_at: string | null;

@@ -80,6 +80,29 @@ def _sweep_out(session: Session, sweep_id: int, tz_offset: int = 0) -> dict | No
     }
 
 
+@router.get("/sweep/pipes")
+def sweep_pipes() -> dict:
+    """The shaper pipes available to sweep (download/upload/…), for the pipe picker.
+
+    Only pipes with a stable uuid are returned — those are the ones we can target.
+    """
+    try:
+        configs = get_provider().discover()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"Could not discover pipes: {type(exc).__name__}: {exc}"
+        ) from exc
+    pipes = []
+    for c in configs:
+        extra = c.extra or {}
+        uuid = extra.get("uuid")
+        if not uuid:
+            continue
+        label = extra.get("description") or extra.get("pipe") or extra.get("direction") or uuid
+        pipes.append({"uuid": uuid, "label": label, "direction": extra.get("direction")})
+    return {"pipes": pipes}
+
+
 @router.post("/sweep/preview")
 def sweep_preview(body: dict = Body(...), session: Session = Depends(get_session)) -> dict:
     """Variant count + ETA for a sweep spec, without starting it."""
@@ -159,15 +182,19 @@ def apply_best(sweep_id: int, session: Session = Depends(get_session)) -> dict:
         raise HTTPException(status_code=400, detail="No scored variant to apply yet.")
     best = ranked[0]
     provider = get_provider()
+    pipe = best.get("pipe_uuid") or sw.pipe_uuid or None
     applied: dict = {}
     try:
         for param in ("quantum", "target"):
             if best.get(param) is not None:
-                provider.apply({"pipe_uuid": sw.pipe_uuid or None, "param": param, "value": best[param]})
+                provider.apply({"pipe_uuid": pipe, "param": param, "value": best[param]})
                 applied[param] = best[param]
     except Exception as exc:  # noqa: BLE001
         log.exception("apply-best failed for sweep %s", sweep_id)
         raise HTTPException(
             status_code=502, detail=f"Apply failed: {type(exc).__name__}: {exc}"
         ) from exc
-    return {"ok": True, "applied": applied, "run_id": best.get("run_id"), "sops": best.get("sops")}
+    return {
+        "ok": True, "applied": applied, "pipe": best.get("pipe_label"),
+        "run_id": best.get("run_id"), "sops": best.get("sops"),
+    }

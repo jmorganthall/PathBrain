@@ -24,7 +24,14 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 
 import { api } from "../api/client";
-import type { Sweep, SweepParamRange, SweepPreview, SweepResult, SweepSpec } from "../api/types";
+import type {
+  Sweep,
+  SweepParamRange,
+  SweepPipe,
+  SweepPreview,
+  SweepResult,
+  SweepSpec,
+} from "../api/types";
 import { fmtDuration } from "../utils/format";
 import { sopsColor } from "../theme";
 
@@ -131,12 +138,19 @@ export default function ShotgunSweep() {
 
   const [preview, setPreview] = useState<SweepPreview | null>(null);
   const [sweep, setSweep] = useState<Sweep | null>(null);
+  const [pipes, setPipes] = useState<SweepPipe[]>([]);
+  const [selectedPipes, setSelectedPipes] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
 
-  const spec: SweepSpec = { quantum, target };
+  useEffect(() => {
+    api.sweepPipes().then((r) => setPipes(r.pipes)).catch(() => setPipes([]));
+  }, []);
+
+  const chosenPipes = pipes.filter((p) => selectedPipes.includes(p.uuid));
+  const spec: SweepSpec = { quantum, target, ...(chosenPipes.length ? { pipes: chosenPipes } : {}) };
 
   // Live variant count + ETA (debounced).
   useEffect(() => {
@@ -148,7 +162,7 @@ export default function ShotgunSweep() {
     }, 300);
     return () => window.clearTimeout(h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quantum, target, iterations, dwellMinutes]);
+  }, [quantum, target, iterations, dwellMinutes, selectedPipes]);
 
   const poll = useCallback(() => {
     if (pollRef.current) window.clearInterval(pollRef.current);
@@ -268,6 +282,34 @@ export default function ShotgunSweep() {
       {/* Configuration */}
       <Card sx={{ mb: 2 }}>
         <CardContent>
+          {pipes.length > 0 && (
+            <Box sx={{ mb: 2 }}>
+              <Typography sx={{ fontWeight: 600, mb: 0.5 }}>Pipes to sweep</Typography>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                {pipes.map((p) => {
+                  const on = selectedPipes.includes(p.uuid);
+                  return (
+                    <Chip
+                      key={p.uuid}
+                      label={p.label}
+                      color={on ? "primary" : "default"}
+                      variant={on ? "filled" : "outlined"}
+                      onClick={() =>
+                        setSelectedPipes((s) =>
+                          on ? s.filter((x) => x !== p.uuid) : [...s, p.uuid],
+                        )
+                      }
+                    />
+                  );
+                })}
+              </Stack>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                {selectedPipes.length === 0
+                  ? "None selected → sweeps the default (download) pipe."
+                  : `Each parameter value is tried on each selected pipe, one at a time — ${selectedPipes.length} pipe(s) × the grid.`}
+              </Typography>
+            </Box>
+          )}
           <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
             <ParamCard
               title="Quantum"
@@ -384,6 +426,7 @@ export default function ShotgunSweep() {
                   <TableHead>
                     <TableRow>
                       <TableCell>Rank</TableCell>
+                      <TableCell>Pipe</TableCell>
                       <TableCell align="right">Quantum</TableCell>
                       <TableCell align="right">Target</TableCell>
                       <TableCell align="right">SOPS</TableCell>
@@ -395,6 +438,7 @@ export default function ShotgunSweep() {
                     {sweep.results.map((r, i) => (
                       <TableRow key={r.index} selected={i === 0 && r.sops != null}>
                         <TableCell>{i + 1}</TableCell>
+                        <TableCell>{r.pipe_label ?? "—"}</TableCell>
                         <TableCell align="right">{r.quantum ?? "—"}</TableCell>
                         <TableCell align="right">{r.target ?? "—"}</TableCell>
                         <TableCell align="right" sx={{ fontWeight: 700, color: sopsColor(r.sops) }}>

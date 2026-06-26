@@ -59,10 +59,9 @@ def _value_range(spec: dict) -> list[float]:
     return out
 
 
-def generate_variants(spec: dict) -> list[dict]:
-    """Cartesian product of the enabled parameters' value ranges.
+def _param_combos(spec: dict) -> list[dict]:
+    """Cartesian product of the enabled parameters' value ranges (quantum × target).
 
-    ``spec`` = ``{"quantum": {"enabled", "min", "max", "step"}, "target": {...}}``.
     Quantum values are ints; target values are ``"<n>ms"`` strings (the form the
     provider expects). Returns ``[]`` when no parameter is enabled.
     """
@@ -75,10 +74,32 @@ def generate_variants(spec: dict) -> list[dict]:
         dims.append(("target", [f"{int(round(v))}ms" for v in _value_range(t)]))
     if not dims:
         return []
-    variants: list[dict] = [{}]
+    combos: list[dict] = [{}]
     for name, vals in dims:
-        variants = [{**v, name: val} for v in variants for val in vals]
-    return variants
+        combos = [{**v, name: val} for v in combos for val in vals]
+    return combos
+
+
+def generate_variants(spec: dict) -> list[dict]:
+    """All sweep variants: the parameter grid applied to each selected pipe.
+
+    ``spec`` adds an optional ``"pipes": [{"uuid", "label"}, …]`` — when present, each
+    parameter combo is run on *each* pipe (one pipe varied at a time, others left at
+    baseline), so sweeping 3 quantum values across 2 pipes yields 6 variants. Without
+    ``pipes`` it's the legacy single-pipe behavior (the run's ``pipe_uuid``). Returns
+    ``[]`` when no parameter is enabled.
+    """
+    combos = _param_combos(spec)
+    if not combos:
+        return []
+    pipes = spec.get("pipes") or []
+    if not pipes:
+        return combos  # legacy: single pipe (sweep.pipe_uuid)
+    return [
+        {**c, "pipe_uuid": p.get("uuid"), "pipe_label": p.get("label")}
+        for p in pipes
+        for c in combos
+    ]
 
 
 def estimate(variants: list[dict], iterations: int, dwell_s: float, per_iteration_ms: float | None) -> dict:
@@ -91,16 +112,29 @@ def estimate(variants: list[dict], iterations: int, dwell_s: float, per_iteratio
 # ── baseline / apply ─────────────────────────────────────────────────────────
 
 
-def _baseline(provider, pipe_uuid: str | None) -> dict:
-    """Read the target pipe's current quantum + target (and snapshot all settings)."""
+def _pipe_label(cfg) -> str | None:
+    extra = cfg.extra or {}
+    return extra.get("description") or extra.get("pipe") or extra.get("direction")
+
+
+def _baseline(provider, pipe_uuid: str | None = None) -> dict:
+    """Snapshot every pipe's current quantum + target (keyed by uuid), so any pipe a
+    variant touches can be restored. Keeps the primary pipe's quantum/target at the
+    top level for back-compat with the single-pipe display/restore path."""
     configs = provider.discover()
-    target = None
+    pipes: dict[str, dict] = {}
+    for c in configs:
+        uuid = (c.extra or {}).get("uuid")
+        if uuid:
+            pipes[uuid] = {"quantum": c.quantum, "target": c.target, "label": _pipe_label(c)}
+    primary = None
     if pipe_uuid:
-        target = next((c for c in configs if (c.extra or {}).get("uuid") == pipe_uuid), None)
-    target = target or (configs[0] if configs else None)
+        primary = next((c for c in configs if (c.extra or {}).get("uuid") == pipe_uuid), None)
+    primary = primary or (configs[0] if configs else None)
     return {
-        "quantum": target.quantum if target else None,
-        "target": target.target if target else None,
+        "pipes": pipes,
+        "quantum": primary.quantum if primary else None,
+        "target": primary.target if primary else None,
         "settings": normalize(configs),
     }
 
@@ -114,13 +148,24 @@ def _apply(provider, pipe_uuid: str | None, param: str, value, dry_run: bool) ->
     provider.apply({"pipe_uuid": pipe_uuid or None, "param": param, "value": value})
 
 
-def _label(quantum, target) -> str:
+def _label(quantum, target, pipe_label: str | None = None) -> str:
     parts = []
+    if pipe_label:
+        parts.append(str(pipe_label))
     if quantum is not None:
         parts.append(f"q{quantum}")
     if target is not None:
         parts.append(f"t{target}")
     return "sweep · " + " ".join(parts)
+
+
+def _restore_pipe(provider, baseline: dict, uuid: str | None, dry_run: bool) -> None:
+    """Set one pipe back to its baseline quantum + target."""
+    base = (baseline.get("pipes") or {}).get(uuid) if uuid else None
+    if base is None:  # legacy baseline (no per-pipe map): use the top-level values
+        base = baseline
+    _apply(provider, uuid, "quantum", base.get("quantum"), dry_run)
+    _apply(provider, uuid, "target", base.get("target"), dry_run)
 
 
 def _run_sops(run_id: int) -> float | None:
@@ -130,16 +175,21 @@ def _run_sops(run_id: int) -> float | None:
 
 
 def _restore(provider, sweep_id: int) -> None:
-    """Apply the stored baseline quantum + target back (best-effort, logs on fail)."""
+    """Restore every swept pipe to its baseline quantum + target (best-effort)."""
     try:
         with session_scope() as session:
             sw = session.get(Sweep, sweep_id)
             baseline = (sw.baseline or {}) if sw else {}
             dry_run = sw.dry_run if sw else False
             pipe_uuid = sw.pipe_uuid if sw else None
-        _apply(provider, pipe_uuid, "quantum", baseline.get("quantum"), dry_run)
-        _apply(provider, pipe_uuid, "target", baseline.get("target"), dry_run)
-        log.info("Sweep %s: restored baseline %s", sweep_id, baseline)
+        pipes = baseline.get("pipes") or {}
+        if pipes:
+            for uuid in pipes:
+                _restore_pipe(provider, baseline, uuid, dry_run)
+        else:  # legacy single-pipe baseline
+            _apply(provider, pipe_uuid, "quantum", baseline.get("quantum"), dry_run)
+            _apply(provider, pipe_uuid, "target", baseline.get("target"), dry_run)
+        log.info("Sweep %s: restored baseline", sweep_id)
     except Exception:  # noqa: BLE001 — never raise out of cleanup
         log.exception("Sweep %s: baseline restore failed", sweep_id)
 
@@ -226,28 +276,41 @@ def _drive(sweep_id: int) -> None:
             sw.started_at = datetime.now(timezone.utc)
             variants = list((sw.spec or {}).get("variants") or [])
             iterations, dwell_s, dry_run, pipe_uuid = sw.iterations, sw.dwell_s, sw.dry_run, sw.pipe_uuid
+            baseline = dict(sw.baseline or {})
             results = list(sw.results or [])
 
+        last_pipe: str | None = None
         for idx, variant in enumerate(variants):
             if cancel_evt.is_set():
                 final_status = SweepStatus.CANCELLED
                 break
             quantum, target = variant.get("quantum"), variant.get("target")
-            _apply(provider, pipe_uuid, "quantum", quantum, dry_run)
-            _apply(provider, pipe_uuid, "target", target, dry_run)
+            # Each variant varies ONE pipe; reset the previously-varied pipe to its
+            # baseline first so only this variant's pipe is off-baseline.
+            pipe = variant.get("pipe_uuid") or pipe_uuid
+            pipe_label = variant.get("pipe_label")
+            if last_pipe is not None and last_pipe != pipe:
+                _restore_pipe(provider, baseline, last_pipe, dry_run)
+            _apply(provider, pipe, "quantum", quantum, dry_run)
+            _apply(provider, pipe, "target", target, dry_run)
+            last_pipe = pipe
             # Let the change settle (and serve as a cancel checkpoint).
             if dwell_s > 0 and cancel_evt.wait(dwell_s):
                 final_status = SweepStatus.CANCELLED
                 break
 
             run_id = create_run(
-                label=_label(quantum, target),
+                label=_label(quantum, target, pipe_label),
                 notes=f"Shotgun sweep #{sweep_id} variant {idx + 1}/{len(variants)}",
                 iterations=iterations,
             )
             execute_run(run_id)  # blocking; captures the just-applied settings onto the run
             results.append(
-                {"index": idx, "quantum": quantum, "target": target, "run_id": run_id, "sops": _run_sops(run_id)}
+                {
+                    "index": idx, "quantum": quantum, "target": target,
+                    "pipe_uuid": pipe, "pipe_label": pipe_label,
+                    "run_id": run_id, "sops": _run_sops(run_id),
+                }
             )
             with session_scope() as session:
                 sw = session.get(Sweep, sweep_id)
@@ -286,11 +349,18 @@ def reconcile_interrupted_sweeps() -> int:
             if not sw.dry_run:
                 try:
                     provider = provider or get_provider()
-                    for param in ("quantum", "target"):
-                        if baseline.get(param) is not None:
-                            provider.apply(
-                                {"pipe_uuid": sw.pipe_uuid or None, "param": param, "value": baseline[param]}
-                            )
+                    pipes = baseline.get("pipes") or {}
+                    if pipes:
+                        for uuid, base in pipes.items():
+                            for param in ("quantum", "target"):
+                                if base.get(param) is not None:
+                                    provider.apply({"pipe_uuid": uuid, "param": param, "value": base[param]})
+                    else:  # legacy single-pipe baseline
+                        for param in ("quantum", "target"):
+                            if baseline.get(param) is not None:
+                                provider.apply(
+                                    {"pipe_uuid": sw.pipe_uuid or None, "param": param, "value": baseline[param]}
+                                )
                 except Exception:  # noqa: BLE001
                     log.exception("Sweep %s: restore on reconcile failed", sw.id)
             sw.status = SweepStatus.FAILED
