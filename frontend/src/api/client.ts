@@ -20,6 +20,9 @@ import type {
   SettingsDiagnostics,
   SettingsImpact,
   SettingsProfilesResponse,
+  Sweep,
+  SweepPreview,
+  SweepSpec,
   TestApplyResult,
   TrendHeatmapResponse,
   TrendRelativeResponse,
@@ -121,6 +124,30 @@ export const api = {
   providerHealth: () => request<ProviderHealth>("/config/provider"),
   discover: () => request<DiscoverResponse>("/config/discover", { method: "POST" }),
   testApply: () => request<TestApplyResult>("/config/test-apply", { method: "POST" }),
+
+  // Shotgun Sweep
+  sweepPreview: (body: { spec: SweepSpec; iterations: number; dwell_minutes: number }) =>
+    request<SweepPreview>("/sweep/preview", { method: "POST", body: JSON.stringify(body) }),
+  startSweep: (body: {
+    spec: SweepSpec;
+    iterations: number;
+    dwell_minutes: number;
+    dry_run: boolean;
+    pipe_uuid?: string | null;
+  }) =>
+    request<Sweep>(`/sweep?tz_offset=${tzOffsetMinutes()}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  sweepCurrent: () =>
+    request<{ sweep: Sweep | null }>(`/sweep/current?tz_offset=${tzOffsetMinutes()}`),
+  cancelSweep: (id: number) =>
+    request<{ cancelling: boolean }>(`/sweep/${id}/cancel`, { method: "POST" }),
+  applySweepBest: (id: number) =>
+    request<{ ok: boolean; applied: Record<string, unknown>; run_id: number | null; sops: number | null }>(
+      `/sweep/${id}/apply-best`,
+      { method: "POST" }
+    ),
   snapshots: () => request<ConfigSnapshot[]>("/config/snapshots"),
 
   // Plugins
