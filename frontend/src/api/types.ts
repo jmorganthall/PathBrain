@@ -12,8 +12,10 @@ export interface RunSummary {
   finished_at?: string | null;
   status: string;
   label?: string | null;
-  sops?: number | null;
-  // True when this run's score predates the current rubric (legacy, not comparable).
+  // Headline axis scores under the current methodology (null until scored/comparable).
+  speed?: number | null;
+  smoothness?: number | null;
+  // True when the run has a score but isn't comparable under the current methodology.
   legacy?: boolean;
   iterations: number;
   iterations_completed: number;
@@ -275,9 +277,10 @@ export interface SeriesPoint {
   run_id: number;
   timestamp: string;
   label?: string | null;
-  sops: number | null;
-  sops_min?: number | null;
-  sops_max?: number | null;
+  speed: number | null;
+  smoothness: number | null;
+  stability?: number | null;
+  completion?: number | null;
   dns_ms: number | null;
   tcp_ms: number | null;
   tls_ms: number | null;

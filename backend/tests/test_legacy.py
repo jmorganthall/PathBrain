@@ -23,8 +23,17 @@ def _isolate_runs():
 
 
 def _seed(metric_values: dict, sops: float = 80.0) -> int:
+    """Seed a completed run. Runs carrying the current-rubric marker also get a
+    comparable Score under the current methodology (so they're non-legacy); others
+    get only the legacy ScoreResult (no comparable Score → flagged legacy)."""
+    from pathbrain.methodology import CURRENT_METHODOLOGY
+
+    comparable = has_latest_metrics(metric_values)
     with session_scope() as s:
-        run = Run(status=RunStatus.COMPLETE)
+        run = Run(
+            status=RunStatus.COMPLETE,
+            methodology_version=CURRENT_METHODOLOGY if comparable else None,
+        )
         s.add(run)
         s.flush()
         s.add(
@@ -33,6 +42,12 @@ def _seed(metric_values: dict, sops: float = 80.0) -> int:
                 metric_values=metric_values,
             )
         )
+        if comparable:
+            s.add(Score(
+                run_id=run.id, methodology_version=CURRENT_METHODOLOGY, is_at_measure=True,
+                comparability="exact", axis_scores={"speed": sops, "smoothness": sops},
+                subscores={}, weights_used={}, metric_values=metric_values,
+            ))
         return run.id
 
 
