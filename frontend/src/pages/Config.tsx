@@ -18,6 +18,7 @@ import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
+import Tooltip from "@mui/material/Tooltip";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
@@ -61,8 +62,10 @@ function NumberField(props: {
   min?: number;
   max?: number;
   error?: string | null;
+  /** Persistent hint shown under the field (format / meaning). Hidden by an error. */
+  helperText?: string;
 }) {
-  const { label, value, onChange, width = 150, fullWidth, step = 1, min, max, error } = props;
+  const { label, value, onChange, width = 150, fullWidth, step = 1, min, max, error, helperText } = props;
   return (
     <TextField
       size="small"
@@ -72,7 +75,7 @@ function NumberField(props: {
       value={Number.isFinite(value) ? value : ""}
       onChange={(e) => onChange(parseFloat(e.target.value))}
       error={Boolean(error)}
-      helperText={error ?? undefined}
+      helperText={error ?? helperText ?? undefined}
       sx={fullWidth ? undefined : { width }}
       inputProps={{ step, min, max }}
     />
@@ -375,39 +378,45 @@ export default function Config() {
             auto-promote is on. Start in dry-run to validate.
           </Alert>
           <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center">
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={d.experiment.enabled}
-                  onChange={(e) =>
-                    setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, enabled: e.target.checked } } : p))
-                  }
-                />
-              }
-              label="Armed"
-            />
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={d.experiment.dry_run}
-                  onChange={(e) =>
-                    setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, dry_run: e.target.checked } } : p))
-                  }
-                />
-              }
-              label="Dry-run (no changes applied)"
-            />
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={d.experiment.auto_promote}
-                  onChange={(e) =>
-                    setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, auto_promote: e.target.checked } } : p))
-                  }
-                />
-              }
-              label="Auto-promote winner"
-            />
+            <Tooltip title="Master on/off switch for the experiment engine. Off = it never runs and never touches the firewall. On = it runs during the window below. Leave dry-run on until you trust it.">
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={d.experiment.enabled}
+                    onChange={(e) =>
+                      setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, enabled: e.target.checked } } : p))
+                    }
+                  />
+                }
+                label="Armed"
+              />
+            </Tooltip>
+            <Tooltip title="When on, the engine logs the changes it *would* make but does NOT write to the firewall — a safe rehearsal. Turn it off only when you're ready for real shaper changes during the window.">
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={d.experiment.dry_run}
+                    onChange={(e) =>
+                      setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, dry_run: e.target.checked } } : p))
+                    }
+                  />
+                }
+                label="Dry-run (no changes applied)"
+              />
+            </Tooltip>
+            <Tooltip title="At the window's close: ON keeps the best-performing candidate value live; OFF restores the original pre-window setting regardless of the result. Start with OFF.">
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={d.experiment.auto_promote}
+                    onChange={(e) =>
+                      setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, auto_promote: e.target.checked } } : p))
+                    }
+                  />
+                }
+                label="Auto-promote winner"
+              />
+            </Tooltip>
           </Stack>
           <Stack direction="row" spacing={2} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
             <TextField
@@ -418,7 +427,8 @@ export default function Config() {
               onChange={(e) =>
                 setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, param: e.target.value } } : p))
               }
-              sx={{ width: 160 }}
+              helperText="The single fq_codel shaper field to sweep this run."
+              sx={{ width: 200 }}
             >
               {EXP_PARAMS.map((pm) => (
                 <MenuItem key={pm} value={pm}>
@@ -438,7 +448,8 @@ export default function Config() {
                   .map((s) => (s !== "" && Number.isFinite(Number(s)) ? Number(s) : s));
                 setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, candidates: vals } } : p));
               }}
-              sx={{ minWidth: 260, flex: 1 }}
+              helperText="Values to try for the parameter above, e.g. “1514, 2000, 3000”. Each is held for the dwell time, then benchmarked."
+              sx={{ minWidth: 280, flex: 1 }}
             />
             <TextField
               size="small"
@@ -447,7 +458,8 @@ export default function Config() {
               onChange={(e) =>
                 setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, pipe_uuid: e.target.value } } : p))
               }
-              sx={{ width: 220 }}
+              helperText="Which shaper pipe to target. Leave blank to use the first one discovered."
+              sx={{ width: 240 }}
             />
           </Stack>
           <Stack direction="row" spacing={2} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
@@ -455,6 +467,8 @@ export default function Config() {
               label="Dwell (min)"
               value={d.experiment.dwell_minutes}
               min={0}
+              width={170}
+              helperText="Minutes to hold each value before measuring, so the change settles."
               onChange={(v) =>
                 setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, dwell_minutes: v } } : p))
               }
@@ -463,6 +477,8 @@ export default function Config() {
               label="Min trials / value"
               value={d.experiment.min_trials_per_value}
               min={1}
+              width={170}
+              helperText="Benchmark runs per candidate before comparing — more = less noise."
               onChange={(v) =>
                 setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, min_trials_per_value: v } } : p))
               }
@@ -472,6 +488,8 @@ export default function Config() {
               value={d.experiment.improve_pct}
               min={0}
               step={0.5}
+              width={190}
+              helperText="A candidate must beat baseline SOPS by at least this % to be promoted."
               onChange={(v) =>
                 setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, improve_pct: v } } : p))
               }
@@ -480,28 +498,36 @@ export default function Config() {
           <Typography variant="subtitle2" sx={{ mt: 2 }}>
             Experimentation window (local time)
           </Typography>
-          <ToggleButtonGroup
-            size="small"
-            sx={{ mt: 1, flexWrap: "wrap" }}
-            value={d.experiment.window.days}
-            onChange={(_e, days: number[]) =>
-              setDraft((p) =>
-                p ? { ...p, experiment: { ...p.experiment, window: { ...p.experiment.window, days } } } : p
-              )
-            }
-          >
-            {EXP_DAYS.map((lbl, idx) => (
-              <ToggleButton key={idx} value={idx}>
-                {lbl}
-              </ToggleButton>
-            ))}
-          </ToggleButtonGroup>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+            The engine only sweeps during these days and hours — pick a low-traffic window (e.g. the
+            middle of the night) so experiments don't disrupt real use.
+          </Typography>
+          <Tooltip title="Days of the week the window is active. Highlighted = on. Select one or more.">
+            <ToggleButtonGroup
+              size="small"
+              sx={{ mt: 0.5, flexWrap: "wrap" }}
+              value={d.experiment.window.days}
+              onChange={(_e, days: number[]) =>
+                setDraft((p) =>
+                  p ? { ...p, experiment: { ...p.experiment, window: { ...p.experiment.window, days } } } : p
+                )
+              }
+            >
+              {EXP_DAYS.map((lbl, idx) => (
+                <ToggleButton key={idx} value={idx}>
+                  {lbl}
+                </ToggleButton>
+              ))}
+            </ToggleButtonGroup>
+          </Tooltip>
           <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
             <NumberField
               label="Start hour"
               value={d.experiment.window.start_hour}
               min={0}
               max={24}
+              width={170}
+              helperText="0–23, inclusive. 24-hour clock (e.g. 2 = 2 AM)."
               onChange={(v) =>
                 setDraft((p) =>
                   p ? { ...p, experiment: { ...p.experiment, window: { ...p.experiment.window, start_hour: v } } } : p
@@ -513,6 +539,8 @@ export default function Config() {
               value={d.experiment.window.end_hour}
               min={0}
               max={24}
+              width={170}
+              helperText="0–24, exclusive. e.g. 5 = stop at 5 AM."
               onChange={(v) =>
                 setDraft((p) =>
                   p ? { ...p, experiment: { ...p.experiment, window: { ...p.experiment.window, end_hour: v } } } : p
@@ -522,7 +550,8 @@ export default function Config() {
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
             Hours use the container's local time — set the <code>TZ</code> env var to your timezone.
-            Start &gt; end means an overnight window. Manage running experiments on the Experiments page.
+            Start &gt; end means an <b>overnight</b> window (e.g. 22 → 5 runs 10 PM to 5 AM). Manage
+            running experiments on the Experiments page.
           </Typography>
         </CardContent>
       </Card>
