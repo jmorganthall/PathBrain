@@ -4,7 +4,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from pathbrain.database import session_scope
-from pathbrain.models import Run, RunStatus, ScoreResult
+from pathbrain.methodology import CURRENT_METHODOLOGY
+from pathbrain.models import Run, RunStatus, Score, ScoreResult
 from pathbrain.settings_profile import diff_profiles, fingerprint, normalize, summarize
 from pathbrain.providers.mock import MockProvider
 
@@ -62,16 +63,25 @@ def _seed_run(
         session.flush()
         session.add(
             ScoreResult(
-                run_id=run.id,
-                sops=sops,
-                subscores={},
-                weights_used={},
-                # Default to the latest (trajectory) metric set so runs aren't
-                # filtered out by the complete_only default; pass {} for a legacy run.
+                run_id=run.id, sops=sops, subscores={}, weights_used={},
                 metric_values=metric_values if metric_values is not None
                 else {"longest_stall": 1500.0, "fcp": 500.0, "lcp": 800.0},
-                completion=completion,
-                completion_metric_values=completion_metrics,
+                completion=completion, completion_metric_values=completion_metrics,
+            )
+        )
+        # Settings now reads the (run × methodology) Score: smoothness is the ranking
+        # axis. A legacy run (metric_values={}) gets an *incomparable* Score so it's
+        # excluded; everything else is comparable with smoothness = the seeded score.
+        comparable = metric_values is None or len(metric_values) > 0
+        axes = {"speed": sops, "smoothness": sops}
+        if completion is not None:
+            axes["completion"] = completion
+        session.add(
+            Score(
+                run_id=run.id, methodology_version=CURRENT_METHODOLOGY, is_at_measure=True,
+                comparability="exact" if comparable else "incomparable",
+                axis_scores=axes if comparable else {},
+                subscores={}, weights_used={}, metric_values=completion_metrics or {},
             )
         )
 
@@ -182,11 +192,14 @@ def test_complete_only_filters_legacy_runs(client):
     fps = {p["fingerprint"] for p in default["profiles"]}
     assert default["complete_only"] is True
     assert "latestdata0x" in fps
-    assert "legacyonly9x" not in fps  # legacy excluded so it can't skew
+    # Incomparable runs have no axis score, so a legacy-only profile can't be ranked
+    # — it's absent whether or not complete_only filters it.
+    assert "legacyonly9x" not in fps
 
     allruns = client.get("/api/settings/profiles?complete_only=false").json()
     fps_all = {p["fingerprint"] for p in allruns["profiles"]}
-    assert {"latestdata0x", "legacyonly9x"} <= fps_all
+    assert "latestdata0x" in fps_all
+    assert "legacyonly9x" not in fps_all
 
 
 # ── one-click "Apply this profile" (firewall write) ──────────────────────────

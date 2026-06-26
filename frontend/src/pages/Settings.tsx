@@ -62,7 +62,7 @@ export function ImpactBanner({ impact }: { impact: SettingsImpact }) {
     <Alert severity={severity} icon={<InsightsIcon />} sx={{ mb: 2 }}>
       <Typography variant="body2">
         Since the settings changed{impact.changed_at ? ` (${fmtDateTime(impact.changed_at)})` : ""},
-        median SOPS moved <b>{arrow} {Math.abs(impact.delta_pct)}%</b> (
+        median Smoothness moved <b>{arrow} {Math.abs(impact.delta_pct)}%</b> (
         {impact.before?.median} → {impact.after?.median}).{" "}
         {collecting
           ? `Collecting data before calling it — ${nBefore}/${nAfter} runs (need ${impact.min_runs} each).`
@@ -121,7 +121,7 @@ function RelativeSopsCell({
   return (
     <Tooltip
       arrow
-      title={`Median SOPS minus the day×hour historical norm, over ${rel.count} run${
+      title={`Median Smoothness minus the day×hour historical norm, over ${rel.count} run${
         rel.count === 1 ? "" : "s"
       } (IQR ${rel.p25} to ${rel.p75}). Positive = this profile performs above the typical score for the times it actually ran, with the time-of-day environment removed.`}
     >
@@ -166,7 +166,7 @@ export function ProfileDiffCard({
           <Chip
             size="small"
             color={improved ? "success" : "warning"}
-            label={`SOPS ${improved ? "▲" : "▼"} ${diff.delta_abs >= 0 ? "+" : ""}${diff.delta_abs}${
+            label={`Smoothness ${improved ? "▲" : "▼"} ${diff.delta_abs >= 0 ? "+" : ""}${diff.delta_abs}${
               diff.delta_pct != null
                 ? ` (${diff.delta_pct >= 0 ? "+" : ""}${diff.delta_pct}%)`
                 : ""
@@ -175,7 +175,7 @@ export function ProfileDiffCard({
           {diff.relative_delta != null && (
             <Tooltip
               arrow
-              title="SOPS gap once each profile's day×hour environment is removed. If this differs from the raw delta, the two profiles were sampled at different times — and this is the fairer number."
+              title="Smoothness gap once each profile's day×hour environment is removed. If this differs from the raw delta, the two profiles were sampled at different times — and this is the fairer number."
             >
               <Chip
                 size="small"
@@ -380,7 +380,7 @@ export default function Settings() {
           <Typography variant="body2" color="text.secondary">
             Only runs with the latest metrics (full paint data)
             {diag ? ` — ${diag.with_latest_metrics} of ${diag.total_completed} runs qualify` : ""}.
-            Legacy runs score SOPS off a thinner set and read artificially high.
+            Runs not comparable under the current methodology are excluded.
           </Typography>
         }
       />
@@ -433,8 +433,8 @@ export default function Settings() {
               />
             </Stack>
             <Typography variant="caption" color="text.secondary">
-              Ranked by median <b>SOPS</b> — the Seat of Pants, human-feel score (paint timing +
-              TTFB/render); higher is better, and it's the metric that decides "best". "Best" is only
+              Ranked by median <b>Smoothness</b> — how steadily content was delivered (the
+              project's reason for being); higher is better, and it decides "best". Speed is shown alongside. "Best" is only
               awarded to a confident profile. Iterations count every measurement sweep — a 15‑iteration
               run carries far more signal than a single‑iteration one. <b>vs typical</b> is the
               time-adjusted edge: median SOPS minus the historical norm for the day &amp; hour each run
@@ -455,7 +455,8 @@ export default function Settings() {
                     <TableCell>Profile</TableCell>
                     <TableCell align="right">Runs</TableCell>
                     <TableCell align="right">Iterations</TableCell>
-                    <TableCell align="right">SOPS</TableCell>
+                    <TableCell align="right">Smoothness</TableCell>
+                    <TableCell align="right">Speed</TableCell>
                     <TableCell align="right">vs typical</TableCell>
                     <TableCell align="right">IQR</TableCell>
                     <TableCell align="right">Min–Max</TableCell>
@@ -488,6 +489,7 @@ export default function Settings() {
                       <TableCell align="right" sx={{ fontWeight: 700 }}>
                         {p.median}
                       </TableCell>
+                      <TableCell align="right">{p.speed ? p.speed.median : "—"}</TableCell>
                       <TableCell align="right">
                         <RelativeSopsCell rel={p.relative_sops} confident={p.confident} />
                       </TableCell>

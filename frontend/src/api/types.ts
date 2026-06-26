@@ -100,11 +100,14 @@ export interface SettingsProfile {
   confident: boolean;
   first_seen: string;
   last_seen: string;
+  // Top-level distribution is Smoothness (the ranking axis).
   median: number;
   p25: number;
   p75: number;
   min: number;
   max: number;
+  // Speed axis distribution (the other headline axis), shown alongside.
+  speed: ProfileSpread | null;
   // Completion axis distribution; null until any run in the profile captured its
   // (infra) metrics.
   completion: ProfileSpread | null;
