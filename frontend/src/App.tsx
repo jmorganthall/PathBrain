@@ -3,6 +3,7 @@ import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
 import Trends from "./pages/Trends";
+import ShotgunSweep from "./pages/ShotgunSweep";
 import RunDetail from "./pages/RunDetail";
 import Compare from "./pages/Compare";
 import Config from "./pages/Config";
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/compare" element={<Compare />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/experiments" element={<Experiments />} />
+        <Route path="/sweep" element={<ShotgunSweep />} />
         <Route path="/config" element={<Config />} />
         <Route path="/plugins" element={<Plugins />} />
         <Route path="*" element={<Navigate to="/" replace />} />

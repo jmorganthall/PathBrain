@@ -78,6 +78,15 @@ def _loop(stop: threading.Event) -> None:
                 )
             fail_stale_runs(timeout_min)
 
+            # A foreground Shotgun Sweep owns the benchmark pipeline while it runs
+            # (it drives execute_run from its own thread). Yield so monitoring and
+            # experiments never overlap its measurements.
+            from . import sweep
+
+            if sweep.active():
+                stop.wait(_TICK_SECONDS)
+                continue
+
             # Experiments take priority; if one did work this tick, skip monitoring
             # so the two never overlap or pollute each other's measurements.
             from . import experiment
