@@ -53,43 +53,61 @@ settings are actually best?* — into an empirical, measured answer.
 
 ### The Seat of Pants Score (SOPS)
 
-SOPS is a single **0–100** number. Each contributing metric is normalized to a
-0–100 subscore against configurable *best/worst* thresholds (lower latency →
-higher score), then combined by weight:
+SOPS is a single **0–100** number. It's **trajectory-aware**: it rewards a page
+that paints *early and steadily*, not one that merely finishes first. Each metric
+is normalized to a 0–100 subscore against configurable *best/worst* thresholds
+(perception-calibrated log curve), then combined by weight (rubric `perceptual-v3`):
 
 | Metric | Source | Default weight | Why |
 | --- | --- | ---: | --- |
-| Render | Browser (headless Chromium) | 25% | What the user literally watches load |
-| TTFB | HTTP | 20% | First sign the page is responding |
-| TLS | TLS handshake | 20% | Felt on every new secure connection |
-| TCP | TCP connect | 15% | Connection setup latency |
-| DNS | Resolver lookup | 10% | The very first hop of every request |
-| Jitter | ICMP | 5% | Consistency matters, raw ping does not |
-| Packet loss | ICMP | 5% | Retransmits = stalls |
+| Speed Index | Browser filmstrip | 30% | Average time content is visible — early, progressive paint |
+| First Contentful Paint | Browser | 20% | First sign content is appearing |
+| Paint smoothness (cadence) | Browser filmstrip | 10% | Steady fill vs. stall-then-dump |
+| Largest Contentful Paint | Browser | 10% | Main content visible (a completion milestone) |
+| Interaction to Next Paint | Browser | 10% | Responsiveness to input |
+| Time to First Byte | HTTP | 10% | Server starting to respond |
+| Layout stability (CLS) | Browser | 5% | Janky reflow feels worse |
+| Total render (to network-idle) | Browser | 5% | Pure completion time — deliberately low |
 
-Two deliberate design choices:
+Three deliberate design choices:
 
-- **Ping does not dominate.** Latency-derived metrics carry only 10% by default;
-  perceptual metrics (render, TTFB, TLS) carry the most.
-- **Missing metrics never penalize.** If a metric is unavailable (e.g. `render`
-  before the browser engine ships, or a failed probe), its weight is
-  redistributed proportionally across the metrics that *are* present — so the
-  score stays on a stable, comparable 0–100 scale.
+- **The journey beats the endpoint.** Speed Index + FCP + cadence + CLS (65%)
+  dominate "how it unfolded"; completion times (LCP + render = 15%) are kept low.
+- **Infra timing is a separate axis.** Raw DNS/TCP/TLS/jitter/loss form the
+  secondary **Completion** score — diagnostic only, never folded into SOPS, since
+  it barely moves human feel.
+- **Missing metrics never penalize.** If a metric is unavailable (e.g. Speed Index
+  where the browser/filmstrip didn't run, or a failed probe), its weight is
+  redistributed across the metrics that *are* present, keeping a stable 0–100 scale.
 
-All weights and thresholds are editable at runtime from the UI or `PUT /api/config`.
+Plugins are **pure sensors** that store raw observations; all interpretation
+(jitter = stddev of pings, Speed Index from the filmstrip, the score itself) lives
+in a separate, versioned layer — so a new metric or a changed formula can be
+re-derived over history without re-collecting (`POST /api/score/rederive`). All
+weights and thresholds are editable at runtime from the UI or `PUT /api/config`.
 
 ---
 
 ## Status — what works today ✅
 
-- 🔌 **Plugin benchmark engine** — six independent, registered benchmarks:
-  `icmp` (latency / jitter / loss), `dns` (per-resolver lookup), `tcp` (connect),
-  `tls` (handshake), `http` (TTFB / download / transfer speed), and `browser`
-  (headless-Chromium page-load timing + **total render**, with screenshot & HAR).
-- 🧮 **SOPS scoring** — perception-calibrated **log curve** (Weber–Fechner;
-  thresholds anchored to Nielsen / RAIL), proportional weight redistribution for
-  missing metrics, and a **versioned rubric** with `POST /api/score/rescore` to
-  re-grade history after a calibration change.
+- 🔌 **Plugin benchmark engine** — six registered benchmarks (**pure sensors** that
+  store raw observations): `icmp` (per-ping RTT series), `dns` (per-resolver lookup),
+  `tcp` (connect), `tls` (handshake), `http` (TTFB / bytes / timing), and `browser`
+  (headless-Chromium nav/paint timing + a **filmstrip**, with screenshot & HAR).
+- 🧮 **Trajectory-aware SOPS** — perception-calibrated **log curve** (Weber–Fechner),
+  led by **Speed Index**, paint cadence and CLS (from the filmstrip) so a smoothly-
+  progressive load wins over one that finishes first. Raw-only collection + a
+  **versioned interpretation layer**: `POST /api/score/rescore` re-grades under a
+  new rubric, `POST /api/score/rederive` re-runs derivation from stored raw (new
+  metric / formula) — neither re-collects.
+- 🌦️ **Historical trends + "vs typical"** — per-metric baselines by day-of-week ×
+  hour-of-day (`/api/trends/*`); the Dashboard, a dedicated **Trends** page, and
+  **Settings Impact** read each result *relative to its historical norm* ("wins
+  above replacement"), so a config is judged fairly for the times it actually ran.
+- 🎯 **Shotgun Sweep** — an on-demand grid sweep over quantum × target: applies each
+  variant for real, benchmarks it, ranks by SOPS + "vs typical", and **restores the
+  baseline** at the end (and on startup if interrupted). Plus a reversible **config
+  write-test** (`POST /api/config/test-apply`) to validate the firewall apply path.
 - 🔁 **Multi-iteration runs** — repeat the suite N times and take the **median**,
   with a per-run **confidence band** (± / range) and an **ETA**.
 - 📈 **Continuous monitoring + rolling score** — optional scheduler runs the suite
@@ -102,17 +120,18 @@ All weights and thresholds are editable at runtime from the UI or `PUT /api/conf
 - 🧪 **Experiment engine** — within a configurable **window**, sweep one shaper
   parameter across candidates, benchmark each, and **restore the pre-window
   baseline** at close (or auto-promote a clear winner). **Disarmed + dry-run by
-  default.** The only path that *writes* to the firewall.
+  default.** Firewall writes go only through `provider.apply()` (experiment, Shotgun
+  Sweep, config write-test) — each reversible and snapshot/restore.
 - 🛡️ **Run-lifecycle safety** — startup reconciliation + a watchdog timeout +
   manual cancel so a restart/hang never leaves a zombie "running" job.
-- 📊 **Web dashboard** — React + MUI, dark mode: Dashboard (rolling score +
-  aggregated metric breakdown + trend), History (charts + paginated runs),
-  Compare, Settings Impact, Experiments, Config, Run Detail.
+- 📊 **Web dashboard** — React + MUI, dark mode: Dashboard (rolling score + "vs
+  typical" + metric breakdown), History, **Trends** (day/hour heatmaps), Compare,
+  Settings Impact, Experiments, **Shotgun Sweep**, Config, Run Detail (with filmstrip).
 - 💾 **SQLite persistence** with additive auto-migrations; background execution.
 
-**Next:** real-world test profiles, speed test, bufferbloat, multi-parameter
-Bayesian search + interleaved A/B with effect-size/CI + hysteresis, routing
-intelligence / SD-WAN.
+**Next:** speed test / bufferbloat (latency-under-load), A/B weight calibration from
+blind ratings, multi-parameter Bayesian search + interleaved A/B with effect-size/CI
++ hysteresis, routing intelligence / SD-WAN.
 
 ---
 
@@ -230,9 +249,10 @@ PATHBRAIN_OPNSENSE_VERIFY_TLS=false
 > Users → (your user) → API keys**. The user needs **traffic-shaper read** access
 > (page privilege **"Firewall: Shaper"**, and/or **"System: Settings: Traffic
 > Shaper"**), or use an admin account — without it discovery returns 403. The
-> **experiment engine additionally writes** to the shaper (`setPipe` +
-> `reconfigure`), so arming it for real needs write access; it's **disarmed +
-> dry-run by default** and always snapshots/restores the baseline.
+> **experiment engine, Shotgun Sweep, and config write-test additionally write** to
+> the shaper (`setPipe` + `reconfigure`), so those need write access; each is
+> reversible and snapshots/restores the baseline (the experiment engine is also
+> disarmed + dry-run by default).
 
 ### Runtime (DB-backed, edit on the Config page or `PUT /api/config`)
 
@@ -243,6 +263,7 @@ run needs no setup:
 - **`iterations`** — suite repeats per run; the headline SOPS is the **median**.
 - **`monitoring`** — `enabled`, `interval_minutes`, `run_timeout_minutes` (watchdog).
 - **`correlation`** — `significant_change_pct`, `min_runs` (settings-impact guards).
+- **`trends`** — `lookback_days`, `window_hours`, `min_samples` (historical baselines).
 - **`rubric_version` / `weights` / `thresholds`** — the scoring rubric (perception
   curve). After editing, **Save → Re-score history** to keep the timeline comparable.
 - **`experiment`** — `enabled`, `dry_run`, `auto_promote`, `param`, `candidates`,
@@ -270,12 +291,16 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 | `GET /api/score/{id}` / `…/weights` | Run score / current weights + thresholds |
 | `GET /api/score/rolling` | Windowed median SOPS + IQR + aggregated subscores |
 | `POST /api/score/rescore` | Re-grade all history with the current rubric |
+| `POST /api/score/rederive` | Re-run derivation+scoring from stored raw (new metric/formula) |
 | `POST /api/score/preview` | Score ad-hoc metrics with current weights |
+| `GET /api/trends/heatmap` | Per-metric baseline grid by day-of-week × hour-of-day |
+| `GET /api/trends/relative` | Current reading vs. its historical baseline ("vs typical") |
 | `GET /api/monitoring` | Continuous-monitoring scheduler status |
 | `GET /api/config` / `PUT` / `POST …/reset` | Read / update / reset benchmark config |
 | `POST /api/config/adopt-rubric` | Load perception-calibrated default rubric |
 | `GET /api/config/provider` | Discovery provider health (cause shown if down) |
 | `POST /api/config/discover` | Discover FQ-CoDel settings + store a snapshot |
+| `POST /api/config/test-apply` | Reversible write-path test (nudge quantum +1, then restore) |
 | `GET /api/config/snapshots` | List stored config snapshots |
 | `GET /api/settings/profiles` | Per-settings-profile SOPS distribution |
 | `GET /api/settings/impact` | Significance of the latest settings change |
@@ -283,6 +308,9 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 | `GET /api/settings/diagnostics` | Settings-capture diagnostics (stamped/unstamped) |
 | `GET /api/experiments` / `…/{id}` | Experiment status + history / one experiment's trials |
 | `POST /api/experiments/abort` | Abort the running experiment, restore baseline |
+| `POST /api/sweep/preview` | Shotgun Sweep variant count + ETA for a spec |
+| `POST /api/sweep` · `GET /api/sweep/current` | Start a sweep / poll the active (or latest) sweep |
+| `POST /api/sweep/{id}/cancel` · `…/apply-best` | Cancel (restores baseline) / apply the winning variant |
 | `GET /api/plugins` | List registered benchmark plugins |
 | `GET /api/health` | Liveness / version |
 
@@ -324,17 +352,20 @@ backend/pathbrain/
   main.py            FastAPI app (serves UI; startup reconcile; /artifacts)
   config.py          Env-driven infrastructure settings
   database.py        SQLAlchemy engine/session + additive SQLite migrations
-  models.py          ORM: Run, BenchmarkResult, ScoreResult, ConfigSnapshot,
-                     AppConfig, Experiment, ExperimentTrial
+  models.py          ORM: Run, BenchmarkResult (+raw), ScoreResult, ConfigSnapshot,
+                     AppConfig, Experiment, ExperimentTrial, Sweep
   schemas.py         Pydantic request/response models
-  runner.py          Run orchestration; median aggregation; reconcile/watchdog/rescore
-  scheduler.py       Daemon thread: watchdog → experiment step → monitoring run
+  runner.py          Run orchestration; median aggregation; reconcile/watchdog/rescore/rederive
+  scheduler.py       Daemon thread: watchdog → (yield to sweep) → experiment → monitoring
   experiment.py      Window-gated autonomous shaper sweep (writes via provider.apply)
+  sweep.py           Shotgun Sweep: on-demand grid sweep, applies + restores baseline
+  trends.py          Day/hour historical baselines + time-adjusted "vs typical"
   settings_profile.py  Normalize/fingerprint/summarize firewall profiles
   config_store.py    DB-backed runtime config + defaults
   logging_config.py  Structured logging
   api/               REST routers (one module per resource)
-  plugins/           Benchmark plugins + registry (base.py)
+  plugins/           Benchmark plugins + registry (base.py) — pure sensors (raw only)
+  interpret/         Raw observations → metric values (derive.py, versioned)
   providers/         Config discovery + apply (opnsense.py, mock.py)
   scoring/           SOPS engine (engine.py, perception-calibrated)
 frontend/            React + TS + Vite + MUI dashboard (dark mode)
@@ -346,8 +377,9 @@ docker-compose*.yml  Build (.yml) and pull-from-GHCR (.ghcr.yml) deploys
 ### Extending PathBrain
 
 - **New benchmark:** drop a module in `plugins/`, subclass `BenchmarkPlugin`,
-  decorate with `@register`, and return a `PluginResult`. Plugins must never
-  raise for measurement failures — return `success=False` with an `error`.
+  decorate with `@register`, and return a `PluginResult` with **raw observations
+  only** (`raw=…`) — derive the scoreable metrics in `interpret/derive.py`. Plugins
+  must never raise for measurement failures — return `success=False` with an `error`.
 - **New firewall:** subclass `ConfigProvider` in `providers/` and implement
   `discover()` / `snapshot()` (and `apply()` to support the experiment engine).
 
@@ -365,12 +397,21 @@ docker-compose*.yml  Build (.yml) and pull-from-GHCR (.ghcr.yml) deploys
 - [x] **Settings-vs-responsiveness correlation:** each run is fingerprinted with
       the live FQ-CoDel/SQM settings; runs group into profiles with their SOPS
       distribution, and a significant-change banner (with a min-runs guard).
-- [ ] **Real-world profiles, speed test, bufferbloat test.**
+- [x] **Trajectory-aware scoring:** raw-only collection + a versioned interpretation
+      layer; **Speed Index**, paint cadence and CLS from a browser filmstrip lead the
+      rubric (`perceptual-v3`); `rederive` re-applies new metrics to history.
+- [x] **Historical trends + relative SOPS:** day-of-week × hour-of-day baselines and
+      a time-adjusted "vs typical" reading on the Dashboard, Trends page, and
+      Settings Impact.
 - [x] **Experiment engine:** within an experimentation window, sweep one shaper
       parameter across candidates (interleaved), benchmark each, and **restore the
       pre-window baseline** when the window closes (or auto-promote a clear
       winner). Disarmed + dry-run by default; manual abort restores baseline.
       *Requires OPNsense write (apply) access; window uses the container `TZ`.*
+- [x] **Shotgun Sweep:** on-demand grid sweep (quantum × target) that applies each
+      variant, benchmarks it, ranks by SOPS + "vs typical", and restores the
+      baseline — plus a reversible config write-test. *Requires apply access.*
+- [ ] **Speed test, bufferbloat (latency-under-load), A/B weight calibration.**
 - [ ] **Phase 4 — Fuller autonomy:** Bayesian search over multiple parameters,
       interleaved A/B with effect-size + CI, hysteresis across windows.
 - [ ] **Phase 5 — Routing intelligence / SD-WAN** with hysteresis (no route
