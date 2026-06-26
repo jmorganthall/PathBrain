@@ -22,6 +22,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -63,6 +64,10 @@ class Run(Base):
     # is a stable hash so runs can be grouped by configuration profile.
     settings_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # The methodology version this run was scored under at capture (its at-measure
+    # interpretation). See the Score table + docs/methodology.md.
+    methodology_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # The benchmark config used for this run (snapshot for reproducibility).
     config_used: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -300,3 +305,43 @@ class Methodology(Base):
     # The full frozen catalog + rubric: {axes:[...], metrics:[{key, axis, weight,
     # best, worst, unit, label, required, ...}]}. See methodology.build_definition.
     definition: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class Score(Base):
+    """A run's score under one methodology — the (run × methodology) record.
+
+    Each pairing of a run with a methodology is its own immutable row, so a run can
+    be viewed under any past or present methodology (see ``docs/methodology.md``):
+
+    * **score-at-measure** — the row whose ``methodology_version`` is the one that was
+      current when the run was collected (``is_at_measure=True``). Written once at
+      capture, never overwritten.
+    * **score-at-present** — the row for the *current* methodology; added/refreshed by
+      re-grading (Phase 3), which never touches the at-measure row of another version.
+
+    ``comparability`` records whether this run's raw can reproduce the methodology's
+    metrics: ``exact`` (all present), ``partial`` (some optional ones missing —
+    redistributed, see ``missing_metrics``), or ``incomparable`` (a required metric the
+    raw never captured).
+    """
+
+    __tablename__ = "scores"
+    __table_args__ = (UniqueConstraint("run_id", "methodology_version", name="uq_score_run_methodology"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"))
+    # Soft reference (no hard FK): pre-foundation versions may not be recorded.
+    methodology_version: Mapped[str] = mapped_column(String(64))
+    is_at_measure: Mapped[bool] = mapped_column(default=False)
+    comparability: Mapped[str] = mapped_column(String(16), default="exact")
+    missing_metrics: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    # Per-axis headline scores, e.g. {"sops": 78.1, "completion": 70.4}.
+    axis_scores: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Per-metric 0..100 subscores, redistributed weights, and the scalars scored.
+    subscores: Mapped[dict] = mapped_column(JSON, default=dict)
+    weights_used: Mapped[dict] = mapped_column(JSON, default=dict)
+    metric_values: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Per-axis confidence bands: {axis: {stdev, min, max, ...}}.
+    bands: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

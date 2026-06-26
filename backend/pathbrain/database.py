@@ -65,6 +65,7 @@ def _migrate() -> None:
             "per_iteration_ms": "FLOAT",
             "settings_fingerprint": "VARCHAR(40)",
             "settings": "JSON",
+            "methodology_version": "VARCHAR(64)",
         },
         "benchmark_results": {
             "raw": "JSON",
