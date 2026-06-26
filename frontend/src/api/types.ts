@@ -27,6 +27,15 @@ export interface RunEstimate {
   max_iterations: number;
 }
 
+// Where the window's stall time came from (PRD R7). dominant is the layer to act
+// on: "network" is tunable (FQ-CoDel/quantum); "render" is main-thread, not.
+export interface StallAttribution {
+  network_ms: number;
+  render_ms: number;
+  unknown_ms: number;
+  dominant: "network" | "render" | "mixed" | "unknown";
+}
+
 export interface RollingScore {
   window_hours: number;
   count: number;
@@ -38,6 +47,7 @@ export interface RollingScore {
   subscores: Record<string, number>;
   metric_values: Record<string, number>;
   weights: Record<string, number>;
+  attribution?: StallAttribution | null;
 }
 
 export interface MonitoringStatus {

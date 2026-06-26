@@ -123,12 +123,12 @@ def test_rolling_score_shape(client):
 def test_adopt_rubric_and_rescore(client):
     adopted = client.post("/api/config/adopt-rubric")
     assert adopted.status_code == 200
-    assert adopted.json()["rubric_version"] == "perceptual-v4"
+    assert adopted.json()["rubric_version"] == "perceptual-v5"
 
     resp = client.post("/api/score/rescore")
     assert resp.status_code == 200
     body = resp.json()
-    assert "rescored" in body and body["rubric_version"] == "perceptual-v4"
+    assert "rescored" in body and body["rubric_version"] == "perceptual-v5"
 
 
 def test_monitoring_status_shape(client):
@@ -137,3 +137,31 @@ def test_monitoring_status_shape(client):
     body = resp.json()
     assert body["enabled"] is False
     assert "interval_minutes" in body and "next_run_at" in body
+
+
+def test_rolling_score_surfaces_stall_attribution(client):
+    """The 24h rolling breakdown exposes a network/render/mixed attribution badge
+    derived from the window's browser stall metrics (PRD R7)."""
+    from pathbrain.database import session_scope
+    from pathbrain.models import BenchmarkResult, Run, RunStatus, ScoreResult
+
+    with session_scope() as s:
+        run = Run(status=RunStatus.COMPLETE)
+        s.add(run)
+        s.flush()
+        # Non-legacy score (carries the longest_stall marker so rolling keeps it).
+        s.add(ScoreResult(
+            run_id=run.id, sops=75.0, subscores={"longest_stall": 44.0},
+            weights_used={"longest_stall": 1.0}, metric_values={"longest_stall": 398.0},
+        ))
+        # A render-dominated stall: render_stall_ms >> network_stall_ms.
+        s.add(BenchmarkResult(
+            run_id=run.id, plugin="browser", success=True,
+            metrics={"network_stall_ms": 40.0, "render_stall_ms": 360.0, "unknown_stall_ms": 0.0},
+        ))
+
+    body = client.get("/api/score/rolling?hours=24").json()
+    attr = body["attribution"]
+    assert attr is not None
+    assert attr["dominant"] == "render"  # main-thread bound — not network-tunable
+    assert attr["render_ms"] == 360.0 and attr["network_ms"] == 40.0

@@ -29,8 +29,10 @@ def test_registry_derives_config_defaults():
         "byte_earliness": 25, "fcp": 20, "longest_stall": 10, "perceived_time": 5,
         "cls": 5, "lcp": 10, "inp": 10, "ttfb": 10, "render": 5,
     }
-    assert DEFAULT_THRESHOLDS["fcp"] == {"best": 150.0, "worst": 4000.0}
-    assert DEFAULT_THRESHOLDS["ttfb"] == {"best": 30.0, "worst": 1000.0}
+    # perceptual-v5: thresholds anchored to CWV "good"/"poor" boundaries.
+    assert DEFAULT_THRESHOLDS["fcp"] == {"best": 1800.0, "worst": 3000.0}
+    assert DEFAULT_THRESHOLDS["ttfb"] == {"best": 800.0, "worst": 1800.0}
+    assert DEFAULT_THRESHOLDS["inp"] == {"best": 200.0, "worst": 500.0}
     assert DEFAULT_THRESHOLDS["byte_earliness"] == {"best": 300.0, "worst": 5000.0}
     assert DEFAULT_COMPLETION_WEIGHTS["tls"] == 20
     assert DEFAULT_COMPLETION_THRESHOLDS["packet_loss"] == {"best": 0.0, "worst": 2.5}

@@ -382,7 +382,7 @@ export default function Dashboard() {
                   : "Latest run"}
               </Typography>
               {aggBreakdown ? (
-                <SubscoreBreakdown score={aggBreakdown} />
+                <SubscoreBreakdown score={aggBreakdown} attribution={rolling?.attribution} />
               ) : latest.score ? (
                 <SubscoreBreakdown score={latest.score} />
               ) : (
