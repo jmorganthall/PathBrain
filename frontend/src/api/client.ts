@@ -95,7 +95,9 @@ export const api = {
 
   // Settings correlation
   settingsProfiles: (completeOnly = true) =>
-    request<SettingsProfilesResponse>(`/settings/profiles?complete_only=${completeOnly}`),
+    request<SettingsProfilesResponse>(
+      `/settings/profiles?complete_only=${completeOnly}&tz_offset=${tzOffsetMinutes()}`
+    ),
   settingsImpact: (completeOnly = true) =>
     request<SettingsImpact>(`/settings/impact?complete_only=${completeOnly}`),
   settingsBackfill: () =>

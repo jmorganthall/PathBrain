@@ -80,6 +80,45 @@ function completionSummary(p: SettingsProfile): string {
   return parts.length ? parts.join(" · ") : "no completion metrics captured";
 }
 
+// "Above/below the historical norm for when it ran." Positive = this config beats
+// the day×hour environment it was sampled in — the confound-controlled comparator.
+function RelativeSopsCell({
+  rel,
+  confident,
+}: {
+  rel: SettingsProfile["relative_sops"];
+  confident: boolean;
+}) {
+  if (!rel) {
+    return (
+      <Typography component="span" variant="caption" color="text.secondary">
+        —
+      </Typography>
+    );
+  }
+  const d = rel.delta_median;
+  const neutral = Math.abs(d) < 0.5;
+  const color = neutral ? "text.secondary" : d > 0 ? "success.main" : "error.main";
+  const arrow = neutral ? "" : d > 0 ? "▲ " : "▼ ";
+  return (
+    <Tooltip
+      arrow
+      title={`Median SOPS minus the day×hour historical norm, over ${rel.count} run${
+        rel.count === 1 ? "" : "s"
+      } (IQR ${rel.p25} to ${rel.p75}). Positive = this profile performs above the typical score for the times it actually ran, with the time-of-day environment removed.`}
+    >
+      <Typography
+        component="span"
+        sx={{ color, fontWeight: 700, opacity: confident ? 1 : 0.6, cursor: "help" }}
+      >
+        {arrow}
+        {d > 0 ? "+" : ""}
+        {d}
+      </Typography>
+    </Tooltip>
+  );
+}
+
 function dirArrow(d: ProfileFieldChange["direction"]): string {
   return d === "higher" ? "↑" : d === "lower" ? "↓" : "≠";
 }
@@ -115,6 +154,19 @@ export function ProfileDiffCard({
                 : ""
             }`}
           />
+          {diff.relative_delta != null && (
+            <Tooltip
+              arrow
+              title="SOPS gap once each profile's day×hour environment is removed. If this differs from the raw delta, the two profiles were sampled at different times — and this is the fairer number."
+            >
+              <Chip
+                size="small"
+                variant="outlined"
+                color={diff.relative_delta >= 0 ? "success" : "warning"}
+                label={`time-adj ${diff.relative_delta >= 0 ? "▲ +" : "▼ "}${diff.relative_delta}`}
+              />
+            </Tooltip>
+          )}
           {showCompletion && diff.completion_delta != null && (
             <Typography variant="caption" color="text.secondary">
               completion {diff.completion_delta >= 0 ? "▲ +" : "▼ "}
@@ -320,7 +372,10 @@ export default function Settings() {
               Ranked by median <b>SOPS</b> — the Seat of Pants, human-feel score (paint timing +
               TTFB/render); higher is better, and it's the metric that decides "best". "Best" is only
               awarded to a confident profile. Iterations count every measurement sweep — a 15‑iteration
-              run carries far more signal than a single‑iteration one.
+              run carries far more signal than a single‑iteration one. <b>vs typical</b> is the
+              time-adjusted edge: median SOPS minus the historical norm for the day &amp; hour each run
+              landed on — positive means the profile beats its environment, which is the fair way to
+              compare configs sampled at different times.
               {showCompletion && (
                 <>
                   {" "}
@@ -337,6 +392,7 @@ export default function Settings() {
                     <TableCell align="right">Runs</TableCell>
                     <TableCell align="right">Iterations</TableCell>
                     <TableCell align="right">SOPS</TableCell>
+                    <TableCell align="right">vs typical</TableCell>
                     <TableCell align="right">IQR</TableCell>
                     <TableCell align="right">Min–Max</TableCell>
                     {showCompletion && <TableCell align="right">Compl.</TableCell>}
@@ -366,6 +422,9 @@ export default function Settings() {
                       <TableCell align="right">{p.iterations}</TableCell>
                       <TableCell align="right" sx={{ fontWeight: 700 }}>
                         {p.median}
+                      </TableCell>
+                      <TableCell align="right">
+                        <RelativeSopsCell rel={p.relative_sops} confident={p.confident} />
                       </TableCell>
                       <TableCell align="right">
                         {p.p25}–{p.p75}

@@ -77,6 +77,10 @@ export interface SettingsProfile {
   completion: ProfileSpread | null;
   // Per infra-metric medians, e.g. { dns: { median, count }, tcp: {...} }.
   completion_metrics: Record<string, { median: number; count: number }>;
+  // Time-adjusted SOPS: median of (run SOPS − the day×hour historical norm).
+  // Positive = this profile performs above the historical average for the times
+  // it actually ran. Null until any run has a usable baseline.
+  relative_sops: { delta_median: number; p25: number; p75: number; count: number } | null;
 }
 
 export interface ProfileFieldChange {
@@ -93,6 +97,8 @@ export interface ProfileDiffSide {
   label: string;
   median: number;
   completion: number | null;
+  // Time-adjusted SOPS (median vs the day×hour norm), null if not computable.
+  relative_sops: number | null;
   confident: boolean;
 }
 
@@ -103,6 +109,8 @@ export interface ProfileDiff {
   delta_pct: number | null;
   // Completion median delta (best − comparison); can move opposite to SOPS.
   completion_delta: number | null;
+  // Time-adjusted advantage of best over comparison (their relative_sops gap).
+  relative_delta: number | null;
   changes: ProfileFieldChange[];
 }
 
