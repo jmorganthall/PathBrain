@@ -265,6 +265,61 @@ def relative_reading(
     return out
 
 
+def relative_deltas(
+    baseline_points: list[RunPoint],
+    target_points: list[RunPoint],
+    metric_key: str,
+    tz_offset_min: int,
+    min_samples: int,
+) -> list[float]:
+    """Per-run ``value − baseline_median(its weekday,hour)`` for ``target_points``.
+
+    The baseline is built from ``baseline_points`` (the comparison universe), using
+    the same fallback ladder as a live relative reading so each run is judged
+    against the most specific time context that has enough history. This is the core
+    of *time-adjusting* a settings profile: it removes the day/hour environment a run
+    happened to land in, leaving the config's own contribution.
+    """
+    buckets = bucket_values(baseline_points, metric_key, tz_offset_min)
+    deltas: list[float] = []
+    for p in target_points:
+        v = p.values.get(metric_key)
+        if v is None:
+            continue
+        wd, hr = local_bucket(p.created_at, tz_offset_min)
+        pool = _baseline_pool(buckets, wd, hr, min_samples)
+        if pool is None:
+            continue
+        deltas.append(v - median(pool[1]))
+    return deltas
+
+
+def profile_relative(
+    baseline_points: list[RunPoint],
+    target_points: list[RunPoint],
+    metric_key: str,
+    tz_offset_min: int,
+    min_samples: int,
+) -> dict | None:
+    """Time-adjusted summary for a set of runs (e.g. one settings profile).
+
+    ``delta_median`` > 0 means runs under this profile beat the time-of-day norm by
+    that many points on average (for a higher-is-better metric like SOPS) — "this
+    config performs above its historical environment". None when no run had a
+    usable baseline.
+    """
+    deltas = relative_deltas(baseline_points, target_points, metric_key, tz_offset_min, min_samples)
+    if not deltas:
+        return None
+    s = sorted(deltas)
+    return {
+        "delta_median": round(median(s), 2),
+        "p25": round(_percentile(s, 25), 2),
+        "p75": round(_percentile(s, 75), 2),
+        "count": len(s),
+    }
+
+
 def current_values(
     points: list[RunPoint],
     metric_keys: list[str],

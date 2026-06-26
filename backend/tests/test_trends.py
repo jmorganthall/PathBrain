@@ -9,6 +9,7 @@ from pathbrain.trends import (
     current_values,
     local_bucket,
     metric_grid,
+    profile_relative,
     relative_reading,
     run_metric_values,
 )
@@ -124,6 +125,30 @@ def test_current_values_medians_recent_window():
     out = current_values(points, ["latency", "sops"], window_hours=2, now_utc=now)
     assert out["latency"] == 15.0
     assert out["sops"] is None
+
+
+def test_profile_relative_strips_time_of_day_confound():
+    good = datetime(2024, 1, 1, 10, 0)  # Mon 10:00 — easy environment
+    hard = datetime(2024, 1, 1, 22, 0)  # Mon 22:00 — congested environment
+    # Config-blind baseline filler so each bucket's norm isn't defined by A/B alone.
+    base = [_pt(good, sops=70.0) for _ in range(4)] + [_pt(hard, sops=40.0) for _ in range(4)]
+    a_points = [_pt(good, sops=75.0) for _ in range(3)]  # +5 over its (easy) norm
+    b_points = [_pt(hard, sops=50.0) for _ in range(3)]  # +10 over its (hard) norm
+    baseline = base + a_points + b_points
+
+    a = profile_relative(baseline, a_points, "sops", 0, min_samples=3)
+    b = profile_relative(baseline, b_points, "sops", 0, min_samples=3)
+    # Raw SOPS ranks A (75) above B (50)…
+    assert a["delta_median"] == 5.0 and a["count"] == 3
+    # …but time-adjusted, B beat its tougher environment by more — the confound the
+    # whole feature exists to strip out.
+    assert b["delta_median"] == 10.0
+    assert b["delta_median"] > a["delta_median"]
+
+
+def test_profile_relative_none_without_values():
+    pts = [_pt(datetime(2024, 1, 1, 10, 0), sops=None)]
+    assert profile_relative(pts, pts, "sops", 0, 3) is None
 
 
 # ── API smoke tests (no live network) ───────────────────────────────────────

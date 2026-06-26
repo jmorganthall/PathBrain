@@ -20,6 +20,7 @@ from ..providers import get_provider
 from ..metrics import has_latest_metrics
 from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import diff_profiles, fingerprint, normalize, summarize
+from ..trends import RunPoint, profile_relative
 
 router = APIRouter()
 log = get_logger("api.settings")
@@ -139,6 +140,9 @@ def settings_profiles(
     complete_only: bool = Query(
         True, description="Only aggregate runs with the latest (paint) SOPS metrics."
     ),
+    tz_offset: int = Query(
+        0, description="Minutes to add to UTC for viewer-local time (day/hour baselines)."
+    ),
 ) -> dict:
     """One row per distinct settings profile, with its SOPS distribution.
 
@@ -147,21 +151,36 @@ def settings_profiles(
     profile's SOPS. Set ``complete_only=false`` to include everything. Profiles
     with no qualifying runs drop out entirely.
 
+    Each profile also carries ``relative_sops``: its SOPS *time-adjusted* against the
+    day-of-week × hour-of-day baseline of this same population — "is this config
+    performing above or below the historical norm for the times it actually ran".
+    This is the fair comparator: it strips out the confound of a config happening to
+    be sampled more during congested hours.
+
     Also returns ``best_diff``: how the best (top confident) profile differs from
     the next-ranked one — the at-a-glance "what changed and did it help" view.
     """
     min_runs = _min_runs(session)
+    min_samples = int((get_config(session).get("trends", {}) or {}).get("min_samples", 3) or 3)
     rows = _completed_runs_with_scores(session)
+    # Config-blind baseline: every qualifying run, regardless of profile, defines
+    # the time-of-day environment each profile's runs are judged against.
+    baseline_points: list[RunPoint] = []
     groups: dict[str, dict] = {}
     for run, score in rows:
         if complete_only and not _has_latest_metrics(score):
             continue
+        # Legacy SOPS isn't comparable, so keep it out of the time baseline.
+        sops_val = score.sops if _has_latest_metrics(score) else None
+        point = RunPoint(created_at=run.created_at, values={"sops": sops_val})
+        baseline_points.append(point)
         g = groups.setdefault(
             run.settings_fingerprint,
             {
                 "fingerprint": run.settings_fingerprint,
                 "settings": run.settings,
                 "sops": [],
+                "points": [],
                 "iterations": 0,
                 "completion": [],
                 "completion_metrics": {m: [] for m in COMPLETION_METRIC_SOURCES},
@@ -170,6 +189,7 @@ def settings_profiles(
             },
         )
         g["sops"].append(score.sops)
+        g["points"].append(point)
         # A run with more iterations is more data; track the total alongside runs.
         g["iterations"] += int(run.iterations or 1)
         if score.completion is not None:
@@ -197,6 +217,10 @@ def settings_profiles(
                 "last_seen": g["last_seen"].isoformat(),
                 # Primary ranking is SOPS (human-feel).
                 **_spread(g["sops"]),
+                # Time-adjusted SOPS: above/below the day×hour historical norm.
+                "relative_sops": profile_relative(
+                    baseline_points, g["points"], "sops", tz_offset, min_samples
+                ),
                 # Completion axis, gated like SOPS: only confident with enough runs
                 # that actually captured its metrics.
                 "completion": (
@@ -253,12 +277,25 @@ def _best_diff(profiles: list[dict]) -> dict | None:
         if best_comp is not None and comp_comp is not None
         else None
     )
+
+    def _rel_median(p: dict) -> float | None:
+        r = p.get("relative_sops")
+        return r["delta_median"] if r else None
+
+    best_rel, comp_rel = _rel_median(best), _rel_median(comparison)
+    # Time-adjusted advantage: the gap once each profile's day/hour environment is
+    # removed. Can differ from the raw delta if the two were sampled at different
+    # times — that difference is exactly the confound this strips out.
+    relative_delta = (
+        round(best_rel - comp_rel, 2) if best_rel is not None and comp_rel is not None else None
+    )
     return {
         "best": {
             "fingerprint": best["fingerprint"],
             "label": best["label"],
             "median": best["median"],
             "completion": best_comp,
+            "relative_sops": best_rel,
             "confident": best["confident"],
         },
         "comparison": {
@@ -266,6 +303,7 @@ def _best_diff(profiles: list[dict]) -> dict | None:
             "label": comparison["label"],
             "median": comparison["median"],
             "completion": comp_comp,
+            "relative_sops": comp_rel,
             "confident": comparison["confident"],
         },
         "delta_abs": delta_abs,
@@ -273,6 +311,7 @@ def _best_diff(profiles: list[dict]) -> dict | None:
         # Completion can move opposite to SOPS — surfacing it here is the whole
         # point (feels-fast vs. raw-completion pulling apart).
         "completion_delta": completion_delta,
+        "relative_delta": relative_delta,
         "changes": diff_profiles(comparison["settings"], best["settings"]),
     }
 
