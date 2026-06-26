@@ -99,8 +99,14 @@ export const api = {
       body: JSON.stringify(body),
     }),
   score: (id: number) => request<ScoreOut>(`/score/${id}`),
-  rollingScore: (hours = 24) => request<RollingScore>(`/score/rolling?hours=${hours}`),
-  axisSeries: (limit = 100) => request<AxisSeriesResponse>(`/score/axis-series?limit=${limit}`),
+  rollingScore: (hours = 24, fingerprint?: string) =>
+    request<RollingScore>(
+      `/score/rolling?hours=${hours}` + (fingerprint ? `&fingerprint=${encodeURIComponent(fingerprint)}` : "")
+    ),
+  axisSeries: (limit = 100, fingerprint?: string) =>
+    request<AxisSeriesResponse>(
+      `/score/axis-series?limit=${limit}` + (fingerprint ? `&fingerprint=${encodeURIComponent(fingerprint)}` : "")
+    ),
   // Methodology layer (versioned interpretation)
   methodologies: () => request<MethodologiesResponse>("/methodologies"),
   methodologyCurrent: () => request<MethodologyDetail>("/methodologies/current"),

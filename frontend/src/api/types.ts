@@ -40,6 +40,7 @@ export interface AxisStat {
   median: number;
   p25: number;
   p75: number;
+  p95: number;
   min: number;
   max: number;
 }
