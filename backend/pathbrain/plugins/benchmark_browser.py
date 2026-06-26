@@ -128,6 +128,31 @@ _NAV_JS = (
 _PAINT_INIT_JS = """
 (() => {
   window.__paint = { fcp: null, lcp: null, inp: null, cls_entries: [], long_tasks: [] };
+  // Generous Resource Timing buffer so heavy pages don't silently drop entries
+  // (the default 250 fills up fast); top up again if it ever does fill.
+  try {
+    performance.setResourceTimingBufferSize(1000);
+    performance.addEventListener('resourcetimingbufferfull', () => {
+      try { performance.setResourceTimingBufferSize(2000); } catch (e) {}
+    });
+  } catch (e) {}
+  // Long Animation Frames (Chromium-only, newer) for network-vs-render stall
+  // attribution; fall back to longtask; if neither, leave source null -> 'unknown'.
+  window.__loaf = { entries: [], source: null };
+  try {
+    const supported = (window.PerformanceObserver
+      && PerformanceObserver.supportedEntryTypes) || [];
+    const loafType = supported.indexOf('long-animation-frame') >= 0
+      ? 'long-animation-frame'
+      : (supported.indexOf('longtask') >= 0 ? 'longtask' : null);
+    if (loafType) {
+      window.__loaf.source = loafType === 'long-animation-frame' ? 'loaf' : 'longtask';
+      new PerformanceObserver((l) => {
+        for (const e of l.getEntries())
+          window.__loaf.entries.push({ startTime: e.startTime, duration: e.duration });
+      }).observe({ type: loafType, buffered: true });
+    }
+  } catch (e) {}
   try {
     new PerformanceObserver((l) => {
       for (const e of l.getEntries())
@@ -165,6 +190,24 @@ _PAINT_INIT_JS = """
 """
 
 _PAINT_READ_JS = "() => window.__paint || null"
+
+# Resource Timing entries for the perceived-load-smoothness instrument. Only the
+# fields the smoothness math needs (responseEnd + transferSize + nextHopProtocol),
+# kept minimal so raw stays small. Cross-origin entries without Timing-Allow-Origin
+# expose these but zero the *phase* timings — still enough for stall/cadence/bytes.
+_RESOURCE_JS = """
+() => performance.getEntriesByType('resource').map((r) => ({
+  name: r.name,
+  startTime: r.startTime,
+  responseStart: r.responseStart,
+  responseEnd: r.responseEnd,
+  transferSize: r.transferSize,
+  encodedBodySize: r.encodedBodySize,
+  nextHopProtocol: r.nextHopProtocol,
+}))
+"""
+
+_LOAF_READ_JS = "() => window.__loaf || null"
 
 
 def extract_paint_metrics(paint: dict | None) -> dict:
@@ -315,6 +358,20 @@ class BrowserBenchmark(BenchmarkPlugin):
                             except Exception:  # noqa: BLE001 — paint capture is optional
                                 pass
 
+                            # Resource Timing + LoAF for the smoothness instrument.
+                            # Read after the synthetic interaction so the full
+                            # initial-load resource set is captured. Best-effort.
+                            resources = None
+                            try:
+                                resources = page.evaluate(_RESOURCE_JS)
+                            except Exception:  # noqa: BLE001 — optional
+                                pass
+                            loaf = None
+                            try:
+                                loaf = page.evaluate(_LOAF_READ_JS)
+                            except Exception:  # noqa: BLE001 — optional
+                                pass
+
                             if want_screenshot and shot_path:
                                 page.screenshot(path=shot_path)
 
@@ -323,6 +380,8 @@ class BrowserBenchmark(BenchmarkPlugin):
                                 "paint": paint,
                                 "total_render_ms": total_render_ms,
                                 "filmstrip": frames,
+                                "resources": resources,
+                                "loaf": loaf,
                             }
                             per_url_display[url] = {
                                 "screenshot_url": (

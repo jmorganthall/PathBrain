@@ -180,6 +180,63 @@ METRICS: list[MetricDef] = [
             "Lower is better."
         ),
     ),
+    # ── Perceived load smoothness: the *shape* of the delivery curve over time ──
+    # Display-only (measurement, not scored): these isolate byte-arrival cadence
+    # from Resource Timing — the exact layer network shaping touches — and travel
+    # alongside the speed-side finish metrics so the smoothness-vs-speed tradeoff
+    # is visible per load. No pixel/video/Speed-Index-visual capture is involved.
+    MetricDef(
+        "longest_stall", "browser", "longest_stall_ms", "Longest stall", unit="ms",
+        description=(
+            "The longest stretch where nothing finished loading — the field-measurable "
+            "'standing at the carousel seeing nothing'. The single signal most tied to a "
+            "load feeling chunky. Lower is smoother."
+        ),
+    ),
+    MetricDef(
+        "cadence_cov", "browser", "cadence_cov", "Delivery cadence",
+        description=(
+            "Regularity of the gaps between resource completions (coefficient of variation). "
+            "Low = metronomic, steady delivery; high = clumps and stalls. Lower is smoother."
+        ),
+    ),
+    MetricDef(
+        "byte_earliness", "browser", "byte_earliness_ms", "Byte earliness", unit="ms",
+        description=(
+            "Area above the cumulative-bytes-delivered curve — a Speed-Index analog in bytes, "
+            "not pixels. Rewards delivering bytes early and progressively rather than in a late "
+            "burst. Lower means bytes arrived earlier."
+        ),
+    ),
+    MetricDef(
+        "delivery_gini", "browser", "delivery_gini", "Delivery evenness",
+        description=(
+            "Gini coefficient of bytes delivered across the load window (0–1). High = bytes "
+            "arrived very unevenly (chunky); low = evenly (smooth). Lower is smoother."
+        ),
+    ),
+    MetricDef(
+        "perceived_time", "browser", "perceived_time_ms", "Perceived time", unit="ms",
+        description=(
+            "Weighted load time where stalls (unoccupied waiting) cost more than time with "
+            "visible progress (occupied). Captures that a smoother-but-slightly-slower load can "
+            "feel faster. Weights are calibratable. Lower is better perceived."
+        ),
+    ),
+    MetricDef(
+        "network_stall", "browser", "network_stall_ms", "Network stall time", unit="ms",
+        description=(
+            "Total stall time attributed to the network — no resource arriving and no long "
+            "main-thread task. This is the tunable share that network shaping can move. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "render_stall", "browser", "render_stall_ms", "Render stall time", unit="ms",
+        description=(
+            "Total stall time overlapped by a long main-thread task — render-bound, so network "
+            "config changes should not be expected to move it. Lower is better."
+        ),
+    ),
 ]
 
 
@@ -192,6 +249,9 @@ DISPLAY_ORDER = [
     "fcp", "speed_index", "dom_content_loaded", "lcp",    # paint trajectory
     "load_event", "render", "paint_cadence", "cls",       # completion + smoothness
     "inp",                                                # interaction (after load)
+    # perceived load smoothness (delivery-curve shape, byte-arrival)
+    "perceived_time", "longest_stall", "cadence_cov",
+    "byte_earliness", "delivery_gini", "network_stall", "render_stall",
     "latency", "jitter", "packet_loss",                   # network quality (continuous)
 ]
 

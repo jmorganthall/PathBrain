@@ -18,8 +18,9 @@ from statistics import mean, pstdev
 # Reuse the browser plugin's pure nav/paint extractors (importing the module is
 # safe — it imports Playwright lazily inside run()).
 from ..plugins.benchmark_browser import compute_navigation_metrics, extract_paint_metrics
+from .smoothness import smoothness_metrics
 
-DERIVATION_VERSION = "derive-v1"
+DERIVATION_VERSION = "derive-v2"
 
 
 def _round(v: float | None, n: int = 3) -> float | None:
@@ -176,6 +177,12 @@ def _derive_browser(raw: dict, artifact_dir: str | None) -> dict:
         paint = u.get("paint") or {}
         shifts = paint.get("cls_entries")
         m["cls"] = round(sum(float(s) for s in shifts), 4) if shifts is not None else None
+        # Perceived load-smoothness metrics (byte-arrival cadence from Resource
+        # Timing). Computed from raw, so they backfill over history on re-derive;
+        # absent on legacy runs that captured no resource series.
+        m.update(
+            smoothness_metrics(u.get("nav"), u.get("resources"), paint, u.get("loaf"))
+        )
         for k, v in m.items():
             if v is not None:
                 acc[k].append(float(v))

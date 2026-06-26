@@ -1,0 +1,206 @@
+"""Tests for the perceived load-smoothness metrics (pure functions over a series).
+
+Uses synthetic series throughout: a deliberately "chunky" load (long plateau then
+a dump) and a "smooth" linear load, asserting the instrument clearly separates
+them. Attribution tests build a synthetic main-thread block vs a synthetic
+delivery gap and assert they tag ``render`` vs ``network``.
+"""
+from __future__ import annotations
+
+from pathbrain.interpret.smoothness import (
+    attribute_stall,
+    byte_earliness,
+    cadence_cov,
+    completion_series,
+    delivery_gini,
+    longest_stall,
+    longest_stall_window,
+    perceived_time,
+    protocol_mix,
+    smoothness_metrics,
+    smoothness_record,
+    stall_attribution_times,
+)
+
+
+def _res(end, size=1000, proto="h2"):
+    return {"responseEnd": end, "transferSize": size, "nextHopProtocol": proto}
+
+
+# A steady trickle (smooth) vs a long blank then everything-at-once (chunky).
+SMOOTH = [_res(t) for t in (100, 200, 300, 400, 500, 600, 700, 800)]
+CHUNKY = [_res(t) for t in (50, 60, 70, 80, 760, 770, 780, 800)]
+
+
+# ── R2: completion series ────────────────────────────────────────────────────
+
+
+def test_completion_series_filters_zero_and_sorts():
+    res = [_res(300), _res(0), {"responseEnd": -1}, _res(100)]
+    assert completion_series(res) == [100.0, 300.0]
+
+
+def test_completion_series_injects_boundaries():
+    series = completion_series([_res(300)], fcp=50, doc_response_end=80, load_event_end=400)
+    assert series == [50.0, 80.0, 300.0, 400.0]
+
+
+# ── R3 / R4: the core discriminators (acceptance #2) ─────────────────────────
+
+
+def test_longest_stall_and_cadence_separate_chunky_from_smooth():
+    smooth_series = completion_series(SMOOTH)
+    chunky_series = completion_series(CHUNKY)
+    # The chunky load has a long blank stretch; the smooth one never stalls.
+    assert longest_stall(chunky_series) > longest_stall(smooth_series)
+    assert longest_stall(chunky_series) >= 600  # the 80→760 plateau
+    # And its delivery is far less metronomic.
+    assert cadence_cov(chunky_series) > cadence_cov(smooth_series)
+
+
+def test_longest_stall_window_points_at_the_plateau():
+    window = longest_stall_window(completion_series(CHUNKY))
+    assert window is not None
+    start, end, dur = window
+    assert (start, end) == (80.0, 760.0)
+    assert dur == 680.0
+
+
+def test_cadence_needs_two_gaps():
+    assert cadence_cov([100.0]) is None
+    assert cadence_cov([100.0, 200.0]) is None  # one gap → undefined CoV
+
+
+# ── R5: byte-weighted earliness ──────────────────────────────────────────────
+
+
+def test_byte_earliness_rewards_early_bytes():
+    # Same total bytes, same finish; one front-loads delivery, one back-loads it.
+    early = [_res(100, 900), _res(900, 100)]
+    late = [_res(100, 100), _res(900, 900)]
+    assert byte_earliness(early, start=0) < byte_earliness(late, start=0)
+
+
+def test_byte_earliness_none_without_bytes():
+    assert byte_earliness([_res(100, 0)], start=0) is None
+
+
+# ── R6: delivery evenness ────────────────────────────────────────────────────
+
+
+def test_delivery_gini_smooth_is_lower_than_chunky():
+    g_smooth = delivery_gini(SMOOTH, start=0, end=900)
+    g_chunky = delivery_gini(CHUNKY, start=0, end=900)
+    assert 0.0 <= g_smooth <= 1.0 and 0.0 <= g_chunky <= 1.0
+    assert g_smooth < g_chunky
+
+
+# ── R8: perceived time ───────────────────────────────────────────────────────
+
+
+def test_perceived_time_penalizes_unoccupied_stalls():
+    # Both span the same real window; chunky has a long unoccupied stretch.
+    smooth_events = completion_series(SMOOTH)
+    chunky_events = completion_series(CHUNKY)
+    pt_smooth = perceived_time(smooth_events, start=0, end=900)
+    pt_chunky = perceived_time(chunky_events, start=0, end=900)
+    assert pt_chunky > pt_smooth
+
+
+def test_perceived_time_weight_ratio_controls_penalty():
+    events = completion_series(CHUNKY)
+    flat = perceived_time(events, 0, 900, w_occupied=1.0, w_unoccupied=1.0)
+    steep = perceived_time(events, 0, 900, w_occupied=1.0, w_unoccupied=5.0)
+    # With equal weights perceived time == real time; a higher unoccupied weight
+    # only ever raises it (the stall slices cost more).
+    assert steep > flat
+    assert abs(flat - 900.0) < 1e-6
+
+
+# ── R7: attribution (acceptance #3) ──────────────────────────────────────────
+
+
+def test_delivery_gap_with_no_long_task_is_network():
+    # A long gap, LoAF supported but no long task overlapping → tunable layer.
+    window = (100.0, 800.0, 700.0)
+    assert attribute_stall(window, loaf=[], loaf_source="loaf") == "network"
+
+
+def test_stall_overlapping_long_task_is_render():
+    # A long task spans the whole stall → render-bound, shaping won't fix it.
+    window = (100.0, 800.0, 700.0)
+    loaf = [{"startTime": 90.0, "duration": 800.0}]
+    assert attribute_stall(window, loaf, loaf_source="loaf") == "render"
+
+
+def test_partial_overlap_is_mixed():
+    window = (100.0, 800.0, 700.0)
+    loaf = [{"startTime": 100.0, "duration": 200.0}]  # covers ~29%
+    assert attribute_stall(window, loaf, loaf_source="loaf") == "mixed"
+
+
+def test_no_loaf_support_is_unknown():
+    window = (100.0, 800.0, 700.0)
+    assert attribute_stall(window, loaf=[], loaf_source=None) == "unknown"
+
+
+def test_attribution_times_split_network_and_render():
+    series = completion_series(CHUNKY)  # one big 680ms stall (80→760)
+    # A long task covering the first 180ms of that stall → mixed split.
+    loaf = [{"startTime": 80.0, "duration": 180.0}]
+    times = stall_attribution_times(series, loaf, loaf_source="loaf")
+    assert times["render_ms"] == 180.0
+    assert times["network_ms"] == 500.0  # 680 - 180
+    assert times["unknown_ms"] == 0.0
+
+
+def test_attribution_times_unknown_without_loaf():
+    series = completion_series(CHUNKY)
+    times = stall_attribution_times(series, loaf=[], loaf_source=None)
+    assert times["unknown_ms"] >= 600.0
+    assert times["network_ms"] == 0.0 and times["render_ms"] == 0.0
+
+
+# ── protocol mix + assemblers ────────────────────────────────────────────────
+
+
+def test_protocol_mix_counts_live_resources():
+    res = [_res(100, proto="h2"), _res(200, proto="h3"), _res(300, proto="h2"), _res(0, proto="h3")]
+    assert protocol_mix(res) == {"h2": 2, "h3": 1}
+
+
+def test_smoothness_metrics_returns_numeric_subset():
+    nav = {"responseStart": 50.0, "responseEnd": 80.0, "loadEventEnd": 900.0}
+    paint = {"fcp": 120.0, "lcp": 400.0}
+    loaf = {"entries": [], "source": "loaf"}
+    m = smoothness_metrics(nav, CHUNKY, paint, loaf)
+    assert m["longest_stall_ms"] > 0
+    assert m["network_stall_ms"] > 0  # the plateau, no long task → network
+    assert "perceived_time_ms" in m and "byte_earliness_ms" in m
+    # Numeric only — categorical fields must not leak into the scoreable subset.
+    assert all(isinstance(v, (int, float)) for v in m.values())
+
+
+def test_smoothness_record_carries_speed_side_and_attribution():
+    nav = {"responseStart": 50.0, "responseEnd": 80.0, "loadEventEnd": 900.0,
+           "domContentLoadedEventEnd": 600.0}
+    paint = {"fcp": 120.0, "lcp": 400.0}
+    rec = smoothness_record(nav, CHUNKY, paint, {"entries": [], "source": "loaf"})
+    # Speed-side context travels with the smoothness metrics (acceptance #1).
+    assert rec["load_event_ms"] == 900.0 and rec["lcp_ms"] == 400.0
+    assert rec["longest_stall_attribution"] == "network"
+    assert rec["protocol_mix"] == {"h2": 8}
+    assert rec["perceived_time_params"]["w_unoccupied"] == 3.0
+
+
+def test_smoothness_handles_empty_and_cross_origin_zeroed_input():
+    # Cross-origin without TAO: phase timings zeroed, but responseEnd/transferSize
+    # present → R3/R4/R5 still computable, nothing crashes.
+    res = [{"responseEnd": 100.0, "transferSize": 0, "nextHopProtocol": ""},
+           {"responseEnd": 500.0, "transferSize": 0, "nextHopProtocol": ""}]
+    rec = smoothness_record({}, res, {}, {})
+    assert rec["longest_stall_ms"] == 400.0
+    assert rec["loaf_source"] is None
+    assert rec["longest_stall_attribution"] in ("unknown", None)
+    # Totally empty input is graceful too.
+    assert smoothness_metrics({}, [], {}, {}) == {}

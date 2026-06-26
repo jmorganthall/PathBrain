@@ -84,6 +84,31 @@ def test_derive_browser_paint_without_filmstrip():
     assert m["total_render_ms"] == 1500.0
     assert m["cls"] == 0.0
     assert "speed_index_ms" not in m  # no filmstrip -> not derivable
+    # No resource series captured -> no smoothness metrics (legacy runs stay thin).
+    assert "longest_stall_ms" not in m
+
+
+def test_derive_browser_emits_smoothness_from_resource_series():
+    raw = {
+        "urls": {
+            "u": {
+                "nav": {"responseStart": 50.0, "responseEnd": 80.0, "loadEventEnd": 900.0},
+                "paint": {"fcp": 120.0, "lcp": 400.0, "cls_entries": []},
+                "total_render_ms": 1500.0,
+                "filmstrip": [],
+                # A long blank plateau (chunky delivery) with no long task -> network.
+                "resources": [
+                    {"responseEnd": t, "transferSize": 1000, "nextHopProtocol": "h2"}
+                    for t in (60, 70, 80, 760, 800)
+                ],
+                "loaf": {"entries": [], "source": "loaf"},
+            }
+        }
+    }
+    m = derive("browser", raw)
+    assert m["longest_stall_ms"] >= 600  # the 80->760 plateau
+    assert m["network_stall_ms"] > 0     # no long task overlapped it
+    assert "perceived_time_ms" in m and "byte_earliness_ms" in m
 
 
 # ── rederive: re-interpret stored raw end-to-end ─────────────────────────────
