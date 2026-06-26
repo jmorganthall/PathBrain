@@ -13,7 +13,7 @@ from ..database import get_session
 from ..metrics import has_latest_metrics
 from ..config import get_settings
 from ..interpret import DERIVATION_VERSION
-from ..models import BenchmarkResult, Run, RunStatus, ScoreResult
+from ..models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
 from ..runner import rederive_run, rescore_run
 from ..schemas import ScoreOut
 from ..scoring import compute_score
@@ -95,6 +95,40 @@ def rederive_history(session: Session = Depends(get_session)) -> dict:
     )
     session.commit()
     return {"rederived": rederived, "derivation_version": DERIVATION_VERSION}
+
+
+@router.post("/score/regrade")
+def regrade_history(session: Session = Depends(get_session)) -> dict:
+    """Score every completed run from its preserved raw under the *current*
+    methodology, writing (run × methodology) Score rows.
+
+    This is the methodology-aware successor to ``/score/rescore`` + ``/score/rederive``:
+    it never mutates a run's at-measure score, it works straight from raw (so a
+    re-weight *or* a new metric both land), and it tags each run exact / partial /
+    incomparable. Returns a comparability summary.
+    """
+    from ..runner import score_history_under_current
+
+    return score_history_under_current(session)
+
+
+@router.get("/score/{run_id}/methodologies")
+def run_scores(run_id: int, session: Session = Depends(get_session)) -> dict:
+    """All (run × methodology) scores for a run — its at-measure record plus any
+    at-present re-grades — for the RTINGS-style "then vs now" view."""
+    from ..methodology import serialize_score
+
+    run = session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"No run {run_id}")
+    rows = session.scalars(
+        select(Score).where(Score.run_id == run_id).order_by(Score.is_at_measure.desc())
+    ).all()
+    return {
+        "run_id": run_id,
+        "at_measure_version": run.methodology_version,
+        "scores": [serialize_score(r) for r in rows],
+    }
 
 
 @router.get("/score/rolling")
