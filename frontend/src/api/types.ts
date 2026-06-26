@@ -83,6 +83,32 @@ export interface SettingsProfile {
   relative_sops: { delta_median: number; p25: number; p75: number; count: number } | null;
 }
 
+// One planned/applied firewall field write from "Apply this profile".
+export interface ApplyProfileChange {
+  pipe_uuid: string;
+  param: string;
+  value: string | number | boolean;
+  label: string;
+  field: string;
+  field_label: string;
+  from: string | number | boolean | null;
+  to: string | number | boolean | null;
+}
+
+export interface ApplyProfileResult {
+  ok?: boolean;
+  preview?: boolean;
+  fingerprint: string;
+  label: string;
+  // Present on preview responses: the writes that *would* happen.
+  changes?: ApplyProfileChange[];
+  // Present on commit responses: the writes that happened.
+  applied?: Array<{ label: string; field_label: string; to: string | number | boolean | null }>;
+  warnings: string[];
+  already_applied: boolean;
+  resulting_fingerprint?: string | null;
+}
+
 export interface ProfileFieldChange {
   pipe: string;
   field: string;

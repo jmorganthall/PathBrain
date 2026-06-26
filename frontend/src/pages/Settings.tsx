@@ -6,6 +6,12 @@ import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Checkbox from "@mui/material/Checkbox";
 import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogContentText from "@mui/material/DialogContentText";
+import DialogTitle from "@mui/material/DialogTitle";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
@@ -20,6 +26,7 @@ import Typography from "@mui/material/Typography";
 
 import { api } from "../api/client";
 import type {
+  ApplyProfileChange,
   ProfileDiff,
   ProfileFieldChange,
   SettingsDiagnostics,
@@ -29,8 +36,19 @@ import type {
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
 import InsightsIcon from "@mui/icons-material/Insights";
+import PublishIcon from "@mui/icons-material/Publish";
 import RestorePageIcon from "@mui/icons-material/Restore";
 import { fmtDateTime } from "../utils/format";
+
+// State for the "Apply this profile" confirmation dialog: the previewed write
+// plan for one profile, awaiting the user's go-ahead.
+interface ApplyConfirm {
+  fingerprint: string;
+  label: string;
+  changes: ApplyProfileChange[];
+  warnings: string[];
+  alreadyApplied: boolean;
+}
 
 export function ImpactBanner({ impact }: { impact: SettingsImpact }) {
   if (!impact.changed || impact.delta_pct == null) return null;
@@ -233,6 +251,11 @@ export default function Settings() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // Apply-this-profile flow: which row is loading its preview, the pending
+  // confirmation, and whether a write is in flight.
+  const [previewFp, setPreviewFp] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<ApplyConfirm | null>(null);
+  const [applying, setApplying] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -270,6 +293,47 @@ export default function Settings() {
       setBusy(false);
     }
   }, [load]);
+
+  // Step 1: fetch the exact field changes (preview, no write) and open the dialog.
+  const handleApplyClick = useCallback(async (p: SettingsProfile) => {
+    setPreviewFp(p.fingerprint);
+    setError(null);
+    try {
+      const r = await api.applyProfile(p.fingerprint, true);
+      setConfirm({
+        fingerprint: p.fingerprint,
+        label: r.label || p.label,
+        changes: r.changes ?? [],
+        warnings: r.warnings ?? [],
+        alreadyApplied: r.already_applied,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not preview the profile changes");
+    } finally {
+      setPreviewFp(null);
+    }
+  }, []);
+
+  // Step 2: confirmed — write the profile to the firewall.
+  const handleConfirmApply = useCallback(async () => {
+    if (!confirm) return;
+    setApplying(true);
+    setError(null);
+    try {
+      const r = await api.applyProfile(confirm.fingerprint);
+      setToast(
+        r.applied && r.applied.length > 0
+          ? `Wrote ${r.applied.length} change(s) to the firewall — now on ${r.label}`
+          : `Firewall already on ${r.label} — no changes needed`
+      );
+      setConfirm(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to apply profile");
+    } finally {
+      setApplying(false);
+    }
+  }, [confirm, load]);
 
   if (loading) return <Loading label="Loading settings analysis…" />;
 
@@ -397,6 +461,7 @@ export default function Settings() {
                     <TableCell align="right">Min–Max</TableCell>
                     {showCompletion && <TableCell align="right">Compl.</TableCell>}
                     <TableCell>Last seen</TableCell>
+                    <TableCell align="right">Apply</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -471,6 +536,27 @@ export default function Settings() {
                         </TableCell>
                       )}
                       <TableCell>{fmtDateTime(p.last_seen)}</TableCell>
+                      <TableCell align="right">
+                        <Tooltip title="Write this profile's shaper settings to the firewall now. You'll see the exact changes and confirm first.">
+                          <span>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              startIcon={
+                                previewFp === p.fingerprint ? (
+                                  <CircularProgress size={14} />
+                                ) : (
+                                  <PublishIcon />
+                                )
+                              }
+                              onClick={() => handleApplyClick(p)}
+                              disabled={previewFp != null || applying}
+                            >
+                              Apply
+                            </Button>
+                          </span>
+                        </Tooltip>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -546,6 +632,76 @@ export default function Settings() {
           </CardContent>
         </Card>
       )}
+
+      <Dialog open={confirm != null} onClose={() => !applying && setConfirm(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Apply profile to firewall</DialogTitle>
+        <DialogContent>
+          {confirm && (
+            <>
+              <DialogContentText sx={{ mb: 1 }}>
+                Write <b>{confirm.label}</b> to the firewall via the traffic shaper. This changes your
+                live network shaping immediately and isn't auto-undone — to revert, apply a different
+                profile.
+              </DialogContentText>
+              {confirm.alreadyApplied ? (
+                <Alert severity="info" sx={{ mb: 1 }}>
+                  The firewall already matches this profile — there's nothing to write.
+                </Alert>
+              ) : (
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Pipe</TableCell>
+                        <TableCell>Field</TableCell>
+                        <TableCell align="right">From</TableCell>
+                        <TableCell align="right">To</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {confirm.changes.map((c, i) => (
+                        <TableRow key={`${c.pipe_uuid}-${c.field}-${i}`}>
+                          <TableCell>{c.label}</TableCell>
+                          <TableCell>{c.field_label}</TableCell>
+                          <TableCell align="right">
+                            <Typography component="span" variant="body2" color="text.secondary">
+                              {String(c.from ?? "—")}
+                            </Typography>
+                          </TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 700 }}>
+                            {String(c.to ?? "—")}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              )}
+              {confirm.warnings.length > 0 && (
+                <Alert severity="warning" sx={{ mt: 1 }}>
+                  {confirm.warnings.map((w, i) => (
+                    <div key={i}>{w}</div>
+                  ))}
+                </Alert>
+              )}
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setConfirm(null)} disabled={applying}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            startIcon={applying ? <CircularProgress size={16} color="inherit" /> : <PublishIcon />}
+            onClick={handleConfirmApply}
+            disabled={applying || (confirm?.alreadyApplied ?? false)}
+          >
+            {applying ? "Writing…" : "Write to firewall"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Snackbar
         open={toast != null}

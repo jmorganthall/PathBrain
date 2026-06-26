@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from statistics import median, quantiles
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -19,7 +19,7 @@ from ..models import Run, RunStatus, ScoreResult
 from ..providers import get_provider
 from ..metrics import has_latest_metrics
 from ..scoring import COMPLETION_METRIC_SOURCES
-from ..settings_profile import diff_profiles, fingerprint, normalize, summarize
+from ..settings_profile import diff_profiles, fingerprint, normalize, plan_apply, summarize
 from ..trends import RunPoint, profile_relative
 
 router = APIRouter()
@@ -313,6 +313,103 @@ def _best_diff(profiles: list[dict]) -> dict | None:
         "completion_delta": completion_delta,
         "relative_delta": relative_delta,
         "changes": diff_profiles(comparison["settings"], best["settings"]),
+    }
+
+
+def _profile_settings(session: Session, fingerprint_: str) -> list[dict] | None:
+    """The stored normalized settings for a profile (latest run that captured it)."""
+    run = session.scalars(
+        select(Run)
+        .where(Run.settings_fingerprint == fingerprint_, Run.settings.is_not(None))
+        .order_by(Run.created_at.desc())
+    ).first()
+    return run.settings if run else None
+
+
+@router.post("/settings/apply-profile")
+def apply_profile(
+    body: dict = Body(...),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Write a stored settings profile to the firewall (the one-click apply).
+
+    Body: ``{"fingerprint": "<12-hex>", "preview": bool}``. Discovers the live
+    pipes, matches the profile's pipes by label, and applies every writable field
+    that differs via ``provider.apply()`` (the only sanctioned firewall-write path).
+    With ``preview: true`` it returns the planned field changes *without* writing —
+    the UI uses this to show an exact-diff confirmation before committing.
+
+    This is a one-way write (like Shotgun Sweep's apply-winner): to revert, apply a
+    different profile. Fields already at the target value are skipped, so re-applying
+    the current profile is a safe no-op.
+    """
+    fp = (body or {}).get("fingerprint")
+    if not fp:
+        raise HTTPException(status_code=400, detail="fingerprint is required")
+    preview = bool((body or {}).get("preview", False))
+
+    target = _profile_settings(session, fp)
+    if not target:
+        raise HTTPException(status_code=404, detail="No stored settings for that profile")
+
+    provider = get_provider()
+    try:
+        live = provider.discover()
+    except Exception as exc:  # noqa: BLE001
+        log.exception("apply-profile discovery failed")
+        raise HTTPException(
+            status_code=502, detail=f"{provider.name} discovery failed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    changes, warnings = plan_apply(target, live)
+
+    if preview:
+        return {
+            "preview": True,
+            "fingerprint": fp,
+            "label": summarize(target),
+            "changes": changes,
+            "warnings": warnings,
+            "already_applied": not changes,
+        }
+
+    applied: list[dict] = []
+    for ch in changes:
+        try:
+            provider.apply({"pipe_uuid": ch["pipe_uuid"], "param": ch["param"], "value": ch["value"]})
+        except NotImplementedError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"The {provider.name} provider can't write changes.",
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            log.exception("apply-profile write failed on %s after %s change(s)", ch["param"], len(applied))
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Applied {len(applied)} change(s), then failed on "
+                    f"{ch['field_label']}: {type(exc).__name__}: {exc}. The firewall may be "
+                    "partially changed — re-apply once the issue is resolved."
+                ),
+            ) from exc
+        applied.append({"label": ch["label"], "field_label": ch["field_label"], "to": ch["to"]})
+
+    # Best-effort: report the fingerprint the firewall is now on.
+    resulting_fp = None
+    try:
+        resulting_fp = fingerprint(normalize(provider.discover()))
+    except Exception:  # noqa: BLE001
+        log.warning("apply-profile post-verify discovery failed", exc_info=True)
+
+    log.info("Applied profile %s: %s change(s)", fp, len(applied))
+    return {
+        "ok": True,
+        "fingerprint": fp,
+        "label": summarize(target),
+        "applied": applied,
+        "warnings": warnings,
+        "already_applied": not changes,
+        "resulting_fingerprint": resulting_fp,
     }
 
 
