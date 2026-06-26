@@ -1,9 +1,17 @@
 # CLAUDE.md — PathBrain developer guide
 
-PathBrain is an empirical network-optimization platform that maximizes a
-**Seat of Pants Score (SOPS)** — a measure of *human-perceived responsiveness*,
-not raw ping/throughput. The optimizer is classical (deterministic sweep +
-hysteresis), not LLM-based. See `README.md` for the product overview.
+PathBrain is an empirical network-optimization platform that rates
+*human-perceived responsiveness* (not raw ping/throughput) across four scored
+axes — **Speed, Smoothness, Stability & Interactivity, and Completion** —
+interpreted through a **versioned, RTINGS-style methodology** (`raw + methodology
+→ score`, reproducibly; see `docs/methodology.md`). The optimizer is classical
+(deterministic sweep + hysteresis), not LLM-based. See `README.md` for the
+product overview.
+
+> History note: the project began with a single headline **Seat of Pants Score
+> (SOPS)**; it was replaced by the four-axis model. Some legacy code/columns still
+> carry `sops`/`responsiveness`/`perceptual_*` names (no rename migration) — read
+> them as the corresponding axis.
 
 ## Layout
 
@@ -33,53 +41,77 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     weights/thresholds, `LATEST_METRIC_KEYS`, and the `/api/metrics` catalog (which
     the frontend's `MetricCatalogProvider`/`useMetricMeta` consume) are all derived
     from it. Adding a measurement = one entry here (+ the plugin emitting it).
-  - `scoring/engine.py` — score computation (weighted, perception-calibrated log
-    curve, redistributes missing-metric weight). **Two axes, never blended:**
-    **SOPS** is the headline *human-feel* score — perception-led and **delivery-
-    aware**: byte earliness (25) + FCP (20) + longest stall (10) + perceived time (5)
-    lead; LCP (10) + INP (10) + TTFB (10) + render-to-networkidle (5) trail
-    (`METRIC_SOURCES`, rubric `perceptual-v4`). The byte-arrival smoothness metrics
-    isolate the network layer (the tunable one) without the CPU cost of the pixel
-    screencast; Speed Index / paint cadence are now display-only diagnostics (require
-    the opt-in `browser.filmstrip`). It rewards delivering *early and steadily*, not
-    finishing first. **Completion** is the secondary infra axis
-    (DNS/TCP/TLS/jitter/loss,
-    `COMPLETION_METRIC_SOURCES`, `compute_completion`) — raw timing that barely
-    moves human feel, so it's kept out of SOPS. Completion persists on
-    `ScoreResult.completion` (+ sub/weights/values), reusing the legacy
-    `responsiveness`/`perceptual_*` DB columns via attribute mapping (no migration;
-    deeper column rename deferred). Aggregated per profile by `/api/settings/
-    profiles`. Rubric keys: `weights`/`thresholds` (SOPS) + `completion_weights`/
-    `completion_thresholds`.
+  - `scoring/engine.py` — generic multi-axis score computation (weighted,
+    perception-calibrated log curve, redistributes missing-metric weight).
+    `compute_score(metric_sources=…)` scores **any** axis from a methodology
+    definition; `compute_completion` is the same machinery for Completion. **Four
+    axes, never blended:** **Speed** (byte earliness / FCP / LCP / TTFB — how fast
+    content arrives), **Smoothness** (longest stall / cadence CoV / perceived time /
+    render-to-networkidle — how *steadily* it arrives; the byte-arrival metrics
+    isolate the tunable network layer with no pixel screencast), **Stability &
+    Interactivity** (INP / CLS), and **Completion** (the secondary infra axis —
+    DNS/TCP/TLS/jitter/loss raw timing that barely moves human feel). Speed +
+    Smoothness are the headline axes. Speed Index / paint cadence are now display-only
+    diagnostics (require the opt-in `browser.filmstrip`). Thresholds anchored to
+    CWV/Nielsen (rubric `perceptual-v5`).
+  - `methodology.py` — **the methodology layer** (`docs/methodology.md`). The
+    `raw + methodology → score` invariant. `METHODOLOGY_REGISTRY` holds declarative
+    version specs; `CURRENT_METHODOLOGY = "speed-smoothness-v2"`;
+    `build_definition_from_spec` expands a spec → a frozen, self-contained
+    `definition` (axes + metrics + weights + thresholds); `ensure_current_methodology`
+    inserts the current row on startup; `current_version(config)` honors a config
+    `methodology_version` override; `comparability(...)` grades a run vs a methodology
+    as **exact / partial / incomparable** (replaces the old binary legacy flag).
+    Methodologies are immutable + append-only — a new weight/threshold/metric = a new
+    version. Surfaced at `/api/methodologies*`.
+  - `metrics.py` — **single source of truth for metric *definitions*** (each
+    `MetricDef`: key, plugin+source_key, axis, default weight/thresholds, label/unit/
+    direction, `marks_latest` — now on `longest_stall`). The four-axis methodology
+    definitions in `methodology.py` are built from these. Adding a measurement = one
+    entry here (+ the plugin emitting it).
   - `config_store.py` — DB-backed runtime config + defaults (targets, weights,
     thresholds, `iterations`, `monitoring`, `correlation`, `trends`, `experiment`,
-    `rubric_version`).
-  - `runner.py` — orchestrates a run across plugins (derives metrics from raw via
-    `interpret`, median-aggregated over iterations, per-run SOPS confidence band),
-    stores `BenchmarkResult.raw` as the source of truth, captures the firewall
-    settings + fingerprint per run, and holds run-lifecycle safety
-    (`reconcile_interrupted_runs`, `fail_stale_runs`, `rescore_run` = re-grade cached
-    scalars under a new rubric, `rederive_run` = re-run derivation+scoring from raw).
+    `rubric_version` = `perceptual-v5`, `methodology_version`).
+  - `runner.py` — orchestrates a run across plugins, derives metrics from raw via
+    `interpret` (median-aggregated over iterations, per-axis confidence bands), stores
+    `BenchmarkResult.raw` as the source of truth, captures the firewall settings +
+    fingerprint per run. At capture it scores via the generic
+    `score_metrics_under` / `score_run_under` and writes the **at-measure `Score` row**
+    under the current methodology (and still dual-writes the legacy `ScoreResult`).
+    `score_history_under_current` re-scores history from raw under the current
+    methodology. Run-lifecycle safety: `reconcile_interrupted_runs`, `fail_stale_runs`,
+    plus the legacy `rescore_run`/`rederive_run`.
   - `trends.py` — historical baselines by day-of-week × hour-of-day (viewer-local);
     `relative_reading`/`profile_relative` give a time-adjusted "vs typical" delta
     ("wins above replacement"). Powers `/api/trends/*`, the Dashboard delta chip,
     and the Settings-Impact "vs typical" column.
-  - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a quantum ×
-    target grid. Applies each variant for real, benchmarks it, **restores the
-    baseline at the end** (`reconcile_interrupted_sweeps` restores on startup too).
-    Runs in its own thread; the scheduler yields while `sweep.active()`.
+  - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a
+    pipe × quantum × target grid (varies one pipe at a time across **download +
+    upload**, each with its own `_baseline`/`_restore_pipe`). Applies each variant for
+    real, benchmarks it, **restores the baseline at the end**
+    (`reconcile_interrupted_sweeps` restores on startup too). Runs in its own thread;
+    the scheduler yields while `sweep.active()`. `/api/sweep/pipes` lists pipes.
   - `scheduler.py` — daemon thread: watchdog → (yield if a sweep is active) →
     experiment step → monitoring run (serialized so benchmark runs never overlap).
   - `experiment.py` — autonomous window-gated single-parameter shaper sweep
     (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline).
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
     settings-vs-responsiveness correlation (`/api/settings/*`).
+  - `models.py` — ORM models, including the methodology layer: **`Methodology`**
+    (immutable published versions) and **`Score`** (`run × methodology`; axis_scores /
+    subscores / weights_used / metric_values / bands, `is_at_measure`,
+    `comparability`, `missing_metrics`; `UNIQUE(run_id, methodology_version)`).
+    `Score` is the source of truth for all current read paths; `ScoreResult` is the
+    legacy lane.
   - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
-    columns; `create_all` for new tables).
-  - `api/` — REST routers mounted at `/api`.
-- `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
-  History, Trends, Compare, Settings Impact, Experiments, Shotgun Sweep, Config,
-  Plugins, Run Detail.
+    columns; `create_all` for new tables, incl. `methodology`/`score`).
+  - `api/` — REST routers mounted at `/api` (incl. `routes_methodology.py`,
+    `routes_score.py` with methodology-aware `/score/rolling`, `/score/axis-series`,
+    `/score/regrade`, `/score/{id}/methodologies`).
+- `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard
+  (Speed/Smoothness gauges, config-tag filter, p95, axis-series chart), History,
+  Trends, Compare, Settings Impact, Experiments, Shotgun Sweep (pipe picker), Config,
+  Plugins, Methodology, Run Detail (at-measure vs at-present).
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`.
@@ -111,26 +143,30 @@ docker compose up --build   # -> http://localhost:8000
   statistics/aggregation out of the probe.
 - All runtime config (targets/weights/thresholds) is DB-backed and editable via
   `/api/config`; infra config (DB URL, OPNsense creds) is env-only (`config.py`).
-- Lower-is-better for all current SOPS metrics; thresholds define best/worst and
-  are interpolated on a perception-calibrated log curve (Weber–Fechner). The
-  rubric (weights+thresholds+`rubric_version`) is versioned. **Two re-grade paths:**
-  `POST /api/score/rescore` re-applies the rubric to cached metric scalars (after a
-  weight/threshold change); `POST /api/score/rederive` re-runs the whole
-  interpretation from stored `BenchmarkResult.raw` (after a new metric or changed
-  `DERIVATION_VERSION`), so history reflects it without re-collecting.
-- A run repeats the suite `iterations` times; the headline SOPS is the **median**
-  over iterations, with a confidence band (`sops_stdev/min/max`). The Dashboard
-  shows a windowed **rolling** score (`/api/score/rolling`, 24h median + IQR) plus
-  a **"vs typical"** delta vs the day/hour historical baseline (`trends.py`).
-- **Current vs. legacy scoring (no dual-score machinery).** A run scored before
-  the current rubric (no longest-stall / byte-arrival metrics —
-  `metrics.has_latest_metrics`, keyed off `marks_latest`, now `longest_stall`) isn't
-  comparable, so it's **quarantined**, not
-  reconciled: Dashboard rolling + History trend exclude legacy; the History list
-  hides it behind a "Show legacy" toggle; Run Detail/Compare flag it
-  (`ScoreOut.legacy`/`RunSummary.legacy`); Settings Impact aggregates `complete_only`
-  (default true). Legacy runs are kept for their *settings* history, not their score.
-  SOPS is the sole ranked headline everywhere; Completion is an opt-in diagnostic.
+- Lower-is-better for all current axis metrics; thresholds define best/worst and
+  are interpolated on a perception-calibrated log curve (Weber–Fechner), anchored to
+  CWV/Nielsen (rubric `perceptual-v5`). **Methodologies are versioned and immutable**
+  (`methodology.py`): a weight/threshold/metric change = a **new** version. Re-grade
+  via `POST /api/score/regrade` ("Re-grade history under current") — it **derives
+  scores from `BenchmarkResult.raw`** and **writes new `Score` rows**, never mutating
+  the at-measure rows. (The legacy `POST /api/score/rescore`/`rederive` paths remain
+  for the `ScoreResult` lane only.) There is **no backfill of historical scores** —
+  the `Score`/`Methodology` tables populate from raw on demand; only raw is retained
+  across the reset.
+- A run repeats the suite `iterations` times; each axis is the **median** over
+  iterations, with confidence bands (stdev/min/max + p75/p95). The Dashboard shows
+  windowed **rolling** per-axis scores (`/api/score/rolling`, 24h median + IQR/p95,
+  optional `fingerprint`/config-tag filter) plus a **"vs typical"** delta vs the
+  day/hour historical baseline (`trends.py`).
+- **Comparability replaces the binary legacy flag.** For a `(run, methodology)`,
+  `methodology.comparability(...)` grades **exact** (every required metric
+  reproducible — a pure re-weight), **partial** (some metrics missing; scored with
+  weight redistribution + `missing_metrics`), or **incomparable** (a required metric
+  the raw never captured — no faithful at-present score). Runs that aren't comparable
+  under the current methodology are quarantined from rolling/trend aggregates and
+  flagged in Run Detail/Compare; they're kept for their *settings* history. Speed +
+  Smoothness are the ranked headline axes everywhere; Completion is an opt-in
+  diagnostic.
 - Each run captures the live firewall settings + a stable **fingerprint** at start
   (best-effort). Runs group into **profiles**; `/api/settings/impact` flags a
   change significant only with ≥ `correlation.min_runs` per side. `/api/settings/
@@ -170,12 +206,20 @@ docker compose up --build   # -> http://localhost:8000
   restores the baseline.
 - **Phase 5 (done):** **perceived load-smoothness instrument** — byte-arrival
   smoothness metrics from Resource Timing + LoAF (`interpret/smoothness.py`), with
-  network-vs-render stall attribution and protocol mix. Promoted into SOPS (rubric
-  `perceptual-v4`): byte earliness / longest stall / perceived time replace the
-  pixel Speed Index / paint cadence (now opt-in diagnostics). Per-run records +
-  two-config comparison at `/api/smoothness/*` (keyed on `settings_fingerprint`);
-  an offline **calibration harness** (`calibration/`) fits the perceived-time
-  weight ratio to subjective 1–10 ratings.
+  network-vs-render stall attribution and protocol mix. Per-run records + two-config
+  comparison at `/api/smoothness/*` (keyed on `settings_fingerprint`); an offline
+  **calibration harness** (`calibration/`) fits the perceived-time weight ratio to
+  subjective 1–10 ratings.
+- **Phase 6 (done):** **methodology layer + four-axis scoring** (`docs/methodology.md`).
+  The `raw + methodology → score` invariant made first-class: immutable
+  `Methodology` + `(run × methodology)` `Score` tables, score-at-measure vs
+  score-at-present, and exact/partial/incomparable comparability. SOPS replaced by
+  **Speed / Smoothness / Stability / Completion** axes (methodology
+  `speed-smoothness-v2`, derivation `derive-v3`, rubric `perceptual-v5` with
+  CWV/Nielsen-anchored thresholds). Generic multi-axis scoring; all read paths
+  (Dashboard, History, Trends, Settings Impact) read the `Score` table; Methodology
+  tab + Run Detail at-measure/at-present surfacing. Multi-pipe Shotgun Sweep
+  (download + upload). No score backfill — history re-scores from raw on demand.
 - **Next:** speed test / bufferbloat (latency-under-load), multi-parameter Bayesian
   search + interleaved A/B with effect-size/CI + hysteresis, routing intelligence /
   SD-WAN.

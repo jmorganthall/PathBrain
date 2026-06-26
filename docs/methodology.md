@@ -1,8 +1,15 @@
 # PathBrain Measurement & Methodology Architecture
 
-**Status:** Design (approved direction; implementation phased below)
+**Status:** Implemented (all phases below shipped). See §11 for as-built deviations.
 **Owner:** Josh
 **Audience:** anyone adding a metric, changing a weight, or reading a historical score.
+
+**As-built quick reference:**
+- Current methodology: `CURRENT_METHODOLOGY = "speed-smoothness-v2"` (`methodology.py`).
+- Current derivation: `DERIVATION_VERSION = "derive-v3"` (`interpret/derive.py`).
+- Current rubric: `DEFAULT_RUBRIC_VERSION = "perceptual-v5"` (`config_store.py`).
+- Tables `methodology` + `score(run × methodology)` are live; every read path
+  (Dashboard, History, Trends, Settings Impact) reads the `Score` table.
 
 ## 1. Why this exists
 
@@ -243,4 +250,36 @@ honest comparability — is the entire point of this layer.
    perceived-time calibration (Change 3), p75/p95 bands (Change 5), config-tag splitting
    (Change 6).
 
-Each phase is independently shippable and verifiable.
+Each phase is independently shippable and verifiable. **All five phases shipped.**
+
+## 11. As-built reconciliation
+
+The design above is implemented faithfully; a few decisions landed differently and are
+recorded here so the doc matches the code.
+
+- **No backfill / no migration of historical scores.** Per the explicit decision to
+  "start fresh from raw," there is *no* batch that converts old `ScoreResult` rows into
+  at-measure `Score` rows, and `methodology.py` ships **no backfill helper**. The
+  `Methodology`/`Score` tables begin populating from the first run captured after deploy.
+  Historical raw is retained, so any past run can be re-scored on demand via
+  `POST /api/score/regrade` ("Re-grade history under current") — which *derives* scores
+  from `BenchmarkResult.raw` rather than migrating stored numbers. This supersedes the
+  §4.3 migration note and §9 ("Existing `ScoreResult` rows become the at-measure rows") —
+  that conversion is intentionally **not** performed.
+- **Methodology is a declarative registry, not a config snapshot.** Versions live in
+  `METHODOLOGY_REGISTRY` (`methodology.py`) as version specs; `build_definition_from_spec`
+  expands a spec into the frozen `definition`, and `ensure_current_methodology` inserts the
+  current version's row on startup. Two versions are published: `speed-smoothness-v1` and
+  the current `speed-smoothness-v2`.
+- **Generic multi-axis scoring.** `scoring/engine.compute_score` takes
+  `metric_sources=...`; `runner.score_metrics_under` / `score_run_under` /
+  `score_history_under_current` drive all four axes (Speed / Smoothness / Stability /
+  Completion) through one code path keyed off a methodology definition.
+- **Re-grade endpoint.** The "write new rows" semantics are exposed as
+  `POST /api/score/regrade` (not a renamed `rescore`); the legacy `rescore`/`rederive`
+  paths remain for the legacy `ScoreResult` lane only.
+- **Capture still dual-writes.** `runner.execute_run` writes the at-measure `Score` row
+  **and** continues to write the legacy `ScoreResult` (the old rolling/legacy lane still
+  references it); the `Score` table is the source of truth for all current read paths.
+- **The diff endpoint** (`GET /api/methodologies/diff`, §6) is not yet built; the
+  Methodology tab lists versions and full definitions only.
