@@ -68,9 +68,11 @@ class RunSummary(BaseModel):
     finished_at: datetime | None = None
     status: str
     label: str | None = None
-    sops: float | None = None
-    # True when this run's score predates the current rubric's metrics (legacy,
-    # not comparable). False for runs with no score yet (running/failed).
+    # Headline axis scores under the current methodology (null until scored/comparable).
+    speed: float | None = None
+    smoothness: float | None = None
+    # True when the run has a score but isn't comparable under the current
+    # methodology. False for runs with no score yet (running/failed).
     legacy: bool = False
     iterations: int = 1
     iterations_completed: int = 0
