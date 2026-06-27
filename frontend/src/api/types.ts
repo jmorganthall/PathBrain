@@ -207,6 +207,9 @@ export interface SettingsProfilesResponse {
   // The crowned profile: confident and closest to the top-right (fastest+smoothest)
   // corner. Null until a confident profile with both axes exists.
   best_fingerprint: string | null;
+  // The profile the firewall is on right now (best-effort live discovery), so the UI
+  // can flag the active row. Null when discovery is unavailable.
+  current_fingerprint: string | null;
   // Selectable non-metric numeric fields for the chart axes + column selector.
   fields: ProfileField[];
   best_diff: ProfileDiff | null;

@@ -28,13 +28,44 @@ def _iso(dt) -> str | None:
     return dt.isoformat() if dt else None
 
 
+def _per_iteration_estimate(session: Session) -> float | None:
+    """Avg per-iteration duration (ms) over recent completed runs, for ETAs."""
+    rows = session.scalars(
+        select(Run)
+        .where(Run.status == RunStatus.COMPLETE, Run.per_iteration_ms.is_not(None))
+        .order_by(Run.created_at.desc())
+        .limit(5)
+    ).all()
+    vals = [r.per_iteration_ms for r in rows if r.per_iteration_ms]
+    return sum(vals) / len(vals) if vals else None
+
+
+def _fmt_eta(ms: float) -> str:
+    secs = max(0, round(ms / 1000))
+    if secs < 60:
+        return f"~{secs}s left"
+    return f"~{secs // 60}m {secs % 60:02d}s left"
+
+
 def _active_run_jobs(session: Session) -> list[dict]:
+    from .. import coordinator
+
     runs = session.scalars(
         select(Run).where(Run.status.in_([RunStatus.RUNNING, RunStatus.PENDING]))
     ).all()
+    est = _per_iteration_estimate(session)
     out = []
     for r in runs:
         done, total = r.iterations_completed or 0, r.iterations or 1
+        is_running = r.status == RunStatus.RUNNING
+        if is_running:
+            message = f"iteration {min(done + 1, total)}/{total}"
+            if est is not None:
+                message += f" · {_fmt_eta(est * max(0, total - done))}"
+        else:
+            # Queued behind the coordination lock — tell the user what it's waiting on.
+            holder = coordinator.owner()
+            message = f"queued — waiting for {holder}" if holder else "queued"
         out.append(
             {
                 "id": f"run-{r.id}",
@@ -43,7 +74,7 @@ def _active_run_jobs(session: Session) -> list[dict]:
                 "status": "running",
                 "current": done,
                 "total": total,
-                "message": f"iteration {min(done + 1, total)}/{total}",
+                "message": message,
                 "error": None,
                 "href": f"/runs/{r.id}",
                 "started_at": _iso(r.started_at or r.created_at),
