@@ -240,8 +240,22 @@ def settings_profiles(
 
     Also returns ``best_diff``: how the best (top confident) profile differs from
     the next-ranked one — the at-a-glance "what changed and did it help" view.
+
+    Also returns ``current_fingerprint``: the profile the firewall is on *right now*
+    (best-effort live discovery), so the UI can flag the active row.
     """
-    return compute_profiles(session, complete_only=complete_only, tz_offset=tz_offset)
+    result = compute_profiles(session, complete_only=complete_only, tz_offset=tz_offset)
+    result["current_fingerprint"] = _current_fingerprint()
+    return result
+
+
+def _current_fingerprint() -> str | None:
+    """Fingerprint of the live firewall settings right now (None if discovery fails)."""
+    try:
+        return fingerprint(normalize(get_provider().discover()))
+    except Exception:  # noqa: BLE001 — best-effort; the UI just won't flag an active row
+        log.debug("Could not discover current settings for active-profile flag", exc_info=True)
+        return None
 
 
 def compute_profiles(session: Session, complete_only: bool = True, tz_offset: int = 0) -> dict:

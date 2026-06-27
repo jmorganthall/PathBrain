@@ -408,6 +408,7 @@ export default function Settings() {
   // The crowned "best" profile (closest to the top-right corner) + the selectable
   // numeric fields, both from the server.
   const [bestFingerprint, setBestFingerprint] = useState<string | null>(null);
+  const [currentFingerprint, setCurrentFingerprint] = useState<string | null>(null);
   const [responseFields, setResponseFields] = useState<ProfileField[]>([]);
   // Dynamic quadrant axes (default Speed × Smoothness — the original view) + the
   // optional third dimension encoded as bubble size (default Overall).
@@ -504,6 +505,7 @@ export default function Settings() {
       setBestDiff(p.best_diff);
       setMinIterations(p.min_iterations);
       setBestFingerprint(p.best_fingerprint);
+      setCurrentFingerprint(p.current_fingerprint);
       setResponseFields(p.fields);
       setImpact(i);
       setDiag(d);
@@ -1007,13 +1009,24 @@ export default function Settings() {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {(pagedProfiles ?? []).map((p) => (
-                    <TableRow key={p.fingerprint}>
+                  {(pagedProfiles ?? []).map((p) => {
+                    const isActive = p.fingerprint === currentFingerprint;
+                    return (
+                    <TableRow
+                      key={p.fingerprint}
+                      selected={isActive}
+                      sx={isActive ? { "& td": { bgcolor: "action.selected" } } : undefined}
+                    >
                       <TableCell sx={{ maxWidth: 360 }}>
                         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
                           <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
                             {p.label}
                           </Typography>
+                          {isActive && (
+                            <Tooltip title="This profile is live on the firewall right now">
+                              <Chip size="small" color="info" label="active" />
+                            </Tooltip>
+                          )}
                           {p.fingerprint === bestFingerprint && (
                             <Chip size="small" color="success" label="best" />
                           )}
@@ -1134,7 +1147,8 @@ export default function Settings() {
                         </Stack>
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </TableContainer>

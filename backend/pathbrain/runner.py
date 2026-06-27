@@ -499,6 +499,12 @@ def execute_run(run_id: int) -> None:
             if run is None:
                 log.error("Run %s not found", run_id)
                 return
+            # A run can be cancelled while it's still queued behind the coordination
+            # lock (status flipped to FAILED by /runs/{id}/cancel). Don't execute it —
+            # otherwise a "cancelled" run would still run and write results (dirty data).
+            if run.status != RunStatus.PENDING:
+                log.info("Run %s no longer pending (%s) — skipping execution", run_id, run.status)
+                return
             run.status = RunStatus.RUNNING
             run.started_at = datetime.now(timezone.utc)
             config = run.config_used or get_config(session)
