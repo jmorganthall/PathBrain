@@ -30,6 +30,8 @@ import DataObjectIcon from "@mui/icons-material/DataObject";
 
 import type { ReactNode } from "react";
 
+import JobStatus from "./JobStatus";
+
 const DRAWER_WIDTH = 240;
 
 interface NavItem {
@@ -114,9 +116,10 @@ export default function Layout({ children }: { children: ReactNode }) {
           <Typography variant="h6" sx={{ fontWeight: 700, flexGrow: 1 }}>
             PathBrain
           </Typography>
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" }, mr: 1 }}>
             Network Path Intelligence
           </Typography>
+          <JobStatus />
         </Toolbar>
       </AppBar>
 

@@ -146,14 +146,10 @@ export default function Methodology() {
   const handleRegrade = useCallback(async () => {
     setRegrading(true);
     try {
-      const r = await api.regradeHistory();
-      setToast(
-        `Re-graded ${r.scored} run(s) under ${r.methodology}: ` +
-          `${r.exact} exact · ${r.partial} partial · ${r.incomparable} incomparable` +
-          (r.skipped ? ` · ${r.skipped} skipped (no raw)` : ""),
-      );
+      await api.regradeHistory();
+      setToast("Re-grade started — track its progress in the jobs menu (top right) ↗");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Re-grade failed");
+      setError(e instanceof Error ? e.message : "Could not start the re-grade");
     } finally {
       setRegrading(false);
     }

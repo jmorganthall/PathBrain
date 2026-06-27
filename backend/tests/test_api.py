@@ -127,10 +127,28 @@ def test_adopt_rubric_and_rescore(client):
     assert adopted.status_code == 200
     assert adopted.json()["rubric_version"] == "perceptual-v5"
 
+    # Re-score now runs as a background job: returns 202 + a job id, and the job
+    # shows up (and finishes) in the unified /api/jobs feed.
     resp = client.post("/api/score/rescore")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "rescored" in body and body["rubric_version"] == "perceptual-v5"
+    assert resp.status_code == 202
+    job_id = resp.json()["job_id"]
+    assert job_id
+    job = _await_job(client, job_id)
+    assert job["status"] == "succeeded"
+
+
+def _await_job(client, job_id: str, timeout: float = 10.0) -> dict:
+    """Poll /api/jobs until the given job finishes; return its serialized entry."""
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        feed = client.get("/api/jobs").json()["jobs"]
+        job = next((j for j in feed if j["id"] == job_id), None)
+        if job and job["status"] in ("succeeded", "failed"):
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} did not finish in time")
 
 
 def test_monitoring_status_shape(client):

@@ -7,6 +7,7 @@ from . import (
     routes_config,
     routes_experiments,
     routes_history,
+    routes_jobs,
     routes_methodology,
     routes_metrics,
     routes_monitoring,
@@ -35,3 +36,4 @@ api_router.include_router(routes_methodology.router, tags=["methodology"])
 api_router.include_router(routes_experiments.router, tags=["experiments"])
 api_router.include_router(routes_trends.router, tags=["trends"])
 api_router.include_router(routes_sweep.router, tags=["sweep"])
+api_router.include_router(routes_jobs.router, tags=["jobs"])

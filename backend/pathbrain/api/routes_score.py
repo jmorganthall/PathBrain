@@ -8,17 +8,21 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import jobs
 from ..config_store import get_config
-from ..database import get_session
+from ..database import get_session, session_scope
 from ..metrics import has_latest_metrics
 from ..config import get_settings
 from ..interpret import DERIVATION_VERSION
 from ..models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
-from ..runner import rederive_run, rescore_run
+from ..runner import rederive_run, rescore_run, score_history_under_current
 from ..schemas import ScoreOut
 from ..scoring import compute_score
 
 router = APIRouter()
+
+# Commit cadence for the long re-score/re-derive passes (resumable progress).
+_COMMIT_EVERY = 25
 
 
 def _attribution(network_ms: float | None, render_ms: float | None, unknown_ms: float | None) -> dict | None:
@@ -44,32 +48,43 @@ def _attribution(network_ms: float | None, render_ms: float | None, unknown_ms: 
     }
 
 
-@router.post("/score/rescore")
-def rescore_history(session: Session = Depends(get_session)) -> dict:
-    """Re-grade every completed run with the current scoring rubric.
+@router.post("/score/rescore", status_code=202)
+def rescore_history() -> dict:
+    """Re-grade every completed run with the current scoring rubric, **in the
+    background**. Returns ``{job_id}`` immediately; track it in the jobs feed.
 
     Run this after changing thresholds/weights so historical scores stay
     comparable (no discontinuity in the SOPS timeline at the change).
     """
-    cfg = get_config(session)
-    weights = cfg.get("weights", {})
-    thresholds = cfg.get("thresholds", {})
-    rubric_version = cfg.get("rubric_version")
-    c_weights = cfg.get("completion_weights", {})
-    c_thresholds = cfg.get("completion_thresholds", {})
-    runs = session.scalars(select(Run).where(Run.status == RunStatus.COMPLETE)).all()
-    rescored = sum(
-        1
-        for run in runs
-        if rescore_run(run, weights, thresholds, rubric_version, c_weights, c_thresholds)
-    )
-    session.commit()
-    return {"rescored": rescored, "rubric_version": rubric_version}
+
+    def task(job: jobs.Job) -> dict:
+        with session_scope() as session:
+            cfg = get_config(session)
+            weights = cfg.get("weights", {})
+            thresholds = cfg.get("thresholds", {})
+            rubric_version = cfg.get("rubric_version")
+            c_weights = cfg.get("completion_weights", {})
+            c_thresholds = cfg.get("completion_thresholds", {})
+            runs = session.scalars(select(Run).where(Run.status == RunStatus.COMPLETE)).all()
+            total = len(runs)
+            rescored = 0
+            for i, run in enumerate(runs):
+                if rescore_run(run, weights, thresholds, rubric_version, c_weights, c_thresholds):
+                    rescored += 1
+                if (i + 1) % _COMMIT_EVERY == 0:
+                    session.commit()
+                job.set_progress(i + 1, total, f"re-scored {rescored}/{total}")
+            session.commit()
+            return {"rescored": rescored, "rubric_version": rubric_version}
+
+    job_id = jobs.start("rescore", "Re-score history (current rubric)", task, href="/config")
+    return {"job_id": job_id}
 
 
-@router.post("/score/rederive")
-def rederive_history(session: Session = Depends(get_session)) -> dict:
-    """Re-derive *and* re-grade every completed run from its stored raw observations.
+@router.post("/score/rederive", status_code=202)
+def rederive_history() -> dict:
+    """Re-derive *and* re-grade every completed run from its stored raw observations,
+    **in the background**. Returns ``{job_id}`` immediately.
 
     Heavier than ``/score/rescore`` (which only re-applies the rubric to cached
     metric scalars): this re-runs the full interpretation, so a new metric or a
@@ -78,38 +93,52 @@ def rederive_history(session: Session = Depends(get_session)) -> dict:
     """
     import os
 
-    cfg = get_config(session)
-    weights = cfg.get("weights", {})
-    thresholds = cfg.get("thresholds", {})
-    rubric_version = cfg.get("rubric_version")
-    c_weights = cfg.get("completion_weights", {})
-    c_thresholds = cfg.get("completion_thresholds", {})
-    artifact_base = os.path.abspath(get_settings().artifact_dir)
-    runs = session.scalars(select(Run).where(Run.status == RunStatus.COMPLETE)).all()
-    rederived = sum(
-        1
-        for run in runs
-        if rederive_run(
-            run, weights, thresholds, rubric_version, c_weights, c_thresholds, artifact_base
-        )
-    )
-    session.commit()
-    return {"rederived": rederived, "derivation_version": DERIVATION_VERSION}
+    def task(job: jobs.Job) -> dict:
+        with session_scope() as session:
+            cfg = get_config(session)
+            weights = cfg.get("weights", {})
+            thresholds = cfg.get("thresholds", {})
+            rubric_version = cfg.get("rubric_version")
+            c_weights = cfg.get("completion_weights", {})
+            c_thresholds = cfg.get("completion_thresholds", {})
+            artifact_base = os.path.abspath(get_settings().artifact_dir)
+            runs = session.scalars(select(Run).where(Run.status == RunStatus.COMPLETE)).all()
+            total = len(runs)
+            rederived = 0
+            for i, run in enumerate(runs):
+                if rederive_run(
+                    run, weights, thresholds, rubric_version, c_weights, c_thresholds, artifact_base
+                ):
+                    rederived += 1
+                if (i + 1) % _COMMIT_EVERY == 0:
+                    session.commit()
+                job.set_progress(i + 1, total, f"re-derived {rederived}/{total}")
+            session.commit()
+            return {"rederived": rederived, "derivation_version": DERIVATION_VERSION}
+
+    job_id = jobs.start("rederive", "Re-derive history from raw", task, href="/config")
+    return {"job_id": job_id}
 
 
-@router.post("/score/regrade")
-def regrade_history(session: Session = Depends(get_session)) -> dict:
+@router.post("/score/regrade", status_code=202)
+def regrade_history() -> dict:
     """Score every completed run from its preserved raw under the *current*
-    methodology, writing (run × methodology) Score rows.
+    methodology, **in the background**. Returns ``{job_id}`` immediately.
 
     This is the methodology-aware successor to ``/score/rescore`` + ``/score/rederive``:
     it never mutates a run's at-measure score, it works straight from raw (so a
     re-weight *or* a new metric both land), and it tags each run exact / partial /
-    incomparable. Returns a comparability summary.
+    incomparable. Progress + the final comparability summary surface in the jobs feed.
     """
-    from ..runner import score_history_under_current
 
-    return score_history_under_current(session)
+    def task(job: jobs.Job) -> dict:
+        with session_scope() as session:
+            return score_history_under_current(session, progress=job.set_progress)
+
+    job_id = jobs.start(
+        "regrade", "Re-grade history under current methodology", task, href="/methodology"
+    )
+    return {"job_id": job_id}
 
 
 @router.get("/score/{run_id}/methodologies")

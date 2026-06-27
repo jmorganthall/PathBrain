@@ -733,6 +733,32 @@ export interface RegradeSummary {
   skipped: number;
 }
 
+// Returned by the heavy async endpoints (regrade/rescore/rederive): they kick off a
+// background job and hand back its id; progress is tracked in the jobs feed.
+export interface JobStart {
+  job_id: string;
+}
+
+// One entry in the universal "running jobs" feed (GET /api/jobs).
+export interface Job {
+  id: string;
+  kind: string; // regrade | rescore | rederive | run | sweep | profile_test | experiment
+  label: string;
+  status: "running" | "succeeded" | "failed";
+  current: number | null;
+  total: number | null;
+  message: string | null;
+  error: string | null;
+  href: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface JobsResponse {
+  jobs: Job[];
+  running: number;
+}
+
 // Consolidated raw export (GET /history/dump). The shape is intentionally loose —
 // it's a debugging/analysis payload rendered as raw JSON, not a typed view model.
 export interface DataDumpRun {
