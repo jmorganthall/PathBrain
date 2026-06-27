@@ -397,3 +397,44 @@ def test_crown_prefers_proven_profile_over_lucky_one(client):
     assert by_fp["luckythin0x"]["confident"] and by_fp["provenwide0x"]["confident"]
     # Despite the lucky profile's noisy high median, the proven one is crowned.
     assert body["best_fingerprint"] == "provenwide0x"
+
+
+def test_relative_lower_bound_discounts_window_riders():
+    from pathbrain.api.routes_settings import relative_lower_bound
+
+    # No baseline yet → no time-adjusted signal to crown on.
+    assert relative_lower_bound(None) is None
+    assert relative_lower_bound({"delta_median": None}) is None
+
+    # A profile that beats its day/hour norm by a tight, well-sampled margin keeps
+    # almost all of that edge; a noisy one with the same median is discounted more.
+    steady = relative_lower_bound({"delta_median": 6.0, "p25": 5.0, "p75": 7.0, "count": 20})
+    noisy = relative_lower_bound({"delta_median": 6.0, "p25": -4.0, "p75": 16.0, "count": 20})
+    assert steady > noisy
+
+    # The bound can go negative — a profile that ran *below* its time-of-day norm (it
+    # only looked good because of *when* it ran) is the window-rider the crown docks.
+    rider = relative_lower_bound({"delta_median": -3.0, "p25": -5.0, "p75": -1.0, "count": 20})
+    assert rider < 0
+
+    # √n: same spread, more runs → less discount (tighter bound, nearer the median).
+    few = relative_lower_bound({"delta_median": 5.0, "p25": 0.0, "p75": 10.0, "count": 4})
+    many = relative_lower_bound({"delta_median": 5.0, "p25": 0.0, "p75": 10.0, "count": 100})
+    assert many > few
+
+    # A single-sample profile takes the fixed margin penalty (no IQR to estimate SE).
+    assert relative_lower_bound({"delta_median": 4.0, "p25": 4.0, "p75": 4.0, "count": 1}) == -1.0
+
+
+def test_profiles_expose_time_adjusted_overall(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(8):
+        _seed_run("reloverall0x", 88, t0 - timedelta(minutes=80 - i), iterations=3)
+
+    by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
+    p = by_fp["reloverall0x"]
+    # The time-adjusted Overall ("vs typical") + its confidence-adjusted lower bound
+    # are wired through for the crown + the table's "vs typical" column.
+    assert "relative_overall" in p and "relative_overall_lb" in p
+    if p["relative_overall"] is not None:
+        assert set(p["relative_overall"]) >= {"delta_median", "p25", "p75", "count"}

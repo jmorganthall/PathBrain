@@ -116,6 +116,26 @@ def overall_lower_bound(
     se = (iqr / 1.349) / (n ** 0.5)
     return round(max(0.0, med - k * se), 2)
 
+
+def relative_lower_bound(
+    rel: dict | None, k: float = CROWN_PESSIMISM_K, margin: float = CROWN_PESSIMISM_MARGIN
+) -> float | None:
+    """Confidence-adjusted lower bound of a profile's *time-adjusted* Overall ("vs
+    typical": run Overall − day×hour baseline). Like ``overall_lower_bound`` but on the
+    relative-delta distribution (``profile_relative`` output), so the value can be
+    negative (a profile below its environment's norm). De-confounds for *when* a profile
+    was sampled — a profile that only looks good because it ran in a favourable window
+    has a small/negative "vs typical", so it can't be crowned. None when no baseline."""
+    if not rel or rel.get("delta_median") is None:
+        return None
+    med = float(rel["delta_median"])
+    n = int(rel.get("count") or 0)
+    if n < 2:
+        return round(med - margin, 2)
+    iqr = float(rel["p75"]) - float(rel["p25"])
+    se = (iqr / 1.349) / (n ** 0.5)
+    return round(med - k * se, 2)
+
 router = APIRouter()
 log = get_logger("api.settings")
 
@@ -312,8 +332,14 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
         axes = (score.axis_scores or {}) if comparable else {}
         smooth, speed, comp_axis = axes.get("smoothness"), axes.get("speed"), axes.get("completion")
         resp = axes.get("responsiveness")
-        # Smoothness is the primary ranking; the time baseline is built on it.
-        point = RunPoint(created_at=run.created_at, values={"smoothness": smooth})
+        # This run's Overall (corner of its three headline axes) — the unit we crown on.
+        run_overall = _corner_overall({"responsiveness": resp, "smoothness": smooth, "speed": speed})
+        # Time baseline carries both smoothness and the per-run Overall, so we can read
+        # each profile's "vs typical" (day×hour-adjusted) for the Overall too.
+        point_values = {"smoothness": smooth}
+        if run_overall is not None:
+            point_values["overall"] = run_overall
+        point = RunPoint(created_at=run.created_at, values=point_values)
         baseline_points.append(point)
         g = groups.setdefault(
             run.settings_fingerprint,
@@ -341,9 +367,6 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
             g["smoothness"].append(smooth)
         if speed is not None:
             g["speed"].append(speed)
-        # This run's Overall (corner of its three headline axes) — the unit whose
-        # run-to-run variation drives the confidence-adjusted crown.
-        run_overall = _corner_overall({"responsiveness": resp, "smoothness": smooth, "speed": speed})
         if run_overall is not None:
             g["overall_samples"].append(run_overall)
         g["points"].append(point)
@@ -393,6 +416,9 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
         # Per-metric medians — every numeric value we collect, for the chart + columns.
         metrics = {key: round(median(vals), 3) for key, vals in g["metric_samples"].items() if vals}
         rel = profile_relative(baseline_points, g["points"], "smoothness", tz_offset, min_samples)
+        # Time-adjusted Overall ("vs typical"): de-confounds for *when* the profile ran.
+        rel_overall = profile_relative(baseline_points, g["points"], "overall", tz_offset, min_samples)
+        relative_overall_lb = relative_lower_bound(rel_overall)
         profiles.append(
             {
                 "fingerprint": g["fingerprint"],
@@ -413,8 +439,12 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
                 "scores": scores,
                 "axis_spreads": axis_spreads,
                 "overall": overall,
-                # Confidence-adjusted Overall (lower bound) used to crown "best".
+                # Confidence-adjusted absolute Overall (lower bound).
                 "overall_pessimistic": overall_pessimistic,
+                # Time-adjusted ("vs typical") Overall + its confidence-adjusted lower
+                # bound — the basis for crowning "best" (de-confounds narrow time windows).
+                "relative_overall": rel_overall,
+                "relative_overall_lb": relative_overall_lb,
                 # IQR of the per-run Overall (its own run-to-run variation, for display).
                 "overall_p25": overall_spread["p25"] if overall_spread else None,
                 "overall_p75": overall_spread["p75"] if overall_spread else None,
@@ -445,13 +475,25 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
     # missing it (no speed or smoothness yet) fall back to smoothness median, sort last.
     profiles.sort(key=lambda p: (p["overall"] is not None, p["overall"] if p["overall"] is not None else p["median"]), reverse=True)
 
-    # "Best" = the confident profile with the highest *confidence-adjusted* Overall (a
-    # lower bound), NOT the highest median — so a lucky 15-iteration profile can't be
-    # crowned over a proven, well-sampled one and then regress (winner's curse).
-    confident_candidates = [
-        p for p in profiles if p["confident"] and p["overall_pessimistic"] is not None
-    ]
-    best = max(confident_candidates, key=lambda p: p["overall_pessimistic"], default=None)
+    # "Best" = the confident profile with the highest *crown score*. The backbone is the
+    # absolute confidence-adjusted Overall (a lower bound), which already counters the
+    # small-sample winner's curse so a lucky 15-iteration profile can't out-rank a proven
+    # one. On top of that we subtract a **window-rider penalty**: if a profile's
+    # time-adjusted ("vs typical") Overall lower bound is negative — it scored *below* its
+    # own day×hour norm, i.e. it only looked good because it happened to run in a
+    # favourable window — we dock it by that shortfall. A profile that genuinely beats its
+    # environment (≥ 0 vs typical) takes no penalty, and one with no usable time baseline
+    # yet is judged on the absolute bound alone. This de-confounds for *when* a profile was
+    # sampled without letting the noisier relative signal dominate the crown.
+    def crown_score(p: dict) -> float | None:
+        base = p["overall_pessimistic"]
+        if base is None:
+            return None
+        penalty = min(0.0, p["relative_overall_lb"]) if p["relative_overall_lb"] is not None else 0.0
+        return base + penalty
+
+    confident = [p for p in profiles if p["confident"] and crown_score(p) is not None]
+    best = max(confident, key=lambda p: crown_score(p), default=None)
     best_fingerprint = best["fingerprint"] if best else None
 
     return {
