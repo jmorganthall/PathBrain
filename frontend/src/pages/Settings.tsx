@@ -413,7 +413,7 @@ export default function Settings() {
   // optional third dimension encoded as bubble size (default Overall).
   const [xKey, setXKey] = useState("speed");
   const [yKey, setYKey] = useState("smoothness");
-  const [sizeKey, setSizeKey] = useState("overall");
+  const [sizeKey, setSizeKey] = useState("responsiveness");
   // Optional extra table columns (dynamic field keys), persisted across reloads.
   const [extraCols, setExtraCols] = useState<string[]>(() => {
     try {
