@@ -26,17 +26,19 @@ from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import diff_profiles, fingerprint, normalize, plan_apply, summarize
 from ..trends import RunPoint, profile_relative
 
-# The two headline axes whose 0–100 scores define the Speed×Smoothness quadrant; the
-# crowned "best" profile is the confident one closest to the top-right corner (100,100).
-_CORNER_AXES = ("speed", "smoothness")
+# The three headline axes (the temporal phases of a load) whose 0–100 scores define the
+# Overall "corner" score under methodology speed-smoothness-v4; the crowned "best"
+# profile is the confident one closest to the perfect (100, 100, 100) corner.
+_CORNER_AXES = ("responsiveness", "smoothness", "speed")
 
 # Non-metric numeric fields the /api/metrics catalog doesn't describe, exposed so the
 # UI's chart-axis pickers + column selector can offer them (metric fields get their
 # metadata from the catalog). higher_is_better drives the "↑/↓ better" hints.
 _PROFILE_FIELDS = [
     {"key": "overall", "label": "Overall (corner)", "unit": "score", "higher_is_better": True, "group": "Scores"},
-    {"key": "speed", "label": "Speed", "unit": "score", "higher_is_better": True, "group": "Scores"},
+    {"key": "responsiveness", "label": "Responsiveness", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "smoothness", "label": "Smoothness", "unit": "score", "higher_is_better": True, "group": "Scores"},
+    {"key": "speed", "label": "Speed", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "stability", "label": "Stability", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "completion", "label": "Completion", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "iterations", "label": "Iterations", "unit": "", "higher_is_better": True, "group": "Run stats"},
@@ -46,9 +48,10 @@ _PROFILE_FIELDS = [
 
 
 def _corner_overall(scores: dict) -> float | None:
-    """0–100 'closeness to the ideal top-right corner' over the Speed×Smoothness
-    scores: 100 at (100,100), 0 at (0,0). Ranks identically to smallest distance to
-    the corner, so the highest-``overall`` confident profile is 'best'."""
+    """0–100 'closeness to the perfect corner' over the three headline axes
+    (Responsiveness/Smoothness/Speed): 100 at all-100, 0 at all-0. Ranks identically to
+    smallest distance to the corner, so the highest-``overall`` confident profile is
+    'best'. Returns None unless every corner axis is present."""
     vals = [scores.get(a) for a in _CORNER_AXES]
     if any(v is None for v in vals):
         return None

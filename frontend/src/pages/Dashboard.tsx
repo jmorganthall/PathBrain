@@ -38,8 +38,10 @@ import EmptyState from "../components/EmptyState";
 import { sopsColor } from "../theme";
 import { fmtDateTime, fmtDuration, parseApiDate, runRemainingMs } from "../utils/format";
 
-// Colors for the headline axis lines/gauges (cyan = speed, violet = smoothness, …).
+// Colors for the headline axis lines/gauges (amber = responsiveness, cyan = speed,
+// violet = smoothness, …).
 const AXIS_COLORS: Record<string, string> = {
+  responsiveness: "#ffa726",
   speed: "#4dd0e1",
   smoothness: "#ab47bc",
   stability: "#81c784",

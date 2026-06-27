@@ -37,9 +37,12 @@ AXIS_META: dict[str, dict] = {
 # (the engine normalizes them), so each axis can sum to whatever is readable.
 
 SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
+# v4 splits the old blended "Speed" into Responsiveness (time-to-first) and a
+# redefined Speed (time-to-last + interactive).
+RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v3"
+CURRENT_METHODOLOGY = "speed-smoothness-v4"
 
 # Shared axis layout + per-metric rubric for the speed/smoothness family.
 _SS_AXES = [
@@ -110,6 +113,51 @@ def _ss_v3_assignments() -> dict:
     }
 
 
+# speed-smoothness-v4: reframe the headline axes around the three temporal phases
+# of a page load. The old "Speed" axis blended time-to-first (TTFB/FCP/byte-
+# earliness) with time-to-last (LCP/render); v4 splits those into **Responsiveness**
+# (how fast the first content appears) and a redefined **Speed** (overall time to the
+# last paint + interaction-ready, so INP moves here from Stability). Smoothness is
+# unchanged; Stability becomes CLS-only; Completion is unchanged. Each metric still
+# maps to exactly one axis (a clean re-partition — no engine change). Thresholds and
+# derivation are carried over from v3 unchanged, so history re-grades straight from
+# raw. Weights within an axis are relative (the engine normalizes them).
+_SS_V4_AXES = [
+    {"key": RESPONSIVENESS, "label": "Responsiveness", "role": "headline"},
+    {"key": SMOOTHNESS, "label": "Smoothness", "role": "headline"},
+    {"key": SPEED, "label": "Speed", "role": "headline"},
+    {"key": STABILITY, "label": "Stability", "role": "secondary"},
+    {"key": COMPLETION, "label": "Completion", "role": "secondary"},
+]
+
+
+def _ss_v4_assignments() -> dict:
+    return {
+        # Completion — pure infrastructure timing (unchanged from v3).
+        "dns": {"axis": COMPLETION, "weight": 10, "best": 1.0, "worst": 150.0},
+        "tcp": {"axis": COMPLETION, "weight": 15, "best": 5.0, "worst": 250.0},
+        "tls": {"axis": COMPLETION, "weight": 20, "best": 5.0, "worst": 500.0},
+        "jitter": {"axis": COMPLETION, "weight": 5, "best": 0.5, "worst": 30.0},
+        "packet_loss": {"axis": COMPLETION, "weight": 5, "best": 0.0, "worst": 2.5},
+        # Responsiveness — how fast the *first* content appears (time-to-first).
+        "ttfb": {"axis": RESPONSIVENESS, "weight": 15, "best": 50.0, "worst": 1800.0},
+        "fcp": {"axis": RESPONSIVENESS, "weight": 25, "best": 300.0, "worst": 3000.0},
+        "byte_earliness": {"axis": RESPONSIVENESS, "weight": 30, "best": 200.0, "worst": 5000.0},
+        # Speed — overall time to the *last* paint + interaction-ready.
+        "lcp": {"axis": SPEED, "weight": 40, "best": 800.0, "worst": 4000.0},
+        "render": {"axis": SPEED, "weight": 20, "best": 500.0, "worst": 8000.0},
+        "inp": {"axis": SPEED, "weight": 40, "best": 50.0, "worst": 500.0},
+        # Stability — layout stability (CLS only; INP moved to Speed).
+        "cls": {"axis": STABILITY, "weight": 50, "best": 0.0, "worst": 0.25},
+        # Smoothness — how steady delivery was (the reason this project exists).
+        "perceived_time": {"axis": SMOOTHNESS, "weight": 30, "best": 300.0, "worst": 8000.0},
+        "longest_stall": {"axis": SMOOTHNESS, "weight": 40, "best": 25.0, "worst": 2000.0,
+                          "required": True},
+        "cadence_cov": {"axis": SMOOTHNESS, "weight": 15, "best": 0.2, "worst": 2.5},
+        "delivery_gini": {"axis": SMOOTHNESS, "weight": 15, "best": 0.1, "worst": 0.7},
+    }
+
+
 METHODOLOGY_REGISTRY: dict[str, dict] = {
     "speed-smoothness-v1": {
         "derivation_version": "derive-v2",
@@ -145,6 +193,19 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         ),
         "axes": _SS_AXES,
         "assignments": _ss_v3_assignments(),
+    },
+    "speed-smoothness-v4": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v3 (no formula change)
+        "notes": (
+            "Reframe the headline axes around the three phases of a load: split the "
+            "old blended Speed into Responsiveness (time-to-first: TTFB/FCP/byte-"
+            "earliness) and a redefined Speed (time-to-last + interactive: LCP/render/"
+            "INP, so INP moves out of Stability). Smoothness unchanged; Stability "
+            "becomes CLS-only. Thresholds/weights and derivation carried over from v3, "
+            "so history re-grades straight from raw."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v4_assignments(),
     },
 }
 

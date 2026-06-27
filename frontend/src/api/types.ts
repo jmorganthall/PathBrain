@@ -13,6 +13,7 @@ export interface RunSummary {
   status: string;
   label?: string | null;
   // Headline axis scores under the current methodology (null until scored/comparable).
+  responsiveness?: number | null;
   speed?: number | null;
   smoothness?: number | null;
   // True when the run has a score but isn't comparable under the current methodology.
@@ -333,6 +334,7 @@ export interface SeriesPoint {
   run_id: number;
   timestamp: string;
   label?: string | null;
+  responsiveness?: number | null;
   speed: number | null;
   smoothness: number | null;
   stability?: number | null;

@@ -79,31 +79,33 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v3_rubric():
-    # The published-now methodology is speed-smoothness-v3 with the re-anchored
-    # rubric (axis, weight, best, worst per metric) from the spec table.
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v3"
+def test_current_methodology_is_v4_rubric():
+    # The published-now methodology is speed-smoothness-v4: the old blended Speed is
+    # split into Responsiveness (time-to-first) and a redefined Speed (time-to-last +
+    # interactive, so INP moves here); Stability becomes CLS-only.
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v4"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
 
     expected = {
-        # completion
+        # completion (unchanged)
         "dns": ("completion", 10, 1.0, 150.0),
         "tcp": ("completion", 15, 5.0, 250.0),
         "tls": ("completion", 20, 5.0, 500.0),
         "jitter": ("completion", 5, 0.5, 30.0),
         "packet_loss": ("completion", 5, 0.0, 2.5),
-        # speed
-        "ttfb": ("speed", 15, 50.0, 1800.0),
-        "fcp": ("speed", 25, 300.0, 3000.0),
-        "lcp": ("speed", 20, 800.0, 4000.0),
-        "render": ("speed", 10, 500.0, 8000.0),
-        "byte_earliness": ("speed", 30, 200.0, 5000.0),
-        # stability
+        # responsiveness — time-to-first
+        "ttfb": ("responsiveness", 15, 50.0, 1800.0),
+        "fcp": ("responsiveness", 25, 300.0, 3000.0),
+        "byte_earliness": ("responsiveness", 30, 200.0, 5000.0),
+        # speed — time-to-last + interactive
+        "lcp": ("speed", 40, 800.0, 4000.0),
+        "render": ("speed", 20, 500.0, 8000.0),
+        "inp": ("speed", 40, 50.0, 500.0),
+        # stability — CLS only
         "cls": ("stability", 50, 0.0, 0.25),
-        "inp": ("stability", 50, 50.0, 500.0),
-        # smoothness
+        # smoothness (unchanged)
         "perceived_time": ("smoothness", 30, 300.0, 8000.0),
         "longest_stall": ("smoothness", 40, 25.0, 2000.0),
         "cadence_cov": ("smoothness", 15, 0.2, 2.5),
@@ -113,9 +115,20 @@ def test_current_methodology_is_v3_rubric():
         m = by_key[key]
         assert (m["axis"], m["weight"], m["best"], m["worst"]) == (axis, weight, best, worst), key
 
-    # longest_stall is the required marker; the four axes are present.
+    # longest_stall is the required marker; the five axes are present.
     assert by_key["longest_stall"]["required"] is True
-    assert {a["key"] for a in d["axes"]} == {"speed", "smoothness", "stability", "completion"}
+    assert {a["key"] for a in d["axes"]} == {
+        "responsiveness", "speed", "smoothness", "stability", "completion"
+    }
     # Display-only metrics carry no axis (e.g. latency, transfer, speed_index).
     for k in ("latency", "transfer", "speed_index", "network_stall"):
         assert by_key[k]["axis"] is None
+
+
+def test_v3_methodology_still_frozen():
+    # v3 is preserved append-only (its blended Speed axis lives on for old at-measure
+    # scores), even though v4 is now current.
+    spec = METHODOLOGY_REGISTRY["speed-smoothness-v3"]
+    by_key = {m["key"]: m for m in build_definition_from_spec(spec)["metrics"]}
+    assert by_key["lcp"]["axis"] == "speed"
+    assert by_key["inp"]["axis"] == "stability"

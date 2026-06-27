@@ -76,24 +76,35 @@ score or re-derive one, with no reference to current code:
 ```jsonc
 {
   "axes": [
-    { "key": "speed",      "label": "Speed",      "role": "headline" },
-    { "key": "smoothness", "label": "Smoothness", "role": "headline" },
-    { "key": "stability",  "label": "Stability & Interactivity", "role": "secondary" },
-    { "key": "completion", "label": "Completion", "role": "secondary" }
+    { "key": "responsiveness", "label": "Responsiveness", "role": "headline" },
+    { "key": "smoothness",     "label": "Smoothness",     "role": "headline" },
+    { "key": "speed",          "label": "Speed",          "role": "headline" },
+    { "key": "stability",      "label": "Stability",      "role": "secondary" },
+    { "key": "completion",     "label": "Completion",     "role": "secondary" }
   ],
   "metrics": [
     {
-      "key": "byte_earliness", "axis": "speed",
+      "key": "byte_earliness", "axis": "responsiveness",
       "plugin": "browser", "source_key": "byte_earliness_ms",
-      "weight": 25, "best": 300.0, "worst": 5000.0,
+      "weight": 30, "best": 200.0, "worst": 5000.0,
       "unit": "ms", "label": "Byte earliness", "higher_is_better": false,
-      "required": true,          // a run lacking this is not exactly-scorable under this version
+      "required": false,         // a run lacking a *required* metric is not exactly-scorable
       "description": "..."
     }
     // ... one entry per metric in play at this version
   ]
 }
 ```
+
+> The axes above are `speed-smoothness-v4` (the published-now version): the three
+> temporal phases of a load — **Responsiveness** (time-to-first: TTFB/FCP/byte-
+> earliness), **Smoothness** (the steady fill), and **Speed** (time-to-last +
+> interactive: LCP/render/INP) — plus secondary **Stability** (CLS) and
+> **Completion** (infra). Each metric maps to exactly one axis, so a new headline
+> framing is just a re-partition published as a new version. A single higher-is-
+> better **Overall** (closeness to the perfect 100/100/100 corner) is computed in
+> the API as a *derived presentation roll-up* — deliberately **not** a methodology
+> axis (no weights/thresholds of its own, never persisted).
 
 The `definition` is produced from the live registry (`metrics.py` + config) at publish
 time, so it's always a faithful snapshot of "the methodology in play."
@@ -195,10 +206,13 @@ score can be recomputed and audited at any time from data alone.
 Once methodology is first-class, the rest of the backlog stops being code surgery and
 becomes *publishing a version*:
 
-- **Speed/Smoothness split** (replace the single SOPS headline) → publish a methodology
-  version whose `axes` are Speed + Smoothness + Stability. Old runs re-score **exact** (pure
-  regrouping/re-weight of existing metrics) — every historical run gets an at-present
-  Speed/Smoothness with no recollection.
+- **Speed/Smoothness split** (replace the single SOPS headline) → **shipped.** Published as
+  `speed-smoothness-v1..v3`; `v4` then re-partitioned the headline into
+  **Responsiveness + Smoothness + Speed** (the three temporal phases of a load), moving
+  LCP/render/INP into a redefined Speed and leaving Stability = CLS-only. Because each
+  metric still maps to one axis and derivation was unchanged, every historical run
+  re-scores **exact** straight from raw via `POST /api/score/regrade` — no recollection.
+  The new headline framing was a pure re-partition: no engine change.
 - **Re-weighting `perceived_time`** (calibration) → new version, **exact** everywhere.
 - **A genuinely new instrument** (e.g. bufferbloat/latency-under-load) → new version;
   pre-instrument runs are **incomparable** for that metric and the UI says so — no silent,

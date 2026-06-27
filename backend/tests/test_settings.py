@@ -53,6 +53,7 @@ def _seed_run(
     metric_values: dict | None = None,
     iterations: int = 1,
     speed: float | None = None,
+    responsiveness: float | None = None,
     result_metrics: dict | None = None,
 ) -> None:
     with session_scope() as session:
@@ -81,7 +82,13 @@ def _seed_run(
         # axis. A legacy run (metric_values={}) gets an *incomparable* Score so it's
         # excluded; everything else is comparable with smoothness = the seeded score.
         comparable = metric_values is None or len(metric_values) > 0
-        axes = {"speed": speed if speed is not None else sops, "smoothness": sops}
+        # A comparable run under speed-smoothness-v4 carries all three headline axes;
+        # responsiveness defaults to the seeded smoothness score for fixtures.
+        axes = {
+            "responsiveness": responsiveness if responsiveness is not None else sops,
+            "speed": speed if speed is not None else sops,
+            "smoothness": sops,
+        }
         if completion is not None:
             axes["completion"] = completion
         session.add(
@@ -153,13 +160,16 @@ def test_confidence_is_iteration_based(client):
 
 def test_best_is_closest_to_top_right_corner(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # Profile A: highest Smoothness (90) but only middling Speed (70).
-    # Profile B: lower Smoothness (80) but much higher Speed (95) — so it sits closer
-    # to the ideal (100,100) corner. "Best" must follow the corner, not raw smoothness.
+    # Profile A: highest Smoothness (90) but slow to start *and* finish (resp/speed 70).
+    # Profile B: lower Smoothness (80) but fast to start *and* finish (resp/speed 95) —
+    # so it sits closer to the perfect (100,100,100) corner. "Best" must follow the
+    # three-axis corner, not raw smoothness.
     for i in range(3):
-        _seed_run("smoothA0000x", 90, t0 - timedelta(minutes=120 - i), speed=70, iterations=6)
+        _seed_run("smoothA0000x", 90, t0 - timedelta(minutes=120 - i),
+                  speed=70, responsiveness=70, iterations=6)
     for i in range(3):
-        _seed_run("cornerB0000x", 80, t0 - timedelta(minutes=60 - i), speed=95, iterations=6)
+        _seed_run("cornerB0000x", 80, t0 - timedelta(minutes=60 - i),
+                  speed=95, responsiveness=95, iterations=6)
 
     body = client.get("/api/settings/profiles").json()
     by_fp = {p["fingerprint"]: p for p in body["profiles"]}

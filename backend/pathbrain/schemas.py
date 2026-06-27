@@ -69,6 +69,7 @@ class RunSummary(BaseModel):
     status: str
     label: str | None = None
     # Headline axis scores under the current methodology (null until scored/comparable).
+    responsiveness: float | None = None
     speed: float | None = None
     smoothness: float | None = None
     # True when the run has a score but isn't comparable under the current
