@@ -138,6 +138,10 @@ published-now version.
   further — a time-boxed, adaptive race that tests promising limited-data profiles **one
   iteration at a time**, eliminating any that can't overtake the best, and (optionally)
   auto-promoting a confirmed winner. Mock provider for offline dev.
+- ⬆️ **Version awareness** — the image is stamped with its build commit; the app does a
+  cached, best-effort check against the latest commit on `main` (`GET /api/version`) and
+  shows an **"Update available"** chip in the top bar when a newer `:latest` is pullable.
+  On by default; set `PATHBRAIN_UPDATE_CHECK=false` to disable.
 - 🔔 **Background jobs + status dropdown** — long operations (re-grade / re-score /
   re-derive history) run **in the background** with live progress instead of blocking;
   a top-right notifications dropdown (`GET /api/jobs`) shows every active +
@@ -358,6 +362,7 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 | `POST /api/sweep/{id}/cancel` · `…/apply-best` | Cancel (restores baseline) / apply the winning variant |
 | `GET /api/plugins` | List registered benchmark plugins |
 | `GET /api/health` | Liveness / version |
+| `GET /api/version` | Build commit + cached "newer build available to pull" check |
 
 ---
 

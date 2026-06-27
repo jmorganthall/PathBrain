@@ -24,6 +24,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./backend/
 COPY --from=frontend /frontend/dist ./frontend/dist
 
+# Stamp the commit this image was built from (CI passes --build-arg GIT_SHA=$github.sha)
+# so the running app can tell when a newer build is available to pull.
+ARG GIT_SHA=""
+ENV PATHBRAIN_GIT_SHA=$GIT_SHA
+
 ENV PATHBRAIN_DATABASE_URL=sqlite:////data/pathbrain.db \
     PATHBRAIN_ARTIFACT_DIR=/data/artifacts \
     PATHBRAIN_FRONTEND_DIST=/app/frontend/dist \

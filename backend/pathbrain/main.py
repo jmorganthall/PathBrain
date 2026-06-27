@@ -86,6 +86,14 @@ def health() -> dict:
     return {"status": "ok", "version": __version__}
 
 
+@app.get("/api/version")
+def version() -> dict:
+    """Build identity + a cached, best-effort check for a newer build to pull."""
+    from .updates import version_info
+
+    return version_info()
+
+
 # -- Browser-engine artifacts (screenshots, HAR) --------------------------
 _artifact_dir = os.path.abspath(settings.artifact_dir)
 os.makedirs(_artifact_dir, exist_ok=True)

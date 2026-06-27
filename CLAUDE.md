@@ -122,7 +122,13 @@ LLM-based. See `README.md` for the product overview.
   (re-grade, sweep, run, profile test, challenger race, …).
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
-  `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`.
+  `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`,
+  stamping the build commit (`--build-arg GIT_SHA=$github.sha` → `PATHBRAIN_GIT_SHA`).
+- **Version awareness** (`updates.py`, `GET /api/version`): a cached, best-effort
+  compare of this build's `git_sha` against the latest commit on `update_repo`'s
+  default branch (GitHub API; on by default, `PATHBRAIN_UPDATE_CHECK=false` to disable).
+  The top-bar `UpdateChip` shows "Update available" (→ the GitHub compare) when the
+  branch has moved past the running build — i.e. a newer `:latest` image is pullable.
 
 ## Commands
 

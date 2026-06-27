@@ -260,6 +260,18 @@ export interface RaceStart {
   auto_promote: boolean;
 }
 
+export interface VersionInfo {
+  version: string;
+  git_sha: string | null;
+  git_sha_short: string | null;
+  update_check: boolean;
+  update_available: boolean;
+  latest_sha: string | null;
+  latest_sha_short: string | null;
+  compare_url: string | null;
+  error: string | null;
+}
+
 export interface ImpactSide {
   label: string;
   fingerprint: string;
