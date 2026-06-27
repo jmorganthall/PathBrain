@@ -39,7 +39,7 @@ AXIS_META: dict[str, dict] = {
 SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v2"
+CURRENT_METHODOLOGY = "speed-smoothness-v3"
 
 # Shared axis layout + per-metric rubric for the speed/smoothness family.
 _SS_AXES = [
@@ -76,6 +76,40 @@ def _ss_assignments(perceived_threshold: dict) -> dict:
     }
 
 
+# speed-smoothness-v3: same axis layout as v2, with thresholds re-anchored so a
+# value "comfortably inside good" reads green on home-connection scales — tighter
+# "best" anchors on the infra/connection metrics (DNS 1ms, TCP/TLS 5ms, jitter
+# 0.5ms), the paint metrics (FCP best 300ms, LCP 800ms, TTFB 50ms, render 500ms),
+# and the smoothness metrics (longest-stall best 25ms, perceived-time 300ms,
+# cadence 0.20, evenness 0.10), plus CLS best at a pristine 0. Weights unchanged
+# from v2. Derivation is unchanged (no formula change), so history re-grades
+# straight from raw.
+def _ss_v3_assignments() -> dict:
+    return {
+        # Completion — pure infrastructure timing.
+        "dns": {"axis": COMPLETION, "weight": 10, "best": 1.0, "worst": 150.0},
+        "tcp": {"axis": COMPLETION, "weight": 15, "best": 5.0, "worst": 250.0},
+        "tls": {"axis": COMPLETION, "weight": 20, "best": 5.0, "worst": 500.0},
+        "jitter": {"axis": COMPLETION, "weight": 5, "best": 0.5, "worst": 30.0},
+        "packet_loss": {"axis": COMPLETION, "weight": 5, "best": 0.0, "worst": 2.5},
+        # Speed — when content arrives.
+        "ttfb": {"axis": SPEED, "weight": 15, "best": 50.0, "worst": 1800.0},
+        "fcp": {"axis": SPEED, "weight": 25, "best": 300.0, "worst": 3000.0},
+        "lcp": {"axis": SPEED, "weight": 20, "best": 800.0, "worst": 4000.0},
+        "render": {"axis": SPEED, "weight": 10, "best": 500.0, "worst": 8000.0},
+        "byte_earliness": {"axis": SPEED, "weight": 30, "best": 200.0, "worst": 5000.0},
+        # Stability & interactivity.
+        "cls": {"axis": STABILITY, "weight": 50, "best": 0.0, "worst": 0.25},
+        "inp": {"axis": STABILITY, "weight": 50, "best": 50.0, "worst": 500.0},
+        # Smoothness — how steady delivery was (the reason this project exists).
+        "perceived_time": {"axis": SMOOTHNESS, "weight": 30, "best": 300.0, "worst": 8000.0},
+        "longest_stall": {"axis": SMOOTHNESS, "weight": 40, "best": 25.0, "worst": 2000.0,
+                          "required": True},
+        "cadence_cov": {"axis": SMOOTHNESS, "weight": 15, "best": 0.2, "worst": 2.5},
+        "delivery_gini": {"axis": SMOOTHNESS, "weight": 15, "best": 0.1, "worst": 0.7},
+    }
+
+
 METHODOLOGY_REGISTRY: dict[str, dict] = {
     "speed-smoothness-v1": {
         "derivation_version": "derive-v2",
@@ -97,6 +131,20 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         ),
         "axes": _SS_AXES,
         "assignments": _ss_assignments({"axis": SMOOTHNESS, "best": 400.0, "worst": 8000.0}),
+    },
+    "speed-smoothness-v3": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v3 (no formula change)
+        "notes": (
+            "Re-anchor thresholds to home-connection 'good' scales while keeping v2's "
+            "axes and weights: tighter best anchors on the connection metrics (DNS 1ms, "
+            "TCP/TLS 5ms, jitter 0.5ms), the paint/speed metrics (TTFB best 50ms, FCP "
+            "300ms, LCP 800ms, render 500ms, byte-earliness 200ms), and the smoothness "
+            "metrics (longest-stall 25ms, perceived-time 300ms, cadence 0.20, evenness "
+            "0.10), plus CLS best at a pristine 0. Derivation unchanged, so history "
+            "re-grades straight from raw."
+        ),
+        "axes": _SS_AXES,
+        "assignments": _ss_v3_assignments(),
     },
 }
 
