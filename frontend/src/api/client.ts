@@ -31,6 +31,7 @@ import type {
   ProfileTestStart,
   RaceStart,
   SettingsImpact,
+  VersionInfo,
   SettingsProfilesResponse,
   Sweep,
   SweepPipe,
@@ -163,6 +164,9 @@ export const api = {
     }),
   raceCurrent: () => request<{ race: ChallengerRace | null }>("/settings/race"),
   cancelRace: () => request<{ cancelled: boolean }>("/settings/race/cancel", { method: "POST" }),
+
+  // Build identity + best-effort "newer build available to pull" check.
+  version: () => request<VersionInfo>("/version"),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),

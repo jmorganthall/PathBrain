@@ -38,6 +38,15 @@ class Settings(BaseSettings):
     opnsense_api_secret: str = ""
     opnsense_verify_tls: bool = False
 
+    # Version / update awareness. ``git_sha`` is stamped into the image at build time
+    # (Dockerfile ARG → ENV PATHBRAIN_GIT_SHA, fed github.sha by CI); empty in dev.
+    # When ``update_check`` is on, the backend does a cached, best-effort comparison of
+    # this build's commit against the latest commit on ``update_repo``'s default branch.
+    git_sha: str = ""
+    update_check: bool = True
+    update_repo: str = "jmorganthall/PathBrain"
+    update_branch: str = "main"
+
 
 @lru_cache
 def get_settings() -> Settings:

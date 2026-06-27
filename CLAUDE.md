@@ -88,6 +88,16 @@ LLM-based. See `README.md` for the product overview.
     iterations still needed to reach `correlation.min_iterations`, then **restore the
     baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
     restores on startup). `/api/settings/test-profile`.
+  - `challenger.py` — **Challenger Race**: the adaptive, multi-profile sibling of
+    `profile_test`. A time-boxed loop that runs **one iteration at a time** on the most
+    promising under-minimum profile, re-ranks via `rank_challengers`, and **eliminates**
+    any whose *optimistic* Overall (corner over each axis's p75 upper estimate;
+    `routes_settings.optimistic_overall`) can no longer beat the confident best. A
+    challenger that reaches the minimum and beats the best raises the bar. At the end it
+    **restores the baseline**, or applies the winner when `auto_promote`. Own thread
+    under the `coordinator` lock (so the scheduler defers via `coordinator.busy()`);
+    persisted to a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on
+    startup. `/api/settings/race` (+ `/race/cancel`).
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
     settings-vs-responsiveness correlation (`/api/settings/*`). Profile confidence is
     gated on **total iterations** (`correlation.min_iterations`, default 15). The
@@ -102,14 +112,23 @@ LLM-based. See `README.md` for the product overview.
     columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.
 - `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
-  History, Trends, Compare, Settings Impact (sortable table with an **Overall** column +
-  optional column selector, a **dynamic** Speed-vs-Smoothness-or-any-metric quadrant
-  with the crowned profile ringed, and "Test to minimum"), Experiments, Shotgun Sweep,
-  Config, Methodology, Plugins, Data Dump, Run Detail. A top-right **jobs dropdown**
-  (`JobStatus`) shows every running/recent background job (re-grade, sweep, run, …).
+  History, Trends, Compare, Settings Impact (**paginated** sortable table — 25/page —
+  with standard **Overall / Responsiveness / Smoothness / Speed** columns + an optional
+  column selector; a **dynamic** any-metric quadrant where X/Y pick the axes, a **Shade**
+  picker encodes a third field as dot **opacity** (brighter = better; `ProfileQuadrant`),
+  and the crowned profile is ringed; plus "Test to minimum" and **"Race challengers"**),
+  Experiments, Shotgun Sweep, Config, Methodology, Plugins, Data Dump, Run Detail. A
+  top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
+  (re-grade, sweep, run, profile test, challenger race, …).
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
-  `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`.
+  `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`,
+  stamping the build commit (`--build-arg GIT_SHA=$github.sha` → `PATHBRAIN_GIT_SHA`).
+- **Version awareness** (`updates.py`, `GET /api/version`): a cached, best-effort
+  compare of this build's `git_sha` against the latest commit on `update_repo`'s
+  default branch (GitHub API; on by default, `PATHBRAIN_UPDATE_CHECK=false` to disable).
+  The top-bar `UpdateChip` shows "Update available" (→ the GitHub compare) when the
+  branch has moved past the running build — i.e. a newer `:latest` image is pullable.
 
 ## Commands
 
@@ -204,21 +223,31 @@ docker compose up --build   # -> http://localhost:8000
   two-config comparison at `/api/smoothness/*` (keyed on `settings_fingerprint`);
   an offline **calibration harness** (`calibration/`) fits the perceived-time
   weight ratio to subjective 1–10 ratings.
+- **Phase 6 (done):** **three-axis headline** (methodology `speed-smoothness-v4`):
+  split the blended Speed into **Responsiveness** (time-to-first) + a redefined
+  **Speed** (time-to-last + interactive), with a derived **Overall** corner roll-up;
+  Settings Impact gained the dynamic any-metric quadrant (opacity-shaded third axis) +
+  a paginated, column-selectable table; and the **Challenger Race** (`challenger.py`) —
+  an adaptive, time-boxed elimination race that promotes limited-data profiles toward
+  confidence one iteration at a time.
 - **Next:** speed test / bufferbloat (latency-under-load), multi-parameter Bayesian
   search + interleaved A/B with effect-size/CI + hysteresis, routing intelligence /
   SD-WAN.
 
-⚠️ Firewall **writes** go only through `provider.apply()`. Five callers use it, all
+⚠️ Firewall **writes** go only through `provider.apply()`. Six callers use it, all
 snapshot/restore or are reversible: the experiment engine (disarmed + dry-run by
 default), the Shotgun Sweep (restores baseline at end + on startup), config
-test-apply (+1 then revert), sweep apply-best (explicit, supervised), and the
+test-apply (+1 then revert), sweep apply-best (explicit, supervised), the
 profile test (`profile_test.py`: apply → benchmark → restore, baseline persisted +
-reconciled on startup). Keep new write paths to `provider.apply()` and always
-snapshot/restore.
+reconciled on startup), and the **challenger race** (`challenger.py`: time-boxed
+apply → 1 iteration → re-rank, restoring the baseline at the end — or applying the
+winner when `auto_promote` — baseline persisted + reconciled on startup). Keep new
+write paths to `provider.apply()` and always snapshot/restore.
 
 ⚠️ Any **apply-firewall + benchmark** session must hold the `coordinator.py` lock so
-two never overlap (user-triggered ones — sweep, profile test, manual `/api/run` —
-`hold` and queue; periodic ones — monitoring, experiment — `try_hold` and defer).
+two never overlap (user-triggered ones — sweep, profile test, challenger race, manual
+`/api/run` — `hold` and queue; periodic ones — monitoring, experiment — `try_hold` and
+defer).
 `runner.execute_run` independently re-reads the firewall fingerprint **after** the
 run and FAILs it on drift (the read-before/read-after integrity check), so "what we
 tested" always matches "what we thought". A profile is **confident** once its runs
