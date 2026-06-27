@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Enum,
     Float,
@@ -384,3 +385,52 @@ class ProfileTest(Base):
     baseline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # The benchmark run this test produced (once it starts), for linking.
     run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+
+
+class ChallengerRaceStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ChallengerRace(Base):
+    """An adaptive, time-boxed "race" of limited-data profiles against the confident
+    best (the adaptive sibling of ``ProfileTest``).
+
+    Runs ONE iteration at a time on the most promising under-minimum profile, re-ranks,
+    and eliminates any challenger whose optimistic best-case can no longer beat the
+    best. Like ``ProfileTest``/``Sweep`` it persists the pre-race baseline so a crash
+    mid-race can still restore the firewall on startup
+    (``reconcile_interrupted_challenges``). When ``auto_promote`` is set and a
+    challenger confirms it beats the best, the winner is left applied instead of
+    restoring the baseline.
+    """
+
+    __tablename__ = "challenger_races"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[ChallengerRaceStatus] = mapped_column(
+        Enum(ChallengerRaceStatus), default=ChallengerRaceStatus.PENDING
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Race configuration.
+    time_budget_s: Mapped[int] = mapped_column(Integer, default=300)
+    auto_promote: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Pre-race live settings to restore (normalized pipe list) — drives reconcile.
+    baseline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # Live/result progress.
+    iterations_run: Mapped[int] = mapped_column(Integer, default=0)
+    leader_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    leader_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    winner_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    promoted: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Eliminated challengers: [{fingerprint, label, reason}].
+    eliminated: Mapped[list | None] = mapped_column(JSON, nullable=True)

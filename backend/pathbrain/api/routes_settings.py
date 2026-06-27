@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from .. import challenger as challenger_mod
 from .. import profile_test as profile_test_mod
 from ..config_store import get_config
 from ..database import get_session
@@ -57,6 +58,31 @@ def _corner_overall(scores: dict) -> float | None:
         return None
     dist = sqrt(sum((100.0 - v) ** 2 for v in vals))
     return round(100.0 - dist / sqrt(len(_CORNER_AXES)), 1)
+
+
+# Optimism margin (points) given to a corner axis with too few samples to have a
+# spread — the benefit of the doubt that keeps a 1-shot challenger in the race.
+RACE_OPTIMISM_MARGIN = 5.0
+
+
+def optimistic_overall(axis_spreads: dict, margin: float = RACE_OPTIMISM_MARGIN) -> float | None:
+    """An *upper-bound* Overall for a not-yet-confident profile: the corner score over
+    each headline axis's optimistic estimate. Uses the axis p75 (upper quartile) when
+    there are ≥2 samples, else ``median + margin`` — so a thin sample gets the benefit
+    of the doubt, and the bound tightens toward the real Overall as iterations
+    accumulate (p75 → median). Drives the racing/elimination decision. Returns None
+    unless every corner axis has at least one sample."""
+    opt: dict[str, float] = {}
+    for axis in _CORNER_AXES:
+        sp = axis_spreads.get(axis)
+        if not sp or sp.get("median") is None:
+            return None  # missing a corner axis → not yet comparable on the corner
+        if (sp.get("n") or 0) >= 2 and sp.get("p75") is not None:
+            val = float(sp["p75"])
+        else:
+            val = float(sp["median"]) + margin
+        opt[axis] = min(100.0, val)
+    return _corner_overall(opt)
 
 router = APIRouter()
 log = get_logger("api.settings")
@@ -215,6 +241,15 @@ def settings_profiles(
     Also returns ``best_diff``: how the best (top confident) profile differs from
     the next-ranked one — the at-a-glance "what changed and did it help" view.
     """
+    return compute_profiles(session, complete_only=complete_only, tz_offset=tz_offset)
+
+
+def compute_profiles(session: Session, complete_only: bool = True, tz_offset: int = 0) -> dict:
+    """Aggregate completed runs into per-profile rows ranked by the corner Overall,
+    with the crowned ``best_fingerprint``. Shared by the ``/settings/profiles`` endpoint
+    and the challenger race (``challenger.py``) so both rank profiles with identical
+    logic. Each profile also carries ``axis_spreads`` ({axis: {median,p25,p75,n}}) so a
+    caller can compute an ``optimistic_overall`` for not-yet-confident profiles."""
     min_runs = _min_runs(session)
     min_iterations = _min_iterations(session)
     min_samples = int((get_config(session).get("trends", {}) or {}).get("min_samples", 3) or 3)
@@ -290,6 +325,11 @@ def settings_profiles(
         # Per-axis medians (0–100) and the corner "overall" derived from them.
         scores = {axis: round(median(vals), 2) for axis, vals in g["axis_samples"].items() if vals}
         overall = _corner_overall(scores)
+        # Per-axis spread + sample count, so callers can derive an optimistic Overall.
+        axis_spreads = {
+            axis: {**_spread(vals), "n": len(vals)}
+            for axis, vals in g["axis_samples"].items() if vals
+        }
         # Per-metric medians — every numeric value we collect, for the chart + columns.
         metrics = {key: round(median(vals), 3) for key, vals in g["metric_samples"].items() if vals}
         rel = profile_relative(baseline_points, g["points"], "smoothness", tz_offset, min_samples)
@@ -311,6 +351,7 @@ def settings_profiles(
                 "speed": _spread(g["speed"]) if g["speed"] else None,
                 # Per-axis medians + the single corner "overall" (closeness to 100,100).
                 "scores": scores,
+                "axis_spreads": axis_spreads,
                 "overall": overall,
                 # Every numeric value we collect, median over the profile's runs.
                 "metrics": metrics,
@@ -596,6 +637,77 @@ def test_profile(
 def current_profile_test() -> dict:
     """The most recent profile test, for status polling (``{test: {...} | null}``)."""
     return {"test": profile_test_mod.current()}
+
+
+def _contending_challengers(session: Session) -> tuple[str | None, list[str]]:
+    """``(best_fingerprint, [contender fingerprints])`` for the race.
+
+    A contender is an under-minimum profile whose *optimistic* Overall could still beat
+    the confident best — the same rule the race loop uses to enter/eliminate."""
+    field = compute_profiles(session, complete_only=True)
+    best_fp = field.get("best_fingerprint")
+    profiles = {p["fingerprint"]: p for p in field["profiles"]}
+    bar = profiles[best_fp]["overall"] if best_fp else None
+    contenders = []
+    for fp, p in profiles.items():
+        if p["confident"] or fp == best_fp:
+            continue
+        opt = optimistic_overall(p.get("axis_spreads") or {})
+        if opt is not None and (bar is None or opt >= bar):
+            contenders.append(fp)
+    return best_fp, contenders
+
+
+@router.post("/settings/race")
+def start_race(body: dict = Body(...), session: Session = Depends(get_session)) -> dict:
+    """Start a challenger race: adaptively test promising limited-data profiles one
+    iteration at a time within a time budget, eliminating any that can't overtake the
+    confident best (see ``challenger.py``).
+
+    Body: ``{"time_budget_minutes": <number>, "auto_promote": <bool>}``. Requires a
+    confident best **and** at least one contending challenger. Returns the race id;
+    poll ``GET /settings/race`` for status.
+    """
+    minutes = float((body or {}).get("time_budget_minutes") or 0)
+    if minutes <= 0:
+        raise HTTPException(status_code=400, detail="time_budget_minutes must be > 0")
+    auto_promote = bool((body or {}).get("auto_promote", False))
+
+    best_fp, contenders = _contending_challengers(session)
+    if best_fp is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No confident best profile yet — nothing to race challengers against.",
+        )
+    if not contenders:
+        raise HTTPException(
+            status_code=400,
+            detail="No limited-data profile could overtake the current best, so there's nothing to race.",
+        )
+
+    try:
+        race_id = challenger_mod.start(int(minutes * 60), auto_promote)
+    except RuntimeError as exc:  # a race is already running
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("race start failed")
+        raise HTTPException(
+            status_code=502, detail=f"Could not start the race: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    return {"id": race_id, "contenders": len(contenders), "auto_promote": auto_promote}
+
+
+@router.get("/settings/race")
+def current_race() -> dict:
+    """The most recent challenger race, for status polling (``{race: {...} | null}``)."""
+    return {"race": challenger_mod.current()}
+
+
+@router.post("/settings/race/cancel")
+def cancel_race() -> dict:
+    """Ask the running race to stop after its current iteration (baseline is restored)."""
+    return {"cancelled": challenger_mod.cancel()}
 
 
 @router.get("/settings/impact")

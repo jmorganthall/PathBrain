@@ -48,6 +48,9 @@ async def lifespan(app: FastAPI):
     from .profile_test import reconcile_interrupted_profile_tests
 
     reconcile_interrupted_profile_tests()  # restore the firewall if a profile test was interrupted
+    from .challenger import reconcile_interrupted_challenges
+
+    reconcile_interrupted_challenges()  # restore the firewall if a challenger race was interrupted
     from .scheduler import start_scheduler, stop_scheduler
 
     start_scheduler()

@@ -236,6 +236,30 @@ export interface ProfileTestStart {
   min_iterations: number;
 }
 
+export interface ChallengerRace {
+  id: number;
+  status: "pending" | "running" | "complete" | "failed" | "cancelled";
+  time_budget_s: number;
+  auto_promote: boolean;
+  iterations_run: number;
+  leader_fingerprint: string | null;
+  leader_label: string | null;
+  winner_fingerprint: string | null;
+  promoted: boolean;
+  eliminated: Array<{ fingerprint: string; label: string | null; reason: string }>;
+  error: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  lock_owner: string | null;
+}
+
+export interface RaceStart {
+  id: number;
+  contenders: number;
+  auto_promote: boolean;
+}
+
 export interface ImpactSide {
   label: string;
   fingerprint: string;

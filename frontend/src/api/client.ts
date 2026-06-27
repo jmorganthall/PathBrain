@@ -25,9 +25,11 @@ import type {
   JobStart,
   JobsResponse,
   RunScoresResponse,
+  ChallengerRace,
   DataDump,
   ProfileTest,
   ProfileTestStart,
+  RaceStart,
   SettingsImpact,
   SettingsProfilesResponse,
   Sweep,
@@ -151,6 +153,16 @@ export const api = {
     }),
   profileTestCurrent: () =>
     request<{ test: ProfileTest | null }>("/settings/test-profile/current"),
+
+  // Challenger race: adaptively test promising limited-data profiles one iteration at
+  // a time within a time budget, eliminating any that can't overtake the best.
+  startRace: (timeBudgetMinutes: number, autoPromote: boolean) =>
+    request<RaceStart>("/settings/race", {
+      method: "POST",
+      body: JSON.stringify({ time_budget_minutes: timeBudgetMinutes, auto_promote: autoPromote }),
+    }),
+  raceCurrent: () => request<{ race: ChallengerRace | null }>("/settings/race"),
+  cancelRace: () => request<{ cancelled: boolean }>("/settings/race/cancel", { method: "POST" }),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),
