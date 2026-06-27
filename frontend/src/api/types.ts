@@ -128,6 +128,9 @@ export interface SettingsProfile {
   // Confidence-adjusted (lower-bound) Overall — what "best" is actually crowned by, so
   // a lucky small-sample profile can't outrank a proven one. Null until scorable.
   overall_pessimistic: number | null;
+  // IQR of the per-run Overall score (its own run-to-run variation). Null until scorable.
+  overall_p25: number | null;
+  overall_p75: number | null;
   // Median of every numeric metric we collect (logical key → value), for the
   // dynamic chart axes + the table column selector.
   metrics: Record<string, number>;

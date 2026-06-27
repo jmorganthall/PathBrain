@@ -276,6 +276,8 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.relative_sops?.delta_median ?? null;
     case "p25":
       return p.p25;
+    case "overall_p25":
+      return p.overall_p25 ?? null;
     case "min":
       return p.min;
     case "completion":
@@ -963,8 +965,8 @@ export default function Settings() {
                       onSort={handleSort}
                     />
                     <SortHeader
-                      id="p25"
-                      label="IQR"
+                      id="overall_p25"
+                      label="Overall IQR"
                       align="right"
                       orderBy={orderBy}
                       order={order}
@@ -1057,7 +1059,7 @@ export default function Settings() {
                         <RelativeSopsCell rel={p.relative_sops} confident={p.confident} />
                       </TableCell>
                       <TableCell align="right">
-                        {p.p25}–{p.p75}
+                        {p.overall_p25 != null ? `${p.overall_p25}–${p.overall_p75}` : "—"}
                       </TableCell>
                       <TableCell align="right">
                         {p.min}–{p.max}

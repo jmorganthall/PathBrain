@@ -364,24 +364,21 @@ def test_apply_profile_requires_fingerprint(client):
     assert resp.status_code == 400
 
 
-def test_pessimistic_overall_penalizes_small_noisy_samples():
-    from pathbrain.api.routes_settings import pessimistic_overall
+def test_overall_lower_bound_uses_overall_variation():
+    from pathbrain.api.routes_settings import overall_lower_bound
 
-    def axes(median, p25, p75, n):
-        return {a: {"median": median, "p25": p25, "p75": p75, "n": n} for a in
-                ("responsiveness", "smoothness", "speed")}
-
-    # Same median, but a wide-band / small-n profile gets a lower (more discounted)
-    # bound than a tight-band / large-n one → the proven one wins.
-    lucky = pessimistic_overall(axes(88, 70, 99, 15))    # wide band, few samples
-    proven = pessimistic_overall(axes(88, 85, 91, 100))  # tight band, many samples
-    assert proven > lucky
-    # The penalty shrinks as iterations accumulate (√n): same spread, more data → higher.
-    few = pessimistic_overall(axes(85, 80, 90, 15))
-    many = pessimistic_overall(axes(85, 80, 90, 240))
+    # Built from the variation of the *Overall* score itself (one value per run).
+    # Same median, but a noisy/few-sample profile is discounted more than a steady one.
+    noisy = overall_lower_bound([70, 99, 80, 99, 62])          # wide Overall spread, n=5
+    steady = overall_lower_bound([88, 88, 89, 87, 88, 88, 88])  # tight spread
+    assert steady > noisy
+    # Penalty shrinks with √n: same spread, more runs → higher bound.
+    few = overall_lower_bound([80, 90] * 3)    # n=6
+    many = overall_lower_bound([80, 90] * 60)  # n=120
     assert many > few
-    # Missing a corner axis → None.
-    assert pessimistic_overall({"responsiveness": {"median": 80, "p25": 75, "p75": 85, "n": 5}}) is None
+    # A perfectly consistent profile takes no spread penalty.
+    assert overall_lower_bound([90, 90, 90, 90]) == 90
+    assert overall_lower_bound([]) is None
 
 
 def test_crown_prefers_proven_profile_over_lucky_one(client):
