@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import jobs, profile_test, sweep
+from .. import challenger, jobs, profile_test, sweep
 from ..database import get_session
 from ..models import Experiment, ExperimentStatus, Run, RunStatus, Sweep
 
@@ -126,19 +126,45 @@ def _active_experiment_job(session: Session) -> list[dict]:
     ]
 
 
+def _active_challenger_job() -> list[dict]:
+    if not challenger.active():
+        return []
+    r = challenger.current()
+    if not r or r.get("status") not in ("running", "pending"):
+        return []
+    n_elim = len(r.get("eliminated") or [])
+    leader = r.get("leader_label") or "…"
+    return [
+        {
+            "id": f"challenger-{r['id']}",
+            "kind": "challenger",
+            "label": "Challenger race",
+            "status": "running",
+            "current": r.get("iterations_run") or 0,
+            "total": None,
+            "message": f"iter {r.get('iterations_run') or 0} · leader {leader} · {n_elim} eliminated",
+            "error": None,
+            "href": "/settings",
+            "started_at": r.get("started_at") or r.get("created_at"),
+            "finished_at": None,
+        }
+    ]
+
+
 @router.get("/jobs")
 def list_jobs(session: Session = Depends(get_session)) -> dict:
     """Every active + recently-finished background operation, for the jobs dropdown.
 
-    Live adapter entries (runs/sweep/profile test/experiment) come first, then the
-    in-process score jobs (which include recent finished history). ``running`` is the
-    count the UI badges.
+    Live adapter entries (runs/sweep/profile test/experiment/challenger race) come
+    first, then the in-process score jobs (which include recent finished history).
+    ``running`` is the count the UI badges.
     """
     adapters: list[dict] = []
     adapters += _active_run_jobs(session)
     adapters += _active_sweep_job(session)
     adapters += _active_profile_test_job()
     adapters += _active_experiment_job(session)
+    adapters += _active_challenger_job()
 
     feed = adapters + jobs.list_jobs()
     running = sum(1 for j in feed if j["status"] == "running")

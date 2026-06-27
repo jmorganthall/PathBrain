@@ -37,6 +37,7 @@ import Typography from "@mui/material/Typography";
 import { api } from "../api/client";
 import type {
   ApplyProfileChange,
+  ChallengerRace,
   ProfileDiff,
   ProfileFieldChange,
   ProfileTest,
@@ -612,6 +613,59 @@ export default function Settings() {
 
   const testRunning = activeTest != null && (activeTest.status === "running" || activeTest.status === "pending");
 
+  // Challenger race: a time-boxed, adaptive race of limited-data profiles against the
+  // best (one iteration at a time). Dialog inputs + live status.
+  const [raceOpen, setRaceOpen] = useState(false);
+  const [raceMinutes, setRaceMinutes] = useState(10);
+  const [raceAutoPromote, setRaceAutoPromote] = useState(false);
+  const [activeRace, setActiveRace] = useState<ChallengerRace | null>(null);
+  const raceRunning =
+    activeRace != null && (activeRace.status === "running" || activeRace.status === "pending");
+
+  const handleStartRace = useCallback(async () => {
+    setError(null);
+    try {
+      await api.startRace(raceMinutes, raceAutoPromote);
+      setRaceOpen(false);
+      setToast(
+        `Racing challengers for up to ${raceMinutes} min${raceAutoPromote ? " — winner will be auto-applied" : ""}`
+      );
+      const cur = await api.raceCurrent();
+      setActiveRace(cur.race);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start the challenger race");
+    }
+  }, [raceMinutes, raceAutoPromote]);
+
+  // Poll the active race until it finishes, then reload + report the outcome.
+  useEffect(() => {
+    if (!activeRace || (activeRace.status !== "running" && activeRace.status !== "pending")) return;
+    const t = setInterval(async () => {
+      try {
+        const cur = await api.raceCurrent();
+        setActiveRace(cur.race);
+        const st = cur.race?.status;
+        if (cur.race && st && st !== "running" && st !== "pending") {
+          if (st === "failed") {
+            setError(`Challenger race failed: ${cur.race.error ?? "unknown error"}`);
+          } else if (cur.race.winner_fingerprint) {
+            setToast(
+              cur.race.promoted
+                ? `Race done — promoted a new best (${cur.race.winner_fingerprint.slice(0, 8)})`
+                : `Race done — found a new best (${cur.race.winner_fingerprint.slice(0, 8)}); baseline restored`
+            );
+          } else {
+            setToast(`Race ${st} — no challenger beat the best; baseline restored`);
+          }
+          await load();
+        }
+      } catch {
+        /* transient; keep polling */
+      }
+    }, 2000);
+    return () => clearInterval(t);
+  }, [activeRace, load]);
+
   if (loading) return <Loading label="Loading settings analysis…" />;
 
   return (
@@ -679,6 +733,26 @@ export default function Settings() {
         </Alert>
       )}
 
+      {raceRunning && activeRace && (
+        <Alert
+          severity="info"
+          icon={<CircularProgress size={18} />}
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => api.cancelRace().catch(() => {})}>
+              Cancel
+            </Button>
+          }
+        >
+          Racing challengers — {activeRace.iterations_run} iteration(s) run
+          {activeRace.leader_label ? `, leading: ${activeRace.leader_label}` : ""}
+          {(activeRace.eliminated?.length ?? 0) > 0
+            ? `, ${activeRace.eliminated.length} eliminated`
+            : ""}
+          {activeRace.auto_promote ? " · winner will be auto-applied" : " · baseline restored at end"}.
+        </Alert>
+      )}
+
       {impact && <ImpactBanner impact={impact} />}
 
       {bestDiff && <ProfileDiffCard diff={bestDiff} showCompletion={showCompletion} />}
@@ -694,7 +768,19 @@ export default function Settings() {
               sx={{ mb: 1 }}
             >
               <Typography variant="h6">Profile scatter</Typography>
-              <Stack direction="row" spacing={1}>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Tooltip title="Adaptively test promising limited-data profiles one iteration at a time, eliminating any that can't overtake the best.">
+                  <span>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => setRaceOpen(true)}
+                      disabled={raceRunning || testRunning || applying}
+                    >
+                      Race challengers
+                    </Button>
+                  </span>
+                </Tooltip>
                 <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={setXKey} />
                 <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={setYKey} />
               </Stack>
@@ -1223,6 +1309,46 @@ export default function Settings() {
             onClick={handleConfirmTest}
           >
             Run test &amp; restore
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={raceOpen} onClose={() => setRaceOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Race challengers</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Adaptively test your limited-data profiles against the current best — one
+            iteration at a time, eliminating any whose best case can't overtake the best.
+            The firewall is applied and benchmarked for real during the race.
+          </DialogContentText>
+          <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
+            <Typography variant="body2">Time budget</Typography>
+            <Select
+              size="small"
+              value={raceMinutes}
+              onChange={(e) => setRaceMinutes(Number(e.target.value))}
+            >
+              {[5, 10, 15, 30, 60, 120].map((m) => (
+                <MenuItem key={m} value={m}>
+                  {m} min
+                </MenuItem>
+              ))}
+            </Select>
+          </Stack>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={raceAutoPromote}
+                onChange={(e) => setRaceAutoPromote(e.target.checked)}
+              />
+            }
+            label="Auto-promote the winner (apply it instead of restoring the baseline)"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRaceOpen(false)}>Cancel</Button>
+          <Button variant="contained" color="secondary" startIcon={<ScienceIcon />} onClick={handleStartRace}>
+            Start race
           </Button>
         </DialogActions>
       </Dialog>
