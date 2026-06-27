@@ -22,7 +22,8 @@ import type {
   ApplyProfileResult,
   MethodologiesResponse,
   MethodologyDetail,
-  RegradeSummary,
+  JobStart,
+  JobsResponse,
   RunScoresResponse,
   DataDump,
   ProfileTest,
@@ -116,7 +117,10 @@ export const api = {
   methodology: (version: string) =>
     request<MethodologyDetail>(`/methodologies/${encodeURIComponent(version)}`),
   runScores: (id: number) => request<RunScoresResponse>(`/score/${id}/methodologies`),
-  regradeHistory: () => request<RegradeSummary>("/score/regrade", { method: "POST" }),
+  regradeHistory: () => request<JobStart>("/score/regrade", { method: "POST" }),
+
+  // Background jobs feed (powers the top-right "running jobs" dropdown)
+  jobs: () => request<JobsResponse>("/jobs"),
 
   // Monitoring
   monitoring: () => request<MonitoringStatus>("/monitoring"),
@@ -157,10 +161,8 @@ export const api = {
     }),
   resetConfig: () => request<BenchmarkConfig>("/config/reset", { method: "POST" }),
   adoptRubric: () => request<BenchmarkConfig>("/config/adopt-rubric", { method: "POST" }),
-  rescoreHistory: () =>
-    request<{ rescored: number; rubric_version: string }>("/score/rescore", { method: "POST" }),
-  rederiveHistory: () =>
-    request<{ rederived: number; derivation_version: string }>("/score/rederive", { method: "POST" }),
+  rescoreHistory: () => request<JobStart>("/score/rescore", { method: "POST" }),
+  rederiveHistory: () => request<JobStart>("/score/rederive", { method: "POST" }),
   providerHealth: () => request<ProviderHealth>("/config/provider"),
   discover: () => request<DiscoverResponse>("/config/discover", { method: "POST" }),
   testApply: () => request<TestApplyResult>("/config/test-apply", { method: "POST" }),

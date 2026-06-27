@@ -122,10 +122,31 @@ def test_run_without_browser_raw_is_incomparable():
 
 
 def test_regrade_endpoint_writes_scores(client):
+    import time
+
     rid = _seed_run_with_raw(resources_present=True)
-    summary = client.post("/api/score/regrade").json()
-    assert summary["scored"] >= 1
-    assert summary["methodology"] == CURRENT_METHODOLOGY
+    # Re-grade now runs as a background job (202 + job id); poll the jobs feed.
+    resp = client.post("/api/score/regrade")
+    assert resp.status_code == 202
+    job_id = resp.json()["job_id"]
+
+    deadline = time.time() + 10.0
+    job = None
+    while time.time() < deadline:
+        feed = client.get("/api/jobs").json()["jobs"]
+        job = next((j for j in feed if j["id"] == job_id), None)
+        if job and job["status"] in ("succeeded", "failed"):
+            break
+        time.sleep(0.05)
+    assert job is not None and job["status"] == "succeeded", job
+    # A Score row was written for the seeded run under the current methodology.
+    with session_scope() as s:
+        score = s.scalar(
+            select(Score).where(
+                Score.run_id == rid, Score.methodology_version == CURRENT_METHODOLOGY
+            )
+        )
+        assert score is not None
 
     body = client.get(f"/api/score/{rid}/methodologies").json()
     assert body["scores"]

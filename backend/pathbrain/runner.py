@@ -394,27 +394,48 @@ def score_run_under(session, run, methodology, artifact_base: str | None = None)
     return score_metrics_under(session, run.id, run.methodology_version, methodology, iter_metrics)
 
 
-def score_history_under_current(session) -> dict:
+def score_history_under_current(session, progress=None) -> dict:
     """Score every completed run from raw under the current methodology (Phase 3
     re-grade). Writes new/refreshed Score rows; leaves other versions' at-measure
-    rows untouched. Returns a comparability summary."""
+    rows untouched. Returns a comparability summary.
+
+    Each run is committed as it's scored (not one all-or-nothing commit at the end)
+    and wrapped in its own try/except, so the pass is **resumable and robust**: a
+    slow run, a client/proxy timeout, or one run with malformed raw can't discard
+    the progress already made — re-running simply continues. ``skipped`` counts runs
+    whose raw can't be re-derived (e.g. captured before raw storage, or no browser
+    raw for the required metric); ``errors`` counts runs that raised.
+
+    ``progress`` is an optional ``callable(current, total, message)`` invoked after
+    each run, so a background job can report live progress to the jobs feed.
+    """
     from .config_store import get_config
     from .methodology import ensure_current_methodology
 
     methodology = ensure_current_methodology(session, get_config(session))
+    session.commit()  # persist the methodology row before the (possibly long) loop
     artifact_base = os.path.abspath(get_settings().artifact_dir)
-    runs = session.scalars(select(Run).where(Run.status == RunStatus.COMPLETE)).all()
-    counts = {"exact": 0, "partial": 0, "incomparable": 0, "scored": 0, "skipped": 0}
-    for run in runs:
-        score = score_run_under(session, run, methodology, artifact_base)
-        if score is None:
-            counts["skipped"] += 1
-            continue
-        counts["scored"] += 1
-        counts[score.comparability] = counts.get(score.comparability, 0) + 1
-    session.commit()
+    run_ids = list(session.scalars(select(Run.id).where(Run.status == RunStatus.COMPLETE)))
+    total = len(run_ids)
+    counts = {"exact": 0, "partial": 0, "incomparable": 0, "scored": 0, "skipped": 0, "errors": 0}
+    for i, run_id in enumerate(run_ids):
+        try:
+            run = session.get(Run, run_id)
+            score = score_run_under(session, run, methodology, artifact_base)
+            if score is None:
+                counts["skipped"] += 1
+            else:
+                counts["scored"] += 1
+                counts[score.comparability] = counts.get(score.comparability, 0) + 1
+                session.commit()  # persist this run before moving on (resumable progress)
+        except Exception:  # noqa: BLE001 — isolate a bad run; never abort the whole pass
+            log.exception("Re-grade failed for run %s; skipping", run_id)
+            session.rollback()
+            counts["errors"] += 1
+        if progress is not None:
+            progress(i + 1, total, f"scored {counts['scored']}/{total}")
     log.info("Re-graded %s run(s) under %s: %s", counts["scored"], methodology.version, counts)
-    return {"methodology": methodology.version, "total": len(runs), **counts}
+    return {"methodology": methodology.version, "total": total, **counts}
 
 
 def reconcile_interrupted_runs() -> int:

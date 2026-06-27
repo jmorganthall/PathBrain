@@ -224,10 +224,10 @@ export default function Config() {
   const handleRescore = useCallback(async () => {
     setSaving(true);
     try {
-      const r = await api.rescoreHistory();
-      setToast(`Re-scored ${r.rescored} run(s) with rubric "${r.rubric_version}"`);
+      await api.rescoreHistory();
+      setToast("Re-score started — track its progress in the jobs menu (top right) ↗");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to re-score history");
+      setError(e instanceof Error ? e.message : "Could not start the re-score");
     } finally {
       setSaving(false);
     }
@@ -236,10 +236,10 @@ export default function Config() {
   const handleRederive = useCallback(async () => {
     setSaving(true);
     try {
-      const r = await api.rederiveHistory();
-      setToast(`Re-derived ${r.rederived} run(s) from raw (derivation "${r.derivation_version}")`);
+      await api.rederiveHistory();
+      setToast("Re-derive started — track its progress in the jobs menu (top right) ↗");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to re-derive history");
+      setError(e instanceof Error ? e.message : "Could not start the re-derive");
     } finally {
       setSaving(false);
     }
