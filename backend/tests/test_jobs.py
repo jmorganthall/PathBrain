@@ -90,3 +90,46 @@ def test_jobs_endpoint_merges_registry_and_run_adapter(client):
     # aggregations or "active" checks.
     with session_scope() as s:
         s.delete(s.get(Run, rid))
+
+
+def test_run_adapter_estimates_eta_from_recent_per_iteration(client):
+    """The run adapter exposes an estimated total duration (ms) for an ETA countdown,
+    derived from recent completed runs' per-iteration time, like /runs/estimate."""
+    with session_scope() as s:
+        # A completed, timed run guarantees the recent per-iteration estimate exists...
+        s.add(Run(status=RunStatus.COMPLETE, iterations=2, per_iteration_ms=1000.0))
+        s.flush()
+        done_id = next(r.id for r in s.query(Run).filter(Run.per_iteration_ms == 1000.0))
+        # ...and a live 4-iteration run should expose eta_total = per × iterations.
+        live = Run(status=RunStatus.RUNNING, label="live", iterations=4, iterations_completed=1)
+        s.add(live)
+        s.flush()
+        rid = live.id
+
+    # The adapter uses the same recent-runs average as /runs/estimate, so derive the
+    # expected total from that endpoint (the shared test DB may hold other runs too).
+    per = client.get("/api/runs/estimate").json()["per_iteration_ms"]
+    entry = next(j for j in client.get("/api/jobs").json()["jobs"] if j["id"] == f"run-{rid}")
+    assert per is not None
+    assert entry["eta_total_ms"] == round(per * 4, 1)
+
+    with session_scope() as s:
+        s.delete(s.get(Run, rid))
+        s.delete(s.get(Run, done_id))
+
+
+def test_scheduled_run_is_categorized(client):
+    """A monitoring run (label "scheduled") is surfaced as its own kind so the UI can
+    label/color it distinctly from a manual benchmark run."""
+    with session_scope() as s:
+        run = Run(status=RunStatus.RUNNING, label="scheduled", iterations=2, iterations_completed=0)
+        s.add(run)
+        s.flush()
+        rid = run.id
+
+    entry = next(j for j in client.get("/api/jobs").json()["jobs"] if j["id"] == f"run-{rid}")
+    assert entry["kind"] == "scheduled_run"
+    assert entry["label"] == "Scheduled run"
+
+    with session_scope() as s:
+        s.delete(s.get(Run, rid))

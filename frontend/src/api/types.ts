@@ -765,7 +765,8 @@ export interface JobStart {
 // One entry in the universal "running jobs" feed (GET /api/jobs).
 export interface Job {
   id: string;
-  kind: string; // regrade | rescore | rederive | run | sweep | profile_test | experiment
+  // regrade | rescore | rederive | run | scheduled_run | sweep | profile_test | experiment
+  kind: string;
   label: string;
   status: "running" | "succeeded" | "failed";
   current: number | null;
@@ -775,6 +776,9 @@ export interface Job {
   href: string | null;
   started_at: string;
   finished_at: string | null;
+  // Estimated total wall-clock (ms) for the job; the UI subtracts elapsed time to
+  // show a live "ETA: …" countdown. Null/absent when the duration can't be estimated.
+  eta_total_ms?: number | null;
 }
 
 export interface JobsResponse {

@@ -28,18 +28,41 @@ def _iso(dt) -> str | None:
     return dt.isoformat() if dt else None
 
 
-def _active_run_jobs(session: Session) -> list[dict]:
+def _recent_per_iteration_ms(session: Session) -> float | None:
+    """Mean per-iteration wall-clock (ms) over the last few completed runs.
+
+    Mirrors ``/runs/estimate`` and the Shotgun-Sweep preview so the jobs dropdown
+    estimates an ETA the same way the rest of the app does. ``None`` until at least
+    one timed run exists. The frontend turns this into a live "ETA: …" countdown by
+    subtracting elapsed time from the estimated total duration.
+    """
+    rows = session.scalars(
+        select(Run)
+        .where(Run.status == RunStatus.COMPLETE, Run.per_iteration_ms.is_not(None))
+        .order_by(Run.created_at.desc())
+        .limit(5)
+    ).all()
+    vals = [r.per_iteration_ms for r in rows if r.per_iteration_ms]
+    return round(sum(vals) / len(vals), 3) if vals else None
+
+
+def _active_run_jobs(session: Session, per_iteration_ms: float | None) -> list[dict]:
     runs = session.scalars(
         select(Run).where(Run.status.in_([RunStatus.RUNNING, RunStatus.PENDING]))
     ).all()
     out = []
     for r in runs:
         done, total = r.iterations_completed or 0, r.iterations or 1
+        scheduled = (r.label or "").lower() == "scheduled"
+        # A run's own measured per-iteration time is only set at completion, so during
+        # the run we fall back to the recent average; estimated total = per × iterations.
+        per = r.per_iteration_ms or per_iteration_ms
+        eta_total_ms = round(per * total, 1) if per else None
         out.append(
             {
                 "id": f"run-{r.id}",
-                "kind": "run",
-                "label": r.label or f"Benchmark run #{r.id}",
+                "kind": "scheduled_run" if scheduled else "run",
+                "label": "Scheduled run" if scheduled else (r.label or f"Benchmark run #{r.id}"),
                 "status": "running",
                 "current": done,
                 "total": total,
@@ -48,12 +71,13 @@ def _active_run_jobs(session: Session) -> list[dict]:
                 "href": f"/runs/{r.id}",
                 "started_at": _iso(r.started_at or r.created_at),
                 "finished_at": None,
+                "eta_total_ms": eta_total_ms,
             }
         )
     return out
 
 
-def _active_sweep_job(session: Session) -> list[dict]:
+def _active_sweep_job(session: Session, per_iteration_ms: float | None) -> list[dict]:
     sweep_id = sweep.active_sweep_id()
     if sweep_id is None:
         return []
@@ -61,6 +85,11 @@ def _active_sweep_job(session: Session) -> list[dict]:
     if sw is None:
         return []
     done, total = sw.completed_variants or 0, sw.total_variants or 0
+    # Estimated total mirrors sweep.estimate(): each variant dwells then benchmarks.
+    eta_total_ms = None
+    if per_iteration_ms and total:
+        per_variant_ms = (sw.dwell_s or 0.0) * 1000.0 + (sw.iterations or 1) * per_iteration_ms
+        eta_total_ms = round(total * per_variant_ms, 1)
     return [
         {
             "id": f"sweep-{sw.id}",
@@ -74,16 +103,21 @@ def _active_sweep_job(session: Session) -> list[dict]:
             "href": "/sweep",
             "started_at": _iso(sw.started_at or sw.created_at),
             "finished_at": None,
+            "eta_total_ms": eta_total_ms,
         }
     ]
 
 
-def _active_profile_test_job() -> list[dict]:
+def _active_profile_test_job(per_iteration_ms: float | None) -> list[dict]:
     if not profile_test.active():
         return []
     t = profile_test.current()
     if not t or t.get("status") not in ("running", "pending"):
         return []
+    iterations = t.get("iterations") or 0
+    eta_total_ms = (
+        round(per_iteration_ms * iterations, 1) if per_iteration_ms and iterations else None
+    )
     return [
         {
             "id": f"profile_test-{t['id']}",
@@ -97,6 +131,7 @@ def _active_profile_test_job() -> list[dict]:
             "href": "/settings",
             "started_at": t.get("started_at") or t.get("created_at"),
             "finished_at": None,
+            "eta_total_ms": eta_total_ms,
         }
     ]
 
@@ -122,6 +157,8 @@ def _active_experiment_job(session: Session) -> list[dict]:
             "href": "/experiments",
             "started_at": _iso(exp.created_at),
             "finished_at": None,
+            # Experiments interleave an open-ended set of candidates — no fixed total.
+            "eta_total_ms": None,
         }
     ]
 
@@ -134,10 +171,11 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     in-process score jobs (which include recent finished history). ``running`` is the
     count the UI badges.
     """
+    per = _recent_per_iteration_ms(session)
     adapters: list[dict] = []
-    adapters += _active_run_jobs(session)
-    adapters += _active_sweep_job(session)
-    adapters += _active_profile_test_job()
+    adapters += _active_run_jobs(session, per)
+    adapters += _active_sweep_job(session, per)
+    adapters += _active_profile_test_job(per)
     adapters += _active_experiment_job(session)
 
     feed = adapters + jobs.list_jobs()
