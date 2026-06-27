@@ -10,9 +10,12 @@ wasted on a fluke), this races every *limited-data* profile against the confiden
    - rank under-minimum profiles by an **optimistic Overall** (corner score over each
      headline axis's upper estimate; see ``optimistic_overall``),
    - **eliminate** any whose optimistic best-case can't beat the best's Overall,
-   - apply the top challenger (only when it isn't already live), run **one** benchmark
-     iteration, and re-rank. A challenger that reaches the minimum and beats the best
-     becomes the new bar the rest race against.
+   - if the crowned incumbent's newest run is **stale** (older than
+     ``challenger.incumbent_refresh_minutes``), re-measure IT first so challengers race
+     a *contemporaneous* bar (removes time-of-day drift; keeps the crown's band tight),
+   - else apply the top challenger (only when it isn't already live), run **one**
+     benchmark iteration, and re-rank. A challenger that reaches the minimum and beats
+     the best becomes the new bar the rest race against.
 3. At the end, **restore the baseline** — unless ``auto_promote`` is set and a
    challenger confirmed it beats the best, in which case the winner is left applied.
 
@@ -26,7 +29,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -62,6 +65,34 @@ def cancel() -> bool:
 
 def _min_iterations(session) -> int:
     return int((get_config(session).get("correlation", {}) or {}).get("min_iterations", 15) or 15)
+
+
+def _incumbent_refresh_minutes(session) -> int:
+    """How stale (minutes) the crowned incumbent's newest run may be before the race
+    re-measures it. 0 disables the refresh."""
+    cfg = get_config(session).get("challenger") or {}
+    val = cfg.get("incumbent_refresh_minutes", 60)
+    return int(val) if val is not None else 60
+
+
+def _incumbent_stale(last_seen_iso: str | None, refresh_minutes: int, now: datetime) -> bool:
+    """True when the crowned incumbent should be re-run before sampling a challenger.
+
+    The bar challengers race against is the incumbent's Overall — but it's measured from
+    its *historical* runs, which may be hours old and from a different network window.
+    Re-running the incumbent when its newest run ages past ``refresh_minutes`` keeps the
+    comparison contemporaneous (and tightens/validates the crown). Disabled when
+    ``refresh_minutes`` ≤ 0; never fires when we can't tell the age (missing or
+    unparseable ``last_seen``) so we don't churn the firewall on a degenerate field."""
+    if refresh_minutes <= 0 or not last_seen_iso:
+        return False
+    try:
+        ts = datetime.fromisoformat(last_seen_iso)
+    except ValueError:
+        return False
+    if ts.tzinfo is not None:  # compare in naive UTC (last_seen is stored naive UTC)
+        ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+    return (now - ts) > timedelta(minutes=refresh_minutes)
 
 
 def _field(session) -> dict:
@@ -167,11 +198,13 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
                 budget_s = race.time_budget_s
                 auto_promote = race.auto_promote
                 min_iters = _min_iterations(session)
+                refresh_min = _incumbent_refresh_minutes(session)
 
             deadline = time.monotonic() + budget_s
             applied_fp: str | None = None  # baseline is live to start
             eliminated: dict[str, dict] = {}  # fingerprint -> {label, reason}
             iterations_run = 0
+            incumbent_refreshes = 0
             initial_confident: set[str] = set()
             seeded_initial = False
 
@@ -195,6 +228,37 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
                 if leader is None:
                     log.info("Challenger race %s: no challenger can still beat the best", race_id)
                     break
+
+                # Keep the bar honest: if the crowned incumbent's newest run is stale,
+                # re-measure IT first so challengers race a *contemporaneous* bar (removes
+                # time-of-day drift) and the crown's own band stays tight + validated.
+                # The fresh run updates its last_seen, so next loop it won't be stale.
+                incumbent = profiles.get(best_fp) if best_fp else None
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                if incumbent is not None and _incumbent_stale(
+                    incumbent.get("last_seen"), refresh_min, now
+                ):
+                    if best_fp != applied_fp:
+                        _apply_profile(provider, incumbent["settings"], best_fp)
+                        applied_fp = best_fp
+                    run_id = create_run(
+                        label=f"race · incumbent {incumbent['label']}",
+                        notes=f"Challenger race #{race_id}: refresh stale incumbent {best_fp}",
+                        iterations=1,
+                    )
+                    execute_run(run_id)
+                    iterations_run += 1
+                    incumbent_refreshes += 1
+                    log.info(
+                        "Challenger race %s: refreshed stale incumbent %s (bar now contemporaneous)",
+                        race_id, best_fp,
+                    )
+                    with session_scope() as session:
+                        race = session.get(ChallengerRace, race_id)
+                        race.iterations_run = iterations_run
+                        race.incumbent_refreshes = incumbent_refreshes
+                    continue  # re-rank against the fresh bar before touching a challenger
+
                 leader_fp = leader["fingerprint"]
 
                 # Apply the leader only when it isn't already the live profile.
@@ -213,6 +277,7 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
                 with session_scope() as session:
                     race = session.get(ChallengerRace, race_id)
                     race.iterations_run = iterations_run
+                    race.incumbent_refreshes = incumbent_refreshes
                     race.leader_fingerprint = leader_fp
                     race.leader_label = leader["label"]
                     race.eliminated = list(
@@ -264,6 +329,7 @@ def _serialize(race: ChallengerRace) -> dict:
         "time_budget_s": race.time_budget_s,
         "auto_promote": race.auto_promote,
         "iterations_run": race.iterations_run or 0,
+        "incumbent_refreshes": race.incumbent_refreshes or 0,
         "leader_fingerprint": race.leader_fingerprint,
         "leader_label": race.leader_label,
         "winner_fingerprint": race.winner_fingerprint,

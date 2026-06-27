@@ -256,6 +256,9 @@ export interface ChallengerRace {
   time_budget_s: number;
   auto_promote: boolean;
   iterations_run: number;
+  // Iterations spent re-measuring the crowned incumbent so challengers race a
+  // contemporaneous bar (counted within iterations_run).
+  incumbent_refreshes: number;
   leader_fingerprint: string | null;
   leader_label: string | null;
   winner_fingerprint: string | null;

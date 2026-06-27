@@ -777,6 +777,9 @@ export default function Settings() {
           {(activeRace.eliminated?.length ?? 0) > 0
             ? `, ${activeRace.eliminated.length} eliminated`
             : ""}
+          {(activeRace.incumbent_refreshes ?? 0) > 0
+            ? `, ${activeRace.incumbent_refreshes} incumbent refresh(es)`
+            : ""}
           {activeRace.auto_promote ? " · winner will be auto-applied" : " · baseline restored at end"}.
         </Alert>
       )}

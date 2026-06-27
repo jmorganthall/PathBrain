@@ -70,6 +70,9 @@ def _migrate() -> None:
         "benchmark_results": {
             "raw": "JSON",
         },
+        "challenger_races": {
+            "incumbent_refreshes": "INTEGER DEFAULT 0",
+        },
         "score_results": {
             "sops_stdev": "FLOAT",
             "sops_min": "FLOAT",

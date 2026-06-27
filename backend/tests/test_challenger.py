@@ -1,6 +1,8 @@
 """Tests for the challenger race: optimistic-band ranking + the driver lifecycle."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from pathbrain import challenger
 from pathbrain.api.routes_settings import optimistic_overall
 from pathbrain.database import session_scope
@@ -183,3 +185,106 @@ def test_drive_restores_baseline_when_not_promoting(monkeypatch):
     # Applied C once during the race; finalized via the baseline-restore path.
     assert spy["apply_profile"] == ["C"]
     assert spy["restore"] == 1
+
+
+# ── incumbent refresh (contemporaneous bar) ──────────────────────────────────
+
+
+def test_incumbent_stale_logic():
+    now = datetime(2026, 1, 2, 12, 0, 0)
+    old = (now - timedelta(minutes=90)).isoformat()
+    fresh = (now - timedelta(minutes=10)).isoformat()
+    assert challenger._incumbent_stale(old, 60, now) is True
+    assert challenger._incumbent_stale(fresh, 60, now) is False
+    # 0 disables the refresh entirely.
+    assert challenger._incumbent_stale(old, 0, now) is False
+    # Unknown/unparseable age → never churn the firewall.
+    assert challenger._incumbent_stale(None, 60, now) is False
+    assert challenger._incumbent_stale("not-a-date", 60, now) is False
+    # A tz-aware last_seen is normalized to naive UTC before comparing.
+    aware = (now - timedelta(minutes=90)).replace(tzinfo=timezone.utc).isoformat()
+    assert challenger._incumbent_stale(aware, 60, now) is True
+
+
+def _run_drive(monkeypatch, fields, *, auto_promote=False):
+    """Run _drive synchronously over a scripted list of fields, primitives stubbed."""
+    spy = {"apply_profile": [], "restore": 0, "runs": 0}
+    scripted = iter(fields)
+    last = {"f": fields[-1]}
+
+    def fake_field(_session):
+        try:
+            last["f"] = next(scripted)
+        except StopIteration:
+            pass
+        return last["f"]
+
+    def fake_create_run(**kwargs):
+        spy["runs"] += 1
+        return spy["runs"]
+
+    monkeypatch.setattr(challenger, "get_provider", lambda: _FakeProvider())
+    monkeypatch.setattr(challenger, "normalize", lambda x: [])
+    monkeypatch.setattr(challenger, "plan_apply", lambda target, live: ([], []))
+    monkeypatch.setattr(challenger, "_apply_all", lambda provider, changes: spy.__setitem__("restore", spy["restore"] + 1))
+    monkeypatch.setattr(challenger, "_apply_profile", lambda provider, settings, fp: spy["apply_profile"].append(fp))
+    monkeypatch.setattr(challenger, "create_run", fake_create_run)
+    monkeypatch.setattr(challenger, "execute_run", lambda rid: None)
+    monkeypatch.setattr(challenger, "_field", fake_field)
+
+    with session_scope() as s:
+        race = ChallengerRace(
+            status=ChallengerRaceStatus.PENDING, time_budget_s=300,
+            auto_promote=auto_promote, eliminated=[],
+        )
+        s.add(race)
+        s.flush()
+        rid = race.id
+
+    challenger._state.update({"active": True, "id": rid, "cancel": False})
+    challenger._drive(rid)
+    with session_scope() as s:
+        return s.get(ChallengerRace, rid), spy
+
+
+def test_drive_refreshes_stale_incumbent(monkeypatch):
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    stale = (now - timedelta(minutes=120)).isoformat()
+    fresh = now.isoformat()
+    b_stale = {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
+               "axis_spreads": {}, "settings": [{"label": "B"}], "last_seen": stale}
+    b_fresh = {**b_stale, "last_seen": fresh}
+    c_under = {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
+               "axis_spreads": _axes(80, 96, 3), "settings": [{"label": "C"}], "last_seen": fresh}
+    c_conf = {"fingerprint": "C", "label": "C", "confident": True, "overall": 90.0,
+              "axis_spreads": {}, "settings": [{"label": "C"}], "last_seen": fresh}
+    # Step 1: incumbent B is 2h stale → re-measure B first (don't touch a challenger yet).
+    # Step 2: B fresh → sample challenger C. Step 3: C confirmed best → winner, race ends.
+    f1 = _field([b_stale, c_under], best_fingerprint="B")
+    f2 = _field([b_fresh, c_under], best_fingerprint="B")
+    f3 = _field([b_fresh, c_conf], best_fingerprint="C")
+
+    race, spy = _run_drive(monkeypatch, [f1, f2, f3], auto_promote=False)
+    assert race.incumbent_refreshes == 1
+    assert race.iterations_run == 2  # one incumbent refresh + one challenger iteration
+    # Re-measured B (the stale incumbent), then sampled challenger C.
+    assert spy["apply_profile"] == ["B", "C"]
+    assert spy["restore"] == 1
+    assert race.winner_fingerprint == "C"
+
+
+def test_drive_skips_refresh_when_incumbent_fresh(monkeypatch):
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    fresh = now.isoformat()
+    b_fresh = {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
+               "axis_spreads": {}, "settings": [{"label": "B"}], "last_seen": fresh}
+    c_under = {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
+               "axis_spreads": _axes(80, 96, 3), "settings": [{"label": "C"}], "last_seen": fresh}
+    c_conf = {"fingerprint": "C", "label": "C", "confident": True, "overall": 90.0,
+              "axis_spreads": {}, "settings": [{"label": "C"}], "last_seen": fresh}
+    f1 = _field([b_fresh, c_under], best_fingerprint="B")
+    f2 = _field([b_fresh, c_conf], best_fingerprint="C")
+
+    race, spy = _run_drive(monkeypatch, [f1, f2], auto_promote=False)
+    assert race.incumbent_refreshes == 0
+    assert spy["apply_profile"] == ["C"]  # straight to the challenger, no refresh
