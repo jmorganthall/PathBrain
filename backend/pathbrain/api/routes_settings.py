@@ -85,38 +85,36 @@ def optimistic_overall(axis_spreads: dict, margin: float = RACE_OPTIMISM_MARGIN)
     return _corner_overall(opt)
 
 
-# Penalty (points) for a corner axis too thin to estimate a spread — the "prove it"
-# discount applied when crowning the best, mirroring the optimism margin above.
+# Penalty (points) applied when a profile is too thin to estimate spread — the
+# "prove it" discount when crowning the best, mirroring the optimism margin above.
 CROWN_PESSIMISM_MARGIN = 5.0
-# Z-multiple of the (sample-size-aware) standard error subtracted from each axis when
-# crowning. ~1 standard error ≈ a one-sided 68% lower bound.
+# Z-multiple of the (sample-size-aware) standard error subtracted when crowning.
+# ~1 standard error ≈ a one-sided 68% lower bound.
 CROWN_PESSIMISM_K = 1.0
 
 
-def pessimistic_overall(
-    axis_spreads: dict, k: float = CROWN_PESSIMISM_K, margin: float = CROWN_PESSIMISM_MARGIN
+def overall_lower_bound(
+    overall_samples: list[float], k: float = CROWN_PESSIMISM_K, margin: float = CROWN_PESSIMISM_MARGIN
 ) -> float | None:
-    """A *lower-bound* Overall used to crown the best, countering winner's curse: the
-    corner score over each axis's confidence-adjusted lower estimate
-    ``median − k·SE``, where ``SE = (IQR/1.349)/√n`` (IQR→σ, then standard error). The
-    penalty **shrinks as iterations accumulate** (√n), so a lucky small-sample profile
-    (wide band, low n) is discounted more than a proven, well-sampled one — exactly the
-    regression-to-the-mean case. Thin samples (n<2) take a flat ``margin`` penalty.
-    Returns None unless every corner axis has a sample."""
-    lo: dict[str, float] = {}
-    for axis in _CORNER_AXES:
-        sp = axis_spreads.get(axis)
-        if not sp or sp.get("median") is None:
-            return None
-        med = float(sp["median"])
-        nn = int(sp.get("n") or 0)
-        if nn >= 2 and sp.get("p75") is not None and sp.get("p25") is not None:
-            sd = (float(sp["p75"]) - float(sp["p25"])) / 1.349  # IQR → σ
-            bound = med - k * (sd / (nn ** 0.5))
-        else:
-            bound = med - margin
-        lo[axis] = max(0.0, bound)
-    return _corner_overall(lo)
+    """Confidence-adjusted lower bound of a profile's **per-run Overall** scores — the
+    basis for crowning "best", countering winner's curse.
+
+    Works off the variation of the *Overall corner score itself* (one value per run),
+    NOT a single axis: ``median(Overall) − k·SE``, where ``SE = (IQR/1.349)/√n``
+    (IQR→σ, then standard error). The penalty **shrinks as runs accumulate** (√n), so a
+    lucky small-sample profile (wide Overall spread, low n) is discounted more than a
+    proven, consistent one — the regression-to-the-mean case. Thin samples (n<2) take a
+    flat ``margin`` penalty. Returns None for an empty sample."""
+    if not overall_samples:
+        return None
+    med = median(overall_samples)
+    n = len(overall_samples)
+    if n < 2:
+        return round(max(0.0, med - margin), 2)
+    q = quantiles(overall_samples, n=4)
+    iqr = q[2] - q[0]
+    se = (iqr / 1.349) / (n ** 0.5)
+    return round(max(0.0, med - k * se), 2)
 
 router = APIRouter()
 log = get_logger("api.settings")
@@ -313,6 +311,7 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
             continue
         axes = (score.axis_scores or {}) if comparable else {}
         smooth, speed, comp_axis = axes.get("smoothness"), axes.get("speed"), axes.get("completion")
+        resp = axes.get("responsiveness")
         # Smoothness is the primary ranking; the time baseline is built on it.
         point = RunPoint(created_at=run.created_at, values={"smoothness": smooth})
         baseline_points.append(point)
@@ -332,6 +331,8 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
                 "axis_samples": {},
                 # …and per-metric raw value samples (every numeric value we collect).
                 "metric_samples": {},
+                # Per-run Overall (corner) scores → the distribution we crown/rank on.
+                "overall_samples": [],
                 "first_seen": run.created_at,
                 "last_seen": run.created_at,
             },
@@ -340,6 +341,11 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
             g["smoothness"].append(smooth)
         if speed is not None:
             g["speed"].append(speed)
+        # This run's Overall (corner of its three headline axes) — the unit whose
+        # run-to-run variation drives the confidence-adjusted crown.
+        run_overall = _corner_overall({"responsiveness": resp, "smoothness": smooth, "speed": speed})
+        if run_overall is not None:
+            g["overall_samples"].append(run_overall)
         g["points"].append(point)
         # A run with more iterations is more data; track the total alongside runs.
         g["iterations"] += int(run.iterations or 1)
@@ -372,15 +378,18 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
         comp = g["completion"]
         # Per-axis medians (0–100) and the corner "overall" derived from them.
         scores = {axis: round(median(vals), 2) for axis, vals in g["axis_samples"].items() if vals}
-        overall = _corner_overall(scores)
-        # Per-axis spread + sample count, so callers can derive optimistic/pessimistic Overall.
+        # Per-axis spread + sample count, so callers can derive an optimistic Overall.
         axis_spreads = {
             axis: {**_spread(vals), "n": len(vals)}
             for axis, vals in g["axis_samples"].items() if vals
         }
-        # Confidence-adjusted lower-bound Overall — the basis for crowning "best", so a
-        # lucky small-sample profile can't outrank a proven one (winner's-curse guard).
-        overall_pessimistic = pessimistic_overall(axis_spreads)
+        # Overall is the *distribution of per-run Overall scores* — central value, its
+        # own IQR, and a confidence-adjusted lower bound (the crown basis). This makes
+        # variation reflect the Overall score itself, not a single axis.
+        overall_samples = g["overall_samples"]
+        overall_spread = _spread(overall_samples) if overall_samples else None
+        overall = overall_spread["median"] if overall_spread else None
+        overall_pessimistic = overall_lower_bound(overall_samples)
         # Per-metric medians — every numeric value we collect, for the chart + columns.
         metrics = {key: round(median(vals), 3) for key, vals in g["metric_samples"].items() if vals}
         rel = profile_relative(baseline_points, g["points"], "smoothness", tz_offset, min_samples)
@@ -406,6 +415,9 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
                 "overall": overall,
                 # Confidence-adjusted Overall (lower bound) used to crown "best".
                 "overall_pessimistic": overall_pessimistic,
+                # IQR of the per-run Overall (its own run-to-run variation, for display).
+                "overall_p25": overall_spread["p25"] if overall_spread else None,
+                "overall_p75": overall_spread["p75"] if overall_spread else None,
                 # Every numeric value we collect, median over the profile's runs.
                 "metrics": metrics,
                 # Time-adjusted Smoothness: above/below the day×hour historical norm.
