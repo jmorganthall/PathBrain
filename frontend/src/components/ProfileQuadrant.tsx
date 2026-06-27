@@ -32,6 +32,7 @@ interface Point {
   iterations: number;
   confident: boolean;
   isBest: boolean;
+  isActive: boolean; // currently live on the firewall → drawn as a triangle
 }
 
 function median(xs: number[]): number {
@@ -61,6 +62,7 @@ function QuadrantTooltip({
       <Typography variant="caption" sx={{ display: "block", fontWeight: 700, wordBreak: "break-word" }}>
         {p.label}
         {p.isBest ? " · best" : ""}
+        {p.isActive ? " · active" : ""}
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
         {yField.label} {fmtFieldValue(p.y, yField.unit)} · {xField.label} {fmtFieldValue(p.x, xField.unit)}
@@ -87,12 +89,14 @@ export default function ProfileQuadrant({
   yField,
   shadeField,
   bestFingerprint,
+  currentFingerprint,
 }: {
   profiles: SettingsProfile[];
   xField: FieldDef;
   yField: FieldDef;
   shadeField?: FieldDef | null;
   bestFingerprint: string | null;
+  currentFingerprint?: string | null;
 }) {
   const theme = useTheme();
   // The third dimension drives dot OPACITY (better = fully opaque, worse fades out) —
@@ -112,6 +116,7 @@ export default function ProfileQuadrant({
       iterations: p.iterations,
       confident: p.confident,
       isBest: p.fingerprint === bestFingerprint,
+      isActive: currentFingerprint != null && p.fingerprint === currentFingerprint,
     }));
 
   if (points.length < 2) {
@@ -122,8 +127,10 @@ export default function ProfileQuadrant({
     );
   }
 
-  const confident = points.filter((p) => p.confident);
-  const limited = points.filter((p) => !p.confident);
+  // The live profile is drawn separately as a triangle; everyone else as circles.
+  const active = points.filter((p) => p.isActive);
+  const confident = points.filter((p) => p.confident && !p.isActive);
+  const limited = points.filter((p) => !p.confident && !p.isActive);
   const xMid = median(points.map((p) => p.x));
   const yMid = median(points.map((p) => p.y));
   const greyColor = theme.palette.text.disabled;
@@ -152,7 +159,7 @@ export default function ProfileQuadrant({
     i = j;
   }
   const opacityOf = (p: Point): number => {
-    if (!shadeOn || p.isBest) return 1;
+    if (!shadeOn || p.isBest || p.isActive) return 1; // always show best + active clearly
     if (p.zRaw == null) return MIN_OPACITY; // no value on the third axis → faint
     if (n <= 1) return 1; // nothing to rank against
     const frac = fracByVal.get(p.zRaw) ?? 0; // 0 = lowest rank, 1 = highest
@@ -219,6 +226,19 @@ export default function ProfileQuadrant({
                 <Cell key={p.fingerprint} fill={greyColor} fillOpacity={opacityOf(p)} />
               ))}
             </Scatter>
+            {/* The live-on-the-firewall profile: a triangle so it stands out among the
+                circles, regardless of its position/score. Drawn last (on top). */}
+            <Scatter name="Active" data={active} shape="triangle" fill={goodColor}>
+              {active.map((p) => (
+                <Cell
+                  key={p.fingerprint}
+                  fill={cellColor(p)}
+                  fillOpacity={1}
+                  stroke={theme.palette.common.white}
+                  strokeWidth={1.5}
+                />
+              ))}
+            </Scatter>
           </ScatterChart>
         </ResponsiveContainer>
       </Box>
@@ -237,6 +257,7 @@ export default function ProfileQuadrant({
           </>
         )}
         {shadeOn ? <> Opacity = <b>{shadeField!.label}</b> (brighter = better; faded = worse).</> : null}
+        {active.length > 0 ? <> The <b>▲ triangle</b> is the profile live on the firewall now.</> : null}
       </Typography>
     </Box>
   );

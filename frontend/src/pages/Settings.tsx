@@ -818,6 +818,7 @@ export default function Settings() {
               yField={fieldByKey(yKey) ?? allFields[0]}
               shadeField={fieldByKey(sizeKey) ?? null}
               bestFingerprint={bestFingerprint}
+              currentFingerprint={currentFingerprint}
             />
           </CardContent>
         </Card>
