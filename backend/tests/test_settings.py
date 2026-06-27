@@ -383,20 +383,42 @@ def test_overall_lower_bound_uses_overall_variation():
 
 def test_crown_prefers_proven_profile_over_lucky_one(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # "lucky": minimum iterations with a high but very noisy score.
-    for s in [60, 99, 95, 70, 99]:
+    # "lucky": a profile that *typically* scores ~82 but occasionally spikes to 99.
+    for s in [78, 99, 82, 99, 80]:
         _seed_run("luckythin0x", s, t0 - timedelta(minutes=200), iterations=3)
-    # "proven": many consistent iterations at a slightly lower median (92 < lucky's
-    # noisy ~95), so a median crown would pick the lucky one — but the confidence-
-    # adjusted crown picks proven. 92 also clears any other seeded profile's bound.
+    # "proven": many consistent iterations at a clearly higher typical score (92).
+    # 92 is the highest median among all confident profiles seeded so far.
     for i in range(10):
         _seed_run("provenwide0x", 92, t0 - timedelta(minutes=150 - i), iterations=3)
 
     body = client.get("/api/settings/profiles").json()
     by_fp = {p["fingerprint"]: p for p in body["profiles"]}
     assert by_fp["luckythin0x"]["confident"] and by_fp["provenwide0x"]["confident"]
-    # Despite the lucky profile's noisy high median, the proven one is crowned.
+    # The probability-of-best crown picks the steady-higher profile, not the spiky one,
+    # and surfaces *how sure* it is (P > the noisy profile's).
     assert body["best_fingerprint"] == "provenwide0x"
+    assert by_fp["provenwide0x"]["prob_best"] > by_fp["luckythin0x"]["prob_best"]
+
+
+def test_probability_of_best_rewards_height_and_certainty():
+    from pathbrain.api.routes_settings import overall_posterior_scale, probability_of_best
+
+    # A clearly higher profile dominates a lower one.
+    probs = probability_of_best([("hi", 90.0, 1.0), ("lo", 80.0, 1.0)])
+    assert probs["hi"] > 0.99
+    assert abs(probs["hi"] + probs["lo"] - 1.0) < 1e-9  # probabilities sum to 1
+
+    # Equal location: the tighter (more certain) posterior wins the draw more often.
+    tied = probability_of_best([("tight", 85.0, 0.5), ("wide", 85.0, 8.0)])
+    assert abs(tied["tight"] - 0.5) < 0.05 and abs(tied["wide"] - 0.5) < 0.05
+
+    # Posterior scale tightens with √n and is wide for a thin sample.
+    few = overall_posterior_scale([80.0, 90.0] * 3)     # n=6
+    many = overall_posterior_scale([80.0, 90.0] * 60)   # n=120
+    assert many < few
+    assert overall_posterior_scale([88.0]) == 5.0       # n<2 → wide margin scale
+    assert overall_posterior_scale([90.0, 90.0, 90.0]) == 0.0  # perfectly consistent
+    assert overall_posterior_scale([]) is None
 
 
 def test_relative_lower_bound_discounts_window_riders():

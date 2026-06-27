@@ -93,21 +93,33 @@ LLM-based. See `README.md` for the product overview.
     promising under-minimum profile, re-ranks via `rank_challengers`, and **eliminates**
     any whose *optimistic* Overall (corner over each axis's p75 upper estimate;
     `routes_settings.optimistic_overall`) can no longer beat the confident best. A
-    challenger that reaches the minimum and beats the best raises the bar. At the end it
-    **restores the baseline**, or applies the winner when `auto_promote`. Own thread
+    challenger that reaches the minimum and beats the best raises the bar. To keep that
+    bar honest it **refreshes a stale incumbent**: if the crowned best's newest run is
+    older than `challenger.incumbent_refresh_minutes` (default 60) it re-measures the
+    incumbent first, so challengers race a *contemporaneous* bar (no time-of-day drift)
+    and the crown's own band stays tight (`_incumbent_stale`; counted in
+    `incumbent_refreshes`). At the end it **restores the baseline**, or applies the winner
+    when `auto_promote`. Own thread
     under the `coordinator` lock (so the scheduler defers via `coordinator.busy()`);
     persisted to a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on
     startup. `/api/settings/race` (+ `/race/cancel`).
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
     settings-vs-responsiveness correlation (`/api/settings/*`). Profile confidence is
-    gated on **total iterations** (`correlation.min_iterations`, default 15). The
-    crowned **"best"** profile is the confident one closest to the perfect corner —
+    gated on **total iterations** (`correlation.min_iterations`, default 15).
     `/api/settings/profiles` derives an **Overall** = closeness to the (100, 100, 100)
     corner across the three headline axes (`_CORNER_AXES` =
-    Responsiveness/Smoothness/Speed; `_corner_overall`), ranks + returns
-    `best_fingerprint` by it, and aggregates per profile the median of every axis score
-    *and* every metric we collect (`metrics.all_metric_sources`) to power the dynamic
-    quadrant + table column selector.
+    Responsiveness/Smoothness/Speed; `_corner_overall`), and aggregates per profile the
+    median of every axis score *and* every metric we collect
+    (`metrics.all_metric_sources`) to power the dynamic quadrant + table column selector.
+    The crowned **"best"** is the confident profile with the highest **probability of
+    being the true best** (`probability_of_best`): a Bayesian/Thompson Monte-Carlo over
+    each candidate's Normal posterior on its true Overall (location = median, scale =
+    `overall_posterior_scale` SE, tightening with √n), so it weighs *both* a high typical
+    Overall and how sure we are — rather than a pessimistic floor that double-penalized
+    variance (smoothness already scores consistency). The posterior location is shifted
+    *down* by any negative **vs-typical** shortfall (`relative_lower_bound`) so a
+    window-rider competes from its de-confounded level. Returns `best_fingerprint` + a
+    per-profile `prob_best`.
   - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
     columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.
