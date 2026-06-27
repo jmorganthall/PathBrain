@@ -126,7 +126,7 @@ function RelativeSopsCell({
   rel,
   confident,
 }: {
-  rel: SettingsProfile["relative_sops"];
+  rel: SettingsProfile["relative_overall"];
   confident: boolean;
 }) {
   if (!rel) {
@@ -143,9 +143,9 @@ function RelativeSopsCell({
   return (
     <Tooltip
       arrow
-      title={`Median Smoothness minus the day×hour historical norm, over ${rel.count} run${
+      title={`Median Overall minus the day×hour historical norm, over ${rel.count} run${
         rel.count === 1 ? "" : "s"
-      } (IQR ${rel.p25} to ${rel.p75}). Positive = this profile performs above the typical score for the times it actually ran, with the time-of-day environment removed.`}
+      } (IQR ${rel.p25} to ${rel.p75}). Positive = this profile performs above the typical Overall for the times it actually ran, with the time-of-day environment removed.`}
     >
       <Typography
         component="span"
@@ -273,7 +273,7 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
     case "speed":
       return p.speed?.median ?? null;
     case "relative_sops":
-      return p.relative_sops?.delta_median ?? null;
+      return p.relative_overall?.delta_median ?? null;
     case "p25":
       return p.p25;
     case "overall_p25":
@@ -891,10 +891,12 @@ export default function Settings() {
               ideal <b>Speed 100 / Smoothness 100</b> corner (fastest <i>and</i> smoothest). "Best" is
               the confident profile closest to that corner. Speed and Smoothness are shown alongside.
               Iterations count every measurement sweep — a 15‑iteration run carries far more signal
-              than a single‑iteration one. <b>vs typical</b> is the time-adjusted edge: median SOPS
+              than a single‑iteration one. <b>vs typical</b> is the time-adjusted edge: median Overall
               minus the historical norm for the day &amp; hour each run landed on — positive means the
               profile beats its environment, the fair way to compare configs sampled at different
-              times. Use <b>Columns</b> to add any other metric we collect, then sort by it.
+              times. The crown docks a profile that scores below its own day/hour norm, so "best"
+              can't just be riding a favorable time window. Use <b>Columns</b> to add any other metric
+              we collect, then sort by it.
               {showCompletion && (
                 <>
                   {" "}
@@ -1032,9 +1034,14 @@ export default function Settings() {
                           )}
                           {p.fingerprint === bestFingerprint && (
                             <Tooltip
-                              title={`Crowned by confidence-adjusted Overall${
-                                p.overall_pessimistic != null ? ` (${p.overall_pessimistic})` : ""
-                              } — a lower bound that penalizes small/noisy samples, so the best stays best as it gathers data.`}
+                              title={
+                                `Crowned by confidence-adjusted Overall${
+                                  p.overall_pessimistic != null ? ` (${p.overall_pessimistic})` : ""
+                                } — a lower bound that penalizes small/noisy samples.` +
+                                (p.relative_overall_lb != null && p.relative_overall_lb < 0
+                                  ? ` Docked ${p.relative_overall_lb} for scoring below its day/hour norm (it rode a favorable time window).`
+                                  : ` Not penalized — it holds up against its day/hour norm, so it isn't just riding a favorable time window.`)
+                              }
                             >
                               <Chip size="small" color="success" label="best" />
                             </Tooltip>
@@ -1056,7 +1063,7 @@ export default function Settings() {
                       <TableCell align="right">{p.median}</TableCell>
                       <TableCell align="right">{p.speed ? p.speed.median : "—"}</TableCell>
                       <TableCell align="right">
-                        <RelativeSopsCell rel={p.relative_sops} confident={p.confident} />
+                        <RelativeSopsCell rel={p.relative_overall} confident={p.confident} />
                       </TableCell>
                       <TableCell align="right">
                         {p.overall_p25 != null ? `${p.overall_p25}–${p.overall_p75}` : "—"}

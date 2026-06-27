@@ -131,6 +131,11 @@ export interface SettingsProfile {
   // IQR of the per-run Overall score (its own run-to-run variation). Null until scorable.
   overall_p25: number | null;
   overall_p75: number | null;
+  // Time-adjusted ("vs typical") Overall: how much this profile beats its day×hour
+  // norm, with a confidence-adjusted lower bound — the basis for crowning "best"
+  // (de-confounds for *when* the profile ran). Null until a usable baseline exists.
+  relative_overall: { delta_median: number; p25: number; p75: number; count: number } | null;
+  relative_overall_lb: number | null;
   // Median of every numeric metric we collect (logical key → value), for the
   // dynamic chart axes + the table column selector.
   metrics: Record<string, number>;
