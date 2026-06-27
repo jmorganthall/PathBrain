@@ -29,6 +29,7 @@ import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
 import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
+import TablePagination from "@mui/material/TablePagination";
 import TableRow from "@mui/material/TableRow";
 import TableSortLabel from "@mui/material/TableSortLabel";
 import Tooltip from "@mui/material/Tooltip";
@@ -461,6 +462,7 @@ export default function Settings() {
   );
 
   const handleSort = useCallback((key: SortKey) => {
+    setPage(0); // re-sorting should land you on the first page
     setOrderBy((prev) => {
       if (prev === key) {
         setOrder((o) => (o === "asc" ? "desc" : "asc"));
@@ -474,6 +476,21 @@ export default function Settings() {
   const sortedProfiles = useMemo(
     () => (profiles ? [...profiles].sort((a, b) => compareProfiles(a, b, orderBy, order)) : profiles),
     [profiles, orderBy, order]
+  );
+
+  // Paginate the (sorted) profiles table — 25/page by default. Sorting + the column
+  // picker still operate on the full set; only the rendered rows are sliced.
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
+  const rowCount = sortedProfiles?.length ?? 0;
+  // Keep the page in range when the result set shrinks (filter toggles, reloads).
+  useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(rowCount / rowsPerPage) - 1);
+    if (page > maxPage) setPage(maxPage);
+  }, [rowCount, rowsPerPage, page]);
+  const pagedProfiles = useMemo(
+    () => (sortedProfiles ? sortedProfiles.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage) : sortedProfiles),
+    [sortedProfiles, page, rowsPerPage]
   );
 
   const load = useCallback(async () => {
@@ -790,14 +807,14 @@ export default function Settings() {
                 </Tooltip>
                 <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={setXKey} />
                 <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={setYKey} />
-                <AxisSelect label="Size" value={sizeKey} fields={allFields} onChange={setSizeKey} />
+                <AxisSelect label="Shade" value={sizeKey} fields={allFields} onChange={setSizeKey} />
               </Stack>
             </Stack>
             <ProfileQuadrant
               profiles={profiles}
               xField={fieldByKey(xKey) ?? allFields[0]}
               yField={fieldByKey(yKey) ?? allFields[0]}
-              sizeField={fieldByKey(sizeKey) ?? null}
+              shadeField={fieldByKey(sizeKey) ?? null}
               bestFingerprint={bestFingerprint}
             />
           </CardContent>
@@ -990,7 +1007,7 @@ export default function Settings() {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {(sortedProfiles ?? []).map((p) => (
+                  {(pagedProfiles ?? []).map((p) => (
                     <TableRow key={p.fingerprint}>
                       <TableCell sx={{ maxWidth: 360 }}>
                         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
@@ -1121,6 +1138,20 @@ export default function Settings() {
                 </TableBody>
               </Table>
             </TableContainer>
+            {rowCount > 0 && (
+              <TablePagination
+                component="div"
+                count={rowCount}
+                page={page}
+                onPageChange={(_e, p) => setPage(p)}
+                rowsPerPage={rowsPerPage}
+                onRowsPerPageChange={(e) => {
+                  setRowsPerPage(parseInt(e.target.value, 10));
+                  setPage(0);
+                }}
+                rowsPerPageOptions={[25, 50, 100]}
+              />
+            )}
           </CardContent>
         </Card>
       )}

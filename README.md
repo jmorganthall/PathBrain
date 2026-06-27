@@ -128,12 +128,16 @@ published-now version.
   Smoothness 100, Speed 100), so "best" is genuinely *starts fast, fills smoothly, **and**
   finishes fast*. The quadrant is **dynamic** (plot any two numeric fields we collect —
   e.g. Responsiveness × Smoothness or Speed × Smoothness; the crowned profile is
-  ringed), and the profiles table has an **optional column selector** to show/sort by
-  any metric. A profile is **confident** once its runs total ≥
+  ringed; a **Shade** picker encodes a third field as dot **opacity** — brighter =
+  better — so the hidden axis is visible), and the **paginated** profiles table (25/page)
+  has standard Responsiveness/Smoothness/Speed columns plus an **optional column
+  selector** to show/sort by any metric. A profile is **confident** once its runs total ≥
   `correlation.min_iterations` (default **15**) — iterations, not run count, are the
-  unit of signal. A one-click **"Test to minimum"** tops a limited-data profile up: it
-  applies the profile, runs exactly the iterations still needed, then **restores your
-  prior settings**. Mock provider for offline dev.
+  unit of signal. A one-click **"Test to minimum"** tops a limited-data profile up
+  (apply → run the iterations still needed → **restore**); **"Race challengers"** goes
+  further — a time-boxed, adaptive race that tests promising limited-data profiles **one
+  iteration at a time**, eliminating any that can't overtake the best, and (optionally)
+  auto-promoting a confirmed winner. Mock provider for offline dev.
 - 🔔 **Background jobs + status dropdown** — long operations (re-grade / re-score /
   re-derive history) run **in the background** with live progress instead of blocking;
   a top-right notifications dropdown (`GET /api/jobs`) shows every active +
@@ -344,6 +348,7 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 | `GET /api/settings/impact` | Significance of the latest settings change |
 | `POST /api/settings/apply-profile` | Write a stored profile to the firewall (`preview` for a dry diff) |
 | `POST /api/settings/test-profile` · `GET …/test-profile/current` | "Test to minimum": apply → run → restore / poll its status |
+| `POST /api/settings/race` · `GET …/race` · `POST …/race/cancel` | "Race challengers": start/poll/cancel the adaptive time-boxed elimination race |
 | `POST /api/settings/backfill` | Stamp current settings onto unattributed runs |
 | `GET /api/settings/diagnostics` | Settings-capture diagnostics (stamped/unstamped) |
 | `GET /api/experiments` / `…/{id}` | Experiment status + history / one experiment's trials |
@@ -405,6 +410,7 @@ backend/pathbrain/
   experiment.py      Window-gated autonomous shaper sweep (writes via provider.apply)
   sweep.py           Shotgun Sweep: on-demand grid sweep, applies + restores baseline
   profile_test.py    "Test to minimum": apply a profile, run the needed iterations, restore
+  challenger.py      "Race challengers": adaptive 1-iteration-at-a-time elimination race
   trends.py          Day/hour historical baselines + time-adjusted "vs typical"
   settings_profile.py  Normalize/fingerprint/summarize firewall profiles
   config_store.py    DB-backed runtime config + defaults

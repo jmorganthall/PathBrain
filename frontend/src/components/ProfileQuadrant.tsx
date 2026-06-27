@@ -26,8 +26,7 @@ import { fmtFieldValue } from "../utils/profileFields";
 interface Point {
   x: number;
   y: number;
-  z: number; // drives bubble size via ZAxis (the optional third dimension)
-  zRaw: number | null; // the third field's actual value, for the tooltip
+  zRaw: number | null; // the third field's value → drives dot opacity (+ tooltip)
   label: string;
   fingerprint: string;
   iterations: number;
@@ -68,7 +67,7 @@ function QuadrantTooltip({
       </Typography>
       {sizeField && sizeField.key !== xField.key && sizeField.key !== yField.key && (
         <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-          {sizeField.label} {p.zRaw == null ? "—" : fmtFieldValue(p.zRaw, sizeField.unit)} (size)
+          {sizeField.label} {p.zRaw == null ? "—" : fmtFieldValue(p.zRaw, sizeField.unit)} (opacity)
         </Typography>
       )}
       <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
@@ -86,38 +85,34 @@ export default function ProfileQuadrant({
   profiles,
   xField,
   yField,
-  sizeField,
+  shadeField,
   bestFingerprint,
 }: {
   profiles: SettingsProfile[];
   xField: FieldDef;
   yField: FieldDef;
-  sizeField?: FieldDef | null;
+  shadeField?: FieldDef | null;
   bestFingerprint: string | null;
 }) {
   const theme = useTheme();
-  // The third dimension drives bubble size — only when it's a distinct field from the
-  // two plotted axes (otherwise size would just restate an axis).
-  const sizeOn =
-    sizeField != null && sizeField.key !== xField.key && sizeField.key !== yField.key;
+  // The third dimension drives dot OPACITY (better = fully opaque, worse fades out) —
+  // only when it's a distinct field from the two plotted axes (otherwise it'd just
+  // restate an axis). Opacity reads with any number of points, unlike bubble size.
+  const shadeOn =
+    shadeField != null && shadeField.key !== xField.key && shadeField.key !== yField.key;
   const points: Point[] = profiles
     .map((p) => ({ p, x: xField.get(p), y: yField.get(p) }))
     .filter((r): r is { p: SettingsProfile; x: number; y: number } => r.x != null && r.y != null)
-    .map(({ p, x, y }) => {
-      const zRaw = sizeOn ? sizeField!.get(p) ?? null : null;
-      return {
-        x,
-        y,
-        // Missing third value → smallest bubble (z=0); off → uniform (handled by range).
-        z: zRaw ?? 0,
-        zRaw,
-        label: p.label,
-        fingerprint: p.fingerprint,
-        iterations: p.iterations,
-        confident: p.confident,
-        isBest: p.fingerprint === bestFingerprint,
-      };
-    });
+    .map(({ p, x, y }) => ({
+      x,
+      y,
+      zRaw: shadeOn ? shadeField!.get(p) ?? null : null,
+      label: p.label,
+      fingerprint: p.fingerprint,
+      iterations: p.iterations,
+      confident: p.confident,
+      isBest: p.fingerprint === bestFingerprint,
+    }));
 
   if (points.length < 2) {
     return (
@@ -138,6 +133,22 @@ export default function ProfileQuadrant({
 
   const cellColor = (p: Point) =>
     p.isBest ? bestColor : p.confident ? goodColor : greyColor;
+
+  // Opacity encodes the third field: best on it = fully opaque, worst fades to 15%.
+  // (Honours the field's "better" direction.) The crowned dot is always full opacity.
+  const MIN_OPACITY = 0.15;
+  const shadeVals = points.map((p) => p.zRaw).filter((v): v is number => v != null);
+  const zMin = shadeVals.length ? Math.min(...shadeVals) : 0;
+  const zMax = shadeVals.length ? Math.max(...shadeVals) : 0;
+  const zSpan = zMax - zMin;
+  const opacityOf = (p: Point): number => {
+    if (!shadeOn || p.isBest) return 1;
+    if (p.zRaw == null) return MIN_OPACITY; // no value on the third axis → faint
+    if (zSpan <= 0) return 1; // all equal → don't dim
+    const norm = (p.zRaw - zMin) / zSpan; // 0..1 by raw value
+    const good = shadeField!.higherIsBetter ? norm : 1 - norm;
+    return MIN_OPACITY + (1 - MIN_OPACITY) * good;
+  };
 
   return (
     <Box>
@@ -174,12 +185,12 @@ export default function ProfileQuadrant({
                 style: { textAnchor: "middle" },
               }}
             />
-            {/* Bubble size encodes the optional third field; uniform when it's off. */}
-            <ZAxis dataKey="z" range={sizeOn ? [60, 700] : [90, 90]} name={sizeField?.label} />
+            {/* Uniform dot size — the third field is encoded as opacity, not size. */}
+            <ZAxis range={[90, 90]} />
             <ReferenceLine x={xMid} stroke={theme.palette.divider} />
             <ReferenceLine y={yMid} stroke={theme.palette.divider} />
             <Tooltip
-              content={<QuadrantTooltip xField={xField} yField={yField} sizeField={sizeField} />}
+              content={<QuadrantTooltip xField={xField} yField={yField} sizeField={shadeField} />}
               cursor={{ strokeDasharray: "3 3" }}
             />
             <Scatter name="Confident" data={confident} fill={goodColor}>
@@ -187,6 +198,7 @@ export default function ProfileQuadrant({
                 <Cell
                   key={p.fingerprint}
                   fill={cellColor(p)}
+                  fillOpacity={opacityOf(p)}
                   stroke={p.isBest ? theme.palette.warning.light : undefined}
                   strokeWidth={p.isBest ? 3 : 0}
                 />
@@ -194,7 +206,7 @@ export default function ProfileQuadrant({
             </Scatter>
             <Scatter name="Limited data" data={limited} fill={greyColor}>
               {limited.map((p) => (
-                <Cell key={p.fingerprint} fill={greyColor} />
+                <Cell key={p.fingerprint} fill={greyColor} fillOpacity={opacityOf(p)} />
               ))}
             </Scatter>
           </ScatterChart>
@@ -214,7 +226,7 @@ export default function ProfileQuadrant({
             Speed × Smoothness); grey dots are limited-data profiles.
           </>
         )}
-        {sizeOn ? <> Dot size = <b>{sizeField!.label}</b> (bigger = higher).</> : null}
+        {shadeOn ? <> Opacity = <b>{shadeField!.label}</b> (brighter = better; faded = worse).</> : null}
       </Typography>
     </Box>
   );
