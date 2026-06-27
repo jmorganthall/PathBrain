@@ -76,20 +76,32 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     session (sweep, profile test, experiment, monitoring, manual run): user-triggered
     ones `hold` (queue), periodic ones `try_hold` (defer). Pairs with the read-before/
     read-after fingerprint check in `runner.execute_run` (FAILs a run on mid-run drift).
+  - `jobs.py` — in-process background-job registry (progress/status/recent history).
+    The heavy score passes (`/api/score/regrade|rescore|rederive`) run as jobs and
+    return `202 {job_id}`; `/api/jobs` (`api/routes_jobs.py`) merges them with read-only
+    adapters for active runs/sweep/profile-test/experiment so the top-right jobs
+    dropdown shows everything. History is in-memory (durable ops live in their DB rows).
   - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
     iterations still needed to reach `correlation.min_iterations`, then **restore the
     baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
     restores on startup). `/api/settings/test-profile`.
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
     settings-vs-responsiveness correlation (`/api/settings/*`). Profile confidence is
-    gated on **total iterations** (`correlation.min_iterations`, default 15).
+    gated on **total iterations** (`correlation.min_iterations`, default 15). The
+    crowned **"best"** profile is the confident one closest to the ideal top-right
+    corner — `/api/settings/profiles` derives an **Overall** = closeness to (Speed 100,
+    Smoothness 100), ranks + returns `best_fingerprint` by it, and aggregates per
+    profile the median of every axis score *and* every metric we collect
+    (`metrics.all_metric_sources`) to power the dynamic quadrant + table column selector.
   - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
     columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.
 - `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
-  History, Trends, Compare, Settings Impact (sortable table + Speed-vs-Smoothness
-  quadrant + "Test to minimum"), Experiments, Shotgun Sweep, Config, Methodology,
-  Plugins, Data Dump, Run Detail.
+  History, Trends, Compare, Settings Impact (sortable table with an **Overall** column +
+  optional column selector, a **dynamic** Speed-vs-Smoothness-or-any-metric quadrant
+  with the crowned profile ringed, and "Test to minimum"), Experiments, Shotgun Sweep,
+  Config, Methodology, Plugins, Data Dump, Run Detail. A top-right **jobs dropdown**
+  (`JobStatus`) shows every running/recent background job (re-grade, sweep, run, …).
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`.

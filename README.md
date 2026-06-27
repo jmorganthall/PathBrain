@@ -56,7 +56,16 @@ settings are actually best?* — into an empirical, measured answer.
 SOPS is a single **0–100** number. It's **trajectory-aware**: it rewards a page
 that paints *early and steadily*, not one that merely finishes first. Each metric
 is normalized to a 0–100 subscore against configurable *best/worst* thresholds
-(perception-calibrated log curve), then combined by weight (rubric `perceptual-v3`):
+(perception-calibrated log curve), then combined by weight.
+
+> **Heads up — SOPS has since been split.** The current methodology
+> (`speed-smoothness-v3`) replaces the single SOPS headline with two independent
+> 0–100 axes: **Speed** (how soon content arrives — TTFB/FCP/LCP/render/byte-earliness)
+> and **Smoothness** (how steadily it arrives — longest-stall/perceived-time/cadence/
+> evenness), plus secondary **Stability** (CLS+INP) and **Completion** (DNS/TCP/TLS/
+> jitter/loss) axes. Settings Impact combines Speed + Smoothness into a single
+> **Overall** = closeness to the perfect (100,100) corner. The original single-number
+> rubric (`perceptual-v3`) below is kept for context:
 
 | Metric | Source | Default weight | Why |
 | --- | --- | ---: | --- |
@@ -114,14 +123,23 @@ weights and thresholds are editable at runtime from the UI or `PUT /api/config`.
   on an interval; the Dashboard shows a windowed **median (24h) + IQR** so
   "current responsiveness" is stable, not point-in-time noise.
 - 🔍 **OPNsense discovery + settings correlation** — each run captures the live
-  FQ-CoDel/SQM settings + a **fingerprint**; runs group into **profiles** with
-  their SOPS distribution, a **Speed-vs-Smoothness quadrant** (top-right = smoothest
-  *and* fastest), and a **significant-change** banner (effect ≥ threshold). A profile
-  is **confident** once its runs total ≥ `correlation.min_iterations` (default **15**)
-  — iterations, not run count, are the unit of signal. A one-click **"Test to
-  minimum"** tops a limited-data profile up: it applies the profile, runs exactly the
-  iterations still needed, then **restores your prior settings**. Mock provider for
-  offline dev.
+  FQ-CoDel/SQM settings + a **fingerprint**; runs group into **profiles** with their
+  score distribution and a **significant-change** banner (effect ≥ threshold). The
+  **crowned "best"** profile is the one closest to the ideal top-right corner of the
+  **Speed × Smoothness quadrant** — a single 0–100 **Overall** = closeness to (Speed
+  100, Smoothness 100), so "best" is genuinely *fastest **and** smoothest*. The quadrant
+  is **dynamic** (plot any two numeric fields we collect; the crowned profile is
+  ringed), and the profiles table has an **optional column selector** to show/sort by
+  any metric. A profile is **confident** once its runs total ≥
+  `correlation.min_iterations` (default **15**) — iterations, not run count, are the
+  unit of signal. A one-click **"Test to minimum"** tops a limited-data profile up: it
+  applies the profile, runs exactly the iterations still needed, then **restores your
+  prior settings**. Mock provider for offline dev.
+- 🔔 **Background jobs + status dropdown** — long operations (re-grade / re-score /
+  re-derive history) run **in the background** with live progress instead of blocking;
+  a top-right notifications dropdown (`GET /api/jobs`) shows every active +
+  recently-finished job — score passes, benchmark runs, sweeps, profile tests,
+  experiments — in one place.
 - 🔒 **Firewall/benchmark coordination** — a single in-process lock (`coordinator.py`)
   serializes every apply-firewall-and-benchmark session (sweep, profile test,
   experiment, monitoring, manual run) so two never overlap. Each run also re-reads the
@@ -140,9 +158,10 @@ weights and thresholds are editable at runtime from the UI or `PUT /api/config`.
   manual cancel so a restart/hang never leaves a zombie "running" job.
 - 📊 **Web dashboard** — React + MUI, dark mode: Dashboard (rolling score + "vs
   typical" + metric breakdown), History, **Trends** (day/hour heatmaps), Compare,
-  Settings Impact (sortable profiles table + Speed-vs-Smoothness quadrant + "Test to
-  minimum"), Experiments, **Shotgun Sweep**, Config, **Data Dump**, Run Detail (with
-  filmstrip).
+  Settings Impact (sortable profiles table with an **Overall** column + column
+  selector, a **dynamic** Speed/Smoothness/any-metric quadrant + "Test to minimum"),
+  Experiments, **Shotgun Sweep**, Config, **Data Dump**, Run Detail (with filmstrip),
+  and a global **jobs** status dropdown.
 - 💾 **SQLite persistence** with additive auto-migrations; background execution.
 
 **Next:** speed test / bufferbloat (latency-under-load), A/B weight calibration from
@@ -308,9 +327,11 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 | `GET /api/history/dump` | Consolidated JSON of the last `limit` runs incl. raw observations |
 | `GET /api/score/{id}` / `…/weights` | Run score / current weights + thresholds |
 | `GET /api/score/rolling` | Windowed median SOPS + IQR + aggregated subscores |
-| `POST /api/score/rescore` | Re-grade all history with the current rubric |
-| `POST /api/score/rederive` | Re-run derivation+scoring from stored raw (new metric/formula) |
+| `POST /api/score/regrade` | Re-score history under the current methodology (background job → `202 {job_id}`) |
+| `POST /api/score/rescore` | Re-grade all history with the current rubric (background job) |
+| `POST /api/score/rederive` | Re-run derivation+scoring from stored raw (background job) |
 | `POST /api/score/preview` | Score ad-hoc metrics with current weights |
+| `GET /api/jobs` | Active + recently-finished background jobs (powers the status dropdown) |
 | `GET /api/trends/heatmap` | Per-metric baseline grid by day-of-week × hour-of-day |
 | `GET /api/trends/relative` | Current reading vs. its historical baseline ("vs typical") |
 | `GET /api/monitoring` | Continuous-monitoring scheduler status |
@@ -320,7 +341,7 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 | `POST /api/config/discover` | Discover FQ-CoDel settings + store a snapshot |
 | `POST /api/config/test-apply` | Reversible write-path test (nudge quantum +1, then restore) |
 | `GET /api/config/snapshots` | List stored config snapshots |
-| `GET /api/settings/profiles` | Per-settings-profile SOPS distribution (+ confidence on iterations) |
+| `GET /api/settings/profiles` | Per-profile scores + per-metric medians, `overall`/`best_fingerprint` (corner), selectable `fields` |
 | `GET /api/settings/impact` | Significance of the latest settings change |
 | `POST /api/settings/apply-profile` | Write a stored profile to the firewall (`preview` for a dry diff) |
 | `POST /api/settings/test-profile` · `GET …/test-profile/current` | "Test to minimum": apply → run → restore / poll its status |
@@ -377,6 +398,7 @@ backend/pathbrain/
                      Sweep, ProfileTest
   schemas.py         Pydantic request/response models
   coordinator.py     Process-wide lock: serializes apply-firewall + benchmark sessions
+  jobs.py            In-process background-job registry (progress) for the /api/jobs feed
   runner.py          Run orchestration; median aggregation; read-before/after integrity;
                      reconcile/watchdog/rescore/rederive
   scheduler.py       Daemon thread: watchdog → (yield while a session holds the lock) →
@@ -419,15 +441,18 @@ docker-compose*.yml  Build (.yml) and pull-from-GHCR (.ghcr.yml) deploys
       HAR). The `render` SOPS weight activates automatically.
 - [x] **Continuous monitoring:** scheduled recurring runs + a windowed rolling
       score (median + IQR) for stable "current responsiveness."
-- [x] **Settings-vs-responsiveness correlation:** each run is fingerprinted with
-      the live FQ-CoDel/SQM settings; runs group into profiles with their SOPS
-      distribution (confidence gated on **total iterations**, default 15), a
-      Speed-vs-Smoothness quadrant, and a significant-change banner.
+- [x] **Settings-vs-responsiveness correlation:** each run is fingerprinted with the
+      live FQ-CoDel/SQM settings; runs group into profiles (confidence gated on **total
+      iterations**, default 15) with a significant-change banner. "Best" = the profile
+      closest to the ideal top-right **Speed × Smoothness** corner (a single **Overall**
+      score), shown on a **dynamic any-metric quadrant** with the crowned profile ringed,
+      plus a sortable table with an optional **column selector** for any metric.
 - [x] **Firewall/benchmark coordination + integrity:** a single lock serializes every
       apply-and-benchmark session, and each run re-reads the firewall before/after
       measuring (FAILed on drift). A **"Test to minimum"** action tops a limited-data
       profile up to the confidence bar, then restores the prior settings. Plus a
-      **Data Dump** export (last *N* runs incl. raw).
+      **Data Dump** export (last *N* runs incl. raw) and a **background-jobs** system
+      (long score passes run async with a top-right progress dropdown).
 - [x] **Trajectory-aware scoring:** raw-only collection + a versioned interpretation
       layer; **Speed Index**, paint cadence and CLS from a browser filmstrip lead the
       rubric (`perceptual-v3`); `rederive` re-applies new metrics to history.
