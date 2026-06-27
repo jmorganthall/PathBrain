@@ -119,6 +119,24 @@ export interface SettingsProfile {
   // Positive = this profile performs above the historical average for the times
   // it actually ran. Null until any run has a usable baseline.
   relative_sops: { delta_median: number; p25: number; p75: number; count: number } | null;
+  // Median 0–100 score per axis (speed/smoothness/stability/completion).
+  scores: Record<string, number>;
+  // Single "closeness to the ideal Speed=100/Smoothness=100 corner" (higher = better);
+  // null until both axes exist. The crowned "best" profile is the highest.
+  overall: number | null;
+  // Median of every numeric metric we collect (logical key → value), for the
+  // dynamic chart axes + the table column selector.
+  metrics: Record<string, number>;
+}
+
+// A selectable non-metric numeric field (axis scores + run stats) the /api/metrics
+// catalog doesn't describe; metric fields get their metadata from the catalog.
+export interface ProfileField {
+  key: string;
+  label: string;
+  unit: string;
+  higher_is_better: boolean;
+  group: string;
 }
 
 // One planned/applied firewall field write from "Apply this profile".
@@ -185,6 +203,11 @@ export interface SettingsProfilesResponse {
   // Total iterations a profile needs to be "confident" (the unit of signal).
   min_iterations: number;
   complete_only: boolean;
+  // The crowned profile: confident and closest to the top-right (fastest+smoothest)
+  // corner. Null until a confident profile with both axes exists.
+  best_fingerprint: string | null;
+  // Selectable non-metric numeric fields for the chart axes + column selector.
+  fields: ProfileField[];
   best_diff: ProfileDiff | null;
 }
 

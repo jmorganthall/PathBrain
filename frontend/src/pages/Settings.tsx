@@ -13,7 +13,15 @@ import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
+import FormControl from "@mui/material/FormControl";
 import FormControlLabel from "@mui/material/FormControlLabel";
+import InputLabel from "@mui/material/InputLabel";
+import ListItemIcon from "@mui/material/ListItemIcon";
+import ListSubheader from "@mui/material/ListSubheader";
+import ListItemText from "@mui/material/ListItemText";
+import Menu from "@mui/material/Menu";
+import MenuItem from "@mui/material/MenuItem";
+import Select from "@mui/material/Select";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
@@ -43,7 +51,13 @@ import InsightsIcon from "@mui/icons-material/Insights";
 import PublishIcon from "@mui/icons-material/Publish";
 import RestorePageIcon from "@mui/icons-material/Restore";
 import ScienceIcon from "@mui/icons-material/Science";
+import ViewColumnIcon from "@mui/icons-material/ViewColumn";
+import CheckIcon from "@mui/icons-material/Check";
 import { fmtDateTime } from "../utils/format";
+import { useMetricMeta } from "../utils/metrics";
+import type { ProfileField } from "../api/types";
+import { buildFields, fmtFieldValue as fmtNumField, profileValue } from "../utils/profileFields";
+import type { FieldDef } from "../utils/profileFields";
 
 // State for the "Apply this profile" confirmation dialog: the previewed write
 // plan for one profile, awaiting the user's go-ahead.
@@ -241,20 +255,10 @@ export function ProfileDiffCard({
   );
 }
 
-// Columns the Profiles table can be sorted by. Each maps to a comparable scalar
-// (numbers compared numerically, the label/last_seen compared as strings — ISO
-// dates sort lexicographically). Nulls always sort last regardless of direction.
-type SortKey =
-  | "label"
-  | "count"
-  | "iterations"
-  | "median"
-  | "speed"
-  | "relative_sops"
-  | "p25"
-  | "min"
-  | "completion"
-  | "last_seen";
+// Columns the Profiles table can be sorted by. Built-in column keys plus any dynamic
+// field key (overall / axis score / metric), resolved via profileValue. Numbers
+// compare numerically, label/last_seen as strings; nulls always sort last.
+type SortKey = string;
 
 type SortDir = "asc" | "desc";
 
@@ -262,10 +266,6 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
   switch (key) {
     case "label":
       return p.label.toLowerCase();
-    case "count":
-      return p.count;
-    case "iterations":
-      return p.iterations;
     case "median":
       return p.median;
     case "speed":
@@ -281,6 +281,8 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
     case "last_seen":
       return p.last_seen;
   }
+  // Dynamic keys: overall, axis scores, run stats, and any metric.
+  return profileValue(p, key);
 }
 
 function compareProfiles(a: SettingsProfile, b: SettingsProfile, key: SortKey, order: SortDir): number {
@@ -319,6 +321,60 @@ function SortHeader({
   );
 }
 
+// Numeric fields that already have a dedicated fixed column, so they're excluded
+// from the optional column-selector menu (no duplicate columns).
+const FIXED_COLUMN_KEYS = new Set([
+  "overall",
+  "speed",
+  "smoothness",
+  "iterations",
+  "count",
+  "relative_smoothness",
+]);
+
+// Group a field list by its `group` for the axis-picker / column menus.
+function groupFields(fields: FieldDef[]): { name: string; items: FieldDef[] }[] {
+  const groups: { name: string; items: FieldDef[] }[] = [];
+  for (const f of fields) {
+    let g = groups.find((x) => x.name === f.group);
+    if (!g) {
+      g = { name: f.group, items: [] };
+      groups.push(g);
+    }
+    g.items.push(f);
+  }
+  return groups;
+}
+
+// A grouped dropdown for picking which numeric field a chart axis plots.
+function AxisSelect({
+  label,
+  value,
+  fields,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  fields: FieldDef[];
+  onChange: (key: string) => void;
+}) {
+  return (
+    <FormControl size="small" sx={{ minWidth: 170 }}>
+      <InputLabel>{label}</InputLabel>
+      <Select label={label} value={value} onChange={(e) => onChange(e.target.value)}>
+        {groupFields(fields).flatMap((g) => [
+          <ListSubheader key={`h-${g.name}`}>{g.name}</ListSubheader>,
+          ...g.items.map((f) => (
+            <MenuItem key={f.key} value={f.key}>
+              {f.label}
+            </MenuItem>
+          )),
+        ])}
+      </Select>
+    </FormControl>
+  );
+}
+
 export default function Settings() {
   const [profiles, setProfiles] = useState<SettingsProfile[] | null>(null);
   const [bestDiff, setBestDiff] = useState<ProfileDiff | null>(null);
@@ -346,10 +402,55 @@ export default function Settings() {
   const [testConfirm, setTestConfirm] = useState<ApplyConfirm | null>(null);
   const [testPreviewFp, setTestPreviewFp] = useState<string | null>(null);
   const [activeTest, setActiveTest] = useState<ProfileTest | null>(null);
-  // Profiles table sort. Defaults to median Smoothness descending — the ranking
-  // axis the server already orders by, so the initial view is unchanged.
-  const [orderBy, setOrderBy] = useState<SortKey>("median");
+  // The crowned "best" profile (closest to the top-right corner) + the selectable
+  // numeric fields, both from the server.
+  const [bestFingerprint, setBestFingerprint] = useState<string | null>(null);
+  const [responseFields, setResponseFields] = useState<ProfileField[]>([]);
+  // Dynamic quadrant axes (default Speed × Smoothness — the original view).
+  const [xKey, setXKey] = useState("speed");
+  const [yKey, setYKey] = useState("smoothness");
+  // Optional extra table columns (dynamic field keys), persisted across reloads.
+  const [extraCols, setExtraCols] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("settingsImpactColumns") || "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [colMenu, setColMenu] = useState<HTMLElement | null>(null);
+  // Profiles table sort. Defaults to Overall (corner) descending — so the crowned,
+  // closest-to-top-right profile is on top.
+  const [orderBy, setOrderBy] = useState<SortKey>("overall");
   const [order, setOrder] = useState<SortDir>("desc");
+
+  const metricMeta = useMetricMeta();
+  const allFields = useMemo(
+    () => buildFields(profiles ?? [], responseFields, metricMeta),
+    [profiles, responseFields, metricMeta]
+  );
+  const fieldByKey = useMemo(() => {
+    const m = new Map(allFields.map((f) => [f.key, f]));
+    return (k: string) => m.get(k);
+  }, [allFields]);
+
+  const toggleColumn = useCallback((key: string) => {
+    setExtraCols((prev) => {
+      const next = prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key];
+      localStorage.setItem("settingsImpactColumns", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  // Fields offered in the column menu (excluding those with a fixed column), and the
+  // currently-selected extra columns resolved to field defs.
+  const columnMenuFields = useMemo(
+    () => allFields.filter((f) => !FIXED_COLUMN_KEYS.has(f.key)),
+    [allFields]
+  );
+  const extraFields = useMemo(
+    () => extraCols.map((k) => fieldByKey(k)).filter((f): f is FieldDef => f != null),
+    [extraCols, fieldByKey]
+  );
 
   const handleSort = useCallback((key: SortKey) => {
     setOrderBy((prev) => {
@@ -377,6 +478,8 @@ export default function Settings() {
       setProfiles(p.profiles);
       setBestDiff(p.best_diff);
       setMinIterations(p.min_iterations);
+      setBestFingerprint(p.best_fingerprint);
+      setResponseFields(p.fields);
       setImpact(i);
       setDiag(d);
       setError(null);
@@ -511,8 +614,6 @@ export default function Settings() {
 
   if (loading) return <Loading label="Loading settings analysis…" />;
 
-  const bestFingerprint = profiles?.find((p) => p.confident)?.fingerprint;
-
   return (
     <Box>
       <Stack
@@ -582,13 +683,28 @@ export default function Settings() {
 
       {bestDiff && <ProfileDiffCard diff={bestDiff} showCompletion={showCompletion} />}
 
-      {profiles && profiles.length >= 2 && (
+      {profiles && profiles.length >= 2 && allFields.length > 0 && (
         <Card sx={{ mb: 2 }}>
           <CardContent>
-            <Typography variant="h6" sx={{ mb: 0.5 }}>
-              Speed vs Smoothness
-            </Typography>
-            <ProfileQuadrant profiles={profiles} minIterations={minIterations} />
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              justifyContent="space-between"
+              alignItems={{ xs: "flex-start", sm: "center" }}
+              spacing={1}
+              sx={{ mb: 1 }}
+            >
+              <Typography variant="h6">Profile scatter</Typography>
+              <Stack direction="row" spacing={1}>
+                <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={setXKey} />
+                <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={setYKey} />
+              </Stack>
+            </Stack>
+            <ProfileQuadrant
+              profiles={profiles}
+              xField={fieldByKey(xKey) ?? allFields[0]}
+              yField={fieldByKey(yKey) ?? allFields[0]}
+              bestFingerprint={bestFingerprint}
+            />
           </CardContent>
         </Card>
       )}
@@ -622,22 +738,46 @@ export default function Settings() {
               sx={{ mb: 0.5 }}
             >
               <Typography variant="h6">Profiles ({profiles.length})</Typography>
-              <Chip
-                size="small"
-                variant={showCompletion ? "filled" : "outlined"}
-                color={showCompletion ? "primary" : "default"}
-                onClick={() => setShowCompletion((v) => !v)}
-                label={showCompletion ? "Hide completion detail" : "Show completion detail"}
-              />
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<ViewColumnIcon />}
+                  onClick={(e) => setColMenu(e.currentTarget)}
+                >
+                  Columns{extraCols.length ? ` (${extraCols.length})` : ""}
+                </Button>
+                <Menu anchorEl={colMenu} open={Boolean(colMenu)} onClose={() => setColMenu(null)}>
+                  {groupFields(columnMenuFields).flatMap((g) => [
+                    <ListSubheader key={`h-${g.name}`}>{g.name}</ListSubheader>,
+                    ...g.items.map((f) => (
+                      <MenuItem key={f.key} onClick={() => toggleColumn(f.key)} dense>
+                        <ListItemIcon sx={{ minWidth: 28 }}>
+                          {extraCols.includes(f.key) && <CheckIcon fontSize="small" />}
+                        </ListItemIcon>
+                        <ListItemText>{f.label}</ListItemText>
+                      </MenuItem>
+                    )),
+                  ])}
+                </Menu>
+                <Chip
+                  size="small"
+                  variant={showCompletion ? "filled" : "outlined"}
+                  color={showCompletion ? "primary" : "default"}
+                  onClick={() => setShowCompletion((v) => !v)}
+                  label={showCompletion ? "Hide completion detail" : "Show completion detail"}
+                />
+              </Stack>
             </Stack>
             <Typography variant="caption" color="text.secondary">
-              Ranked by median <b>Smoothness</b> — how steadily content was delivered (the
-              project's reason for being); higher is better, and it decides "best". Speed is shown alongside. "Best" is only
-              awarded to a confident profile. Iterations count every measurement sweep — a 15‑iteration
-              run carries far more signal than a single‑iteration one. <b>vs typical</b> is the
-              time-adjusted edge: median SOPS minus the historical norm for the day &amp; hour each run
-              landed on — positive means the profile beats its environment, which is the fair way to
-              compare configs sampled at different times.
+              Ranked by <b>Overall</b> — a single 0–100 measure of how close a profile sits to the
+              ideal <b>Speed 100 / Smoothness 100</b> corner (fastest <i>and</i> smoothest). "Best" is
+              the confident profile closest to that corner. Speed and Smoothness are shown alongside.
+              Iterations count every measurement sweep — a 15‑iteration run carries far more signal
+              than a single‑iteration one. <b>vs typical</b> is the time-adjusted edge: median SOPS
+              minus the historical norm for the day &amp; hour each run landed on — positive means the
+              profile beats its environment, the fair way to compare configs sampled at different
+              times. Use <b>Columns</b> to add any other metric we collect, then sort by it.
               {showCompletion && (
                 <>
                   {" "}
@@ -662,6 +802,14 @@ export default function Settings() {
                     <SortHeader
                       id="iterations"
                       label="Iterations"
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    <SortHeader
+                      id="overall"
+                      label="Overall"
                       align="right"
                       orderBy={orderBy}
                       order={order}
@@ -707,6 +855,17 @@ export default function Settings() {
                       order={order}
                       onSort={handleSort}
                     />
+                    {extraFields.map((f) => (
+                      <SortHeader
+                        key={f.key}
+                        id={f.key}
+                        label={f.label}
+                        align="right"
+                        orderBy={orderBy}
+                        order={order}
+                        onSort={handleSort}
+                      />
+                    ))}
                     {showCompletion && (
                       <SortHeader
                         id="completion"
@@ -749,8 +908,9 @@ export default function Settings() {
                       <TableCell align="right">{p.count}</TableCell>
                       <TableCell align="right">{p.iterations}</TableCell>
                       <TableCell align="right" sx={{ fontWeight: 700 }}>
-                        {p.median}
+                        {p.overall ?? "—"}
                       </TableCell>
+                      <TableCell align="right">{p.median}</TableCell>
                       <TableCell align="right">{p.speed ? p.speed.median : "—"}</TableCell>
                       <TableCell align="right">
                         <RelativeSopsCell rel={p.relative_sops} confident={p.confident} />
@@ -761,6 +921,11 @@ export default function Settings() {
                       <TableCell align="right">
                         {p.min}–{p.max}
                       </TableCell>
+                      {extraFields.map((f) => (
+                        <TableCell key={f.key} align="right">
+                          {fmtNumField(f.get(p), f.unit)}
+                        </TableCell>
+                      ))}
                       {showCompletion && (
                         <TableCell align="right">
                           {p.completion ? (
