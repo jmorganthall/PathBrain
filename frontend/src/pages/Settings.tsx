@@ -326,6 +326,7 @@ function SortHeader({
 // from the optional column-selector menu (no duplicate columns).
 const FIXED_COLUMN_KEYS = new Set([
   "overall",
+  "responsiveness",
   "speed",
   "smoothness",
   "iterations",
@@ -449,7 +450,11 @@ export default function Settings() {
     [allFields]
   );
   const extraFields = useMemo(
-    () => extraCols.map((k) => fieldByKey(k)).filter((f): f is FieldDef => f != null),
+    () =>
+      extraCols
+        .filter((k) => !FIXED_COLUMN_KEYS.has(k))  // never duplicate a now-standard column
+        .map((k) => fieldByKey(k))
+        .filter((f): f is FieldDef => f != null),
     [extraCols, fieldByKey]
   );
 
@@ -902,6 +907,14 @@ export default function Settings() {
                       onSort={handleSort}
                     />
                     <SortHeader
+                      id="responsiveness"
+                      label="Respons."
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    <SortHeader
                       id="median"
                       label="Smoothness"
                       align="right"
@@ -996,6 +1009,7 @@ export default function Settings() {
                       <TableCell align="right" sx={{ fontWeight: 700 }}>
                         {p.overall ?? "—"}
                       </TableCell>
+                      <TableCell align="right">{p.scores?.responsiveness ?? "—"}</TableCell>
                       <TableCell align="right">{p.median}</TableCell>
                       <TableCell align="right">{p.speed ? p.speed.median : "—"}</TableCell>
                       <TableCell align="right">
