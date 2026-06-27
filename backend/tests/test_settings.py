@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from pathbrain.database import session_scope
 from pathbrain.methodology import CURRENT_METHODOLOGY
-from pathbrain.models import Run, RunStatus, Score, ScoreResult
+from pathbrain.models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
 from pathbrain.settings_profile import diff_profiles, fingerprint, normalize, summarize
 from pathbrain.providers.mock import MockProvider
 
@@ -52,6 +52,8 @@ def _seed_run(
     completion_metrics: dict | None = None,
     metric_values: dict | None = None,
     iterations: int = 1,
+    speed: float | None = None,
+    result_metrics: dict | None = None,
 ) -> None:
     with session_scope() as session:
         run = Run(
@@ -71,11 +73,15 @@ def _seed_run(
                 completion=completion, completion_metric_values=completion_metrics,
             )
         )
+        # Optional per-plugin derived metrics (the cache the profiles endpoint reads
+        # for its per-metric medians), e.g. {"icmp": {"latency_ms": 12.0}}.
+        for plugin, metrics in (result_metrics or {}).items():
+            session.add(BenchmarkResult(run_id=run.id, plugin=plugin, success=True, metrics=metrics))
         # Settings now reads the (run × methodology) Score: smoothness is the ranking
         # axis. A legacy run (metric_values={}) gets an *incomparable* Score so it's
         # excluded; everything else is comparable with smoothness = the seeded score.
         comparable = metric_values is None or len(metric_values) > 0
-        axes = {"speed": sops, "smoothness": sops}
+        axes = {"speed": speed if speed is not None else sops, "smoothness": sops}
         if completion is not None:
             axes["completion"] = completion
         session.add(
@@ -143,6 +149,47 @@ def test_confidence_is_iteration_based(client):
     assert by_fp["itersmall0x"]["confident"] is False
     assert by_fp["iterbig000x"]["iterations"] == 16
     assert by_fp["iterbig000x"]["confident"] is True
+
+
+def test_best_is_closest_to_top_right_corner(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Profile A: highest Smoothness (90) but only middling Speed (70).
+    # Profile B: lower Smoothness (80) but much higher Speed (95) — so it sits closer
+    # to the ideal (100,100) corner. "Best" must follow the corner, not raw smoothness.
+    for i in range(3):
+        _seed_run("smoothA0000x", 90, t0 - timedelta(minutes=120 - i), speed=70, iterations=6)
+    for i in range(3):
+        _seed_run("cornerB0000x", 80, t0 - timedelta(minutes=60 - i), speed=95, iterations=6)
+
+    body = client.get("/api/settings/profiles").json()
+    by_fp = {p["fingerprint"]: p for p in body["profiles"]}
+    # Corner profile B wins despite A having the higher smoothness.
+    assert body["best_fingerprint"] == "cornerB0000x"
+    assert by_fp["cornerB0000x"]["overall"] > by_fp["smoothA0000x"]["overall"]
+    assert by_fp["smoothA0000x"]["median"] > by_fp["cornerB0000x"]["median"]  # A still smoother
+    # Each profile exposes its per-axis scores for the dynamic chart.
+    assert by_fp["cornerB0000x"]["scores"]["speed"] == 95
+    assert by_fp["cornerB0000x"]["scores"]["smoothness"] == 80
+    # The response advertises selectable numeric fields for the UI.
+    assert any(f["key"] == "overall" for f in body["fields"])
+
+
+def test_profiles_expose_per_metric_medians(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # A run whose plugin caches carry a display-only metric (latency) + a scored one.
+    for i in range(3):
+        _seed_run(
+            "metricsfp00x",
+            80,
+            t0 - timedelta(minutes=30 - i),
+            iterations=6,
+            result_metrics={"icmp": {"latency_ms": 12.0}, "http": {"ttfb_ms": 200.0}},
+        )
+    body = client.get("/api/settings/profiles").json()
+    prof = next(p for p in body["profiles"] if p["fingerprint"] == "metricsfp00x")
+    # "Any numeric value we collect" — incl. the display-only latency — is aggregated.
+    assert prof["metrics"]["latency"] == 12.0
+    assert prof["metrics"]["ttfb"] == 200.0
 
 
 def test_impact_not_significant_without_enough_runs(client):

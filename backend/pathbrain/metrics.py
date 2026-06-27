@@ -283,6 +283,13 @@ def metric_sources(axis: str) -> dict[str, tuple[str, str]]:
     return {m.key: (m.plugin, m.source_key) for m in _by_axis(axis)}
 
 
+def all_metric_sources() -> dict[str, tuple[str, str]]:
+    """``{logical_key: (plugin, source_key)}`` for **every** metric — scored and
+    display-only. Lets callers pull every numeric value a run captured (e.g. the
+    Settings-Impact per-profile aggregates) back out of the plugins' metric caches."""
+    return {m.key: (m.plugin, m.source_key) for m in METRICS}
+
+
 def default_weights(axis: str) -> dict[str, float]:
     return {m.key: m.weight for m in _by_axis(axis)}
 

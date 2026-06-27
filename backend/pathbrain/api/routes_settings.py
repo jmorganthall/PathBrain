@@ -6,23 +6,54 @@ configurable threshold.
 """
 from __future__ import annotations
 
+from math import sqrt
 from statistics import median, quantiles
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .. import profile_test as profile_test_mod
 from ..config_store import get_config
 from ..database import get_session
 from ..logging_config import get_logger
 from ..methodology import ensure_current_methodology
+from ..metrics import all_metric_sources
 from ..models import Run, RunStatus, Score
 from ..providers import get_provider
 from ..runner import MAX_ITERATIONS
 from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import diff_profiles, fingerprint, normalize, plan_apply, summarize
 from ..trends import RunPoint, profile_relative
+
+# The two headline axes whose 0–100 scores define the Speed×Smoothness quadrant; the
+# crowned "best" profile is the confident one closest to the top-right corner (100,100).
+_CORNER_AXES = ("speed", "smoothness")
+
+# Non-metric numeric fields the /api/metrics catalog doesn't describe, exposed so the
+# UI's chart-axis pickers + column selector can offer them (metric fields get their
+# metadata from the catalog). higher_is_better drives the "↑/↓ better" hints.
+_PROFILE_FIELDS = [
+    {"key": "overall", "label": "Overall (corner)", "unit": "score", "higher_is_better": True, "group": "Scores"},
+    {"key": "speed", "label": "Speed", "unit": "score", "higher_is_better": True, "group": "Scores"},
+    {"key": "smoothness", "label": "Smoothness", "unit": "score", "higher_is_better": True, "group": "Scores"},
+    {"key": "stability", "label": "Stability", "unit": "score", "higher_is_better": True, "group": "Scores"},
+    {"key": "completion", "label": "Completion", "unit": "score", "higher_is_better": True, "group": "Scores"},
+    {"key": "iterations", "label": "Iterations", "unit": "", "higher_is_better": True, "group": "Run stats"},
+    {"key": "count", "label": "Runs", "unit": "", "higher_is_better": True, "group": "Run stats"},
+    {"key": "relative_smoothness", "label": "vs typical", "unit": "", "higher_is_better": True, "group": "Run stats"},
+]
+
+
+def _corner_overall(scores: dict) -> float | None:
+    """0–100 'closeness to the ideal top-right corner' over the Speed×Smoothness
+    scores: 100 at (100,100), 0 at (0,0). Ranks identically to smallest distance to
+    the corner, so the highest-``overall`` confident profile is 'best'."""
+    vals = [scores.get(a) for a in _CORNER_AXES]
+    if any(v is None for v in vals):
+        return None
+    dist = sqrt(sum((100.0 - v) ** 2 for v in vals))
+    return round(100.0 - dist / sqrt(len(_CORNER_AXES)), 1)
 
 router = APIRouter()
 log = get_logger("api.settings")
@@ -68,6 +99,9 @@ def _completed_runs_with_scores(session: Session):
     return session.execute(
         select(Run, Score)
         .join(Score, Score.run_id == Run.id)
+        # Eager-load each run's plugin results so per-profile metric medians (every
+        # numeric value we collect, incl. display-only) can be aggregated without N+1.
+        .options(selectinload(Run.results))
         .where(
             Run.status == RunStatus.COMPLETE,
             Run.settings_fingerprint.is_not(None),
@@ -186,6 +220,7 @@ def settings_profiles(
     # the time-of-day environment each profile's runs are judged against.
     baseline_points: list[RunPoint] = []
     groups: dict[str, dict] = {}
+    metric_src = all_metric_sources()  # {logical_key: (plugin, source_key)} for every metric
     for run, score in rows:
         comparable = _comparable(score)
         if complete_only and not comparable:
@@ -207,6 +242,10 @@ def settings_profiles(
                 "completion": [],
                 "completion_iterations": 0,
                 "completion_metrics": {m: [] for m in COMPLETION_METRIC_SOURCES},
+                # Per-axis 0–100 score samples (speed/smoothness/stability/completion)…
+                "axis_samples": {},
+                # …and per-metric raw value samples (every numeric value we collect).
+                "metric_samples": {},
                 "first_seen": run.created_at,
                 "last_seen": run.created_at,
             },
@@ -225,6 +264,17 @@ def settings_profiles(
         for m in COMPLETION_METRIC_SOURCES:
             if mv.get(m) is not None:
                 g["completion_metrics"][m].append(float(mv[m]))
+        # All axis scores (0–100) for this run → per-axis samples.
+        for axis_key, val in (axes or {}).items():
+            if val is not None:
+                g["axis_samples"].setdefault(axis_key, []).append(float(val))
+        # Every metric's raw value for this run, from the plugin metric caches.
+        results_by_plugin = {r.plugin: (r.metrics or {}) for r in run.results}
+        for key, (plugin, source_key) in metric_src.items():
+            val = results_by_plugin.get(plugin, {}).get(source_key)
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                continue
+            g["metric_samples"].setdefault(key, []).append(float(val))
         g["settings"] = run.settings
         g["last_seen"] = run.created_at
 
@@ -234,6 +284,12 @@ def settings_profiles(
         if count == 0:
             continue  # nothing comparable to rank
         comp = g["completion"]
+        # Per-axis medians (0–100) and the corner "overall" derived from them.
+        scores = {axis: round(median(vals), 2) for axis, vals in g["axis_samples"].items() if vals}
+        overall = _corner_overall(scores)
+        # Per-metric medians — every numeric value we collect, for the chart + columns.
+        metrics = {key: round(median(vals), 3) for key, vals in g["metric_samples"].items() if vals}
+        rel = profile_relative(baseline_points, g["points"], "smoothness", tz_offset, min_samples)
         profiles.append(
             {
                 "fingerprint": g["fingerprint"],
@@ -250,10 +306,13 @@ def settings_profiles(
                 **_spread(g["smoothness"]),
                 # Speed shown alongside (the other headline axis).
                 "speed": _spread(g["speed"]) if g["speed"] else None,
+                # Per-axis medians + the single corner "overall" (closeness to 100,100).
+                "scores": scores,
+                "overall": overall,
+                # Every numeric value we collect, median over the profile's runs.
+                "metrics": metrics,
                 # Time-adjusted Smoothness: above/below the day×hour historical norm.
-                "relative_sops": profile_relative(
-                    baseline_points, g["points"], "smoothness", tz_offset, min_samples
-                ),
+                "relative_sops": rel,
                 # Completion axis, gated like SOPS: only confident with enough runs
                 # that actually captured its metrics.
                 "completion": (
@@ -273,7 +332,15 @@ def settings_profiles(
                 },
             }
         )
-    profiles.sort(key=lambda p: p["median"], reverse=True)
+    # Rank by the corner "overall" (closeness to fastest+smoothest); profiles missing
+    # it (no speed or smoothness yet) fall back to smoothness median, then sort last.
+    profiles.sort(key=lambda p: (p["overall"] is not None, p["overall"] if p["overall"] is not None else p["median"]), reverse=True)
+
+    # "Best" = the confident profile closest to the top-right corner (highest overall).
+    best_fingerprint = next(
+        (p["fingerprint"] for p in profiles if p["confident"] and p["overall"] is not None),
+        None,
+    )
 
     return {
         "profiles": profiles,
@@ -281,18 +348,25 @@ def settings_profiles(
         "min_runs": min_runs,
         "min_iterations": min_iterations,
         "complete_only": complete_only,
-        "best_diff": _best_diff(profiles),
+        "best_fingerprint": best_fingerprint,
+        # Selectable non-metric numeric fields for the chart axes + column selector
+        # (metric fields' metadata comes from /api/metrics).
+        "fields": _PROFILE_FIELDS,
+        "best_diff": _best_diff(profiles, best_fingerprint),
     }
 
 
-def _best_diff(profiles: list[dict]) -> dict | None:
-    """Diff the best (top confident) profile against the next-ranked profile.
+def _best_diff(profiles: list[dict], best_fingerprint: str | None) -> dict | None:
+    """Diff the best profile (closest to the top-right corner) against the next-ranked
+    profile.
 
     Returns ``None`` until there are two profiles to compare. ``changes`` describe
     what the *best* profile did relative to the comparison one (e.g. CoDel target
     10ms → 5ms, direction "lower"), with the resulting SOPS delta.
     """
-    best_idx = next((i for i, p in enumerate(profiles) if p["confident"]), None)
+    best_idx = next(
+        (i for i, p in enumerate(profiles) if p["fingerprint"] == best_fingerprint), None
+    )
     if best_idx is None or best_idx + 1 >= len(profiles):
         return None
     best = profiles[best_idx]
