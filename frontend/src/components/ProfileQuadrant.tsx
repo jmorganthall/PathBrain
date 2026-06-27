@@ -135,18 +135,28 @@ export default function ProfileQuadrant({
     p.isBest ? bestColor : p.confident ? goodColor : greyColor;
 
   // Opacity encodes the third field: best on it = fully opaque, worst fades to 15%.
-  // (Honours the field's "better" direction.) The crowned dot is always full opacity.
+  // We spread by **rank** (percentile), not raw value, so a tight cluster of scores
+  // (e.g. 85–88) still separates clearly instead of all looking near-opaque — and one
+  // low outlier doesn't squash everyone else. Honours the field's "better" direction;
+  // the crowned dot is always full opacity.
   const MIN_OPACITY = 0.15;
   const shadeVals = points.map((p) => p.zRaw).filter((v): v is number => v != null);
-  const zMin = shadeVals.length ? Math.min(...shadeVals) : 0;
-  const zMax = shadeVals.length ? Math.max(...shadeVals) : 0;
-  const zSpan = zMax - zMin;
+  const sorted = [...shadeVals].sort((a, b) => a - b);
+  const n = sorted.length;
+  // value → averaged 0..1 rank fraction (ties share a rank).
+  const fracByVal = new Map<number, number>();
+  for (let i = 0; i < n; ) {
+    let j = i;
+    while (j < n && sorted[j] === sorted[i]) j++;
+    fracByVal.set(sorted[i], n > 1 ? (i + j - 1) / 2 / (n - 1) : 1);
+    i = j;
+  }
   const opacityOf = (p: Point): number => {
     if (!shadeOn || p.isBest) return 1;
     if (p.zRaw == null) return MIN_OPACITY; // no value on the third axis → faint
-    if (zSpan <= 0) return 1; // all equal → don't dim
-    const norm = (p.zRaw - zMin) / zSpan; // 0..1 by raw value
-    const good = shadeField!.higherIsBetter ? norm : 1 - norm;
+    if (n <= 1) return 1; // nothing to rank against
+    const frac = fracByVal.get(p.zRaw) ?? 0; // 0 = lowest rank, 1 = highest
+    const good = shadeField!.higherIsBetter ? frac : 1 - frac;
     return MIN_OPACITY + (1 - MIN_OPACITY) * good;
   };
 
