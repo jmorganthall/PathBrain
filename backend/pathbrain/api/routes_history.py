@@ -64,6 +64,7 @@ def list_history(
                 finished_at=run.finished_at,
                 status=run.status.value if hasattr(run.status, "value") else str(run.status),
                 label=run.label,
+                responsiveness=(axes or {}).get("responsiveness"),
                 speed=(axes or {}).get("speed"),
                 smoothness=(axes or {}).get("smoothness"),
                 # "legacy" now = not comparable under the current methodology.
@@ -191,6 +192,7 @@ def history_series(
                 "run_id": run.id,
                 "timestamp": run.created_at.isoformat(),
                 "label": run.label,
+                "responsiveness": axes.get("responsiveness"),
                 "speed": axes.get("speed"),
                 "smoothness": axes.get("smoothness"),
                 "stability": axes.get("stability"),

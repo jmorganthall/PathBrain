@@ -1,9 +1,11 @@
 # CLAUDE.md — PathBrain developer guide
 
-PathBrain is an empirical network-optimization platform that maximizes a
-**Seat of Pants Score (SOPS)** — a measure of *human-perceived responsiveness*,
-not raw ping/throughput. The optimizer is classical (deterministic sweep +
-hysteresis), not LLM-based. See `README.md` for the product overview.
+PathBrain is an empirical network-optimization platform that maximizes
+*human-perceived responsiveness* — scored as the **Responsiveness / Smoothness /
+Speed** axes (+ an **Overall** corner roll-up), not raw ping/throughput. (The
+original single *Seat of Pants Score* was split into these axes; SOPS is now
+legacy.) The optimizer is classical (deterministic sweep + hysteresis), not
+LLM-based. See `README.md` for the product overview.
 
 ## Layout
 
@@ -33,24 +35,25 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
     weights/thresholds, `LATEST_METRIC_KEYS`, and the `/api/metrics` catalog (which
     the frontend's `MetricCatalogProvider`/`useMetricMeta` consume) are all derived
     from it. Adding a measurement = one entry here (+ the plugin emitting it).
-  - `scoring/engine.py` — score computation (weighted, perception-calibrated log
-    curve, redistributes missing-metric weight). **Two axes, never blended:**
-    **SOPS** is the headline *human-feel* score — perception-led and **delivery-
-    aware**: byte earliness (25) + FCP (20) + longest stall (10) + perceived time (5)
-    lead; LCP (10) + INP (10) + TTFB (10) + render-to-networkidle (5) trail
-    (`METRIC_SOURCES`, rubric `perceptual-v4`). The byte-arrival smoothness metrics
-    isolate the network layer (the tunable one) without the CPU cost of the pixel
-    screencast; Speed Index / paint cadence are now display-only diagnostics (require
-    the opt-in `browser.filmstrip`). It rewards delivering *early and steadily*, not
-    finishing first. **Completion** is the secondary infra axis
-    (DNS/TCP/TLS/jitter/loss,
-    `COMPLETION_METRIC_SOURCES`, `compute_completion`) — raw timing that barely
-    moves human feel, so it's kept out of SOPS. Completion persists on
-    `ScoreResult.completion` (+ sub/weights/values), reusing the legacy
-    `responsiveness`/`perceptual_*` DB columns via attribute mapping (no migration;
-    deeper column rename deferred). Aggregated per profile by `/api/settings/
-    profiles`. Rubric keys: `weights`/`thresholds` (SOPS) + `completion_weights`/
-    `completion_thresholds`.
+  - `scoring/engine.py` — the generic score **primitive**: `compute_score` takes a
+    metric set + weights + thresholds and returns a 0–100 weighted average on a
+    perception-calibrated log curve, redistributing missing-metric weight. Axis-
+    agnostic; *which* metrics form *which* axis lives in `methodology.py`.
+  - `methodology.py` — **the published, versioned rubric** (derivation + axis
+    weights/thresholds), append-only. `CURRENT_METHODOLOGY` = `speed-smoothness-v4`,
+    which scores **three headline axes** (the temporal phases of a load; each metric
+    maps to exactly one axis):
+    - **Responsiveness** (time-to-first): byte-earliness (30) + FCP (25) + TTFB (15).
+    - **Smoothness** (steady fill): longest-stall (40, required) + perceived-time (30)
+      + cadence (15) + evenness (15).
+    - **Speed** (time-to-last + interactive): LCP (40) + INP (40) + render (20).
+    Plus secondary **Stability** (CLS) and **Completion** (DNS/TCP/TLS/jitter/loss),
+    kept out of the headline since they barely move human feel.
+    `runner._score_multi_axis` scores every axis generically via `axis_rubric` +
+    `compute_score`, persisting per-axis results to `Score.axis_scores` (JSON).
+    Predecessors (`speed-smoothness-v1..v3`, original blended single-SOPS rubrics) are
+    frozen for old at-measure scores. The **Overall** corner-score is a *derived
+    presentation* roll-up in `routes_settings` — not a scored axis, never persisted.
   - `config_store.py` — DB-backed runtime config + defaults (targets, weights,
     thresholds, `iterations`, `monitoring`, `correlation`, `trends`, `experiment`,
     `rubric_version`).
@@ -88,11 +91,13 @@ hysteresis), not LLM-based. See `README.md` for the product overview.
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
     settings-vs-responsiveness correlation (`/api/settings/*`). Profile confidence is
     gated on **total iterations** (`correlation.min_iterations`, default 15). The
-    crowned **"best"** profile is the confident one closest to the ideal top-right
-    corner — `/api/settings/profiles` derives an **Overall** = closeness to (Speed 100,
-    Smoothness 100), ranks + returns `best_fingerprint` by it, and aggregates per
-    profile the median of every axis score *and* every metric we collect
-    (`metrics.all_metric_sources`) to power the dynamic quadrant + table column selector.
+    crowned **"best"** profile is the confident one closest to the perfect corner —
+    `/api/settings/profiles` derives an **Overall** = closeness to the (100, 100, 100)
+    corner across the three headline axes (`_CORNER_AXES` =
+    Responsiveness/Smoothness/Speed; `_corner_overall`), ranks + returns
+    `best_fingerprint` by it, and aggregates per profile the median of every axis score
+    *and* every metric we collect (`metrics.all_metric_sources`) to power the dynamic
+    quadrant + table column selector.
   - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
     columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.
@@ -133,17 +138,17 @@ docker compose up --build   # -> http://localhost:8000
   statistics/aggregation out of the probe.
 - All runtime config (targets/weights/thresholds) is DB-backed and editable via
   `/api/config`; infra config (DB URL, OPNsense creds) is env-only (`config.py`).
-- Lower-is-better for all current SOPS metrics; thresholds define best/worst and
+- Lower-is-better for all current axis metrics; thresholds define best/worst and
   are interpolated on a perception-calibrated log curve (Weber–Fechner). The
-  rubric (weights+thresholds+`rubric_version`) is versioned. **Two re-grade paths:**
-  `POST /api/score/rescore` re-applies the rubric to cached metric scalars (after a
-  weight/threshold change); `POST /api/score/rederive` re-runs the whole
-  interpretation from stored `BenchmarkResult.raw` (after a new metric or changed
-  `DERIVATION_VERSION`), so history reflects it without re-collecting.
-- A run repeats the suite `iterations` times; the headline SOPS is the **median**
-  over iterations, with a confidence band (`sops_stdev/min/max`). The Dashboard
-  shows a windowed **rolling** score (`/api/score/rolling`, 24h median + IQR) plus
-  a **"vs typical"** delta vs the day/hour historical baseline (`trends.py`).
+  rubric (axes+weights+thresholds) is bundled into a versioned **methodology**.
+  **Re-grade paths:** `POST /api/score/regrade` re-scores every run from raw under
+  the current methodology, writing new `Score` rows (use this after publishing a new
+  methodology — e.g. the v4 axis split); `POST /api/score/rescore` / `rederive` are
+  the legacy in-place paths over cached scalars / raw.
+- A run repeats the suite `iterations` times; each headline axis is the **median**
+  over iterations, with a confidence band. The Dashboard shows a windowed
+  **rolling** score (`/api/score/rolling`, 24h median + IQR) plus a **"vs typical"**
+  delta vs the day/hour historical baseline (`trends.py`).
 - **Current vs. legacy scoring (no dual-score machinery).** A run scored before
   the current rubric (no longest-stall / byte-arrival metrics —
   `metrics.has_latest_metrics`, keyed off `marks_latest`, now `longest_stall`) isn't
@@ -152,7 +157,8 @@ docker compose up --build   # -> http://localhost:8000
   hides it behind a "Show legacy" toggle; Run Detail/Compare flag it
   (`ScoreOut.legacy`/`RunSummary.legacy`); Settings Impact aggregates `complete_only`
   (default true). Legacy runs are kept for their *settings* history, not their score.
-  SOPS is the sole ranked headline everywhere; Completion is an opt-in diagnostic.
+  Responsiveness/Smoothness/Speed (+ the Overall roll-up) are the ranked headlines;
+  Stability and Completion are opt-in diagnostics.
 - Each run captures the live firewall settings + a stable **fingerprint** at start
   (best-effort). Runs group into **profiles**; `/api/settings/impact` flags a
   change significant only with ≥ `correlation.min_runs` per side. `/api/settings/

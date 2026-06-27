@@ -56,7 +56,7 @@ def _trend_metrics() -> dict[str, TrendMetric]:
 
 
 # The methodology score axes (synthetic, not registry metrics).
-AXIS_KEYS = ("speed", "smoothness", "stability", "completion")
+AXIS_KEYS = ("responsiveness", "speed", "smoothness", "stability", "completion")
 
 
 TREND_METRICS: dict[str, TrendMetric] = _trend_metrics()

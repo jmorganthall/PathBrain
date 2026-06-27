@@ -51,49 +51,47 @@ settings are actually best?* — into an empirical, measured answer.
 > **Philosophy:** Empirical. Never assume. Never rely on folklore. Every
 > optimization is tested, measured, scored, and historically tracked.
 
-### The Seat of Pants Score (SOPS)
+### The score: three perceptual axes (methodology `speed-smoothness-v4`)
 
-SOPS is a single **0–100** number. It's **trajectory-aware**: it rewards a page
-that paints *early and steadily*, not one that merely finishes first. Each metric
-is normalized to a 0–100 subscore against configurable *best/worst* thresholds
-(perception-calibrated log curve), then combined by weight.
+PathBrain scores the **three temporal phases of a page load** as independent
+0–100 axes, rather than blending them into one number. (The original single
+*Seat of Pants Score* was split into these — SOPS is now legacy.) Each metric is
+normalized to a 0–100 subscore against configurable *best/worst* thresholds
+(perception-calibrated log curve), then weight-averaged within its axis:
 
-> **Heads up — SOPS has since been split.** The current methodology
-> (`speed-smoothness-v3`) replaces the single SOPS headline with two independent
-> 0–100 axes: **Speed** (how soon content arrives — TTFB/FCP/LCP/render/byte-earliness)
-> and **Smoothness** (how steadily it arrives — longest-stall/perceived-time/cadence/
-> evenness), plus secondary **Stability** (CLS+INP) and **Completion** (DNS/TCP/TLS/
-> jitter/loss) axes. Settings Impact combines Speed + Smoothness into a single
-> **Overall** = closeness to the perfect (100,100) corner. The original single-number
-> rubric (`perceptual-v3`) below is kept for context:
+| Axis | Answers | Metrics (weights) |
+| --- | --- | --- |
+| **Responsiveness** | How fast does the *first* content appear? | byte-earliness (30) · FCP (25) · TTFB (15) |
+| **Smoothness** | How steadily does it fill in (minimized wait)? | longest-stall (40) · perceived-time (30) · cadence (15) · evenness (15) |
+| **Speed** | How soon is it *fully visible + interaction-ready*? | LCP (40) · INP (40) · total render (20) |
 
-| Metric | Source | Default weight | Why |
-| --- | --- | ---: | --- |
-| Speed Index | Browser filmstrip | 30% | Average time content is visible — early, progressive paint |
-| First Contentful Paint | Browser | 20% | First sign content is appearing |
-| Paint smoothness (cadence) | Browser filmstrip | 10% | Steady fill vs. stall-then-dump |
-| Largest Contentful Paint | Browser | 10% | Main content visible (a completion milestone) |
-| Interaction to Next Paint | Browser | 10% | Responsiveness to input |
-| Time to First Byte | HTTP | 10% | Server starting to respond |
-| Layout stability (CLS) | Browser | 5% | Janky reflow feels worse |
-| Total render (to network-idle) | Browser | 5% | Pure completion time — deliberately low |
+Plus two **secondary** axes: **Stability** (layout shift / CLS) and **Completion**
+(raw DNS/TCP/TLS/jitter/loss infra timing) — diagnostic only, never folded into the
+headline axes since they barely move human feel.
 
-Three deliberate design choices:
+**Overall** is a single higher-is-better roll-up = how close a profile sits to the
+perfect (100/100/100) corner across the three headline axes. It crowns the single
+best profile. It's a *derived presentation measure*, not a scored axis — a fixed
+geometric function of the published axis scores, with no weights/thresholds of its
+own.
 
-- **The journey beats the endpoint.** Speed Index + FCP + cadence + CLS (65%)
-  dominate "how it unfolded"; completion times (LCP + render = 15%) are kept low.
-- **Infra timing is a separate axis.** Raw DNS/TCP/TLS/jitter/loss form the
-  secondary **Completion** score — diagnostic only, never folded into SOPS, since
-  it barely moves human feel.
-- **Missing metrics never penalize.** If a metric is unavailable (e.g. Speed Index
-  where the browser/filmstrip didn't run, or a failed probe), its weight is
-  redistributed across the metrics that *are* present, keeping a stable 0–100 scale.
+Design choices:
+
+- **The journey beats the endpoint.** Smoothness isolates *how* the page filled in
+  (the network layer you can actually tune), kept distinct from when it started
+  (Responsiveness) and when it finished (Speed).
+- **Missing metrics never penalize.** If a metric is unavailable (e.g. a paint
+  metric where the browser engine didn't run, or a failed probe), its weight is
+  redistributed across the metrics that *are* present within the axis.
+- **Axes are never blended.** Each is reported and ranked on its own.
 
 Plugins are **pure sensors** that store raw observations; all interpretation
-(jitter = stddev of pings, Speed Index from the filmstrip, the score itself) lives
-in a separate, versioned layer — so a new metric or a changed formula can be
-re-derived over history without re-collecting (`POST /api/score/rederive`). All
-weights and thresholds are editable at runtime from the UI or `PUT /api/config`.
+(jitter = stddev of pings, byte-earliness = area over the cumulative-bytes curve,
+the axis scores themselves) lives in a separate, **versioned methodology** layer —
+so a new metric, a re-weight, or an axis re-partition is published as a new
+methodology version and re-graded over history straight from raw, without
+re-collecting (`POST /api/score/regrade`). `speed-smoothness-v4` is the
+published-now version.
 
 ---
 
@@ -103,12 +101,12 @@ weights and thresholds are editable at runtime from the UI or `PUT /api/config`.
   store raw observations): `icmp` (per-ping RTT series), `dns` (per-resolver lookup),
   `tcp` (connect), `tls` (handshake), `http` (TTFB / bytes / timing), and `browser`
   (headless-Chromium nav/paint timing + a **filmstrip**, with screenshot & HAR).
-- 🧮 **Trajectory-aware SOPS** — perception-calibrated **log curve** (Weber–Fechner),
-  led by **Speed Index**, paint cadence and CLS (from the filmstrip) so a smoothly-
-  progressive load wins over one that finishes first. Raw-only collection + a
-  **versioned interpretation layer**: `POST /api/score/rescore` re-grades under a
-  new rubric, `POST /api/score/rederive` re-runs derivation from stored raw (new
-  metric / formula) — neither re-collects.
+- 🧮 **Three perceptual axes** — perception-calibrated **log curve** (Weber–Fechner):
+  **Responsiveness** (time-to-first), **Smoothness** (the steady fill, led by byte-
+  arrival metrics — longest-stall/perceived-time/cadence), and **Speed** (time-to-last
+  + interactive), plus an **Overall** corner roll-up. Raw-only collection + a
+  **versioned methodology**: `POST /api/score/regrade` re-scores history from raw under
+  any published methodology — without re-collecting.
 - 🌦️ **Historical trends + "vs typical"** — per-metric baselines by day-of-week ×
   hour-of-day (`/api/trends/*`); the Dashboard, a dedicated **Trends** page, and
   **Settings Impact** read each result *relative to its historical norm* ("wins
@@ -125,10 +123,11 @@ weights and thresholds are editable at runtime from the UI or `PUT /api/config`.
 - 🔍 **OPNsense discovery + settings correlation** — each run captures the live
   FQ-CoDel/SQM settings + a **fingerprint**; runs group into **profiles** with their
   score distribution and a **significant-change** banner (effect ≥ threshold). The
-  **crowned "best"** profile is the one closest to the ideal top-right corner of the
-  **Speed × Smoothness quadrant** — a single 0–100 **Overall** = closeness to (Speed
-  100, Smoothness 100), so "best" is genuinely *fastest **and** smoothest*. The quadrant
-  is **dynamic** (plot any two numeric fields we collect; the crowned profile is
+  **crowned "best"** profile is the one closest to the perfect corner across the three
+  headline axes — a single 0–100 **Overall** = closeness to (Responsiveness 100,
+  Smoothness 100, Speed 100), so "best" is genuinely *starts fast, fills smoothly, **and**
+  finishes fast*. The quadrant is **dynamic** (plot any two numeric fields we collect —
+  e.g. Responsiveness × Smoothness or Speed × Smoothness; the crowned profile is
   ringed), and the profiles table has an **optional column selector** to show/sort by
   any metric. A profile is **confident** once its runs total ≥
   `correlation.min_iterations` (default **15**) — iterations, not run count, are the
@@ -444,18 +443,20 @@ docker-compose*.yml  Build (.yml) and pull-from-GHCR (.ghcr.yml) deploys
 - [x] **Settings-vs-responsiveness correlation:** each run is fingerprinted with the
       live FQ-CoDel/SQM settings; runs group into profiles (confidence gated on **total
       iterations**, default 15) with a significant-change banner. "Best" = the profile
-      closest to the ideal top-right **Speed × Smoothness** corner (a single **Overall**
-      score), shown on a **dynamic any-metric quadrant** with the crowned profile ringed,
-      plus a sortable table with an optional **column selector** for any metric.
+      closest to the perfect **Responsiveness / Smoothness / Speed** corner (a single
+      **Overall** score), shown on a **dynamic any-metric quadrant** with the crowned
+      profile ringed, plus a sortable table with an optional **column selector** for any
+      metric.
 - [x] **Firewall/benchmark coordination + integrity:** a single lock serializes every
       apply-and-benchmark session, and each run re-reads the firewall before/after
       measuring (FAILed on drift). A **"Test to minimum"** action tops a limited-data
       profile up to the confidence bar, then restores the prior settings. Plus a
       **Data Dump** export (last *N* runs incl. raw) and a **background-jobs** system
       (long score passes run async with a top-right progress dropdown).
-- [x] **Trajectory-aware scoring:** raw-only collection + a versioned interpretation
-      layer; **Speed Index**, paint cadence and CLS from a browser filmstrip lead the
-      rubric (`perceptual-v3`); `rederive` re-applies new metrics to history.
+- [x] **Trajectory-aware scoring + first-class methodology:** raw-only collection + a
+      versioned methodology layer; byte-arrival smoothness metrics lead the score. The
+      headline split into **Responsiveness / Smoothness / Speed** + an **Overall**
+      roll-up ships as `speed-smoothness-v4`; `regrade` re-scores history from raw.
 - [x] **Historical trends + relative SOPS:** day-of-week × hour-of-day baselines and
       a time-adjusted "vs typical" reading on the Dashboard, Trends page, and
       Settings Impact.
