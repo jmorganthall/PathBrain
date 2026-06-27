@@ -84,6 +84,40 @@ def optimistic_overall(axis_spreads: dict, margin: float = RACE_OPTIMISM_MARGIN)
         opt[axis] = min(100.0, val)
     return _corner_overall(opt)
 
+
+# Penalty (points) for a corner axis too thin to estimate a spread — the "prove it"
+# discount applied when crowning the best, mirroring the optimism margin above.
+CROWN_PESSIMISM_MARGIN = 5.0
+# Z-multiple of the (sample-size-aware) standard error subtracted from each axis when
+# crowning. ~1 standard error ≈ a one-sided 68% lower bound.
+CROWN_PESSIMISM_K = 1.0
+
+
+def pessimistic_overall(
+    axis_spreads: dict, k: float = CROWN_PESSIMISM_K, margin: float = CROWN_PESSIMISM_MARGIN
+) -> float | None:
+    """A *lower-bound* Overall used to crown the best, countering winner's curse: the
+    corner score over each axis's confidence-adjusted lower estimate
+    ``median − k·SE``, where ``SE = (IQR/1.349)/√n`` (IQR→σ, then standard error). The
+    penalty **shrinks as iterations accumulate** (√n), so a lucky small-sample profile
+    (wide band, low n) is discounted more than a proven, well-sampled one — exactly the
+    regression-to-the-mean case. Thin samples (n<2) take a flat ``margin`` penalty.
+    Returns None unless every corner axis has a sample."""
+    lo: dict[str, float] = {}
+    for axis in _CORNER_AXES:
+        sp = axis_spreads.get(axis)
+        if not sp or sp.get("median") is None:
+            return None
+        med = float(sp["median"])
+        nn = int(sp.get("n") or 0)
+        if nn >= 2 and sp.get("p75") is not None and sp.get("p25") is not None:
+            sd = (float(sp["p75"]) - float(sp["p25"])) / 1.349  # IQR → σ
+            bound = med - k * (sd / (nn ** 0.5))
+        else:
+            bound = med - margin
+        lo[axis] = max(0.0, bound)
+    return _corner_overall(lo)
+
 router = APIRouter()
 log = get_logger("api.settings")
 
@@ -339,11 +373,14 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
         # Per-axis medians (0–100) and the corner "overall" derived from them.
         scores = {axis: round(median(vals), 2) for axis, vals in g["axis_samples"].items() if vals}
         overall = _corner_overall(scores)
-        # Per-axis spread + sample count, so callers can derive an optimistic Overall.
+        # Per-axis spread + sample count, so callers can derive optimistic/pessimistic Overall.
         axis_spreads = {
             axis: {**_spread(vals), "n": len(vals)}
             for axis, vals in g["axis_samples"].items() if vals
         }
+        # Confidence-adjusted lower-bound Overall — the basis for crowning "best", so a
+        # lucky small-sample profile can't outrank a proven one (winner's-curse guard).
+        overall_pessimistic = pessimistic_overall(axis_spreads)
         # Per-metric medians — every numeric value we collect, for the chart + columns.
         metrics = {key: round(median(vals), 3) for key, vals in g["metric_samples"].items() if vals}
         rel = profile_relative(baseline_points, g["points"], "smoothness", tz_offset, min_samples)
@@ -367,6 +404,8 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
                 "scores": scores,
                 "axis_spreads": axis_spreads,
                 "overall": overall,
+                # Confidence-adjusted Overall (lower bound) used to crown "best".
+                "overall_pessimistic": overall_pessimistic,
                 # Every numeric value we collect, median over the profile's runs.
                 "metrics": metrics,
                 # Time-adjusted Smoothness: above/below the day×hour historical norm.
@@ -390,15 +429,18 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
                 },
             }
         )
-    # Rank by the corner "overall" (closeness to fastest+smoothest); profiles missing
-    # it (no speed or smoothness yet) fall back to smoothness median, then sort last.
+    # Rank the table by the corner "overall" (closeness to fastest+smoothest); profiles
+    # missing it (no speed or smoothness yet) fall back to smoothness median, sort last.
     profiles.sort(key=lambda p: (p["overall"] is not None, p["overall"] if p["overall"] is not None else p["median"]), reverse=True)
 
-    # "Best" = the confident profile closest to the top-right corner (highest overall).
-    best_fingerprint = next(
-        (p["fingerprint"] for p in profiles if p["confident"] and p["overall"] is not None),
-        None,
-    )
+    # "Best" = the confident profile with the highest *confidence-adjusted* Overall (a
+    # lower bound), NOT the highest median — so a lucky 15-iteration profile can't be
+    # crowned over a proven, well-sampled one and then regress (winner's curse).
+    confident_candidates = [
+        p for p in profiles if p["confident"] and p["overall_pessimistic"] is not None
+    ]
+    best = max(confident_candidates, key=lambda p: p["overall_pessimistic"], default=None)
+    best_fingerprint = best["fingerprint"] if best else None
 
     return {
         "profiles": profiles,
