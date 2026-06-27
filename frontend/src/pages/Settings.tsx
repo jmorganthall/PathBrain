@@ -326,6 +326,7 @@ function SortHeader({
 // from the optional column-selector menu (no duplicate columns).
 const FIXED_COLUMN_KEYS = new Set([
   "overall",
+  "responsiveness",
   "speed",
   "smoothness",
   "iterations",
@@ -407,9 +408,11 @@ export default function Settings() {
   // numeric fields, both from the server.
   const [bestFingerprint, setBestFingerprint] = useState<string | null>(null);
   const [responseFields, setResponseFields] = useState<ProfileField[]>([]);
-  // Dynamic quadrant axes (default Speed × Smoothness — the original view).
+  // Dynamic quadrant axes (default Speed × Smoothness — the original view) + the
+  // optional third dimension encoded as bubble size (default Overall).
   const [xKey, setXKey] = useState("speed");
   const [yKey, setYKey] = useState("smoothness");
+  const [sizeKey, setSizeKey] = useState("overall");
   // Optional extra table columns (dynamic field keys), persisted across reloads.
   const [extraCols, setExtraCols] = useState<string[]>(() => {
     try {
@@ -449,7 +452,11 @@ export default function Settings() {
     [allFields]
   );
   const extraFields = useMemo(
-    () => extraCols.map((k) => fieldByKey(k)).filter((f): f is FieldDef => f != null),
+    () =>
+      extraCols
+        .filter((k) => !FIXED_COLUMN_KEYS.has(k))  // never duplicate a now-standard column
+        .map((k) => fieldByKey(k))
+        .filter((f): f is FieldDef => f != null),
     [extraCols, fieldByKey]
   );
 
@@ -783,12 +790,14 @@ export default function Settings() {
                 </Tooltip>
                 <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={setXKey} />
                 <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={setYKey} />
+                <AxisSelect label="Size" value={sizeKey} fields={allFields} onChange={setSizeKey} />
               </Stack>
             </Stack>
             <ProfileQuadrant
               profiles={profiles}
               xField={fieldByKey(xKey) ?? allFields[0]}
               yField={fieldByKey(yKey) ?? allFields[0]}
+              sizeField={fieldByKey(sizeKey) ?? null}
               bestFingerprint={bestFingerprint}
             />
           </CardContent>
@@ -902,6 +911,14 @@ export default function Settings() {
                       onSort={handleSort}
                     />
                     <SortHeader
+                      id="responsiveness"
+                      label="Respons."
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    <SortHeader
                       id="median"
                       label="Smoothness"
                       align="right"
@@ -996,6 +1013,7 @@ export default function Settings() {
                       <TableCell align="right" sx={{ fontWeight: 700 }}>
                         {p.overall ?? "—"}
                       </TableCell>
+                      <TableCell align="right">{p.scores?.responsiveness ?? "—"}</TableCell>
                       <TableCell align="right">{p.median}</TableCell>
                       <TableCell align="right">{p.speed ? p.speed.median : "—"}</TableCell>
                       <TableCell align="right">

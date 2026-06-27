@@ -26,6 +26,8 @@ import { fmtFieldValue } from "../utils/profileFields";
 interface Point {
   x: number;
   y: number;
+  z: number; // drives bubble size via ZAxis (the optional third dimension)
+  zRaw: number | null; // the third field's actual value, for the tooltip
   label: string;
   fingerprint: string;
   iterations: number;
@@ -45,11 +47,13 @@ function QuadrantTooltip({
   payload,
   xField,
   yField,
+  sizeField,
 }: {
   active?: boolean;
   payload?: Array<{ payload: Point }>;
   xField: FieldDef;
   yField: FieldDef;
+  sizeField?: FieldDef | null;
 }) {
   if (!active || !payload || !payload.length) return null;
   const p = payload[0].payload;
@@ -62,6 +66,11 @@ function QuadrantTooltip({
       <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
         {yField.label} {fmtFieldValue(p.y, yField.unit)} · {xField.label} {fmtFieldValue(p.x, xField.unit)}
       </Typography>
+      {sizeField && sizeField.key !== xField.key && sizeField.key !== yField.key && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+          {sizeField.label} {p.zRaw == null ? "—" : fmtFieldValue(p.zRaw, sizeField.unit)} (size)
+        </Typography>
+      )}
       <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
         {p.iterations} iteration(s){p.confident ? "" : " — limited data"}
       </Typography>
@@ -77,26 +86,38 @@ export default function ProfileQuadrant({
   profiles,
   xField,
   yField,
+  sizeField,
   bestFingerprint,
 }: {
   profiles: SettingsProfile[];
   xField: FieldDef;
   yField: FieldDef;
+  sizeField?: FieldDef | null;
   bestFingerprint: string | null;
 }) {
   const theme = useTheme();
+  // The third dimension drives bubble size — only when it's a distinct field from the
+  // two plotted axes (otherwise size would just restate an axis).
+  const sizeOn =
+    sizeField != null && sizeField.key !== xField.key && sizeField.key !== yField.key;
   const points: Point[] = profiles
     .map((p) => ({ p, x: xField.get(p), y: yField.get(p) }))
     .filter((r): r is { p: SettingsProfile; x: number; y: number } => r.x != null && r.y != null)
-    .map(({ p, x, y }) => ({
-      x,
-      y,
-      label: p.label,
-      fingerprint: p.fingerprint,
-      iterations: p.iterations,
-      confident: p.confident,
-      isBest: p.fingerprint === bestFingerprint,
-    }));
+    .map(({ p, x, y }) => {
+      const zRaw = sizeOn ? sizeField!.get(p) ?? null : null;
+      return {
+        x,
+        y,
+        // Missing third value → smallest bubble (z=0); off → uniform (handled by range).
+        z: zRaw ?? 0,
+        zRaw,
+        label: p.label,
+        fingerprint: p.fingerprint,
+        iterations: p.iterations,
+        confident: p.confident,
+        isBest: p.fingerprint === bestFingerprint,
+      };
+    });
 
   if (points.length < 2) {
     return (
@@ -153,11 +174,12 @@ export default function ProfileQuadrant({
                 style: { textAnchor: "middle" },
               }}
             />
-            <ZAxis range={[90, 90]} />
+            {/* Bubble size encodes the optional third field; uniform when it's off. */}
+            <ZAxis dataKey="z" range={sizeOn ? [60, 700] : [90, 90]} name={sizeField?.label} />
             <ReferenceLine x={xMid} stroke={theme.palette.divider} />
             <ReferenceLine y={yMid} stroke={theme.palette.divider} />
             <Tooltip
-              content={<QuadrantTooltip xField={xField} yField={yField} />}
+              content={<QuadrantTooltip xField={xField} yField={yField} sizeField={sizeField} />}
               cursor={{ strokeDasharray: "3 3" }}
             />
             <Scatter name="Confident" data={confident} fill={goodColor}>
@@ -192,6 +214,7 @@ export default function ProfileQuadrant({
             Speed × Smoothness); grey dots are limited-data profiles.
           </>
         )}
+        {sizeOn ? <> Dot size = <b>{sizeField!.label}</b> (bigger = higher).</> : null}
       </Typography>
     </Box>
   );
