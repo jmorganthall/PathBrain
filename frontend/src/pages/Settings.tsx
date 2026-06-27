@@ -408,9 +408,11 @@ export default function Settings() {
   // numeric fields, both from the server.
   const [bestFingerprint, setBestFingerprint] = useState<string | null>(null);
   const [responseFields, setResponseFields] = useState<ProfileField[]>([]);
-  // Dynamic quadrant axes (default Speed × Smoothness — the original view).
+  // Dynamic quadrant axes (default Speed × Smoothness — the original view) + the
+  // optional third dimension encoded as bubble size (default Overall).
   const [xKey, setXKey] = useState("speed");
   const [yKey, setYKey] = useState("smoothness");
+  const [sizeKey, setSizeKey] = useState("overall");
   // Optional extra table columns (dynamic field keys), persisted across reloads.
   const [extraCols, setExtraCols] = useState<string[]>(() => {
     try {
@@ -788,12 +790,14 @@ export default function Settings() {
                 </Tooltip>
                 <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={setXKey} />
                 <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={setYKey} />
+                <AxisSelect label="Size" value={sizeKey} fields={allFields} onChange={setSizeKey} />
               </Stack>
             </Stack>
             <ProfileQuadrant
               profiles={profiles}
               xField={fieldByKey(xKey) ?? allFields[0]}
               yField={fieldByKey(yKey) ?? allFields[0]}
+              sizeField={fieldByKey(sizeKey) ?? null}
               bestFingerprint={bestFingerprint}
             />
           </CardContent>
