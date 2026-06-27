@@ -362,3 +362,41 @@ def test_apply_profile_unknown_fingerprint_404(client):
 def test_apply_profile_requires_fingerprint(client):
     resp = client.post("/api/settings/apply-profile", json={})
     assert resp.status_code == 400
+
+
+def test_pessimistic_overall_penalizes_small_noisy_samples():
+    from pathbrain.api.routes_settings import pessimistic_overall
+
+    def axes(median, p25, p75, n):
+        return {a: {"median": median, "p25": p25, "p75": p75, "n": n} for a in
+                ("responsiveness", "smoothness", "speed")}
+
+    # Same median, but a wide-band / small-n profile gets a lower (more discounted)
+    # bound than a tight-band / large-n one → the proven one wins.
+    lucky = pessimistic_overall(axes(88, 70, 99, 15))    # wide band, few samples
+    proven = pessimistic_overall(axes(88, 85, 91, 100))  # tight band, many samples
+    assert proven > lucky
+    # The penalty shrinks as iterations accumulate (√n): same spread, more data → higher.
+    few = pessimistic_overall(axes(85, 80, 90, 15))
+    many = pessimistic_overall(axes(85, 80, 90, 240))
+    assert many > few
+    # Missing a corner axis → None.
+    assert pessimistic_overall({"responsiveness": {"median": 80, "p25": 75, "p75": 85, "n": 5}}) is None
+
+
+def test_crown_prefers_proven_profile_over_lucky_one(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # "lucky": minimum iterations with a high but very noisy score.
+    for s in [60, 99, 95, 70, 99]:
+        _seed_run("luckythin0x", s, t0 - timedelta(minutes=200), iterations=3)
+    # "proven": many consistent iterations at a slightly lower median (92 < lucky's
+    # noisy ~95), so a median crown would pick the lucky one — but the confidence-
+    # adjusted crown picks proven. 92 also clears any other seeded profile's bound.
+    for i in range(10):
+        _seed_run("provenwide0x", 92, t0 - timedelta(minutes=150 - i), iterations=3)
+
+    body = client.get("/api/settings/profiles").json()
+    by_fp = {p["fingerprint"]: p for p in body["profiles"]}
+    assert by_fp["luckythin0x"]["confident"] and by_fp["provenwide0x"]["confident"]
+    # Despite the lucky profile's noisy high median, the proven one is crowned.
+    assert body["best_fingerprint"] == "provenwide0x"

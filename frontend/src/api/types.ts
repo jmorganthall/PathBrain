@@ -123,8 +123,11 @@ export interface SettingsProfile {
   // Median 0–100 score per axis (speed/smoothness/stability/completion).
   scores: Record<string, number>;
   // Single "closeness to the ideal Speed=100/Smoothness=100 corner" (higher = better);
-  // null until both axes exist. The crowned "best" profile is the highest.
+  // null until both axes exist.
   overall: number | null;
+  // Confidence-adjusted (lower-bound) Overall — what "best" is actually crowned by, so
+  // a lucky small-sample profile can't outrank a proven one. Null until scorable.
+  overall_pessimistic: number | null;
   // Median of every numeric metric we collect (logical key → value), for the
   // dynamic chart axes + the table column selector.
   metrics: Record<string, number>;

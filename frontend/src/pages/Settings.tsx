@@ -1029,7 +1029,13 @@ export default function Settings() {
                             </Tooltip>
                           )}
                           {p.fingerprint === bestFingerprint && (
-                            <Chip size="small" color="success" label="best" />
+                            <Tooltip
+                              title={`Crowned by confidence-adjusted Overall${
+                                p.overall_pessimistic != null ? ` (${p.overall_pessimistic})` : ""
+                              } — a lower bound that penalizes small/noisy samples, so the best stays best as it gathers data.`}
+                            >
+                              <Chip size="small" color="success" label="best" />
+                            </Tooltip>
                           )}
                           {!p.confident && (
                             <Chip size="small" variant="outlined" color="warning" label="limited data" />
