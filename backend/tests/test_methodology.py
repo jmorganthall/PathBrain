@@ -79,11 +79,11 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v4_rubric():
-    # The published-now methodology is speed-smoothness-v4: the old blended Speed is
-    # split into Responsiveness (time-to-first) and a redefined Speed (time-to-last +
-    # interactive, so INP moves here); Stability becomes CLS-only.
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v4"
+def test_current_methodology_is_v5_rubric():
+    # The published-now methodology is speed-smoothness-v5: same axes/weights/thresholds
+    # as v4 (Responsiveness/Speed/Smoothness/Stability/Completion), but it also promotes
+    # the Overall to a first-class, versioned definition (corner over the feel trinity).
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v5"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
@@ -95,12 +95,12 @@ def test_current_methodology_is_v4_rubric():
         "tls": ("completion", 20, 5.0, 500.0),
         "jitter": ("completion", 5, 0.5, 30.0),
         "packet_loss": ("completion", 5, 0.0, 2.5),
-        # responsiveness — time-to-first
-        "ttfb": ("responsiveness", 15, 50.0, 1800.0),
-        "fcp": ("responsiveness", 25, 300.0, 3000.0),
-        "byte_earliness": ("responsiveness", 30, 200.0, 5000.0),
-        # speed — time-to-last + interactive
-        "lcp": ("speed", 40, 800.0, 4000.0),
+        # responsiveness — time-to-first (best anchors re-anchored to aspirational floor in v5)
+        "ttfb": ("responsiveness", 15, 30.0, 1800.0),
+        "fcp": ("responsiveness", 25, 150.0, 3000.0),
+        "byte_earliness": ("responsiveness", 30, 150.0, 5000.0),
+        # speed — time-to-last + interactive (LCP best re-anchored in v5; render unchanged)
+        "lcp": ("speed", 40, 150.0, 4000.0),
         "render": ("speed", 20, 500.0, 8000.0),
         "inp": ("speed", 40, 50.0, 500.0),
         # stability — CLS only
@@ -123,6 +123,29 @@ def test_current_methodology_is_v4_rubric():
     # Display-only metrics carry no axis (e.g. latency, transfer, speed_index).
     for k in ("latency", "transfer", "speed_index", "network_stall"):
         assert by_key[k]["axis"] is None
+
+    # v5's headline addition: a first-class Overall definition (the feel-trinity corner).
+    assert d["overall"] == {
+        "method": "corner",
+        "metrics": ["fcp", "perceived_time", "inp"],
+        "required": ["fcp", "perceived_time"],
+    }
+
+
+def test_overall_from_definition_corners_the_feel_trinity():
+    from pathbrain.methodology import overall_from_definition
+
+    d = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v5"])
+    # All three present → corner over {90, 80, 70}.
+    full = overall_from_definition(d, {"fcp": 90, "perceived_time": 80, "inp": 70})
+    assert full is not None and 70 < full < 90
+    # INP absent → folds to the 2-corner over {80, 80} == 80 (√k-normalized).
+    assert overall_from_definition(d, {"fcp": 80, "perceived_time": 80}) == 80.0
+    # A required metric missing → no Overall.
+    assert overall_from_definition(d, {"fcp": 80, "inp": 80}) is None
+    # v4 has no overall spec → None (pre-first-class).
+    d4 = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v4"])
+    assert overall_from_definition(d4, {"fcp": 80, "perceived_time": 80, "inp": 80}) is None
 
 
 def test_v3_methodology_still_frozen():

@@ -40,20 +40,25 @@ LLM-based. See `README.md` for the product overview.
     perception-calibrated log curve, redistributing missing-metric weight. Axis-
     agnostic; *which* metrics form *which* axis lives in `methodology.py`.
   - `methodology.py` — **the published, versioned rubric** (derivation + axis
-    weights/thresholds), append-only. `CURRENT_METHODOLOGY` = `speed-smoothness-v4`,
-    which scores **three headline axes** (the temporal phases of a load; each metric
-    maps to exactly one axis):
+    weights/thresholds + the first-class Overall), append-only. `CURRENT_METHODOLOGY` =
+    `speed-smoothness-v5`, which scores **three headline axes** (the temporal phases of a
+    load; each metric maps to exactly one axis):
     - **Responsiveness** (time-to-first): byte-earliness (30) + FCP (25) + TTFB (15).
     - **Smoothness** (steady fill): longest-stall (40, required) + perceived-time (30)
       + cadence (15) + evenness (15).
     - **Speed** (time-to-last + interactive): LCP (40) + INP (40) + render (20).
     Plus secondary **Stability** (CLS) and **Completion** (DNS/TCP/TLS/jitter/loss),
-    kept out of the headline since they barely move human feel.
-    `runner._score_multi_axis` scores every axis generically via `axis_rubric` +
-    `compute_score`, persisting per-axis results to `Score.axis_scores` (JSON).
-    Predecessors (`speed-smoothness-v1..v3`, original blended single-SOPS rubrics) are
-    frozen for old at-measure scores. The **Overall** corner-score is a *derived
-    presentation* roll-up in `routes_settings` — not a scored axis, never persisted.
+    kept out of the headline since they barely move human feel. v5 also (a) defines a
+    first-class **Overall** = corner over the feel trinity (fcp/perceived_time/inp;
+    `overall_from_definition`, persisted to `Score.axis_scores["overall"]`), and (b)
+    re-anchors the time-to-content `best` thresholds (TTFB 30, FCP 150, byte-earliness 150,
+    LCP 150ms) so a fast connection no longer pins FCP/LCP at 99–100.
+    `runner.score_metrics_under` scores every axis generically via `axis_rubric` +
+    `compute_score`, persisting per-axis results + Overall to `Score.axis_scores` (JSON).
+    Predecessors (`speed-smoothness-v1..v4`, earlier rubrics) are
+    frozen for old at-measure scores. The **Overall** corner-score is now methodology-
+    defined and persisted (v5+; pre-v5 Scores have no Overall until re-graded) — *not* a
+    scored axis with its own rubric, but a versioned roll-up so grading and crowning agree.
   - `config_store.py` — DB-backed runtime config + defaults (targets, weights,
     thresholds, `iterations`, `monitoring`, `correlation`, `trends`, `experiment`,
     `rubric_version`).
@@ -106,10 +111,24 @@ LLM-based. See `README.md` for the product overview.
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
     settings-vs-responsiveness correlation (`/api/settings/*`). Profile confidence is
     gated on **total iterations** (`correlation.min_iterations`, default 15).
-    `/api/settings/profiles` derives an **Overall** = closeness to the (100, 100, 100)
-    corner across the three headline axes (`_CORNER_AXES` =
-    Responsiveness/Smoothness/Speed; `_corner_overall`), and aggregates per profile the
-    median of every axis score *and* every metric we collect
+    `/api/settings/profiles` ranks profiles by the **Overall**, which since methodology
+    `speed-smoothness-v5` is a **first-class, versioned quantity** defined in the
+    methodology (`overall_from_definition`) and **persisted** on each `Score`
+    (`axis_scores["overall"]`) at scoring time — so grading and crowning never drift.
+    Overall = closeness to the (100, 100, 100) corner (`methodology.corner_score`) over the
+    **seat-of-pants "feel trinity"** — the few measurements that directly capture human
+    feel, as perception-calibrated 0–100 subscores (`CROWN_METRICS` = `fcp`
+    quickest-first-response + `perceived_time` lowest-perceived + `inp` quickest-to-
+    interactive). It's an *intersection* (corner, not mean — one weak metric can't be
+    averaged away); FCP + perceived-time are required and INP folds in when a run captured
+    it (`CROWN_REQUIRED`, √k-normalized so a 2-corner and 3-corner share a scale).
+    `compute_profiles` reads the persisted Overall (falling back to a live `_crown_corner`
+    for not-yet-re-graded Scores). A **custom crown** (`crown_metrics=` query param,
+    `_apply_custom_crown`) corners over any caller-chosen subset of subscores as an
+    exploratory `custom_overall` + `custom_best_fingerprint` — a what-if lens over the same
+    persisted building blocks, leaving the canonical Overall untouched. The per-axis scores
+    (Responsiveness/Smoothness/Speed; `_CORNER_AXES`) remain as display columns. It also
+    aggregates per profile the median of every axis score *and* every metric we collect
     (`metrics.all_metric_sources`) to power the dynamic quadrant + table column selector.
     The crowned **"best"** is the confident profile with the highest **probability of
     being the true best** (`probability_of_best`): a Bayesian/Thompson Monte-Carlo over

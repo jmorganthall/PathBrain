@@ -9,6 +9,8 @@ threshold, or metric change is published as a new version, never an edit.
 """
 from __future__ import annotations
 
+from math import sqrt
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -42,7 +44,21 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v4"
+CURRENT_METHODOLOGY = "speed-smoothness-v5"
+
+
+def corner_score(values: list[float]) -> float | None:
+    """0–100 'closeness to the perfect corner' over the present 0–100 values: 100 at
+    all-100, 0 at all-0. Normalized by √k so the scale is independent of how many
+    dimensions were present (a 2-corner and a 3-corner are comparable). This is an
+    *intersection* — one weak dimension pulls the result down and can't be averaged
+    away. Returns None for an empty list. The single corner primitive shared by the
+    methodology's first-class Overall and the settings/crown layer."""
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return None
+    dist = sqrt(sum((100.0 - v) ** 2 for v in vals))
+    return round(100.0 - dist / sqrt(len(vals)), 1)
 
 # Shared axis layout + per-metric rubric for the speed/smoothness family.
 _SS_AXES = [
@@ -158,6 +174,22 @@ def _ss_v4_assignments() -> dict:
     }
 
 
+def _ss_v5_assignments() -> dict:
+    """v4 rubric with the **time-to-content** ``best`` anchors re-anchored to an
+    *aspirational floor* rather than "typical good", so a fast connection no longer pins
+    FCP/LCP/byte-earliness at 99–100 and there's headroom to *show* a tuning improvement.
+    Only the paint/timing ``best`` values move; weights, worsts, and every other metric are
+    unchanged from v4. (DNS/CLS/packet-loss are left as-is: 0% loss / 0 CLS / ~1ms DNS are
+    genuine physical floors — no threshold can manufacture headroom there, and they're
+    secondary axes anyway. ``render`` is left as-is: at ~50 it already shows change.)"""
+    a = _ss_v4_assignments()
+    a["ttfb"] = {**a["ttfb"], "best": 30.0}            # 50 → 30ms
+    a["fcp"] = {**a["fcp"], "best": 150.0}             # 300 → 150ms (a crown metric)
+    a["byte_earliness"] = {**a["byte_earliness"], "best": 150.0}  # 200 → 150
+    a["lcp"] = {**a["lcp"], "best": 150.0}             # 800 → 150ms (40% of Speed)
+    return a
+
+
 METHODOLOGY_REGISTRY: dict[str, dict] = {
     "speed-smoothness-v1": {
         "derivation_version": "derive-v2",
@@ -207,6 +239,34 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         "axes": _SS_V4_AXES,
         "assignments": _ss_v4_assignments(),
     },
+    "speed-smoothness-v5": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v3 (no formula change)
+        "notes": (
+            "Two changes. (1) Promote the seat-of-pants Overall to a first-class, versioned "
+            "quantity so grading and crowning can never drift: Overall is defined here (not "
+            "in the settings layer) as the corner over the 'feel trinity' metric subscores — "
+            "fcp (quickest first response) + perceived_time (lowest perceived time) + inp "
+            "(quickest to interactive) — an intersection, not a mean (one weak metric can't "
+            "be averaged away); FCP + perceived-time required, INP folds in when captured. "
+            "(2) Re-anchor the time-to-content 'best' thresholds to an aspirational floor "
+            "(TTFB 50→30, FCP 300→150, byte-earliness 200→150, LCP 800→150ms) so a fast "
+            "connection no longer pins FCP/LCP at 99–100 and tuning gains are visible. "
+            "Axes/weights/worsts and derivation are otherwise unchanged from v4, so history "
+            "re-grades straight from raw."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v5_assignments(),
+        # First-class Overall: the methodology owns *which* metrics define the headline
+        # roll-up and *how* they combine. The settings/crown layer reads this, never
+        # redefines it. The cross-profile crown decision (probability_of_best, posteriors,
+        # vs-typical de-confounding) stays separate — it ranks Overall *distributions*,
+        # which is a statistical decision, not a per-run grade.
+        "overall": {
+            "method": "corner",
+            "metrics": ["fcp", "perceived_time", "inp"],
+            "required": ["fcp", "perceived_time"],
+        },
+    },
 }
 
 
@@ -239,7 +299,25 @@ def build_definition_from_spec(spec: dict) -> dict:
                 }
             )
     out_metrics.sort(key=lambda x: x["order"])
-    return {"axes": spec["axes"], "metrics": out_metrics}
+    definition = {"axes": spec["axes"], "metrics": out_metrics}
+    if spec.get("overall"):  # first-class Overall spec (v5+), carried into the frozen def
+        definition["overall"] = spec["overall"]
+    return definition
+
+
+def overall_from_definition(definition: dict, subscores: dict | None) -> float | None:
+    """The methodology's first-class Overall for one run: the corner over its feel-trinity
+    metric subscores, per the version's ``overall`` spec. Requires the spec's ``required``
+    metrics and folds in the rest when present. Returns None if the version has no overall
+    spec (pre-v5) or a required metric is missing — so grading and crowning derive the
+    headline number from one versioned definition."""
+    spec = (definition or {}).get("overall") or {}
+    metrics = spec.get("metrics") or []
+    required = spec.get("required") or []
+    sub = subscores or {}
+    if not metrics or any(sub.get(k) is None for k in required):
+        return None
+    return corner_score([sub.get(k) for k in metrics if sub.get(k) is not None])
 
 
 def _effective(m: metrics_mod.MetricDef, config: dict) -> tuple[float, float | None, float | None]:
