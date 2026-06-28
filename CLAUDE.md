@@ -205,6 +205,22 @@ docker compose up --build   # -> http://localhost:8000
   the current methodology, writing new `Score` rows (use this after publishing a new
   methodology — e.g. the v4 axis split); `POST /api/score/rescore` / `rederive` are
   the legacy in-place paths over cached scalars / raw.
+- **Publishing a new methodology — required follow-through.** Bumping
+  `CURRENT_METHODOLOGY` is not done until both of these happen, or history shows stale
+  scores and the default UI stops reflecting the rubric:
+  1. **Re-grade history.** New/changed metrics derive from the **already-captured raw**
+     (Resource Timing etc.), so a re-grade re-scores every run with the new
+     metrics — **no re-collection / re-run needed**. Trigger it via the **Methodology
+     page → "Re-grade history under current"** button (or `POST /api/score/regrade`).
+     Only pre-raw-collection legacy runs (no raw) can't be re-derived — they stay
+     quarantined as legacy. There is deliberately no "physically re-run every profile"
+     batch; re-grading from raw is the supported way to bring history onto a new rubric.
+  2. **Update the quadrant defaults.** The Settings-Impact quadrant should open on the
+     metrics that drive the current Overall. Set the default axis keys in
+     `frontend/src/pages/Settings.tsx` (`xKey`/`yKey`/`sizeKey`) to the new crown set —
+     the methodology's `overall` spec metrics (`methodology.overall_metrics`), one per
+     X / Y / Shade slot — so the default view demonstrates how Overall is scored. (v6:
+     `fcp` × `load_event` × `total_stall`.)
 - A run repeats the suite `iterations` times; each headline axis is the **median**
   over iterations, with a confidence band. The Dashboard shows a windowed
   **rolling** score (`/api/score/rolling`, 24h median + IQR) plus a **"vs typical"**
