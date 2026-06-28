@@ -514,15 +514,25 @@ export interface SweepParamRange {
   step: number;
 }
 
+// A shaper field the sweep can vary (from /sweep/fields, driven by the shaper-field
+// registry) — its label, unit, and a sensible starting range for the UI control.
+export interface SweepField {
+  key: string;
+  label: string;
+  unit: string | null;
+  default: SweepParamRange;
+}
+
 export interface SweepPipe {
   uuid: string;
   label: string;
   direction?: string | null;
 }
 
+// A range per swept field (keyed by field key, e.g. "quantum"/"target") plus the pipes
+// to vary. The field set is dynamic — whatever the registry marks sweepable.
 export interface SweepSpec {
-  quantum: SweepParamRange;
-  target: SweepParamRange;
+  [field: string]: SweepParamRange | SweepPipe[] | undefined;
   // Pipes to sweep; the parameter grid runs on each (one pipe varied at a time).
   // Omitted/empty = the single default pipe.
   pipes?: SweepPipe[];
@@ -530,14 +540,14 @@ export interface SweepSpec {
 
 export interface SweepResult {
   index: number;
-  quantum: number | null;
-  target: string | null;
   pipe_uuid?: string | null;
   pipe_label?: string | null;
   run_id: number | null;
   sops: number | null;
   created_at: string | null;
   relative: TrendRelative | null;
+  // Each swept field's value for this variant (quantum/target + any future field).
+  [field: string]: number | string | null | TrendRelative | undefined;
 }
 
 export interface Sweep {
@@ -549,7 +559,7 @@ export interface Sweep {
   pipe_uuid: string | null;
   total_variants: number;
   completed_variants: number;
-  baseline: { quantum: number | null; target: string | null } | null;
+  baseline: Record<string, number | string | null> | null;
   error: string | null;
   created_at: string;
   started_at: string | null;

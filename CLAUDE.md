@@ -97,7 +97,10 @@ LLM-based. See `README.md` for the product overview.
     benchmarks it, **restores the baseline at the end** (`reconcile_interrupted_sweeps`
     restores on startup too). Variant generation, value formatting (`shaper_fields.format_value`
     — int vs `"<n>ms"`), apply, label, and restore all iterate `SWEEPABLE_FIELDS`, so marking
-    another field sweepable in the registry extends the engine with no new branch. Runs in its
+    another field sweepable in the registry extends the engine with no new branch. The Shotgun
+    Sweep **UI** is driven the same way: `GET /api/sweep/fields` returns each sweepable field's
+    label/unit/default range (from `ShaperField.sweep_default`) and the page renders a control
+    + a results column per field — so a new sweepable field needs no frontend edit. Runs in its
     own thread; the scheduler yields while `sweep.active()`.
   - `scheduler.py` — daemon thread: watchdog → (yield while the coordination lock is
     held) → experiment step → monitoring run (serialized so benchmark runs never overlap).

@@ -103,6 +103,28 @@ def sweep_pipes() -> dict:
     return {"pipes": pipes}
 
 
+@router.get("/sweep/fields")
+def sweep_fields() -> dict:
+    """The shaper fields the sweep can vary, from the registry — so the UI renders a control
+    per sweepable field with no hardcoding. Each carries a label, unit, and a sensible
+    starting range. Marking a field ``sweepable`` in ``shaper_fields`` surfaces it here."""
+    from ..shaper_fields import SHAPER_FIELDS
+
+    default_range = {"enabled": False, "min": 0, "max": 0, "step": 1}
+    return {
+        "fields": [
+            {
+                "key": f.key,
+                "label": f.label,
+                "unit": f.unit,
+                "default": f.sweep_default or default_range,
+            }
+            for f in SHAPER_FIELDS
+            if f.sweepable
+        ]
+    }
+
+
 @router.post("/sweep/preview")
 def sweep_preview(body: dict = Body(...), session: Session = Depends(get_session)) -> dict:
     """Variant count + ETA for a sweep spec, without starting it."""
@@ -170,7 +192,9 @@ def cancel_sweep(sweep_id: int) -> dict:
 
 @router.post("/sweep/{sweep_id}/apply-best")
 def apply_best(sweep_id: int, session: Session = Depends(get_session)) -> dict:
-    """Apply the highest-SOPS variant's quantum + target to the firewall."""
+    """Apply the highest-SOPS variant's swept fields to the firewall."""
+    from ..shaper_fields import SWEEPABLE_FIELDS
+
     sw = session.get(Sweep, sweep_id)
     if sw is None:
         raise HTTPException(status_code=404, detail=f"Sweep {sweep_id} not found")
@@ -185,7 +209,7 @@ def apply_best(sweep_id: int, session: Session = Depends(get_session)) -> dict:
     pipe = best.get("pipe_uuid") or sw.pipe_uuid or None
     applied: dict = {}
     try:
-        for param in ("quantum", "target"):
+        for param in SWEEPABLE_FIELDS:
             if best.get(param) is not None:
                 provider.apply({"pipe_uuid": pipe, "param": param, "value": best[param]})
                 applied[param] = best[param]

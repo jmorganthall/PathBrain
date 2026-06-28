@@ -26,6 +26,7 @@ import StopIcon from "@mui/icons-material/Stop";
 import { api } from "../api/client";
 import type {
   Sweep,
+  SweepField,
   SweepParamRange,
   SweepPipe,
   SweepPreview,
@@ -130,8 +131,11 @@ function VsTypical({ r }: { r: SweepResult }) {
 
 export default function ShotgunSweep() {
   const [mtu, setMtu] = useState(1500);
-  const [quantum, setQuantum] = useState<SweepParamRange>({ enabled: true, min: 300, max: 10000, step: 757 });
-  const [target, setTarget] = useState<SweepParamRange>({ enabled: false, min: 3, max: 8, step: 1 });
+  // The sweepable fields (from the registry) and a range per field, keyed by field key.
+  // Both are populated from /sweep/fields, so marking a field sweepable in the backend
+  // automatically gives it a control here — no hardcoded quantum/target.
+  const [fields, setFields] = useState<SweepField[]>([]);
+  const [ranges, setRanges] = useState<Record<string, SweepParamRange>>({});
   const [iterations, setIterations] = useState(2);
   const [dwellMinutes, setDwellMinutes] = useState(0);
   const [dryRun, setDryRun] = useState(false);
@@ -147,10 +151,22 @@ export default function ShotgunSweep() {
 
   useEffect(() => {
     api.sweepPipes().then((r) => setPipes(r.pipes)).catch(() => setPipes([]));
+    api
+      .sweepFields()
+      .then((r) => {
+        setFields(r.fields);
+        setRanges(Object.fromEntries(r.fields.map((f) => [f.key, { ...f.default }])));
+      })
+      .catch(() => setFields([]));
+  }, []);
+
+  const setRange = useCallback((key: string, r: SweepParamRange) => {
+    setRanges((prev) => ({ ...prev, [key]: r }));
   }, []);
 
   const chosenPipes = pipes.filter((p) => selectedPipes.includes(p.uuid));
-  const spec: SweepSpec = { quantum, target, ...(chosenPipes.length ? { pipes: chosenPipes } : {}) };
+  const spec: SweepSpec = { ...ranges, ...(chosenPipes.length ? { pipes: chosenPipes } : {}) };
+  const rangesKey = JSON.stringify(ranges);
 
   // Live variant count + ETA (debounced).
   useEffect(() => {
@@ -162,7 +178,7 @@ export default function ShotgunSweep() {
     }, 300);
     return () => window.clearTimeout(h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quantum, target, iterations, dwellMinutes, selectedPipes]);
+  }, [rangesKey, iterations, dwellMinutes, selectedPipes]);
 
   const poll = useCallback(() => {
     if (pollRef.current) window.clearInterval(pollRef.current);
@@ -206,7 +222,7 @@ export default function ShotgunSweep() {
       setBusy(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quantum, target, iterations, dwellMinutes, dryRun, poll]);
+  }, [rangesKey, iterations, dwellMinutes, dryRun, poll]);
 
   const handleCancel = useCallback(async () => {
     if (!sweep) return;
@@ -310,21 +326,33 @@ export default function ShotgunSweep() {
               </Typography>
             </Box>
           )}
-          <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-            <ParamCard
-              title="Quantum"
-              unit=""
-              range={quantum}
-              onChange={setQuantum}
-              hint={`Bytes per scheduler turn. Step defaults to ½ MTU = ${halfMtu}.`}
-            />
-            <ParamCard title="CoDel target" unit=" (ms)" range={target} onChange={setTarget} hint="Queue delay target, in ms." />
+          <Stack direction={{ xs: "column", md: "row" }} spacing={2} flexWrap="wrap" useFlexGap>
+            {fields.map((f) => {
+              const range = ranges[f.key];
+              if (!range) return null;
+              return (
+                <ParamCard
+                  key={f.key}
+                  title={f.label}
+                  unit={f.unit ? ` (${f.unit})` : ""}
+                  range={range}
+                  onChange={(r) => setRange(f.key, r)}
+                  hint={
+                    f.key === "quantum"
+                      ? `Bytes per scheduler turn. Step defaults to ½ MTU = ${halfMtu}.`
+                      : undefined
+                  }
+                />
+              );
+            })}
           </Stack>
           <Stack direction="row" spacing={2} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap alignItems="center">
-            <Num label="MTU" value={mtu} width={100} onChange={(v) => {
-              setMtu(v);
-              setQuantum((q) => ({ ...q, step: Math.round(v / 2) }));
-            }} />
+            {ranges.quantum && (
+              <Num label="MTU" value={mtu} width={100} onChange={(v) => {
+                setMtu(v);
+                setRange("quantum", { ...ranges.quantum, step: Math.round(v / 2) });
+              }} />
+            )}
             <Num label="Iterations / variant" value={iterations} width={160} onChange={(v) => setIterations(Math.max(1, Math.round(v)))} />
             <Num label="Dwell (min)" value={dwellMinutes} width={120} step={0.5} onChange={(v) => setDwellMinutes(Math.max(0, v))} />
             <FormControlLabel
@@ -383,7 +411,7 @@ export default function ShotgunSweep() {
                 {sweep.dry_run && <Chip size="small" variant="outlined" label="dry-run" />}
               </Stack>
               {sweep.results.length > 0 && !running && (
-                <Tooltip title="Apply the top-ranked variant's quantum + target to the firewall.">
+                <Tooltip title="Apply the top-ranked variant's swept field values to the firewall.">
                   <span>
                     <Button size="small" variant="outlined" onClick={handleApplyBest} disabled={sweep.dry_run}>
                       Apply winner
@@ -411,8 +439,10 @@ export default function ShotgunSweep() {
             )}
             {sweep.baseline && (
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-                Baseline (restored at end): quantum {String(sweep.baseline.quantum ?? "—")} · target{" "}
-                {String(sweep.baseline.target ?? "—")}
+                Baseline (restored at end):{" "}
+                {fields
+                  .map((f) => `${f.label.toLowerCase()} ${String(sweep.baseline?.[f.key] ?? "—")}`)
+                  .join(" · ")}
               </Typography>
             )}
 
@@ -427,8 +457,9 @@ export default function ShotgunSweep() {
                     <TableRow>
                       <TableCell>Rank</TableCell>
                       <TableCell>Pipe</TableCell>
-                      <TableCell align="right">Quantum</TableCell>
-                      <TableCell align="right">Target</TableCell>
+                      {fields.map((f) => (
+                        <TableCell key={f.key} align="right">{f.label}</TableCell>
+                      ))}
                       <TableCell align="right">SOPS</TableCell>
                       <TableCell align="right">vs typical</TableCell>
                       <TableCell>Run</TableCell>
@@ -439,8 +470,11 @@ export default function ShotgunSweep() {
                       <TableRow key={r.index} selected={i === 0 && r.sops != null}>
                         <TableCell>{i + 1}</TableCell>
                         <TableCell>{r.pipe_label ?? "—"}</TableCell>
-                        <TableCell align="right">{r.quantum ?? "—"}</TableCell>
-                        <TableCell align="right">{r.target ?? "—"}</TableCell>
+                        {fields.map((f) => (
+                          <TableCell key={f.key} align="right">
+                            {(r[f.key] as number | string | null) ?? "—"}
+                          </TableCell>
+                        ))}
                         <TableCell align="right" sx={{ fontWeight: 700, color: sopsColor(r.sops) }}>
                           {r.sops != null ? r.sops.toFixed(1) : "—"}
                         </TableCell>
