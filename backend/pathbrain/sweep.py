@@ -23,6 +23,7 @@ from .models import Run, RunStatus, Sweep, SweepStatus
 from .providers import get_provider
 from .runner import create_run, execute_run
 from .settings_profile import normalize
+from .shaper_fields import SWEEPABLE_FIELDS, format_value
 
 log = get_logger("sweep")
 
@@ -61,18 +62,18 @@ def _value_range(spec: dict) -> list[float]:
 
 
 def _param_combos(spec: dict) -> list[dict]:
-    """Cartesian product of the enabled parameters' value ranges (quantum × target).
+    """Cartesian product of the enabled sweepable parameters' value ranges.
 
-    Quantum values are ints; target values are ``"<n>ms"`` strings (the form the
-    provider expects). Returns ``[]`` when no parameter is enabled.
+    Iterates the shaper-field registry's ``SWEEPABLE_FIELDS`` and formats each field's
+    values per the registry (ints, or ``"<n>ms"`` for unit fields) — so adding a sweepable
+    field is one registry entry, not a hardcoded branch here. Returns ``[]`` when nothing
+    is enabled.
     """
     dims: list[tuple[str, list]] = []
-    q = spec.get("quantum") or {}
-    if q.get("enabled"):
-        dims.append(("quantum", [int(round(v)) for v in _value_range(q)]))
-    t = spec.get("target") or {}
-    if t.get("enabled"):
-        dims.append(("target", [f"{int(round(v))}ms" for v in _value_range(t)]))
+    for key in SWEEPABLE_FIELDS:
+        p = spec.get(key) or {}
+        if p.get("enabled"):
+            dims.append((key, [format_value(key, v) for v in _value_range(p)]))
     if not dims:
         return []
     combos: list[dict] = [{}]
@@ -127,15 +128,15 @@ def _baseline(provider, pipe_uuid: str | None = None) -> dict:
     for c in configs:
         uuid = (c.extra or {}).get("uuid")
         if uuid:
-            pipes[uuid] = {"quantum": c.quantum, "target": c.target, "label": _pipe_label(c)}
+            pipes[uuid] = {**{k: getattr(c, k, None) for k in SWEEPABLE_FIELDS}, "label": _pipe_label(c)}
     primary = None
     if pipe_uuid:
         primary = next((c for c in configs if (c.extra or {}).get("uuid") == pipe_uuid), None)
     primary = primary or (configs[0] if configs else None)
     return {
         "pipes": pipes,
-        "quantum": primary.quantum if primary else None,
-        "target": primary.target if primary else None,
+        # Top-level baseline of each sweepable field for the legacy single-pipe restore path.
+        **{k: (getattr(primary, k, None) if primary else None) for k in SWEEPABLE_FIELDS},
         "settings": normalize(configs),
     }
 
@@ -149,24 +150,25 @@ def _apply(provider, pipe_uuid: str | None, param: str, value, dry_run: bool) ->
     provider.apply({"pipe_uuid": pipe_uuid or None, "param": param, "value": value})
 
 
-def _label(quantum, target, pipe_label: str | None = None) -> str:
+def _label(variant: dict, pipe_label: str | None = None) -> str:
     parts = []
     if pipe_label:
         parts.append(str(pipe_label))
-    if quantum is not None:
-        parts.append(f"q{quantum}")
-    if target is not None:
-        parts.append(f"t{target}")
+    # One short tag per swept field present (e.g. q1514 t5ms), in registry order.
+    for key in SWEEPABLE_FIELDS:
+        val = variant.get(key)
+        if val is not None:
+            parts.append(f"{key[0]}{val}")
     return "sweep · " + " ".join(parts)
 
 
 def _restore_pipe(provider, baseline: dict, uuid: str | None, dry_run: bool) -> None:
-    """Set one pipe back to its baseline quantum + target."""
+    """Set one pipe back to its baseline values for every sweepable field."""
     base = (baseline.get("pipes") or {}).get(uuid) if uuid else None
     if base is None:  # legacy baseline (no per-pipe map): use the top-level values
         base = baseline
-    _apply(provider, uuid, "quantum", base.get("quantum"), dry_run)
-    _apply(provider, uuid, "target", base.get("target"), dry_run)
+    for key in SWEEPABLE_FIELDS:
+        _apply(provider, uuid, key, base.get(key), dry_run)
 
 
 def _run_sops(run_id: int) -> float | None:
@@ -188,8 +190,8 @@ def _restore(provider, sweep_id: int) -> None:
             for uuid in pipes:
                 _restore_pipe(provider, baseline, uuid, dry_run)
         else:  # legacy single-pipe baseline
-            _apply(provider, pipe_uuid, "quantum", baseline.get("quantum"), dry_run)
-            _apply(provider, pipe_uuid, "target", baseline.get("target"), dry_run)
+            for key in SWEEPABLE_FIELDS:
+                _apply(provider, pipe_uuid, key, baseline.get(key), dry_run)
         log.info("Sweep %s: restored baseline", sweep_id)
     except Exception:  # noqa: BLE001 — never raise out of cleanup
         log.exception("Sweep %s: baseline restore failed", sweep_id)
@@ -292,15 +294,15 @@ def _drive(sweep_id: int) -> None:
                     if cancel_evt.is_set():
                         final_status = SweepStatus.CANCELLED
                         break
-                    quantum, target = variant.get("quantum"), variant.get("target")
                     # Each variant varies ONE pipe; reset the previously-varied pipe to
                     # its baseline first so only this variant's pipe is off-baseline.
                     pipe = variant.get("pipe_uuid") or pipe_uuid
                     pipe_label = variant.get("pipe_label")
                     if last_pipe is not None and last_pipe != pipe:
                         _restore_pipe(provider, baseline, last_pipe, dry_run)
-                    _apply(provider, pipe, "quantum", quantum, dry_run)
-                    _apply(provider, pipe, "target", target, dry_run)
+                    for key in SWEEPABLE_FIELDS:
+                        if key in variant:
+                            _apply(provider, pipe, key, variant[key], dry_run)
                     last_pipe = pipe
                     # Let the change settle (and serve as a cancel checkpoint).
                     if dwell_s > 0 and cancel_evt.wait(dwell_s):
@@ -308,14 +310,16 @@ def _drive(sweep_id: int) -> None:
                         break
 
                     run_id = create_run(
-                        label=_label(quantum, target, pipe_label),
+                        label=_label(variant, pipe_label),
                         notes=f"Shotgun sweep #{sweep_id} variant {idx + 1}/{len(variants)}",
                         iterations=iterations,
                     )
                     execute_run(run_id)  # blocking; captures the applied settings onto the run
                     results.append(
                         {
-                            "index": idx, "quantum": quantum, "target": target,
+                            "index": idx,
+                            # Every swept field's value (quantum/target + any future field).
+                            **{k: variant.get(k) for k in SWEEPABLE_FIELDS},
                             "pipe_uuid": pipe, "pipe_label": pipe_label,
                             "run_id": run_id, "sops": _run_sops(run_id),
                         }

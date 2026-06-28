@@ -92,14 +92,19 @@ LLM-based. See `README.md` for the product overview.
     `relative_reading`/`profile_relative` give a time-adjusted "vs typical" delta
     ("wins above replacement"). Powers `/api/trends/*`, the Dashboard delta chip,
     and the Settings-Impact "vs typical" column.
-  - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a quantum ×
-    target grid. Applies each variant for real, benchmarks it, **restores the
-    baseline at the end** (`reconcile_interrupted_sweeps` restores on startup too).
-    Runs in its own thread; the scheduler yields while `sweep.active()`.
+  - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a grid over the
+    registry's `SWEEPABLE_FIELDS` (quantum × target today). Applies each variant for real,
+    benchmarks it, **restores the baseline at the end** (`reconcile_interrupted_sweeps`
+    restores on startup too). Variant generation, value formatting (`shaper_fields.format_value`
+    — int vs `"<n>ms"`), apply, label, and restore all iterate `SWEEPABLE_FIELDS`, so marking
+    another field sweepable in the registry extends the engine with no new branch. Runs in its
+    own thread; the scheduler yields while `sweep.active()`.
   - `scheduler.py` — daemon thread: watchdog → (yield while the coordination lock is
     held) → experiment step → monitoring run (serialized so benchmark runs never overlap).
   - `experiment.py` — autonomous window-gated single-parameter shaper sweep
-    (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline).
+    (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline). The
+    swept `param` is validated against `shaper_fields.WRITABLE_FIELDS` at start — an
+    experiment on a non-writable field (scheduler/queues) is refused instead of no-op'ing.
   - `coordinator.py` — process-wide lock that serializes any apply-firewall + benchmark
     session (sweep, profile test, experiment, monitoring, manual run): user-triggered
     ones `hold` (queue), periodic ones `try_hold` (defer). Pairs with the read-before/

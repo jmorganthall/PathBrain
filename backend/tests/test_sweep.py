@@ -13,6 +13,27 @@ from pathbrain.providers import mock as mock_mod
 # ── pure: variant generation + ETA ───────────────────────────────────────────
 
 
+def test_value_formatting_comes_from_the_registry():
+    from pathbrain.shaper_fields import format_value
+
+    assert format_value("quantum", 1514.4) == 1514          # int field
+    assert format_value("target", 5.0) == "5ms"             # unit field
+    assert format_value("interval", 100) == "100ms"
+
+
+def test_param_combos_pick_up_a_newly_sweepable_field(monkeypatch):
+    # The whole point of the registry: marking another field sweepable extends the sweep
+    # engine with no new branch. Simulate that by widening the sweepable set.
+    monkeypatch.setattr(sweep_mod, "SWEEPABLE_FIELDS", ["quantum", "limit"])
+    spec = {
+        "quantum": {"enabled": True, "min": 1500, "max": 1500, "step": 1},
+        "limit": {"enabled": True, "min": 1000, "max": 2000, "step": 1000},
+    }
+    combos = sweep_mod._param_combos(spec)
+    assert {"quantum": 1500, "limit": 1000} in combos       # limit (an int field) flows through
+    assert {"quantum": 1500, "limit": 2000} in combos
+
+
 def test_generate_variants_cartesian():
     spec = {
         "quantum": {"enabled": True, "min": 1500, "max": 3000, "step": 750},

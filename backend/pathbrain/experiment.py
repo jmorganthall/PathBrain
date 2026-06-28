@@ -85,6 +85,17 @@ def _baseline_value(cfg: dict, normalized: list[dict]) -> str | None:
 
 
 def _start(session, cfg: dict) -> Experiment | None:
+    from .shaper_fields import WRITABLE_FIELDS
+
+    # You can only experiment on a field apply() can actually write — otherwise every trial
+    # silently no-ops. Validate against the one capability source instead of trusting config.
+    param = cfg.get("param")
+    if param not in WRITABLE_FIELDS:
+        log.warning(
+            "Experiment start: param '%s' isn't writable (writable: %s) — not starting",
+            param, WRITABLE_FIELDS,
+        )
+        return None
     provider = get_provider()
     try:
         normalized = normalize(provider.discover())
