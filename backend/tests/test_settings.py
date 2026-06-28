@@ -177,6 +177,49 @@ def test_confidence_is_iteration_based(client):
     assert by_fp["iterbig000x"]["confident"] is True
 
 
+def test_heirs_are_limited_data_profiles_that_can_beat_the_crown(client):
+    # NB: the test DB is shared across the module, so assert only on our own fingerprints
+    # (not the global crown / heir totals). The heir is given a near-perfect ceiling so it
+    # is guaranteed to out-rank any incidental accumulated contender and surface in the top.
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # A confident, fresh profile (kept low so it can't disturb the module's global crown) —
+    # must NEVER appear as an heir, because the crown only lists profiles it can't yet trust.
+    for i in range(3):
+        _seed_run("hcrown0000x", 60, t0 - timedelta(minutes=120 - i),
+                  crown_subscores={"fcp": 60, "total_stall": 60, "load_event": 60}, iterations=6)
+    # Heir: limited data (3 iters < 15) but near-perfect subscores — its optimistic ceiling
+    # (median + margin, capped at 100) corners to ~100, clearing any plausible crown.
+    _seed_run("heir000000x", 97, t0 - timedelta(minutes=50),
+              crown_subscores={"fcp": 97, "total_stall": 97, "load_event": 97}, iterations=3)
+    # Not an heir: limited data AND a ceiling that can't reach the crown even optimistically.
+    _seed_run("nohope0000x", 40, t0 - timedelta(minutes=40),
+              crown_subscores={"fcp": 40, "total_stall": 40, "load_event": 40}, iterations=3)
+
+    body = client.get("/api/settings/profiles").json()
+    heirs = body["heirs"]
+    fps = [h["fingerprint"] for h in heirs["items"]]
+    assert "heir000000x" in fps                 # promising limited-data profile surfaces
+    assert "nohope0000x" not in fps             # can't beat the crown even optimistically
+    assert "hcrown0000x" not in fps             # confident + fresh → never an heir
+    heir = next(h for h in heirs["items"] if h["fingerprint"] == "heir000000x")
+    assert heir["margin"] > 0                    # ceiling above the crown's Overall
+    assert heir["reason"] == "limited-data"
+    assert heir["iterations_to_min"] == 12       # 15 - 3 still to go
+    assert heirs["total"] >= 1
+
+
+def test_metric_thresholds_expose_effective_v6_anchors(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    _seed_run("thr000000x", 80, t0 - timedelta(minutes=30), iterations=6)
+    body = client.get("/api/settings/profiles").json()
+    thresholds = body["metric_thresholds"]
+    # v6 re-anchors fcp's "best" to 150ms (vs the catalog default of 1800) — the saturation
+    # check must use the methodology's effective threshold, not the registry default.
+    assert thresholds["fcp"]["best"] == 150.0
+    assert thresholds["load_event"]["best"] == 800.0
+    assert thresholds["fcp"]["higher_is_better"] is False
+
+
 def test_best_is_closest_to_top_right_corner(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     # Profile A: least dead-air (total_stall subscore 90) but slow first response *and*

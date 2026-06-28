@@ -14,7 +14,7 @@ import { useTheme } from "@mui/material/styles";
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 
-import type { SettingsProfile } from "../api/types";
+import type { MetricThreshold, SettingsProfile } from "../api/types";
 import type { FieldDef } from "../utils/profileFields";
 import { fmtFieldValue } from "../utils/profileFields";
 
@@ -83,6 +83,17 @@ function arrow(higher: boolean) {
   return higher ? "↑ better" : "↓ better";
 }
 
+// True when every plotted profile already sits on the "good" side of the metric's
+// scoring "best" threshold — so the score saturates (all ~100) and the raw spread the
+// user sees on this axis carries no signal about the crown. Only meaningful for axes that
+// are scored metrics (have a threshold); non-metric axes return false.
+function axisSaturated(field: FieldDef, values: number[], th?: MetricThreshold): boolean {
+  if (!th || !values.length) return false;
+  return field.higherIsBetter
+    ? values.every((v) => v >= th.best)
+    : values.every((v) => v <= th.best);
+}
+
 export default function ProfileQuadrant({
   profiles,
   xField,
@@ -90,6 +101,7 @@ export default function ProfileQuadrant({
   shadeField,
   bestFingerprint,
   currentFingerprint,
+  thresholds,
 }: {
   profiles: SettingsProfile[];
   xField: FieldDef;
@@ -97,6 +109,9 @@ export default function ProfileQuadrant({
   shadeField?: FieldDef | null;
   bestFingerprint: string | null;
   currentFingerprint?: string | null;
+  // Per-metric effective scoring thresholds (keyed by metric key), for the saturated-axis
+  // warning. Omitted → no warning shown.
+  thresholds?: Record<string, MetricThreshold>;
 }) {
   const theme = useTheme();
   // The third dimension drives dot OPACITY (better = fully opaque, worse fades out) —
@@ -141,6 +156,24 @@ export default function ProfileQuadrant({
   const cellColor = (p: Point) =>
     p.isBest ? bestColor : p.confident ? goodColor : greyColor;
 
+  // Flag any axis whose every value already clears the scoring "best" threshold: the
+  // score is pinned at ~100 there, so the visible spread is perceptually meaningless and
+  // the crown is *not* decided on this axis (a common surprise when the network is fast
+  // enough to bottom out FCP/load_event). The shade axis can saturate the same way.
+  const xSat = axisSaturated(xField, points.map((p) => p.x), thresholds?.[xField.key]);
+  const ySat = axisSaturated(yField, points.map((p) => p.y), thresholds?.[yField.key]);
+  const shadeSat =
+    shadeOn &&
+    axisSaturated(
+      shadeField!,
+      points.map((p) => p.zRaw).filter((v): v is number => v != null),
+      thresholds?.[shadeField!.key],
+    );
+  const saturated: string[] = [];
+  if (xSat) saturated.push(`X · ${xField.label}`);
+  if (ySat) saturated.push(`Y · ${yField.label}`);
+  if (shadeSat) saturated.push(`Shade · ${shadeField!.label}`);
+
   // Opacity encodes the third field: best on it = fully opaque, worst fades to 15%.
   // We spread by **rank** (percentile), not raw value, so a tight cluster of scores
   // (e.g. 85–88) still separates clearly instead of all looking near-opaque — and one
@@ -169,6 +202,30 @@ export default function ProfileQuadrant({
 
   return (
     <Box>
+      {saturated.length > 0 && (
+        <Box
+          sx={{
+            mb: 1,
+            px: 1,
+            py: 0.75,
+            borderRadius: 1,
+            bgcolor: "warning.dark",
+            color: "warning.contrastText",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 0.75,
+          }}
+        >
+          <Typography variant="caption" component="span" sx={{ fontWeight: 700 }}>
+            ⚠ Saturated {saturated.length > 1 ? "axes" : "axis"}: {saturated.join(", ")}
+          </Typography>
+          <Typography variant="caption" component="span" sx={{ opacity: 0.9 }}>
+            — every profile is already past “best”, so the score pins at ~100 here and this
+            axis carries no signal about the crown. Pick a metric with spread to see what
+            actually separates the profiles.
+          </Typography>
+        </Box>
+      )}
       <Box sx={{ width: "100%", height: 360 }}>
         <ResponsiveContainer>
           <ScatterChart margin={{ top: 16, right: 24, bottom: 36, left: 12 }}>

@@ -171,7 +171,14 @@ LLM-based. See `README.md` for the product overview.
   with standard **Overall / Responsiveness / Smoothness / Speed** columns + an optional
   column selector; a **dynamic** any-metric quadrant where X/Y pick the axes, a **Shade**
   picker encodes a third field as dot **opacity** (brighter = better; `ProfileQuadrant`),
-  and the crowned profile is ringed; plus "Test to minimum" and **"Race challengers"**),
+  and the crowned profile is ringed — the quadrant now warns when an axis is **saturated**
+  (every profile already past the methodology's `best` threshold, so the raw spread carries
+  no score signal, e.g. fcp/load_event on a fast link), using the effective thresholds in
+  the profiles response's `metric_thresholds`; plus a **"Heirs to the crown"** card — the
+  limited-data / stale profiles whose *optimistic ceiling* (`optimistic_overall`, the same
+  number the race uses) could still beat the crown, ranked by margin-above-crown, with a
+  count badge on **"Race challengers"** ("N could beat your crown"; response field `heirs`);
+  plus "Test to minimum" and **"Race challengers"**),
   Experiments, Shotgun Sweep, Config, Methodology, Plugins, Data Dump, Run Detail. A
   top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
   (re-grade, sweep, run, profile test, challenger race, …).

@@ -396,6 +396,10 @@ def settings_profiles(
         session, complete_only=complete_only, tz_offset=tz_offset, custom_crown_metrics=custom
     )
     result["current_fingerprint"] = _current_fingerprint()
+    # The crown's heirs (limited-data / stale profiles that could still dethrone it) and
+    # the effective per-metric thresholds (so the quadrant can flag a saturated axis).
+    result["heirs"] = _compute_heirs(result, session)
+    result["metric_thresholds"] = _metric_thresholds(session)
     return result
 
 
@@ -406,6 +410,116 @@ def _current_fingerprint() -> str | None:
     except Exception:  # noqa: BLE001 — best-effort; the UI just won't flag an active row
         log.debug("Could not discover current settings for active-profile flag", exc_info=True)
         return None
+
+
+def _heir_count(session: Session) -> int:
+    """How many heirs to surface on the crown card (config ``challenger.heir_count``,
+    default 5)."""
+    val = (get_config(session).get("challenger", {}) or {}).get("heir_count", 5)
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _metric_thresholds(session: Session) -> dict[str, dict]:
+    """Per-metric *effective* best/worst/direction under the current methodology — the
+    thresholds the score actually uses (v6 re-anchors fcp→150ms, load_event→800ms, …),
+    NOT the catalog defaults. Lets the quadrant flag an axis as **saturated**: when every
+    profile already sits past 'best', the raw spread the user is reading carries no score
+    signal (the crown isn't decided there). Keyed by metric key."""
+    methodology = ensure_current_methodology(session, get_config(session))
+    out: dict[str, dict] = {}
+    for m in (methodology.definition or {}).get("metrics", []):
+        if m.get("best") is None or m.get("worst") is None:
+            continue
+        out[m["key"]] = {
+            "best": m["best"],
+            "worst": m["worst"],
+            "higher_is_better": bool(m.get("higher_is_better")),
+        }
+    return out
+
+
+def _compute_heirs(result: dict, session: Session) -> dict:
+    """The crown's **heirs**: limited-data or stale-confident profiles whose *optimistic
+    ceiling* can still clear the reigning crown's Overall — "run these and one may dethrone
+    the crown".
+
+    The ceiling is ``optimistic_overall`` — the crown corner over each metric's p75 upper
+    estimate, the very number the challenger race uses to keep/eliminate a contender — so
+    the heirs list can't drift from the race or the persisted Overall. The pool is exactly
+    the profiles the crown *excludes*: not-yet-confident (under the iteration minimum) or
+    confident-but-stale (newest run older than ``challenger.contender_stale_minutes``). A
+    profile is an heir unless even its optimistic best case can't reach the crown. Bootstrap
+    (no crown yet) → every non-confident profile is an heir.
+
+    Returns ``{items, total, limit, crown_overall}``: ``total`` is every qualifying heir
+    (drives the "N could beat your crown" badge), ``items`` the top ``limit`` by ceiling-
+    above-crown. Profiles that never produced a comparable run have no ceiling to rank by
+    and aren't here — the Race button's bootstrap path still picks them up."""
+    from datetime import datetime, timezone
+
+    profiles = result.get("profiles", [])
+    best_fp = result.get("best_fingerprint")
+    crown_metrics = result.get("overall_metrics") or list(CROWN_METRICS)
+    crown_required = result.get("overall_required") or list(CROWN_REQUIRED)
+    min_iterations = result.get("min_iterations") or _min_iterations(session)
+    stale_minutes = challenger_mod._contender_stale_minutes(session)
+    limit = _heir_count(session)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    crown = next((p for p in profiles if p["fingerprint"] == best_fp), None)
+    crown_overall = crown["overall"] if crown else None
+
+    heirs: list[dict] = []
+    for p in profiles:
+        if p["fingerprint"] == best_fp:
+            continue
+        confident = bool(p.get("confident"))
+        stale = confident and challenger_mod._incumbent_stale(
+            p.get("last_seen"), stale_minutes, now
+        )
+        # Heir pool: not-yet-confident (limited data) or confident-but-stale only.
+        if confident and not stale:
+            continue
+        opt = optimistic_overall(p.get("crown_spreads") or {}, crown_metrics, crown_required)
+        # Qualify unless even the optimistic ceiling can't reach the crown. With no crown
+        # (bootstrap) or no ceiling estimate yet, keep it — we can't rule it out.
+        if crown_overall is not None and opt is not None and opt <= crown_overall:
+            continue
+        margin = (
+            round(opt - crown_overall, 1)
+            if (opt is not None and crown_overall is not None)
+            else None
+        )
+        heirs.append(
+            {
+                "fingerprint": p["fingerprint"],
+                "label": p["label"],
+                "reason": "stale" if stale else ("limited-data" if opt is not None else "untested"),
+                "optimistic": opt,
+                "margin": margin,
+                "overall": p.get("overall"),
+                "iterations": p.get("iterations"),
+                "iterations_to_min": max(0, min_iterations - int(p.get("iterations") or 0)),
+                "confident": confident,
+                "last_seen": p.get("last_seen"),
+            }
+        )
+
+    # Rank by optimistic ceiling above the crown (known margins first, descending); a
+    # profile whose ceiling we can't yet estimate sorts last but is still listed.
+    heirs.sort(
+        key=lambda h: (h["margin"] is not None, h["margin"] if h["margin"] is not None else 0.0),
+        reverse=True,
+    )
+    return {
+        "items": heirs[:limit],
+        "total": len(heirs),
+        "limit": limit,
+        "crown_overall": crown_overall,
+    }
 
 
 def compute_profiles(
