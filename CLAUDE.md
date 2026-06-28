@@ -116,6 +116,16 @@ LLM-based. See `README.md` for the product overview.
     under the `coordinator` lock (so the scheduler defers via `coordinator.busy()`);
     persisted to a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on
     startup. `/api/settings/race` (+ `/race/cancel`).
+  - `refresh.py` — **Re-run all profiles**: the batch sibling of `profile_test`. For
+    each stored profile it applies the settings, benchmarks a **caller-chosen** number of
+    iterations, then moves on — **restoring the baseline at the end** (persisted to a
+    `ProfileRefresh` row; `reconcile_interrupted_refreshes` restores on startup). One bad
+    profile is logged and skipped, not fatal. `refresh.preview` estimates duration
+    (median per-iteration time × total iterations + per-profile overhead) so the UI can
+    show "N profiles × M ≈ ~T" before committing. Own thread under the `coordinator` lock.
+    Use it to collect fresh, comparable data after a methodology change quarantines
+    history that can't supply a new crown metric. `/api/settings/refresh`
+    (+ `/refresh/preview`, `/refresh/cancel`).
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
     settings-vs-responsiveness correlation (`/api/settings/*`). Profile confidence is
     gated on **total iterations** (`correlation.min_iterations`, default 15).
@@ -225,6 +235,15 @@ docker compose up --build   # -> http://localhost:8000
   over iterations, with a confidence band. The Dashboard shows a windowed
   **rolling** score (`/api/score/rolling`, 24h median + IQR) plus a **"vs typical"**
   delta vs the day/hour historical baseline (`trends.py`).
+- **Comparability is tied to crownability.** `methodology.comparability()` flags a run
+  `incomparable` when its raw can't supply a `required` metric **or any of the current
+  methodology's crown metrics** (`overall.required`, via `overall_metrics`) — so a run
+  that can't produce the headline Overall (e.g. a pre-v6 run with no `total_stall`) is
+  quarantined, never silently scored without the metrics that define the score. A re-grade
+  reports the `exact`/`partial`/`incomparable` split (surfaced in the job summary). This
+  auto-adapts to every future methodology, so adding a crown metric can't silently leave
+  stale-but-valid-looking scores. (`marks_latest`/`has_latest_metrics` is the separate,
+  static at-measure legacy marker — still `longest_stall`.)
 - **Current vs. legacy scoring (no dual-score machinery).** A run scored before
   the current rubric (no longest-stall / byte-arrival metrics —
   `metrics.has_latest_metrics`, keyed off `marks_latest`, now `longest_stall`) isn't
@@ -291,20 +310,22 @@ docker compose up --build   # -> http://localhost:8000
   search + interleaved A/B with effect-size/CI + hysteresis, routing intelligence /
   SD-WAN.
 
-⚠️ Firewall **writes** go only through `provider.apply()`. Six callers use it, all
+⚠️ Firewall **writes** go only through `provider.apply()`. Seven callers use it, all
 snapshot/restore or are reversible: the experiment engine (disarmed + dry-run by
 default), the Shotgun Sweep (restores baseline at end + on startup), config
 test-apply (+1 then revert), sweep apply-best (explicit, supervised), the
 profile test (`profile_test.py`: apply → benchmark → restore, baseline persisted +
-reconciled on startup), and the **challenger race** (`challenger.py`: time-boxed
+reconciled on startup), the **challenger race** (`challenger.py`: time-boxed
 apply → 1 iteration → re-rank, restoring the baseline at the end — or applying the
-winner when `auto_promote` — baseline persisted + reconciled on startup). Keep new
-write paths to `provider.apply()` and always snapshot/restore.
+winner when `auto_promote` — baseline persisted + reconciled on startup), and the
+**profile refresh** (`refresh.py`: for each stored profile apply → benchmark N
+iterations → next, restoring the baseline at the end — baseline persisted + reconciled
+on startup). Keep new write paths to `provider.apply()` and always snapshot/restore.
 
 ⚠️ Any **apply-firewall + benchmark** session must hold the `coordinator.py` lock so
-two never overlap (user-triggered ones — sweep, profile test, challenger race, manual
-`/api/run` — `hold` and queue; periodic ones — monitoring, experiment — `try_hold` and
-defer).
+two never overlap (user-triggered ones — sweep, profile test, challenger race, profile
+refresh, manual `/api/run` — `hold` and queue; periodic ones — monitoring, experiment —
+`try_hold` and defer).
 `runner.execute_run` independently re-reads the firewall fingerprint **after** the
 run and FAILs it on drift (the read-before/read-after integrity check), so "what we
 tested" always matches "what we thought". A profile is **confident** once its runs

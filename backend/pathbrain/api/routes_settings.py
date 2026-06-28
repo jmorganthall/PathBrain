@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .. import challenger as challenger_mod
 from .. import profile_test as profile_test_mod
+from .. import refresh as refresh_mod
 from ..config_store import get_config
 from ..database import get_session
 from ..logging_config import get_logger
@@ -1015,6 +1016,54 @@ def current_race() -> dict:
 def cancel_race() -> dict:
     """Ask the running race to stop after its current iteration (baseline is restored)."""
     return {"cancelled": challenger_mod.cancel()}
+
+
+@router.get("/settings/refresh/preview")
+def refresh_preview(
+    iterations: int = Query(..., description="Benchmark iterations to run per profile."),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Preview a 'Re-run all profiles' batch: how many profiles, total iterations, and an
+    estimated duration (from recent runs' per-iteration timing) — so the UI can show
+    'N profiles × M iterations ≈ ~T' before committing."""
+    return refresh_mod.preview(session, iterations)
+
+
+@router.post("/settings/refresh")
+def start_refresh(body: dict = Body(...), session: Session = Depends(get_session)) -> dict:
+    """Start a 'Re-run all profiles' batch: apply each stored profile, run ``iterations``
+    benchmarks on it, and restore the baseline at the end (see ``refresh.py``).
+
+    Body: ``{"iterations": <number>}``. Returns the refresh id; poll
+    ``GET /settings/refresh`` for status.
+    """
+    iterations = int((body or {}).get("iterations") or 0)
+    if iterations <= 0:
+        raise HTTPException(status_code=400, detail="iterations must be > 0")
+    try:
+        refresh_id = refresh_mod.start(iterations)
+    except RuntimeError as exc:  # already running, or no profiles
+        # "already running" is a conflict; "no profiles" is a bad request.
+        status = 409 if "already running" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("refresh start failed")
+        raise HTTPException(
+            status_code=502, detail=f"Could not start the refresh: {type(exc).__name__}: {exc}"
+        ) from exc
+    return {"id": refresh_id, "iterations": iterations}
+
+
+@router.get("/settings/refresh")
+def current_refresh() -> dict:
+    """The most recent profile refresh, for status polling (``{refresh: {...} | null}``)."""
+    return {"refresh": refresh_mod.current()}
+
+
+@router.post("/settings/refresh/cancel")
+def cancel_refresh() -> dict:
+    """Ask the running refresh to stop after the current profile (baseline is restored)."""
+    return {"cancelled": refresh_mod.cancel()}
 
 
 @router.get("/settings/impact")

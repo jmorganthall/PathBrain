@@ -41,6 +41,8 @@ import type {
   ChallengerRace,
   ProfileDiff,
   ProfileFieldChange,
+  ProfileRefresh,
+  ProfileRefreshPreview,
   ProfileTest,
   SettingsDiagnostics,
   SettingsImpact,
@@ -55,7 +57,7 @@ import RestorePageIcon from "@mui/icons-material/Restore";
 import ScienceIcon from "@mui/icons-material/Science";
 import ViewColumnIcon from "@mui/icons-material/ViewColumn";
 import CheckIcon from "@mui/icons-material/Check";
-import { fmtDateTime } from "../utils/format";
+import { fmtDateTime, fmtDuration } from "../utils/format";
 import { useMetricMeta } from "../utils/metrics";
 import type { ProfileField } from "../api/types";
 import { buildFields, fmtFieldValue as fmtNumField, profileValue } from "../utils/profileFields";
@@ -695,6 +697,74 @@ export default function Settings() {
     return () => clearInterval(t);
   }, [activeRace, load]);
 
+  // "Re-run all profiles": apply each stored profile, run a chosen number of iterations,
+  // restore the baseline at the end. Dialog input (iterations) + a time estimate + live
+  // status. Useful after a methodology change quarantines history that can't supply a
+  // new crown metric.
+  const [refreshOpen, setRefreshOpen] = useState(false);
+  const [refreshIters, setRefreshIters] = useState(5);
+  const [refreshPreview, setRefreshPreview] = useState<ProfileRefreshPreview | null>(null);
+  const [activeRefresh, setActiveRefresh] = useState<ProfileRefresh | null>(null);
+  const refreshRunning =
+    activeRefresh != null &&
+    (activeRefresh.status === "running" || activeRefresh.status === "pending");
+
+  // Pull a fresh estimate whenever the dialog opens or the iteration count changes.
+  useEffect(() => {
+    if (!refreshOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const p = await api.refreshPreview(refreshIters);
+        if (!cancelled) setRefreshPreview(p);
+      } catch {
+        if (!cancelled) setRefreshPreview(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshOpen, refreshIters]);
+
+  const handleStartRefresh = useCallback(async () => {
+    setError(null);
+    try {
+      await api.startRefresh(refreshIters);
+      setRefreshOpen(false);
+      setToast(`Re-running all profiles · ${refreshIters} iteration(s) each, then restoring`);
+      const cur = await api.refreshCurrent();
+      setActiveRefresh(cur.refresh);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start the profile refresh");
+    }
+  }, [refreshIters]);
+
+  // Poll the active refresh until it finishes, then reload + report the outcome.
+  useEffect(() => {
+    if (!activeRefresh || (activeRefresh.status !== "running" && activeRefresh.status !== "pending"))
+      return;
+    const t = setInterval(async () => {
+      try {
+        const cur = await api.refreshCurrent();
+        setActiveRefresh(cur.refresh);
+        const st = cur.refresh?.status;
+        if (cur.refresh && st && st !== "running" && st !== "pending") {
+          if (st === "failed") {
+            setError(`Profile refresh failed: ${cur.refresh.error ?? "unknown error"}`);
+          } else if (st === "cancelled") {
+            setToast("Profile refresh cancelled — baseline restored");
+          } else {
+            setToast(`Profile refresh done — ${cur.refresh.profiles_done} profile(s) re-run; baseline restored`);
+          }
+          await load();
+        }
+      } catch {
+        /* transient; keep polling */
+      }
+    }, 2000);
+    return () => clearInterval(t);
+  }, [activeRefresh, load]);
+
   if (loading) return <Loading label="Loading settings analysis…" />;
 
   return (
@@ -807,9 +877,21 @@ export default function Settings() {
                       size="small"
                       variant="outlined"
                       onClick={() => setRaceOpen(true)}
-                      disabled={raceRunning || testRunning || applying}
+                      disabled={raceRunning || testRunning || refreshRunning || applying}
                     >
                       Race challengers
+                    </Button>
+                  </span>
+                </Tooltip>
+                <Tooltip title="Apply each stored profile and benchmark it for a chosen number of iterations, then restore your current settings. Use after a methodology change to collect fresh, comparable data for every profile.">
+                  <span>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => setRefreshOpen(true)}
+                      disabled={raceRunning || testRunning || refreshRunning || applying}
+                    >
+                      Re-run all profiles
                     </Button>
                   </span>
                 </Tooltip>
@@ -1434,6 +1516,53 @@ export default function Settings() {
           <Button onClick={() => setRaceOpen(false)}>Cancel</Button>
           <Button variant="contained" color="secondary" startIcon={<ScienceIcon />} onClick={handleStartRace}>
             Start race
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={refreshOpen} onClose={() => setRefreshOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Re-run all profiles</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Applies each stored profile to the firewall and benchmarks it for the chosen
+            number of iterations, then restores your current settings at the end. Use this
+            to collect fresh, comparable data for every profile after a methodology change.
+          </DialogContentText>
+          <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
+            <Typography variant="body2">Iterations per profile</Typography>
+            <Select
+              size="small"
+              value={refreshIters}
+              onChange={(e) => setRefreshIters(Number(e.target.value))}
+            >
+              {[1, 3, 5, 10, 15, 20].map((n) => (
+                <MenuItem key={n} value={n}>
+                  {n}
+                </MenuItem>
+              ))}
+            </Select>
+          </Stack>
+          <Typography variant="body2" color="text.secondary">
+            {refreshPreview == null
+              ? "Estimating…"
+              : refreshPreview.profiles === 0
+                ? "No stored profiles to re-run yet."
+                : `${refreshPreview.profiles} profile(s) × ${refreshPreview.iterations} = ${refreshPreview.total_iterations} iteration(s)` +
+                  (refreshPreview.estimated_seconds != null
+                    ? ` · ~${fmtDuration(refreshPreview.estimated_seconds * 1000)} (estimate)`
+                    : " · time estimate unavailable (no timing history yet)")}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRefreshOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            color="secondary"
+            startIcon={<ScienceIcon />}
+            onClick={handleStartRefresh}
+            disabled={refreshPreview != null && refreshPreview.profiles === 0}
+          >
+            Re-run all profiles
           </Button>
         </DialogActions>
       </Dialog>

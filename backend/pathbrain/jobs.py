@@ -124,7 +124,7 @@ def start(kind: str, label: str, fn: Callable[[Job], object], *, href: str | Non
 
 def _summarize(result: dict) -> str:
     """Compact one-line summary of a worker's returned dict (best-effort)."""
-    keys = ("scored", "rescored", "rederived", "skipped", "errors")
+    keys = ("scored", "partial", "incomparable", "rescored", "rederived", "skipped", "errors")
     parts = [f"{k} {result[k]}" for k in keys if isinstance(result.get(k), int)]
     return " · ".join(parts) if parts else "done"
 

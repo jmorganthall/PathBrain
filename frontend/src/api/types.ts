@@ -282,6 +282,29 @@ export interface RaceStart {
   auto_promote: boolean;
 }
 
+export interface ProfileRefresh {
+  id: number;
+  status: "pending" | "running" | "complete" | "failed" | "cancelled";
+  profiles_total: number;
+  profiles_done: number;
+  iterations_run: number;
+  current_fingerprint: string | null;
+  current_label: string | null;
+  error: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  lock_owner: string | null;
+}
+
+export interface ProfileRefreshPreview {
+  profiles: number;
+  iterations: number;
+  total_iterations: number;
+  per_iteration_ms: number | null;
+  estimated_seconds: number | null;
+}
+
 export interface VersionInfo {
   version: string;
   git_sha: string | null;

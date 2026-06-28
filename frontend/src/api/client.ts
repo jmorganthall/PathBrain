@@ -29,6 +29,8 @@ import type {
   DataDump,
   ProfileTest,
   ProfileTestStart,
+  ProfileRefresh,
+  ProfileRefreshPreview,
   RaceStart,
   SettingsImpact,
   VersionInfo,
@@ -164,6 +166,18 @@ export const api = {
     }),
   raceCurrent: () => request<{ race: ChallengerRace | null }>("/settings/race"),
   cancelRace: () => request<{ cancelled: boolean }>("/settings/race/cancel", { method: "POST" }),
+
+  // Re-run all stored profiles: apply each, run a chosen number of iterations, restore
+  // the baseline at the end. `refreshPreview` estimates time before committing.
+  refreshPreview: (iterations: number) =>
+    request<ProfileRefreshPreview>(`/settings/refresh/preview?iterations=${iterations}`),
+  startRefresh: (iterations: number) =>
+    request<{ id: number; iterations: number }>("/settings/refresh", {
+      method: "POST",
+      body: JSON.stringify({ iterations }),
+    }),
+  refreshCurrent: () => request<{ refresh: ProfileRefresh | null }>("/settings/refresh"),
+  cancelRefresh: () => request<{ cancelled: boolean }>("/settings/refresh/cancel", { method: "POST" }),
 
   // Build identity + best-effort "newer build available to pull" check.
   version: () => request<VersionInfo>("/version"),

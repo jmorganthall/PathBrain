@@ -437,3 +437,45 @@ class ChallengerRace(Base):
     promoted: Mapped[bool] = mapped_column(Boolean, default=False)
     # Eliminated challengers: [{fingerprint, label, reason}].
     eliminated: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class ProfileRefreshStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ProfileRefresh(Base):
+    """A "re-run all profiles" session: top every stored profile up to the confidence
+    minimum under the current methodology, so profiles whose history can't supply the
+    current crown metrics get fresh, comparable data.
+
+    For each profile it applies the stored settings, benchmarks exactly the iterations
+    still needed to reach ``correlation.min_iterations`` of comparable runs, then moves
+    on — restoring the pre-refresh baseline at the end (always, in a ``finally``). Like
+    ``ProfileTest``/``ChallengerRace`` it persists the baseline so a crash mid-refresh
+    can still restore the firewall on startup (``reconcile_interrupted_refreshes``).
+    """
+
+    __tablename__ = "profile_refreshes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[ProfileRefreshStatus] = mapped_column(
+        Enum(ProfileRefreshStatus), default=ProfileRefreshStatus.PENDING
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Pre-refresh live settings to restore (normalized pipe list) — drives reconcile.
+    baseline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # Live/result progress.
+    profiles_total: Mapped[int] = mapped_column(Integer, default=0)
+    profiles_done: Mapped[int] = mapped_column(Integer, default=0)
+    iterations_run: Mapped[int] = mapped_column(Integer, default=0)
+    current_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    current_label: Mapped[str | None] = mapped_column(String(255), nullable=True)

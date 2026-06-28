@@ -154,6 +154,23 @@ def test_overall_from_definition_corners_the_crown_trinity():
     assert overall_from_definition(d4, {"fcp": 80, "total_stall": 80, "load_event": 80}) is None
 
 
+def test_comparability_gates_on_crown_metrics():
+    from pathbrain.methodology import comparability
+
+    d = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v6"])
+    # Every scored metric present → exact.
+    full = {m["key"]: 1.0 for m in d["metrics"] if m.get("axis")}
+    assert comparability(d, full)[0] == "exact"
+    # A run missing a crown metric (no total_stall) → incomparable, even though it's
+    # not flagged required:True in the assignment — the crown set is now required.
+    no_stall = {k: v for k, v in full.items() if k != "total_stall"}
+    tag, missing = comparability(d, no_stall)
+    assert tag == "incomparable" and "total_stall" in missing
+    # All crown metrics present but an optional axis metric missing → partial.
+    no_byte = {k: v for k, v in full.items() if k != "byte_earliness"}
+    assert comparability(d, no_byte)[0] == "partial"
+
+
 def test_v3_methodology_still_frozen():
     # v3 is preserved append-only (its blended Speed axis lives on for old at-measure
     # scores), even though v4 is now current.
