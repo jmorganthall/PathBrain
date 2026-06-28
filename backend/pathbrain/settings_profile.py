@@ -12,35 +12,19 @@ import re
 
 from .providers.base import FqCodelConfig
 
-# Fields that define a configuration profile (exclude volatile extras like uuids).
-CANON_FIELDS = [
-    "download_bandwidth",
-    "upload_bandwidth",
-    "quantum",
-    "limit",
-    "target",
-    "interval",
-    "ecn",
-    "flows",
-    "queues",
-    "scheduler",
-]
+# The shaper field model — identity (CANON_FIELDS), labels, and which fields apply() can
+# write (WRITABLE_PARAMS) / can't (NON_WRITABLE_FIELDS) — is owned by ``shaper_fields`` so
+# fingerprinting, the providers, and the sweep/experiment engines all share one definition.
+# These names are re-exported here for the existing call sites.
+from .shaper_fields import (  # noqa: F401 — re-exported for back-compat
+    CANON_FIELDS,
+    FIELD_LABELS,
+    NON_WRITABLE_FIELDS,
+    WRITABLE_FIELDS,
+)
 
-# Human labels + whether a higher value is intuitively "more"/"bigger", for the
-# at-a-glance profile diff. Direction here is purely numeric (did the value go up
-# or down); whether up is *good* depends on the resulting score.
-FIELD_LABELS: dict[str, str] = {
-    "download_bandwidth": "Download bandwidth",
-    "upload_bandwidth": "Upload bandwidth",
-    "quantum": "Quantum",
-    "limit": "Queue limit",
-    "target": "CoDel target",
-    "interval": "CoDel interval",
-    "ecn": "ECN",
-    "flows": "Flows",
-    "queues": "Queues",
-    "scheduler": "Scheduler",
-}
+# Back-compat alias: the writable subset was historically ``WRITABLE_PARAMS`` here.
+WRITABLE_PARAMS = WRITABLE_FIELDS
 
 # Bandwidth unit -> Mbit, so "1Gbit" and "880Mbit" compare numerically.
 _BW_UNITS = {"kbit": 1e-3, "mbit": 1.0, "gbit": 1000.0, "bit": 1e-6}
@@ -130,18 +114,6 @@ def diff_profiles(from_norm: list[dict] | None, to_norm: list[dict] | None) -> l
                 }
             )
     return changes
-
-
-# Normalized fields that can be written back to the firewall. These match the
-# provider ``apply()`` param names 1:1 (see opnsense ``_PARAM_FIELD``); the other
-# CANON_FIELDS (upload_bandwidth/queues/scheduler) have no writable mapping.
-WRITABLE_PARAMS = ["quantum", "limit", "flows", "target", "interval", "ecn", "download_bandwidth"]
-
-# CANON_FIELDS that ``apply()`` can't drive (scheduler / queue count / upload bandwidth).
-# They still *define* a profile (they affect performance), but PathBrain can't change the
-# live config to them — so a stored profile that differs here is **unreachable** by apply:
-# you can only recreate it if the environment is already in that state.
-NON_WRITABLE_FIELDS = [f for f in CANON_FIELDS if f not in WRITABLE_PARAMS]
 
 
 def environment_signature(normalized: list[dict] | None) -> str:
