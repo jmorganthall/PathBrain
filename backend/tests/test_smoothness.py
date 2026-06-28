@@ -20,6 +20,7 @@ from pathbrain.interpret.smoothness import (
     smoothness_metrics,
     smoothness_record,
     stall_attribution_times,
+    total_stall,
 )
 
 
@@ -56,6 +57,21 @@ def test_longest_stall_and_cadence_separate_chunky_from_smooth():
     assert longest_stall(chunky_series) >= 600  # the 80→760 plateau
     # And its delivery is far less metronomic.
     assert cadence_cov(chunky_series) > cadence_cov(smooth_series)
+
+
+def test_total_stall_counts_dead_air_beyond_rhythm():
+    smooth_series = completion_series(SMOOTH)
+    chunky_series = completion_series(CHUNKY)
+    # Steady delivery never falls behind its own median pace → ~no cumulative stall.
+    assert total_stall(smooth_series) == 0.0
+    # The chunky load's 80→760 freeze is dead air far beyond its rhythm.
+    assert total_stall(chunky_series) >= 670.0
+    assert total_stall(chunky_series) > total_stall(smooth_series)
+    # A steady fast trickle (uniform gaps) also has no excess over its own pace.
+    assert total_stall([0.0, 10.0, 20.0, 30.0]) == 0.0
+    # Need a rhythm to compare against → None with fewer than two gaps.
+    assert total_stall([]) is None
+    assert total_stall([100.0, 200.0]) is None
 
 
 def test_longest_stall_window_points_at_the_plateau():

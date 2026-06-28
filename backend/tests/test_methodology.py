@@ -79,11 +79,11 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v5_rubric():
-    # The published-now methodology is speed-smoothness-v5: same axes/weights/thresholds
-    # as v4 (Responsiveness/Speed/Smoothness/Stability/Completion), but it also promotes
-    # the Overall to a first-class, versioned definition (corner over the feel trinity).
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v5"
+def test_current_methodology_is_v6_rubric():
+    # The published-now methodology is speed-smoothness-v6: v5's axes/thresholds, but the
+    # crown is decomposed — perceived_time is no longer scored (display-only), total_stall
+    # joins Smoothness, and the built-in load_event is scored on Speed.
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v6"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
@@ -95,25 +95,29 @@ def test_current_methodology_is_v5_rubric():
         "tls": ("completion", 20, 5.0, 500.0),
         "jitter": ("completion", 5, 0.5, 30.0),
         "packet_loss": ("completion", 5, 0.0, 2.5),
-        # responsiveness — time-to-first (best anchors re-anchored to aspirational floor in v5)
+        # responsiveness — time-to-first (v5 aspirational-floor anchors carried over)
         "ttfb": ("responsiveness", 15, 30.0, 1800.0),
         "fcp": ("responsiveness", 25, 150.0, 3000.0),
         "byte_earliness": ("responsiveness", 30, 150.0, 5000.0),
-        # speed — time-to-last + interactive (LCP best re-anchored in v5; render unchanged)
+        # speed — time-to-last + interactive + the newly-scored built-in page-load time
         "lcp": ("speed", 40, 150.0, 4000.0),
         "render": ("speed", 20, 500.0, 8000.0),
         "inp": ("speed", 40, 50.0, 500.0),
+        "load_event": ("speed", 20, 800.0, 8000.0),
         # stability — CLS only
         "cls": ("stability", 50, 0.0, 0.25),
-        # smoothness (unchanged)
-        "perceived_time": ("smoothness", 30, 300.0, 8000.0),
+        # smoothness — perceived_time replaced by cumulative total_stall
         "longest_stall": ("smoothness", 40, 25.0, 2000.0),
+        "total_stall": ("smoothness", 30, 0.0, 3000.0),
         "cadence_cov": ("smoothness", 15, 0.2, 2.5),
         "delivery_gini": ("smoothness", 15, 0.1, 0.7),
     }
     for key, (axis, weight, best, worst) in expected.items():
         m = by_key[key]
         assert (m["axis"], m["weight"], m["best"], m["worst"]) == (axis, weight, best, worst), key
+
+    # perceived_time is retained but no longer scored (display-only diagnostic).
+    assert by_key["perceived_time"]["axis"] is None
 
     # longest_stall is the required marker; the five axes are present.
     assert by_key["longest_stall"]["required"] is True
@@ -124,28 +128,30 @@ def test_current_methodology_is_v5_rubric():
     for k in ("latency", "transfer", "speed_index", "network_stall"):
         assert by_key[k]["axis"] is None
 
-    # v5's headline addition: a first-class Overall definition (the feel-trinity corner).
+    # v6's crown: the decomposed corner over FCP × total_stall × load_event.
     assert d["overall"] == {
         "method": "corner",
-        "metrics": ["fcp", "perceived_time", "inp"],
-        "required": ["fcp", "perceived_time"],
+        "metrics": ["fcp", "total_stall", "load_event"],
+        "required": ["fcp", "total_stall", "load_event"],
     }
 
 
-def test_overall_from_definition_corners_the_feel_trinity():
-    from pathbrain.methodology import overall_from_definition
+def test_overall_from_definition_corners_the_crown_trinity():
+    from pathbrain.methodology import overall_from_definition, overall_metrics
 
-    d = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v5"])
+    d = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v6"])
+    assert overall_metrics(d) == (["fcp", "total_stall", "load_event"],
+                                  ["fcp", "total_stall", "load_event"])
     # All three present → corner over {90, 80, 70}.
-    full = overall_from_definition(d, {"fcp": 90, "perceived_time": 80, "inp": 70})
+    full = overall_from_definition(d, {"fcp": 90, "total_stall": 80, "load_event": 70})
     assert full is not None and 70 < full < 90
-    # INP absent → folds to the 2-corner over {80, 80} == 80 (√k-normalized).
-    assert overall_from_definition(d, {"fcp": 80, "perceived_time": 80}) == 80.0
+    # All equal → the √k-normalized corner equals that value.
+    assert overall_from_definition(d, {"fcp": 80, "total_stall": 80, "load_event": 80}) == 80.0
     # A required metric missing → no Overall.
-    assert overall_from_definition(d, {"fcp": 80, "inp": 80}) is None
+    assert overall_from_definition(d, {"fcp": 80, "total_stall": 80}) is None
     # v4 has no overall spec → None (pre-first-class).
     d4 = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v4"])
-    assert overall_from_definition(d4, {"fcp": 80, "perceived_time": 80, "inp": 80}) is None
+    assert overall_from_definition(d4, {"fcp": 80, "total_stall": 80, "load_event": 80}) is None
 
 
 def test_v3_methodology_still_frozen():

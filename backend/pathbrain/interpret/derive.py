@@ -20,7 +20,10 @@ from statistics import mean, pstdev
 from ..plugins.benchmark_browser import compute_navigation_metrics, extract_paint_metrics
 from .smoothness import smoothness_metrics
 
-DERIVATION_VERSION = "derive-v3"
+# derive-v4: smoothness now also emits `total_stall_ms` (cumulative dead air) — the
+# standalone stall dimension that, with the built-in FCP and load_event, replaces the
+# conflated perceived_time in the crown. No existing formula changed.
+DERIVATION_VERSION = "derive-v4"
 
 
 def _round(v: float | None, n: int = 3) -> float | None:

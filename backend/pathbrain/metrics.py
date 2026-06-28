@@ -218,6 +218,15 @@ METRICS: list[MetricDef] = [
         ),
     ),
     MetricDef(
+        "total_stall", "browser", "total_stall_ms", "Total stall time", unit="ms",
+        description=(
+            "Cumulative dead-air — how much time delivery ran behind its own typical pace "
+            "(the excess of each completion gap over the median gap). The cumulative "
+            "counterpart to the longest single stall, and the crown's standalone stall "
+            "dimension. Steady delivery scores ~0. Lower is better."
+        ),
+    ),
+    MetricDef(
         "render_stall", "browser", "render_stall_ms", "Render stall time", unit="ms",
         description=(
             "Total stall time overlapped by a long main-thread task — render-bound, so network "

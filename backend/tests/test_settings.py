@@ -100,14 +100,14 @@ def _seed_run(
         # back to the live feel-trinity corner over the subscores below).
         if overall is not None:
             axes["overall"] = overall
-        # The crown corners over the feel-trinity subscores. By default map them from the
-        # axis fixture values (fcp←responsiveness, perceived_time←smoothness, inp←speed)
-        # so corner-based assertions read naturally; tests can override (incl. dropping
-        # inp) via ``crown_subscores``.
+        # The crown (v6) corners over fcp × total_stall × load_event. By default map them
+        # from the axis fixture values (fcp←responsiveness, total_stall←smoothness,
+        # load_event←speed) so corner-based assertions read naturally; tests override via
+        # ``crown_subscores``.
         subs = (
             crown_subscores
             if crown_subscores is not None
-            else {"fcp": resp_val, "perceived_time": sops, "inp": speed_val}
+            else {"fcp": resp_val, "total_stall": sops, "load_event": speed_val}
         )
         session.add(
             Score(
@@ -179,10 +179,10 @@ def test_confidence_is_iteration_based(client):
 
 def test_best_is_closest_to_top_right_corner(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # Profile A: best perceived-time (90) but slow first response *and* interactivity
-    # (fcp/inp 70). Profile B: lower perceived-time (80) but fast to start *and* interact
-    # (fcp/inp 95) — so it sits closer to the perfect (100,100,100) feel corner. "Best"
-    # must follow the feel-trinity corner, not raw smoothness/perceived-time alone.
+    # Profile A: least dead-air (total_stall subscore 90) but slow first response *and*
+    # page-load (fcp/load_event 70). Profile B: a bit more stall (80) but fast to start
+    # *and* finish (fcp/load_event 95) — so it sits closer to the perfect (100,100,100)
+    # corner. "Best" must follow the feel-trinity corner, not one metric alone.
     for i in range(3):
         _seed_run("smoothA0000x", 90, t0 - timedelta(minutes=120 - i),
                   speed=70, responsiveness=70, iterations=6)
@@ -213,10 +213,10 @@ def test_crown_rewards_balance_over_specialism(client):
     # other fixtures' profiles, so we don't assert the global crown here.)
     for i in range(3):
         _seed_run("specialist0x", 80, t0 - timedelta(minutes=120 - i), iterations=6,
-                  crown_subscores={"fcp": 100, "perceived_time": 100, "inp": 40})
+                  crown_subscores={"fcp": 100, "total_stall": 100, "load_event": 40})
     for i in range(3):
         _seed_run("balanced000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  crown_subscores={"fcp": 76, "perceived_time": 76, "inp": 76})
+                  crown_subscores={"fcp": 76, "total_stall": 76, "load_event": 76})
 
     by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
     spec = by_fp["specialist0x"]["crown_scores"]
@@ -224,26 +224,24 @@ def test_crown_rewards_balance_over_specialism(client):
     assert by_fp["balanced000x"]["overall"] > by_fp["specialist0x"]["overall"]  # …yet BAL's corner wins
 
 
-def test_crown_degrades_gracefully_without_inp(client):
+def test_crown_corners_over_the_trinity(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # No interaction captured → no INP subscore. The crown corners over the present pair
-    # (fcp + perceived_time) instead of dropping the profile, and √k normalization keeps
-    # the 2-corner on the same 0–100 scale as a 3-corner (both 80 here).
+    # All three crown metrics present and equal → the corner (√k-normalized) == that value.
     for i in range(3):
-        _seed_run("noinp00000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  crown_subscores={"fcp": 80, "perceived_time": 80})
+        _seed_run("trinity000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
+                  crown_subscores={"fcp": 80, "total_stall": 80, "load_event": 80})
 
     by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
-    prof = by_fp["noinp00000x"]
-    assert prof["overall"] == 80.0  # corner over {80, 80} == 80, not None
-    assert "inp" not in prof["crown_scores"]
-    assert prof["confident"]  # still aggregates + is crownable on two metrics
+    prof = by_fp["trinity000x"]
+    assert prof["overall"] == 80.0  # corner over {80, 80, 80} == 80
+    assert set(prof["crown_scores"]) >= {"fcp", "total_stall", "load_event"}
+    assert prof["confident"]
 
 
 def test_crown_skips_run_missing_required_metric(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # A run missing a *required* crown metric (no perceived_time) can't be cornered, so it
-    # contributes no Overall and can't be crowned — but it still aggregates for display.
+    # A run missing required crown metrics (only fcp; no total_stall/load_event) can't be
+    # cornered, so it contributes no Overall and can't be crowned — but still aggregates.
     for i in range(3):
         _seed_run("nopt000000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
                   crown_subscores={"fcp": 90})
@@ -261,7 +259,7 @@ def test_overall_uses_persisted_value_over_live_corner(client):
     # not recompute from subscores.
     for i in range(3):
         _seed_run("persisted00x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  overall=42.0, crown_subscores={"fcp": 80, "perceived_time": 80, "inp": 80})
+                  overall=42.0, crown_subscores={"fcp": 80, "total_stall": 80, "load_event": 80})
 
     by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
     assert by_fp["persisted00x"]["overall"] == 42.0
@@ -269,13 +267,13 @@ def test_overall_uses_persisted_value_over_live_corner(client):
 
 def test_custom_crown_corners_selected_betterments(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # X aces first response (fcp 100) but laggy interactivity (inp 50); Y is the reverse.
+    # X aces first response (fcp 100) but slow to finish (load_event 50); Y is the reverse.
     for i in range(3):
         _seed_run("xcustom0000x", 80, t0 - timedelta(minutes=120 - i), iterations=6,
-                  crown_subscores={"fcp": 100, "perceived_time": 80, "inp": 50})
+                  crown_subscores={"fcp": 100, "total_stall": 80, "load_event": 50})
     for i in range(3):
         _seed_run("ycustom0000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  crown_subscores={"fcp": 50, "perceived_time": 80, "inp": 100})
+                  crown_subscores={"fcp": 50, "total_stall": 80, "load_event": 100})
 
     # Crown on first-response only → X's corner beats Y's.
     body = client.get("/api/settings/profiles?crown_metrics=fcp").json()
@@ -284,9 +282,9 @@ def test_custom_crown_corners_selected_betterments(client):
     assert by["xcustom0000x"]["custom_overall"] == 100.0
     assert by["xcustom0000x"]["custom_overall"] > by["ycustom0000x"]["custom_overall"]
 
-    # Crown on interactivity only → Y wins the same comparison.
+    # Crown on page-load time only → Y wins the same comparison.
     by2 = {p["fingerprint"]: p for p in
-           client.get("/api/settings/profiles?crown_metrics=inp").json()["profiles"]}
+           client.get("/api/settings/profiles?crown_metrics=load_event").json()["profiles"]}
     assert by2["ycustom0000x"]["custom_overall"] > by2["xcustom0000x"]["custom_overall"]
 
     # No selection → no custom corner at all (canonical Overall untouched).
