@@ -518,6 +518,11 @@ def _compute_heirs(result: dict, session: Session) -> dict:
     profile is an heir unless even its optimistic best case can't reach the crown. Bootstrap
     (no crown yet) → every non-confident profile is an heir.
 
+    Only profiles **reachable** from the live environment are listed — an heir is something
+    you could actually race, and the race can't apply a profile whose non-writable fields
+    (scheduler/queues/upload bandwidth) differ from the current config. So this matches the
+    race's contender set instead of dangling profiles it would refuse.
+
     Returns ``{items, total, limit, crown_overall}``: ``total`` is every qualifying heir
     (drives the "N could beat your crown" badge), ``items`` the top ``limit`` by ceiling-
     above-crown. Profiles that never produced a comparable run have no ceiling to rank by
@@ -532,6 +537,13 @@ def _compute_heirs(result: dict, session: Session) -> dict:
     stale_minutes = challenger_mod._contender_stale_minutes(session)
     limit = _heir_count(session)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Live environment signature for the reachability filter (best-effort; if discovery
+    # fails we don't filter, same as the race start-check).
+    reachable_env = None
+    try:
+        reachable_env = environment_signature(normalize(get_provider().discover()))
+    except Exception:  # noqa: BLE001 — best-effort
+        log.debug("Heirs: live discovery failed; not filtering by reachability", exc_info=True)
 
     crown = next((p for p in profiles if p["fingerprint"] == best_fp), None)
     crown_overall = crown["overall"] if crown else None
@@ -539,6 +551,11 @@ def _compute_heirs(result: dict, session: Session) -> dict:
     heirs: list[dict] = []
     for p in profiles:
         if p["fingerprint"] == best_fp:
+            continue
+        # Skip profiles the race could never apply (non-writable fields differ from live).
+        if reachable_env is not None and environment_signature(
+            p.get("settings") or []
+        ) != reachable_env:
             continue
         confident = bool(p.get("confident"))
         stale = confident and challenger_mod._incumbent_stale(

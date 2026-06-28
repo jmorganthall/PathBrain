@@ -204,7 +204,10 @@ LLM-based. See `README.md` for the product overview.
   physical floor and never flagged); plus a **"Heirs to the crown"** card — the
   limited-data / stale profiles whose *optimistic ceiling* (`optimistic_overall`, the same
   number the race uses) could still beat the crown, ranked by margin-above-crown, with a
-  count badge on **"Race challengers"** ("N could beat your crown"; response field `heirs`);
+  count badge on **"Race challengers"** ("N could beat your crown"; response field `heirs`).
+  Heirs are filtered to profiles **reachable** from the live environment (same
+  `environment_signature` check as the race), so the card never lists a profile the race
+  would refuse to apply;
   plus "Test to minimum" and **"Race challengers"**),
   Experiments, Shotgun Sweep, Config, Methodology, Plugins, Data Dump, Run Detail. A
   top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
