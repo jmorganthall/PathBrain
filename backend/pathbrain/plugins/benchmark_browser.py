@@ -277,21 +277,74 @@ class BrowserBenchmark(BenchmarkPlugin):
     name = "browser"
     description = "Headless-Chromium page-load timing and total render (Playwright)"
 
+    def __init__(self) -> None:
+        # One Chromium instance is launched lazily and **reused across a run's
+        # iterations** (a fresh context per URL still isolates each load), then closed
+        # in ``teardown`` — so we pay the ~0.5–1s cold start once per run, not per
+        # iteration. The runner serializes runs, so this singleton is only ever live
+        # within a single run on a single thread.
+        self._pw = None
+        self._browser = None
+
+    def _ensure_browser(self, config: dict):
+        """Return a live Chromium, reusing the cached one or launching a fresh one.
+
+        Raises if Playwright/Chromium is unavailable (caller turns it into a
+        ``success=False`` result, same graceful-degradation as before)."""
+        if self._browser is not None:
+            try:
+                if self._browser.is_connected():
+                    return self._browser
+            except Exception:  # noqa: BLE001 — stale/cross-thread handle; relaunch
+                pass
+            self._close_browser()
+        from playwright.sync_api import sync_playwright
+
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(
+            headless=bool(config.get("headless", True)), args=build_chromium_args(config)
+        )
+        return self._browser
+
+    def _close_browser(self) -> None:
+        try:
+            if self._browser is not None:
+                self._browser.close()
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+        try:
+            if self._pw is not None:
+                self._pw.stop()
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+        self._browser = None
+        self._pw = None
+
+    def teardown(self) -> None:
+        """Close the reused Chromium at the end of a run (never raises)."""
+        self._close_browser()
+
     def run(self, config: dict) -> PluginResult:
         urls: list[str] = config.get("urls", [])
         if not urls:
             return PluginResult(self.name, success=False, error="No browser URLs configured")
 
         try:
-            from playwright.sync_api import sync_playwright
+            browser = self._ensure_browser(config)
         except Exception as exc:  # noqa: BLE001 — ImportError or env issue
             return PluginResult(self.name, success=False, error=f"{_INSTALL_HINT} ({exc})")
 
         timeout_ms = float(config.get("timeout_s", 30.0)) * 1000.0
+        # The `networkidle` settle gets its own (short) cap instead of reusing the full
+        # nav timeout: a page with trackers/long-poll may never go idle, and reusing the
+        # 30s nav timeout made every such URL pay up to 30s of dead waiting. The wait is
+        # still useful (lets late resources land for the smoothness metrics), just bounded.
+        idle_timeout_ms = float(config.get("networkidle_timeout_s", 5.0)) * 1000.0
         wait_until = config.get("wait_until", "load")
-        headless = bool(config.get("headless", True))
-        want_screenshot = bool(config.get("screenshot", True))
-        want_har = bool(config.get("har", True))
+        # Screenshot + HAR feed only the artifacts UI (no scored metric), so they're OFF
+        # by default now — opt in for debugging a specific run.
+        want_screenshot = bool(config.get("screenshot", False))
+        want_har = bool(config.get("har", False))
         # The CDP screencast filmstrip (per-frame JPEG) is CPU-intensive and only
         # feeds the pixel-based Speed Index / paint-cadence diagnostics. Off by
         # default — scored SOPS smoothness now comes from the byte-arrival metrics.
@@ -312,108 +365,103 @@ class BrowserBenchmark(BenchmarkPlugin):
             urls_raw: dict[str, dict] = {}
             per_url_display: dict[str, dict] = {}
 
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(
-                    headless=headless, args=build_chromium_args(config)
-                )
+            # ``browser`` is the run-scoped Chromium (reused across iterations); each URL
+            # still gets a fresh context so loads stay isolated. It's closed in teardown().
+            for idx, url in enumerate(urls):
+                slug = _slug(url, idx)
+                har_path = os.path.join(run_dir, f"{slug}.har") if want_har else None
+                shot_path = os.path.join(run_dir, f"{slug}.png") if want_screenshot else None
+                context = browser.new_context(record_har_path=har_path)
+                # Buffer paint/LCP/CLS/long-task timing from the very start.
+                context.add_init_script(_PAINT_INIT_JS)
+                page = context.new_page()
                 try:
-                    for idx, url in enumerate(urls):
-                        slug = _slug(url, idx)
-                        har_path = os.path.join(run_dir, f"{slug}.har") if want_har else None
-                        shot_path = os.path.join(run_dir, f"{slug}.png") if want_screenshot else None
-                        context = browser.new_context(record_har_path=har_path)
-                        # Buffer paint/LCP/CLS/long-task timing from the very start.
-                        context.add_init_script(_PAINT_INIT_JS)
-                        page = context.new_page()
+                    from time import perf_counter
+
+                    t0 = perf_counter()
+                    frames: list[dict] = []
+                    cdp = (
+                        _start_screencast(context, page, frames, run_dir, stamp, slug, t0)
+                        if want_filmstrip
+                        else None
+                    )
+
+                    page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=idle_timeout_ms)
+                    except Exception:  # noqa: BLE001 — idle may never settle
+                        pass
+                    total_render_ms = round((perf_counter() - t0) * 1000.0, 3)
+                    if cdp is not None:
                         try:
-                            from time import perf_counter
+                            cdp.send("Page.stopScreencast")
+                        except Exception:  # noqa: BLE001
+                            pass
 
-                            t0 = perf_counter()
-                            frames: list[dict] = []
-                            cdp = (
-                                _start_screencast(context, page, frames, run_dir, stamp, slug, t0)
-                                if want_filmstrip
-                                else None
-                            )
+                    nav = page.evaluate(_NAV_JS)
 
-                            page.goto(url, wait_until=wait_until, timeout=timeout_ms)
-                            try:
-                                page.wait_for_load_state("networkidle", timeout=timeout_ms)
-                            except Exception:  # noqa: BLE001 — idle may never settle
-                                pass
-                            total_render_ms = round((perf_counter() - t0) * 1000.0, 3)
-                            if cdp is not None:
-                                try:
-                                    cdp.send("Page.stopScreencast")
-                                except Exception:  # noqa: BLE001
-                                    pass
+                    # Best-effort INP: drive a few synthetic interactions and
+                    # let event-timing settle before reading the observers.
+                    try:
+                        page.mouse.click(5, 5)
+                        page.keyboard.press("Tab")
+                        page.mouse.wheel(0, 400)
+                        page.wait_for_timeout(200)
+                    except Exception:  # noqa: BLE001 — interaction is optional
+                        pass
 
-                            nav = page.evaluate(_NAV_JS)
+                    paint = None
+                    try:
+                        paint = page.evaluate(_PAINT_READ_JS)
+                    except Exception:  # noqa: BLE001 — paint capture is optional
+                        pass
 
-                            # Best-effort INP: drive a few synthetic interactions and
-                            # let event-timing settle before reading the observers.
-                            try:
-                                page.mouse.click(5, 5)
-                                page.keyboard.press("Tab")
-                                page.mouse.wheel(0, 400)
-                                page.wait_for_timeout(200)
-                            except Exception:  # noqa: BLE001 — interaction is optional
-                                pass
+                    # Resource Timing + LoAF for the smoothness instrument.
+                    # Read after the synthetic interaction so the full
+                    # initial-load resource set is captured. Best-effort.
+                    resources = None
+                    try:
+                        resources = page.evaluate(_RESOURCE_JS)
+                    except Exception:  # noqa: BLE001 — optional
+                        pass
+                    loaf = None
+                    try:
+                        loaf = page.evaluate(_LOAF_READ_JS)
+                    except Exception:  # noqa: BLE001 — optional
+                        pass
 
-                            paint = None
-                            try:
-                                paint = page.evaluate(_PAINT_READ_JS)
-                            except Exception:  # noqa: BLE001 — paint capture is optional
-                                pass
+                    if want_screenshot and shot_path:
+                        page.screenshot(path=shot_path)
 
-                            # Resource Timing + LoAF for the smoothness instrument.
-                            # Read after the synthetic interaction so the full
-                            # initial-load resource set is captured. Best-effort.
-                            resources = None
-                            try:
-                                resources = page.evaluate(_RESOURCE_JS)
-                            except Exception:  # noqa: BLE001 — optional
-                                pass
-                            loaf = None
-                            try:
-                                loaf = page.evaluate(_LOAF_READ_JS)
-                            except Exception:  # noqa: BLE001 — optional
-                                pass
-
-                            if want_screenshot and shot_path:
-                                page.screenshot(path=shot_path)
-
-                            urls_raw[url] = {
-                                "nav": nav,
-                                "paint": paint,
-                                "total_render_ms": total_render_ms,
-                                "filmstrip": frames,
-                                "resources": resources,
-                                "loaf": loaf,
-                            }
-                            per_url_display[url] = {
-                                "screenshot_url": (
-                                    f"/artifacts/{stamp}/{os.path.basename(shot_path)}"
-                                    if shot_path
-                                    else None
-                                ),
-                                "har_url": (
-                                    f"/artifacts/{stamp}/{os.path.basename(har_path)}"
-                                    if har_path
-                                    else None
-                                ),
-                                "filmstrip_urls": [
-                                    {"t_ms": f["t_ms"], "url": f"/artifacts/{f['frame']}"}
-                                    for f in frames
-                                ],
-                            }
-                        except Exception as exc:  # noqa: BLE001 — per-URL boundary
-                            urls_raw[url] = {"error": f"{type(exc).__name__}: {exc}"}
-                            per_url_display[url] = {"error": f"{type(exc).__name__}: {exc}"}
-                        finally:
-                            context.close()  # flushes the HAR file
+                    urls_raw[url] = {
+                        "nav": nav,
+                        "paint": paint,
+                        "total_render_ms": total_render_ms,
+                        "filmstrip": frames,
+                        "resources": resources,
+                        "loaf": loaf,
+                    }
+                    per_url_display[url] = {
+                        "screenshot_url": (
+                            f"/artifacts/{stamp}/{os.path.basename(shot_path)}"
+                            if shot_path
+                            else None
+                        ),
+                        "har_url": (
+                            f"/artifacts/{stamp}/{os.path.basename(har_path)}"
+                            if har_path
+                            else None
+                        ),
+                        "filmstrip_urls": [
+                            {"t_ms": f["t_ms"], "url": f"/artifacts/{f['frame']}"}
+                            for f in frames
+                        ],
+                    }
+                except Exception as exc:  # noqa: BLE001 — per-URL boundary
+                    urls_raw[url] = {"error": f"{type(exc).__name__}: {exc}"}
+                    per_url_display[url] = {"error": f"{type(exc).__name__}: {exc}"}
                 finally:
-                    browser.close()
+                    context.close()  # flushes the HAR file
 
             return {
                 "raw": {"urls": urls_raw},

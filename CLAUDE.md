@@ -257,6 +257,18 @@ docker compose up --build   # -> http://localhost:8000
   over iterations, with a confidence band. The Dashboard shows a windowed
   **rolling** score (`/api/score/rolling`, 24h median + IQR) plus a **"vs typical"**
   delta vs the day/hour historical baseline (`trends.py`).
+- **Per-plugin iteration caps (perf).** A plugin's config section may set `iterations`
+  to run it fewer than the suite's `iterations` — the heavy **browser** defaults to
+  `browser.iterations` (2) while the cheap network probes run the full count. The headline
+  metric medians use every captured sample (`_median_values` skip-missing, so a capped
+  plugin stays unbiased); only the legacy SOPS confidence band is restricted to full-suite
+  rounds. Plugins get a `teardown()` lifecycle hook the runner calls after the loop, so the
+  browser **reuses one Chromium across a run's iterations** (cold-start once, not per
+  iteration) and closes it there. The browser's **screenshot/HAR are off by default**
+  (artifacts-only, no scored metric), its `networkidle` settle has its own short cap
+  (`networkidle_timeout_s`, 5s) instead of the 30s nav timeout, and the default
+  ICMP/DNS/TCP/TLS/HTTP target lists are trimmed — all to cut wall-clock without changing
+  what's scored.
 - **Comparability is tied to crownability.** `methodology.comparability()` flags a run
   `incomparable` when its raw can't supply a `required` metric **or any of the current
   methodology's crown metrics** (`overall.required`, via `overall_metrics`) — so a run

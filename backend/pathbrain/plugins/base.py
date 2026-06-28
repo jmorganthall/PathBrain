@@ -49,6 +49,16 @@ class BenchmarkPlugin(ABC):
         return a ``PluginResult`` with ``success=False`` and an ``error``.
         """
 
+    # -- lifecycle ---------------------------------------------------------
+    def teardown(self) -> None:
+        """Release any resources held across a run (default: nothing).
+
+        The runner calls this once after a run's full iteration loop, so a plugin
+        that keeps an expensive handle alive across iterations — e.g. the browser
+        reusing one Chromium instead of cold-starting it every iteration — can close
+        it here. Must never raise.
+        """
+
     # -- helpers -----------------------------------------------------------
     def timed(self, fn: Callable[[], dict]) -> PluginResult:
         """Run ``fn`` returning ``{"raw": ..., "details": ...}`` and wrap with timing.
