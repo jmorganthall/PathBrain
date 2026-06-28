@@ -54,6 +54,15 @@ def field(key: str) -> ShaperField | None:
     return _BY_KEY.get(key)
 
 
+def format_value(field_key: str, n: float):
+    """Coerce a numeric sweep value into the provider-ready form for a field: an int, or
+    ``"<n><unit>"`` when the field carries a unit (e.g. ``target`` → ``"5ms"``). One place
+    owns the "quantum is an int / target is '<n>ms'" knowledge the sweep used to hardcode."""
+    f = _BY_KEY.get(field_key)
+    v = int(round(n))
+    return f"{v}{f.unit}" if (f and f.unit) else v
+
+
 # Derived views — the names the rest of the codebase consumes. Keeping them as derived
 # constants (not re-typed literals) is the whole point: change a facet above and every
 # consumer updates with it.

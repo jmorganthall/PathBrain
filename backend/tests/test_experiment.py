@@ -14,6 +14,15 @@ from pathbrain.models import Experiment, ExperimentStatus, Run, RunStatus, Score
 from pathbrain.providers import mock as mockmod
 
 
+def test_start_rejects_non_writable_param():
+    # apply() can't write the scheduler, so an experiment on it would silently no-op every
+    # trial. _start must refuse it (validated against the registry, not config trust).
+    with session_scope() as session:
+        exp = eng._start(session, {"param": "scheduler", "candidates": ["fq_codel", "fq_pie"]})
+        assert exp is None
+        assert session.query(Experiment).count() == 0
+
+
 def test_in_window():
     # Tuesday 03:00 (weekday()==1)
     t = datetime(2026, 6, 16, 3, 0)
