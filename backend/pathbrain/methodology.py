@@ -44,7 +44,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v5"
+CURRENT_METHODOLOGY = "speed-smoothness-v6"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -190,6 +190,23 @@ def _ss_v5_assignments() -> dict:
     return a
 
 
+def _ss_v6_assignments() -> dict:
+    """v5 rubric, with the crown decomposed into independent metrics. Drops the conflated
+    ``perceived_time`` from scoring (kept as a display-only diagnostic), adds ``total_stall``
+    (cumulative dead air) to Smoothness, and promotes the built-in ``load_event``
+    (loadEventEnd page-load time) to a scored Speed metric. The crown then corners over
+    FCP × total_stall × load_event — two built-in standards plus the one bespoke stall
+    signal — so stalls pull the Overall down via the corner geometry, not a hidden weight.
+    The new thresholds are reasoned defaults (calibratable)."""
+    a = _ss_v5_assignments()
+    del a["perceived_time"]  # no longer scored — display-only diagnostic
+    # Smoothness: cumulative dead air takes the slot perceived_time vacated.
+    a["total_stall"] = {"axis": SMOOTHNESS, "weight": 30, "best": 0.0, "worst": 3000.0}
+    # Speed: the recognized "page load time" (loadEventEnd) as the honest time-to-done.
+    a["load_event"] = {"axis": SPEED, "weight": 20, "best": 800.0, "worst": 8000.0}
+    return a
+
+
 METHODOLOGY_REGISTRY: dict[str, dict] = {
     "speed-smoothness-v1": {
         "derivation_version": "derive-v2",
@@ -202,7 +219,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         "assignments": _ss_assignments({"axis": SMOOTHNESS, "best": 500.0, "worst": 8000.0}),
     },
     "speed-smoothness-v2": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v3: perceived-time w_unoccupied 3→4
+        "derivation_version": "derive-v3",  # frozen: published under derive-v3 (perceived-time w_unoccupied 3→4)
         "notes": (
             "Recalibrate perceived-time so a mostly-stall load can't score green: the "
             "unoccupied/stall weight rose 3→4 (derive-v3) and the perceived-time "
@@ -213,7 +230,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         "assignments": _ss_assignments({"axis": SMOOTHNESS, "best": 400.0, "worst": 8000.0}),
     },
     "speed-smoothness-v3": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v3 (no formula change)
+        "derivation_version": "derive-v3",  # frozen: published under derive-v3
         "notes": (
             "Re-anchor thresholds to home-connection 'good' scales while keeping v2's "
             "axes and weights: tighter best anchors on the connection metrics (DNS 1ms, "
@@ -227,7 +244,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         "assignments": _ss_v3_assignments(),
     },
     "speed-smoothness-v4": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v3 (no formula change)
+        "derivation_version": "derive-v3",  # frozen: published under derive-v3
         "notes": (
             "Reframe the headline axes around the three phases of a load: split the "
             "old blended Speed into Responsiveness (time-to-first: TTFB/FCP/byte-"
@@ -240,7 +257,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         "assignments": _ss_v4_assignments(),
     },
     "speed-smoothness-v5": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v3 (no formula change)
+        "derivation_version": "derive-v3",  # frozen: published under derive-v3
         "notes": (
             "Two changes. (1) Promote the seat-of-pants Overall to a first-class, versioned "
             "quantity so grading and crowning can never drift: Overall is defined here (not "
@@ -265,6 +282,32 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "method": "corner",
             "metrics": ["fcp", "perceived_time", "inp"],
             "required": ["fcp", "perceived_time"],
+        },
+    },
+    "speed-smoothness-v6": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v4: adds total_stall_ms
+        "notes": (
+            "Decompose the crown into independent, mostly-built-in metrics. The conflated "
+            "perceived_time (which baked an uncalibrated 4× stall penalty into a duration) is "
+            "dropped from scoring and kept as a display-only diagnostic. The Overall now corners "
+            "over FCP × total_stall × load_event — quickest first response (FCP, a Core Web "
+            "Vital), total dead-air across the load (total_stall, the one bespoke smoothness "
+            "signal), and the recognized page-load time (load_event = loadEventEnd, a built-in "
+            "Navigation-Timing value, newly scored on Speed). Stalls still pull the Overall down "
+            "— via the corner geometry, not a hidden weight. total_stall joins Smoothness (best "
+            "0 / worst 3000ms) and load_event joins Speed (best 800 / worst 8000ms); both are "
+            "reasoned, calibratable defaults. v5's re-anchored time-to-content thresholds carry "
+            "over. derive-v4 adds total_stall_ms, so history re-grades straight from raw."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v6_assignments(),
+        # First-class Overall, now decomposed: FCP × total_stall × load_event (all three
+        # required — each reliably present on a complete browser run). This single spec is
+        # the source of truth the settings/crown layer + challenger race read.
+        "overall": {
+            "method": "corner",
+            "metrics": ["fcp", "total_stall", "load_event"],
+            "required": ["fcp", "total_stall", "load_event"],
         },
     },
 }
@@ -318,6 +361,16 @@ def overall_from_definition(definition: dict, subscores: dict | None) -> float |
     if not metrics or any(sub.get(k) is None for k in required):
         return None
     return corner_score([sub.get(k) for k in metrics if sub.get(k) is not None])
+
+
+def overall_metrics(definition: dict) -> tuple[list[str], list[str]]:
+    """The crown's ``(metrics, required)`` keys from a methodology's ``overall`` spec —
+    the single source of truth for which metric subscores the Overall corners over. The
+    settings/crown layer reads this so the persisted Overall, the live fallback, the
+    challenger's optimistic estimate, and the per-metric spreads never diverge. Empty
+    lists for a pre-v5 definition with no overall spec."""
+    spec = (definition or {}).get("overall") or {}
+    return list(spec.get("metrics") or []), list(spec.get("required") or [])
 
 
 def _effective(m: metrics_mod.MetricDef, config: dict) -> tuple[float, float | None, float | None]:

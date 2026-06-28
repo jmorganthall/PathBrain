@@ -18,7 +18,7 @@ from .. import profile_test as profile_test_mod
 from ..config_store import get_config
 from ..database import get_session
 from ..logging_config import get_logger
-from ..methodology import corner_score, ensure_current_methodology
+from ..methodology import corner_score, ensure_current_methodology, overall_metrics
 from ..metrics import all_metric_sources
 from ..models import Run, RunStatus, Score
 from ..providers import get_provider
@@ -31,18 +31,17 @@ from ..trends import RunPoint, profile_relative
 # drive the per-axis display columns, but the **crown** no longer corners over them.
 _CORNER_AXES = ("responsiveness", "smoothness", "speed")
 
-# The seat-of-pants "feel trinity": the few raw measurements that directly capture
-# human feel, which the crown corners over instead of the composite axes —
-#   fcp            → quickest first response (what the eye first registers),
-#   perceived_time → lowest perceived (stall-weighted) load time,
-#   inp            → quickest time to interactivity ("I touched it and it answered").
-# These are per-metric 0–100 *subscores* (perception-calibrated by the scoring engine,
-# carried on every Score under speed-smoothness-v4), so they're directly comparable and
-# corner cleanly. INP needs a real interaction and may be absent on a pure navigation,
-# so it's optional; FCP + perceived-time are required (the crown never collapses to a
-# single metric, and Josh's "two or three" is honored literally).
-CROWN_METRICS = ("fcp", "perceived_time", "inp")
-CROWN_REQUIRED = ("fcp", "perceived_time")
+# The crown corners over a small set of per-metric 0–100 subscores (perception-calibrated
+# by the scoring engine, carried on every Score). The authoritative set is the current
+# methodology's ``overall`` spec (``methodology.overall_metrics``) — under
+# speed-smoothness-v6 that's FCP × total_stall × load_event (quickest first response ×
+# total dead-air × page-load time). These module constants are only the FALLBACK default
+# used when a methodology has no overall spec (pre-v5). Everything that corners — the live
+# ``_crown_corner`` fallback, ``crown_spreads``, ``optimistic_overall``, and the challenger
+# race — reads the methodology-resolved set so they can never drift from the persisted
+# Overall.
+CROWN_METRICS = ("fcp", "total_stall", "load_event")
+CROWN_REQUIRED = ("fcp", "total_stall", "load_event")
 
 # Non-metric numeric fields the /api/metrics catalog doesn't describe, exposed so the
 # UI's chart-axis pickers + column selector can offer them (metric fields get their
@@ -62,16 +61,20 @@ _PROFILE_FIELDS = [
 ]
 
 
-def _crown_corner(subscores: dict | None) -> float | None:
-    """Live fallback for the seat-of-pants Overall: corner over the feel-trinity metric
-    subscores (``CROWN_METRICS``), requiring the always-present pair (``CROWN_REQUIRED``)
-    and folding in INP when captured. The methodology now owns this definition
-    (``overall_from_definition``) and persists Overall on the Score; this mirrors it for
-    runs whose Score predates the persisted value (e.g. fixtures / not-yet-re-graded)."""
+def _crown_corner(
+    subscores: dict | None,
+    metrics: tuple | list = CROWN_METRICS,
+    required: tuple | list = CROWN_REQUIRED,
+) -> float | None:
+    """Live fallback for the methodology's Overall: corner over the crown metric subscores,
+    requiring ``required`` and folding in the rest when present. ``metrics``/``required``
+    come from the methodology's ``overall`` spec (``overall_metrics``) so this mirrors
+    ``overall_from_definition`` exactly — it's only used for a Score that predates the
+    persisted Overall (fixtures / not-yet-re-graded)."""
     sub = subscores or {}
-    if any(sub.get(k) is None for k in CROWN_REQUIRED):
+    if any(sub.get(k) is None for k in required):
         return None
-    return corner_score([sub.get(k) for k in CROWN_METRICS if sub.get(k) is not None])
+    return corner_score([sub.get(k) for k in metrics if sub.get(k) is not None])
 
 
 # Optimism margin (points) given to a corner axis with too few samples to have a
@@ -79,14 +82,20 @@ def _crown_corner(subscores: dict | None) -> float | None:
 RACE_OPTIMISM_MARGIN = 5.0
 
 
-def optimistic_overall(crown_spreads: dict, margin: float = RACE_OPTIMISM_MARGIN) -> float | None:
-    """An *upper-bound* Overall for a not-yet-confident profile: the feel-trinity corner
-    over each crown metric's optimistic estimate. Uses the metric p75 (upper quartile)
-    when there are ≥2 samples, else ``median + margin`` — so a thin sample gets the
-    benefit of the doubt, and the bound tightens toward the real Overall as iterations
-    accumulate (p75 → median). Drives the racing/elimination decision. Requires the
-    always-present pair (``CROWN_REQUIRED``); folds in INP when sampled. Returns None
-    unless every required crown metric has at least one sample."""
+def optimistic_overall(
+    crown_spreads: dict,
+    metrics: tuple | list = CROWN_METRICS,
+    required: tuple | list = CROWN_REQUIRED,
+    margin: float = RACE_OPTIMISM_MARGIN,
+) -> float | None:
+    """An *upper-bound* Overall for a not-yet-confident profile: the crown corner over each
+    metric's optimistic estimate. Uses the metric p75 (upper quartile) when there are ≥2
+    samples, else ``median + margin`` — so a thin sample gets the benefit of the doubt, and
+    the bound tightens toward the real Overall as iterations accumulate (p75 → median).
+    Drives the racing/elimination decision. ``metrics``/``required`` come from the
+    methodology's ``overall`` spec, so this is the upper-bound analog of the persisted
+    Overall and the race can't drift from it. Returns None unless every required crown
+    metric has at least one sample."""
     def _opt(sp: dict) -> float:
         if (sp.get("n") or 0) >= 2 and sp.get("p75") is not None:
             val = float(sp["p75"])
@@ -94,13 +103,13 @@ def optimistic_overall(crown_spreads: dict, margin: float = RACE_OPTIMISM_MARGIN
             val = float(sp["median"]) + margin
         return min(100.0, val)
 
-    if any((crown_spreads.get(k) or {}).get("median") is None for k in CROWN_REQUIRED):
+    if any((crown_spreads.get(k) or {}).get("median") is None for k in required):
         return None  # missing a required crown metric → not yet comparable on the corner
     opt: list[float] = []
-    for metric in CROWN_METRICS:
+    for metric in metrics:
         sp = crown_spreads.get(metric)
         if not sp or sp.get("median") is None:
-            continue  # optional metric (INP) not sampled → corner over what's present
+            continue  # optional metric not sampled → corner over what's present
         opt.append(_opt(sp))
     return corner_score(opt)
 
@@ -414,6 +423,14 @@ def compute_profiles(
     min_iterations = _min_iterations(session)
     min_samples = int((get_config(session).get("trends", {}) or {}).get("min_samples", 3) or 3)
     rows = _completed_runs_with_scores(session)
+    # The crown metric set, from the current methodology's `overall` spec — the single
+    # source of truth shared by the persisted Overall, the live fallback, crown_spreads,
+    # optimistic_overall, and the challenger race (fallback to the module default for a
+    # pre-v5 methodology with no overall spec).
+    methodology = ensure_current_methodology(session, get_config(session))
+    crown_metrics, crown_required = overall_metrics(methodology.definition or {})
+    if not crown_metrics:
+        crown_metrics, crown_required = list(CROWN_METRICS), list(CROWN_REQUIRED)
     # Config-blind baseline: every qualifying run, regardless of profile, defines
     # the time-of-day environment each profile's runs are judged against.
     baseline_points: list[RunPoint] = []
@@ -434,7 +451,7 @@ def compute_profiles(
         # Score that predates it (fixtures / not-yet-re-graded).
         run_overall = axes.get("overall")
         if run_overall is None:
-            run_overall = _crown_corner(crown_sub)
+            run_overall = _crown_corner(crown_sub, crown_metrics, crown_required)
         # Time baseline carries both smoothness and the per-run Overall, so we can read
         # each profile's "vs typical" (day×hour-adjusted) for the Overall too.
         point_values = {"smoothness": smooth}
@@ -523,7 +540,7 @@ def compute_profiles(
         crown_scores = subscore_medians
         crown_spreads = {
             m: {**_spread(vals), "n": len(vals)}
-            for m, vals in g["subscore_samples"].items() if vals and m in CROWN_METRICS
+            for m, vals in g["subscore_samples"].items() if vals and m in crown_metrics
         }
         # Overall is the *distribution of per-run Overall scores* — central value, its
         # own IQR, and a confidence-adjusted lower bound (the crown basis). This makes
@@ -652,6 +669,11 @@ def compute_profiles(
         "min_iterations": min_iterations,
         "complete_only": complete_only,
         "best_fingerprint": best_fingerprint,
+        # The methodology's canonical crown metric set (source of truth for the corner) —
+        # the challenger race reads these so its optimistic estimate matches the persisted
+        # Overall exactly.
+        "overall_metrics": crown_metrics,
+        "overall_required": crown_required,
         # Echo the custom-crown selection (None when not requested) + its winner.
         "crown_metrics": list(custom_crown_metrics) if custom_crown_metrics else None,
         "custom_best_fingerprint": custom_best_fingerprint,
@@ -931,11 +953,13 @@ def _contending_challengers(session: Session) -> tuple[str | None, list[str]]:
     best_fp = field.get("best_fingerprint")
     profiles = {p["fingerprint"]: p for p in field["profiles"]}
     bar = profiles[best_fp]["overall"] if best_fp else None
+    crown_metrics = field.get("overall_metrics") or CROWN_METRICS
+    crown_required = field.get("overall_required") or CROWN_REQUIRED
     contenders = []
     for fp, p in profiles.items():
         if p["confident"] or fp == best_fp:
             continue
-        opt = optimistic_overall(p.get("crown_spreads") or {})
+        opt = optimistic_overall(p.get("crown_spreads") or {}, crown_metrics, crown_required)
         if opt is not None and (bar is None or opt >= bar):
             contenders.append(fp)
     return best_fp, contenders

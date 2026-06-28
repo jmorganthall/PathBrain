@@ -14,7 +14,7 @@ def _spread(median: float, p75: float, n: int) -> dict:
 
 
 def _crown(median: float, p75: float, n: int) -> dict:
-    return {m: _spread(median, p75, n) for m in ("fcp", "perceived_time", "inp")}
+    return {m: _spread(median, p75, n) for m in ("fcp", "total_stall", "load_event")}
 
 
 # ── optimistic_overall ───────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ def test_optimistic_overall_margin_for_thin_samples():
 
 
 def test_optimistic_overall_none_when_missing_a_required_metric():
-    partial = {"fcp": _spread(80, 90, 3)}  # no perceived_time (a required crown metric)
+    partial = {"fcp": _spread(80, 90, 3)}  # no total_stall/load_event (required crown metrics)
     assert optimistic_overall(partial) is None
 
 

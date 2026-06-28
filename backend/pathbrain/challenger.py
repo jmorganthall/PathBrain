@@ -117,18 +117,27 @@ def rank_challengers(field: dict, already_eliminated: dict | set | None = None) 
       this step (optimistic best-case below the bar, or missing a corner axis).
 
     Factored out of the driver so the elimination/selection logic is unit-testable."""
-    from .api.routes_settings import optimistic_overall
+    from .api.routes_settings import CROWN_METRICS, CROWN_REQUIRED, optimistic_overall
 
     already = already_eliminated or {}
     profiles = {p["fingerprint"]: p for p in field["profiles"]}
     best_fp = field.get("best_fingerprint")
     bar = profiles[best_fp]["overall"] if best_fp else None
+    # The crown metric set comes from compute_profiles (the methodology's overall spec), so
+    # the race's optimistic estimate corners over exactly the metrics the persisted Overall
+    # does — it can't drift from methodology Overall logic.
+    crown_metrics = field.get("overall_metrics")
+    crown_required = field.get("overall_required")
     newly: dict[str, dict] = {}
     contenders: list[tuple[dict, float]] = []
     for fp, p in profiles.items():
         if p["confident"] or fp in already:
             continue
-        opt = optimistic_overall(p.get("crown_spreads") or {})
+        opt = optimistic_overall(
+            p.get("crown_spreads") or {},
+            crown_metrics or CROWN_METRICS,
+            crown_required or CROWN_REQUIRED,
+        )
         if opt is None:
             newly[fp] = {"label": p["label"], "reason": "incomplete corner coverage"}
         elif bar is not None and opt < bar:

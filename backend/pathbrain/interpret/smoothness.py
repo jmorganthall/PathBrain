@@ -15,7 +15,7 @@ events share ``performance.timeOrigin`` so they're directly comparable.
 from __future__ import annotations
 
 import math
-from statistics import mean, pstdev
+from statistics import mean, median, pstdev
 
 # Default perceived-time weights. The balance knob is ``w_unoccupied / w_occupied``
 # (occupied time feels shorter than unoccupied time — Maister's baggage-claim).
@@ -92,6 +92,23 @@ def longest_stall(series: list[float]) -> float | None:
     the carousel seeing nothing." The single signal most tied to the bad feeling."""
     gaps = _gaps(series)
     return round(max(gaps), 3) if gaps else None
+
+
+def total_stall(series: list[float]) -> float | None:
+    """Total dead-air: cumulative time delivery ran *behind its own median pace*.
+
+    The *cumulative* stall counterpart to :func:`longest_stall` (the single worst gap).
+    For each inter-completion gap we count only the excess over the median gap, so steady
+    delivery — even at a moderate cadence — contributes ~zero, while real freezes (gaps
+    far longer than the load's own rhythm) accumulate. Parameter-free (no magic stall
+    threshold) and independent of any perceived-time weighting, so the crown can corner
+    over "how much dead air" without baking a penalty into a duration metric. ``None``
+    when there's no rhythm to compare against (fewer than two gaps)."""
+    gaps = _gaps(series)
+    if len(gaps) < 2:
+        return None
+    baseline = median(gaps)
+    return round(sum(g - baseline for g in gaps if g > baseline), 3)
 
 
 def longest_stall_window(series: list[float]) -> tuple[float, float, float] | None:
@@ -353,9 +370,15 @@ def smoothness_metrics(
 
     out: dict[str, float | None] = {
         "longest_stall_ms": longest_stall(series),
+        # Cumulative dead-air beyond the load's own median pace — the standalone stall
+        # dimension (crown input), parameter-free and unweighted. ~0 for steady delivery.
+        "total_stall_ms": total_stall(series),
         "cadence_cov": cadence_cov(series),
         "byte_earliness_ms": byte_earliness(resources, start),
         "delivery_gini": delivery_gini(resources, start, end),
+        # perceived_time_ms is kept as a display-only diagnostic (no longer scored): the
+        # crown's "done" dimension is the built-in load_event (loadEventEnd), not a bespoke
+        # un-penalized window — fewer metrics to maintain, a recognized "page load time".
         "perceived_time_ms": perceived_time(
             events, start, end,
             slice_ms=pp["slice_ms"], w_occupied=pp["w_occupied"], w_unoccupied=pp["w_unoccupied"],
