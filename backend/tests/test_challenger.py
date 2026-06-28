@@ -107,6 +107,65 @@ def test_rank_prioritizes_no_data_then_under_min():
     assert "N" not in newly  # no-data is never eliminated
 
 
+def test_rank_excludes_unreachable_profiles():
+    # apply() can't change scheduler/queues/upload bandwidth, so a contender on a different
+    # scheduler is unreachable from the live environment — it must be eliminated (with a
+    # reason), not raced (racing it would abort the whole race when we can't reach it).
+    from pathbrain.settings_profile import environment_signature
+
+    reachable = environment_signature([{"scheduler": "fq_codel", "queues": 1}])
+    field = _field(
+        [
+            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
+             "crown_spreads": {}, "settings": [{"scheduler": "fq_codel", "queues": 1}]},
+            {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
+             "crown_spreads": _crown(80, 95, 3), "settings": [{"scheduler": "fq_codel", "queues": 1}]},
+            {"fingerprint": "X", "label": "X", "confident": False, "overall": None,
+             "crown_spreads": _crown(80, 99, 3), "settings": [{"scheduler": "fq_pie", "queues": 1}]},
+        ],
+        "B",
+    )
+    _, _, leader, contenders, newly = challenger.rank_challengers(
+        field, {}, reachable_env=reachable
+    )
+    fps = {p["fingerprint"] for p, _ in contenders}
+    assert "C" in fps          # same environment → reachable
+    assert "X" not in fps      # different scheduler → unreachable, excluded
+    assert "unreachable" in newly["X"]["reason"]
+    assert leader["fingerprint"] == "C"
+
+
+def test_apply_profile_tolerates_nonwritable_mismatch(monkeypatch):
+    # Writable params took (no planned change remains) but the read-back fingerprint
+    # differs — a non-writable field. Must NOT abort the race; just log and proceed.
+    monkeypatch.setattr(challenger, "plan_apply", lambda target, live: ([], []))
+    monkeypatch.setattr(challenger, "_apply_all", lambda provider, changes: None)
+    monkeypatch.setattr(challenger, "normalize", lambda x: [])
+    monkeypatch.setattr(challenger, "fingerprint", lambda n: "actual-fp")
+
+    class _P:
+        def discover(self):
+            return []
+
+    challenger._apply_profile(_P(), [{"label": "x"}], "wanted-fp")  # does not raise
+
+
+def test_apply_profile_raises_when_writable_did_not_take(monkeypatch):
+    import pytest
+
+    # A writable param is still pending after the apply → a genuine apply failure.
+    monkeypatch.setattr(challenger, "plan_apply", lambda target, live: ([{"field": "quantum"}], []))
+    monkeypatch.setattr(challenger, "_apply_all", lambda provider, changes: None)
+    monkeypatch.setattr(challenger, "normalize", lambda x: [])
+
+    class _P:
+        def discover(self):
+            return []
+
+    with pytest.raises(RuntimeError, match="did not take"):
+        challenger._apply_profile(_P(), [{"label": "x"}], "wanted-fp")
+
+
 def test_rank_bootstrap_with_no_confident_best():
     # No confident best (e.g. right after a methodology change) → still yields contenders.
     field = _field(
@@ -206,6 +265,8 @@ def _drive_with(monkeypatch, *, auto_promote: bool) -> tuple[ChallengerRace, dic
 
     monkeypatch.setattr(challenger, "get_provider", lambda: _FakeProvider())
     monkeypatch.setattr(challenger, "normalize", lambda x: [])
+    # These tests exercise the drive loop, not reachability — make every profile reachable.
+    monkeypatch.setattr(challenger, "environment_signature", lambda x: "env")
     monkeypatch.setattr(challenger, "plan_apply", lambda target, live: ([], []))
     monkeypatch.setattr(challenger, "_apply_all", fake_apply_all)
     monkeypatch.setattr(challenger, "_apply_profile", fake_apply_profile)
@@ -288,6 +349,8 @@ def _run_drive(monkeypatch, fields, *, auto_promote=False):
 
     monkeypatch.setattr(challenger, "get_provider", lambda: _FakeProvider())
     monkeypatch.setattr(challenger, "normalize", lambda x: [])
+    # Drive-loop tests aren't about reachability — make every profile reachable.
+    monkeypatch.setattr(challenger, "environment_signature", lambda x: "env")
     monkeypatch.setattr(challenger, "plan_apply", lambda target, live: ([], []))
     monkeypatch.setattr(challenger, "_apply_all", lambda provider, changes: spy.__setitem__("restore", spy["restore"] + 1))
     monkeypatch.setattr(challenger, "_apply_profile", lambda provider, settings, fp: spy["apply_profile"].append(fp))

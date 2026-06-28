@@ -115,8 +115,14 @@ LLM-based. See `README.md` for the product overview.
     **ordered by closeness to the winner**. It **bootstraps** with no confident best (bar
     None → race everything lacking data until a winner emerges). It also **refreshes a stale
     incumbent** (`challenger.incumbent_refresh_minutes`, default 60) first so the bar stays
-    contemporaneous (`_incumbent_stale`; counted in `incumbent_refreshes`). At the end it
-    **restores the baseline**, or applies the winner when `auto_promote`. Own thread under
+    contemporaneous (`_incumbent_stale`; counted in `incumbent_refreshes`). It only races
+    profiles **reachable** from the live environment: `apply()` can write the codel/bandwidth
+    params but not `scheduler`/`queues`/`upload_bandwidth` (`settings_profile.NON_WRITABLE_FIELDS`),
+    so a profile differing in those is unreproducible — `rank_challengers(reachable_env=…)`
+    eliminates it ("unreachable: …") instead of letting `_apply_profile` abort the whole race
+    on a fingerprint it can't reach (`_apply_profile` now verifies the *writable* params took,
+    not the full fingerprint; `environment_signature` hashes the non-writable fields). At the
+    end it **restores the baseline**, or applies the winner when `auto_promote`. Own thread under
     the `coordinator` lock (so the scheduler defers via `coordinator.busy()`); persisted to
     a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on startup.
     `/api/settings/race` (+ `/race/cancel`).

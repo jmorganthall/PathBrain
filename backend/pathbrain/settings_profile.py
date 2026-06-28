@@ -137,6 +137,24 @@ def diff_profiles(from_norm: list[dict] | None, to_norm: list[dict] | None) -> l
 # CANON_FIELDS (upload_bandwidth/queues/scheduler) have no writable mapping.
 WRITABLE_PARAMS = ["quantum", "limit", "flows", "target", "interval", "ecn", "download_bandwidth"]
 
+# CANON_FIELDS that ``apply()`` can't drive (scheduler / queue count / upload bandwidth).
+# They still *define* a profile (they affect performance), but PathBrain can't change the
+# live config to them — so a stored profile that differs here is **unreachable** by apply:
+# you can only recreate it if the environment is already in that state.
+NON_WRITABLE_FIELDS = [f for f in CANON_FIELDS if f not in WRITABLE_PARAMS]
+
+
+def environment_signature(normalized: list[dict] | None) -> str:
+    """Stable hash of only the **non-writable** profile fields — the environmental state
+    PathBrain can't change via ``apply()``. Two profiles with the same signature are
+    mutually reachable (applying the writable codel/bandwidth params drives one to the
+    other); a different signature means the target is unreachable from here. Used to keep
+    the challenger race from selecting a profile it can never apply to."""
+    core = [{k: p.get(k) for k in NON_WRITABLE_FIELDS} for p in (normalized or [])]
+    core.sort(key=lambda x: json.dumps(x, sort_keys=True, default=str))
+    blob = json.dumps(core, sort_keys=True, default=str)
+    return hashlib.sha1(blob.encode()).hexdigest()[:12]
+
 
 def _same_value(a, b) -> bool:
     """Loosely equal? Compares scalars by normalized string so '5ms' == '5ms' and
