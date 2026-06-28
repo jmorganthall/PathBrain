@@ -177,10 +177,14 @@ def test_confidence_is_iteration_based(client):
     assert by_fp["iterbig000x"]["confident"] is True
 
 
-def test_heirs_are_limited_data_profiles_that_can_beat_the_crown(client):
+def test_heirs_are_limited_data_profiles_that_can_beat_the_crown(client, monkeypatch):
     # NB: the test DB is shared across the module, so assert only on our own fingerprints
     # (not the global crown / heir totals). The heir is given a near-perfect ceiling so it
     # is guaranteed to out-rank any incidental accumulated contender and surface in the top.
+    # This test is about ceiling ranking, not reachability — make every profile reachable.
+    import pathbrain.api.routes_settings as rs
+
+    monkeypatch.setattr(rs, "environment_signature", lambda norm: "env")
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     # A confident, fresh profile (kept low so it can't disturb the module's global crown) —
     # must NEVER appear as an heir, because the crown only lists profiles it can't yet trust.
@@ -206,6 +210,46 @@ def test_heirs_are_limited_data_profiles_that_can_beat_the_crown(client):
     assert heir["reason"] == "limited-data"
     assert heir["iterations_to_min"] == 12       # 15 - 3 still to go
     assert heirs["total"] >= 1
+
+
+def test_heirs_exclude_unreachable_profiles(monkeypatch):
+    # _compute_heirs must drop profiles the race could never apply (their non-writable env
+    # differs from the live config), so the card matches what the race would actually run.
+    import pathbrain.api.routes_settings as rs
+    from pathbrain.providers.base import FqCodelConfig
+
+    class _FakeProvider:
+        def discover(self):
+            return [FqCodelConfig(scheduler="fq_codel", queues=1)]
+
+    monkeypatch.setattr(rs, "get_provider", lambda: _FakeProvider())
+
+    def _spread(med, p75):
+        return {"median": med, "p25": med, "p75": p75, "min": med, "max": p75, "n": 3}
+
+    high = {m: _spread(97, 97) for m in ("fcp", "total_stall", "load_event")}
+    result = {
+        "best_fingerprint": "crown",
+        "overall_metrics": ["fcp", "total_stall", "load_event"],
+        "overall_required": ["fcp", "total_stall", "load_event"],
+        "min_iterations": 15,
+        "profiles": [
+            {"fingerprint": "crown", "label": "crown", "confident": True, "overall": 80.0,
+             "last_seen": None, "iterations": 30, "crown_spreads": {},
+             "settings": [{"scheduler": "fq_codel", "queues": 1}]},
+            {"fingerprint": "reach", "label": "R", "confident": False, "overall": None,
+             "last_seen": None, "iterations": 3, "crown_spreads": high,
+             "settings": [{"scheduler": "fq_codel", "queues": 1}]},
+            {"fingerprint": "unreach", "label": "U", "confident": False, "overall": None,
+             "last_seen": None, "iterations": 3, "crown_spreads": high,
+             "settings": [{"scheduler": "fq_pie", "queues": 1}]},  # different scheduler
+        ],
+    }
+    with session_scope() as s:
+        heirs = rs._compute_heirs(result, s)
+    fps = {h["fingerprint"] for h in heirs["items"]}
+    assert "reach" in fps       # same environment as live → reachable
+    assert "unreach" not in fps  # different scheduler → unreachable, excluded
 
 
 def test_metric_thresholds_expose_effective_v6_anchors(client):
