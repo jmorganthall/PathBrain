@@ -515,9 +515,17 @@ def comparability(definition: dict, metric_values: dict | None) -> tuple[str, li
     missing → redistributed; ``missing`` lists them), or ``incomparable`` (a
     ``required`` metric the raw never captured — a new instrument added after this
     run). Drives the RTINGS-style "scored under v4; under current v6: N (exact)" vs
-    "not comparable — needs metric X"."""
+    "not comparable — needs metric X".
+
+    Comparability is tied to *crownability*: the methodology's ``overall`` crown
+    metrics (``overall_metrics``) count as required, so a run whose raw can't produce
+    the headline Overall (e.g. a pre-v6 run with no ``total_stall``) is flagged
+    ``incomparable`` and quarantined — never silently scored without the metrics that
+    define the score. This auto-adapts to every methodology's crown."""
     metrics = (definition or {}).get("metrics", [])
-    required = [m["key"] for m in metrics if m.get("required")]
+    _, overall_required = overall_metrics(definition)
+    # The required set = per-metric `required:True` markers ∪ the crown metrics.
+    required = list(dict.fromkeys([m["key"] for m in metrics if m.get("required")] + overall_required))
     scored = [m["key"] for m in metrics if m.get("axis")]
     mv = metric_values or {}
     missing_required = [k for k in required if mv.get(k) is None]

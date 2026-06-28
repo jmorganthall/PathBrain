@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import challenger, jobs, profile_test, sweep
+from .. import challenger, jobs, profile_test, refresh, sweep
 from ..database import get_session
 from ..models import Experiment, ExperimentStatus, Run, RunStatus, Sweep
 
@@ -184,6 +184,34 @@ def _active_challenger_job() -> list[dict]:
     ]
 
 
+def _active_refresh_job() -> list[dict]:
+    if not refresh.active():
+        return []
+    r = refresh.current()
+    if not r or r.get("status") not in ("running", "pending"):
+        return []
+    done, total = r.get("profiles_done") or 0, r.get("profiles_total") or 0
+    cur = r.get("current_label")
+    message = f"profile {min(done + 1, total)}/{total}" if total else "starting…"
+    if cur:
+        message += f" · {cur}"
+    return [
+        {
+            "id": f"refresh-{r['id']}",
+            "kind": "refresh",
+            "label": "Re-run all profiles",
+            "status": "running",
+            "current": done,
+            "total": total,
+            "message": message,
+            "error": None,
+            "href": "/settings",
+            "started_at": r.get("started_at") or r.get("created_at"),
+            "finished_at": None,
+        }
+    ]
+
+
 @router.get("/jobs")
 def list_jobs(session: Session = Depends(get_session)) -> dict:
     """Every active + recently-finished background operation, for the jobs dropdown.
@@ -198,6 +226,7 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     adapters += _active_profile_test_job()
     adapters += _active_experiment_job(session)
     adapters += _active_challenger_job()
+    adapters += _active_refresh_job()
 
     feed = adapters + jobs.list_jobs()
     running = sum(1 for j in feed if j["status"] == "running")
