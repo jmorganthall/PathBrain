@@ -180,6 +180,8 @@ export interface ApplyProfileResult {
   warnings: string[];
   already_applied: boolean;
   resulting_fingerprint?: string | null;
+  // The single-iteration benchmark kicked after applying (when run_benchmark), if any.
+  run_id?: number | null;
 }
 
 export interface ProfileFieldChange {

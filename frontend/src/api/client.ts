@@ -142,10 +142,11 @@ export const api = {
   settingsDiagnostics: () => request<SettingsDiagnostics>("/settings/diagnostics"),
   // Write a stored profile to the firewall. preview=true returns the planned
   // field changes without writing, so the UI can confirm an exact diff first.
-  applyProfile: (fingerprint: string, preview = false) =>
+  // runBenchmark (default true) kicks a single-iteration benchmark on the applied profile.
+  applyProfile: (fingerprint: string, preview = false, runBenchmark = true) =>
     request<ApplyProfileResult>("/settings/apply-profile", {
       method: "POST",
-      body: JSON.stringify({ fingerprint, preview }),
+      body: JSON.stringify({ fingerprint, preview, run_benchmark: runBenchmark }),
     }),
   // Top a "limited data" profile up to the confidence minimum: applies it, runs the
   // iterations still needed, then restores the prior settings.

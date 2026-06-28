@@ -404,6 +404,8 @@ export default function Settings() {
   const [previewFp, setPreviewFp] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ApplyConfirm | null>(null);
   const [applying, setApplying] = useState(false);
+  // Whether to benchmark the profile right after applying it (default on).
+  const [applyRunBenchmark, setApplyRunBenchmark] = useState(true);
   // "Test to minimum" flow: the pending confirmation (a limited-data profile + the
   // exact firewall diff that would be written) and the in-progress test status.
   const [testConfirm, setTestConfirm] = useState<ApplyConfirm | null>(null);
@@ -565,12 +567,12 @@ export default function Settings() {
     setApplying(true);
     setError(null);
     try {
-      const r = await api.applyProfile(confirm.fingerprint);
-      setToast(
+      const r = await api.applyProfile(confirm.fingerprint, false, applyRunBenchmark);
+      const base =
         r.applied && r.applied.length > 0
           ? `Wrote ${r.applied.length} change(s) to the firewall — now on ${r.label}`
-          : `Firewall already on ${r.label} — no changes needed`
-      );
+          : `Firewall already on ${r.label} — no changes needed`;
+      setToast(applyRunBenchmark ? `${base} · benchmarking now` : base);
       setConfirm(null);
       await load();
     } catch (e) {
@@ -1394,6 +1396,17 @@ export default function Settings() {
               )}
             </>
           )}
+          <FormControlLabel
+            sx={{ mt: 1 }}
+            control={
+              <Checkbox
+                checked={applyRunBenchmark}
+                onChange={(e) => setApplyRunBenchmark(e.target.checked)}
+                disabled={applying}
+              />
+            }
+            label="Run a benchmark after applying (1 iteration)"
+          />
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setConfirm(null)} disabled={applying}>

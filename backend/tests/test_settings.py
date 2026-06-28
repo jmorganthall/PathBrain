@@ -447,7 +447,10 @@ def test_apply_profile_writes_to_firewall(client):
     _OVERRIDES.clear()
     _seed_profile_run("applyfp02", _apply_target_profile())
 
-    resp = client.post("/api/settings/apply-profile", json={"fingerprint": "applyfp02"})
+    resp = client.post(
+        "/api/settings/apply-profile",
+        json={"fingerprint": "applyfp02", "run_benchmark": False},
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
@@ -458,8 +461,33 @@ def test_apply_profile_writes_to_firewall(client):
     assert {"Quantum", "CoDel target"} <= applied_fields
 
     # Re-applying the same profile is now a no-op (firewall already matches).
-    again = client.post("/api/settings/apply-profile", json={"fingerprint": "applyfp02"}).json()
+    again = client.post(
+        "/api/settings/apply-profile",
+        json={"fingerprint": "applyfp02", "run_benchmark": False},
+    ).json()
     assert again["already_applied"] is True and again["applied"] == []
+    _OVERRIDES.clear()
+
+
+def test_apply_profile_kicks_benchmark_when_requested(client, monkeypatch):
+    from pathbrain.providers.mock import _OVERRIDES
+    import pathbrain.api.routes_run as routes_run
+
+    _OVERRIDES.clear()
+    _seed_profile_run("applyfp03", _apply_target_profile())
+    kicked: list[int] = []
+    # Stub the background execute so the test doesn't run a real benchmark.
+    monkeypatch.setattr(routes_run, "_locked_execute", lambda rid: kicked.append(rid))
+
+    resp = client.post(
+        "/api/settings/apply-profile",
+        json={"fingerprint": "applyfp03", "run_benchmark": True},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # A single-iteration benchmark run was created and kicked in the background.
+    assert body["run_id"] is not None
+    assert kicked == [body["run_id"]]
     _OVERRIDES.clear()
 
 

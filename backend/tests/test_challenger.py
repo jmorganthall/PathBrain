@@ -86,6 +86,69 @@ def test_rank_challengers_respects_already_eliminated():
     assert leader is None and contenders == []
 
 
+def _nodata(fp: str) -> dict:
+    return {"fingerprint": fp, "label": fp, "confident": False, "overall": None,
+            "crown_spreads": {}, "last_seen": None, "no_data": True}
+
+
+def test_rank_prioritizes_no_data_then_under_min():
+    field = _field(
+        [
+            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0, "crown_spreads": {}},
+            {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
+             "crown_spreads": _crown(80, 95, 3)},  # under-min contender
+            _nodata("N"),  # no current-methodology data — must be raced, sampled first
+        ],
+        best_fingerprint="B",
+    )
+    _, _, leader, contenders, newly = challenger.rank_challengers(field, {})
+    assert leader["fingerprint"] == "N"  # no-data sampled before the under-min contender
+    assert [p["fingerprint"] for p, _ in contenders] == ["N", "C"]
+    assert "N" not in newly  # no-data is never eliminated
+
+
+def test_rank_bootstrap_with_no_confident_best():
+    # No confident best (e.g. right after a methodology change) → still yields contenders.
+    field = _field(
+        [
+            _nodata("N"),
+            {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
+             "crown_spreads": _crown(80, 95, 3)},
+        ],
+        best_fingerprint=None,
+    )
+    best, bar, leader, contenders, _ = challenger.rank_challengers(field, {})
+    assert best is None and bar is None
+    assert {p["fingerprint"] for p, _ in contenders} == {"N", "C"}
+    assert leader["fingerprint"] == "N"
+
+
+def test_rank_stale_confident_ordered_by_closeness():
+    now = datetime(2026, 1, 2, 12, 0, 0)
+    stale = (now - timedelta(minutes=300)).isoformat()  # 5h > 180
+    fresh = now.isoformat()
+    field = _field(
+        [
+            {"fingerprint": "B", "label": "B", "confident": True, "overall": 90.0,
+             "crown_spreads": {}, "last_seen": fresh},  # the winner
+            {"fingerprint": "S1", "label": "S1", "confident": True, "overall": 88.0,
+             "crown_spreads": {}, "last_seen": stale},  # close to winner, stale
+            {"fingerprint": "S2", "label": "S2", "confident": True, "overall": 70.0,
+             "crown_spreads": {}, "last_seen": stale},  # far from winner, stale
+            {"fingerprint": "F", "label": "F", "confident": True, "overall": 89.0,
+             "crown_spreads": {}, "last_seen": fresh},  # close but fresh → not a contender
+        ],
+        best_fingerprint="B",
+    )
+    _, _, leader, contenders, newly = challenger.rank_challengers(
+        field, {}, now=now, stale_minutes=180
+    )
+    # Both stale confident profiles race, closest-to-winner first; fresh F and winner B excluded.
+    assert [p["fingerprint"] for p, _ in contenders] == ["S1", "S2"]
+    assert leader["fingerprint"] == "S1"
+    assert not newly  # stale-confident are never eliminated
+
+
 # ── driver lifecycle (restore vs auto-promote) ───────────────────────────────
 
 
@@ -288,3 +351,20 @@ def test_drive_skips_refresh_when_incumbent_fresh(monkeypatch):
     race, spy = _run_drive(monkeypatch, [f1, f2], auto_promote=False)
     assert race.incumbent_refreshes == 0
     assert spy["apply_profile"] == ["C"]  # straight to the challenger, no refresh
+
+
+def test_drive_bootstraps_no_data_with_no_confident_best(monkeypatch):
+    # No confident best at all (e.g. post-methodology-change): the race still runs and
+    # samples the no-data profile, which then becomes the confident winner.
+    c_nodata = {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
+                "crown_spreads": {}, "no_data": True, "settings": [{"label": "C"}],
+                "last_seen": None}
+    c_conf = {"fingerprint": "C", "label": "C", "confident": True, "overall": 90.0,
+              "crown_spreads": {}, "settings": [{"label": "C"}], "last_seen": None}
+    f1 = _field([c_nodata], best_fingerprint=None)
+    f2 = _field([c_conf], best_fingerprint="C")
+
+    race, spy = _run_drive(monkeypatch, [f1, f2], auto_promote=False)
+    assert spy["apply_profile"] == ["C"]  # raced the no-data profile despite no confident best
+    assert race.winner_fingerprint == "C"
+    assert spy["restore"] == 1  # baseline restored at the end

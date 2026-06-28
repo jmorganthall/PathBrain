@@ -144,6 +144,10 @@ DEFAULT_CONFIG: dict = {
         # bar (removes time-of-day drift) and the crown's own confidence band stays
         # tight + re-validated. 0 disables incumbent refresh.
         "incumbent_refresh_minutes": 60,
+        # A confident profile whose newest run is older than this many minutes is re-raced
+        # (ordered closest-to-winner first), so the race verifies stale standings — not
+        # just under-min profiles. 0 disables stale-confident re-racing.
+        "contender_stale_minutes": 180,
     },
     # Autonomous experiment engine. Disarmed by default; it never writes to the
     # firewall unless `enabled` is true, and `dry_run` logs intended changes

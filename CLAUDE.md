@@ -102,20 +102,24 @@ LLM-based. See `README.md` for the product overview.
     baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
     restores on startup). `/api/settings/test-profile`.
   - `challenger.py` — **Challenger Race**: the adaptive, multi-profile sibling of
-    `profile_test`. A time-boxed loop that runs **one iteration at a time** on the most
-    promising under-minimum profile, re-ranks via `rank_challengers`, and **eliminates**
-    any whose *optimistic* Overall (corner over each axis's p75 upper estimate;
-    `routes_settings.optimistic_overall`) can no longer beat the confident best. A
-    challenger that reaches the minimum and beats the best raises the bar. To keep that
-    bar honest it **refreshes a stale incumbent**: if the crowned best's newest run is
-    older than `challenger.incumbent_refresh_minutes` (default 60) it re-measures the
-    incumbent first, so challengers race a *contemporaneous* bar (no time-of-day drift)
-    and the crown's own band stays tight (`_incumbent_stale`; counted in
-    `incumbent_refreshes`). At the end it **restores the baseline**, or applies the winner
-    when `auto_promote`. Own thread
-    under the `coordinator` lock (so the scheduler defers via `coordinator.busy()`);
-    persisted to a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on
-    startup. `/api/settings/race` (+ `/race/cancel`).
+    `profile_test`. A time-boxed loop that runs **one iteration at a time** on whatever the
+    field can't currently trust against the winner, re-ranks via `rank_challengers`, and
+    **eliminates** any under-minimum profile whose *optimistic* Overall (corner over each
+    crown metric's p75 upper estimate; `routes_settings.optimistic_overall`) can no longer
+    beat the confident best. Contenders span, in priority order: **(1) no-data** profiles —
+    zero comparable runs under the current methodology (`_field` augments the
+    `compute_profiles` field with these from `refresh.list_profiles`; the "run anything
+    without data on the latest methodology" case, never eliminated until measured);
+    **(2) under-minimum** profiles that can still beat the bar; **(3) stale confident**
+    profiles older than `challenger.contender_stale_minutes` (default 180), re-measured
+    **ordered by closeness to the winner**. It **bootstraps** with no confident best (bar
+    None → race everything lacking data until a winner emerges). It also **refreshes a stale
+    incumbent** (`challenger.incumbent_refresh_minutes`, default 60) first so the bar stays
+    contemporaneous (`_incumbent_stale`; counted in `incumbent_refreshes`). At the end it
+    **restores the baseline**, or applies the winner when `auto_promote`. Own thread under
+    the `coordinator` lock (so the scheduler defers via `coordinator.busy()`); persisted to
+    a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on startup.
+    `/api/settings/race` (+ `/race/cancel`).
   - `refresh.py` — **Re-run all profiles**: the batch sibling of `profile_test`. For
     each stored profile it applies the settings, benchmarks a **caller-chosen** number of
     iterations, then moves on — **restoring the baseline at the end** (persisted to a
