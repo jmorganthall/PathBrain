@@ -412,11 +412,12 @@ export default function Settings() {
   const [bestFingerprint, setBestFingerprint] = useState<string | null>(null);
   const [currentFingerprint, setCurrentFingerprint] = useState<string | null>(null);
   const [responseFields, setResponseFields] = useState<ProfileField[]>([]);
-  // Dynamic quadrant axes (default Speed × Smoothness — the original view) + the
-  // optional third dimension encoded as bubble size (default Overall).
-  const [xKey, setXKey] = useState("speed");
-  const [yKey, setYKey] = useState("smoothness");
-  const [sizeKey, setSizeKey] = useState("responsiveness");
+  // Dynamic quadrant axes — default to the Overall scoring corner's three inputs
+  // (FCP × page-load × total-stall), with the third encoded as Shade opacity; the
+  // crowned profile is ringed. So the default view demonstrates how Overall is scored.
+  const [xKey, setXKey] = useState("fcp");
+  const [yKey, setYKey] = useState("load_event");
+  const [sizeKey, setSizeKey] = useState("total_stall");
   // Optional extra table columns (dynamic field keys), persisted across reloads.
   const [extraCols, setExtraCols] = useState<string[]>(() => {
     try {
