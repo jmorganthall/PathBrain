@@ -174,7 +174,11 @@ LLM-based. See `README.md` for the product overview.
   and the crowned profile is ringed — the quadrant now warns when an axis is **saturated**
   (every profile already past the methodology's `best` threshold, so the raw spread carries
   no score signal, e.g. fcp/load_event on a fast link), using the effective thresholds in
-  the profiles response's `metric_thresholds`; plus a **"Heirs to the crown"** card — the
+  the profiles response's `metric_thresholds`; a page-level **methodology saturation check**
+  (`saturation` in the response, `_saturation_report`) flags any scored, non-zero-`best`
+  metric that saturates >50% of profiles — too lenient to crown the fastest — and suggests
+  re-anchoring `best` to the fastest value measured (`best`=0 metrics like total_stall are a
+  physical floor and never flagged); plus a **"Heirs to the crown"** card — the
   limited-data / stale profiles whose *optimistic ceiling* (`optimistic_overall`, the same
   number the race uses) could still beat the crown, ranked by margin-above-crown, with a
   count badge on **"Race challengers"** ("N could beat your crown"; response field `heirs`);

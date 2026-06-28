@@ -258,6 +258,22 @@ export interface MetricThreshold {
   higher_is_better: boolean;
 }
 
+// Methodology health for one scored, non-zero-`best` metric: the share of profiles whose
+// value already clears 'best' (so the metric scores ~100 and can't rank them). `flagged`
+// when that share exceeds 50% — the threshold is too lenient to crown the fastest profile;
+// `suggested_best` re-anchors it to the fastest value measured.
+export interface MetricSaturation {
+  key: string;
+  label: string;
+  unit: string;
+  best: number;
+  saturated_fraction: number;
+  profiles: number;
+  flagged: boolean;
+  suggested_best: number | null;
+  higher_is_better: boolean;
+}
+
 export interface SettingsProfilesResponse {
   profiles: SettingsProfile[];
   count: number;
@@ -278,6 +294,9 @@ export interface SettingsProfilesResponse {
   heirs: CrownHeirs;
   // Per-metric effective thresholds (for the saturated-axis warning), keyed by metric key.
   metric_thresholds: Record<string, MetricThreshold>;
+  // Methodology health: scored metrics whose 'best' is too lenient to rank profiles
+  // (saturating >50%), with a suggested re-anchor.
+  saturation: MetricSaturation[];
 }
 
 // One "Test this profile up to the minimum" session.

@@ -220,6 +220,29 @@ def test_metric_thresholds_expose_effective_v6_anchors(client):
     assert thresholds["fcp"]["higher_is_better"] is False
 
 
+def test_saturation_flags_too_lenient_threshold(client):
+    # load_event "best" is 800ms; seed profiles whose page-load mostly clears it (so the
+    # metric pins at ~100 and can't rank them). >50% saturated must flag the metric and
+    # suggest re-anchoring 'best' down to the fastest profile measured.
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for fp, ms in [("sat0000001x", 500.0), ("sat0000002x", 600.0),
+                   ("sat0000003x", 650.0), ("sat0000004x", 700.0)]:
+        _seed_run(fp, 80, t0 - timedelta(minutes=60), iterations=6,
+                  result_metrics={"browser": {"load_event_ms": ms}})
+    # One profile genuinely slower than 'best' (does not saturate).
+    _seed_run("sat0000005x", 80, t0 - timedelta(minutes=55), iterations=6,
+              result_metrics={"browser": {"load_event_ms": 1200.0}})
+
+    body = client.get("/api/settings/profiles").json()
+    le = next(s for s in body["saturation"] if s["key"] == "load_event")
+    assert le["flagged"] is True
+    assert le["saturated_fraction"] == 0.8        # 4 of 5 profiles already past 'best'
+    assert le["best"] == 800.0
+    assert le["suggested_best"] == 500.0          # re-anchor to the fastest measured
+    # total_stall has best=0 (a physical floor) — never flagged/re-anchored even if "saturated".
+    assert all(s["key"] != "total_stall" for s in body["saturation"])
+
+
 def test_best_is_closest_to_top_right_corner(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     # Profile A: least dead-air (total_stall subscore 90) but slow first response *and*

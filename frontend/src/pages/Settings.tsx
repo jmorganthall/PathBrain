@@ -41,6 +41,7 @@ import type {
   ApplyProfileChange,
   ChallengerRace,
   CrownHeirs,
+  MetricSaturation,
   MetricThreshold,
   ProfileDiff,
   ProfileFieldChange,
@@ -513,6 +514,8 @@ export default function Settings() {
   // effective per-metric thresholds (for the saturated-axis warning on the quadrant).
   const [heirs, setHeirs] = useState<CrownHeirs | null>(null);
   const [metricThresholds, setMetricThresholds] = useState<Record<string, MetricThreshold>>({});
+  // Scored metrics whose 'best' is too lenient to rank profiles (saturating >50%).
+  const [saturation, setSaturation] = useState<MetricSaturation[]>([]);
   // Dynamic quadrant axes — default to the Overall scoring corner's three inputs
   // (FCP × page-load × total-stall), with the third encoded as Shade opacity; the
   // crowned profile is ringed. So the default view demonstrates how Overall is scored.
@@ -613,6 +616,7 @@ export default function Settings() {
       setResponseFields(p.fields);
       setHeirs(p.heirs ?? null);
       setMetricThresholds(p.metric_thresholds ?? {});
+      setSaturation(p.saturation ?? []);
       setImpact(i);
       setDiag(d);
       setError(null);
@@ -957,6 +961,40 @@ export default function Settings() {
       )}
 
       {impact && <ImpactBanner impact={impact} />}
+
+      {saturation.some((s) => s.flagged) && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
+            Methodology check — {saturation.filter((s) => s.flagged).length === 1 ? "a metric is" : "metrics are"} too
+            lenient to rank your profiles
+          </Typography>
+          These scored metrics already clear their “best” threshold for most profiles, so the score pins at ~100 and
+          can’t separate them — the rubric can’t crown the fastest. Consider re-anchoring “best”:
+          <Box component="ul" sx={{ mt: 0.75, mb: 0, pl: 3 }}>
+            {saturation
+              .filter((s) => s.flagged)
+              .map((s) => (
+                <li key={s.key}>
+                  <b>{s.label}</b> saturates {Math.round(s.saturated_fraction * 100)}% of {s.profiles} profiles (best{" "}
+                  {s.best}
+                  {s.unit})
+                  {s.suggested_best != null ? (
+                    <>
+                      {" "}
+                      — suggest best →{" "}
+                      <b>
+                        {s.suggested_best}
+                        {s.unit}
+                      </b>{" "}
+                      (the fastest you’ve measured)
+                    </>
+                  ) : null}
+                  .
+                </li>
+              ))}
+          </Box>
+        </Alert>
+      )}
 
       {bestDiff && <ProfileDiffCard diff={bestDiff} showCompletion={showCompletion} />}
 

@@ -396,10 +396,13 @@ def settings_profiles(
         session, complete_only=complete_only, tz_offset=tz_offset, custom_crown_metrics=custom
     )
     result["current_fingerprint"] = _current_fingerprint()
-    # The crown's heirs (limited-data / stale profiles that could still dethrone it) and
-    # the effective per-metric thresholds (so the quadrant can flag a saturated axis).
+    # The crown's heirs (limited-data / stale profiles that could still dethrone it), the
+    # effective per-metric thresholds (so the quadrant can flag a saturated axis), and the
+    # methodology saturation report (metrics whose 'best' is too lenient to rank profiles).
+    definition = ensure_current_methodology(session, get_config(session)).definition or {}
     result["heirs"] = _compute_heirs(result, session)
-    result["metric_thresholds"] = _metric_thresholds(session)
+    result["metric_thresholds"] = _metric_thresholds(definition)
+    result["saturation"] = _saturation_report(result["profiles"], definition)
     return result
 
 
@@ -422,15 +425,14 @@ def _heir_count(session: Session) -> int:
         return 5
 
 
-def _metric_thresholds(session: Session) -> dict[str, dict]:
+def _metric_thresholds(definition: dict) -> dict[str, dict]:
     """Per-metric *effective* best/worst/direction under the current methodology — the
     thresholds the score actually uses (v6 re-anchors fcp→150ms, load_event→800ms, …),
     NOT the catalog defaults. Lets the quadrant flag an axis as **saturated**: when every
     profile already sits past 'best', the raw spread the user is reading carries no score
     signal (the crown isn't decided there). Keyed by metric key."""
-    methodology = ensure_current_methodology(session, get_config(session))
     out: dict[str, dict] = {}
-    for m in (methodology.definition or {}).get("metrics", []):
+    for m in (definition or {}).get("metrics", []):
         if m.get("best") is None or m.get("worst") is None:
             continue
         out[m["key"]] = {
@@ -439,6 +441,61 @@ def _metric_thresholds(session: Session) -> dict[str, dict]:
             "higher_is_better": bool(m.get("higher_is_better")),
         }
     return out
+
+
+# A scored metric that pins this share of profiles at ~100 (their value already clears the
+# 'best' threshold) can no longer rank them — so the threshold is too lenient to crown the
+# fastest. Flag it for a methodology re-anchor. Need a few profiles before judging.
+SATURATION_FLAG_FRACTION = 0.5
+SATURATION_MIN_PROFILES = 3
+
+
+def _saturation_report(profiles: list[dict], definition: dict) -> list[dict]:
+    """Per scored metric with a **non-zero** ``best``: the share of profiles whose median
+    already clears 'best' (so the metric scores ~100 and can't separate them). Flags any
+    metric saturating more than ``SATURATION_FLAG_FRACTION`` of profiles — a sign the
+    threshold is too lenient to crown the fastest profile — and suggests re-anchoring
+    'best' to the fastest value actually measured (so that profile scores 100 and the rest
+    rank below it). ``best``=0 metrics (e.g. total_stall) are skipped: saturating at the
+    physical floor is genuinely optimal, not a miscalibration."""
+    report: list[dict] = []
+    for m in (definition or {}).get("metrics", []):
+        key, best = m.get("key"), m.get("best")
+        # Only scored metrics (axis set) with a non-zero, finite 'best' can be re-anchored.
+        if m.get("axis") is None or not best:
+            continue
+        higher = bool(m.get("higher_is_better"))
+        vals = [
+            p["metrics"][key]
+            for p in profiles
+            if key in (p.get("metrics") or {}) and p["metrics"][key] is not None
+        ]
+        if len(vals) < SATURATION_MIN_PROFILES:
+            continue
+        saturated = [v for v in vals if (v >= best if higher else v <= best)]
+        frac = len(saturated) / len(vals)
+        flagged = frac > SATURATION_FLAG_FRACTION
+        # Re-anchor to the fastest (best-performing) profile measured: max for higher-is-
+        # better, min for lower-is-better. None when not flagged or degenerate (all equal).
+        suggested = None
+        if flagged:
+            anchor = max(vals) if higher else min(vals)
+            if anchor != best:
+                suggested = round(anchor, 1)
+        report.append(
+            {
+                "key": key,
+                "label": m.get("label") or key,
+                "unit": m.get("unit") or "",
+                "best": best,
+                "saturated_fraction": round(frac, 3),
+                "profiles": len(vals),
+                "flagged": flagged,
+                "suggested_best": suggested,
+                "higher_is_better": higher,
+            }
+        )
+    return report
 
 
 def _compute_heirs(result: dict, session: Session) -> dict:
