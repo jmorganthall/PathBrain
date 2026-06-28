@@ -36,6 +36,7 @@ import type {
   VersionInfo,
   SettingsProfilesResponse,
   Sweep,
+  SweepField,
   SweepPipe,
   SweepPreview,
   SweepSpec,
@@ -206,6 +207,7 @@ export const api = {
 
   // Shotgun Sweep
   sweepPipes: () => request<{ pipes: SweepPipe[] }>("/sweep/pipes"),
+  sweepFields: () => request<{ fields: SweepField[] }>("/sweep/fields"),
   sweepPreview: (body: { spec: SweepSpec; iterations: number; dwell_minutes: number }) =>
     request<SweepPreview>("/sweep/preview", { method: "POST", body: JSON.stringify(body) }),
   startSweep: (body: {

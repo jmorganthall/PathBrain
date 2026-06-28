@@ -171,6 +171,20 @@ def test_sweep_pipes_endpoint_lists_uuid_pipes(client):
     assert all(p["uuid"] for p in pipes)
 
 
+def test_sweep_fields_endpoint_lists_sweepable_fields(client):
+    resp = client.get("/api/sweep/fields")
+    assert resp.status_code == 200
+    fields = resp.json()["fields"]
+    by_key = {f["key"]: f for f in fields}
+    # Driven by the registry: quantum + target are sweepable today, each with a label,
+    # a unit (quantum none, target "ms"), and a starting range for the UI control.
+    assert set(by_key) == {"quantum", "target"}
+    assert by_key["quantum"]["unit"] is None
+    assert by_key["target"]["unit"] == "ms"
+    assert by_key["quantum"]["default"]["enabled"] is True
+    assert {"enabled", "min", "max", "step"} <= set(by_key["target"]["default"])
+
+
 def test_sweep_preview_multiplies_by_pipes(client):
     resp = client.post(
         "/api/sweep/preview",

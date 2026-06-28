@@ -27,6 +27,9 @@ class ShaperField:
     writable: bool = False   # the standard provider's apply() can write it
     sweepable: bool = False  # offered as a sweep/experiment parameter
     unit: str | None = None  # value unit/suffix, e.g. "ms" for the CoDel target
+    # A sensible starting range for the sweep UI ({enabled, min, max, step}) so the
+    # Shotgun Sweep page can render a control per sweepable field with no hardcoding.
+    sweep_default: dict | None = None
 
 
 # Declared once, in canonical (display + fingerprint) order. ``writable=False`` means
@@ -36,9 +39,11 @@ class ShaperField:
 SHAPER_FIELDS: list[ShaperField] = [
     ShaperField("download_bandwidth", "Download bandwidth", writable=True),
     ShaperField("upload_bandwidth", "Upload bandwidth"),
-    ShaperField("quantum", "Quantum", kind="int", writable=True, sweepable=True),
+    ShaperField("quantum", "Quantum", kind="int", writable=True, sweepable=True,
+                sweep_default={"enabled": True, "min": 300, "max": 10000, "step": 757}),
     ShaperField("limit", "Queue limit", kind="int", writable=True),
-    ShaperField("target", "CoDel target", writable=True, sweepable=True, unit="ms"),
+    ShaperField("target", "CoDel target", writable=True, sweepable=True, unit="ms",
+                sweep_default={"enabled": False, "min": 3, "max": 8, "step": 1}),
     ShaperField("interval", "CoDel interval", writable=True, unit="ms"),
     ShaperField("ecn", "ECN", kind="bool", writable=True),
     ShaperField("flows", "Flows", kind="int", writable=True),
