@@ -137,6 +137,14 @@ DEFAULT_CONFIG: dict = {
         "min_samples": 3,
     },
     "rubric_version": DEFAULT_RUBRIC_VERSION,
+    # Challenger race tuning.
+    "challenger": {
+        # During a race, re-run the crowned incumbent whenever its newest run is older
+        # than this many minutes, so challengers are judged against a *contemporaneous*
+        # bar (removes time-of-day drift) and the crown's own confidence band stays
+        # tight + re-validated. 0 disables incumbent refresh.
+        "incumbent_refresh_minutes": 60,
+    },
     # Autonomous experiment engine. Disarmed by default; it never writes to the
     # firewall unless `enabled` is true, and `dry_run` logs intended changes
     # without applying. Window hours use the container's local time (set TZ).

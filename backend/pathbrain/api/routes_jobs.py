@@ -165,6 +165,8 @@ def _active_challenger_job() -> list[dict]:
         return []
     n_elim = len(r.get("eliminated") or [])
     leader = r.get("leader_label") or "…"
+    n_refresh = r.get("incumbent_refreshes") or 0
+    refresh_note = f" · {n_refresh} incumbent refresh{'es' if n_refresh != 1 else ''}" if n_refresh else ""
     return [
         {
             "id": f"challenger-{r['id']}",
@@ -173,7 +175,7 @@ def _active_challenger_job() -> list[dict]:
             "status": "running",
             "current": r.get("iterations_run") or 0,
             "total": None,
-            "message": f"iter {r.get('iterations_run') or 0} · leader {leader} · {n_elim} eliminated",
+            "message": f"iter {r.get('iterations_run') or 0} · leader {leader} · {n_elim} eliminated{refresh_note}",
             "error": None,
             "href": "/settings",
             "started_at": r.get("started_at") or r.get("created_at"),

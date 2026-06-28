@@ -777,6 +777,9 @@ export default function Settings() {
           {(activeRace.eliminated?.length ?? 0) > 0
             ? `, ${activeRace.eliminated.length} eliminated`
             : ""}
+          {(activeRace.incumbent_refreshes ?? 0) > 0
+            ? `, ${activeRace.incumbent_refreshes} incumbent refresh(es)`
+            : ""}
           {activeRace.auto_promote ? " · winner will be auto-applied" : " · baseline restored at end"}.
         </Alert>
       )}
@@ -889,14 +892,16 @@ export default function Settings() {
             <Typography variant="caption" color="text.secondary">
               Ranked by <b>Overall</b> — a single 0–100 measure of how close a profile sits to the
               ideal <b>Speed 100 / Smoothness 100</b> corner (fastest <i>and</i> smoothest). "Best" is
-              the confident profile closest to that corner. Speed and Smoothness are shown alongside.
-              Iterations count every measurement sweep — a 15‑iteration run carries far more signal
-              than a single‑iteration one. <b>vs typical</b> is the time-adjusted edge: median Overall
-              minus the historical norm for the day &amp; hour each run landed on — positive means the
-              profile beats its environment, the fair way to compare configs sampled at different
-              times. The crown docks a profile that scores below its own day/hour norm, so "best"
-              can't just be riding a favorable time window. Use <b>Columns</b> to add any other metric
-              we collect, then sort by it.
+              the confident profile with the highest <b>probability of being the true best</b> — a
+              Bayesian comparison that weighs both a high typical Overall and how sure we are of it
+              (more iterations → tighter estimate), rather than a worst-case floor. Speed and
+              Smoothness are shown alongside. Iterations count every measurement sweep — a
+              15‑iteration run carries far more signal than a single‑iteration one. <b>vs typical</b>
+              is the time-adjusted edge: median Overall minus the historical norm for the day &amp;
+              hour each run landed on — positive means the profile beats its environment, the fair way
+              to compare configs sampled at different times; the crown de-confounds a profile that
+              scored below its own day/hour norm, so "best" can't just be riding a favorable window.
+              Use <b>Columns</b> to add any other metric we collect, then sort by it.
               {showCompletion && (
                 <>
                   {" "}
@@ -1035,12 +1040,12 @@ export default function Settings() {
                           {p.fingerprint === bestFingerprint && (
                             <Tooltip
                               title={
-                                `Crowned by confidence-adjusted Overall${
-                                  p.overall_pessimistic != null ? ` (${p.overall_pessimistic})` : ""
-                                } — a lower bound that penalizes small/noisy samples.` +
+                                `Crowned by probability-of-best${
+                                  p.prob_best != null ? ` (${Math.round(p.prob_best * 100)}% most likely the true best)` : ""
+                                } — a Bayesian comparison of each profile's Overall that rewards both a high typical score and how sure we are of it (more iterations → tighter estimate), without docking it twice for variance.` +
                                 (p.relative_overall_lb != null && p.relative_overall_lb < 0
-                                  ? ` Docked ${p.relative_overall_lb} for scoring below its day/hour norm (it rode a favorable time window).`
-                                  : ` Not penalized — it holds up against its day/hour norm, so it isn't just riding a favorable time window.`)
+                                  ? ` Its level is de-confounded down by ${p.relative_overall_lb} for scoring below its day/hour norm (it rode a favorable time window).`
+                                  : ``)
                               }
                             >
                               <Chip size="small" color="success" label="best" />

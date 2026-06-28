@@ -428,6 +428,9 @@ class ChallengerRace(Base):
 
     # Live/result progress.
     iterations_run: Mapped[int] = mapped_column(Integer, default=0)
+    # Iterations spent re-measuring the crowned incumbent (a stale-bar refresh), so the
+    # challengers race a contemporaneous bar. Counted within iterations_run.
+    incumbent_refreshes: Mapped[int] = mapped_column(Integer, default=0)
     leader_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     leader_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     winner_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)

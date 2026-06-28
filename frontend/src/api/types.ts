@@ -131,6 +131,11 @@ export interface SettingsProfile {
   // IQR of the per-run Overall score (its own run-to-run variation). Null until scorable.
   overall_p25: number | null;
   overall_p75: number | null;
+  // Posterior spread (standard error) over the profile's true Overall, and the Bayesian
+  // probability (0–1) that this profile is *truly* the best among confident profiles —
+  // the basis for crowning "best". Null until scorable / not a confident candidate.
+  overall_scale: number | null;
+  prob_best: number | null;
   // Time-adjusted ("vs typical") Overall: how much this profile beats its day×hour
   // norm, with a confidence-adjusted lower bound — the basis for crowning "best"
   // (de-confounds for *when* the profile ran). Null until a usable baseline exists.
@@ -256,6 +261,9 @@ export interface ChallengerRace {
   time_budget_s: number;
   auto_promote: boolean;
   iterations_run: number;
+  // Iterations spent re-measuring the crowned incumbent so challengers race a
+  // contemporaneous bar (counted within iterations_run).
+  incumbent_refreshes: number;
   leader_fingerprint: string | null;
   leader_label: string | null;
   winner_fingerprint: string | null;

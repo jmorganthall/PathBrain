@@ -6,6 +6,7 @@ configurable threshold.
 """
 from __future__ import annotations
 
+import random
 from math import sqrt
 from statistics import median, quantiles
 
@@ -37,6 +38,7 @@ _CORNER_AXES = ("responsiveness", "smoothness", "speed")
 # metadata from the catalog). higher_is_better drives the "↑/↓ better" hints.
 _PROFILE_FIELDS = [
     {"key": "overall", "label": "Overall (corner)", "unit": "score", "higher_is_better": True, "group": "Scores"},
+    {"key": "prob_best", "label": "P(best)", "unit": "%", "higher_is_better": True, "group": "Scores"},
     {"key": "responsiveness", "label": "Responsiveness", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "smoothness", "label": "Smoothness", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "speed", "label": "Speed", "unit": "score", "higher_is_better": True, "group": "Scores"},
@@ -135,6 +137,63 @@ def relative_lower_bound(
     iqr = float(rel["p75"]) - float(rel["p25"])
     se = (iqr / 1.349) / (n ** 0.5)
     return round(med - k * se, 2)
+
+
+# Monte-Carlo settings for the probability-of-best crown. Fixed seed → deterministic
+# (reproducible crowns + tests); only confident profiles compete, so N is small.
+PROB_BEST_SAMPLES = 10000
+PROB_BEST_SEED = 20240617
+
+
+def overall_posterior_scale(
+    overall_samples: list[float], margin: float = CROWN_PESSIMISM_MARGIN
+) -> float | None:
+    """Standard error of a profile's mean **per-run Overall** — the spread of the
+    Normal posterior over its *true* Overall. ``SE = (IQR/1.349)/√n`` (IQR→σ→SE), so it
+    tightens as runs accumulate. Thin samples (n<2) get a wide ``margin`` scale (we're
+    very unsure). Returns None for an empty sample. Pairs with the median (the posterior
+    location) to drive ``probability_of_best``."""
+    if not overall_samples:
+        return None
+    n = len(overall_samples)
+    if n < 2:
+        return float(margin)
+    q = quantiles(overall_samples, n=4)
+    iqr = q[2] - q[0]
+    return (iqr / 1.349) / (n ** 0.5)
+
+
+def probability_of_best(
+    items: list[tuple[str, float, float]],
+    samples: int = PROB_BEST_SAMPLES,
+    seed: int = PROB_BEST_SEED,
+) -> dict[str, float]:
+    """P(this profile is truly the best) for each candidate, by Monte Carlo.
+
+    ``items`` = ``[(key, loc, scale)]`` — each a Normal posterior over the profile's true
+    Overall (loc = median, scale = ``overall_posterior_scale``). We draw all profiles
+    jointly ``samples`` times and tally how often each is the argmax, giving a proper
+    probability that accounts for *both* how high a profile scores **and** how sure we
+    are. Unlike a pessimistic floor it doesn't dock a profile for variance — a noisy
+    profile simply wins the draw less often — and a profile we've barely sampled (wide
+    scale) rarely tops a proven, tight one. Deterministic via the fixed seed."""
+    if not items:
+        return {}
+    if len(items) == 1:
+        return {items[0][0]: 1.0}
+    rng = random.Random(seed)
+    keys = [k for k, _, _ in items]
+    locs = [loc for _, loc, _ in items]
+    scales = [max(0.0, s) for _, _, s in items]
+    wins = dict.fromkeys(keys, 0)
+    for _ in range(samples):
+        best_i, best_v = 0, None
+        for i in range(len(items)):
+            v = rng.gauss(locs[i], scales[i]) if scales[i] > 0 else locs[i]
+            if best_v is None or v > best_v:
+                best_v, best_i = v, i
+        wins[keys[best_i]] += 1
+    return {k: round(wins[k] / samples, 4) for k in keys}
 
 router = APIRouter()
 log = get_logger("api.settings")
@@ -413,6 +472,9 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
         overall_spread = _spread(overall_samples) if overall_samples else None
         overall = overall_spread["median"] if overall_spread else None
         overall_pessimistic = overall_lower_bound(overall_samples)
+        # Spread of the Normal posterior over the profile's true Overall — feeds the
+        # probability-of-best crown (with `overall` as the posterior location).
+        overall_scale = overall_posterior_scale(overall_samples)
         # Per-metric medians — every numeric value we collect, for the chart + columns.
         metrics = {key: round(median(vals), 3) for key, vals in g["metric_samples"].items() if vals}
         rel = profile_relative(baseline_points, g["points"], "smoothness", tz_offset, min_samples)
@@ -448,6 +510,10 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
                 # IQR of the per-run Overall (its own run-to-run variation, for display).
                 "overall_p25": overall_spread["p25"] if overall_spread else None,
                 "overall_p75": overall_spread["p75"] if overall_spread else None,
+                # Posterior spread (SE) over the true Overall + P(this profile is best),
+                # filled in below once every confident candidate is known.
+                "overall_scale": overall_scale,
+                "prob_best": None,
                 # Every numeric value we collect, median over the profile's runs.
                 "metrics": metrics,
                 # Time-adjusted Smoothness: above/below the day×hour historical norm.
@@ -475,25 +541,37 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
     # missing it (no speed or smoothness yet) fall back to smoothness median, sort last.
     profiles.sort(key=lambda p: (p["overall"] is not None, p["overall"] if p["overall"] is not None else p["median"]), reverse=True)
 
-    # "Best" = the confident profile with the highest *crown score*. The backbone is the
-    # absolute confidence-adjusted Overall (a lower bound), which already counters the
-    # small-sample winner's curse so a lucky 15-iteration profile can't out-rank a proven
-    # one. On top of that we subtract a **window-rider penalty**: if a profile's
-    # time-adjusted ("vs typical") Overall lower bound is negative — it scored *below* its
-    # own day×hour norm, i.e. it only looked good because it happened to run in a
-    # favourable window — we dock it by that shortfall. A profile that genuinely beats its
-    # environment (≥ 0 vs typical) takes no penalty, and one with no usable time baseline
-    # yet is judged on the absolute bound alone. This de-confounds for *when* a profile was
-    # sampled without letting the noisier relative signal dominate the crown.
-    def crown_score(p: dict) -> float | None:
-        base = p["overall_pessimistic"]
-        if base is None:
-            return None
-        penalty = min(0.0, p["relative_overall_lb"]) if p["relative_overall_lb"] is not None else 0.0
-        return base + penalty
+    # "Best" = the confident profile most likely to be **truly** the best, by a Bayesian
+    # probability-of-best (Thompson-style) over each candidate's Normal posterior on its
+    # true Overall — location = median Overall, scale = the posterior SE
+    # (``overall_posterior_scale``). Unlike a pessimistic floor this doesn't dock a
+    # profile for variance (smoothness already scores consistency; the floor double-counted
+    # it); a noisy profile simply wins the joint draw less often, and a barely-sampled one
+    # (wide scale) rarely tops a proven, tight one — so it captures "how good" AND "how
+    # sure" without conflating them into one number. We keep the **window-rider**
+    # de-confounding by shifting the posterior location *down* by any negative time-adjusted
+    # ("vs typical") shortfall, so a profile that only looked good because of *when* it ran
+    # competes from its de-confounded level. Ties (equal rounded P) break toward the tighter
+    # posterior, then the higher location.
+    confident = [p for p in profiles if p["confident"] and p["overall"] is not None]
 
-    confident = [p for p in profiles if p["confident"] and crown_score(p) is not None]
-    best = max(confident, key=lambda p: crown_score(p), default=None)
+    def _crown_loc(p: dict) -> float:
+        loc = float(p["overall"])
+        pen = p["relative_overall_lb"]
+        if pen is not None and pen < 0:
+            loc += float(pen)  # window-rider de-confounding: only ever shift down
+        return loc
+
+    items = [(p["fingerprint"], _crown_loc(p), p["overall_scale"] or 0.0) for p in confident]
+    probs = probability_of_best(items)
+    for p in profiles:
+        p["prob_best"] = probs.get(p["fingerprint"])
+
+    best = max(
+        confident,
+        key=lambda p: (round(p["prob_best"] or 0.0, 2), -(p["overall_scale"] or 0.0), _crown_loc(p)),
+        default=None,
+    )
     best_fingerprint = best["fingerprint"] if best else None
 
     return {
