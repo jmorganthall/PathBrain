@@ -13,8 +13,8 @@ def _spread(median: float, p75: float, n: int) -> dict:
     return {"median": median, "p25": median, "p75": p75, "min": median, "max": p75, "n": n}
 
 
-def _axes(median: float, p75: float, n: int) -> dict:
-    return {a: _spread(median, p75, n) for a in ("responsiveness", "smoothness", "speed")}
+def _crown(median: float, p75: float, n: int) -> dict:
+    return {m: _spread(median, p75, n) for m in ("fcp", "perceived_time", "inp")}
 
 
 # ── optimistic_overall ───────────────────────────────────────────────────────
@@ -22,8 +22,8 @@ def _axes(median: float, p75: float, n: int) -> dict:
 
 def test_optimistic_overall_uses_p75_band():
     # A wide, thin sample is optimistic (p75 ≫ median); a tight one is not.
-    tight = optimistic_overall(_axes(80, 80, 10))
-    wide = optimistic_overall(_axes(80, 95, 3))
+    tight = optimistic_overall(_crown(80, 80, 10))
+    wide = optimistic_overall(_crown(80, 95, 3))
     assert wide > tight
     # The tight band ≈ the plain corner Overall of the medians.
     assert abs(tight - 80.0) < 0.5
@@ -31,13 +31,13 @@ def test_optimistic_overall_uses_p75_band():
 
 def test_optimistic_overall_margin_for_thin_samples():
     # With <2 samples there's no usable spread, so it gets median + margin benefit.
-    thin = optimistic_overall(_axes(80, 80, 1))
-    plain = optimistic_overall(_axes(80, 80, 10))
+    thin = optimistic_overall(_crown(80, 80, 1))
+    plain = optimistic_overall(_crown(80, 80, 10))
     assert thin > plain  # the 5-point optimism margin lifts a 1-shot challenger
 
 
-def test_optimistic_overall_none_when_missing_a_corner_axis():
-    partial = {"responsiveness": _spread(80, 90, 3)}  # no smoothness/speed
+def test_optimistic_overall_none_when_missing_a_required_metric():
+    partial = {"fcp": _spread(80, 90, 3)}  # no perceived_time (a required crown metric)
     assert optimistic_overall(partial) is None
 
 
@@ -51,16 +51,16 @@ def _field(profiles: list[dict], best_fingerprint: str | None) -> dict:
 def test_rank_challengers_selects_leader_and_eliminates():
     field = _field(
         [
-            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0, "axis_spreads": {}},
+            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0, "crown_spreads": {}},
             # contender: optimistic ~95 ≥ bar 85
             {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-             "axis_spreads": _axes(80, 95, 3)},
+             "crown_spreads": _crown(80, 95, 3)},
             # laggard: optimistic ~55 < bar → eliminated
             {"fingerprint": "D", "label": "D", "confident": False, "overall": None,
-             "axis_spreads": _axes(50, 55, 8)},
-            # incomplete corner coverage → eliminated
+             "crown_spreads": _crown(50, 55, 8)},
+            # incomplete corner coverage (missing required perceived_time) → eliminated
             {"fingerprint": "E", "label": "E", "confident": False, "overall": None,
-             "axis_spreads": {"responsiveness": _spread(90, 95, 4)}},
+             "crown_spreads": {"fcp": _spread(90, 95, 4)}},
         ],
         best_fingerprint="B",
     )
@@ -76,9 +76,9 @@ def test_rank_challengers_selects_leader_and_eliminates():
 def test_rank_challengers_respects_already_eliminated():
     field = _field(
         [
-            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0, "axis_spreads": {}},
+            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0, "crown_spreads": {}},
             {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-             "axis_spreads": _axes(80, 95, 3)},
+             "crown_spreads": _crown(80, 95, 3)},
         ],
         best_fingerprint="B",
     )
@@ -106,18 +106,18 @@ def _drive_with(monkeypatch, *, auto_promote: bool) -> tuple[ChallengerRace, dic
     f1 = _field(
         [
             {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
-             "axis_spreads": {}, "settings": [{"label": "B"}]},
+             "crown_spreads": {}, "settings": [{"label": "B"}]},
             {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-             "axis_spreads": _axes(80, 96, 3), "settings": [{"label": "C"}]},
+             "crown_spreads": _crown(80, 96, 3), "settings": [{"label": "C"}]},
         ],
         best_fingerprint="B",
     )
     f2 = _field(
         [
             {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
-             "axis_spreads": {}, "settings": [{"label": "B"}]},
+             "crown_spreads": {}, "settings": [{"label": "B"}]},
             {"fingerprint": "C", "label": "C", "confident": True, "overall": 90.0,
-             "axis_spreads": {}, "settings": [{"label": "C"}]},
+             "crown_spreads": {}, "settings": [{"label": "C"}]},
         ],
         best_fingerprint="C",
     )
@@ -252,12 +252,12 @@ def test_drive_refreshes_stale_incumbent(monkeypatch):
     stale = (now - timedelta(minutes=120)).isoformat()
     fresh = now.isoformat()
     b_stale = {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
-               "axis_spreads": {}, "settings": [{"label": "B"}], "last_seen": stale}
+               "crown_spreads": {}, "settings": [{"label": "B"}], "last_seen": stale}
     b_fresh = {**b_stale, "last_seen": fresh}
     c_under = {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-               "axis_spreads": _axes(80, 96, 3), "settings": [{"label": "C"}], "last_seen": fresh}
+               "crown_spreads": _crown(80, 96, 3), "settings": [{"label": "C"}], "last_seen": fresh}
     c_conf = {"fingerprint": "C", "label": "C", "confident": True, "overall": 90.0,
-              "axis_spreads": {}, "settings": [{"label": "C"}], "last_seen": fresh}
+              "crown_spreads": {}, "settings": [{"label": "C"}], "last_seen": fresh}
     # Step 1: incumbent B is 2h stale → re-measure B first (don't touch a challenger yet).
     # Step 2: B fresh → sample challenger C. Step 3: C confirmed best → winner, race ends.
     f1 = _field([b_stale, c_under], best_fingerprint="B")
@@ -277,11 +277,11 @@ def test_drive_skips_refresh_when_incumbent_fresh(monkeypatch):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     fresh = now.isoformat()
     b_fresh = {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
-               "axis_spreads": {}, "settings": [{"label": "B"}], "last_seen": fresh}
+               "crown_spreads": {}, "settings": [{"label": "B"}], "last_seen": fresh}
     c_under = {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-               "axis_spreads": _axes(80, 96, 3), "settings": [{"label": "C"}], "last_seen": fresh}
+               "crown_spreads": _crown(80, 96, 3), "settings": [{"label": "C"}], "last_seen": fresh}
     c_conf = {"fingerprint": "C", "label": "C", "confident": True, "overall": 90.0,
-              "axis_spreads": {}, "settings": [{"label": "C"}], "last_seen": fresh}
+              "crown_spreads": {}, "settings": [{"label": "C"}], "last_seen": fresh}
     f1 = _field([b_fresh, c_under], best_fingerprint="B")
     f2 = _field([b_fresh, c_conf], best_fingerprint="C")
 

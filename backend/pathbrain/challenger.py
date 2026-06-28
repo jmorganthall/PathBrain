@@ -7,8 +7,8 @@ wasted on a fluke), this races every *limited-data* profile against the confiden
 
 1. Snapshot the live firewall settings (the baseline to restore).
 2. Loop, time-boxed, while there's a challenger that could still win:
-   - rank under-minimum profiles by an **optimistic Overall** (corner score over each
-     headline axis's upper estimate; see ``optimistic_overall``),
+   - rank under-minimum profiles by an **optimistic Overall** (feel-trinity corner over
+     each crown metric's upper estimate; see ``optimistic_overall``),
    - **eliminate** any whose optimistic best-case can't beat the best's Overall,
    - if the crowned incumbent's newest run is **stale** (older than
      ``challenger.incumbent_refresh_minutes``), re-measure IT first so challengers race
@@ -128,7 +128,7 @@ def rank_challengers(field: dict, already_eliminated: dict | set | None = None) 
     for fp, p in profiles.items():
         if p["confident"] or fp in already:
             continue
-        opt = optimistic_overall(p.get("axis_spreads") or {})
+        opt = optimistic_overall(p.get("crown_spreads") or {})
         if opt is None:
             newly[fp] = {"label": p["label"], "reason": "incomplete corner coverage"}
         elif bar is not None and opt < bar:

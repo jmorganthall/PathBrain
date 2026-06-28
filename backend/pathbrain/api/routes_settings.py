@@ -7,7 +7,6 @@ configurable threshold.
 from __future__ import annotations
 
 import random
-from math import sqrt
 from statistics import median, quantiles
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -19,7 +18,7 @@ from .. import profile_test as profile_test_mod
 from ..config_store import get_config
 from ..database import get_session
 from ..logging_config import get_logger
-from ..methodology import ensure_current_methodology
+from ..methodology import corner_score, ensure_current_methodology
 from ..metrics import all_metric_sources
 from ..models import Run, RunStatus, Score
 from ..providers import get_provider
@@ -28,16 +27,29 @@ from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import diff_profiles, fingerprint, normalize, plan_apply, summarize
 from ..trends import RunPoint, profile_relative
 
-# The three headline axes (the temporal phases of a load) whose 0–100 scores define the
-# Overall "corner" score under methodology speed-smoothness-v4; the crowned "best"
-# profile is the confident one closest to the perfect (100, 100, 100) corner.
+# The three headline axes (the temporal phases of a load); their 0–100 scores still
+# drive the per-axis display columns, but the **crown** no longer corners over them.
 _CORNER_AXES = ("responsiveness", "smoothness", "speed")
+
+# The seat-of-pants "feel trinity": the few raw measurements that directly capture
+# human feel, which the crown corners over instead of the composite axes —
+#   fcp            → quickest first response (what the eye first registers),
+#   perceived_time → lowest perceived (stall-weighted) load time,
+#   inp            → quickest time to interactivity ("I touched it and it answered").
+# These are per-metric 0–100 *subscores* (perception-calibrated by the scoring engine,
+# carried on every Score under speed-smoothness-v4), so they're directly comparable and
+# corner cleanly. INP needs a real interaction and may be absent on a pure navigation,
+# so it's optional; FCP + perceived-time are required (the crown never collapses to a
+# single metric, and Josh's "two or three" is honored literally).
+CROWN_METRICS = ("fcp", "perceived_time", "inp")
+CROWN_REQUIRED = ("fcp", "perceived_time")
 
 # Non-metric numeric fields the /api/metrics catalog doesn't describe, exposed so the
 # UI's chart-axis pickers + column selector can offer them (metric fields get their
 # metadata from the catalog). higher_is_better drives the "↑/↓ better" hints.
 _PROFILE_FIELDS = [
-    {"key": "overall", "label": "Overall (corner)", "unit": "score", "higher_is_better": True, "group": "Scores"},
+    {"key": "overall", "label": "Overall (feel)", "unit": "score", "higher_is_better": True, "group": "Scores"},
+    {"key": "custom_overall", "label": "Overall (custom)", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "prob_best", "label": "P(best)", "unit": "%", "higher_is_better": True, "group": "Scores"},
     {"key": "responsiveness", "label": "Responsiveness", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "smoothness", "label": "Smoothness", "unit": "score", "higher_is_better": True, "group": "Scores"},
@@ -50,16 +62,16 @@ _PROFILE_FIELDS = [
 ]
 
 
-def _corner_overall(scores: dict) -> float | None:
-    """0–100 'closeness to the perfect corner' over the three headline axes
-    (Responsiveness/Smoothness/Speed): 100 at all-100, 0 at all-0. Ranks identically to
-    smallest distance to the corner, so the highest-``overall`` confident profile is
-    'best'. Returns None unless every corner axis is present."""
-    vals = [scores.get(a) for a in _CORNER_AXES]
-    if any(v is None for v in vals):
+def _crown_corner(subscores: dict | None) -> float | None:
+    """Live fallback for the seat-of-pants Overall: corner over the feel-trinity metric
+    subscores (``CROWN_METRICS``), requiring the always-present pair (``CROWN_REQUIRED``)
+    and folding in INP when captured. The methodology now owns this definition
+    (``overall_from_definition``) and persists Overall on the Score; this mirrors it for
+    runs whose Score predates the persisted value (e.g. fixtures / not-yet-re-graded)."""
+    sub = subscores or {}
+    if any(sub.get(k) is None for k in CROWN_REQUIRED):
         return None
-    dist = sqrt(sum((100.0 - v) ** 2 for v in vals))
-    return round(100.0 - dist / sqrt(len(_CORNER_AXES)), 1)
+    return corner_score([sub.get(k) for k in CROWN_METRICS if sub.get(k) is not None])
 
 
 # Optimism margin (points) given to a corner axis with too few samples to have a
@@ -67,24 +79,30 @@ def _corner_overall(scores: dict) -> float | None:
 RACE_OPTIMISM_MARGIN = 5.0
 
 
-def optimistic_overall(axis_spreads: dict, margin: float = RACE_OPTIMISM_MARGIN) -> float | None:
-    """An *upper-bound* Overall for a not-yet-confident profile: the corner score over
-    each headline axis's optimistic estimate. Uses the axis p75 (upper quartile) when
-    there are ≥2 samples, else ``median + margin`` — so a thin sample gets the benefit
-    of the doubt, and the bound tightens toward the real Overall as iterations
-    accumulate (p75 → median). Drives the racing/elimination decision. Returns None
-    unless every corner axis has at least one sample."""
-    opt: dict[str, float] = {}
-    for axis in _CORNER_AXES:
-        sp = axis_spreads.get(axis)
-        if not sp or sp.get("median") is None:
-            return None  # missing a corner axis → not yet comparable on the corner
+def optimistic_overall(crown_spreads: dict, margin: float = RACE_OPTIMISM_MARGIN) -> float | None:
+    """An *upper-bound* Overall for a not-yet-confident profile: the feel-trinity corner
+    over each crown metric's optimistic estimate. Uses the metric p75 (upper quartile)
+    when there are ≥2 samples, else ``median + margin`` — so a thin sample gets the
+    benefit of the doubt, and the bound tightens toward the real Overall as iterations
+    accumulate (p75 → median). Drives the racing/elimination decision. Requires the
+    always-present pair (``CROWN_REQUIRED``); folds in INP when sampled. Returns None
+    unless every required crown metric has at least one sample."""
+    def _opt(sp: dict) -> float:
         if (sp.get("n") or 0) >= 2 and sp.get("p75") is not None:
             val = float(sp["p75"])
         else:
             val = float(sp["median"]) + margin
-        opt[axis] = min(100.0, val)
-    return _corner_overall(opt)
+        return min(100.0, val)
+
+    if any((crown_spreads.get(k) or {}).get("median") is None for k in CROWN_REQUIRED):
+        return None  # missing a required crown metric → not yet comparable on the corner
+    opt: list[float] = []
+    for metric in CROWN_METRICS:
+        sp = crown_spreads.get(metric)
+        if not sp or sp.get("median") is None:
+            continue  # optional metric (INP) not sampled → corner over what's present
+        opt.append(_opt(sp))
+    return corner_score(opt)
 
 
 # Penalty (points) applied when a profile is too thin to estimate spread — the
@@ -335,6 +353,14 @@ def settings_profiles(
     tz_offset: int = Query(
         0, description="Minutes to add to UTC for viewer-local time (day/hour baselines)."
     ),
+    crown_metrics: str | None = Query(
+        None,
+        description=(
+            "Optional comma-separated subscore keys (e.g. 'fcp,inp') for a custom crown: "
+            "a live corner over the chosen betterments, returned per-profile as "
+            "'custom_overall' + a 'custom_best_fingerprint'. Canonical Overall is unchanged."
+        ),
+    ),
 ) -> dict:
     """One row per distinct settings profile, with its SOPS distribution.
 
@@ -355,7 +381,10 @@ def settings_profiles(
     Also returns ``current_fingerprint``: the profile the firewall is on *right now*
     (best-effort live discovery), so the UI can flag the active row.
     """
-    result = compute_profiles(session, complete_only=complete_only, tz_offset=tz_offset)
+    custom = [m.strip() for m in (crown_metrics or "").split(",") if m.strip()] or None
+    result = compute_profiles(
+        session, complete_only=complete_only, tz_offset=tz_offset, custom_crown_metrics=custom
+    )
     result["current_fingerprint"] = _current_fingerprint()
     return result
 
@@ -369,12 +398,18 @@ def _current_fingerprint() -> str | None:
         return None
 
 
-def compute_profiles(session: Session, complete_only: bool = True, tz_offset: int = 0) -> dict:
-    """Aggregate completed runs into per-profile rows ranked by the corner Overall,
-    with the crowned ``best_fingerprint``. Shared by the ``/settings/profiles`` endpoint
-    and the challenger race (``challenger.py``) so both rank profiles with identical
-    logic. Each profile also carries ``axis_spreads`` ({axis: {median,p25,p75,n}}) so a
-    caller can compute an ``optimistic_overall`` for not-yet-confident profiles."""
+def compute_profiles(
+    session: Session,
+    complete_only: bool = True,
+    tz_offset: int = 0,
+    custom_crown_metrics: list[str] | None = None,
+) -> dict:
+    """Aggregate completed runs into per-profile rows ranked by the feel-trinity corner
+    Overall, with the crowned ``best_fingerprint``. Shared by the ``/settings/profiles``
+    endpoint and the challenger race (``challenger.py``) so both rank profiles with
+    identical logic. Each profile carries ``axis_spreads`` ({axis: {median,p25,p75,n}})
+    for the display columns and ``crown_spreads`` (same shape, keyed by ``CROWN_METRICS``)
+    so a caller can compute an ``optimistic_overall`` for not-yet-confident profiles."""
     min_runs = _min_runs(session)
     min_iterations = _min_iterations(session)
     min_samples = int((get_config(session).get("trends", {}) or {}).get("min_samples", 3) or 3)
@@ -390,9 +425,16 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
             continue
         axes = (score.axis_scores or {}) if comparable else {}
         smooth, speed, comp_axis = axes.get("smoothness"), axes.get("speed"), axes.get("completion")
-        resp = axes.get("responsiveness")
-        # This run's Overall (corner of its three headline axes) — the unit we crown on.
-        run_overall = _corner_overall({"responsiveness": resp, "smoothness": smooth, "speed": speed})
+        # Per-metric 0–100 subscores carried on the Score (perception-calibrated by the
+        # methodology's thresholds) — the building blocks for both the canonical Overall
+        # and any custom-crown corner the caller asks for.
+        crown_sub = (score.subscores or {}) if comparable else {}
+        # This run's Overall: the methodology's first-class value persisted at scoring time
+        # (``axis_scores['overall']``); fall back to the live feel-trinity corner for a
+        # Score that predates it (fixtures / not-yet-re-graded).
+        run_overall = axes.get("overall")
+        if run_overall is None:
+            run_overall = _crown_corner(crown_sub)
         # Time baseline carries both smoothness and the per-run Overall, so we can read
         # each profile's "vs typical" (day×hour-adjusted) for the Overall too.
         point_values = {"smoothness": smooth}
@@ -414,8 +456,11 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
                 "completion_metrics": {m: [] for m in COMPLETION_METRIC_SOURCES},
                 # Per-axis 0–100 score samples (speed/smoothness/stability/completion)…
                 "axis_samples": {},
-                # …and per-metric raw value samples (every numeric value we collect).
+                # …per-metric raw value samples (every numeric value we collect)…
                 "metric_samples": {},
+                # …and per-metric 0–100 subscore samples (every scored metric), so the
+                # canonical crown and any custom corner share one set of building blocks.
+                "subscore_samples": {},
                 # Per-run Overall (corner) scores → the distribution we crown/rank on.
                 "overall_samples": [],
                 "first_seen": run.created_at,
@@ -438,10 +483,16 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
         for m in COMPLETION_METRIC_SOURCES:
             if mv.get(m) is not None:
                 g["completion_metrics"][m].append(float(mv[m]))
-        # All axis scores (0–100) for this run → per-axis samples.
+        # All axis scores (0–100) for this run → per-axis samples (display columns).
+        # ``overall`` is a derived headline, not an axis, so it never becomes a column.
         for axis_key, val in (axes or {}).items():
-            if val is not None:
+            if val is not None and axis_key != "overall":
                 g["axis_samples"].setdefault(axis_key, []).append(float(val))
+        # Every per-metric subscore (0–100) for this run → the crown's corner inputs and
+        # the menu of "betterments" a custom crown can corner over.
+        for metric, val in crown_sub.items():
+            if val is not None:
+                g["subscore_samples"].setdefault(metric, []).append(float(val))
         # Every metric's raw value for this run, from the plugin metric caches.
         results_by_plugin = {r.plugin: (r.metrics or {}) for r in run.results}
         for key, (plugin, source_key) in metric_src.items():
@@ -460,10 +511,19 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
         comp = g["completion"]
         # Per-axis medians (0–100) and the corner "overall" derived from them.
         scores = {axis: round(median(vals), 2) for axis, vals in g["axis_samples"].items() if vals}
-        # Per-axis spread + sample count, so callers can derive an optimistic Overall.
+        # Per-axis spread + sample count (display columns).
         axis_spreads = {
             axis: {**_spread(vals), "n": len(vals)}
             for axis, vals in g["axis_samples"].items() if vals
+        }
+        # Per-metric subscore medians (every scored metric) — the menu of "betterments".
+        # ``crown_scores`` powers display/charting and the custom-crown corner; the
+        # trinity subset (``crown_spreads``) drives the challenger's ``optimistic_overall``.
+        subscore_medians = {m: round(median(vals), 2) for m, vals in g["subscore_samples"].items() if vals}
+        crown_scores = subscore_medians
+        crown_spreads = {
+            m: {**_spread(vals), "n": len(vals)}
+            for m, vals in g["subscore_samples"].items() if vals and m in CROWN_METRICS
         }
         # Overall is the *distribution of per-run Overall scores* — central value, its
         # own IQR, and a confidence-adjusted lower bound (the crown basis). This makes
@@ -497,9 +557,12 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
                 **_spread(g["smoothness"]),
                 # Speed shown alongside (the other headline axis).
                 "speed": _spread(g["speed"]) if g["speed"] else None,
-                # Per-axis medians + the single corner "overall" (closeness to 100,100).
+                # Per-axis medians (display) + the feel-trinity subscore medians/spreads.
                 "scores": scores,
                 "axis_spreads": axis_spreads,
+                "crown_scores": crown_scores,
+                "crown_spreads": crown_spreads,
+                # The single corner "overall" — closeness to the perfect feel corner.
                 "overall": overall,
                 # Confidence-adjusted absolute Overall (lower bound).
                 "overall_pessimistic": overall_pessimistic,
@@ -574,6 +637,14 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
     )
     best_fingerprint = best["fingerprint"] if best else None
 
+    # Custom crown: an *exploratory* second take on "best" that corners over a caller-chosen
+    # set of betterments (per-metric subscores) instead of the canonical feel trinity. It's
+    # a live lens over the same persisted subscores — no re-grade, no methodology change —
+    # so the user can ask "which profile wins if I only care about THESE?". The canonical
+    # ``best_fingerprint`` is untouched; this is a parallel, simpler argmax of the custom
+    # corner among confident profiles (no Thompson — it's a what-if view, not the verdict).
+    custom_best_fingerprint = _apply_custom_crown(profiles, custom_crown_metrics)
+
     return {
         "profiles": profiles,
         "count": len(profiles),
@@ -581,11 +652,35 @@ def compute_profiles(session: Session, complete_only: bool = True, tz_offset: in
         "min_iterations": min_iterations,
         "complete_only": complete_only,
         "best_fingerprint": best_fingerprint,
+        # Echo the custom-crown selection (None when not requested) + its winner.
+        "crown_metrics": list(custom_crown_metrics) if custom_crown_metrics else None,
+        "custom_best_fingerprint": custom_best_fingerprint,
         # Selectable non-metric numeric fields for the chart axes + column selector
         # (metric fields' metadata comes from /api/metrics).
         "fields": _PROFILE_FIELDS,
         "best_diff": _best_diff(profiles, best_fingerprint),
     }
+
+
+def _apply_custom_crown(profiles: list[dict], metrics: list[str] | None) -> str | None:
+    """Set each profile's ``custom_overall`` (corner over the chosen metric subscores) and
+    return the confident winner. ``metrics`` are subscore keys (e.g. ``["fcp", "inp"]``);
+    the corner is an *intersection*, so a profile missing any chosen metric gets ``None``
+    (it can't be placed on this custom corner). No-op returning ``None`` when no metrics
+    are requested. The winner is the highest custom corner among confident profiles."""
+    if not metrics:
+        for p in profiles:
+            p["custom_overall"] = None
+        return None
+    best_fp, best_val = None, None
+    for p in profiles:
+        cs = p.get("crown_scores") or {}
+        vals = [cs.get(m) for m in metrics]
+        custom = corner_score(vals) if all(v is not None for v in vals) else None
+        p["custom_overall"] = custom
+        if custom is not None and p.get("confident") and (best_val is None or custom > best_val):
+            best_fp, best_val = p["fingerprint"], custom
+    return best_fp
 
 
 def _best_diff(profiles: list[dict], best_fingerprint: str | None) -> dict | None:
@@ -840,7 +935,7 @@ def _contending_challengers(session: Session) -> tuple[str | None, list[str]]:
     for fp, p in profiles.items():
         if p["confident"] or fp == best_fp:
             continue
-        opt = optimistic_overall(p.get("axis_spreads") or {})
+        opt = optimistic_overall(p.get("crown_spreads") or {})
         if opt is not None and (bar is None or opt >= bar):
             contenders.append(fp)
     return best_fp, contenders

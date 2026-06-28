@@ -325,7 +325,13 @@ def score_metrics_under(session, run_id, run_methodology_version, methodology, i
     """
     from statistics import pstdev as _pstdev
 
-    from .methodology import axis_rubric, comparability, scored_axes, upsert_score
+    from .methodology import (
+        axis_rubric,
+        comparability,
+        overall_from_definition,
+        scored_axes,
+        upsert_score,
+    )
 
     definition = methodology.definition or {}
     axes = scored_axes(definition)
@@ -362,6 +368,14 @@ def score_metrics_under(session, run_id, run_methodology_version, methodology, i
                 "min": round(min(scores), 2),
                 "max": round(max(scores), 2),
             }
+
+    # First-class Overall: the methodology's headline roll-up (corner over the feel-trinity
+    # subscores), computed once here so capture *and* re-grade persist it identically and
+    # the settings/crown layer never has to recompute it. Stored alongside the axis scores
+    # (it's a derived headline, not a scored axis, so it carries no rubric of its own).
+    overall = overall_from_definition(definition, subscores)
+    if overall is not None:
+        axis_scores["overall"] = overall
 
     comp_tag, missing = comparability(definition, metric_values)
     return upsert_score(
