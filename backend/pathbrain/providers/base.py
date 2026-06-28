@@ -48,6 +48,15 @@ class ConfigProvider(ABC):
         """Lightweight connectivity / configuration check."""
         return {"provider": self.name, "ok": True}
 
+    def writable_fields(self) -> list[str]:
+        """Normalized shaper-field keys this provider's ``apply()`` can write — the single
+        accessor for "what can we change". Defaults to the registry's writable set (the
+        standard OPNsense capability: codel/bandwidth params, not scheduler/queues/upload
+        bandwidth); a provider with a different capability may override."""
+        from ..shaper_fields import WRITABLE_FIELDS
+
+        return list(WRITABLE_FIELDS)
+
     def apply(self, changes: dict) -> dict:
         """Apply a single shaper parameter change and reconfigure.
 

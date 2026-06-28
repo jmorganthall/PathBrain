@@ -41,7 +41,7 @@ from .models import ChallengerRace, ChallengerRaceStatus
 from .profile_test import _apply_all
 from .providers import get_provider
 from .runner import create_run, execute_run
-from .settings_profile import fingerprint, normalize, plan_apply
+from .settings_profile import environment_signature, fingerprint, normalize, plan_apply
 
 log = get_logger("challenger")
 
@@ -134,6 +134,7 @@ def rank_challengers(
     already_eliminated: dict | set | None = None,
     now: datetime | None = None,
     stale_minutes: int = 0,
+    reachable_env: str | None = None,
 ) -> tuple:
     """Pure ranking step over an (augmented) ``compute_profiles`` field. Returns
     ``(best_fingerprint, bar, leader, contenders, newly_eliminated)`` — the next profile
@@ -165,6 +166,18 @@ def rank_challengers(
     scored: list[tuple[tuple, dict, float | None]] = []  # (priority_key, profile, value)
     for fp, p in profiles.items():
         if fp in already:
+            continue
+        # Skip profiles we physically can't reach from the current environment: their
+        # non-writable fields (scheduler/queue count/upload bandwidth) differ from the live
+        # config and apply() can't change them, so racing them would only re-measure the
+        # live profile. Eliminate with a clear reason rather than failing the whole race.
+        if reachable_env is not None and environment_signature(
+            p.get("settings") or []
+        ) != reachable_env:
+            newly[fp] = {
+                "label": p["label"],
+                "reason": "unreachable: scheduler/queues/upload bandwidth differ from the current environment",
+            }
             continue
         if p.get("no_data"):
             scored.append(((0, 0.0), p, None))  # highest priority — measure the unknowns
@@ -218,12 +231,31 @@ def start(time_budget_s: int, auto_promote: bool = False) -> int:
 
 
 def _apply_profile(provider, target_settings: list[dict], target_fp: str) -> None:
-    """Apply a stored profile and read it back to confirm we reached it."""
+    """Apply a stored profile's writable params and confirm *those* took.
+
+    Only the writable codel/bandwidth params are under our control — scheduler, queue
+    count and upload bandwidth can't be driven (see ``settings_profile.NON_WRITABLE_FIELDS``).
+    So we verify the writable params reached the target (no planned change remains), not the
+    full fingerprint: a residual full-fingerprint mismatch means the profile differs only in
+    non-writable fields, which the reachability filter should have excluded already — we log
+    it rather than aborting the race. Raises only when a *writable* param didn't take (a real
+    apply failure)."""
     changes, _warnings = plan_apply(target_settings, provider.discover())
     _apply_all(provider, changes)
-    reached = fingerprint(normalize(provider.discover()))
+    live = provider.discover()
+    remaining, _w = plan_apply(target_settings, live)
+    if remaining:
+        fields = ", ".join(sorted({c["field"] for c in remaining}))
+        raise RuntimeError(
+            f"Could not apply challenger profile {target_fp}: {fields} did not take."
+        )
+    reached = fingerprint(normalize(live))
     if reached != target_fp:
-        raise RuntimeError(f"Could not reach challenger profile (got {reached}, wanted {target_fp}).")
+        log.warning(
+            "Challenger profile %s applied (writable params took) but fingerprint differs "
+            "(got %s) — non-writable fields (scheduler/queues/upload bandwidth) can't be driven.",
+            target_fp, reached,
+        )
 
 
 def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, kept in one place
@@ -266,8 +298,12 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
                     seeded_initial = True
 
                 now = datetime.now(timezone.utc).replace(tzinfo=None)
+                # Only race profiles reachable from the live environment — apply() can't
+                # change scheduler/queues/upload bandwidth, so a profile differing there is
+                # unreachable (and would otherwise abort the race when we fail to reach it).
+                reachable_env = environment_signature(baseline)
                 best_fp, _bar, leader, _contenders, newly_elim = rank_challengers(
-                    field, eliminated, now=now, stale_minutes=stale_min
+                    field, eliminated, now=now, stale_minutes=stale_min, reachable_env=reachable_env
                 )
 
                 # A challenger that became the crowned best (wasn't confident at start)

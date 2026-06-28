@@ -29,6 +29,18 @@ LLM-based. See `README.md` for the product overview.
     `mock.py`); pick via `PATHBRAIN_CONFIG_PROVIDER`. OPNsense reads/writes
     fq_codel fields (`fqcodel_quantum/limit/flows`, `codel_target/interval/ecn`);
     `apply()` does `setPipe` + `reconfigure` and is the **only firewall-write path**.
+    `discover()` (read) + `apply()` (write) are the one read/write path; a provider's
+    `writable_fields()` is the single accessor for *what it can change*.
+  - `shaper_fields.py` — **single source of truth for the SQM field model.** Each
+    `ShaperField` (key, label, kind, `identity`/`writable`/`sweepable`) is declared once;
+    `CANON_FIELDS` (profile identity / fingerprint), `FIELD_LABELS`, `WRITABLE_FIELDS`,
+    `NON_WRITABLE_FIELDS`, and `SWEEPABLE_FIELDS` all derive from it, so `settings_profile`,
+    the providers, and the sweep/experiment engines share one definition instead of
+    re-listing field names. Invariants (writable ⊆ identity; sweepable ⊆ writable; the read
+    model `FqCodelConfig` and OPNsense `_PARAM_FIELD` cover the registry) are asserted at
+    import **and** in `test_shaper_fields` — the relationships that used to drift in comments
+    and produced the "valid but unappliable profile" challenger bug. Adding a shaper field =
+    one entry here.
   - `metrics.py` — **single source of truth for metrics.** Each `MetricDef` (key,
     plugin+source_key, axis, default weight/thresholds, label/description/unit/
     direction, `marks_latest`) is defined once; `METRIC_SOURCES`, the config
@@ -115,8 +127,14 @@ LLM-based. See `README.md` for the product overview.
     **ordered by closeness to the winner**. It **bootstraps** with no confident best (bar
     None → race everything lacking data until a winner emerges). It also **refreshes a stale
     incumbent** (`challenger.incumbent_refresh_minutes`, default 60) first so the bar stays
-    contemporaneous (`_incumbent_stale`; counted in `incumbent_refreshes`). At the end it
-    **restores the baseline**, or applies the winner when `auto_promote`. Own thread under
+    contemporaneous (`_incumbent_stale`; counted in `incumbent_refreshes`). It only races
+    profiles **reachable** from the live environment: `apply()` can write the codel/bandwidth
+    params but not `scheduler`/`queues`/`upload_bandwidth` (`settings_profile.NON_WRITABLE_FIELDS`),
+    so a profile differing in those is unreproducible — `rank_challengers(reachable_env=…)`
+    eliminates it ("unreachable: …") instead of letting `_apply_profile` abort the whole race
+    on a fingerprint it can't reach (`_apply_profile` now verifies the *writable* params took,
+    not the full fingerprint; `environment_signature` hashes the non-writable fields). At the
+    end it **restores the baseline**, or applies the winner when `auto_promote`. Own thread under
     the `coordinator` lock (so the scheduler defers via `coordinator.busy()`); persisted to
     a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on startup.
     `/api/settings/race` (+ `/race/cancel`).

@@ -25,7 +25,14 @@ from ..models import Run, RunStatus, Score
 from ..providers import get_provider
 from ..runner import MAX_ITERATIONS
 from ..scoring import COMPLETION_METRIC_SOURCES
-from ..settings_profile import diff_profiles, fingerprint, normalize, plan_apply, summarize
+from ..settings_profile import (
+    diff_profiles,
+    environment_signature,
+    fingerprint,
+    normalize,
+    plan_apply,
+    summarize,
+)
 from ..trends import RunPoint, profile_relative
 
 # The three headline axes (the temporal phases of a load); their 0–100 scores still
@@ -1150,8 +1157,16 @@ def _contending_challengers(session: Session) -> tuple[str | None, list[str]]:
     field = challenger_mod._field(session)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     stale_min = challenger_mod._contender_stale_minutes(session)
+    # Match the loop: only count contenders reachable from the live environment (apply()
+    # can't drive scheduler/queues/upload bandwidth), so the button doesn't offer a race
+    # whose only contenders can never be applied.
+    reachable_env = None
+    try:
+        reachable_env = environment_signature(normalize(get_provider().discover()))
+    except Exception:  # noqa: BLE001 — best-effort; without it we just don't pre-filter
+        log.debug("Could not discover live settings for reachability filter", exc_info=True)
     best_fp, _bar, _leader, contenders, _newly = challenger_mod.rank_challengers(
-        field, {}, now=now, stale_minutes=stale_min
+        field, {}, now=now, stale_minutes=stale_min, reachable_env=reachable_env
     )
     return best_fp, [p["fingerprint"] for p, _ in contenders]
 
@@ -1176,7 +1191,11 @@ def start_race(body: dict = Body(...), session: Session = Depends(get_session)) 
     if not contenders:
         raise HTTPException(
             status_code=400,
-            detail="Nothing to race — every profile already has current, confident data.",
+            detail=(
+                "Nothing to race — every profile is either already confident/current or "
+                "unreachable from the live environment (its scheduler/queues/upload bandwidth "
+                "differ from the current config, which apply() can't change)."
+            ),
         )
 
     try:

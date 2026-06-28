@@ -24,7 +24,9 @@ _SETTINGS_GET = "/api/trafficshaper/settings/get"
 _SET_PIPE = "/api/trafficshaper/settings/setPipe"
 _RECONFIGURE = "/api/trafficshaper/service/reconfigure"
 
-# Map PathBrain's normalized parameter names to OPNsense pipe field names.
+# Map PathBrain's normalized parameter names to OPNsense pipe field names. Must cover every
+# ``shaper_fields.WRITABLE_FIELDS`` entry (enforced by test_shaper_fields, not just this
+# comment) — that's the relationship whose silent drift broke the challenger race.
 _PARAM_FIELD = {
     "quantum": "fqcodel_quantum",
     "limit": "fqcodel_limit",
