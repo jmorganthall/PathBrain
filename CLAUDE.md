@@ -171,7 +171,18 @@ LLM-based. See `README.md` for the product overview.
   with standard **Overall / Responsiveness / Smoothness / Speed** columns + an optional
   column selector; a **dynamic** any-metric quadrant where X/Y pick the axes, a **Shade**
   picker encodes a third field as dot **opacity** (brighter = better; `ProfileQuadrant`),
-  and the crowned profile is ringed; plus "Test to minimum" and **"Race challengers"**),
+  and the crowned profile is ringed — the quadrant now warns when an axis is **saturated**
+  (every profile already past the methodology's `best` threshold, so the raw spread carries
+  no score signal, e.g. fcp/load_event on a fast link), using the effective thresholds in
+  the profiles response's `metric_thresholds`; a page-level **methodology saturation check**
+  (`saturation` in the response, `_saturation_report`) flags any scored, non-zero-`best`
+  metric that saturates >50% of profiles — too lenient to crown the fastest — and suggests
+  re-anchoring `best` to the fastest value measured (`best`=0 metrics like total_stall are a
+  physical floor and never flagged); plus a **"Heirs to the crown"** card — the
+  limited-data / stale profiles whose *optimistic ceiling* (`optimistic_overall`, the same
+  number the race uses) could still beat the crown, ranked by margin-above-crown, with a
+  count badge on **"Race challengers"** ("N could beat your crown"; response field `heirs`);
+  plus "Test to minimum" and **"Race challengers"**),
   Experiments, Shotgun Sweep, Config, Methodology, Plugins, Data Dump, Run Detail. A
   top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
   (re-grade, sweep, run, profile test, challenger race, …).
@@ -219,6 +230,13 @@ docker compose up --build   # -> http://localhost:8000
   the current methodology, writing new `Score` rows (use this after publishing a new
   methodology — e.g. the v4 axis split); `POST /api/score/rescore` / `rederive` are
   the legacy in-place paths over cached scalars / raw.
+  **GUI re-anchor (`POST /api/methodologies/reanchor`):** forks the *current* methodology's
+  frozen definition, overrides one scored metric's `best`, writes it as a **new** version
+  (axes + Overall spec carried over unchanged — append-only, not an edit), points
+  `config.methodology_version` at it, and kicks the re-grade — the one-click "apply" behind
+  the Settings-Impact saturation alert (Settings → `?reanchor=<metric>&best=<n>` → Methodology
+  page proposal panel). Lets a threshold be re-anchored from the UI without a code edit, while
+  every published version stays a frozen DB snapshot.
 - **Publishing a new methodology — required follow-through.** Bumping
   `CURRENT_METHODOLOGY` is not done until both of these happen, or history shows stale
   scores and the default UI stops reflecting the rubric:

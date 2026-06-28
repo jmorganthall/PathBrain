@@ -177,6 +177,106 @@ def test_confidence_is_iteration_based(client):
     assert by_fp["iterbig000x"]["confident"] is True
 
 
+def test_heirs_are_limited_data_profiles_that_can_beat_the_crown(client):
+    # NB: the test DB is shared across the module, so assert only on our own fingerprints
+    # (not the global crown / heir totals). The heir is given a near-perfect ceiling so it
+    # is guaranteed to out-rank any incidental accumulated contender and surface in the top.
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # A confident, fresh profile (kept low so it can't disturb the module's global crown) —
+    # must NEVER appear as an heir, because the crown only lists profiles it can't yet trust.
+    for i in range(3):
+        _seed_run("hcrown0000x", 60, t0 - timedelta(minutes=120 - i),
+                  crown_subscores={"fcp": 60, "total_stall": 60, "load_event": 60}, iterations=6)
+    # Heir: limited data (3 iters < 15) but near-perfect subscores — its optimistic ceiling
+    # (median + margin, capped at 100) corners to ~100, clearing any plausible crown.
+    _seed_run("heir000000x", 97, t0 - timedelta(minutes=50),
+              crown_subscores={"fcp": 97, "total_stall": 97, "load_event": 97}, iterations=3)
+    # Not an heir: limited data AND a ceiling that can't reach the crown even optimistically.
+    _seed_run("nohope0000x", 40, t0 - timedelta(minutes=40),
+              crown_subscores={"fcp": 40, "total_stall": 40, "load_event": 40}, iterations=3)
+
+    body = client.get("/api/settings/profiles").json()
+    heirs = body["heirs"]
+    fps = [h["fingerprint"] for h in heirs["items"]]
+    assert "heir000000x" in fps                 # promising limited-data profile surfaces
+    assert "nohope0000x" not in fps             # can't beat the crown even optimistically
+    assert "hcrown0000x" not in fps             # confident + fresh → never an heir
+    heir = next(h for h in heirs["items"] if h["fingerprint"] == "heir000000x")
+    assert heir["margin"] > 0                    # ceiling above the crown's Overall
+    assert heir["reason"] == "limited-data"
+    assert heir["iterations_to_min"] == 12       # 15 - 3 still to go
+    assert heirs["total"] >= 1
+
+
+def test_metric_thresholds_expose_effective_v6_anchors(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    _seed_run("thr000000x", 80, t0 - timedelta(minutes=30), iterations=6)
+    body = client.get("/api/settings/profiles").json()
+    thresholds = body["metric_thresholds"]
+    # v6 re-anchors fcp's "best" to 150ms (vs the catalog default of 1800) — the saturation
+    # check must use the methodology's effective threshold, not the registry default.
+    assert thresholds["fcp"]["best"] == 150.0
+    assert thresholds["load_event"]["best"] == 800.0
+    assert thresholds["fcp"]["higher_is_better"] is False
+
+
+def test_saturation_flags_too_lenient_threshold(client):
+    # load_event "best" is 800ms; seed profiles whose page-load mostly clears it (so the
+    # metric pins at ~100 and can't rank them). >50% saturated must flag the metric and
+    # suggest re-anchoring 'best' down to the fastest profile measured.
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for fp, ms in [("sat0000001x", 500.0), ("sat0000002x", 600.0),
+                   ("sat0000003x", 650.0), ("sat0000004x", 700.0)]:
+        _seed_run(fp, 80, t0 - timedelta(minutes=60), iterations=6,
+                  result_metrics={"browser": {"load_event_ms": ms}})
+    # One profile genuinely slower than 'best' (does not saturate).
+    _seed_run("sat0000005x", 80, t0 - timedelta(minutes=55), iterations=6,
+              result_metrics={"browser": {"load_event_ms": 1200.0}})
+
+    body = client.get("/api/settings/profiles").json()
+    le = next(s for s in body["saturation"] if s["key"] == "load_event")
+    assert le["flagged"] is True
+    assert le["saturated_fraction"] == 0.8        # 4 of 5 profiles already past 'best'
+    assert le["best"] == 800.0
+    assert le["suggested_best"] == 500.0          # re-anchor to the fastest measured
+    # total_stall has best=0 (a physical floor) — never flagged/re-anchored even if "saturated".
+    assert all(s["key"] != "total_stall" for s in body["saturation"])
+
+
+def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
+    # Don't run the heavy background re-grade in the test; just confirm the publish.
+    import pathbrain.api.routes_methodology as rm
+
+    monkeypatch.setattr(rm.jobs, "start", lambda *a, **k: "job-test")
+
+    r = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 500})
+    assert r.status_code == 202
+    out = r.json()
+    assert out["version"] == "speed-smoothness-v6+load_event-best500"
+    assert out["job_id"] == "job-test"
+
+    # The fork is now current: only load_event's 'best' changed; fcp and the Overall crown
+    # spec carry over from v6 untouched (append-only — a new version, not an edit).
+    cur = client.get("/api/methodologies/current").json()
+    assert cur["version"] == "speed-smoothness-v6+load_event-best500"
+    metrics = {m["key"]: m for m in cur["definition"]["metrics"]}
+    assert metrics["load_event"]["best"] == 500.0
+    assert metrics["fcp"]["best"] == 150.0  # untouched
+    assert cur["definition"]["overall"]["metrics"] == ["fcp", "total_stall", "load_event"]
+
+    # Guard: 'best' can't cross to the wrong side of 'worst' (would invert the curve).
+    bad = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 99999})
+    assert bad.status_code == 400
+
+    # Restore stock v6 as current so the rest of the shared-DB suite sees the real methodology.
+    from pathbrain.config_store import get_config, save_config
+    from pathbrain.methodology import ensure_current_methodology
+
+    with session_scope() as s:
+        save_config(s, {"methodology_version": "speed-smoothness-v6"})
+        ensure_current_methodology(s, get_config(s))
+
+
 def test_best_is_closest_to_top_right_corner(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     # Profile A: least dead-air (total_stall subscore 90) but slow first response *and*

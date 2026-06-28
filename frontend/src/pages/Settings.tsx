@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
+import Badge from "@mui/material/Badge";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
@@ -39,6 +41,9 @@ import { api } from "../api/client";
 import type {
   ApplyProfileChange,
   ChallengerRace,
+  CrownHeirs,
+  MetricSaturation,
+  MetricThreshold,
   ProfileDiff,
   ProfileFieldChange,
   ProfileRefresh,
@@ -382,7 +387,98 @@ function AxisSelect({
   );
 }
 
+const HEIR_REASON_LABEL: Record<string, string> = {
+  "limited-data": "limited data",
+  stale: "stale — not re-run recently",
+  untested: "untested",
+};
+
+// "Heirs to the crown": the profiles the crown *excludes* (under the iteration minimum, or
+// confident-but-stale) whose optimistic ceiling could still overtake it. Ranked by ceiling-
+// above-crown. Turns the crown from a static trophy into a "here's where to look next" — run
+// these and one may dethrone it. The whole pool is also the "N could beat your crown" signal.
+function HeirsCard({
+  heirs,
+  onRace,
+  raceDisabled,
+}: {
+  heirs: CrownHeirs;
+  onRace: () => void;
+  raceDisabled: boolean;
+}) {
+  const items = heirs.items;
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          justifyContent="space-between"
+          alignItems={{ xs: "flex-start", sm: "center" }}
+          spacing={1}
+          sx={{ mb: 1 }}
+        >
+          <Box>
+            <Typography variant="h6">Heirs to the crown</Typography>
+            <Typography variant="caption" color="text.secondary">
+              {heirs.total} profile{heirs.total === 1 ? "" : "s"} could still beat the crown
+              {heirs.crown_overall != null ? ` (Overall ${heirs.crown_overall.toFixed(1)})` : ""} —
+              ranked by how far their best-case ceiling clears it. Run them to find out.
+            </Typography>
+          </Box>
+          <Tooltip title="Adaptively measure these limited-data / stale profiles against the crown, one iteration at a time.">
+            <span>
+              <Button size="small" variant="contained" color="secondary" onClick={onRace} disabled={raceDisabled}>
+                Race these
+              </Button>
+            </span>
+          </Tooltip>
+        </Stack>
+        <Stack divider={<Box sx={{ borderBottom: 1, borderColor: "divider" }} />} spacing={1}>
+          {items.map((h) => (
+            <Stack
+              key={h.fingerprint}
+              direction="row"
+              justifyContent="space-between"
+              alignItems="center"
+              spacing={1}
+            >
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
+                  {h.label}
+                </Typography>
+                <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.25 }} flexWrap="wrap">
+                  <Chip size="small" variant="outlined" label={HEIR_REASON_LABEL[h.reason] ?? h.reason} />
+                  <Typography variant="caption" color="text.secondary">
+                    {h.iterations_to_min > 0
+                      ? `${h.iterations_to_min} iteration${h.iterations_to_min === 1 ? "" : "s"} to confidence`
+                      : "ready to re-measure"}
+                  </Typography>
+                </Stack>
+              </Box>
+              <Box sx={{ textAlign: "right", flexShrink: 0 }}>
+                <Typography variant="body2" sx={{ fontWeight: 700, color: "success.main" }}>
+                  {h.optimistic != null ? `ceiling ${h.optimistic.toFixed(1)}` : "ceiling —"}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {h.margin != null ? `+${h.margin.toFixed(1)} over crown` : "upside unknown"}
+                  {h.overall != null ? ` · now ${h.overall.toFixed(1)}` : ""}
+                </Typography>
+              </Box>
+            </Stack>
+          ))}
+        </Stack>
+        {heirs.total > items.length && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+            +{heirs.total - items.length} more contender{heirs.total - items.length === 1 ? "" : "s"} not shown.
+          </Typography>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Settings() {
+  const navigate = useNavigate();
   const [profiles, setProfiles] = useState<SettingsProfile[] | null>(null);
   const [bestDiff, setBestDiff] = useState<ProfileDiff | null>(null);
   const [impact, setImpact] = useState<SettingsImpact | null>(null);
@@ -416,6 +512,12 @@ export default function Settings() {
   const [bestFingerprint, setBestFingerprint] = useState<string | null>(null);
   const [currentFingerprint, setCurrentFingerprint] = useState<string | null>(null);
   const [responseFields, setResponseFields] = useState<ProfileField[]>([]);
+  // The crown's heirs (limited-data / stale profiles that could still beat it) + the
+  // effective per-metric thresholds (for the saturated-axis warning on the quadrant).
+  const [heirs, setHeirs] = useState<CrownHeirs | null>(null);
+  const [metricThresholds, setMetricThresholds] = useState<Record<string, MetricThreshold>>({});
+  // Scored metrics whose 'best' is too lenient to rank profiles (saturating >50%).
+  const [saturation, setSaturation] = useState<MetricSaturation[]>([]);
   // Dynamic quadrant axes — default to the Overall scoring corner's three inputs
   // (FCP × page-load × total-stall), with the third encoded as Shade opacity; the
   // crowned profile is ringed. So the default view demonstrates how Overall is scored.
@@ -514,6 +616,9 @@ export default function Settings() {
       setBestFingerprint(p.best_fingerprint);
       setCurrentFingerprint(p.current_fingerprint);
       setResponseFields(p.fields);
+      setHeirs(p.heirs ?? null);
+      setMetricThresholds(p.metric_thresholds ?? {});
+      setSaturation(p.saturation ?? []);
       setImpact(i);
       setDiag(d);
       setError(null);
@@ -859,7 +964,61 @@ export default function Settings() {
 
       {impact && <ImpactBanner impact={impact} />}
 
+      {saturation.some((s) => s.flagged) && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
+            Methodology check — {saturation.filter((s) => s.flagged).length === 1 ? "a metric is" : "metrics are"} too
+            lenient to rank your profiles
+          </Typography>
+          These scored metrics already clear their “best” threshold for most profiles, so the score pins at ~100 and
+          can’t separate them — the rubric can’t crown the fastest. Consider re-anchoring “best”:
+          <Box component="ul" sx={{ mt: 0.75, mb: 0, pl: 3 }}>
+            {saturation
+              .filter((s) => s.flagged)
+              .map((s) => (
+                <li key={s.key}>
+                  <b>{s.label}</b> saturates {Math.round(s.saturated_fraction * 100)}% of {s.profiles} profiles (best{" "}
+                  {s.best}
+                  {s.unit})
+                  {s.suggested_best != null ? (
+                    <>
+                      {" "}
+                      — suggest best →{" "}
+                      <b>
+                        {s.suggested_best}
+                        {s.unit}
+                      </b>{" "}
+                      (the fastest you’ve measured).{" "}
+                      <Button
+                        size="small"
+                        variant="text"
+                        color="inherit"
+                        sx={{ p: 0, minWidth: 0, textDecoration: "underline", verticalAlign: "baseline" }}
+                        onClick={() =>
+                          navigate(`/methodology?reanchor=${encodeURIComponent(s.key)}&best=${s.suggested_best}`)
+                        }
+                      >
+                        Re-anchor →
+                      </Button>
+                    </>
+                  ) : (
+                    "."
+                  )}
+                </li>
+              ))}
+          </Box>
+        </Alert>
+      )}
+
       {bestDiff && <ProfileDiffCard diff={bestDiff} showCompletion={showCompletion} />}
+
+      {heirs && heirs.items.length > 0 && (
+        <HeirsCard
+          heirs={heirs}
+          onRace={() => setRaceOpen(true)}
+          raceDisabled={raceRunning || testRunning || refreshRunning || applying}
+        />
+      )}
 
       {profiles && profiles.length >= 2 && allFields.length > 0 && (
         <Card sx={{ mb: 2 }}>
@@ -875,14 +1034,20 @@ export default function Settings() {
               <Stack direction="row" spacing={1} alignItems="center">
                 <Tooltip title="Adaptively test promising limited-data profiles one iteration at a time, eliminating any that can't overtake the best.">
                   <span>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      onClick={() => setRaceOpen(true)}
-                      disabled={raceRunning || testRunning || refreshRunning || applying}
+                    <Badge
+                      color="warning"
+                      badgeContent={heirs?.total ?? 0}
+                      invisible={!heirs || heirs.total === 0 || raceRunning}
                     >
-                      Race challengers
-                    </Button>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => setRaceOpen(true)}
+                        disabled={raceRunning || testRunning || refreshRunning || applying}
+                      >
+                        Race challengers
+                      </Button>
+                    </Badge>
                   </span>
                 </Tooltip>
                 <Tooltip title="Apply each stored profile and benchmark it for a chosen number of iterations, then restore your current settings. Use after a methodology change to collect fresh, comparable data for every profile.">
@@ -909,6 +1074,7 @@ export default function Settings() {
               shadeField={fieldByKey(sizeKey) ?? null}
               bestFingerprint={bestFingerprint}
               currentFingerprint={currentFingerprint}
+              thresholds={metricThresholds}
             />
           </CardContent>
         </Card>
