@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 from statistics import median, quantiles
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -803,16 +803,20 @@ def _profile_iterations(session: Session, fingerprint_: str) -> int:
 
 @router.post("/settings/apply-profile")
 def apply_profile(
+    background: BackgroundTasks,
     body: dict = Body(...),
     session: Session = Depends(get_session),
 ) -> dict:
     """Write a stored settings profile to the firewall (the one-click apply).
 
-    Body: ``{"fingerprint": "<12-hex>", "preview": bool}``. Discovers the live
-    pipes, matches the profile's pipes by label, and applies every writable field
-    that differs via ``provider.apply()`` (the only sanctioned firewall-write path).
-    With ``preview: true`` it returns the planned field changes *without* writing —
-    the UI uses this to show an exact-diff confirmation before committing.
+    Body: ``{"fingerprint": "<12-hex>", "preview": bool, "run_benchmark": bool}``.
+    Discovers the live pipes, matches the profile's pipes by label, and applies every
+    writable field that differs via ``provider.apply()`` (the only sanctioned
+    firewall-write path). With ``preview: true`` it returns the planned field changes
+    *without* writing — the UI uses this to show an exact-diff confirmation before
+    committing. With ``run_benchmark`` (default **true**) it kicks a single-iteration
+    benchmark on the just-applied profile in the background (returned as ``run_id``), so
+    a one-click apply immediately measures the new settings.
 
     This is a one-way write (like Shotgun Sweep's apply-winner): to revert, apply a
     different profile. Fields already at the target value are skipped, so re-applying
@@ -822,6 +826,7 @@ def apply_profile(
     if not fp:
         raise HTTPException(status_code=400, detail="fingerprint is required")
     preview = bool((body or {}).get("preview", False))
+    run_benchmark = bool((body or {}).get("run_benchmark", True))
 
     target = _profile_settings(session, fp)
     if not target:
@@ -876,7 +881,24 @@ def apply_profile(
     except Exception:  # noqa: BLE001
         log.warning("apply-profile post-verify discovery failed", exc_info=True)
 
-    log.info("Applied profile %s: %s change(s)", fp, len(applied))
+    # Optionally measure the just-applied profile: a single-iteration benchmark, kicked in
+    # the background under the coordination lock (so it queues behind any other firewall
+    # session and shows in the jobs dropdown). Apply is a one-way write — the benchmark
+    # just records how the new settings perform; it doesn't revert anything.
+    run_id = None
+    if run_benchmark:
+        from ..runner import create_run
+        from .routes_run import _locked_execute
+
+        run_id = create_run(
+            label=f"apply · {summarize(target)}",
+            notes=f"Benchmark after applying profile {fp}",
+            iterations=1,
+        )
+        background.add_task(_locked_execute, run_id)
+
+    log.info("Applied profile %s: %s change(s)%s", fp, len(applied),
+             f"; benchmark run {run_id}" if run_id else "")
     return {
         "ok": True,
         "fingerprint": fp,
@@ -885,6 +907,7 @@ def apply_profile(
         "warnings": warnings,
         "already_applied": not changes,
         "resulting_fingerprint": resulting_fp,
+        "run_id": run_id,
     }
 
 
@@ -946,51 +969,43 @@ def current_profile_test() -> dict:
 
 
 def _contending_challengers(session: Session) -> tuple[str | None, list[str]]:
-    """``(best_fingerprint, [contender fingerprints])`` for the race.
+    """``(best_fingerprint, [contender fingerprints])`` for the race — via the same
+    augmented field + ranking the race loop uses, so the start check matches the loop
+    exactly. Contenders span no-data profiles (no current-methodology data), under-min
+    profiles that can still beat the bar, and stale confident profiles. ``best_fingerprint``
+    may be None (bootstrap: race to establish a best)."""
+    from datetime import datetime, timezone
 
-    A contender is an under-minimum profile whose *optimistic* Overall could still beat
-    the confident best — the same rule the race loop uses to enter/eliminate."""
-    field = compute_profiles(session, complete_only=True)
-    best_fp = field.get("best_fingerprint")
-    profiles = {p["fingerprint"]: p for p in field["profiles"]}
-    bar = profiles[best_fp]["overall"] if best_fp else None
-    crown_metrics = field.get("overall_metrics") or CROWN_METRICS
-    crown_required = field.get("overall_required") or CROWN_REQUIRED
-    contenders = []
-    for fp, p in profiles.items():
-        if p["confident"] or fp == best_fp:
-            continue
-        opt = optimistic_overall(p.get("crown_spreads") or {}, crown_metrics, crown_required)
-        if opt is not None and (bar is None or opt >= bar):
-            contenders.append(fp)
-    return best_fp, contenders
+    field = challenger_mod._field(session)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    stale_min = challenger_mod._contender_stale_minutes(session)
+    best_fp, _bar, _leader, contenders, _newly = challenger_mod.rank_challengers(
+        field, {}, now=now, stale_minutes=stale_min
+    )
+    return best_fp, [p["fingerprint"] for p, _ in contenders]
 
 
 @router.post("/settings/race")
 def start_race(body: dict = Body(...), session: Session = Depends(get_session)) -> dict:
-    """Start a challenger race: adaptively test promising limited-data profiles one
-    iteration at a time within a time budget, eliminating any that can't overtake the
-    confident best (see ``challenger.py``).
+    """Start a challenger race: adaptively measure the profiles we can't currently trust
+    against the winner — profiles with no current-methodology data, under-minimum profiles
+    that could still overtake the best, and stale confident profiles — one iteration at a
+    time within a time budget (see ``challenger.py``).
 
-    Body: ``{"time_budget_minutes": <number>, "auto_promote": <bool>}``. Requires a
-    confident best **and** at least one contending challenger. Returns the race id;
-    poll ``GET /settings/race`` for status.
+    Body: ``{"time_budget_minutes": <number>, "auto_promote": <bool>}``. Runs even with no
+    confident best yet (bootstrap, e.g. right after a methodology change). Returns the race
+    id; poll ``GET /settings/race`` for status.
     """
     minutes = float((body or {}).get("time_budget_minutes") or 0)
     if minutes <= 0:
         raise HTTPException(status_code=400, detail="time_budget_minutes must be > 0")
     auto_promote = bool((body or {}).get("auto_promote", False))
 
-    best_fp, contenders = _contending_challengers(session)
-    if best_fp is None:
-        raise HTTPException(
-            status_code=400,
-            detail="No confident best profile yet — nothing to race challengers against.",
-        )
+    _best_fp, contenders = _contending_challengers(session)
     if not contenders:
         raise HTTPException(
             status_code=400,
-            detail="No limited-data profile could overtake the current best, so there's nothing to race.",
+            detail="Nothing to race — every profile already has current, confident data.",
         )
 
     try:

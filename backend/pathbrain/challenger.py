@@ -95,28 +95,61 @@ def _incumbent_stale(last_seen_iso: str | None, refresh_minutes: int, now: datet
     return (now - ts) > timedelta(minutes=refresh_minutes)
 
 
+def _contender_stale_minutes(session) -> int:
+    """How stale (minutes) a *confident* profile's newest run may be before the race
+    re-measures it (ordered closest-to-winner first). 0 disables stale re-racing."""
+    cfg = get_config(session).get("challenger") or {}
+    val = cfg.get("contender_stale_minutes", 180)
+    return int(val) if val is not None else 180
+
+
 def _field(session) -> dict:
     """The current profile field (ranked, with the crowned best), via the shared
-    ``compute_profiles`` so the race ranks exactly like the Settings-Impact UI.
+    ``compute_profiles`` so the race ranks exactly like the Settings-Impact UI — then
+    **augmented** with *no-data* profiles: every stored profile with zero comparable
+    current-methodology runs (invisible to ``compute_profiles``, which drops them). These
+    are the "no data on the latest methodology" contenders the race exists to measure.
 
     Imported lazily to avoid a core↔api import cycle."""
     from .api.routes_settings import compute_profiles
+    from .refresh import list_profiles
 
-    return compute_profiles(session, complete_only=True)
+    field = compute_profiles(session, complete_only=True)
+    comparable_fps = {p["fingerprint"] for p in field["profiles"]}
+    no_data = [
+        {
+            "fingerprint": p["fingerprint"], "settings": p["settings"], "label": p["label"],
+            "confident": False, "overall": None, "crown_spreads": {}, "last_seen": None,
+            "no_data": True,
+        }
+        for p in list_profiles(session)
+        if p["fingerprint"] not in comparable_fps
+    ]
+    field["profiles"] = list(field["profiles"]) + no_data
+    return field
 
 
-def rank_challengers(field: dict, already_eliminated: dict | set | None = None) -> tuple:
-    """Pure ranking step over a ``compute_profiles`` field. Returns
-    ``(best_fingerprint, bar, leader, contenders, newly_eliminated)``:
+def rank_challengers(
+    field: dict,
+    already_eliminated: dict | set | None = None,
+    now: datetime | None = None,
+    stale_minutes: int = 0,
+) -> tuple:
+    """Pure ranking step over an (augmented) ``compute_profiles`` field. Returns
+    ``(best_fingerprint, bar, leader, contenders, newly_eliminated)`` — the next profile
+    to sample plus the eliminations. Contenders span, in priority order:
 
-    - **bar** = the confident best's Overall (None if there's no confident best);
-    - **contenders** = under-minimum profiles (excluding ``already_eliminated``) whose
-      *optimistic* Overall could still reach the bar, as ``[(profile, optimistic)]``;
-    - **leader** = the contender with the highest optimistic Overall (None if none);
-    - **newly_eliminated** = ``{fingerprint: {label, reason}}`` for challengers ruled out
-      this step (optimistic best-case below the bar, or missing a corner axis).
+    1. **no-data** profiles (``no_data``) — zero current-methodology data; always raced
+       (can't be eliminated until they have data), sampled first;
+    2. **under-minimum** comparable profiles whose *optimistic* Overall ≥ ``bar`` (the
+       confident best's Overall, or None in bootstrap) — highest optimistic first;
+       eliminated when optimistic < bar or a required crown metric is missing;
+    3. **stale confident** profiles (not the crowned best) whose newest run is older than
+       ``stale_minutes`` — re-measured to verify they still hold, **ordered by closeness
+       to the winner** (smallest |Overall − bar| first). Never eliminated.
 
-    Factored out of the driver so the elimination/selection logic is unit-testable."""
+    Bootstrap: with no confident best, ``bar`` is None → no-data + under-min all race.
+    Factored out of the driver so the selection logic is unit-testable."""
     from .api.routes_settings import CROWN_METRICS, CROWN_REQUIRED, optimistic_overall
 
     already = already_eliminated or {}
@@ -126,25 +159,31 @@ def rank_challengers(field: dict, already_eliminated: dict | set | None = None) 
     # The crown metric set comes from compute_profiles (the methodology's overall spec), so
     # the race's optimistic estimate corners over exactly the metrics the persisted Overall
     # does — it can't drift from methodology Overall logic.
-    crown_metrics = field.get("overall_metrics")
-    crown_required = field.get("overall_required")
+    crown_metrics = field.get("overall_metrics") or CROWN_METRICS
+    crown_required = field.get("overall_required") or CROWN_REQUIRED
     newly: dict[str, dict] = {}
-    contenders: list[tuple[dict, float]] = []
+    scored: list[tuple[tuple, dict, float | None]] = []  # (priority_key, profile, value)
     for fp, p in profiles.items():
-        if p["confident"] or fp in already:
+        if fp in already:
             continue
-        opt = optimistic_overall(
-            p.get("crown_spreads") or {},
-            crown_metrics or CROWN_METRICS,
-            crown_required or CROWN_REQUIRED,
-        )
-        if opt is None:
-            newly[fp] = {"label": p["label"], "reason": "incomplete corner coverage"}
-        elif bar is not None and opt < bar:
-            newly[fp] = {"label": p["label"], "reason": f"best-case Overall {opt} < best {bar}"}
-        else:
-            contenders.append((p, opt))
-    leader = max(contenders, key=lambda t: t[1])[0] if contenders else None
+        if p.get("no_data"):
+            scored.append(((0, 0.0), p, None))  # highest priority — measure the unknowns
+        elif not p["confident"]:
+            opt = optimistic_overall(p.get("crown_spreads") or {}, crown_metrics, crown_required)
+            if opt is None:
+                newly[fp] = {"label": p["label"], "reason": "incomplete corner coverage"}
+            elif bar is not None and opt < bar:
+                newly[fp] = {"label": p["label"], "reason": f"best-case Overall {opt} < best {bar}"}
+            else:
+                scored.append(((1, -opt), p, opt))  # higher optimistic first
+        elif fp != best_fp and stale_minutes and now is not None and _incumbent_stale(
+            p.get("last_seen"), stale_minutes, now
+        ):
+            closeness = abs((p.get("overall") or 0.0) - (bar if bar is not None else 0.0))
+            scored.append(((2, closeness), p, p.get("overall")))  # closest-to-winner first
+    scored.sort(key=lambda t: t[0])
+    contenders = [(p, v) for _, p, v in scored]
+    leader = contenders[0][0] if contenders else None
     return best_fp, bar, leader, contenders, newly
 
 
@@ -208,6 +247,7 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
                 auto_promote = race.auto_promote
                 min_iters = _min_iterations(session)
                 refresh_min = _incumbent_refresh_minutes(session)
+                stale_min = _contender_stale_minutes(session)
 
             deadline = time.monotonic() + budget_s
             applied_fp: str | None = None  # baseline is live to start
@@ -225,7 +265,10 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
                     initial_confident = {fp for fp, p in profiles.items() if p["confident"]}
                     seeded_initial = True
 
-                best_fp, _bar, leader, _contenders, newly_elim = rank_challengers(field, eliminated)
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                best_fp, _bar, leader, _contenders, newly_elim = rank_challengers(
+                    field, eliminated, now=now, stale_minutes=stale_min
+                )
 
                 # A challenger that became the crowned best (wasn't confident at start)
                 # is a confirmed winner; the bar simply rises and the field races on.
@@ -243,7 +286,6 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
                 # time-of-day drift) and the crown's own band stays tight + validated.
                 # The fresh run updates its last_seen, so next loop it won't be stale.
                 incumbent = profiles.get(best_fp) if best_fp else None
-                now = datetime.now(timezone.utc).replace(tzinfo=None)
                 if incumbent is not None and _incumbent_stale(
                     incumbent.get("last_seen"), refresh_min, now
                 ):
