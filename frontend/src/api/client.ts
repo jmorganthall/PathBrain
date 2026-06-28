@@ -123,6 +123,12 @@ export const api = {
     request<MethodologyDetail>(`/methodologies/${encodeURIComponent(version)}`),
   runScores: (id: number) => request<RunScoresResponse>(`/score/${id}/methodologies`),
   regradeHistory: () => request<JobStart>("/score/regrade", { method: "POST" }),
+  // Fork the current methodology, re-anchor one metric's `best`, and re-grade onto it.
+  reanchorMetric: (metricKey: string, best: number) =>
+    request<{ version: string; job_id: string }>("/methodologies/reanchor", {
+      method: "POST",
+      body: JSON.stringify({ metric_key: metricKey, best }),
+    }),
 
   // Background jobs feed (powers the top-right "running jobs" dropdown)
   jobs: () => request<JobsResponse>("/jobs"),

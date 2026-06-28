@@ -243,6 +243,40 @@ def test_saturation_flags_too_lenient_threshold(client):
     assert all(s["key"] != "total_stall" for s in body["saturation"])
 
 
+def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
+    # Don't run the heavy background re-grade in the test; just confirm the publish.
+    import pathbrain.api.routes_methodology as rm
+
+    monkeypatch.setattr(rm.jobs, "start", lambda *a, **k: "job-test")
+
+    r = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 500})
+    assert r.status_code == 202
+    out = r.json()
+    assert out["version"] == "speed-smoothness-v6+load_event-best500"
+    assert out["job_id"] == "job-test"
+
+    # The fork is now current: only load_event's 'best' changed; fcp and the Overall crown
+    # spec carry over from v6 untouched (append-only — a new version, not an edit).
+    cur = client.get("/api/methodologies/current").json()
+    assert cur["version"] == "speed-smoothness-v6+load_event-best500"
+    metrics = {m["key"]: m for m in cur["definition"]["metrics"]}
+    assert metrics["load_event"]["best"] == 500.0
+    assert metrics["fcp"]["best"] == 150.0  # untouched
+    assert cur["definition"]["overall"]["metrics"] == ["fcp", "total_stall", "load_event"]
+
+    # Guard: 'best' can't cross to the wrong side of 'worst' (would invert the curve).
+    bad = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 99999})
+    assert bad.status_code == 400
+
+    # Restore stock v6 as current so the rest of the shared-DB suite sees the real methodology.
+    from pathbrain.config_store import get_config, save_config
+    from pathbrain.methodology import ensure_current_methodology
+
+    with session_scope() as s:
+        save_config(s, {"methodology_version": "speed-smoothness-v6"})
+        ensure_current_methodology(s, get_config(s))
+
+
 def test_best_is_closest_to_top_right_corner(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     # Profile A: least dead-air (total_stall subscore 90) but slow first response *and*

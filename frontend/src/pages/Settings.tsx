@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Badge from "@mui/material/Badge";
@@ -477,6 +478,7 @@ function HeirsCard({
 }
 
 export default function Settings() {
+  const navigate = useNavigate();
   const [profiles, setProfiles] = useState<SettingsProfile[] | null>(null);
   const [bestDiff, setBestDiff] = useState<ProfileDiff | null>(null);
   const [impact, setImpact] = useState<SettingsImpact | null>(null);
@@ -986,10 +988,22 @@ export default function Settings() {
                         {s.suggested_best}
                         {s.unit}
                       </b>{" "}
-                      (the fastest you’ve measured)
+                      (the fastest you’ve measured).{" "}
+                      <Button
+                        size="small"
+                        variant="text"
+                        color="inherit"
+                        sx={{ p: 0, minWidth: 0, textDecoration: "underline", verticalAlign: "baseline" }}
+                        onClick={() =>
+                          navigate(`/methodology?reanchor=${encodeURIComponent(s.key)}&best=${s.suggested_best}`)
+                        }
+                      >
+                        Re-anchor →
+                      </Button>
                     </>
-                  ) : null}
-                  .
+                  ) : (
+                    "."
+                  )}
                 </li>
               ))}
           </Box>

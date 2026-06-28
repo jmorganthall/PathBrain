@@ -230,6 +230,13 @@ docker compose up --build   # -> http://localhost:8000
   the current methodology, writing new `Score` rows (use this after publishing a new
   methodology — e.g. the v4 axis split); `POST /api/score/rescore` / `rederive` are
   the legacy in-place paths over cached scalars / raw.
+  **GUI re-anchor (`POST /api/methodologies/reanchor`):** forks the *current* methodology's
+  frozen definition, overrides one scored metric's `best`, writes it as a **new** version
+  (axes + Overall spec carried over unchanged — append-only, not an edit), points
+  `config.methodology_version` at it, and kicks the re-grade — the one-click "apply" behind
+  the Settings-Impact saturation alert (Settings → `?reanchor=<metric>&best=<n>` → Methodology
+  page proposal panel). Lets a threshold be re-anchored from the UI without a code edit, while
+  every published version stays a frozen DB snapshot.
 - **Publishing a new methodology — required follow-through.** Bumping
   `CURRENT_METHODOLOGY` is not done until both of these happen, or history shows stale
   scores and the default UI stops reflecting the rubric:

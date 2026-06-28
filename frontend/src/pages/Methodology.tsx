@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -8,6 +9,7 @@ import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
@@ -125,6 +127,17 @@ export default function Methodology() {
   const [error, setError] = useState<string | null>(null);
   const [regrading, setRegrading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  // A pending re-anchor proposal, deep-linked from the Settings-Impact saturation alert
+  // (?reanchor=<metric>&best=<suggested>). The 'best' is editable before publishing.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const reanchorKey = searchParams.get("reanchor");
+  const suggestedBest = searchParams.get("best");
+  const [proposalBest, setProposalBest] = useState("");
+  const [publishing, setPublishing] = useState(false);
+
+  useEffect(() => {
+    if (suggestedBest != null) setProposalBest(suggestedBest);
+  }, [suggestedBest]);
 
   const load = useCallback(async () => {
     try {
@@ -154,6 +167,31 @@ export default function Methodology() {
       setRegrading(false);
     }
   }, []);
+
+  const proposalMetric =
+    reanchorKey && current
+      ? current.definition.metrics.find((m) => m.key === reanchorKey) ?? null
+      : null;
+
+  const handlePublish = useCallback(async () => {
+    if (!proposalMetric) return;
+    const best = Number(proposalBest);
+    if (!Number.isFinite(best)) {
+      setError("Enter a numeric “best” value");
+      return;
+    }
+    setPublishing(true);
+    try {
+      const res = await api.reanchorMetric(proposalMetric.key, best);
+      setToast(`Published ${res.version} and started a re-grade — track it in the jobs menu (top right) ↗`);
+      setSearchParams({}, { replace: true }); // clear the proposal from the URL
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not publish the re-anchor");
+    } finally {
+      setPublishing(false);
+    }
+  }, [proposalMetric, proposalBest, setSearchParams, load]);
 
   if (loading) return <Loading label="Loading methodology…" />;
 
@@ -193,6 +231,63 @@ export default function Methodology() {
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
           {error}
         </Alert>
+      )}
+
+      {reanchorKey && !proposalMetric && (
+        <Alert severity="info" sx={{ mb: 2 }} onClose={() => setSearchParams({}, { replace: true })}>
+          “{reanchorKey}” isn’t a scored metric in the current methodology, so it can’t be re-anchored.
+        </Alert>
+      )}
+
+      {proposalMetric && (
+        <Card sx={{ mb: 2, border: 1, borderColor: "warning.main" }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Proposed re-anchor — {proposalMetric.label}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              From the saturation check on Settings Impact: <b>{proposalMetric.label}</b> already clears
+              its “best” for most profiles, so it can’t rank them. Tightening “best” publishes a new
+              methodology version (forked from <b>{current?.version}</b> — append-only, nothing edited in
+              place) and re-grades history onto it, so the fastest profile scores highest.
+            </Typography>
+            <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Typography variant="body2">
+                Current best: <b>{fmtBound(proposalMetric.best, proposalMetric.unit)}</b>
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                →
+              </Typography>
+              <TextField
+                label="New best"
+                size="small"
+                type="number"
+                value={proposalBest}
+                onChange={(e) => setProposalBest(e.target.value)}
+                InputProps={{
+                  endAdornment: proposalMetric.unit ? (
+                    <Typography variant="caption" color="text.secondary">
+                      {proposalMetric.unit}
+                    </Typography>
+                  ) : null,
+                }}
+                sx={{ width: 170 }}
+              />
+              <Button
+                variant="contained"
+                color="secondary"
+                onClick={handlePublish}
+                disabled={publishing}
+                startIcon={publishing ? <CircularProgress size={16} /> : undefined}
+              >
+                {publishing ? "Publishing…" : "Publish new version & re-grade"}
+              </Button>
+              <Button onClick={() => setSearchParams({}, { replace: true })} disabled={publishing}>
+                Dismiss
+              </Button>
+            </Stack>
+          </CardContent>
+        </Card>
       )}
 
       {current && (
