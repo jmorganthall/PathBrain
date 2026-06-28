@@ -507,6 +507,7 @@ def execute_run(run_id: int) -> None:
     session and never raises out (failures are recorded on the run).
     """
     log.info("Run %s starting", run_id)
+    plugins: list[BenchmarkPlugin] = []
     try:
         with session_scope() as session:
             run = session.get(Run, run_id)
@@ -538,8 +539,23 @@ def execute_run(run_id: int) -> None:
                 log.warning("Run %s: could not capture firewall settings", run_id, exc_info=True)
             session.commit()
 
-            plugins: list[BenchmarkPlugin] = iter_plugins()
+            plugins = iter_plugins()
             per_plugin: dict[str, list[PluginResult]] = {p.name: [] for p in plugins}
+            # Per-plugin iteration count: a plugin's config section may cap how many of the
+            # run's iterations it actually runs (e.g. browser.iterations < the cheap probes),
+            # so the heavy browser samples fewer times. Headline metric medians use every
+            # captured sample (skip-missing) so a capped plugin stays unbiased; only the
+            # legacy SOPS confidence band is restricted to full-suite rounds (below).
+            def _plugin_count(name: str) -> int:
+                cap = (config.get(name, {}) or {}).get("iterations")
+                if cap is None:
+                    return iterations
+                try:
+                    return max(1, min(iterations, int(cap)))
+                except (TypeError, ValueError):
+                    return iterations
+
+            plugin_counts = {p.name: _plugin_count(p.name) for p in plugins}
             artifact_base = os.path.abspath(get_settings().artifact_dir)
             iteration_durations: list[float] = []
             weights = config.get("weights", {})
@@ -562,7 +578,11 @@ def execute_run(run_id: int) -> None:
                 it_start = perf_counter()
                 log.info("Run %s: iteration %s/%s", run_id, i + 1, iterations)
                 iter_metrics: dict[str, dict] = {}
+                ran_full_suite = True
                 for plugin in plugins:
+                    if i >= plugin_counts[plugin.name]:
+                        ran_full_suite = False  # this plugin opted out of this round
+                        continue
                     section = config.get(plugin.name, {})
                     result = plugin.run(section)
                     per_plugin[plugin.name].append(result)
@@ -578,7 +598,11 @@ def execute_run(run_id: int) -> None:
                         )
                 iteration_plugin_metrics.append(iter_metrics)
                 b = compute_score(iter_metrics, weights=weights, thresholds=thresholds)
-                iteration_scores.append(b.sops)
+                # Only full-suite rounds feed the SOPS confidence band — a plugin running
+                # fewer iterations would otherwise make the band heterogeneous (its metrics
+                # still land in the headline median via skip-missing).
+                if ran_full_suite:
+                    iteration_scores.append(b.sops)
                 iteration_metric_values.append(b.metric_values)
                 cb = compute_completion(iter_metrics, completion_weights, completion_thresholds)
                 if cb.subscores:  # only when completion metrics were captured
@@ -716,3 +740,13 @@ def execute_run(run_id: int) -> None:
                 run.error = f"{type(exc).__name__}: {exc}"
                 run.finished_at = datetime.now(timezone.utc)
                 session.commit()
+    finally:
+        # Release per-run plugin resources (e.g. the reused Chromium) so nothing leaks
+        # between runs. Never raises.
+        for plugin in plugins:
+            try:
+                plugin.teardown()
+            except Exception:  # noqa: BLE001 — teardown must never break a run
+                log.warning(
+                    "Run %s: plugin '%s' teardown failed", run_id, plugin.name, exc_info=True
+                )

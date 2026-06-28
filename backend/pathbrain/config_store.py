@@ -32,7 +32,9 @@ DEFAULT_RUBRIC_VERSION = "perceptual-v5"
 
 DEFAULT_CONFIG: dict = {
     "icmp": {
-        "targets": ["1.1.1.1", "8.8.8.8", "9.9.9.9"],
+        # Two representative anycast resolvers (was three); 10 pings × 0.25s interval each
+        # is the bulk of ICMP wall-clock, so each dropped target saves ~2.5s/iteration.
+        "targets": ["1.1.1.1", "8.8.8.8"],
         "count": 10,
         "interval_s": 0.25,
         "timeout_s": 2.0,
@@ -45,15 +47,16 @@ DEFAULT_CONFIG: dict = {
             {"name": "Quad9", "server": "9.9.9.9"},
             {"name": "Local", "server": "local"},
         ],
-        "hostnames": ["google.com", "github.com", "cloudflare.com"],
+        # Two hostnames (was three) — enough to exercise each resolver without tripling
+        # the lookup count.
+        "hostnames": ["google.com", "cloudflare.com"],
         "timeout_s": 3.0,
     },
     "tcp": {
-        # host:port pairs to measure connection establishment against.
+        # host:port pairs to measure connection establishment against (was three).
         "targets": [
             {"host": "1.1.1.1", "port": 443},
             {"host": "google.com", "port": 443},
-            {"host": "github.com", "port": 443},
         ],
         "timeout_s": 5.0,
     },
@@ -61,15 +64,14 @@ DEFAULT_CONFIG: dict = {
         "targets": [
             {"host": "google.com", "port": 443},
             {"host": "github.com", "port": 443},
-            {"host": "cloudflare.com", "port": 443},
         ],
         "timeout_s": 5.0,
     },
     "http": {
+        # Two full-page downloads (was three) — each is a real byte transfer.
         "urls": [
             "https://www.google.com/",
             "https://github.com/",
-            "https://www.cloudflare.com/",
         ],
         "timeout_s": 15.0,
     },
@@ -83,10 +85,21 @@ DEFAULT_CONFIG: dict = {
             "https://github.com/",
         ],
         "timeout_s": 30.0,
+        # Cap the `networkidle` settle so a never-idle page (trackers/long-poll) doesn't
+        # pay up to the full 30s nav timeout every URL. The wait still lets late resources
+        # land for the smoothness metrics, just bounded.
+        "networkidle_timeout_s": 5.0,
+        # The browser is the heaviest probe. It runs at most this many of the run's
+        # iterations (the cheap network probes still run the full `iterations`), since
+        # paint/page-load metrics are stable enough that fewer browser samples suffice —
+        # a big wall-clock cut. Its Chromium is reused across these iterations.
+        "iterations": 2,
         "wait_until": "load",
         "headless": True,
-        "screenshot": True,
-        "har": True,
+        # Screenshot + HAR feed only the artifacts UI (no scored metric), so they're off by
+        # default now — set true to capture them for debugging a specific run.
+        "screenshot": False,
+        "har": False,
         # CPU-intensive CDP screencast that captures a per-frame JPEG filmstrip,
         # used only to derive the *pixel-based* Speed Index / paint-cadence
         # diagnostics. Off by default: the scored SOPS smoothness now comes from
