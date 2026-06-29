@@ -123,24 +123,15 @@ export interface SettingsProfile {
   // Median 0–100 score per axis (speed/smoothness/stability/completion).
   scores: Record<string, number>;
   // Single "closeness to the ideal Speed=100/Smoothness=100 corner" (higher = better);
-  // null until both axes exist.
+  // null until both axes exist. This IS the crown basis: the highest Overall among
+  // confident profiles is "best".
   overall: number | null;
-  // Confidence-adjusted (lower-bound) Overall — what "best" is actually crowned by, so
-  // a lucky small-sample profile can't outrank a proven one. Null until scorable.
-  overall_pessimistic: number | null;
   // IQR of the per-run Overall score (its own run-to-run variation). Null until scorable.
   overall_p25: number | null;
   overall_p75: number | null;
-  // Posterior spread (standard error) over the profile's true Overall, and the Bayesian
-  // probability (0–1) that this profile is *truly* the best among confident profiles —
-  // the basis for crowning "best". Null until scorable / not a confident candidate.
-  overall_scale: number | null;
-  prob_best: number | null;
-  // Time-adjusted ("vs typical") Overall: how much this profile beats its day×hour
-  // norm, with a confidence-adjusted lower bound — the basis for crowning "best"
-  // (de-confounds for *when* the profile ran). Null until a usable baseline exists.
+  // Time-adjusted ("vs typical") Overall: how much this profile beats its day×hour norm.
+  // Informational only — it does not feed the crown. Null until a usable baseline exists.
   relative_overall: { delta_median: number; p25: number; p75: number; count: number } | null;
-  relative_overall_lb: number | null;
   // Median of every numeric metric we collect (logical key → value), for the
   // dynamic chart axes + the table column selector.
   metrics: Record<string, number>;

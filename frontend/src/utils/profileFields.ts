@@ -26,8 +26,6 @@ export function profileValue(p: SettingsProfile, key: string): number | null {
       return p.count;
     case "relative_smoothness":
       return p.relative_sops?.delta_median ?? null;
-    case "prob_best":
-      return p.prob_best != null ? p.prob_best * 100 : null;
   }
   if (p.scores && key in p.scores) return p.scores[key];
   return p.metrics?.[key] ?? null;

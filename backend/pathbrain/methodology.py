@@ -275,9 +275,8 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         "assignments": _ss_v5_assignments(),
         # First-class Overall: the methodology owns *which* metrics define the headline
         # roll-up and *how* they combine. The settings/crown layer reads this, never
-        # redefines it. The cross-profile crown decision (probability_of_best, posteriors,
-        # vs-typical de-confounding) stays separate — it ranks Overall *distributions*,
-        # which is a statistical decision, not a per-run grade.
+        # redefines it. Crowning is then trivial — the confident profile with the highest
+        # Overall wins; finding *challengers* to it (the optimistic-ceiling hunt) is separate.
         "overall": {
             "method": "corner",
             "metrics": ["fcp", "perceived_time", "inp"],

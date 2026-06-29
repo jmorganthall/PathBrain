@@ -184,15 +184,18 @@ LLM-based. See `README.md` for the product overview.
     (Responsiveness/Smoothness/Speed; `_CORNER_AXES`) remain as display columns. It also
     aggregates per profile the median of every axis score *and* every metric we collect
     (`metrics.all_metric_sources`) to power the dynamic quadrant + table column selector.
-    The crowned **"best"** is the confident profile with the highest **probability of
-    being the true best** (`probability_of_best`): a Bayesian/Thompson Monte-Carlo over
-    each candidate's Normal posterior on its true Overall (location = median, scale =
-    `overall_posterior_scale` SE, tightening with √n), so it weighs *both* a high typical
-    Overall and how sure we are — rather than a pessimistic floor that double-penalized
-    variance (smoothness already scores consistency). The posterior location is shifted
-    *down* by any negative **vs-typical** shortfall (`relative_lower_bound`) so a
-    window-rider competes from its de-confounded level. Returns `best_fingerprint` + a
-    per-profile `prob_best`.
+    The crowned **"best"** is dead simple: the **confident** profile (total iterations ≥
+    `correlation.min_iterations`) with the **highest median Overall**. Full stop — the
+    methodology defines the Overall, and the highest *trustworthy* Overall is the best
+    profile we have. No posterior, no variance penalty, no time-window de-confounding enters
+    the verdict (ties break toward more iterations, then most-recently-seen). Returns
+    `best_fingerprint`. **Finding challengers that could overtake the crown is a separate,
+    smarter job** — the **Heirs to the crown** card + the challenger race rank under-sampled
+    / stale profiles by their *optimistic ceiling* (`optimistic_overall`, the crown corner
+    over each crown metric's p75 upper estimate) against the crown's Overall, to decide where
+    to spend iterations to confirm or deny an heir. The **vs-typical** (`relative_overall`)
+    delta is kept as an informational column (and a hook for smarter heir-hunting), not a
+    crown input.
   - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
     columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.
@@ -393,8 +396,10 @@ docker compose up --build   # -> http://localhost:8000
 - **Phase 7 (done):** **first-class Overall + crown intelligence.** Methodology
   `speed-smoothness-v5` made the Overall a first-class, versioned, persisted quantity;
   **v6** decomposed the crown to **FCP × total_stall × load_event** and dropped the
-  uncalibrated `perceived_time`. Crowning became **probability-of-best** (Bayesian/Thompson).
-  Settings Impact gained the **"Heirs to the crown"** card (reachable contenders by optimistic
+  uncalibrated `perceived_time`. The crown is simply the **highest Overall among confident
+  profiles** (the Bayesian/Thompson probability-of-best layer was removed — it over-credited
+  thin, high-variance profiles for their upper tail; selecting *where to run next* is the
+  separate hunting job). Settings Impact gained the **"Heirs to the crown"** card (reachable contenders by optimistic
   ceiling), a **saturation check** with a one-click **GUI re-anchor** (`/api/methodologies/
   reanchor`), and **"Re-run all profiles"** (`refresh.py`). The SQM field model was unified
   into the **`shaper_fields` registry** (identity/writable/sweepable derive from one
