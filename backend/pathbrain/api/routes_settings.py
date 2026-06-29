@@ -589,12 +589,21 @@ def _compute_heirs(result: dict, session: Session) -> dict:
             }
         )
 
-    # Rank by optimistic ceiling above the crown (known margins first, descending); a
-    # profile whose ceiling we can't yet estimate sorts last but is still listed.
-    heirs.sort(
-        key=lambda h: (h["margin"] is not None, h["margin"] if h["margin"] is not None else 0.0),
-        reverse=True,
-    )
+    # Order to mirror the race's sampling priority (challenger.rank_challengers): confront the
+    # biggest known threat first, then refresh nearby stale incumbents, then fill in unknowns —
+    # so the top heir on the card is the first profile a race would actually run.
+    #   tier 0 — limited-data with a known ceiling: highest optimistic ceiling first
+    #   tier 1 — stale confident: closest to the crown first (smallest |Overall − crown|)
+    #   tier 2 — untested (no ceiling estimate yet): listed last
+    def _heir_key(h: dict) -> tuple:
+        if h["reason"] == "stale":
+            closeness = abs((h.get("overall") or 0.0) - (crown_overall or 0.0))
+            return (1, closeness, 0.0)
+        if h.get("optimistic") is not None:
+            return (0, 0.0, -h["optimistic"])  # biggest threat (highest ceiling) first
+        return (2, 0.0, 0.0)
+
+    heirs.sort(key=_heir_key)
     return {
         "items": heirs[:limit],
         "total": len(heirs),

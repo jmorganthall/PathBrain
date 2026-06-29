@@ -138,18 +138,22 @@ def rank_challengers(
 ) -> tuple:
     """Pure ranking step over an (augmented) ``compute_profiles`` field. Returns
     ``(best_fingerprint, bar, leader, contenders, newly_eliminated)`` — the next profile
-    to sample plus the eliminations. Contenders span, in priority order:
+    to sample plus the eliminations. Contenders span, in priority order — defend the
+    crown by confronting the biggest known threat first, not by gambling on the unknowns:
 
-    1. **no-data** profiles (``no_data``) — zero current-methodology data; always raced
-       (can't be eliminated until they have data), sampled first;
-    2. **under-minimum** comparable profiles whose *optimistic* Overall ≥ ``bar`` (the
-       confident best's Overall, or None in bootstrap) — highest optimistic first;
+    1. **under-minimum** comparable profiles whose *optimistic* Overall ≥ ``bar`` (the
+       confident best's Overall, or None in bootstrap) — **highest optimistic first**, so
+       the profile most likely to dethrone the crown is confirmed or refuted first;
        eliminated when optimistic < bar or a required crown metric is missing;
-    3. **stale confident** profiles (not the crowned best) whose newest run is older than
-       ``stale_minutes`` — re-measured to verify they still hold, **ordered by closeness
-       to the winner** (smallest |Overall − bar| first). Never eliminated.
+    2. **stale confident** profiles (not the crowned best) whose newest run is older than
+       ``stale_minutes`` — re-measured (in case anything has changed) to verify they still
+       hold, **ordered by closeness to the winner** (smallest |Overall − bar| first).
+       Never eliminated;
+    3. **no-data** profiles (``no_data``) — zero current-methodology data; always raced
+       (can't be eliminated until they have data) but sampled **last**, only once the
+       known threats and nearby incumbents have had the window's time.
 
-    Bootstrap: with no confident best, ``bar`` is None → no-data + under-min all race.
+    Bootstrap: with no confident best, ``bar`` is None → under-min + no-data all race.
     Factored out of the driver so the selection logic is unit-testable."""
     from .api.routes_settings import CROWN_METRICS, CROWN_REQUIRED, optimistic_overall
 
@@ -180,7 +184,7 @@ def rank_challengers(
             }
             continue
         if p.get("no_data"):
-            scored.append(((0, 0.0), p, None))  # highest priority — measure the unknowns
+            scored.append(((2, 0.0), p, None))  # lowest priority — fill in the unknowns last
         elif not p["confident"]:
             opt = optimistic_overall(p.get("crown_spreads") or {}, crown_metrics, crown_required)
             if opt is None:
@@ -188,12 +192,12 @@ def rank_challengers(
             elif bar is not None and opt < bar:
                 newly[fp] = {"label": p["label"], "reason": f"best-case Overall {opt} < best {bar}"}
             else:
-                scored.append(((1, -opt), p, opt))  # higher optimistic first
+                scored.append(((0, -opt), p, opt))  # biggest threat to the crown first
         elif fp != best_fp and stale_minutes and now is not None and _incumbent_stale(
             p.get("last_seen"), stale_minutes, now
         ):
             closeness = abs((p.get("overall") or 0.0) - (bar if bar is not None else 0.0))
-            scored.append(((2, closeness), p, p.get("overall")))  # closest-to-winner first
+            scored.append(((1, closeness), p, p.get("overall")))  # closest-to-winner next
     scored.sort(key=lambda t: t[0])
     contenders = [(p, v) for _, p, v in scored]
     leader = contenders[0][0] if contenders else None

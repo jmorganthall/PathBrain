@@ -91,20 +91,21 @@ def _nodata(fp: str) -> dict:
             "crown_spreads": {}, "last_seen": None, "no_data": True}
 
 
-def test_rank_prioritizes_no_data_then_under_min():
+def test_rank_prioritizes_threat_then_no_data():
     field = _field(
         [
             {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0, "crown_spreads": {}},
             {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-             "crown_spreads": _crown(80, 95, 3)},  # under-min contender
-            _nodata("N"),  # no current-methodology data — must be raced, sampled first
+             "crown_spreads": _crown(80, 95, 3)},  # under-min threat to the crown
+            _nodata("N"),  # no current-methodology data — raced, but sampled last
         ],
         best_fingerprint="B",
     )
     _, _, leader, contenders, newly = challenger.rank_challengers(field, {})
-    assert leader["fingerprint"] == "N"  # no-data sampled before the under-min contender
-    assert [p["fingerprint"] for p, _ in contenders] == ["N", "C"]
-    assert "N" not in newly  # no-data is never eliminated
+    # The biggest known threat is confirmed/refuted before gambling on the unknown.
+    assert leader["fingerprint"] == "C"
+    assert [p["fingerprint"] for p, _ in contenders] == ["C", "N"]
+    assert "N" not in newly  # no-data is never eliminated, just deprioritized
 
 
 def test_rank_excludes_unreachable_profiles():
@@ -179,7 +180,8 @@ def test_rank_bootstrap_with_no_confident_best():
     best, bar, leader, contenders, _ = challenger.rank_challengers(field, {})
     assert best is None and bar is None
     assert {p["fingerprint"] for p, _ in contenders} == {"N", "C"}
-    assert leader["fingerprint"] == "N"
+    # Even in bootstrap, the profile that already has data (C) is sampled before the unknown.
+    assert leader["fingerprint"] == "C"
 
 
 def test_rank_stale_confident_ordered_by_closeness():
@@ -206,6 +208,32 @@ def test_rank_stale_confident_ordered_by_closeness():
     assert [p["fingerprint"] for p, _ in contenders] == ["S1", "S2"]
     assert leader["fingerprint"] == "S1"
     assert not newly  # stale-confident are never eliminated
+
+
+def test_rank_full_priority_threat_then_stale_then_no_data():
+    # The full ordering across all three tiers: confront the biggest known threat first,
+    # then refresh nearby stale incumbents, then fill in unknowns last.
+    now = datetime(2026, 1, 2, 12, 0, 0)
+    stale = (now - timedelta(minutes=300)).isoformat()  # 5h > 180
+    field = _field(
+        [
+            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
+             "crown_spreads": {}, "last_seen": now.isoformat()},  # the crown
+            {"fingerprint": "T1", "label": "T1", "confident": False, "overall": None,
+             "crown_spreads": _crown(80, 99, 3)},  # under-min, highest ceiling → biggest threat
+            {"fingerprint": "T2", "label": "T2", "confident": False, "overall": None,
+             "crown_spreads": _crown(80, 90, 3)},  # under-min, lower ceiling
+            {"fingerprint": "S", "label": "S", "confident": True, "overall": 84.0,
+             "crown_spreads": {}, "last_seen": stale},  # stale-but-nearby incumbent
+            _nodata("N"),  # no data → filled in last
+        ],
+        best_fingerprint="B",
+    )
+    _, _, leader, contenders, _ = challenger.rank_challengers(
+        field, {}, now=now, stale_minutes=180
+    )
+    assert [p["fingerprint"] for p, _ in contenders] == ["T1", "T2", "S", "N"]
+    assert leader["fingerprint"] == "T1"  # biggest threat to the crown sampled first
 
 
 # ── driver lifecycle (restore vs auto-promote) ───────────────────────────────
