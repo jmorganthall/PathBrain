@@ -126,13 +126,17 @@ LLM-based. See `README.md` for the product overview.
     field can't currently trust against the winner, re-ranks via `rank_challengers`, and
     **eliminates** any under-minimum profile whose *optimistic* Overall (corner over each
     crown metric's p75 upper estimate; `routes_settings.optimistic_overall`) can no longer
-    beat the confident best. Contenders span, in priority order: **(1) no-data** profiles —
-    zero comparable runs under the current methodology (`_field` augments the
-    `compute_profiles` field with these from `refresh.list_profiles`; the "run anything
-    without data on the latest methodology" case, never eliminated until measured);
-    **(2) under-minimum** profiles that can still beat the bar; **(3) stale confident**
-    profiles older than `challenger.contender_stale_minutes` (default 180), re-measured
-    **ordered by closeness to the winner**. It **bootstraps** with no confident best (bar
+    beat the confident best. Contenders span, in priority order — **defend the crown by
+    confronting the biggest known threat first, not by gambling on the unknowns**:
+    **(1) under-minimum** profiles that can still beat the bar, **highest optimistic ceiling
+    first** (the profile most likely to dethrone the crown is confirmed/refuted first);
+    **(2) stale confident** profiles older than `challenger.contender_stale_minutes`
+    (default 180), re-measured **ordered by closeness to the winner** (in case anything has
+    changed); **(3) no-data** profiles — zero comparable runs under the current methodology
+    (`_field` augments the `compute_profiles` field with these from `refresh.list_profiles`;
+    the "run anything without data on the latest methodology" case, never eliminated until
+    measured) — sampled **last**, once the known threats and nearby incumbents have had the
+    window's time. It **bootstraps** with no confident best (bar
     None → race everything lacking data until a winner emerges). It also **refreshes a stale
     incumbent** (`challenger.incumbent_refresh_minutes`, default 60) first so the bar stays
     contemporaneous (`_incumbent_stale`; counted in `incumbent_refreshes`). It only races
@@ -206,7 +210,9 @@ LLM-based. See `README.md` for the product overview.
   re-anchoring `best` to the fastest value measured (`best`=0 metrics like total_stall are a
   physical floor and never flagged); plus a **"Heirs to the crown"** card — the
   limited-data / stale profiles whose *optimistic ceiling* (`optimistic_overall`, the same
-  number the race uses) could still beat the crown, ranked by margin-above-crown, with a
+  number the race uses) could still beat the crown, ordered to **mirror the race's sampling
+  priority** (biggest known threat first → nearby stale incumbents → untested last), so the
+  top heir is the first profile a race would actually run, with a
   count badge on **"Race challengers"** ("N could beat your crown"; response field `heirs`).
   Heirs are filtered to profiles **reachable** from the live environment (same
   `environment_signature` check as the race), so the card never lists a profile the race
