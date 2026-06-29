@@ -176,7 +176,7 @@ def compare_smoothness(
     b: str = Query(..., description="configTag (settings fingerprint) of profile B."),
     session: Session = Depends(get_session),
     complete_only: bool = Query(
-        True, description="Only include runs scored under the latest (paint) rubric."
+        True, description="Only include runs comparable under the current methodology."
     ),
 ) -> dict:
     """Compare two network configs on perceived load smoothness.
@@ -184,7 +184,9 @@ def compare_smoothness(
     Surfaces p50/p75/p95 of the smoothness metrics (longest stall, cadence, byte
     earliness, perceived time, …) plus the speed-side loadEventEnd/LCP for each
     configTag, so the smoothness-vs-speed tradeoff between two settings is legible."""
-    from ..metrics import has_latest_metrics
+    from ..config_store import get_config
+    from ..methodology import ensure_current_methodology
+    from ..models import Score
 
     rows = session.execute(
         select(Run, BenchmarkResult, ScoreResult)
@@ -198,9 +200,22 @@ def compare_smoothness(
         .order_by(Run.created_at)
     ).all()
 
+    # Comparability is the methodology's call, not a static metric marker: a run counts
+    # only if it has a current-methodology Score that isn't quarantined as incomparable
+    # (same central gate as the other scored views). Predates-regrade runs simply drop out.
+    methodology = ensure_current_methodology(session, get_config(session))
+    comparable_ids = set(
+        session.scalars(
+            select(Score.run_id).where(
+                Score.methodology_version == methodology.version,
+                Score.comparability != "incomparable",
+            )
+        )
+    )
+
     grouped: dict[str, list[tuple[Run, BenchmarkResult]]] = {a: [], b: []}
     for run, br, score in rows:
-        if complete_only and not has_latest_metrics(score.metric_values):
+        if complete_only and run.id not in comparable_ids:
             continue
         grouped[run.settings_fingerprint].append((run, br))
 

@@ -304,15 +304,30 @@ docker compose up --build   # -> http://localhost:8000
   (`networkidle_timeout_s`, 5s) instead of the 30s nav timeout, and the default
   ICMP/DNS/TCP/TLS/HTTP target lists are trimmed — all to cut wall-clock without changing
   what's scored.
+- **One universal `required` field (Overall == Crown == required).** A methodology's
+  required set is the *single* `methodology.required_metric_keys(definition)` accessor —
+  *(metrics flagged `required`) ∪ (the Overall/crown `required` set)* — and nothing
+  re-derives it ad hoc. `build_definition_from_spec` **materializes** `required: true` onto
+  every crown metric in the frozen snapshot (so the definition self-describes), and an
+  import-time invariant refuses a methodology whose crown-`required` metric isn't actually
+  scored (the "valid but unscorable Overall" trap). `comparability()`, `summarize()`
+  (`required_metrics`, what the Methodology page shows), and `serialize()` (per-metric
+  chips) all read the one accessor — so the page can no longer under-report the crown as
+  required, and the re-grade enforces exactly what's displayed.
 - **Comparability is tied to crownability.** `methodology.comparability()` flags a run
-  `incomparable` when its raw can't supply a `required` metric **or any of the current
-  methodology's crown metrics** (`overall.required`, via `overall_metrics`) — so a run
-  that can't produce the headline Overall (e.g. a pre-v6 run with no `total_stall`) is
-  quarantined, never silently scored without the metrics that define the score. A re-grade
-  reports the `exact`/`partial`/`incomparable` split (surfaced in the job summary). This
-  auto-adapts to every future methodology, so adding a crown metric can't silently leave
-  stale-but-valid-looking scores. (`marks_latest`/`has_latest_metrics` is the separate,
-  static at-measure legacy marker — still `longest_stall`.)
+  `incomparable` when its raw can't supply a required metric (`required_metric_keys` — i.e.
+  any flagged metric **or** the current methodology's crown metrics) — so a run that can't
+  produce the headline Overall (e.g. a pre-v6 run with no `total_stall`) is quarantined,
+  never silently scored without the metrics that define the score. A re-grade reports the
+  `exact`/`partial`/`incomparable` split (surfaced in the job summary). Every scored view
+  filters through the **single central predicate** `methodology.is_comparable(score)`
+  (`routes_settings._comparable` delegates to it; rolling/axis-series/trends/history/
+  smoothness-compare all gate on current-methodology comparability, **not** the static
+  metric marker) — so an incomparable run can't leak a headline number into a view that
+  forgot the filter. This auto-adapts to every future methodology, so adding a crown metric
+  can't silently leave stale-but-valid-looking scores. (`marks_latest`/`has_latest_metrics`
+  is the separate, static at-measure legacy marker — still `longest_stall` — used only for
+  the per-run Run-Detail "legacy" badge, not for gating scored aggregations.)
 - **Current vs. legacy scoring (no dual-score machinery).** A run scored before
   the current rubric (no longest-stall / byte-arrival metrics —
   `metrics.has_latest_metrics`, keyed off `marks_latest`, now `longest_stall`) isn't

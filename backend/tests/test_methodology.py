@@ -119,8 +119,14 @@ def test_current_methodology_is_v6_rubric():
     # perceived_time is retained but no longer scored (display-only diagnostic).
     assert by_key["perceived_time"]["axis"] is None
 
-    # longest_stall is the required marker; the five axes are present.
-    assert by_key["longest_stall"]["required"] is True
+    # The universal `required` field is materialized onto every metric that defines the
+    # Overall/crown (fcp × total_stall × load_event) plus the flagged longest_stall — so the
+    # frozen snapshot self-describes exactly what comparability enforces.
+    for key in ("fcp", "total_stall", "load_event", "longest_stall"):
+        assert by_key[key]["required"] is True, key
+    # A scored-but-optional metric is NOT required (it redistributes when missing → partial).
+    assert by_key["byte_earliness"]["required"] is False
+    assert by_key["render"]["required"] is False
     assert {a["key"] for a in d["axes"]} == {
         "responsiveness", "speed", "smoothness", "stability", "completion"
     }
@@ -161,14 +167,51 @@ def test_comparability_gates_on_crown_metrics():
     # Every scored metric present → exact.
     full = {m["key"]: 1.0 for m in d["metrics"] if m.get("axis")}
     assert comparability(d, full)[0] == "exact"
-    # A run missing a crown metric (no total_stall) → incomparable, even though it's
-    # not flagged required:True in the assignment — the crown set is now required.
+    # A run missing a crown metric (no total_stall) → incomparable: the crown set is part of
+    # the single universal required field, so it gates comparability.
     no_stall = {k: v for k, v in full.items() if k != "total_stall"}
     tag, missing = comparability(d, no_stall)
     assert tag == "incomparable" and "total_stall" in missing
     # All crown metrics present but an optional axis metric missing → partial.
     no_byte = {k: v for k, v in full.items() if k != "byte_earliness"}
     assert comparability(d, no_byte)[0] == "partial"
+
+
+def test_required_metric_keys_is_the_single_required_set():
+    from pathbrain.methodology import required_metric_keys
+
+    d = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v6"])
+    req = required_metric_keys(d)
+    # Overall == Crown == required: the crown metrics plus the flagged longest_stall, and
+    # nothing else (optional scored metrics like byte_earliness are not required).
+    assert set(req) == {"fcp", "total_stall", "load_event", "longest_stall"}
+    assert "byte_earliness" not in req and "inp" not in req
+
+    # The accessor stays correct for a snapshot that predates the materialized flag: even if
+    # only longest_stall carries required:True, the crown (from the overall spec) is unioned in.
+    legacy_snapshot = {
+        "metrics": [{**m, "required": m["key"] == "longest_stall"} for m in d["metrics"]],
+        "overall": d["overall"],
+    }
+    assert set(required_metric_keys(legacy_snapshot)) == set(req)
+
+    # A pre-Overall methodology (no crown spec) → just the flagged markers.
+    d4 = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v4"])
+    assert required_metric_keys(d4) == ["longest_stall"]
+
+
+def test_summarize_reports_the_full_required_set():
+    # The Methodology page reads `required_metrics`; it must list the crown, not just the
+    # one historically-flagged metric — the transparency gap this change closes.
+    from pathbrain.methodology import build_definition_from_spec, summarize
+    from pathbrain.models import Methodology
+
+    d = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v6"])
+    row = Methodology(version="speed-smoothness-v6", rubric_version="speed-smoothness-v6",
+                      derivation_version="derive-v4", definition=d)
+    assert set(summarize(row)["required_metrics"]) == {
+        "fcp", "total_stall", "load_event", "longest_stall"
+    }
 
 
 def test_v3_methodology_still_frozen():

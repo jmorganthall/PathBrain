@@ -236,8 +236,11 @@ log = get_logger("api.settings")
 
 def _comparable(score: Score) -> bool:
     # A run is comparable once it has a Score under the current methodology that
-    # isn't "incomparable" (i.e. its raw can supply the required metrics).
-    return score.comparability != "incomparable"
+    # isn't "incomparable" (i.e. its raw can supply the required metrics). Delegates to
+    # the single central predicate so every view filters identically.
+    from ..methodology import is_comparable
+
+    return is_comparable(score)
 
 
 def _min_runs(session: Session) -> int:
