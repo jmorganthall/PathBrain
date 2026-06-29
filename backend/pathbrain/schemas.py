@@ -69,6 +69,9 @@ class RunSummary(BaseModel):
     status: str
     label: str | None = None
     # Headline axis scores under the current methodology (null until scored/comparable).
+    # ``overall`` is the first-class, versioned corner roll-up persisted on the Score
+    # (``axis_scores['overall']``) — the headline figure, replacing the legacy SOPS.
+    overall: float | None = None
     responsiveness: float | None = None
     speed: float | None = None
     smoothness: float | None = None
@@ -99,6 +102,10 @@ class RunDetail(BaseModel):
     config_used: dict[str, Any] | None = None
     results: list[BenchmarkResultOut] = []
     score: ScoreOut | None = None
+    # The run's first-class Overall under the current methodology
+    # (``Score.axis_scores['overall']``) — the headline figure shown in the gauge.
+    # None when the run isn't comparable / not yet scored under the current methodology.
+    overall: float | None = None
 
 
 class RunBaselineOut(BaseModel):

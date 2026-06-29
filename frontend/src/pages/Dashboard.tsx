@@ -350,7 +350,7 @@ export default function Dashboard() {
             <EmptyState
               icon={<SpeedIcon fontSize="inherit" />}
               title="No benchmark runs yet"
-              description="Run your first benchmark to measure network path quality and compute a Seat of Pants Score."
+              description="Run your first benchmark to measure network path quality and compute an Overall score."
               action={
                 <Button
                   variant="contained"
@@ -395,12 +395,10 @@ export default function Dashboard() {
                   </Box>
                 );
               })()}
-              <ScoreGauge value={latest.score?.sops ?? null} />
-              {latest.score && latest.score.sops_stdev != null && latest.iterations > 1 && (
-                <Typography variant="caption" color="text.secondary">
-                  ± {latest.score.sops_stdev} (range {latest.score.sops_min}–{latest.score.sops_max})
-                </Typography>
-              )}
+              <ScoreGauge value={latest.overall ?? null} label="Overall" />
+              <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
+                Overall — how close this run sits to the perfect feel corner.
+              </Typography>
               <Stack direction="row" spacing={1} alignItems="center">
                 <StatusChip status={latest.status} etaMs={latestEtaMs} />
                 <Chip

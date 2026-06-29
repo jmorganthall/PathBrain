@@ -13,6 +13,8 @@ export interface RunSummary {
   status: string;
   label?: string | null;
   // Headline axis scores under the current methodology (null until scored/comparable).
+  // `overall` is the first-class corner roll-up (the headline figure, replacing SOPS).
+  overall?: number | null;
   responsiveness?: number | null;
   speed?: number | null;
   smoothness?: number | null;
@@ -474,6 +476,7 @@ export interface SeriesPoint {
   run_id: number;
   timestamp: string;
   label?: string | null;
+  overall?: number | null;
   responsiveness?: number | null;
   speed: number | null;
   smoothness: number | null;

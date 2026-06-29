@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 
 from ..config_store import get_config
 from ..database import get_session
+from ..methodology import ensure_current_methodology
 from ..metrics import has_latest_metrics
-from ..models import Run, RunStatus, ScoreResult
+from ..models import Run, RunStatus, Score, ScoreResult
 from ..schemas import BenchmarkResultOut, RunBaselineOut, RunDetail, ScoreOut
 from ..settings_profile import summarize
 
@@ -29,7 +30,23 @@ def _serialize_score(score: ScoreResult | None) -> ScoreOut | None:
     return out
 
 
-def _serialize_run(run: Run) -> RunDetail:
+def _current_overall(session: Session, run_id: int) -> float | None:
+    """The run's Overall under the *current* methodology (``axis_scores['overall']``),
+    or None when the run isn't comparable / not yet graded under it. This is the
+    first-class headline figure the gauge shows, decoupled from the legacy SOPS."""
+    methodology = ensure_current_methodology(session, get_config(session))
+    score = session.scalars(
+        select(Score).where(
+            Score.run_id == run_id,
+            Score.methodology_version == methodology.version,
+        )
+    ).first()
+    if score is None or score.comparability == "incomparable":
+        return None
+    return (score.axis_scores or {}).get("overall")
+
+
+def _serialize_run(run: Run, overall: float | None = None) -> RunDetail:
     return RunDetail(
         id=run.id,
         created_at=run.created_at,
@@ -47,6 +64,7 @@ def _serialize_run(run: Run) -> RunDetail:
         config_used=run.config_used,
         results=[BenchmarkResultOut.model_validate(r) for r in run.results],
         score=_serialize_score(run.score),
+        overall=overall,
     )
 
 
@@ -60,7 +78,7 @@ def latest_result(session: Session = Depends(get_session)) -> RunDetail:
     ).first()
     if run is None:
         raise HTTPException(status_code=404, detail="No completed runs yet")
-    return _serialize_run(run)
+    return _serialize_run(run, _current_overall(session, run.id))
 
 
 @router.get("/results/{run_id}", response_model=RunDetail)
@@ -68,7 +86,7 @@ def get_result(run_id: int, session: Session = Depends(get_session)) -> RunDetai
     run = session.get(Run, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
-    return _serialize_run(run)
+    return _serialize_run(run, _current_overall(session, run.id))
 
 
 def _average_metrics(runs: list[Run], exclude_run_id: int) -> tuple[dict, int]:

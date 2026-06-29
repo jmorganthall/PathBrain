@@ -94,13 +94,15 @@ export default function Compare() {
   const rows = useMemo<Row[]>(() => {
     if (!aRun?.score || !bRun?.score) return [];
     const out: Row[] = [];
+    const aOverall = aRun.overall ?? null;
+    const bOverall = bRun.overall ?? null;
     out.push({
-      name: "SOPS",
+      name: "Overall",
       group: "Score",
-      a: aRun.score.sops,
-      b: bRun.score.sops,
+      a: aOverall,
+      b: bOverall,
       higherIsBetter: true,
-      verdict: verdictFor(aRun.score.sops, bRun.score.sops, true),
+      verdict: verdictFor(aOverall, bOverall, true),
     });
 
     const subKeys = Array.from(
@@ -197,7 +199,7 @@ export default function Compare() {
           {(aRun?.score?.legacy || bRun?.score?.legacy) && (
             <Alert severity="warning" sx={{ mb: 2 }}>
               One of these runs uses <strong>legacy scoring</strong> (predates the current metrics),
-              so the SOPS comparison isn't meaningful. Pick two current runs to compare like-for-like.
+              so the Overall comparison isn't meaningful. Pick two current runs to compare like-for-like.
             </Alert>
           )}
 
