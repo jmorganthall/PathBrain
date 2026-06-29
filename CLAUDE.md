@@ -390,6 +390,18 @@ docker compose up --build   # -> http://localhost:8000
   a paginated, column-selectable table; and the **Challenger Race** (`challenger.py`) —
   an adaptive, time-boxed elimination race that promotes limited-data profiles toward
   confidence one iteration at a time.
+- **Phase 7 (done):** **first-class Overall + crown intelligence.** Methodology
+  `speed-smoothness-v5` made the Overall a first-class, versioned, persisted quantity;
+  **v6** decomposed the crown to **FCP × total_stall × load_event** and dropped the
+  uncalibrated `perceived_time`. Crowning became **probability-of-best** (Bayesian/Thompson).
+  Settings Impact gained the **"Heirs to the crown"** card (reachable contenders by optimistic
+  ceiling), a **saturation check** with a one-click **GUI re-anchor** (`/api/methodologies/
+  reanchor`), and **"Re-run all profiles"** (`refresh.py`). The SQM field model was unified
+  into the **`shaper_fields` registry** (identity/writable/sweepable derive from one
+  declaration; executable invariants) — fixing the challenger's "unreachable profile" abort
+  (`environment_signature` reachability) and making the sweep/experiment engines **and the
+  Shotgun Sweep UI** registry-driven. Run-perf pass: per-plugin iteration caps, reused
+  Chromium, bounded networkidle, screenshot/HAR off by default.
 - **Next:** speed test / bufferbloat (latency-under-load), multi-parameter Bayesian
   search + interleaved A/B with effect-size/CI + hysteresis, routing intelligence /
   SD-WAN.
