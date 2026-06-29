@@ -51,7 +51,7 @@ settings are actually best?* — into an empirical, measured answer.
 > **Philosophy:** Empirical. Never assume. Never rely on folklore. Every
 > optimization is tested, measured, scored, and historically tracked.
 
-### The score: three perceptual axes (methodology `speed-smoothness-v4`)
+### The score: three perceptual axes (methodology `speed-smoothness-v6`)
 
 PathBrain scores the **three temporal phases of a page load** as independent
 0–100 axes, rather than blending them into one number. (The original single
@@ -62,18 +62,23 @@ normalized to a 0–100 subscore against configurable *best/worst* thresholds
 | Axis | Answers | Metrics (weights) |
 | --- | --- | --- |
 | **Responsiveness** | How fast does the *first* content appear? | byte-earliness (30) · FCP (25) · TTFB (15) |
-| **Smoothness** | How steadily does it fill in (minimized wait)? | longest-stall (40) · perceived-time (30) · cadence (15) · evenness (15) |
-| **Speed** | How soon is it *fully visible + interaction-ready*? | LCP (40) · INP (40) · total render (20) |
+| **Smoothness** | How steadily does it fill in (minimized wait)? | longest-stall (40, required) · total-stall (30) · cadence (15) · evenness (15) |
+| **Speed** | How soon is it *fully visible + interaction-ready*? | LCP (40) · INP (40) · render (20) · load-event (20) |
 
 Plus two **secondary** axes: **Stability** (layout shift / CLS) and **Completion**
 (raw DNS/TCP/TLS/jitter/loss infra timing) — diagnostic only, never folded into the
 headline axes since they barely move human feel.
 
-**Overall** is a single higher-is-better roll-up = how close a profile sits to the
-perfect (100/100/100) corner across the three headline axes. It crowns the single
-best profile. It's a *derived presentation measure*, not a scored axis — a fixed
-geometric function of the published axis scores, with no weights/thresholds of its
-own.
+**Overall** is a single higher-is-better roll-up — and since `speed-smoothness-v5`
+it's a **first-class, versioned, persisted** quantity, not just a presentation
+measure. It's the **corner** (closeness to the perfect 100-corner) over a small,
+hand-picked **crown metric set** — under v6 that's **FCP × total-stall × load-event**
+(quickest first response × cumulative dead-air × page-load time). It's an
+*intersection*, not a mean: one weak metric pulls Overall down through the corner
+geometry and can't be averaged away. The crowned **"best"** profile is the confident
+one with the highest **probability of being the true best** (a Bayesian/Thompson
+Monte-Carlo over each profile's posterior), so it weighs both *how good* and *how
+sure*.
 
 Design choices:
 
@@ -90,8 +95,12 @@ Plugins are **pure sensors** that store raw observations; all interpretation
 the axis scores themselves) lives in a separate, **versioned methodology** layer —
 so a new metric, a re-weight, or an axis re-partition is published as a new
 methodology version and re-graded over history straight from raw, without
-re-collecting (`POST /api/score/regrade`). `speed-smoothness-v4` is the
-published-now version.
+re-collecting (`POST /api/score/regrade`). `speed-smoothness-v6` is the
+published-now version. A too-lenient threshold can even be **re-anchored from the
+UI** (`POST /api/methodologies/reanchor` forks the current version with a tightened
+`best` and re-grades), and every shaper field PathBrain reads/writes/sweeps is
+declared once in a single **`shaper_fields` registry** so identity/writable/sweepable
+can't drift apart.
 
 ---
 
@@ -103,41 +112,52 @@ published-now version.
   (headless-Chromium nav/paint timing + a **filmstrip**, with screenshot & HAR).
 - 🧮 **Three perceptual axes** — perception-calibrated **log curve** (Weber–Fechner):
   **Responsiveness** (time-to-first), **Smoothness** (the steady fill, led by byte-
-  arrival metrics — longest-stall/perceived-time/cadence), and **Speed** (time-to-last
-  + interactive), plus an **Overall** corner roll-up. Raw-only collection + a
-  **versioned methodology**: `POST /api/score/regrade` re-scores history from raw under
-  any published methodology — without re-collecting.
+  arrival metrics — longest-stall/total-stall/cadence/evenness), and **Speed** (time-to-
+  last + interactive), plus a first-class **Overall** corner (v6: FCP × total-stall ×
+  load-event). Raw-only collection + a **versioned methodology**: `POST /api/score/regrade`
+  re-scores history from raw under any published methodology — without re-collecting.
 - 🌦️ **Historical trends + "vs typical"** — per-metric baselines by day-of-week ×
   hour-of-day (`/api/trends/*`); the Dashboard, a dedicated **Trends** page, and
   **Settings Impact** read each result *relative to its historical norm* ("wins
   above replacement"), so a config is judged fairly for the times it actually ran.
-- 🎯 **Shotgun Sweep** — an on-demand grid sweep over quantum × target: applies each
-  variant for real, benchmarks it, ranks by SOPS + "vs typical", and **restores the
-  baseline** at the end (and on startup if interrupted). Plus a reversible **config
-  write-test** (`POST /api/config/test-apply`) to validate the firewall apply path.
+- 🎯 **Shotgun Sweep** — an on-demand grid sweep over the registry's sweepable shaper
+  fields (quantum × target today): applies each variant for real, benchmarks it, ranks
+  by SOPS + "vs typical", and **restores the baseline** at the end (and on startup if
+  interrupted). Marking another field sweepable surfaces it end to end — engine *and* UI
+  control — with no code branch. Plus a reversible **config write-test**
+  (`POST /api/config/test-apply`) to validate the firewall apply path.
 - 🔁 **Multi-iteration runs** — repeat the suite N times and take the **median**,
-  with a per-run **confidence band** (± / range) and an **ETA**.
+  with a per-run **confidence band** (± / range) and an **ETA**. Per-plugin iteration
+  caps keep runs fast: the heavy browser runs fewer iterations than the cheap network
+  probes and **reuses one Chromium** across them, and unscored captures (screenshot/HAR)
+  are off by default — without changing what's scored.
 - 📈 **Continuous monitoring + rolling score** — optional scheduler runs the suite
   on an interval; the Dashboard shows a windowed **median (24h) + IQR** so
   "current responsiveness" is stable, not point-in-time noise.
 - 🔍 **OPNsense discovery + settings correlation** — each run captures the live
   FQ-CoDel/SQM settings + a **fingerprint**; runs group into **profiles** with their
   score distribution and a **significant-change** banner (effect ≥ threshold). The
-  **crowned "best"** profile is the one closest to the perfect corner across the three
-  headline axes — a single 0–100 **Overall** = closeness to (Responsiveness 100,
-  Smoothness 100, Speed 100), so "best" is genuinely *starts fast, fills smoothly, **and**
-  finishes fast*. The quadrant is **dynamic** (plot any two numeric fields we collect —
-  e.g. Responsiveness × Smoothness or Speed × Smoothness; the crowned profile is
-  ringed; a **Shade** picker encodes a third field as dot **opacity** — brighter =
-  better — so the hidden axis is visible), and the **paginated** profiles table (25/page)
-  has standard Responsiveness/Smoothness/Speed columns plus an **optional column
-  selector** to show/sort by any metric. A profile is **confident** once its runs total ≥
-  `correlation.min_iterations` (default **15**) — iterations, not run count, are the
-  unit of signal. A one-click **"Test to minimum"** tops a limited-data profile up
-  (apply → run the iterations still needed → **restore**); **"Race challengers"** goes
-  further — a time-boxed, adaptive race that tests promising limited-data profiles **one
-  iteration at a time**, eliminating any that can't overtake the best, and (optionally)
-  auto-promoting a confirmed winner. Mock provider for offline dev.
+  **crowned "best"** profile is the confident one with the highest **probability of being
+  the true best** over its **Overall** — the v6 corner over **FCP × total-stall ×
+  load-event** — so "best" is genuinely *starts fast, stays smooth, **and** finishes
+  fast*. The quadrant is **dynamic** (plot any two numeric fields we collect; the crowned
+  profile is ringed; a **Shade** picker encodes a third field as dot **opacity** — brighter
+  = better — and it **warns when an axis is saturated**, i.e. every profile already past
+  the methodology's `best` threshold so the spread carries no score signal), and the
+  **paginated** profiles table (25/page) has standard Overall/Responsiveness/Smoothness/
+  Speed columns plus an **optional column selector**. A page-level **saturation check**
+  flags any too-lenient threshold and offers a one-click **re-anchor** (forks the
+  methodology with a tightened `best` and re-grades). A profile is **confident** once its
+  runs total ≥ `correlation.min_iterations` (default **15**). Beyond the crown there's a
+  **"Heirs to the crown"** card — the limited-data / stale profiles whose *optimistic
+  ceiling* could still dethrone it, ranked by margin (and filtered to profiles the live
+  firewall can actually be driven to). To collect the data: **"Test to minimum"** tops one
+  profile up (apply → run the iterations still needed → **restore**); **"Race
+  challengers"** is a time-boxed, adaptive race that tests promising profiles **one
+  iteration at a time**, eliminating any that can't overtake the best (and skipping any it
+  can't reach), optionally auto-promoting a confirmed winner; **"Re-run all profiles"**
+  re-benchmarks every stored profile for fresh, comparable data after a methodology change.
+  Mock provider for offline dev.
 - ⬆️ **Version awareness** — the image is stamped with its build commit; the app does a
   cached, best-effort check against the latest commit on `main` (`GET /api/version`) and
   shows an **"Update available"** chip in the top bar when a newer `:latest` is pullable.
@@ -166,9 +186,11 @@ published-now version.
 - 📊 **Web dashboard** — React + MUI, dark mode: Dashboard (rolling score + "vs
   typical" + metric breakdown), History, **Trends** (day/hour heatmaps), Compare,
   Settings Impact (sortable profiles table with an **Overall** column + column
-  selector, a **dynamic** Speed/Smoothness/any-metric quadrant + "Test to minimum"),
-  Experiments, **Shotgun Sweep**, Config, **Data Dump**, Run Detail (with filmstrip),
-  and a global **jobs** status dropdown.
+  selector, a **dynamic** any-metric quadrant with saturation warnings, **Heirs to the
+  crown**, "Test to minimum" / "Race challengers" / "Re-run all profiles"),
+  Experiments, **Shotgun Sweep**, Config, **Methodology** (versioned rubric + one-click
+  re-grade / re-anchor), Plugins, **Data Dump**, Run Detail (with filmstrip), and a global
+  **jobs** status dropdown.
 - 💾 **SQLite persistence** with additive auto-migrations; background execution.
 
 **Next:** speed test / bufferbloat (latency-under-load), A/B weight calibration from
@@ -467,7 +489,15 @@ docker-compose*.yml  Build (.yml) and pull-from-GHCR (.ghcr.yml) deploys
 - [x] **Trajectory-aware scoring + first-class methodology:** raw-only collection + a
       versioned methodology layer; byte-arrival smoothness metrics lead the score. The
       headline split into **Responsiveness / Smoothness / Speed** + an **Overall**
-      roll-up ships as `speed-smoothness-v4`; `regrade` re-scores history from raw.
+      roll-up; the Overall is first-class & persisted since `speed-smoothness-v5` and the
+      crown decomposed to **FCP × total-stall × load-event** in **`speed-smoothness-v6`**
+      (the published-now version); `regrade` re-scores history from raw.
+- [x] **Crown intelligence + unified field model:** the crown is the **probability-of-
+      best** profile; a **"Heirs to the crown"** card surfaces reachable contenders that
+      could still dethrone it; a **saturation check** flags too-lenient thresholds with a
+      one-click **re-anchor**; **"Re-run all profiles"** collects fresh comparable data;
+      and every shaper field is declared once in a **`shaper_fields` registry** that the
+      settings layer, providers, challenger, sweep engine, and sweep UI all derive from.
 - [x] **Historical trends + relative SOPS:** day-of-week × hour-of-day baselines and
       a time-adjusted "vs typical" reading on the Dashboard, Trends page, and
       Settings Impact.
