@@ -390,10 +390,11 @@ def test_crown_skips_run_missing_required_metric(client):
         _seed_run("nopt000000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
                   crown_subscores={"fcp": 90})
 
-    by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
+    body = client.get("/api/settings/profiles").json()
+    by_fp = {p["fingerprint"]: p for p in body["profiles"]}
     prof = by_fp["nopt000000x"]
     assert prof["overall"] is None  # no feel corner → no Overall
-    assert prof["prob_best"] is None  # excluded from the crown contest
+    assert body["best_fingerprint"] != "nopt000000x"  # no Overall → can't be crowned
 
 
 def test_overall_uses_persisted_value_over_live_corner(client):
@@ -645,88 +646,25 @@ def test_apply_profile_requires_fingerprint(client):
     assert resp.status_code == 400
 
 
-def test_overall_lower_bound_uses_overall_variation():
-    from pathbrain.api.routes_settings import overall_lower_bound
-
-    # Built from the variation of the *Overall* score itself (one value per run).
-    # Same median, but a noisy/few-sample profile is discounted more than a steady one.
-    noisy = overall_lower_bound([70, 99, 80, 99, 62])          # wide Overall spread, n=5
-    steady = overall_lower_bound([88, 88, 89, 87, 88, 88, 88])  # tight spread
-    assert steady > noisy
-    # Penalty shrinks with √n: same spread, more runs → higher bound.
-    few = overall_lower_bound([80, 90] * 3)    # n=6
-    many = overall_lower_bound([80, 90] * 60)  # n=120
-    assert many > few
-    # A perfectly consistent profile takes no spread penalty.
-    assert overall_lower_bound([90, 90, 90, 90]) == 90
-    assert overall_lower_bound([]) is None
-
-
-def test_crown_prefers_proven_profile_over_lucky_one(client):
+def test_crown_is_highest_overall_among_confident(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # "lucky": a profile that *typically* scores ~82 but occasionally spikes to 99.
+    # "lucky": typically ~82 but occasionally spikes to 99 — high variance, few runs.
     for s in [78, 99, 82, 99, 80]:
         _seed_run("luckythin0x", s, t0 - timedelta(minutes=200), iterations=3)
-    # "proven": many consistent iterations at a clearly higher typical score (92).
-    # 92 is the highest median among all confident profiles seeded so far.
+    # "proven": many consistent iterations at a clearly higher typical Overall (92), the
+    # highest median among all confident profiles seeded so far.
     for i in range(10):
         _seed_run("provenwide0x", 92, t0 - timedelta(minutes=150 - i), iterations=3)
 
     body = client.get("/api/settings/profiles").json()
     by_fp = {p["fingerprint"]: p for p in body["profiles"]}
     assert by_fp["luckythin0x"]["confident"] and by_fp["provenwide0x"]["confident"]
-    # The probability-of-best crown picks the steady-higher profile, not the spiky one,
-    # and surfaces *how sure* it is (P > the noisy profile's).
+    # The crown is simply the highest median Overall among confident profiles. The lucky
+    # profile's occasional 99 spikes don't help (median is robust) and variance is no longer
+    # rewarded, so the steadily-higher proven profile wins — and a thin, spiky profile can
+    # never dethrone a proven one on its upper tail (the bug this replaced).
+    assert by_fp["provenwide0x"]["overall"] > by_fp["luckythin0x"]["overall"]
     assert body["best_fingerprint"] == "provenwide0x"
-    assert by_fp["provenwide0x"]["prob_best"] > by_fp["luckythin0x"]["prob_best"]
-
-
-def test_probability_of_best_rewards_height_and_certainty():
-    from pathbrain.api.routes_settings import overall_posterior_scale, probability_of_best
-
-    # A clearly higher profile dominates a lower one.
-    probs = probability_of_best([("hi", 90.0, 1.0), ("lo", 80.0, 1.0)])
-    assert probs["hi"] > 0.99
-    assert abs(probs["hi"] + probs["lo"] - 1.0) < 1e-9  # probabilities sum to 1
-
-    # Equal location: the tighter (more certain) posterior wins the draw more often.
-    tied = probability_of_best([("tight", 85.0, 0.5), ("wide", 85.0, 8.0)])
-    assert abs(tied["tight"] - 0.5) < 0.05 and abs(tied["wide"] - 0.5) < 0.05
-
-    # Posterior scale tightens with √n and is wide for a thin sample.
-    few = overall_posterior_scale([80.0, 90.0] * 3)     # n=6
-    many = overall_posterior_scale([80.0, 90.0] * 60)   # n=120
-    assert many < few
-    assert overall_posterior_scale([88.0]) == 5.0       # n<2 → wide margin scale
-    assert overall_posterior_scale([90.0, 90.0, 90.0]) == 0.0  # perfectly consistent
-    assert overall_posterior_scale([]) is None
-
-
-def test_relative_lower_bound_discounts_window_riders():
-    from pathbrain.api.routes_settings import relative_lower_bound
-
-    # No baseline yet → no time-adjusted signal to crown on.
-    assert relative_lower_bound(None) is None
-    assert relative_lower_bound({"delta_median": None}) is None
-
-    # A profile that beats its day/hour norm by a tight, well-sampled margin keeps
-    # almost all of that edge; a noisy one with the same median is discounted more.
-    steady = relative_lower_bound({"delta_median": 6.0, "p25": 5.0, "p75": 7.0, "count": 20})
-    noisy = relative_lower_bound({"delta_median": 6.0, "p25": -4.0, "p75": 16.0, "count": 20})
-    assert steady > noisy
-
-    # The bound can go negative — a profile that ran *below* its time-of-day norm (it
-    # only looked good because of *when* it ran) is the window-rider the crown docks.
-    rider = relative_lower_bound({"delta_median": -3.0, "p25": -5.0, "p75": -1.0, "count": 20})
-    assert rider < 0
-
-    # √n: same spread, more runs → less discount (tighter bound, nearer the median).
-    few = relative_lower_bound({"delta_median": 5.0, "p25": 0.0, "p75": 10.0, "count": 4})
-    many = relative_lower_bound({"delta_median": 5.0, "p25": 0.0, "p75": 10.0, "count": 100})
-    assert many > few
-
-    # A single-sample profile takes the fixed margin penalty (no IQR to estimate SE).
-    assert relative_lower_bound({"delta_median": 4.0, "p25": 4.0, "p75": 4.0, "count": 1}) == -1.0
 
 
 def test_profiles_expose_time_adjusted_overall(client):
@@ -736,8 +674,8 @@ def test_profiles_expose_time_adjusted_overall(client):
 
     by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
     p = by_fp["reloverall0x"]
-    # The time-adjusted Overall ("vs typical") + its confidence-adjusted lower bound
-    # are wired through for the crown + the table's "vs typical" column.
-    assert "relative_overall" in p and "relative_overall_lb" in p
+    # The time-adjusted Overall ("vs typical") is exposed for the table's "vs typical"
+    # column — informational only; it no longer feeds the crown.
+    assert "relative_overall" in p
     if p["relative_overall"] is not None:
         assert set(p["relative_overall"]) >= {"delta_median", "p25", "p75", "count"}

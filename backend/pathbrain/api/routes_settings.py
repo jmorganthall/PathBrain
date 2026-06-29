@@ -6,7 +6,6 @@ configurable threshold.
 """
 from __future__ import annotations
 
-import random
 from statistics import median, quantiles
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
@@ -57,7 +56,6 @@ CROWN_REQUIRED = ("fcp", "total_stall", "load_event")
 _PROFILE_FIELDS = [
     {"key": "overall", "label": "Overall (feel)", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "custom_overall", "label": "Overall (custom)", "unit": "score", "higher_is_better": True, "group": "Scores"},
-    {"key": "prob_best", "label": "P(best)", "unit": "%", "higher_is_better": True, "group": "Scores"},
     {"key": "responsiveness", "label": "Responsiveness", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "smoothness", "label": "Smoothness", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "speed", "label": "Speed", "unit": "score", "higher_is_better": True, "group": "Scores"},
@@ -122,122 +120,17 @@ def optimistic_overall(
     return corner_score(opt)
 
 
-# Penalty (points) applied when a profile is too thin to estimate spread — the
-# "prove it" discount when crowning the best, mirroring the optimism margin above.
-CROWN_PESSIMISM_MARGIN = 5.0
-# Z-multiple of the (sample-size-aware) standard error subtracted when crowning.
-# ~1 standard error ≈ a one-sided 68% lower bound.
-CROWN_PESSIMISM_K = 1.0
-
-
-def overall_lower_bound(
-    overall_samples: list[float], k: float = CROWN_PESSIMISM_K, margin: float = CROWN_PESSIMISM_MARGIN
-) -> float | None:
-    """Confidence-adjusted lower bound of a profile's **per-run Overall** scores — the
-    basis for crowning "best", countering winner's curse.
-
-    Works off the variation of the *Overall corner score itself* (one value per run),
-    NOT a single axis: ``median(Overall) − k·SE``, where ``SE = (IQR/1.349)/√n``
-    (IQR→σ, then standard error). The penalty **shrinks as runs accumulate** (√n), so a
-    lucky small-sample profile (wide Overall spread, low n) is discounted more than a
-    proven, consistent one — the regression-to-the-mean case. Thin samples (n<2) take a
-    flat ``margin`` penalty. Returns None for an empty sample."""
-    if not overall_samples:
-        return None
-    med = median(overall_samples)
-    n = len(overall_samples)
-    if n < 2:
-        return round(max(0.0, med - margin), 2)
-    q = quantiles(overall_samples, n=4)
-    iqr = q[2] - q[0]
-    se = (iqr / 1.349) / (n ** 0.5)
-    return round(max(0.0, med - k * se), 2)
-
-
-def relative_lower_bound(
-    rel: dict | None, k: float = CROWN_PESSIMISM_K, margin: float = CROWN_PESSIMISM_MARGIN
-) -> float | None:
-    """Confidence-adjusted lower bound of a profile's *time-adjusted* Overall ("vs
-    typical": run Overall − day×hour baseline). Like ``overall_lower_bound`` but on the
-    relative-delta distribution (``profile_relative`` output), so the value can be
-    negative (a profile below its environment's norm). De-confounds for *when* a profile
-    was sampled — a profile that only looks good because it ran in a favourable window
-    has a small/negative "vs typical", so it can't be crowned. None when no baseline."""
-    if not rel or rel.get("delta_median") is None:
-        return None
-    med = float(rel["delta_median"])
-    n = int(rel.get("count") or 0)
-    if n < 2:
-        return round(med - margin, 2)
-    iqr = float(rel["p75"]) - float(rel["p25"])
-    se = (iqr / 1.349) / (n ** 0.5)
-    return round(med - k * se, 2)
-
-
-# Monte-Carlo settings for the probability-of-best crown. Fixed seed → deterministic
-# (reproducible crowns + tests); only confident profiles compete, so N is small.
-PROB_BEST_SAMPLES = 10000
-PROB_BEST_SEED = 20240617
-
-
-def overall_posterior_scale(
-    overall_samples: list[float], margin: float = CROWN_PESSIMISM_MARGIN
-) -> float | None:
-    """Standard error of a profile's mean **per-run Overall** — the spread of the
-    Normal posterior over its *true* Overall. ``SE = (IQR/1.349)/√n`` (IQR→σ→SE), so it
-    tightens as runs accumulate. Thin samples (n<2) get a wide ``margin`` scale (we're
-    very unsure). Returns None for an empty sample. Pairs with the median (the posterior
-    location) to drive ``probability_of_best``."""
-    if not overall_samples:
-        return None
-    n = len(overall_samples)
-    if n < 2:
-        return float(margin)
-    q = quantiles(overall_samples, n=4)
-    iqr = q[2] - q[0]
-    return (iqr / 1.349) / (n ** 0.5)
-
-
-def probability_of_best(
-    items: list[tuple[str, float, float]],
-    samples: int = PROB_BEST_SAMPLES,
-    seed: int = PROB_BEST_SEED,
-) -> dict[str, float]:
-    """P(this profile is truly the best) for each candidate, by Monte Carlo.
-
-    ``items`` = ``[(key, loc, scale)]`` — each a Normal posterior over the profile's true
-    Overall (loc = median, scale = ``overall_posterior_scale``). We draw all profiles
-    jointly ``samples`` times and tally how often each is the argmax, giving a proper
-    probability that accounts for *both* how high a profile scores **and** how sure we
-    are. Unlike a pessimistic floor it doesn't dock a profile for variance — a noisy
-    profile simply wins the draw less often — and a profile we've barely sampled (wide
-    scale) rarely tops a proven, tight one. Deterministic via the fixed seed."""
-    if not items:
-        return {}
-    if len(items) == 1:
-        return {items[0][0]: 1.0}
-    rng = random.Random(seed)
-    keys = [k for k, _, _ in items]
-    locs = [loc for _, loc, _ in items]
-    scales = [max(0.0, s) for _, _, s in items]
-    wins = dict.fromkeys(keys, 0)
-    for _ in range(samples):
-        best_i, best_v = 0, None
-        for i in range(len(items)):
-            v = rng.gauss(locs[i], scales[i]) if scales[i] > 0 else locs[i]
-            if best_v is None or v > best_v:
-                best_v, best_i = v, i
-        wins[keys[best_i]] += 1
-    return {k: round(wins[k] / samples, 4) for k in keys}
-
 router = APIRouter()
 log = get_logger("api.settings")
 
 
 def _comparable(score: Score) -> bool:
     # A run is comparable once it has a Score under the current methodology that
-    # isn't "incomparable" (i.e. its raw can supply the required metrics).
-    return score.comparability != "incomparable"
+    # isn't "incomparable" (i.e. its raw can supply the required metrics). Delegates to
+    # the single central predicate so every view filters identically.
+    from ..methodology import is_comparable
+
+    return is_comparable(score)
 
 
 def _min_runs(session: Session) -> int:
@@ -747,22 +640,19 @@ def compute_profiles(
             m: {**_spread(vals), "n": len(vals)}
             for m, vals in g["subscore_samples"].items() if vals and m in crown_metrics
         }
-        # Overall is the *distribution of per-run Overall scores* — central value, its
-        # own IQR, and a confidence-adjusted lower bound (the crown basis). This makes
-        # variation reflect the Overall score itself, not a single axis.
+        # Overall is the *distribution of per-run Overall scores* — central value + its own
+        # IQR (for display). The crown is just the highest median Overall among confident
+        # profiles, so no posterior/lower-bound is computed here.
         overall_samples = g["overall_samples"]
         overall_spread = _spread(overall_samples) if overall_samples else None
         overall = overall_spread["median"] if overall_spread else None
-        overall_pessimistic = overall_lower_bound(overall_samples)
-        # Spread of the Normal posterior over the profile's true Overall — feeds the
-        # probability-of-best crown (with `overall` as the posterior location).
-        overall_scale = overall_posterior_scale(overall_samples)
         # Per-metric medians — every numeric value we collect, for the chart + columns.
         metrics = {key: round(median(vals), 3) for key, vals in g["metric_samples"].items() if vals}
         rel = profile_relative(baseline_points, g["points"], "smoothness", tz_offset, min_samples)
-        # Time-adjusted Overall ("vs typical"): de-confounds for *when* the profile ran.
+        # Time-adjusted Overall ("vs typical"): how this profile scored vs the day×hour norm.
+        # Kept as an informational signal (display + a hook for smarter heir-hunting), not a
+        # crown input — the crown is highest Overall, full stop.
         rel_overall = profile_relative(baseline_points, g["points"], "overall", tz_offset, min_samples)
-        relative_overall_lb = relative_lower_bound(rel_overall)
         profiles.append(
             {
                 "fingerprint": g["fingerprint"],
@@ -784,21 +674,14 @@ def compute_profiles(
                 "axis_spreads": axis_spreads,
                 "crown_scores": crown_scores,
                 "crown_spreads": crown_spreads,
-                # The single corner "overall" — closeness to the perfect feel corner.
+                # The single corner "overall" — closeness to the perfect feel corner. This
+                # IS the crown basis: the highest Overall among confident profiles wins.
                 "overall": overall,
-                # Confidence-adjusted absolute Overall (lower bound).
-                "overall_pessimistic": overall_pessimistic,
-                # Time-adjusted ("vs typical") Overall + its confidence-adjusted lower
-                # bound — the basis for crowning "best" (de-confounds narrow time windows).
+                # Time-adjusted ("vs typical") Overall — informational, not a crown input.
                 "relative_overall": rel_overall,
-                "relative_overall_lb": relative_overall_lb,
                 # IQR of the per-run Overall (its own run-to-run variation, for display).
                 "overall_p25": overall_spread["p25"] if overall_spread else None,
                 "overall_p75": overall_spread["p75"] if overall_spread else None,
-                # Posterior spread (SE) over the true Overall + P(this profile is best),
-                # filled in below once every confident candidate is known.
-                "overall_scale": overall_scale,
-                "prob_best": None,
                 # Every numeric value we collect, median over the profile's runs.
                 "metrics": metrics,
                 # Time-adjusted Smoothness: above/below the day×hour historical norm.
@@ -826,35 +709,22 @@ def compute_profiles(
     # missing it (no speed or smoothness yet) fall back to smoothness median, sort last.
     profiles.sort(key=lambda p: (p["overall"] is not None, p["overall"] if p["overall"] is not None else p["median"]), reverse=True)
 
-    # "Best" = the confident profile most likely to be **truly** the best, by a Bayesian
-    # probability-of-best (Thompson-style) over each candidate's Normal posterior on its
-    # true Overall — location = median Overall, scale = the posterior SE
-    # (``overall_posterior_scale``). Unlike a pessimistic floor this doesn't dock a
-    # profile for variance (smoothness already scores consistency; the floor double-counted
-    # it); a noisy profile simply wins the joint draw less often, and a barely-sampled one
-    # (wide scale) rarely tops a proven, tight one — so it captures "how good" AND "how
-    # sure" without conflating them into one number. We keep the **window-rider**
-    # de-confounding by shifting the posterior location *down* by any negative time-adjusted
-    # ("vs typical") shortfall, so a profile that only looked good because of *when* it ran
-    # competes from its de-confounded level. Ties (equal rounded P) break toward the tighter
-    # posterior, then the higher location.
+    # "Best" = the crown: the confident profile (total iterations ≥ the minimum) with the
+    # highest Overall under the current methodology. Full stop — the methodology defines the
+    # Overall, and the highest *trustworthy* Overall is the best profile we have. No
+    # posterior, no variance penalty, no time-window de-confounding enters the verdict.
+    #
+    # Finding *challengers* that could overtake the crown is a separate, smarter job: the
+    # "Heirs to the crown" card and the challenger race rank under-sampled / stale profiles
+    # by their *optimistic ceiling* (``optimistic_overall``) against the crown's Overall, to
+    # decide where to spend iterations to confirm or deny an heir. That hunt is untouched.
+    #
+    # Ties on Overall break toward the more-measured profile (more iterations), then the
+    # most recently seen — both deterministic, neither changes the headline number.
     confident = [p for p in profiles if p["confident"] and p["overall"] is not None]
-
-    def _crown_loc(p: dict) -> float:
-        loc = float(p["overall"])
-        pen = p["relative_overall_lb"]
-        if pen is not None and pen < 0:
-            loc += float(pen)  # window-rider de-confounding: only ever shift down
-        return loc
-
-    items = [(p["fingerprint"], _crown_loc(p), p["overall_scale"] or 0.0) for p in confident]
-    probs = probability_of_best(items)
-    for p in profiles:
-        p["prob_best"] = probs.get(p["fingerprint"])
-
     best = max(
         confident,
-        key=lambda p: (round(p["prob_best"] or 0.0, 2), -(p["overall_scale"] or 0.0), _crown_loc(p)),
+        key=lambda p: (p["overall"], p["iterations"], p["last_seen"]),
         default=None,
     )
     best_fingerprint = best["fingerprint"] if best else None

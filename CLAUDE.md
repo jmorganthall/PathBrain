@@ -184,15 +184,18 @@ LLM-based. See `README.md` for the product overview.
     (Responsiveness/Smoothness/Speed; `_CORNER_AXES`) remain as display columns. It also
     aggregates per profile the median of every axis score *and* every metric we collect
     (`metrics.all_metric_sources`) to power the dynamic quadrant + table column selector.
-    The crowned **"best"** is the confident profile with the highest **probability of
-    being the true best** (`probability_of_best`): a Bayesian/Thompson Monte-Carlo over
-    each candidate's Normal posterior on its true Overall (location = median, scale =
-    `overall_posterior_scale` SE, tightening with √n), so it weighs *both* a high typical
-    Overall and how sure we are — rather than a pessimistic floor that double-penalized
-    variance (smoothness already scores consistency). The posterior location is shifted
-    *down* by any negative **vs-typical** shortfall (`relative_lower_bound`) so a
-    window-rider competes from its de-confounded level. Returns `best_fingerprint` + a
-    per-profile `prob_best`.
+    The crowned **"best"** is dead simple: the **confident** profile (total iterations ≥
+    `correlation.min_iterations`) with the **highest median Overall**. Full stop — the
+    methodology defines the Overall, and the highest *trustworthy* Overall is the best
+    profile we have. No posterior, no variance penalty, no time-window de-confounding enters
+    the verdict (ties break toward more iterations, then most-recently-seen). Returns
+    `best_fingerprint`. **Finding challengers that could overtake the crown is a separate,
+    smarter job** — the **Heirs to the crown** card + the challenger race rank under-sampled
+    / stale profiles by their *optimistic ceiling* (`optimistic_overall`, the crown corner
+    over each crown metric's p75 upper estimate) against the crown's Overall, to decide where
+    to spend iterations to confirm or deny an heir. The **vs-typical** (`relative_overall`)
+    delta is kept as an informational column (and a hook for smarter heir-hunting), not a
+    crown input.
   - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
     columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.
@@ -304,15 +307,30 @@ docker compose up --build   # -> http://localhost:8000
   (`networkidle_timeout_s`, 5s) instead of the 30s nav timeout, and the default
   ICMP/DNS/TCP/TLS/HTTP target lists are trimmed — all to cut wall-clock without changing
   what's scored.
+- **One universal `required` field (Overall == Crown == required).** A methodology's
+  required set is the *single* `methodology.required_metric_keys(definition)` accessor —
+  *(metrics flagged `required`) ∪ (the Overall/crown `required` set)* — and nothing
+  re-derives it ad hoc. `build_definition_from_spec` **materializes** `required: true` onto
+  every crown metric in the frozen snapshot (so the definition self-describes), and an
+  import-time invariant refuses a methodology whose crown-`required` metric isn't actually
+  scored (the "valid but unscorable Overall" trap). `comparability()`, `summarize()`
+  (`required_metrics`, what the Methodology page shows), and `serialize()` (per-metric
+  chips) all read the one accessor — so the page can no longer under-report the crown as
+  required, and the re-grade enforces exactly what's displayed.
 - **Comparability is tied to crownability.** `methodology.comparability()` flags a run
-  `incomparable` when its raw can't supply a `required` metric **or any of the current
-  methodology's crown metrics** (`overall.required`, via `overall_metrics`) — so a run
-  that can't produce the headline Overall (e.g. a pre-v6 run with no `total_stall`) is
-  quarantined, never silently scored without the metrics that define the score. A re-grade
-  reports the `exact`/`partial`/`incomparable` split (surfaced in the job summary). This
-  auto-adapts to every future methodology, so adding a crown metric can't silently leave
-  stale-but-valid-looking scores. (`marks_latest`/`has_latest_metrics` is the separate,
-  static at-measure legacy marker — still `longest_stall`.)
+  `incomparable` when its raw can't supply a required metric (`required_metric_keys` — i.e.
+  any flagged metric **or** the current methodology's crown metrics) — so a run that can't
+  produce the headline Overall (e.g. a pre-v6 run with no `total_stall`) is quarantined,
+  never silently scored without the metrics that define the score. A re-grade reports the
+  `exact`/`partial`/`incomparable` split (surfaced in the job summary). Every scored view
+  filters through the **single central predicate** `methodology.is_comparable(score)`
+  (`routes_settings._comparable` delegates to it; rolling/axis-series/trends/history/
+  smoothness-compare all gate on current-methodology comparability, **not** the static
+  metric marker) — so an incomparable run can't leak a headline number into a view that
+  forgot the filter. This auto-adapts to every future methodology, so adding a crown metric
+  can't silently leave stale-but-valid-looking scores. (`marks_latest`/`has_latest_metrics`
+  is the separate, static at-measure legacy marker — still `longest_stall` — used only for
+  the per-run Run-Detail "legacy" badge, not for gating scored aggregations.)
 - **Current vs. legacy scoring (no dual-score machinery).** A run scored before
   the current rubric (no longest-stall / byte-arrival metrics —
   `metrics.has_latest_metrics`, keyed off `marks_latest`, now `longest_stall`) isn't
@@ -378,8 +396,10 @@ docker compose up --build   # -> http://localhost:8000
 - **Phase 7 (done):** **first-class Overall + crown intelligence.** Methodology
   `speed-smoothness-v5` made the Overall a first-class, versioned, persisted quantity;
   **v6** decomposed the crown to **FCP × total_stall × load_event** and dropped the
-  uncalibrated `perceived_time`. Crowning became **probability-of-best** (Bayesian/Thompson).
-  Settings Impact gained the **"Heirs to the crown"** card (reachable contenders by optimistic
+  uncalibrated `perceived_time`. The crown is simply the **highest Overall among confident
+  profiles** (the Bayesian/Thompson probability-of-best layer was removed — it over-credited
+  thin, high-variance profiles for their upper tail; selecting *where to run next* is the
+  separate hunting job). Settings Impact gained the **"Heirs to the crown"** card (reachable contenders by optimistic
   ceiling), a **saturation check** with a one-click **GUI re-anchor** (`/api/methodologies/
   reanchor`), and **"Re-run all profiles"** (`refresh.py`). The SQM field model was unified
   into the **`shaper_fields` registry** (identity/writable/sweepable derive from one

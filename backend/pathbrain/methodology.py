@@ -275,9 +275,8 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         "assignments": _ss_v5_assignments(),
         # First-class Overall: the methodology owns *which* metrics define the headline
         # roll-up and *how* they combine. The settings/crown layer reads this, never
-        # redefines it. The cross-profile crown decision (probability_of_best, posteriors,
-        # vs-typical de-confounding) stays separate — it ranks Overall *distributions*,
-        # which is a statistical decision, not a per-run grade.
+        # redefines it. Crowning is then trivial — the confident profile with the highest
+        # Overall wins; finding *challengers* to it (the optimistic-ceiling hunt) is separate.
         "overall": {
             "method": "corner",
             "metrics": ["fcp", "perceived_time", "inp"],
@@ -313,10 +312,32 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
 }
 
 
+# Invariant: every Overall/crown metric a version *requires* must be a scored metric in
+# that version (have an assignment) — else no run could ever supply it and every run would
+# be quarantined as ``incomparable`` (the "valid but unscorable Overall" trap). Asserted at
+# import so a new methodology can't ship a crown-required metric it doesn't actually score.
+for _ver, _spec in METHODOLOGY_REGISTRY.items():
+    _crown_required = set((_spec.get("overall") or {}).get("required") or [])
+    _scored_keys = set(_spec.get("assignments") or {})
+    _unscored = _crown_required - _scored_keys
+    assert not _unscored, (
+        f"methodology {_ver}: crown-required metrics not scored (no assignment): "
+        f"{sorted(_unscored)}"
+    )
+
+
 def build_definition_from_spec(spec: dict) -> dict:
     """Build a full frozen definition from a registry spec + the metric catalog."""
-    catalog = {m.key: m for m in metrics_mod.METRICS}
     assignments = spec.get("assignments", {})
+    overall = spec.get("overall") or {}
+    # One universal `required` set, materialized onto the metric entries so the frozen
+    # snapshot is self-describing: the Overall (a.k.a. *crown*) metrics this version
+    # requires (``overall.required``) plus any axis metric explicitly flagged required.
+    # Overall == Crown == required — the metrics that compute the headline roll-up are
+    # exactly the ones a run must carry. ``comparability``, the Methodology view, and the
+    # re-grade all read this one field via ``required_metric_keys``.
+    required_keys = set(overall.get("required") or [])
+    required_keys |= {k for k, a in assignments.items() if a.get("required")}
     out_metrics: list[dict] = []
     for m in metrics_mod.METRICS:
         a = assignments.get(m.key)
@@ -328,7 +349,7 @@ def build_definition_from_spec(spec: dict) -> dict:
                     "description": m.description, "unit": m.unit,
                     "weight": a["weight"], "best": a.get("best"), "worst": a.get("worst"),
                     "higher_is_better": m.higher_is_better,
-                    "required": a.get("required", False), "order": metrics_mod._order(m.key),
+                    "required": m.key in required_keys, "order": metrics_mod._order(m.key),
                 }
             )
         else:  # not scored under this version — carried as a display-only diagnostic
@@ -361,6 +382,35 @@ def overall_from_definition(definition: dict, subscores: dict | None) -> float |
     if not metrics or any(sub.get(k) is None for k in required):
         return None
     return corner_score([sub.get(k) for k in metrics if sub.get(k) is not None])
+
+
+def required_metric_keys(definition: dict) -> list[str]:
+    """The single, canonical **required** set for a methodology — the one field referenced
+    everywhere (comparability, the Methodology view, the re-grade) instead of each call site
+    re-deriving it.
+
+        required = metrics flagged ``required`` in the definition  ∪  the Overall (a.k.a.
+        *crown*) metrics the version's ``overall`` spec marks required.
+
+    Overall == Crown == required: the metrics that compute the headline roll-up are exactly
+    the metrics a run must carry, or it can't reproduce this methodology's score and is
+    quarantined as ``incomparable``. The union (rather than reading only the materialized
+    per-metric flag) keeps this correct for definitions snapshotted before the flag was
+    materialized onto crown metrics. Order-preserved, de-duplicated, limited to metrics the
+    definition actually declares."""
+    metrics = (definition or {}).get("metrics", [])
+    known = {m["key"] for m in metrics}
+    flagged = [m["key"] for m in metrics if m.get("required")]
+    _, overall_required = overall_metrics(definition)
+    return list(dict.fromkeys(flagged + [k for k in overall_required if k in known]))
+
+
+def is_comparable(score) -> bool:
+    """The single predicate every scored view filters on: a run is comparable under a
+    methodology iff its Score isn't ``incomparable`` (its raw supplied every required
+    metric). Centralizing it means an incomparable run can't leak a headline number into a
+    view that simply forgot the filter. ``None`` (no score) → not comparable."""
+    return score is not None and getattr(score, "comparability", None) != "incomparable"
 
 
 def overall_metrics(definition: dict) -> tuple[list[str], list[str]]:
@@ -485,13 +535,22 @@ def summarize(row: Methodology) -> dict:
         "axes": definition.get("axes", []),
         "metric_count": len(definition.get("metrics", [])),
         "scored_metric_count": len(scored),
-        "required_metrics": [m["key"] for m in scored if m.get("required")],
+        # The canonical required set (crown/Overall ∪ flagged), not just the materialized
+        # per-metric flag — so old snapshots still report the crown metrics as required.
+        "required_metrics": required_metric_keys(definition),
     }
 
 
 def serialize(row: Methodology) -> dict:
-    """Full methodology including the frozen definition."""
-    return {**summarize(row), "definition": row.definition or {}}
+    """Full methodology including the frozen definition.
+
+    The per-metric ``required`` flag is overlaid from the canonical ``required_metric_keys``
+    so the Methodology page's chips agree with what comparability enforces, even for a
+    definition snapshotted before the flag was materialized onto crown metrics."""
+    definition = row.definition or {}
+    req = set(required_metric_keys(definition))
+    metrics = [{**m, "required": m["key"] in req} for m in definition.get("metrics", [])]
+    return {**summarize(row), "definition": {**definition, "metrics": metrics}}
 
 
 # ── (run × methodology) scores ───────────────────────────────────────────────
@@ -523,9 +582,9 @@ def comparability(definition: dict, metric_values: dict | None) -> tuple[str, li
     ``incomparable`` and quarantined — never silently scored without the metrics that
     define the score. This auto-adapts to every methodology's crown."""
     metrics = (definition or {}).get("metrics", [])
-    _, overall_required = overall_metrics(definition)
-    # The required set = per-metric `required:True` markers ∪ the crown metrics.
-    required = list(dict.fromkeys([m["key"] for m in metrics if m.get("required")] + overall_required))
+    # The required set is the single canonical accessor (per-metric `required` flags ∪ the
+    # crown/Overall metrics) — one source of truth, never re-unioned ad hoc here.
+    required = required_metric_keys(definition)
     scored = [m["key"] for m in metrics if m.get("axis")]
     mv = metric_values or {}
     missing_required = [k for k in required if mv.get(k) is None]

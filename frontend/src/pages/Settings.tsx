@@ -1142,17 +1142,17 @@ export default function Settings() {
             </Stack>
             <Typography variant="caption" color="text.secondary">
               Ranked by <b>Overall</b> — a single 0–100 measure of how close a profile sits to the
-              ideal <b>Speed 100 / Smoothness 100</b> corner (fastest <i>and</i> smoothest). "Best" is
-              the confident profile with the highest <b>probability of being the true best</b> — a
-              Bayesian comparison that weighs both a high typical Overall and how sure we are of it
-              (more iterations → tighter estimate), rather than a worst-case floor. Speed and
-              Smoothness are shown alongside. Iterations count every measurement sweep — a
-              15‑iteration run carries far more signal than a single‑iteration one. <b>vs typical</b>
-              is the time-adjusted edge: median Overall minus the historical norm for the day &amp;
-              hour each run landed on — positive means the profile beats its environment, the fair way
-              to compare configs sampled at different times; the crown de-confounds a profile that
-              scored below its own day/hour norm, so "best" can't just be riding a favorable window.
-              Use <b>Columns</b> to add any other metric we collect, then sort by it.
+              ideal <b>Speed 100 / Smoothness 100</b> corner (fastest <i>and</i> smoothest), as the
+              methodology defines it. <b>"Best"</b> is simply the profile with the highest Overall
+              that meets the iteration minimum — the best profile we have, full stop. Finding
+              challengers that could overtake it is a separate job: the <b>Heirs to the crown</b> card
+              and the challenger race rank under-sampled profiles by their <i>optimistic ceiling</i>
+              to decide where to spend iterations. Speed and Smoothness are shown alongside.
+              Iterations count every measurement sweep — a 15‑iteration run carries far more signal
+              than a single‑iteration one. <b>vs typical</b> is the time-adjusted edge: median Overall
+              minus the historical norm for the day &amp; hour each run landed on — positive means the
+              profile beats its environment; it's informational and no longer affects the crown. Use{" "}
+              <b>Columns</b> to add any other metric we collect, then sort by it.
               {showCompletion && (
                 <>
                   {" "}
@@ -1291,12 +1291,9 @@ export default function Settings() {
                           {p.fingerprint === bestFingerprint && (
                             <Tooltip
                               title={
-                                `Crowned by probability-of-best${
-                                  p.prob_best != null ? ` (${Math.round(p.prob_best * 100)}% most likely the true best)` : ""
-                                } — a Bayesian comparison of each profile's Overall that rewards both a high typical score and how sure we are of it (more iterations → tighter estimate), without docking it twice for variance.` +
-                                (p.relative_overall_lb != null && p.relative_overall_lb < 0
-                                  ? ` Its level is de-confounded down by ${p.relative_overall_lb} for scoring below its day/hour norm (it rode a favorable time window).`
-                                  : ``)
+                                `The crown: the highest Overall${
+                                  p.overall != null ? ` (${p.overall})` : ""
+                                } among profiles that meet the iteration minimum. The methodology defines Overall; the highest trustworthy Overall is the best profile we have.`
                               }
                             >
                               <Chip size="small" color="success" label="best" />

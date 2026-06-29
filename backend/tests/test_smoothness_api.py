@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from pathbrain.database import session_scope
-from pathbrain.models import BenchmarkResult, Run, RunStatus, ScoreResult
+from pathbrain.methodology import CURRENT_METHODOLOGY
+from pathbrain.models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
 
 
 def _chunky_resources():
@@ -55,6 +56,11 @@ def _seed_browser_run(fp: str, *, longest_stall: float, load_event: float) -> in
         # latest-rubric marker so complete_only keeps it.
         s.add(ScoreResult(run_id=run.id, sops=70.0, subscores={}, weights_used={},
                           metric_values={"longest_stall": 1500.0}))
+        # A comparable Score under the current methodology — the gate every scored view
+        # (incl. smoothness/compare) filters on now that comparability is the methodology's
+        # call, not a static metric marker.
+        s.add(Score(run_id=run.id, methodology_version=CURRENT_METHODOLOGY,
+                    comparability="exact"))
         s.flush()
         return run.id
 
