@@ -134,12 +134,13 @@ export default function History() {
             <Card>
               <CardContent>
                 <Typography variant="h6" gutterBottom>
-                  Responsiveness, Smoothness &amp; Speed
+                  Overall, Responsiveness, Smoothness &amp; Speed
                 </Typography>
                 <SeriesChart
                   data={series}
                   yDomain={[0, 100]}
                   lines={[
+                    { key: "overall", name: "Overall", color: "#eceff1" },
                     { key: "responsiveness", name: "Responsiveness", color: "#ffa726" },
                     { key: "smoothness", name: "Smoothness", color: "#ab47bc" },
                     { key: "speed", name: "Speed", color: "#4dd0e1" },
@@ -214,6 +215,7 @@ export default function History() {
                       <TableCell>Time</TableCell>
                       <TableCell>Label</TableCell>
                       <TableCell>Status</TableCell>
+                      <TableCell align="right">Overall</TableCell>
                       <TableCell align="right">Respons.</TableCell>
                       <TableCell align="right">Smoothness</TableCell>
                       <TableCell align="right">Speed</TableCell>
@@ -246,13 +248,18 @@ export default function History() {
                           />
                         </TableCell>
                         {r.legacy ? (
-                          <TableCell align="right" colSpan={3}>
+                          <TableCell align="right" colSpan={4}>
                             <Tooltip title="Not comparable under the current methodology — re-grade or re-run.">
                               <Chip size="small" variant="outlined" label="legacy" />
                             </Tooltip>
                           </TableCell>
                         ) : (
                           <>
+                            <TableCell align="right">
+                              <Typography component="span" sx={{ fontWeight: 700, color: sopsColor(r.overall) }}>
+                                {fmtScore(r.overall)}
+                              </Typography>
+                            </TableCell>
                             <TableCell align="right">
                               <Typography component="span" sx={{ fontWeight: 600, color: sopsColor(r.responsiveness) }}>
                                 {fmtScore(r.responsiveness)}

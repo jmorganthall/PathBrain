@@ -42,9 +42,11 @@ class TrendMetric:
 
 
 def _trend_metrics() -> dict[str, TrendMetric]:
-    # The score axes are synthetic (not in the metric registry); everything else is
-    # derived straight from the single source of truth in ``metrics.py``.
+    # The score axes + the Overall roll-up are synthetic (not in the metric registry);
+    # everything else is derived straight from the single source of truth in ``metrics.py``.
     out: dict[str, TrendMetric] = {
+        "overall": TrendMetric("overall", "Overall", "", higher_is_better=True),
+        "responsiveness": TrendMetric("responsiveness", "Responsiveness", "", higher_is_better=True),
         "speed": TrendMetric("speed", "Speed", "", higher_is_better=True),
         "smoothness": TrendMetric("smoothness", "Smoothness", "", higher_is_better=True),
         "stability": TrendMetric("stability", "Stability & Interactivity", "", higher_is_better=True),
@@ -55,8 +57,10 @@ def _trend_metrics() -> dict[str, TrendMetric]:
     return out
 
 
-# The methodology score axes (synthetic, not registry metrics).
-AXIS_KEYS = ("responsiveness", "speed", "smoothness", "stability", "completion")
+# The methodology score axes + the first-class Overall roll-up (synthetic, not
+# registry metrics). ``overall`` is pulled straight from the run's persisted
+# ``axis_scores['overall']`` like the axes, so it trends "vs typical" too.
+AXIS_KEYS = ("overall", "responsiveness", "speed", "smoothness", "stability", "completion")
 
 
 TREND_METRICS: dict[str, TrendMetric] = _trend_metrics()

@@ -270,13 +270,11 @@ export default function RunDetail() {
       >
         <Card>
           <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-            <ScoreGauge value={run.score?.sops ?? null} label="Seat of Pants Score (how it feels)" />
-            {run.score && run.score.sops_stdev != null && run.iterations > 1 && (
-              <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
-                ± {run.score.sops_stdev} · range {run.score.sops_min}–{run.score.sops_max} over{" "}
-                {run.iterations} iterations
-              </Typography>
-            )}
+            <ScoreGauge value={run.overall ?? null} label="Overall (how it feels)" />
+            <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
+              Overall — closeness to the perfect quick-first-response / stall-free / fast-load
+              corner, as the methodology defines it.
+            </Typography>
             {run.score?.completion != null && (
               <>
                 <Divider flexItem />
@@ -292,7 +290,7 @@ export default function RunDetail() {
                   </Typography>
                 )}
                 <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
-                  Raw connection timing (DNS/TCP/TLS/jitter/loss), separate from SOPS.
+                  Raw connection timing (DNS/TCP/TLS/jitter/loss), separate from the Overall.
                 </Typography>
               </>
             )}
@@ -339,7 +337,7 @@ export default function RunDetail() {
             {run.score ? (
               <>
                 <Typography variant="overline" color="text.secondary">
-                  Seat of Pants · how it feels {Math.round(run.score.sops)}
+                  Overall · how it feels {run.overall != null ? Math.round(run.overall) : "—"}
                 </Typography>
                 <SubscoreBreakdown score={run.score} />
                 {run.score.completion_subscores &&

@@ -8,8 +8,8 @@ interface Props {
   label?: string;
 }
 
-// Circular SOPS gauge rendered with a conic gradient.
-export default function ScoreGauge({ value, size = 200, label = "Seat of Pants Score" }: Props) {
+// Circular score gauge rendered with a conic gradient (Overall/axis scores).
+export default function ScoreGauge({ value, size = 200, label = "Overall" }: Props) {
   const v = value == null ? null : Math.max(0, Math.min(100, value));
   const color = sopsColor(v);
   const pct = v ?? 0;
