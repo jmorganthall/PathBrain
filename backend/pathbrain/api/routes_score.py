@@ -305,6 +305,10 @@ def axis_series(
 
     methodology = ensure_current_methodology(session, get_config(session))
     axes = scored_axes(methodology.definition or {})
+    # The first-class Overall (corner roll-up) isn't a scored axis, but it's the headline
+    # figure — prepend it as a synthetic headline series so the over-time chart trends it
+    # alongside the axes (pulled from the same persisted ``axis_scores['overall']``).
+    series_axes = [{"key": "overall", "label": "Overall", "role": "headline"}, *axes]
     conds = [
         Run.status == RunStatus.COMPLETE,
         Score.methodology_version == methodology.version,
@@ -321,11 +325,11 @@ def axis_series(
         {
             "run_id": score.run_id,
             "timestamp": run.created_at.isoformat(),
-            **{a["key"]: (score.axis_scores or {}).get(a["key"]) for a in axes},
+            **{a["key"]: (score.axis_scores or {}).get(a["key"]) for a in series_axes},
         }
         for score, run in reversed(rows)
     ]
-    return {"methodology": methodology.version, "axes": axes, "points": points}
+    return {"methodology": methodology.version, "axes": series_axes, "points": points}
 
 
 @router.get("/score/weights")

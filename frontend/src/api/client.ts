@@ -95,9 +95,15 @@ export const api = {
   resultBaseline: (id: number) => request<RunBaseline>(`/results/${id}/baseline`),
 
   // History
-  history: (limit = 50, offset = 0) =>
-    request<RunSummary[]>(`/history?limit=${limit}&offset=${offset}`),
-  historyCount: () => request<{ count: number }>("/history/count"),
+  history: (limit = 50, offset = 0, fingerprint?: string) =>
+    request<RunSummary[]>(
+      `/history?limit=${limit}&offset=${offset}` +
+        (fingerprint ? `&fingerprint=${encodeURIComponent(fingerprint)}` : "")
+    ),
+  historyCount: (fingerprint?: string) =>
+    request<{ count: number }>(
+      "/history/count" + (fingerprint ? `?fingerprint=${encodeURIComponent(fingerprint)}` : "")
+    ),
   historySeries: (limit = 100, includeLegacy = false) =>
     request<SeriesResponse>(`/history/series?limit=${limit}&include_legacy=${includeLegacy}`),
 

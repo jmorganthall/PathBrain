@@ -102,6 +102,7 @@ export default function ProfileQuadrant({
   bestFingerprint,
   currentFingerprint,
   thresholds,
+  onSelect,
 }: {
   profiles: SettingsProfile[];
   xField: FieldDef;
@@ -112,6 +113,9 @@ export default function ProfileQuadrant({
   // Per-metric effective scoring thresholds (keyed by metric key), for the saturated-axis
   // warning. Omitted → no warning shown.
   thresholds?: Record<string, MetricThreshold>;
+  // Called with a profile's fingerprint when its dot is clicked (for the select-and-act
+  // panel). Omitted → dots aren't clickable.
+  onSelect?: (fingerprint: string) => void;
 }) {
   const theme = useTheme();
   // The third dimension drives dot OPACITY (better = fully opaque, worse fades out) —
@@ -155,6 +159,15 @@ export default function ProfileQuadrant({
 
   const cellColor = (p: Point) =>
     p.isBest ? bestColor : p.confident ? goodColor : greyColor;
+
+  // recharts hands the clicked entry (sometimes wrapped in `.payload`) to onClick.
+  const handleDotClick = (d: unknown) => {
+    if (!onSelect) return;
+    const node = d as { fingerprint?: string; payload?: { fingerprint?: string } };
+    const fp = node?.fingerprint ?? node?.payload?.fingerprint;
+    if (fp) onSelect(fp);
+  };
+  const dotCursor = onSelect ? "pointer" : undefined;
 
   // Flag any axis whose every value already clears the scoring "best" threshold: the
   // score is pinned at ~100 there, so the visible spread is perceptually meaningless and
@@ -267,7 +280,7 @@ export default function ProfileQuadrant({
               content={<QuadrantTooltip xField={xField} yField={yField} sizeField={shadeField} />}
               cursor={{ strokeDasharray: "3 3" }}
             />
-            <Scatter name="Confident" data={confident} fill={goodColor}>
+            <Scatter name="Confident" data={confident} fill={goodColor} onClick={handleDotClick} cursor={dotCursor}>
               {confident.map((p) => (
                 <Cell
                   key={p.fingerprint}
@@ -278,14 +291,14 @@ export default function ProfileQuadrant({
                 />
               ))}
             </Scatter>
-            <Scatter name="Limited data" data={limited} fill={greyColor}>
+            <Scatter name="Limited data" data={limited} fill={greyColor} onClick={handleDotClick} cursor={dotCursor}>
               {limited.map((p) => (
                 <Cell key={p.fingerprint} fill={greyColor} fillOpacity={opacityOf(p)} />
               ))}
             </Scatter>
             {/* The live-on-the-firewall profile: a triangle so it stands out among the
                 circles, regardless of its position/score. Drawn last (on top). */}
-            <Scatter name="Active" data={active} shape="triangle" fill={goodColor}>
+            <Scatter name="Active" data={active} shape="triangle" fill={goodColor} onClick={handleDotClick} cursor={dotCursor}>
               {active.map((p) => (
                 <Cell
                   key={p.fingerprint}
@@ -315,6 +328,7 @@ export default function ProfileQuadrant({
         )}
         {shadeOn ? <> Opacity = <b>{shadeField!.label}</b> (brighter = better; faded = worse).</> : null}
         {active.length > 0 ? <> The <b>▲ triangle</b> is the profile live on the firewall now.</> : null}
+        {onSelect ? <> <b>Click a dot</b> to apply that profile or view its run history.</> : null}
       </Typography>
     </Box>
   );

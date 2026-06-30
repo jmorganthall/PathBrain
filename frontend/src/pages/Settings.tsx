@@ -528,6 +528,8 @@ export default function Settings() {
   // Scatter-only filter: hide profiles with fewer than this many total iterations, so
   // thin/noisy profiles don't clutter the plot. 0 = show all. Doesn't affect the table.
   const [minIterPlot, setMinIterPlot] = useState(0);
+  // The profile whose dot was last clicked on the scatter → shows a small act-on-it panel.
+  const [scatterFp, setScatterFp] = useState<string | null>(null);
   // Optional extra table columns (dynamic field keys), persisted across reloads.
   const [extraCols, setExtraCols] = useState<string[]>(() => {
     try {
@@ -1103,7 +1105,64 @@ export default function Settings() {
               bestFingerprint={bestFingerprint}
               currentFingerprint={currentFingerprint}
               thresholds={metricThresholds}
+              onSelect={setScatterFp}
             />
+            {scatterFp &&
+              (() => {
+                const sp = (profiles ?? []).find((p) => p.fingerprint === scatterFp);
+                if (!sp) return null;
+                return (
+                  <Box
+                    sx={{
+                      mt: 1.5,
+                      p: 1.5,
+                      borderRadius: 1,
+                      border: 1,
+                      borderColor: "divider",
+                      bgcolor: "action.hover",
+                      display: "flex",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: 1,
+                    }}
+                  >
+                    <Box sx={{ minWidth: 0, flex: 1 }}>
+                      <Typography variant="subtitle2" noWrap title={sp.label}>
+                        {sp.label}
+                        {sp.fingerprint === bestFingerprint ? " · best" : ""}
+                        {sp.fingerprint === currentFingerprint ? " · active" : ""}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Overall {sp.overall ?? "—"} · {sp.iterations} iteration
+                        {sp.iterations === 1 ? "" : "s"}
+                        {sp.confident ? "" : " · limited data"}
+                      </Typography>
+                    </Box>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => navigate(`/profiles/${encodeURIComponent(sp.fingerprint)}`)}
+                    >
+                      View history
+                    </Button>
+                    <Tooltip title="Write this profile's shaper settings to the firewall now. You'll preview the exact changes and confirm first.">
+                      <span>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          onClick={() => handleApplyClick(sp)}
+                          disabled={applying || sp.fingerprint === currentFingerprint}
+                        >
+                          Apply this profile
+                        </Button>
+                      </span>
+                    </Tooltip>
+                    <Button size="small" color="inherit" onClick={() => setScatterFp(null)}>
+                      Dismiss
+                    </Button>
+                  </Box>
+                );
+              })()}
           </CardContent>
         </Card>
       )}
@@ -1308,7 +1367,12 @@ export default function Settings() {
                     >
                       <TableCell sx={{ maxWidth: 360 }}>
                         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                          <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
+                          <Typography
+                            variant="body2"
+                            sx={{ wordBreak: "break-word", cursor: "pointer", color: "primary.light", "&:hover": { textDecoration: "underline" } }}
+                            onClick={() => navigate(`/profiles/${encodeURIComponent(p.fingerprint)}`)}
+                            title="View this profile's run history"
+                          >
                             {p.label}
                           </Typography>
                           {isActive && (

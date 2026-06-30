@@ -41,6 +41,7 @@ import { fmtDateTime, fmtDuration, parseApiDate, runRemainingMs } from "../utils
 // Colors for the headline axis lines/gauges (amber = responsiveness, cyan = speed,
 // violet = smoothness, …).
 const AXIS_COLORS: Record<string, string> = {
+  overall: "#eceff1",
   responsiveness: "#ffa726",
   speed: "#4dd0e1",
   smoothness: "#ab47bc",
