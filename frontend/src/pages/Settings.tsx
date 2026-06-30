@@ -68,6 +68,7 @@ import { useMetricMeta } from "../utils/metrics";
 import type { ProfileField } from "../api/types";
 import { buildFields, fmtFieldValue as fmtNumField, profileValue } from "../utils/profileFields";
 import type { FieldDef } from "../utils/profileFields";
+import { rankByMetric, rankColor } from "../utils/ranking";
 
 // State for the "Apply this profile" confirmation dialog: the previewed write
 // plan for one profile, awaiting the user's go-ahead.
@@ -643,6 +644,34 @@ export default function Settings() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Headline axes come from the *current methodology* (role === "headline"), so the
+  // ranked Overall/axis columns always track whatever the live rubric scores.
+  const [headlineAxes, setHeadlineAxes] = useState<{ key: string; label: string }[]>([]);
+  useEffect(() => {
+    api
+      .methodologyCurrent()
+      .then((m) =>
+        setHeadlineAxes(
+          (m.axes ?? [])
+            .filter((a) => a.role === "headline")
+            .map((a) => ({ key: a.key, label: a.label })),
+        ),
+      )
+      .catch(() => {});
+  }, []);
+  // The columns shown as standings: the first-class Overall, then each headline axis.
+  const rankedMetrics = useMemo(
+    () => [{ key: "overall", label: "Overall" }, ...headlineAxes],
+    [headlineAxes],
+  );
+  // Per-metric rankings over the *full* profile set (not the current page), so a row's
+  // standing is stable across pagination/sorting.
+  const rankings = useMemo(
+    () =>
+      Object.fromEntries(rankedMetrics.map((m) => [m.key, rankByMetric(profiles ?? [], m.key)])),
+    [profiles, rankedMetrics],
+  );
 
   const handleBackfill = useCallback(async () => {
     setBusy(true);
@@ -1228,9 +1257,12 @@ export default function Settings() {
               </Stack>
             </Stack>
             <Typography variant="caption" color="text.secondary">
-              Ranked by <b>Overall</b> — a single 0–100 measure of how close a profile sits to the
-              ideal <b>Speed 100 / Smoothness 100</b> corner (fastest <i>and</i> smoothest), as the
-              methodology defines it. <b>"Best"</b> is simply the profile with the highest Overall
+              The <b>Overall</b> and axis columns show each profile's <b>standing</b> (1 = best)
+              among all profiles, colour-graded <span style={{ color: "hsl(120,70%,55%)" }}>green</span>{" "}
+              (best) → <span style={{ color: "hsl(0,70%,55%)" }}>red</span> (worst); hover a cell for
+              its raw 0–100 score. The axes are whatever the <b>current methodology</b> scores as
+              headline. Overall itself is a single 0–100 measure of how close a profile sits to the
+              ideal corner (fastest <i>and</i> smoothest), as the methodology defines it. <b>"Best"</b> is simply the profile with the highest Overall
               that meets the iteration minimum — the best profile we have, full stop. Finding
               challengers that could overtake it is a separate job: the <b>Heirs to the crown</b> card
               and the challenger race rank under-sampled profiles by their <i>optimistic ceiling</i>
@@ -1269,38 +1301,19 @@ export default function Settings() {
                       order={order}
                       onSort={handleSort}
                     />
-                    <SortHeader
-                      id="overall"
-                      label="Overall"
-                      align="right"
-                      orderBy={orderBy}
-                      order={order}
-                      onSort={handleSort}
-                    />
-                    <SortHeader
-                      id="responsiveness"
-                      label="Respons."
-                      align="right"
-                      orderBy={orderBy}
-                      order={order}
-                      onSort={handleSort}
-                    />
-                    <SortHeader
-                      id="median"
-                      label="Smoothness"
-                      align="right"
-                      orderBy={orderBy}
-                      order={order}
-                      onSort={handleSort}
-                    />
-                    <SortHeader
-                      id="speed"
-                      label="Speed"
-                      align="right"
-                      orderBy={orderBy}
-                      order={order}
-                      onSort={handleSort}
-                    />
+                    {/* Overall + the current methodology's headline axes, shown as
+                        standings (1 = best) — sorting still keys off the raw score. */}
+                    {rankedMetrics.map((m) => (
+                      <SortHeader
+                        key={m.key}
+                        id={m.key}
+                        label={m.label}
+                        align="right"
+                        orderBy={orderBy}
+                        order={order}
+                        onSort={handleSort}
+                      />
+                    ))}
                     <SortHeader
                       id="relative_sops"
                       label="vs typical"
@@ -1401,12 +1414,35 @@ export default function Settings() {
                       </TableCell>
                       <TableCell align="right">{p.count}</TableCell>
                       <TableCell align="right">{p.iterations}</TableCell>
-                      <TableCell align="right" sx={{ fontWeight: 700 }}>
-                        {p.overall ?? "—"}
-                      </TableCell>
-                      <TableCell align="right">{p.scores?.responsiveness ?? "—"}</TableCell>
-                      <TableCell align="right">{p.median}</TableCell>
-                      <TableCell align="right">{p.speed ? p.speed.median : "—"}</TableCell>
+                      {/* Standings (1 = best) per Overall + headline axis, green→red. The
+                          raw 0–100 score is in the hover title. */}
+                      {rankedMetrics.map((m) => {
+                        const rk = rankings[m.key];
+                        const rank = rk?.rankByFp[p.fingerprint];
+                        const raw = profileValue(p, m.key);
+                        return (
+                          <TableCell key={m.key} align="right">
+                            <Tooltip
+                              title={
+                                rank == null
+                                  ? "No score yet"
+                                  : `${m.label} ${raw} · rank ${rank} of ${rk.total}`
+                              }
+                            >
+                              <Typography
+                                component="span"
+                                sx={{
+                                  fontWeight: m.key === "overall" ? 800 : 700,
+                                  color: rankColor(rank, rk?.total ?? 0),
+                                  cursor: "help",
+                                }}
+                              >
+                                {rank ?? "—"}
+                              </Typography>
+                            </Tooltip>
+                          </TableCell>
+                        );
+                      })}
                       <TableCell align="right">
                         <RelativeSopsCell rel={p.relative_overall} confident={p.confident} />
                       </TableCell>
