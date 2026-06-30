@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -34,6 +34,8 @@ import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
 import { fmtDateTime, fmtScore } from "../utils/format";
+import { profileValue } from "../utils/profileFields";
+import { rankByMetric, rankColor } from "../utils/ranking";
 import { sopsColor } from "../theme";
 
 // Headline colours mirror the Dashboard/History charts (Overall is the bright lead line).
@@ -51,6 +53,8 @@ export default function ProfileDetail() {
   const { fingerprint = "" } = useParams<{ fingerprint: string }>();
   const navigate = useNavigate();
   const [profile, setProfile] = useState<SettingsProfile | null>(null);
+  const [allProfiles, setAllProfiles] = useState<SettingsProfile[]>([]);
+  const [headlineAxes, setHeadlineAxes] = useState<{ key: string; label: string }[]>([]);
   const [currentFp, setCurrentFp] = useState<string | null>(null);
   const [bestFp, setBestFp] = useState<string | null>(null);
   const [series, setSeries] = useState<AxisSeriesResponse | null>(null);
@@ -79,12 +83,19 @@ export default function ProfileDetail() {
       setLoading(true);
       setError(null);
       try {
-        const [profsResp, s, c] = await Promise.all([
+        const [profsResp, s, c, methodology] = await Promise.all([
           api.settingsProfiles(false),
           api.axisSeries(200, fingerprint),
           api.historyCount(fingerprint),
+          api.methodologyCurrent().catch(() => null),
         ]);
         setProfile(profsResp.profiles.find((p) => p.fingerprint === fingerprint) ?? null);
+        setAllProfiles(profsResp.profiles);
+        setHeadlineAxes(
+          (methodology?.axes ?? [])
+            .filter((a) => a.role === "headline")
+            .map((a) => ({ key: a.key, label: a.label })),
+        );
         setCurrentFp(profsResp.current_fingerprint);
         setBestFp(profsResp.best_fingerprint);
         setSeries(s);
@@ -131,6 +142,22 @@ export default function ProfileDetail() {
       setApplying(false);
     }
   };
+
+  // This profile's standing (1 = best) among all profiles, for Overall + each headline
+  // axis the current methodology scores — the same ranking shown on the Settings table.
+  const rankedMetrics = useMemo(
+    () => [{ key: "overall", label: "Overall" }, ...headlineAxes],
+    [headlineAxes],
+  );
+  const standings = useMemo(
+    () =>
+      rankedMetrics.map((m) => {
+        const rk = rankByMetric(allProfiles, m.key);
+        const rank = profile ? rk.rankByFp[profile.fingerprint] ?? null : null;
+        return { ...m, rank, total: rk.total, raw: profile ? profileValue(profile, m.key) : null };
+      }),
+    [rankedMetrics, allProfiles, profile],
+  );
 
   if (loading) return <Loading label="Loading profile…" />;
 
@@ -185,31 +212,59 @@ export default function ProfileDetail() {
         </Tooltip>
       </Stack>
 
-      {/* Summary chips */}
+      {/* Status chips */}
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
         {isActive && <Chip color="info" label="active on firewall" />}
         {isBest && <Chip color="success" label="best (crown)" />}
         {profile && !profile.confident && (
           <Chip color="warning" variant="outlined" label="limited data" />
         )}
-        {profile?.overall != null && (
-          <Chip
-            label={`Overall ${profile.overall}`}
-            sx={{ fontWeight: 700, color: sopsColor(profile.overall) }}
-            variant="outlined"
-          />
-        )}
-        {profile?.scores?.responsiveness != null && (
-          <Chip variant="outlined" label={`Respons. ${profile.scores.responsiveness}`} />
-        )}
-        {profile?.median != null && <Chip variant="outlined" label={`Smoothness ${profile.median}`} />}
-        {profile?.speed?.median != null && (
-          <Chip variant="outlined" label={`Speed ${profile.speed.median}`} />
-        )}
         {profile && (
           <Chip variant="outlined" label={`${profile.iterations} iterations · ${profile.count} runs`} />
         )}
       </Stack>
+
+      {/* Standings: this profile's rank (1 = best) per Overall + headline axis, green→red. */}
+      {standings.length > 0 && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Standings
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+              Where this profile ranks among all {standings[0].total || 0} measured profiles (1 = best),
+              for the Overall and each axis the current methodology scores. The raw 0–100 score is shown
+              underneath.
+            </Typography>
+            <Box
+              sx={{
+                display: "grid",
+                gap: 1.5,
+                gridTemplateColumns: { xs: "repeat(2, 1fr)", sm: `repeat(${standings.length}, 1fr)` },
+              }}
+            >
+              {standings.map((s) => (
+                <Box
+                  key={s.key}
+                  sx={{ p: 1.5, borderRadius: 1, border: 1, borderColor: "divider", textAlign: "center" }}
+                >
+                  <Typography variant="overline" color="text.secondary" sx={{ display: "block" }}>
+                    {s.label}
+                  </Typography>
+                  <Typography
+                    sx={{ fontWeight: 800, fontSize: "1.6rem", lineHeight: 1.1, color: rankColor(s.rank, s.total) }}
+                  >
+                    {s.rank == null ? "—" : `#${s.rank}`}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {s.rank == null ? "no score" : `of ${s.total} · score ${s.raw}`}
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
+          </CardContent>
+        </Card>
+      )}
 
       <Box sx={{ display: "grid", gap: 2 }}>
         <Card>
