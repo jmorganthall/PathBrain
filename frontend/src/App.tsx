@@ -10,6 +10,7 @@ import Config from "./pages/Config";
 import Plugins from "./pages/Plugins";
 import Methodology from "./pages/Methodology";
 import Settings from "./pages/Settings";
+import ProfileDetail from "./pages/ProfileDetail";
 import Experiments from "./pages/Experiments";
 import DataDump from "./pages/DataDump";
 
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/runs/:id" element={<RunDetail />} />
         <Route path="/compare" element={<Compare />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/profiles/:fingerprint" element={<ProfileDetail />} />
         <Route path="/experiments" element={<Experiments />} />
         <Route path="/sweep" element={<ShotgunSweep />} />
         <Route path="/config" element={<Config />} />

@@ -38,20 +38,29 @@ def _axes(score: Score | None) -> dict | None:
 
 
 @router.get("/history/count")
-def history_count(session: Session = Depends(get_session)) -> dict:
-    """Total number of runs, for paginating the history list."""
-    return {"count": session.scalar(select(func.count()).select_from(Run)) or 0}
+def history_count(
+    fingerprint: str | None = Query(None, description="Restrict the count to one settings profile."),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Total number of runs, for paginating the history list. Optionally scoped to one
+    settings profile (its run history)."""
+    stmt = select(func.count()).select_from(Run)
+    if fingerprint:
+        stmt = stmt.where(Run.settings_fingerprint == fingerprint)
+    return {"count": session.scalar(stmt) or 0}
 
 
 @router.get("/history", response_model=list[RunSummary])
 def list_history(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    fingerprint: str | None = Query(None, description="Restrict to one settings profile (its run history)."),
     session: Session = Depends(get_session),
 ) -> list[RunSummary]:
-    runs = session.scalars(
-        select(Run).order_by(Run.created_at.desc()).limit(limit).offset(offset)
-    ).all()
+    stmt = select(Run).order_by(Run.created_at.desc())
+    if fingerprint:
+        stmt = stmt.where(Run.settings_fingerprint == fingerprint)
+    runs = session.scalars(stmt.limit(limit).offset(offset)).all()
     scores = _current_scores(session, [r.id for r in runs])
     out = []
     for run in runs:
