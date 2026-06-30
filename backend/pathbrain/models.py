@@ -20,6 +20,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -43,6 +44,14 @@ class RunStatus(str, enum.Enum):
 
 class Run(Base):
     __tablename__ = "runs"
+    # Nearly every query filters by status and/or orders by created_at, and the
+    # settings views group by fingerprint. Without these, SQLite full-scans + filesorts
+    # the whole table on each request — the dominant cost as history grows.
+    __table_args__ = (
+        Index("ix_runs_status_created_at", "status", "created_at"),
+        Index("ix_runs_created_at", "created_at"),
+        Index("ix_runs_settings_fingerprint", "settings_fingerprint"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -88,6 +97,9 @@ class Run(Base):
 
 class BenchmarkResult(Base):
     __tablename__ = "benchmark_results"
+    # Results are always fetched by run_id (per-run detail + the eager-load on profile/
+    # trend aggregations). SQLite doesn't auto-index foreign keys, so add it explicitly.
+    __table_args__ = (Index("ix_benchmark_results_run_id", "run_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"))
@@ -327,7 +339,13 @@ class Score(Base):
     """
 
     __tablename__ = "scores"
-    __table_args__ = (UniqueConstraint("run_id", "methodology_version", name="uq_score_run_methodology"),)
+    # The unique constraint indexes (run_id, methodology_version) — good for joining by
+    # run_id. The aggregations also filter by methodology_version alone (all scores under
+    # the current methodology), which that index can't serve; add a leading-column index.
+    __table_args__ = (
+        UniqueConstraint("run_id", "methodology_version", name="uq_score_run_methodology"),
+        Index("ix_scores_methodology_version", "methodology_version"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"))

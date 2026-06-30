@@ -24,6 +24,7 @@ import ListItemText from "@mui/material/ListItemText";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
+import TextField from "@mui/material/TextField";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
@@ -524,6 +525,9 @@ export default function Settings() {
   const [xKey, setXKey] = useState("fcp");
   const [yKey, setYKey] = useState("load_event");
   const [sizeKey, setSizeKey] = useState("total_stall");
+  // Scatter-only filter: hide profiles with fewer than this many total iterations, so
+  // thin/noisy profiles don't clutter the plot. 0 = show all. Doesn't affect the table.
+  const [minIterPlot, setMinIterPlot] = useState(0);
   // Optional extra table columns (dynamic field keys), persisted across reloads.
   const [extraCols, setExtraCols] = useState<string[]>(() => {
     try {
@@ -547,6 +551,11 @@ export default function Settings() {
     const m = new Map(allFields.map((f) => [f.key, f]));
     return (k: string) => m.get(k);
   }, [allFields]);
+  // Profiles shown on the scatter, after the min-iterations filter (table is unaffected).
+  const plotProfiles = useMemo(
+    () => (profiles ?? []).filter((p) => p.iterations >= minIterPlot),
+    [profiles, minIterPlot]
+  );
 
   const toggleColumn = useCallback((key: string) => {
     setExtraCols((prev) => {
@@ -1062,13 +1071,32 @@ export default function Settings() {
                     </Button>
                   </span>
                 </Tooltip>
+                <Tooltip title="Hide profiles with fewer than this many total iterations from the scatter (the table below is unaffected). 0 shows all.">
+                  <TextField
+                    label="Min iterations"
+                    type="number"
+                    size="small"
+                    value={minIterPlot}
+                    onChange={(e) =>
+                      setMinIterPlot(Math.max(0, Math.floor(Number(e.target.value) || 0)))
+                    }
+                    inputProps={{ min: 0, step: 1, "aria-label": "Minimum iterations to plot" }}
+                    sx={{ width: 130 }}
+                  />
+                </Tooltip>
                 <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={setXKey} />
                 <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={setYKey} />
                 <AxisSelect label="Shade" value={sizeKey} fields={allFields} onChange={setSizeKey} />
               </Stack>
             </Stack>
+            {minIterPlot > 0 && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                Showing {plotProfiles.length} of {profiles.length} profiles with ≥ {minIterPlot}{" "}
+                iteration{minIterPlot === 1 ? "" : "s"}.
+              </Typography>
+            )}
             <ProfileQuadrant
-              profiles={profiles}
+              profiles={plotProfiles}
               xField={fieldByKey(xKey) ?? allFields[0]}
               yField={fieldByKey(yKey) ?? allFields[0]}
               shadeField={fieldByKey(sizeKey) ?? null}

@@ -17,12 +17,12 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, defer, selectinload
 
 from ..config_store import get_config
 from ..database import get_session
 from ..methodology import ensure_current_methodology
-from ..models import Run, RunStatus, Score
+from ..models import BenchmarkResult, Run, RunStatus, Score
 from ..trends import (
     TREND_METRICS,
     RunPoint,
@@ -52,7 +52,8 @@ def _load_points(session: Session, days: int) -> list[RunPoint]:
     runs = (
         session.execute(
             select(Run)
-            .options(selectinload(Run.results))
+            # Only ``metrics`` is read per result; skip the heavy raw/details JSON blobs.
+            .options(selectinload(Run.results).options(defer(BenchmarkResult.raw), defer(BenchmarkResult.details)))
             .where(Run.status == RunStatus.COMPLETE, Run.created_at >= cutoff)
             .order_by(Run.created_at)
         )

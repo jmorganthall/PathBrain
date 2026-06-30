@@ -10,7 +10,7 @@ from statistics import median, quantiles
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, defer, selectinload
 
 from .. import challenger as challenger_mod
 from .. import profile_test as profile_test_mod
@@ -20,7 +20,7 @@ from ..database import get_session
 from ..logging_config import get_logger
 from ..methodology import corner_score, ensure_current_methodology, overall_metrics
 from ..metrics import all_metric_sources
-from ..models import Run, RunStatus, Score
+from ..models import BenchmarkResult, Run, RunStatus, Score
 from ..providers import get_provider
 from ..runner import MAX_ITERATIONS
 from ..scoring import COMPLETION_METRIC_SOURCES
@@ -169,7 +169,10 @@ def _completed_runs_with_scores(session: Session):
         .join(Score, Score.run_id == Run.id)
         # Eager-load each run's plugin results so per-profile metric medians (every
         # numeric value we collect, incl. display-only) can be aggregated without N+1.
-        .options(selectinload(Run.results))
+        # Defer the heavy immutable JSON blobs (raw observations + per-target details):
+        # the aggregation only reads ``metrics``/``plugin``, so loading + JSON-decoding
+        # the raw payload of every browser result across all history was pure waste.
+        .options(selectinload(Run.results).options(defer(BenchmarkResult.raw), defer(BenchmarkResult.details)))
         .where(
             Run.status == RunStatus.COMPLETE,
             Run.settings_fingerprint.is_not(None),

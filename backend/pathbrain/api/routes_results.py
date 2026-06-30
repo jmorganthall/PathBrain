@@ -11,7 +11,7 @@ from ..config_store import get_config
 from ..database import get_session
 from ..methodology import ensure_current_methodology
 from ..metrics import has_latest_metrics
-from ..models import Run, RunStatus, Score, ScoreResult
+from ..models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
 from ..schemas import BenchmarkResultOut, RunBaselineOut, RunDetail, ScoreOut
 from ..settings_profile import summarize
 
@@ -89,23 +89,34 @@ def get_result(run_id: int, session: Session = Depends(get_session)) -> RunDetai
     return _serialize_run(run, _current_overall(session, run.id))
 
 
-def _average_metrics(runs: list[Run], exclude_run_id: int) -> tuple[dict, int]:
+def _average_metrics(
+    session: Session, runs: list[Run], exclude_run_id: int
+) -> tuple[dict, int]:
     """Mean of each numeric plugin metric across ``runs`` (excluding one run).
 
     Returns ``(metrics, run_count)`` where ``metrics`` maps plugin -> {key: mean}
     and ``run_count`` is the number of runs that contributed at least one value.
+
+    Reads only ``(run_id, plugin, metrics)`` in a single query rather than walking
+    ``run.results`` (which lazy-loads each full result row — including the large,
+    unused ``raw``/``details`` JSON blobs — one query per run).
     """
+    run_ids = [r.id for r in runs if r.id != exclude_run_id]
+    if not run_ids:
+        return {}, 0
+    rows = session.execute(
+        select(BenchmarkResult.run_id, BenchmarkResult.plugin, BenchmarkResult.metrics).where(
+            BenchmarkResult.run_id.in_(run_ids)
+        )
+    ).all()
     samples: dict[str, dict[str, list[float]]] = {}
     contributing: set[int] = set()
-    for r in runs:
-        if r.id == exclude_run_id:
-            continue
-        for res in r.results:
-            for key, value in (res.metrics or {}).items():
-                if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    continue
-                samples.setdefault(res.plugin, {}).setdefault(key, []).append(float(value))
-                contributing.add(r.id)
+    for rid, plugin, res_metrics in rows:
+        for key, value in (res_metrics or {}).items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            samples.setdefault(plugin, {}).setdefault(key, []).append(float(value))
+            contributing.add(rid)
     metrics = {
         plugin: {key: round(mean(vals), 3) for key, vals in keyed.items() if vals}
         for plugin, keyed in samples.items()
@@ -164,7 +175,7 @@ def get_result_baseline(
 
     if best_fp is not None:
         best = groups[best_fp]
-        metrics, count = _average_metrics(best["runs"], exclude_run_id=run_id)
+        metrics, count = _average_metrics(session, best["runs"], exclude_run_id=run_id)
         if count > 0:
             return RunBaselineOut(
                 run_id=run_id,
@@ -187,7 +198,7 @@ def get_result_baseline(
             .limit(BASELINE_RUN_LIMIT)
         ).all()
     )
-    metrics, count = _average_metrics(recent, exclude_run_id=run_id)
+    metrics, count = _average_metrics(session, recent, exclude_run_id=run_id)
     return RunBaselineOut(
         run_id=run_id,
         scope="all",
