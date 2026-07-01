@@ -44,7 +44,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v6"
+CURRENT_METHODOLOGY = "speed-smoothness-v7"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -307,6 +307,30 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "method": "corner",
             "metrics": ["fcp", "total_stall", "load_event"],
             "required": ["fcp", "total_stall", "load_event"],
+        },
+    },
+    "speed-smoothness-v7": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v4 — no new metric; lcp already derived
+        "notes": (
+            "Swap the crown's completion leg from load_event (the *technical* page-load: all "
+            "resources fetched) to LCP (Largest Contentful Paint — the *perceptual* 'main "
+            "content is visible / usefully loaded' milestone). The Overall now corners over "
+            "FCP × LCP × total_stall — how fast it starts (FCP), how fast the main content is "
+            "there (LCP), and how steadily it filled in between (total_stall, cumulative dead-"
+            "air). Three genuinely independent dimensions of the felt experience, so the corner "
+            "geometry does real work (paint milestones alone are correlated and co-saturate). "
+            "load_event stays a scored Speed metric — just no longer a crown metric. Thresholds "
+            "and derivation are unchanged from v6, so history re-grades straight from raw. NB: "
+            "LCP's 'best' carries over from v5's aspirational anchor (150ms), so as a corner "
+            "term it tends to dominate; re-anchor it from the Methodology page if the Overall "
+            "reads too LCP-limited on your link."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v6_assignments(),  # unchanged from v6 (lcp already scored at best 150)
+        "overall": {
+            "method": "corner",
+            "metrics": ["fcp", "lcp", "total_stall"],
+            "required": ["fcp", "lcp", "total_stall"],
         },
     },
 }

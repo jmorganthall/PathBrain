@@ -39,14 +39,13 @@ from ..trends import RunPoint, profile_relative
 _CORNER_AXES = ("responsiveness", "smoothness", "speed")
 
 # The crown corners over a small set of per-metric 0–100 subscores (perception-calibrated
-# by the scoring engine, carried on every Score). The authoritative set is the current
-# methodology's ``overall`` spec (``methodology.overall_metrics``) — under
-# speed-smoothness-v6 that's FCP × total_stall × load_event (quickest first response ×
-# total dead-air × page-load time). These module constants are only the FALLBACK default
-# used when a methodology has no overall spec (pre-v5). Everything that corners — the live
-# ``_crown_corner`` fallback, ``crown_spreads``, ``optimistic_overall``, and the challenger
-# race — reads the methodology-resolved set so they can never drift from the persisted
-# Overall.
+# by the scoring engine, carried on every Score). The **authoritative** set is always the
+# current methodology's ``overall`` spec (``methodology.overall_metrics`` — under v7,
+# FCP × LCP × total_stall). These module constants are ONLY a static FALLBACK for a
+# methodology that has no overall spec at all (pre-v5); they intentionally don't track the
+# current crown. Everything that corners — the live ``_crown_corner`` fallback,
+# ``crown_spreads``, ``optimistic_overall``, and the challenger race — reads the
+# methodology-resolved set, so the crown always follows the methodology and never drifts.
 CROWN_METRICS = ("fcp", "total_stall", "load_event")
 CROWN_REQUIRED = ("fcp", "total_stall", "load_event")
 

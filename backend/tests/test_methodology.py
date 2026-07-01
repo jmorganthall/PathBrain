@@ -79,11 +79,11 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v6_rubric():
-    # The published-now methodology is speed-smoothness-v6: v5's axes/thresholds, but the
-    # crown is decomposed — perceived_time is no longer scored (display-only), total_stall
-    # joins Smoothness, and the built-in load_event is scored on Speed.
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v6"
+def test_current_methodology_is_v7_rubric():
+    # The published-now methodology is speed-smoothness-v7: identical axes/thresholds to v6,
+    # but the crown swaps its completion leg from load_event (technical page-load) to lcp
+    # (perceptual "main content visible"). Overall now corners over FCP × LCP × total_stall.
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v7"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
@@ -120,9 +120,9 @@ def test_current_methodology_is_v6_rubric():
     assert by_key["perceived_time"]["axis"] is None
 
     # The universal `required` field is materialized onto every metric that defines the
-    # Overall/crown (fcp × total_stall × load_event) plus the flagged longest_stall — so the
+    # Overall/crown (v7: fcp × lcp × total_stall) plus the flagged longest_stall — so the
     # frozen snapshot self-describes exactly what comparability enforces.
-    for key in ("fcp", "total_stall", "load_event", "longest_stall"):
+    for key in ("fcp", "lcp", "total_stall", "longest_stall"):
         assert by_key[key]["required"] is True, key
     # A scored-but-optional metric is NOT required (it redistributes when missing → partial).
     assert by_key["byte_earliness"]["required"] is False
@@ -134,11 +134,12 @@ def test_current_methodology_is_v6_rubric():
     for k in ("latency", "transfer", "speed_index", "network_stall"):
         assert by_key[k]["axis"] is None
 
-    # v6's crown: the decomposed corner over FCP × total_stall × load_event.
+    # v7's crown: the corner over FCP × LCP × total_stall (load_event stays a scored Speed
+    # metric — see above — but is no longer a crown metric).
     assert d["overall"] == {
         "method": "corner",
-        "metrics": ["fcp", "total_stall", "load_event"],
-        "required": ["fcp", "total_stall", "load_event"],
+        "metrics": ["fcp", "lcp", "total_stall"],
+        "required": ["fcp", "lcp", "total_stall"],
     }
 
 
