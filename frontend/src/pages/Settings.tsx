@@ -521,10 +521,10 @@ export default function Settings() {
   // Scored metrics whose 'best' is too lenient to rank profiles (saturating >50%).
   const [saturation, setSaturation] = useState<MetricSaturation[]>([]);
   // Dynamic quadrant axes — default to the Overall scoring corner's three inputs
-  // (FCP × page-load × total-stall), with the third encoded as Shade opacity; the
+  // (v7: FCP × LCP × total-stall), with the third encoded as Shade opacity; the
   // crowned profile is ringed. So the default view demonstrates how Overall is scored.
   const [xKey, setXKey] = useState("fcp");
-  const [yKey, setYKey] = useState("load_event");
+  const [yKey, setYKey] = useState("lcp");
   const [sizeKey, setSizeKey] = useState("total_stall");
   // Scatter-only filter: hide profiles with fewer than this many total iterations, so
   // thin/noisy profiles don't clutter the plot. 0 = show all. Doesn't affect the table.

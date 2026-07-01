@@ -4,10 +4,25 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from pathbrain.database import session_scope
-from pathbrain.methodology import CURRENT_METHODOLOGY
+from pathbrain.methodology import (
+    CURRENT_METHODOLOGY,
+    METHODOLOGY_REGISTRY,
+    build_definition_from_spec,
+    overall_metrics,
+)
 from pathbrain.models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
 from pathbrain.settings_profile import diff_profiles, fingerprint, normalize, summarize
 from pathbrain.providers.mock import MockProvider
+
+
+def _crown_metrics() -> list[str]:
+    """The *current* methodology's crown metric set. Heirs (and their tests) always corner
+    over the current crown, so we derive it here instead of hardcoding a set that silently
+    drifts when the methodology changes."""
+    metrics, _required = overall_metrics(
+        build_definition_from_spec(METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY])
+    )
+    return metrics
 
 
 def test_diff_profiles_reports_direction():
@@ -100,14 +115,16 @@ def _seed_run(
         # back to the live feel-trinity corner over the subscores below).
         if overall is not None:
             axes["overall"] = overall
-        # The crown (v6) corners over fcp × total_stall × load_event. By default map them
-        # from the axis fixture values (fcp←responsiveness, total_stall←smoothness,
-        # load_event←speed) so corner-based assertions read naturally; tests override via
-        # ``crown_subscores``.
+        # The crown (v7) corners over fcp × lcp × total_stall. By default map them from the
+        # axis fixture values (fcp←responsiveness, lcp←speed, total_stall←smoothness) so
+        # corner-based assertions read naturally; load_event is kept too (still a scored
+        # Speed metric) for the tests that target it. Tests override via ``crown_subscores``.
         subs = (
             crown_subscores
             if crown_subscores is not None
-            else {"fcp": resp_val, "total_stall": sops, "load_event": speed_val}
+            else {
+                "fcp": resp_val, "lcp": speed_val, "total_stall": sops, "load_event": speed_val,
+            }
         )
         session.add(
             Score(
@@ -186,18 +203,19 @@ def test_heirs_are_limited_data_profiles_that_can_beat_the_crown(client, monkeyp
 
     monkeypatch.setattr(rs, "environment_signature", lambda norm: "env")
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    crown = _crown_metrics()  # follow the methodology's crown set, don't hardcode it
     # A confident, fresh profile (kept low so it can't disturb the module's global crown) —
     # must NEVER appear as an heir, because the crown only lists profiles it can't yet trust.
     for i in range(3):
         _seed_run("hcrown0000x", 60, t0 - timedelta(minutes=120 - i),
-                  crown_subscores={"fcp": 60, "total_stall": 60, "load_event": 60}, iterations=6)
+                  crown_subscores={m: 60 for m in crown}, iterations=6)
     # Heir: limited data (3 iters < 15) but near-perfect subscores — its optimistic ceiling
     # (median + margin, capped at 100) corners to ~100, clearing any plausible crown.
     _seed_run("heir000000x", 97, t0 - timedelta(minutes=50),
-              crown_subscores={"fcp": 97, "total_stall": 97, "load_event": 97}, iterations=3)
+              crown_subscores={m: 97 for m in crown}, iterations=3)
     # Not an heir: limited data AND a ceiling that can't reach the crown even optimistically.
     _seed_run("nohope0000x", 40, t0 - timedelta(minutes=40),
-              crown_subscores={"fcp": 40, "total_stall": 40, "load_event": 40}, iterations=3)
+              crown_subscores={m: 40 for m in crown}, iterations=3)
 
     body = client.get("/api/settings/profiles").json()
     heirs = body["heirs"]
@@ -227,11 +245,12 @@ def test_heirs_exclude_unreachable_profiles(monkeypatch):
     def _spread(med, p75):
         return {"median": med, "p25": med, "p75": p75, "min": med, "max": p75, "n": 3}
 
-    high = {m: _spread(97, 97) for m in ("fcp", "total_stall", "load_event")}
+    crown = _crown_metrics()  # follow the methodology, not a hardcoded crown set
+    high = {m: _spread(97, 97) for m in crown}
     result = {
         "best_fingerprint": "crown",
-        "overall_metrics": ["fcp", "total_stall", "load_event"],
-        "overall_required": ["fcp", "total_stall", "load_event"],
+        "overall_metrics": crown,
+        "overall_required": crown,
         "min_iterations": 15,
         "profiles": [
             {"fingerprint": "crown", "label": "crown", "confident": True, "overall": 80.0,
@@ -296,28 +315,28 @@ def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
     r = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 500})
     assert r.status_code == 202
     out = r.json()
-    assert out["version"] == "speed-smoothness-v6+load_event-best500"
+    assert out["version"] == "speed-smoothness-v7+load_event-best500"
     assert out["job_id"] == "job-test"
 
     # The fork is now current: only load_event's 'best' changed; fcp and the Overall crown
     # spec carry over from v6 untouched (append-only — a new version, not an edit).
     cur = client.get("/api/methodologies/current").json()
-    assert cur["version"] == "speed-smoothness-v6+load_event-best500"
+    assert cur["version"] == "speed-smoothness-v7+load_event-best500"
     metrics = {m["key"]: m for m in cur["definition"]["metrics"]}
     assert metrics["load_event"]["best"] == 500.0
     assert metrics["fcp"]["best"] == 150.0  # untouched
-    assert cur["definition"]["overall"]["metrics"] == ["fcp", "total_stall", "load_event"]
+    assert cur["definition"]["overall"]["metrics"] == ["fcp", "lcp", "total_stall"]
 
     # Guard: 'best' can't cross to the wrong side of 'worst' (would invert the curve).
     bad = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 99999})
     assert bad.status_code == 400
 
-    # Restore stock v6 as current so the rest of the shared-DB suite sees the real methodology.
+    # Restore the stock current methodology so the rest of the shared-DB suite sees it.
     from pathbrain.config_store import get_config, save_config
-    from pathbrain.methodology import ensure_current_methodology
+    from pathbrain.methodology import CURRENT_METHODOLOGY, ensure_current_methodology
 
     with session_scope() as s:
-        save_config(s, {"methodology_version": "speed-smoothness-v6"})
+        save_config(s, {"methodology_version": CURRENT_METHODOLOGY})
         ensure_current_methodology(s, get_config(s))
 
 
@@ -357,10 +376,10 @@ def test_crown_rewards_balance_over_specialism(client):
     # other fixtures' profiles, so we don't assert the global crown here.)
     for i in range(3):
         _seed_run("specialist0x", 80, t0 - timedelta(minutes=120 - i), iterations=6,
-                  crown_subscores={"fcp": 100, "total_stall": 100, "load_event": 40})
+                  crown_subscores={"fcp": 100, "total_stall": 100, "lcp": 40})
     for i in range(3):
         _seed_run("balanced000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  crown_subscores={"fcp": 76, "total_stall": 76, "load_event": 76})
+                  crown_subscores={"fcp": 76, "total_stall": 76, "lcp": 76})
 
     by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
     spec = by_fp["specialist0x"]["crown_scores"]
@@ -373,12 +392,12 @@ def test_crown_corners_over_the_trinity(client):
     # All three crown metrics present and equal → the corner (√k-normalized) == that value.
     for i in range(3):
         _seed_run("trinity000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  crown_subscores={"fcp": 80, "total_stall": 80, "load_event": 80})
+                  crown_subscores={"fcp": 80, "lcp": 80, "total_stall": 80, "load_event": 80})
 
     by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
     prof = by_fp["trinity000x"]
     assert prof["overall"] == 80.0  # corner over {80, 80, 80} == 80
-    assert set(prof["crown_scores"]) >= {"fcp", "total_stall", "load_event"}
+    assert set(prof["crown_scores"]) >= {"fcp", "lcp", "total_stall"}
     assert prof["confident"]
 
 
@@ -404,7 +423,7 @@ def test_overall_uses_persisted_value_over_live_corner(client):
     # not recompute from subscores.
     for i in range(3):
         _seed_run("persisted00x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  overall=42.0, crown_subscores={"fcp": 80, "total_stall": 80, "load_event": 80})
+                  overall=42.0, crown_subscores={"fcp": 80, "lcp": 80, "total_stall": 80, "load_event": 80})
 
     by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
     assert by_fp["persisted00x"]["overall"] == 42.0
@@ -415,10 +434,10 @@ def test_custom_crown_corners_selected_betterments(client):
     # X aces first response (fcp 100) but slow to finish (load_event 50); Y is the reverse.
     for i in range(3):
         _seed_run("xcustom0000x", 80, t0 - timedelta(minutes=120 - i), iterations=6,
-                  crown_subscores={"fcp": 100, "total_stall": 80, "load_event": 50})
+                  crown_subscores={"fcp": 100, "lcp": 50, "total_stall": 80, "load_event": 50})
     for i in range(3):
         _seed_run("ycustom0000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  crown_subscores={"fcp": 50, "total_stall": 80, "load_event": 100})
+                  crown_subscores={"fcp": 50, "lcp": 100, "total_stall": 80, "load_event": 100})
 
     # Crown on first-response only → X's corner beats Y's.
     body = client.get("/api/settings/profiles?crown_metrics=fcp").json()

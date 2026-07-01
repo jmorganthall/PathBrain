@@ -53,7 +53,7 @@ LLM-based. See `README.md` for the product overview.
     agnostic; *which* metrics form *which* axis lives in `methodology.py`.
   - `methodology.py` — **the published, versioned rubric** (derivation + axis
     weights/thresholds + the first-class Overall), append-only. `CURRENT_METHODOLOGY` =
-    `speed-smoothness-v6`, which scores **three headline axes** (the temporal phases of a
+    `speed-smoothness-v7`, which scores **three headline axes** (the temporal phases of a
     load; each metric maps to exactly one axis):
     - **Responsiveness** (time-to-first): byte-earliness (30) + FCP (25) + TTFB (15).
     - **Smoothness** (steady fill): longest-stall (40, required) + total-stall (30)
@@ -64,16 +64,21 @@ LLM-based. See `README.md` for the product overview.
     kept out of the headline since they barely move human feel. The **Overall** is a
     first-class, versioned roll-up defined here (`overall_from_definition` /
     `corner_score`) and persisted to `Score.axis_scores["overall"]` at scoring time — the
-    corner over **FCP × total_stall × load_event** (quickest first response × cumulative
-    dead-air × page-load time), two built-in standards plus the one bespoke stall signal.
-    It's an intersection, so a stall pulls the Overall down via the corner geometry, not a
-    hidden weight. v5 introduced the first-class Overall (then fcp/perceived_time/inp) and
+    corner over **FCP × LCP × total_stall** (quickest first response × perceptual "main
+    content visible" × cumulative dead-air): three genuinely independent dimensions of the
+    felt load (start / main-content-there / steadiness of the fill between). It's an
+    intersection, so a stall pulls the Overall down via the corner geometry, not a hidden
+    weight. `load_event` stays a scored Speed metric but is no longer a crown metric. v5 introduced the first-class Overall (then fcp/perceived_time/inp) and
     re-anchored the time-to-content `best` thresholds (TTFB 30, FCP 150, byte-earliness
     150, LCP 150ms); **v6** decomposed the crown — `perceived_time` (which baked an
     uncalibrated 4× stall penalty into a duration) is dropped from scoring and kept as a
     display-only diagnostic, replaced by the independent `total_stall` (cumulative time
     behind the load's own median pace; `interpret/smoothness.total_stall`) + the built-in
-    `load_event`. `runner.score_metrics_under` scores every axis generically via
+    `load_event`. **v7** swaps the crown's completion leg `load_event → lcp` — the *technical*
+    page-load (all resources fetched) for the *perceptual* "main content visible" milestone —
+    so the crown corners over three independent dimensions instead of two correlated paint
+    milestones + completion (identical axes/thresholds to v6; only the `overall` spec moved).
+    `runner.score_metrics_under` scores every axis generically via
     `axis_rubric` + `compute_score`, persisting per-axis results + Overall to
     `Score.axis_scores` (JSON). Predecessors (`speed-smoothness-v1..v5`, earlier rubrics)
     are frozen for old at-measure scores. The crown metric set is read from the current
@@ -171,11 +176,11 @@ LLM-based. See `README.md` for the product overview.
     crown metric set — the few measurements that directly capture human feel, as
     perception-calibrated 0–100 subscores. The set is read from the methodology's `overall`
     spec (`overall_metrics`; module `CROWN_METRICS`/`CROWN_REQUIRED` are only the pre-v5
-    fallback): under v6 that's **FCP × total_stall × load_event** (quickest first response ×
-    cumulative dead-air × page-load time — two built-in standards + one bespoke stall
-    signal; v5 used fcp/perceived_time/inp). It's an *intersection* (corner, not mean — one
-    weak metric can't be averaged away), √k-normalized so corners of different arity share a
-    scale.
+    fallback): under **v7** that's **FCP × LCP × total_stall** (quickest first response ×
+    perceptual "main content visible" × cumulative dead-air — three independent dimensions of
+    the felt load; v6 used fcp/total_stall/load_event, v5 fcp/perceived_time/inp). It's an
+    *intersection* (corner, not mean — one weak metric can't be averaged away), √k-normalized
+    so corners of different arity share a scale.
     `compute_profiles` reads the persisted Overall (falling back to a live `_crown_corner`
     for not-yet-re-graded Scores). A **custom crown** (`crown_metrics=` query param,
     `_apply_custom_crown`) corners over any caller-chosen subset of subscores as an
@@ -289,8 +294,8 @@ docker compose up --build   # -> http://localhost:8000
      metrics that drive the current Overall. Set the default axis keys in
      `frontend/src/pages/Settings.tsx` (`xKey`/`yKey`/`sizeKey`) to the new crown set —
      the methodology's `overall` spec metrics (`methodology.overall_metrics`), one per
-     X / Y / Shade slot — so the default view demonstrates how Overall is scored. (v6:
-     `fcp` × `load_event` × `total_stall`.)
+     X / Y / Shade slot — so the default view demonstrates how Overall is scored. (v7:
+     `fcp` × `lcp` × `total_stall`.)
 - A run repeats the suite `iterations` times; each headline axis is the **median**
   over iterations, with a confidence band. The Dashboard shows a windowed
   **rolling** score (`/api/score/rolling`, 24h median + IQR) plus a **"vs typical"**
@@ -395,11 +400,14 @@ docker compose up --build   # -> http://localhost:8000
   confidence one iteration at a time.
 - **Phase 7 (done):** **first-class Overall + crown intelligence.** Methodology
   `speed-smoothness-v5` made the Overall a first-class, versioned, persisted quantity;
-  **v6** decomposed the crown to **FCP × total_stall × load_event** and dropped the
-  uncalibrated `perceived_time`. The crown is simply the **highest Overall among confident
-  profiles** (the Bayesian/Thompson probability-of-best layer was removed — it over-credited
-  thin, high-variance profiles for their upper tail; selecting *where to run next* is the
-  separate hunting job). Settings Impact gained the **"Heirs to the crown"** card (reachable contenders by optimistic
+  **v6** decomposed the crown to FCP × total_stall × load_event (dropping the uncalibrated
+  `perceived_time`); **v7** swapped the completion leg `load_event → lcp` so the crown is
+  **FCP × LCP × total_stall** — three independent dimensions (start / main-content-visible /
+  fill-steadiness) rather than two correlated paint milestones + technical completion. The
+  crown is the **highest Overall among confident profiles** (the Bayesian/Thompson
+  probability-of-best layer was removed — it over-credited thin, high-variance profiles for
+  their upper tail; selecting *where to run next* is the separate hunting job). Settings
+  Impact gained the **"Heirs to the crown"** card (reachable contenders by optimistic
   ceiling), a **saturation check** with a one-click **GUI re-anchor** (`/api/methodologies/
   reanchor`), and **"Re-run all profiles"** (`refresh.py`). The SQM field model was unified
   into the **`shaper_fields` registry** (identity/writable/sweepable derive from one
