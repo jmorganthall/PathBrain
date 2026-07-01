@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import metrics as metrics_mod
-from .config_store import get_config
+from .config_store import get_config, save_config
 from .database import session_scope
 from .interpret import DERIVATION_VERSION
 from .logging_config import get_logger
@@ -532,10 +532,43 @@ def ensure_current_methodology(session: Session, config: dict, notes: str | None
     return row
 
 
+def supersede_stale_methodology_pin(session: Session, config: dict) -> str | None:
+    """Drop a stale re-anchor pin so a newly-shipped code methodology takes over on deploy.
+
+    The GUI re-anchor endpoint (``POST /api/methodologies/reanchor``) pins
+    ``config.methodology_version`` to a *fork* of whatever methodology was current at the
+    time — e.g. ``speed-smoothness-v6+fcp-best150``. That pin otherwise outlives the deploy
+    that bumps ``CURRENT_METHODOLOGY``, so ``current_version`` keeps returning the old fork
+    and a freshly-published methodology (say v7) never becomes current — the instance is
+    permanently frozen on the old rubric.
+
+    A fork pin whose base (the part before ``+``) is no longer ``CURRENT_METHODOLOGY`` was
+    forked from a now-superseded methodology, so we clear it and let the code-published
+    version take over. Left untouched: a bare (non-fork) pin — a deliberate operator choice
+    to hold a version — and a re-anchor fork of the *current* base (still valid, keep it
+    until the next methodology ships). Returns the cleared pin, if any."""
+    pin = (config or {}).get("methodology_version")
+    if not pin or "+" not in str(pin):
+        return None  # unset, or a deliberate bare version pin — respect it
+    if str(pin).split("+", 1)[0] == CURRENT_METHODOLOGY:
+        return None  # a re-anchor of the still-current methodology — keep it
+    save_config(session, {"methodology_version": None})
+    log.info(
+        "Superseded stale methodology pin %s → %s (code-published on deploy)",
+        pin, CURRENT_METHODOLOGY,
+    )
+    return str(pin)
+
+
 def seed_current_methodology() -> None:
-    """Startup hook: ensure the current methodology is recorded. Best-effort."""
+    """Startup hook: ensure the current methodology is recorded. Best-effort.
+
+    First drops any stale re-anchor pin (see ``supersede_stale_methodology_pin``) so a
+    deploy that ships a new ``CURRENT_METHODOLOGY`` actually adopts it, then records +
+    marks that version current."""
     try:
         with session_scope() as session:
+            supersede_stale_methodology_pin(session, get_config(session))
             ensure_current_methodology(session, get_config(session))
     except Exception:  # noqa: BLE001 — never block startup on this
         log.warning("Could not seed current methodology", exc_info=True)

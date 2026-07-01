@@ -52,6 +52,48 @@ def test_ensure_current_is_idempotent_and_immutable():
         ensure_current_methodology(s, get_config(s))
 
 
+def test_supersede_stale_methodology_pin_drops_reanchor_fork():
+    # A GUI re-anchor pins config.methodology_version to a fork of a *superseded* base
+    # (v6+…). On the next deploy — which ships a newer CURRENT_METHODOLOGY — startup must
+    # drop that stale pin so the code-published version becomes current, instead of the
+    # instance staying frozen on the fork forever.
+    from pathbrain.config_store import save_config
+    from pathbrain.methodology import (
+        current_version,
+        supersede_stale_methodology_pin,
+    )
+
+    with session_scope() as s:
+        original = get_config(s).get("methodology_version")
+        try:
+            stale = "speed-smoothness-v6+fcp-best150"  # base v6 ≠ current v7 → stale
+            save_config(s, {"methodology_version": stale})
+            assert current_version(get_config(s)) == stale  # pinned before reconcile
+
+            cleared = supersede_stale_methodology_pin(s, get_config(s))
+            assert cleared == stale
+            # Pin gone → current_version falls back to the code-published methodology.
+            assert current_version(get_config(s)) == CURRENT_METHODOLOGY
+        finally:
+            save_config(s, {"methodology_version": original})
+
+
+def test_supersede_keeps_current_base_fork_and_bare_pins():
+    # A re-anchor of the *current* methodology is a legitimate live fork — keep it until a
+    # newer methodology ships. A bare (non-fork) pin is a deliberate operator hold — respect
+    # it. Neither writes to config; both return None (no-op).
+    from pathbrain.methodology import supersede_stale_methodology_pin
+
+    with session_scope() as s:
+        current_fork = {"methodology_version": f"{CURRENT_METHODOLOGY}+fcp-best120"}
+        assert supersede_stale_methodology_pin(s, current_fork) is None
+
+        bare = {"methodology_version": "speed-smoothness-v5"}
+        assert supersede_stale_methodology_pin(s, bare) is None
+
+        assert supersede_stale_methodology_pin(s, {}) is None  # unset → no-op
+
+
 def test_methodologies_endpoint_lists_current(client):
     resp = client.get("/api/methodologies")
     assert resp.status_code == 200
