@@ -136,6 +136,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ metric_key: metricKey, best }),
     }),
+  // Fork the current methodology, swap the Overall (crown) corner metric set, and re-grade.
+  recrownOverall: (metrics: string[], required?: string[]) =>
+    request<{ version: string; job_id: string }>("/methodologies/recrown", {
+      method: "POST",
+      body: JSON.stringify({ metrics, ...(required ? { required } : {}) }),
+    }),
 
   // Background jobs feed (powers the top-right "running jobs" dropdown)
   jobs: () => request<JobsResponse>("/jobs"),

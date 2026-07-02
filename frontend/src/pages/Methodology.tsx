@@ -120,6 +120,152 @@ function VersionRow({ m }: { m: MethodologySummary }) {
   );
 }
 
+// View + modify the Overall (crown) corner metric set for the current methodology.
+// The picker offers ONLY scored metrics of the current methodology (axis !== null) — you
+// can't corner over a metric this rubric doesn't score. Publishing forks a new version
+// (append-only) and re-grades. Crown metrics are the single source of truth the Settings-
+// Impact quadrant defaults align to, so a re-crown realigns the plot automatically.
+function CrownCard({
+  current,
+  onPublished,
+  onError,
+}: {
+  current: MethodologyDetail;
+  onPublished: (msg: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const overall = current.definition.overall;
+  const currentCrown = overall?.metrics ?? [];
+  const scored = current.definition.metrics.filter((m) => m.axis !== null);
+  const labelOf = useCallback(
+    (key: string) =>
+      current.definition.metrics.find((m) => m.key === key)?.label ?? key,
+    [current],
+  );
+
+  const [selected, setSelected] = useState<string[]>(currentCrown);
+  const [publishing, setPublishing] = useState(false);
+  // Reset the selection whenever the current methodology changes (e.g. after publishing).
+  useEffect(() => {
+    setSelected(overall?.metrics ?? []);
+  }, [current.version, overall]);
+
+  if (!overall) {
+    return (
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>
+            Overall crown
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {current.version} predates the first-class Overall (no corner spec), so its crown
+            metrics can’t be edited here.
+          </Typography>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const toggle = (key: string) =>
+    setSelected((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+    );
+
+  const currentSet = new Set(currentCrown);
+  const added = selected.filter((k) => !currentSet.has(k));
+  const removed = currentCrown.filter((k) => !selected.includes(k));
+  const changed = added.length > 0 || removed.length > 0;
+
+  const handlePublish = async () => {
+    if (selected.length === 0) {
+      onError("Pick at least one crown metric");
+      return;
+    }
+    setPublishing(true);
+    try {
+      const res = await api.recrownOverall(selected);
+      onPublished(
+        `Published ${res.version} and started a re-grade — track it in the jobs menu (top right) ↗`,
+      );
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Could not publish the re-crown");
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Typography variant="h6" gutterBottom>
+          Overall crown — the corner metrics
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          The <b>Overall</b> is the geometric corner over these metric subscores (one weak leg
+          can’t be averaged away). This set is the single source of truth — it drives the
+          persisted Overall, the challenger’s ceiling, the Heirs card, and the Settings-Impact
+          quadrant’s default axes. Changing it publishes a new methodology version (forked from{" "}
+          <b>{current.version}</b> — append-only) and re-grades history onto it.
+        </Typography>
+
+        <Typography variant="caption" color="text.secondary">
+          Current crown ({currentCrown.length}):
+        </Typography>
+        <Stack direction="row" spacing={1} sx={{ mt: 0.5, mb: 2 }} flexWrap="wrap" useFlexGap>
+          {currentCrown.map((k) => (
+            <Chip key={k} size="small" color="secondary" label={labelOf(k)} />
+          ))}
+        </Stack>
+
+        <Typography variant="caption" color="text.secondary">
+          Pick the corner metrics (scored metrics of {current.version} only):
+        </Typography>
+        <Stack direction="row" spacing={1} sx={{ mt: 0.5, mb: 2 }} flexWrap="wrap" useFlexGap>
+          {scored.map((m) => {
+            const on = selected.includes(m.key);
+            return (
+              <Tooltip key={m.key} arrow title={m.description}>
+                <Chip
+                  label={m.label}
+                  color={on ? "secondary" : "default"}
+                  variant={on ? "filled" : "outlined"}
+                  onClick={() => toggle(m.key)}
+                  sx={{ cursor: "pointer" }}
+                />
+              </Tooltip>
+            );
+          })}
+        </Stack>
+
+        {added.length > 0 && (
+          <Alert severity="warning" sx={{ mb: 1.5 }}>
+            Adding <b>{added.map(labelOf).join(", ")}</b> to the crown will quarantine any
+            historical run whose raw can’t produce it (they become <i>incomparable</i> and drop
+            out of scored views until re-collected). The re-grade’s job summary reports the
+            exact / partial / incomparable split.
+          </Alert>
+        )}
+        {removed.length > 0 && added.length === 0 && (
+          <Alert severity="info" sx={{ mb: 1.5 }}>
+            Removing <b>{removed.map(labelOf).join(", ")}</b> from the crown un-quarantines runs
+            that were only incomparable for lacking it.
+          </Alert>
+        )}
+
+        <Button
+          variant="contained"
+          color="secondary"
+          onClick={handlePublish}
+          disabled={publishing || !changed || selected.length === 0}
+          startIcon={publishing ? <CircularProgress size={16} /> : undefined}
+        >
+          {publishing ? "Publishing…" : "Publish new crown & re-grade"}
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Methodology() {
   const [current, setCurrent] = useState<MethodologyDetail | null>(null);
   const [versions, setVersions] = useState<MethodologySummary[]>([]);
@@ -312,6 +458,17 @@ export default function Methodology() {
             <MetricTable metrics={current.definition.metrics} />
           </CardContent>
         </Card>
+      )}
+
+      {current && (
+        <CrownCard
+          current={current}
+          onError={setError}
+          onPublished={async (msg) => {
+            setToast(msg);
+            await load();
+          }}
+        />
       )}
 
       {others.length > 0 && (

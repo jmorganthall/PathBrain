@@ -340,6 +340,60 @@ def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
         ensure_current_methodology(s, get_config(s))
 
 
+def test_recrown_forks_new_crown_and_aligns_everything(client, monkeypatch):
+    # Swapping the Overall corner metric set forks a new (append-only) version, re-materializes
+    # the required set onto it, and points config at it. The profiles response's
+    # `overall_metrics` — the single source the quadrant defaults align to — must follow.
+    import pathbrain.api.routes_methodology as rm
+
+    monkeypatch.setattr(rm.jobs, "start", lambda *a, **k: "job-test")
+
+    r = client.post("/api/methodologies/recrown", json={"metrics": ["fcp", "lcp"]})
+    assert r.status_code == 202, r.text
+    out = r.json()
+    assert out["version"] == "speed-smoothness-v7+crown-fcp.lcp"
+    assert out["job_id"] == "job-test"
+
+    cur = client.get("/api/methodologies/current").json()
+    assert cur["version"] == "speed-smoothness-v7+crown-fcp.lcp"
+    # New crown spec (required defaults to the metric set — Overall == Crown == required).
+    assert cur["definition"]["overall"] == {
+        "method": "corner",
+        "metrics": ["fcp", "lcp"],
+        "required": ["fcp", "lcp"],
+    }
+    metrics = {m["key"]: m for m in cur["definition"]["metrics"]}
+    # required re-materialized: fcp/lcp (new crown) + longest_stall (flagged, non-crown) are
+    # required; total_stall — dropped from the crown and not otherwise flagged — no longer is.
+    assert metrics["fcp"]["required"] is True
+    assert metrics["lcp"]["required"] is True
+    assert metrics["longest_stall"]["required"] is True
+    assert metrics["total_stall"]["required"] is False
+    # Thresholds/axes carry over untouched (append-only fork, not an edit).
+    assert metrics["fcp"]["best"] == 150.0
+
+    # The Settings-Impact profiles response exposes the new crown so the quadrant realigns.
+    prof = client.get("/api/settings/profiles").json()
+    assert prof["overall_metrics"] == ["fcp", "lcp"]
+    assert prof["overall_required"] == ["fcp", "lcp"]
+
+    # Guardrails: a display-only (unscored) metric can't be a crown metric; `required` must be
+    # a subset of `metrics`; and re-crowning to the identical set is rejected.
+    assert client.post("/api/methodologies/recrown", json={"metrics": ["latency"]}).status_code == 400
+    assert client.post(
+        "/api/methodologies/recrown", json={"metrics": ["fcp"], "required": ["lcp"]}
+    ).status_code == 400
+    assert client.post("/api/methodologies/recrown", json={"metrics": ["fcp", "lcp"]}).status_code == 400
+
+    # Restore the stock current methodology so the rest of the shared-DB suite sees it.
+    from pathbrain.config_store import get_config, save_config
+    from pathbrain.methodology import CURRENT_METHODOLOGY, ensure_current_methodology
+
+    with session_scope() as s:
+        save_config(s, {"methodology_version": CURRENT_METHODOLOGY})
+        ensure_current_methodology(s, get_config(s))
+
+
 def test_best_is_closest_to_top_right_corner(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     # Profile A: least dead-air (total_stall subscore 90) but slow first response *and*
