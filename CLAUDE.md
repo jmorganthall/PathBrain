@@ -238,6 +238,18 @@ LLM-based. See `README.md` for the product overview.
   default branch (GitHub API; on by default, `PATHBRAIN_UPDATE_CHECK=false` to disable).
   The top-bar `UpdateChip` shows "Update available" (→ the GitHub compare) when the
   branch has moved past the running build — i.e. a newer `:latest` image is pullable.
+- **Container self-update** (`self_update.py`, `POST /api/update/apply`): an optional,
+  disarmed-by-default one-click update. PathBrain never touches the Docker socket — it POSTs
+  to a **Watchtower** sidecar's token-guarded `--http-api-update` endpoint
+  (`PATHBRAIN_WATCHTOWER_URL` + `PATHBRAIN_WATCHTOWER_TOKEN`; the token is the only capability
+  it holds and can only trigger an update), and Watchtower pulls `:latest` and recreates the
+  labeled PathBrain container. A container can't cleanly recreate *itself*, so the external
+  agent is required. The endpoint fires the webhook in a **background thread** and returns
+  `202` immediately (a synchronous call would be killed mid-response by its own recreate); it
+  `400`s when disarmed. `version_info()` exposes `self_update.available` (never the token) so
+  the `UpdateChip` shows an "Update container" button only when a sidecar is wired up; the
+  button confirms, triggers, then polls `/api/version` until the build SHA changes and reloads.
+  The Watchtower sidecar is an opt-in `self-update` compose profile in `docker-compose.ghcr.yml`.
 
 ## Commands
 

@@ -201,6 +201,10 @@ export const api = {
 
   // Build identity + best-effort "newer build available to pull" check.
   version: () => request<VersionInfo>("/version"),
+  // Trigger a container self-update via the Watchtower sidecar (fire-and-forget on the
+  // backend; the container recreates itself, so the UI polls /version to detect the restart).
+  applyUpdate: () =>
+    request<{ requested: boolean; detail: string }>("/update/apply", { method: "POST" }),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),

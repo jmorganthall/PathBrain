@@ -1,9 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link as RouterLink, useLocation } from "react-router-dom";
 import AppBar from "@mui/material/AppBar";
 import Box from "@mui/material/Box";
-import Chip from "@mui/material/Chip";
-import Tooltip from "@mui/material/Tooltip";
 import Divider from "@mui/material/Divider";
 import Drawer from "@mui/material/Drawer";
 import IconButton from "@mui/material/IconButton";
@@ -29,56 +27,13 @@ import ScatterPlotIcon from "@mui/icons-material/ScatterPlot";
 import ExtensionIcon from "@mui/icons-material/Extension";
 import RuleIcon from "@mui/icons-material/Rule";
 import DataObjectIcon from "@mui/icons-material/DataObject";
-import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 
 import type { ReactNode } from "react";
 
 import JobStatus from "./JobStatus";
-import { api } from "../api/client";
-import type { VersionInfo } from "../api/types";
+import UpdateChip from "./UpdateChip";
 
 const DRAWER_WIDTH = 240;
-
-// Top-bar chip that appears only when a newer build is available to pull. Polls the
-// backend's cached /api/version (hourly) so it never hammers GitHub.
-function UpdateChip() {
-  const [info, setInfo] = useState<VersionInfo | null>(null);
-  useEffect(() => {
-    let alive = true;
-    const check = () =>
-      api
-        .version()
-        .then((v) => alive && setInfo(v))
-        .catch(() => {});
-    check();
-    const t = setInterval(check, 60 * 60 * 1000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
-  if (!info?.update_available) return null;
-  const tip = `A newer build is available to pull (ghcr.io/jmorganthall/pathbrain:latest).\nThis build: ${
-    info.git_sha_short ?? "unknown"
-  } · latest: ${info.latest_sha_short ?? "?"}`;
-  return (
-    <Tooltip title={tip}>
-      <Chip
-        icon={<SystemUpdateAltIcon />}
-        label="Update available"
-        color="warning"
-        size="small"
-        variant="outlined"
-        component="a"
-        clickable
-        href={info.compare_url ?? undefined}
-        target="_blank"
-        rel="noopener noreferrer"
-        sx={{ mr: 1 }}
-      />
-    </Tooltip>
-  );
-}
 
 interface NavItem {
   label: string;

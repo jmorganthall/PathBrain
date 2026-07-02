@@ -380,6 +380,9 @@ export interface VersionInfo {
   latest_sha_short: string | null;
   compare_url: string | null;
   error: string | null;
+  // Whether a Watchtower sidecar is wired up so the UI can offer a one-click container
+  // self-update. The token is never exposed — only availability + the endpoint URL.
+  self_update?: { available: boolean; url: string | null } | null;
 }
 
 export interface ImpactSide {
