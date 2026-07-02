@@ -40,8 +40,37 @@ services:
       PATHBRAIN_OPNSENSE_API_KEY: "${PATHBRAIN_OPNSENSE_API_KEY:-}"
       PATHBRAIN_OPNSENSE_API_SECRET: "${PATHBRAIN_OPNSENSE_API_SECRET:-}"
       PATHBRAIN_OPNSENSE_VERIFY_TLS: "${PATHBRAIN_OPNSENSE_VERIFY_TLS:-false}"
+
+      # Container self-update (optional). When these point at the Watchtower sidecar below,
+      # the top-bar "Update available" chip gains a one-click "Update container" button that
+      # asks Watchtower to pull :latest and recreate this container. PathBrain never touches
+      # the Docker socket — the token is the only capability it holds, and it can only
+      # trigger an update. Set PATHBRAIN_WATCHTOWER_TOKEN in your .env to enable.
+      PATHBRAIN_WATCHTOWER_URL: "${PATHBRAIN_WATCHTOWER_URL:-http://watchtower:8080/v1/update}"
+      PATHBRAIN_WATCHTOWER_TOKEN: "${PATHBRAIN_WATCHTOWER_TOKEN:-}"
+    labels:
+      # Only containers with this label are managed by the label-scoped Watchtower below.
+      com.centurylinklabs.watchtower.enable: "true"
     volumes:
       - pathbrain-data:/data
+
+  # Optional self-update agent. Holds the Docker socket (so PathBrain doesn't have to) and
+  # exposes ONLY an HTTP trigger guarded by a bearer token. Scoped with --label-enable so it
+  # touches only the PathBrain container. Remove this service to disable self-update; the
+  # PathBrain button hides itself when PATHBRAIN_WATCHTOWER_TOKEN is unset.
+  watchtower:
+    image: containrrr/watchtower
+    container_name: pathbrain-watchtower
+    restart: unless-stopped
+    # --http-api-update: don't poll on a schedule; only update when the token'd endpoint is hit.
+    command: --http-api-update --http-api-token "${PATHBRAIN_WATCHTOWER_TOKEN:-}" --label-enable --cleanup
+    environment:
+      WATCHTOWER_HTTP_API_TOKEN: "${PATHBRAIN_WATCHTOWER_TOKEN:-}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    profiles:
+      # Only starts when you opt in: `docker compose --profile self-update up -d`.
+      - self-update
 
 volumes:
   pathbrain-data:

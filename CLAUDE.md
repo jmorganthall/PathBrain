@@ -238,6 +238,18 @@ LLM-based. See `README.md` for the product overview.
   default branch (GitHub API; on by default, `PATHBRAIN_UPDATE_CHECK=false` to disable).
   The top-bar `UpdateChip` shows "Update available" (→ the GitHub compare) when the
   branch has moved past the running build — i.e. a newer `:latest` image is pullable.
+- **Container self-update** (`self_update.py`, `POST /api/update/apply`): an optional,
+  disarmed-by-default one-click update. PathBrain never touches the Docker socket — it POSTs
+  to a **Watchtower** sidecar's token-guarded `--http-api-update` endpoint
+  (`PATHBRAIN_WATCHTOWER_URL` + `PATHBRAIN_WATCHTOWER_TOKEN`; the token is the only capability
+  it holds and can only trigger an update), and Watchtower pulls `:latest` and recreates the
+  labeled PathBrain container. A container can't cleanly recreate *itself*, so the external
+  agent is required. The endpoint fires the webhook in a **background thread** and returns
+  `202` immediately (a synchronous call would be killed mid-response by its own recreate); it
+  `400`s when disarmed. `version_info()` exposes `self_update.available` (never the token) so
+  the `UpdateChip` shows an "Update container" button only when a sidecar is wired up; the
+  button confirms, triggers, then polls `/api/version` until the build SHA changes and reloads.
+  The Watchtower sidecar is an opt-in `self-update` compose profile in `docker-compose.ghcr.yml`.
 
 ## Commands
 
@@ -280,6 +292,17 @@ docker compose up --build   # -> http://localhost:8000
   the Settings-Impact saturation alert (Settings → `?reanchor=<metric>&best=<n>` → Methodology
   page proposal panel). Lets a threshold be re-anchored from the UI without a code edit, while
   every published version stays a frozen DB snapshot.
+  **GUI re-crown (`POST /api/methodologies/recrown`):** the crown-metric analog of re-anchor —
+  forks the *current* methodology, rewrites only its `overall` spec (the corner metric set +
+  `required`), re-materializes the per-metric `required` flags, writes a **new** version
+  (`…+crown-<m1.m2.…>`), points config at it, and kicks the re-grade. Guardrails mirror the
+  import-time invariant: every proposed metric must be a **scored** metric in the base version
+  (unscorable crown ⇒ every run quarantined), and `required ⊆ metrics`. Driven from the
+  **Methodology page → "Overall crown" card**, whose picker offers **only scored metrics of the
+  current methodology** and warns that adding a crown metric quarantines runs whose raw can't
+  supply it (removing one un-quarantines them). Because the crown is the single source of truth
+  (`overall_metrics` → persisted Overall, challenger ceiling, Heirs, and the Settings-Impact
+  quadrant defaults), a re-crown realigns all of them at once.
 - **Publishing a new methodology — required follow-through.** Bumping
   `CURRENT_METHODOLOGY` is not done until both of these happen, or history shows stale
   scores and the default UI stops reflecting the rubric:
@@ -290,12 +313,14 @@ docker compose up --build   # -> http://localhost:8000
      Only pre-raw-collection legacy runs (no raw) can't be re-derived — they stay
      quarantined as legacy. There is deliberately no "physically re-run every profile"
      batch; re-grading from raw is the supported way to bring history onto a new rubric.
-  2. **Update the quadrant defaults.** The Settings-Impact quadrant should open on the
-     metrics that drive the current Overall. Set the default axis keys in
-     `frontend/src/pages/Settings.tsx` (`xKey`/`yKey`/`sizeKey`) to the new crown set —
-     the methodology's `overall` spec metrics (`methodology.overall_metrics`), one per
-     X / Y / Shade slot — so the default view demonstrates how Overall is scored. (v7:
-     `fcp` × `lcp` × `total_stall`.)
+  2. **Quadrant defaults auto-align (no edit needed).** The Settings-Impact quadrant opens on
+     the metrics that drive the current Overall, and this is now **derived, not hardcoded**:
+     `/api/settings/profiles` returns the crown set as `overall_metrics`/`overall_required`
+     (from the methodology's `overall` spec), and `Settings.tsx` seeds the quadrant's default
+     X / Y / Shade axes from it on load (unless the user has manually pinned an axis). So a new
+     methodology — or a runtime re-crown — realigns the plot automatically; the `xKey`/`yKey`/
+     `sizeKey` `useState` values are only a pre-load fallback (v7: `fcp` × `lcp` × `total_stall`).
+     This is the single source of truth linking **methodology → crown → plot**.
 - A run repeats the suite `iterations` times; each headline axis is the **median**
   over iterations, with a confidence band. The Dashboard shows a windowed
   **rolling** score (`/api/score/rolling`, 24h median + IQR) plus a **"vs typical"**

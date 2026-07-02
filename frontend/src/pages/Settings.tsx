@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import Alert from "@mui/material/Alert";
@@ -523,9 +523,17 @@ export default function Settings() {
   // Dynamic quadrant axes — default to the Overall scoring corner's three inputs
   // (v7: FCP × LCP × total-stall), with the third encoded as Shade opacity; the
   // crowned profile is ringed. So the default view demonstrates how Overall is scored.
+  // These initial values are only a pre-load fallback: on load the axes are aligned to the
+  // *current methodology's* crown (the profiles response's `overall_metrics`), so a re-crown
+  // realigns the plot automatically — no hardcoded edit here needed. Once the user picks an
+  // axis manually (`axesPinned`), we stop overriding their choice on subsequent reloads.
   const [xKey, setXKey] = useState("fcp");
   const [yKey, setYKey] = useState("lcp");
   const [sizeKey, setSizeKey] = useState("total_stall");
+  const axesPinned = useRef(false);
+  const pinX = useCallback((v: string) => { axesPinned.current = true; setXKey(v); }, []);
+  const pinY = useCallback((v: string) => { axesPinned.current = true; setYKey(v); }, []);
+  const pinSize = useCallback((v: string) => { axesPinned.current = true; setSizeKey(v); }, []);
   // Scatter-only filter: hide profiles with fewer than this many total iterations, so
   // thin/noisy profiles don't clutter the plot. 0 = show all. Doesn't affect the table.
   const [minIterPlot, setMinIterPlot] = useState(0);
@@ -631,6 +639,15 @@ export default function Settings() {
       setHeirs(p.heirs ?? null);
       setMetricThresholds(p.metric_thresholds ?? {});
       setSaturation(p.saturation ?? []);
+      // Align the quadrant's default axes to the current methodology's crown (Overall corner)
+      // — the single source of truth — unless the user has manually pinned an axis. This is
+      // what keeps methodology → crown → plot in lockstep across a re-crown.
+      if (!axesPinned.current && p.overall_metrics && p.overall_metrics.length > 0) {
+        const [c0, c1, c2] = p.overall_metrics;
+        if (c0) setXKey(c0);
+        if (c1) setYKey(c1);
+        if (c2) setSizeKey(c2);
+      }
       setImpact(i);
       setDiag(d);
       setError(null);
@@ -1115,9 +1132,9 @@ export default function Settings() {
                     sx={{ width: 130 }}
                   />
                 </Tooltip>
-                <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={setXKey} />
-                <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={setYKey} />
-                <AxisSelect label="Shade" value={sizeKey} fields={allFields} onChange={setSizeKey} />
+                <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={pinX} />
+                <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={pinY} />
+                <AxisSelect label="Shade" value={sizeKey} fields={allFields} onChange={pinSize} />
               </Stack>
             </Stack>
             {minIterPlot > 0 && (

@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -95,6 +95,34 @@ def version() -> dict:
     from .updates import version_info
 
     return version_info()
+
+
+@app.post("/api/update/apply", status_code=202)
+def apply_update() -> dict:
+    """Trigger a container self-update via the Watchtower sidecar (if configured).
+
+    Fires the Watchtower webhook in a **background thread** and returns immediately: a
+    successful update recreates *this* container, so a synchronous call would be killed
+    before it could respond. Returns 400 when self-update isn't configured (no
+    ``PATHBRAIN_WATCHTOWER_URL`` / ``_TOKEN`` + a Watchtower sidecar). The UI should show a
+    "restarting…" state and poll ``/api/version`` until the build SHA changes."""
+    import threading
+
+    from .self_update import self_update_status, trigger_update
+
+    if not self_update_status()["available"]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Self-update is not configured. Set PATHBRAIN_WATCHTOWER_URL and "
+                "PATHBRAIN_WATCHTOWER_TOKEN and run a Watchtower sidecar with --http-api-update."
+            ),
+        )
+    threading.Thread(target=trigger_update, daemon=True).start()
+    return {
+        "requested": True,
+        "detail": "Update requested — Watchtower will pull :latest and recreate this container. The app will restart shortly.",
+    }
 
 
 # -- Browser-engine artifacts (screenshots, HAR) --------------------------

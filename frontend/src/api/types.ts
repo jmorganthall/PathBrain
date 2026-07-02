@@ -290,6 +290,10 @@ export interface SettingsProfilesResponse {
   // Methodology health: scored metrics whose 'best' is too lenient to rank profiles
   // (saturating >50%), with a suggested re-anchor.
   saturation: MetricSaturation[];
+  // The current methodology's crown (Overall corner) metric keys + the required subset.
+  // The single source of truth the quadrant defaults align to. Null on a pre-v5 rubric.
+  overall_metrics: string[] | null;
+  overall_required: string[] | null;
 }
 
 // One "Test this profile up to the minimum" session.
@@ -376,6 +380,9 @@ export interface VersionInfo {
   latest_sha_short: string | null;
   compare_url: string | null;
   error: string | null;
+  // Whether a Watchtower sidecar is wired up so the UI can offer a one-click container
+  // self-update. The token is never exposed — only availability + the endpoint URL.
+  self_update?: { available: boolean; url: string | null } | null;
 }
 
 export interface ImpactSide {
@@ -852,9 +859,19 @@ export interface MethodologyMetric {
   order: number;
 }
 
+// The first-class Overall (crown) spec (v5+): the metric subscores the Overall corners
+// over. The single source of truth for scoring, the challenger, the Heirs card, and the
+// Settings-Impact quadrant defaults. Absent on pre-v5 definitions.
+export interface MethodologyOverall {
+  method: string;
+  metrics: string[];
+  required: string[];
+}
+
 export interface MethodologyDefinition {
   axes: MethodologyAxis[];
   metrics: MethodologyMetric[];
+  overall?: MethodologyOverall;
 }
 
 export interface MethodologySummary {

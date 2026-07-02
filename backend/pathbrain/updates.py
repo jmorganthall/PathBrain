@@ -67,6 +67,11 @@ def version_info() -> dict:
         "compare_url": None,
         "error": None,
     }
+    # Whether the operator has wired up a Watchtower sidecar so the UI can offer a
+    # one-click "Update container" (never exposes the token — just availability + URL).
+    from .self_update import self_update_status
+
+    info["self_update"] = self_update_status()
     if not settings.update_check:
         return info
 

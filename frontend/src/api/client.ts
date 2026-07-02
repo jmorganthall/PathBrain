@@ -136,6 +136,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ metric_key: metricKey, best }),
     }),
+  // Fork the current methodology, swap the Overall (crown) corner metric set, and re-grade.
+  recrownOverall: (metrics: string[], required?: string[]) =>
+    request<{ version: string; job_id: string }>("/methodologies/recrown", {
+      method: "POST",
+      body: JSON.stringify({ metrics, ...(required ? { required } : {}) }),
+    }),
 
   // Background jobs feed (powers the top-right "running jobs" dropdown)
   jobs: () => request<JobsResponse>("/jobs"),
@@ -195,6 +201,10 @@ export const api = {
 
   // Build identity + best-effort "newer build available to pull" check.
   version: () => request<VersionInfo>("/version"),
+  // Trigger a container self-update via the Watchtower sidecar (fire-and-forget on the
+  // backend; the container recreates itself, so the UI polls /version to detect the restart).
+  applyUpdate: () =>
+    request<{ requested: boolean; detail: string }>("/update/apply", { method: "POST" }),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),
