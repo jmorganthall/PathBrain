@@ -139,6 +139,17 @@ DEFAULT_CONFIG: dict = {
         # the unit of signal: a 15-iteration run carries far more than a 1-iteration
         # one. Eligible for a "best" badge / significance calls once met.
         "min_iterations": 15,
+        # Crown tie-awareness. The crown is no longer a bare argmax of the median
+        # Overall: a challenger only *clearly* beats the incumbent when its median
+        # pulls ahead by more than the run-to-run noise. Two knobs define "more than
+        # noise": the median gap must exceed BOTH an absolute floor (guards against
+        # crowning on rounding when both bands are ~0) AND this fraction of the two
+        # profiles' averaged Overall IQR (a wider, jitterier band demands a wider
+        # gap). Profiles that don't clearly separate are *co-leaders* (a statistical
+        # tie); among them the crown goes to the currently-active profile (hysteresis
+        # — don't churn the firewall for noise), else the steadiest (tightest IQR).
+        "crown_tie_iqr_fraction": 0.5,
+        "crown_tie_min_margin": 0.5,
     },
     # Historical trends: baseline a metric over this many days of history, judge a
     # run against the median over the last `window_hours`, and require at least
