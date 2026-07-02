@@ -190,22 +190,20 @@ LLM-based. See `README.md` for the product overview.
     aggregates per profile the median of every axis score *and* every metric we collect
     (`metrics.all_metric_sources`) to power the dynamic quadrant + table column selector.
     The crowned **"best"** is the **confident** profile (total iterations ≥
-    `correlation.min_iterations`) with the **highest median Overall** — but **tie-aware**
-    (`_select_crown`/`_clearly_better`). A bare argmax of the median crowns a winner in a
-    photo finish it can't see: on a fast link two profiles routinely differ by less than
-    their own run-to-run wobble. So the median-leader only keeps the crown outright when it's
-    *clearly* better — its median lead exceeds **both** an absolute floor
-    (`correlation.crown_tie_min_margin`, default 0.5) **and** a fraction
-    (`correlation.crown_tie_iqr_fraction`, default 0.5) of the two profiles' averaged per-run
-    Overall IQR (`overall_p25/p75`), so a jitterier pair must separate by more. Everyone it
-    can't clearly beat is a **co-leader** (a statistical tie; returned as `co_leaders`), and
-    the crown among co-leaders goes to the **currently-active** profile (hysteresis — don't
-    churn the firewall for noise; the route passes `current_fingerprint` in), else the
-    **steadiest** (tightest Overall IQR), then most-measured. No posterior, no variance
-    penalty, no time-window de-confounding enters the verdict. Returns
-    `best_fingerprint` (+ `co_leaders`). The challenger race reads `compute_profiles` without
-    a `current_fingerprint` (no hysteresis there) and its bar is `best_fingerprint`'s Overall
-    — unchanged, since co-leaders have ~equal Overall. **Finding challengers that could overtake the crown is a separate,
+    `correlation.min_iterations`) with the **highest median Overall** — full stop, the
+    profile that wins wins, even by an infinitesimal margin (`_select_crown`). The verdict is
+    a deterministic argmax of the median (exact-tie break: more iterations, then
+    most-recently-seen); there is **no hysteresis/stickiness and no steadiness override** — a
+    marginally higher median is still a higher median. The per-run Overall IQR
+    (`overall_p25/p75`) does **not** decide the crown; it only *labels* a photo finish:
+    `_clearly_better`/`co_leaders` flag every confident profile statistically
+    indistinguishable from the crown (median lead within an absolute floor
+    `correlation.crown_tie_min_margin` **and** a fraction `correlation.crown_tie_iqr_fraction`
+    of the pooled IQR), returned **purely as information** so the UI can show a "tied" chip
+    without changing who's crowned. No posterior, no variance penalty, no time-window
+    de-confounding enters the verdict. Returns `best_fingerprint` (+ `co_leaders`). The
+    challenger race reads `compute_profiles` and its bar is `best_fingerprint`'s Overall.
+    **Finding challengers that could overtake the crown is a separate,
     smarter job** — the **Heirs to the crown** card + the challenger race rank under-sampled
     / stale profiles by their *optimistic ceiling* (`optimistic_overall`, the crown corner
     over each crown metric's p75 upper estimate) against the crown's Overall, to decide where

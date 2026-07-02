@@ -700,13 +700,14 @@ def test_profiles_expose_time_adjusted_overall(client):
         assert set(p["relative_overall"]) >= {"delta_median", "p25", "p75", "count"}
 
 
-# ── Tie-aware crown ────────────────────────────────────────────────────────────────
-# The crown is no longer a bare argmax of the median Overall. A challenger only *clearly*
-# beats the incumbent when its median pulls ahead by more than run-to-run noise (an
-# absolute floor AND a share of the pooled Overall IQR). Otherwise the two are co-leaders
-# (a statistical tie), broken by hysteresis (keep the active profile) then steadiness
-# (tightest IQR). These are exercised as pure-function unit tests (no DB) plus one
-# end-to-end wiring test, so the shared module DB can't perturb the assertions.
+# ── Crown = highest median Overall; ties are informational only ─────────────────────
+# The crown follows the highest median Overall, full stop — the winner wins, by any margin.
+# The per-run Overall IQR does NOT change who is crowned: it only labels a photo finish.
+# ``co_leaders`` lists the profiles statistically indistinguishable from the crown (within
+# run-to-run noise via ``_clearly_better``), purely so the UI can flag a "tied" chip. There
+# is no hysteresis (stickiness to the active profile) and no steadiness override in the
+# verdict. Exercised as pure-function unit tests (no DB) plus one end-to-end wiring test, so
+# the shared module DB can't perturb the assertions.
 
 from pathbrain.api.routes_settings import _clearly_better, _select_crown  # noqa: E402
 
@@ -721,77 +722,71 @@ def _prof(fp: str, overall: float, iqr: float = 0.0, iterations: int = 30) -> di
         "overall_p75": overall + iqr / 2,
         "iterations": iterations,
         "confident": True,
+        "last_seen": "2026-01-01T00:00:00",
     }
 
 
 def test_clearly_better_requires_more_than_noise():
+    # ``_clearly_better`` still powers the *co-leader* (tie) labelling, so it keeps its
+    # noise-aware semantics — it just no longer changes who's crowned.
     tight_hi = _prof("hi", 90.0, iqr=0.0)
     tight_lo = _prof("lo", 70.0, iqr=0.0)
-    # A 20-point lead with no spread is a real win.
-    assert _clearly_better(tight_hi, tight_lo, 0.5, 0.5) is True
-    # A 1-point lead over a wide (±5 → width 10) band is inside the noise: 1 < 0.5*10.
+    assert _clearly_better(tight_hi, tight_lo, 0.5, 0.5) is True  # 20-pt lead is real
     wide = _prof("wide", 89.0, iqr=10.0)
-    assert _clearly_better(tight_hi, wide, 0.5, 0.5) is False
-    # A hair of median with both bands ~0 is still not "clear" — the absolute floor guards
-    # against crowning on rounding.
+    assert _clearly_better(tight_hi, wide, 0.5, 0.5) is False  # 1 < 0.5*10 → within noise
     near = _prof("near", 89.7, iqr=0.0)
     assert _clearly_better(tight_hi, near, 0.5, 0.5) is False  # gap 0.3 < 0.5 floor
 
 
-def test_crown_breaks_a_statistical_tie_by_steadiness():
-    # jittery has the marginally higher median (96 vs 95) but a wide band; steady is a hair
-    # lower but rock-steady. The gap (1) is inside the pooled noise, so they're co-leaders —
-    # and the crown goes to the steadier profile, not the higher-median one.
+def test_crown_follows_highest_median_even_by_a_hair():
+    # jittery leads by a hair (96 vs 95) with a wide band; steady is a touch lower but
+    # rock-steady. The winner is the highest median, period — jittery is crowned even though
+    # the lead is inside the noise. Both are still returned as co-leaders (informational).
     steady = _prof("steady", 95.0, iqr=0.0)
     jittery = _prof("jittery", 96.0, iqr=12.0)
-    best, co = _select_crown([jittery, steady], current_fingerprint=None,
-                             min_margin=0.5, iqr_fraction=0.5)
-    assert best["fingerprint"] == "steady"
-    assert set(co) == {"steady", "jittery"}  # both are co-leaders
+    best, co = _select_crown([steady, jittery], min_margin=0.5, iqr_fraction=0.5)
+    assert best["fingerprint"] == "jittery"  # higher median wins, no steadiness override
+    assert set(co) == {"steady", "jittery"}  # both flagged tied (within noise)
 
 
-def test_crown_hysteresis_keeps_the_active_profile_among_co_leaders():
-    # Same tie, but the jittery profile is the one currently deployed. Hysteresis keeps the
-    # crown on it rather than churning the firewall for a noise-level difference.
-    steady = _prof("steady", 95.0, iqr=0.0)
-    jittery = _prof("jittery", 96.0, iqr=12.0)
-    best, co = _select_crown([jittery, steady], current_fingerprint="jittery",
-                             min_margin=0.5, iqr_fraction=0.5)
-    assert best["fingerprint"] == "jittery"
-    assert set(co) == {"steady", "jittery"}
+def test_crown_ignores_the_active_profile_no_stickiness():
+    # There is no hysteresis: even if the marginally-lower profile is the one deployed, the
+    # crown still moves to the highest median. (``_select_crown`` takes no active fingerprint.)
+    deployed_lo = _prof("deployed", 95.0, iqr=0.0)
+    higher = _prof("higher", 95.4, iqr=0.0)  # +0.4: within the 0.5 floor → a co-leader…
+    best, co = _select_crown([deployed_lo, higher], min_margin=0.5, iqr_fraction=0.5)
+    assert best["fingerprint"] == "higher"  # …yet still crowned: highest median wins
+    assert set(co) == {"deployed", "higher"}  # both within noise → both tied
 
 
-def test_crown_clear_winner_is_not_a_tie():
-    # A decisive, well-separated lead crowns the higher profile with no co-leaders, even if
-    # the loser happens to be the active one (hysteresis never overrides a *clear* winner).
+def test_crown_clear_winner_has_no_co_leaders():
+    # A decisive, well-separated lead crowns the higher profile with no co-leaders.
     hi = _prof("hi", 92.0, iqr=1.0)
     lo = _prof("lo", 74.0, iqr=1.0)
-    best, co = _select_crown([lo, hi], current_fingerprint="lo",
-                             min_margin=0.5, iqr_fraction=0.5)
+    best, co = _select_crown([lo, hi], min_margin=0.5, iqr_fraction=0.5)
     assert best["fingerprint"] == "hi"
     assert co == ["hi"]  # only the crown; "lo" is clearly beaten, not a co-leader
 
 
-def test_profiles_endpoint_exposes_co_leaders(client, monkeypatch):
-    # End-to-end: two confident profiles a hair apart in median but overlapping bands should
-    # come back as co-leaders. Seed them as the module's top profiles (Overall ~96) so they
-    # are the global crown contenders regardless of other fixtures' lower-scoring profiles.
+def test_profiles_endpoint_crowns_highest_median_and_lists_co_leaders(client, monkeypatch):
+    # End-to-end: two confident profiles a hair apart in median but overlapping bands. The
+    # higher median is crowned (even by a hair); the other is returned as a co-leader. Seed
+    # them as the module's top profiles (Overall ~96) so they're the global crown contenders.
     import pathbrain.api.routes_settings as rs
 
     monkeypatch.setattr(rs, "_current_fingerprint", lambda: None)
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # steady: six runs all at Overall 96 → tight band.
+    # steady: six runs all at Overall 96 → tight band, median 96.
     for i in range(6):
         _seed_run("tiesteady0x", 96, t0 - timedelta(minutes=200 - i), iterations=3, overall=96)
-    # jittery: median 96 too, but a wide run-to-run spread (90..100).
-    for i, o in enumerate([90, 100, 90, 100, 96, 96]):
-        _seed_run("tiejitter0x", o, t0 - timedelta(minutes=150 - i), iterations=3, overall=o)
+    # winner: a hair higher median (~97) with a wide run-to-run spread (94..100).
+    for i, o in enumerate([94, 100, 94, 100, 97, 97]):
+        _seed_run("tiewinner0x", o, t0 - timedelta(minutes=150 - i), iterations=3, overall=o)
 
     body = client.get("/api/settings/profiles").json()
     co = set(body["co_leaders"])
-    assert {"tiesteady0x", "tiejitter0x"} <= co | {body["best_fingerprint"]}
-    # The crown is one of our two tied profiles, and the *other* is listed as a co-leader.
-    assert body["best_fingerprint"] in {"tiesteady0x", "tiejitter0x"}
-    # The steadier profile wins the tie (no active profile to make it sticky).
-    assert body["best_fingerprint"] == "tiesteady0x"
-    assert "tiejitter0x" in co
+    # The higher-median profile is crowned even though its lead is within the noise band…
+    assert body["best_fingerprint"] == "tiewinner0x"
+    # …and the near-tied steady profile is flagged as a co-leader (informational).
+    assert "tiesteady0x" in co
+    assert "tiewinner0x" not in co  # the crown itself is excluded from its co-leaders
