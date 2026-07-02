@@ -196,39 +196,40 @@ def _finite(x: float) -> float:
 
 def _select_crown(
     confident: list[dict],
-    current_fingerprint: str | None,
     min_margin: float,
     iqr_fraction: float,
 ) -> tuple[dict | None, list[str]]:
-    """Pick the crown from the confident profiles, tie-aware. Returns
-    ``(best_profile, co_leader_fingerprints)`` where the co-leaders are every confident
-    profile *statistically indistinguishable* from the crown (including the crown itself).
+    """Pick the crown from the confident profiles. Returns
+    ``(best_profile, co_leader_fingerprints)``.
 
-    1. The median-leader is the highest Overall — but it only *keeps* the crown outright
-       when it's ``_clearly_better`` than the rest. Everyone it can't clearly beat is a
-       co-leader (a tie within run-to-run noise).
-    2. The crown among co-leaders is the currently-active profile if it's one of them
-       (hysteresis: don't move the crown off the deployed config for noise), else the
-       **steadiest** (tightest Overall IQR), then the most-measured, then highest median.
+    The crown is the **highest median Overall**, full stop — the profile that wins, wins,
+    even by an infinitesimal margin. No stickiness/hysteresis and no steadiness override
+    enter the *verdict*: a marginally-higher median is still a higher median, and the crown
+    follows it deterministically (ties on the exact median break toward the more-measured,
+    then most-recently-seen profile).
+
+    The ``co_leaders`` — every confident profile the crown can't ``_clearly_better`` (i.e.
+    within run-to-run noise of it, including the crown itself) — are still returned, but
+    **purely as information**: the UI flags them as "tied" so a photo finish reads as one,
+    without ever changing *who* is crowned. This keeps the IQR "how close is this really?"
+    signal while letting the actual winner take the crown.
 
     Pure (no DB) so it's unit-testable in isolation, like ``rank_challengers``."""
     scored = [p for p in confident if p.get("overall") is not None]
     if not scored:
         return None, []
-    leader = max(scored, key=lambda p: p["overall"])
-    # Co-leaders: everyone the leader can't clearly beat — the statistical tie set.
-    co_leaders = [p for p in scored if not _clearly_better(leader, p, min_margin, iqr_fraction)]
-    # Hysteresis: keep the crown on the active profile when it's a co-leader.
-    sticky = next(
-        (p for p in co_leaders if current_fingerprint and p["fingerprint"] == current_fingerprint),
-        None,
+    # The winner is simply the highest median Overall (deterministic tie-break on exact
+    # equality: more iterations, then most recent). A hair of a lead still wins.
+    best = max(
+        scored,
+        key=lambda p: (float(p["overall"]), int(p.get("iterations") or 0), p.get("last_seen") or ""),
     )
-    best = sticky or min(
-        co_leaders,
-        # Steadiest first (tightest IQR), then most iterations, then highest median.
-        key=lambda p: (_overall_iqr(p), -int(p.get("iterations") or 0), -float(p["overall"])),
-    )
-    co_fps = [p["fingerprint"] for p in co_leaders]
+    # Informational only: who is statistically indistinguishable from the crown.
+    co_fps = [
+        p["fingerprint"]
+        for p in scored
+        if not _clearly_better(best, p, min_margin, iqr_fraction)
+    ]
     return best, co_fps
 
 
@@ -384,18 +385,12 @@ def settings_profiles(
     (best-effort live discovery), so the UI can flag the active row.
     """
     custom = [m.strip() for m in (crown_metrics or "").split(",") if m.strip()] or None
-    # Discover the live profile first so the crown can be *sticky* to it (hysteresis): among
-    # profiles statistically tied for the lead, the one already deployed keeps the crown, so
-    # the recommendation doesn't flip-flop on run-to-run noise.
-    current_fp = _current_fingerprint()
     result = compute_profiles(
-        session,
-        complete_only=complete_only,
-        tz_offset=tz_offset,
-        custom_crown_metrics=custom,
-        current_fingerprint=current_fp,
+        session, complete_only=complete_only, tz_offset=tz_offset, custom_crown_metrics=custom
     )
-    result["current_fingerprint"] = current_fp
+    # The live profile, for flagging the active row only — it no longer influences the crown
+    # (the crown follows the highest median Overall, whoever wins, by any margin).
+    result["current_fingerprint"] = _current_fingerprint()
     # The crown's heirs (limited-data / stale profiles that could still dethrone it), the
     # effective per-metric thresholds (so the quadrant can flag a saturated axis), and the
     # methodology saturation report (metrics whose 'best' is too lenient to rank profiles).
@@ -610,7 +605,6 @@ def compute_profiles(
     complete_only: bool = True,
     tz_offset: int = 0,
     custom_crown_metrics: list[str] | None = None,
-    current_fingerprint: str | None = None,
 ) -> dict:
     """Aggregate completed runs into per-profile rows ranked by the feel-trinity corner
     Overall, with the crowned ``best_fingerprint``. Shared by the ``/settings/profiles``
@@ -811,18 +805,14 @@ def compute_profiles(
     profiles.sort(key=lambda p: (p["overall"] is not None, p["overall"] if p["overall"] is not None else p["median"]), reverse=True)
 
     # "Best" = the crown: the confident profile (total iterations ≥ the minimum) with the
-    # highest Overall — but *tie-aware*. A bare argmax of the median would crown a winner in
-    # a photo finish it can't actually see: on a fast link two profiles routinely differ by
-    # less than their own run-to-run wobble, and calling one "best" over the other is reading
-    # noise. So the median-leader only keeps the crown outright when it's ``_clearly_better``
-    # than the rest (its median lead exceeds both an absolute floor and a share of the pooled
-    # Overall IQR). Everyone it can't clearly beat is a **co-leader** — a statistical tie —
-    # and the crown among co-leaders goes to the currently-active profile (hysteresis: don't
-    # churn the firewall for noise), else the **steadiest** (tightest IQR), then most-measured.
+    # highest median Overall — the profile that wins, wins, even by an infinitesimal margin.
+    # No stickiness/hysteresis and no steadiness override enter the verdict: a marginally
+    # higher median is still a higher median, and the crown follows it deterministically.
     #
-    # This uses the per-run Overall IQR the response already carries (overall_p25/p75); the
-    # bar's *value* barely moves (co-leaders have ~equal Overall), so the challenger race —
-    # which reads best_fingerprint's Overall as its bar — is unaffected.
+    # The IQR still buys us something — but only as *information*: ``co_leaders`` lists the
+    # profiles statistically indistinguishable from the crown (within run-to-run noise), so
+    # the UI can flag a photo finish as "tied" without ever changing *who* is crowned. The
+    # challenger race reads best_fingerprint's Overall as its bar, unchanged.
     #
     # Finding *challengers* that could overtake the crown is a separate, smarter job: the
     # "Heirs to the crown" card and the challenger race rank under-sampled / stale profiles
@@ -830,11 +820,10 @@ def compute_profiles(
     # decide where to spend iterations to confirm or deny an heir. That hunt is untouched.
     tie_margin, tie_fraction = _crown_tie_params(session)
     confident = [p for p in profiles if p["confident"] and p["overall"] is not None]
-    best, co_leaders = _select_crown(confident, current_fingerprint, tie_margin, tie_fraction)
+    best, co_leaders = _select_crown(confident, tie_margin, tie_fraction)
     best_fingerprint = best["fingerprint"] if best else None
-    # Co-leaders tied with the crown (excluding the crown itself), so the UI can flag a tie
-    # rather than present a noise-level distinction as a verdict. Empty when the crown stands
-    # clearly apart.
+    # Co-leaders within noise of the crown (excluding the crown itself) — an informational
+    # "this was close" flag, not a re-ranking. Empty when the crown stands clearly apart.
     crown_co_leaders = [fp for fp in co_leaders if fp != best_fingerprint]
 
     # Custom crown: an *exploratory* second take on "best" that corners over a caller-chosen

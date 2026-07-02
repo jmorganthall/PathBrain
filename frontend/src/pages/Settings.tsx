@@ -1269,12 +1269,11 @@ export default function Settings() {
               (best) → <span style={{ color: "hsl(0,70%,55%)" }}>red</span> (worst); hover a cell for
               its raw 0–100 score. The axes are whatever the <b>current methodology</b> scores as
               headline. Overall itself is a single 0–100 measure of how close a profile sits to the
-              ideal corner (fastest <i>and</i> smoothest), as the methodology defines it. <b>"Best"</b> is the profile with the highest Overall
-              that meets the iteration minimum — but <i>tie-aware</i>: a challenger only takes the crown
-              when its lead clears the run-to-run noise (an absolute margin plus a share of the two
-              profiles' Overall spread). Profiles within noise of the best are shown as <b>tied</b>
-              co-leaders; among them the crown stays on the active profile (so it doesn't flip-flop on
-              noise), else the steadiest (tightest Overall band). Finding
+              ideal corner (fastest <i>and</i> smoothest), as the methodology defines it. <b>"Best"</b> is the profile with the highest median Overall
+              that meets the iteration minimum — the winner wins, by any margin (no stickiness, no
+              steadiness override). The per-run Overall spread doesn't change who's crowned; it only
+              flags a photo finish: profiles within run-to-run noise of the best are shown as
+              <b>tied</b>, purely for information. Finding
               challengers that could overtake it is a separate job: the <b>Heirs to the crown</b> card
               and the challenger race rank under-sampled profiles by their <i>optimistic ceiling</i>
               to decide where to spend iterations. Speed and Smoothness are shown alongside.
@@ -1407,21 +1406,21 @@ export default function Settings() {
                           {p.fingerprint === bestFingerprint && (
                             <Tooltip
                               title={
-                                `The crown: the highest Overall${
+                                `The crown: the highest median Overall${
                                   p.overall != null ? ` (${p.overall})` : ""
-                                } among profiles that meet the iteration minimum${
+                                } among profiles that meet the iteration minimum — the winner wins, by any margin${
                                   coLeaders.size > 0
-                                    ? ", tie-broken by steadiness (tightest run-to-run Overall band) since one or more profiles are within noise of it"
+                                    ? ". One or more profiles are within run-to-run noise of it (see the 'tied' chips) — that's informational; it doesn't change who's crowned"
                                     : ""
-                                }. A challenger only takes the crown when its lead clears the run-to-run noise, not on a hair of median.`
+                                }.`
                               }
                             >
                               <Chip size="small" color="success" label="best" />
                             </Tooltip>
                           )}
                           {p.fingerprint !== bestFingerprint && coLeaders.has(p.fingerprint) && (
-                            <Tooltip title="Tied with the crown: this profile's Overall is within run-to-run noise of the best, so it isn't decisively behind. The crown was broken by steadiness / the active profile, not a meaningful gap.">
-                              <Chip size="small" variant="outlined" color="success" label="tied" />
+                            <Tooltip title="Within run-to-run noise of the crown: this profile's Overall is close enough to the best that the gap is a photo finish. Informational only — the crown still follows the highest median.">
+                              <Chip size="small" variant="outlined" color="info" label="tied" />
                             </Tooltip>
                           )}
                           {!p.confident && (
