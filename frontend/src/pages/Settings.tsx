@@ -1267,11 +1267,13 @@ export default function Settings() {
               among all profiles, colour-graded <span style={{ color: "hsl(120,70%,55%)" }}>green</span>{" "}
               (best) → <span style={{ color: "hsl(0,70%,55%)" }}>red</span> (worst); hover a cell for
               its raw 0–100 subscore and value. The three columns after Overall are the exact metrics the
-              <b> current methodology</b> corners the Overall over (the crown set) — so a profile ranks
-              high on Overall only when it ranks high on all three. (The headline axes
-              Responsiveness/Smoothness/Speed are a different decomposition and stay available via{" "}
-              <b>Columns</b>.) Overall itself is a single 0–100 measure of how close a profile sits to the
-              ideal corner over those crown metrics, as the methodology defines it. <b>"Best"</b> is the profile with the highest median Overall
+              <b> current methodology</b> corners the Overall over (the crown set), and Overall is the
+              corner of a profile's <i>median</i> subscore on each — so it's <b>monotonic in these three
+              columns</b>: a profile better on all three is guaranteed a higher Overall, and the standings
+              always explain the ranking. (The headline axes Responsiveness/Smoothness/Speed are a
+              different decomposition and stay available via <b>Columns</b>.) Overall itself is a single
+              0–100 measure of how close a profile sits to the ideal corner over those crown metrics, as
+              the methodology defines it. <b>"Best"</b> is the profile with the highest Overall
               that meets the iteration minimum — the winner wins, by any margin (no stickiness, no
               steadiness override). The per-run Overall spread doesn't change who's crowned; it only
               flags a photo finish: profiles within run-to-run noise of the best are shown as
@@ -1408,7 +1410,7 @@ export default function Settings() {
                           {p.fingerprint === bestFingerprint && (
                             <Tooltip
                               title={
-                                `The crown: the highest median Overall${
+                                `The crown: the highest Overall${
                                   p.overall != null ? ` (${p.overall})` : ""
                                 } among profiles that meet the iteration minimum — the winner wins, by any margin${
                                   coLeaders.size > 0
@@ -1421,7 +1423,7 @@ export default function Settings() {
                             </Tooltip>
                           )}
                           {p.fingerprint !== bestFingerprint && coLeaders.has(p.fingerprint) && (
-                            <Tooltip title="Within run-to-run noise of the crown: this profile's Overall is close enough to the best that the gap is a photo finish. Informational only — the crown still follows the highest median.">
+                            <Tooltip title="Within run-to-run noise of the crown: this profile's Overall is close enough to the best that the gap is a photo finish. Informational only — the crown still follows the highest Overall.">
                               <Chip size="small" variant="outlined" color="info" label="tied" />
                             </Tooltip>
                           )}

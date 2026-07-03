@@ -671,8 +671,6 @@ def compute_profiles(
                 # …and per-metric 0–100 subscore samples (every scored metric), so the
                 # canonical crown and any custom corner share one set of building blocks.
                 "subscore_samples": {},
-                # Per-run Overall (corner) scores → the distribution we crown/rank on.
-                "overall_samples": [],
                 "first_seen": run.created_at,
                 "last_seen": run.created_at,
             },
@@ -681,8 +679,6 @@ def compute_profiles(
             g["smoothness"].append(smooth)
         if speed is not None:
             g["speed"].append(speed)
-        if run_overall is not None:
-            g["overall_samples"].append(run_overall)
         g["points"].append(point)
         # A run with more iterations is more data; track the total alongside runs.
         g["iterations"] += int(run.iterations or 1)
@@ -735,12 +731,29 @@ def compute_profiles(
             m: {**_spread(vals), "n": len(vals)}
             for m, vals in g["subscore_samples"].items() if vals and m in crown_metrics
         }
-        # Overall is the *distribution of per-run Overall scores* — central value + its own
-        # IQR (for display). The crown is just the highest median Overall among confident
-        # profiles, so no posterior/lower-bound is computed here.
-        overall_samples = g["overall_samples"]
-        overall_spread = _spread(overall_samples) if overall_samples else None
-        overall = overall_spread["median"] if overall_spread else None
+        # Overall = the corner over the profile's **median** crown subscores
+        # (corner-of-medians), using the methodology's corner. This makes Overall a
+        # *monotonic* function of exactly the crown-metric columns the table shows: a profile
+        # better on every crown metric necessarily has a higher Overall, so the standings can
+        # always explain the ranking. (Previously this took the median of each *run's* corner
+        # — a joint median that could rank a profile below another it beat on all three
+        # marginal medians, because median-of-corners ≠ corner-of-medians.) The corner and its
+        # required set come straight from the methodology's ``overall`` spec, over the same
+        # persisted, versioned subscores grading uses — so nothing drifts.
+        overall = _crown_corner(subscore_medians, crown_metrics, crown_required)
+        # Overall IQR, kept consistent with the point estimate: corner over each crown
+        # metric's p25 / p75 subscore. Because the corner is monotonic per axis this brackets
+        # ``overall`` (p25-corner ≤ overall ≤ p75-corner), unlike medianing the per-run
+        # corners (which could sit below the point Overall). Shown as the Overall IQR column
+        # and used to flag statistical ties. p25/p75 collapse to the median for a thin sample.
+        overall_p25_val = _crown_corner(
+            {m: (crown_spreads.get(m) or {}).get("p25") for m in crown_metrics},
+            crown_metrics, crown_required,
+        )
+        overall_p75_val = _crown_corner(
+            {m: (crown_spreads.get(m) or {}).get("p75") for m in crown_metrics},
+            crown_metrics, crown_required,
+        )
         # Per-metric medians — every numeric value we collect, for the chart + columns.
         metrics = {key: round(median(vals), 3) for key, vals in g["metric_samples"].items() if vals}
         rel = profile_relative(baseline_points, g["points"], "smoothness", tz_offset, min_samples)
@@ -774,9 +787,9 @@ def compute_profiles(
                 "overall": overall,
                 # Time-adjusted ("vs typical") Overall — informational, not a crown input.
                 "relative_overall": rel_overall,
-                # IQR of the per-run Overall (its own run-to-run variation, for display).
-                "overall_p25": overall_spread["p25"] if overall_spread else None,
-                "overall_p75": overall_spread["p75"] if overall_spread else None,
+                # Overall IQR (corner over each crown metric's p25/p75) — brackets Overall.
+                "overall_p25": overall_p25_val,
+                "overall_p75": overall_p75_val,
                 # Every numeric value we collect, median over the profile's runs.
                 "metrics": metrics,
                 # Time-adjusted Smoothness: above/below the day×hour historical norm.

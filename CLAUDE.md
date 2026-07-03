@@ -191,8 +191,19 @@ LLM-based. See `README.md` for the product overview.
     the felt load; v6 used fcp/total_stall/load_event, v5 fcp/perceived_time/inp). It's an
     *intersection* (corner, not mean — one weak metric can't be averaged away), √k-normalized
     so corners of different arity share a scale.
-    `compute_profiles` reads the persisted Overall (falling back to a live `_crown_corner`
-    for not-yet-re-graded Scores). A **custom crown** (`crown_metrics=` query param,
+    A profile's Overall is the **corner over its median crown subscores** (corner-of-medians):
+    `compute_profiles` takes the median, across the profile's runs, of each crown metric's
+    persisted 0–100 subscore, then corners those (`_crown_corner`, the same primitive grading
+    uses). This makes Overall a **monotonic function of exactly the crown-metric columns the
+    table shows** — a profile better on every crown metric necessarily has a higher Overall, so
+    the standings always explain the ranking. (It deliberately does **not** median each run's
+    persisted per-run Overall: that's a *joint* median where `median(corner) ≠ corner(median)`,
+    which let a profile that beat another on all three marginal medians still rank below it —
+    the "columns don't match the Overall" bug.) The per-Score `axis_scores["overall"]` (a
+    per-*run* corner) stays for per-run views + the "vs typical" baseline; the **Overall IQR**
+    (`overall_p25/p75`) is the corner over each crown metric's p25/p75 subscore, so it brackets
+    the point Overall. No re-grade is needed — the subscores are already persisted; only the
+    cross-run aggregation changed. A **custom crown** (`crown_metrics=` query param,
     `_apply_custom_crown`) corners over any caller-chosen subset of subscores as an
     exploratory `custom_overall` + `custom_best_fingerprint` — a what-if lens over the same
     persisted building blocks, leaving the canonical Overall untouched. The per-axis scores
@@ -200,11 +211,11 @@ LLM-based. See `README.md` for the product overview.
     aggregates per profile the median of every axis score *and* every metric we collect
     (`metrics.all_metric_sources`) to power the dynamic quadrant + table column selector.
     The crowned **"best"** is the **confident** profile (total iterations ≥
-    `correlation.min_iterations`) with the **highest median Overall** — full stop, the
-    profile that wins wins, even by an infinitesimal margin (`_select_crown`). The verdict is
-    a deterministic argmax of the median (exact-tie break: more iterations, then
-    most-recently-seen); there is **no hysteresis/stickiness and no steadiness override** — a
-    marginally higher median is still a higher median. The per-run Overall IQR
+    `correlation.min_iterations`) with the **highest Overall** (the corner-of-medians above) —
+    full stop, the profile that wins wins, even by an infinitesimal margin (`_select_crown`).
+    The verdict is a deterministic argmax of that Overall (exact-tie break: more iterations,
+    then most-recently-seen); there is **no hysteresis/stickiness and no steadiness override**.
+    The Overall IQR
     (`overall_p25/p75`) does **not** decide the crown; it only *labels* a photo finish:
     `_clearly_better`/`co_leaders` flag every confident profile statistically
     indistinguishable from the crown (median lead within an absolute floor

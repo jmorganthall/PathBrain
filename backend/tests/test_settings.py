@@ -416,17 +416,46 @@ def test_crown_skips_run_missing_required_metric(client):
     assert body["best_fingerprint"] != "nopt000000x"  # no Overall → can't be crowned
 
 
-def test_overall_uses_persisted_value_over_live_corner(client):
+def test_overall_is_corner_of_median_subscores(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # Persist a first-class Overall of 42 while the subscores would *live*-corner to ~80.
-    # compute_profiles must report the persisted value (grading and crowning share it),
-    # not recompute from subscores.
+    # The profile Overall is the corner over the profile's MEDIAN crown subscores (using the
+    # methodology's corner), so it's a monotonic function of exactly the crown-metric columns
+    # the table shows. Here all three median to 80 → corner(80,80,80) == 80 — regardless of a
+    # stale per-run scalar that was persisted (the crown no longer passes that through).
     for i in range(3):
-        _seed_run("persisted00x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
+        _seed_run("cornermed00x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
                   overall=42.0, crown_subscores={"fcp": 80, "lcp": 80, "total_stall": 80, "load_event": 80})
 
     by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
-    assert by_fp["persisted00x"]["overall"] == 42.0
+    assert by_fp["cornermed00x"]["overall"] == 80.0
+
+
+def test_overall_is_monotonic_in_the_crown_metric_columns(client):
+    # The bug this fixes: a profile that beats another on the *median* of every crown metric
+    # must not rank below it on Overall. Profile A's metrics peak on different runs (fcp/lcp
+    # high when total_stall low, and vice-versa), so its per-run corners are depressed — under
+    # the old median-of-corners its Overall fell *below* a steady rival it beats on all three
+    # marginal medians. Corner-of-medians makes Overall monotonic in the displayed columns.
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i, subs in enumerate([
+        {"fcp": 100, "lcp": 100, "total_stall": 60},
+        {"fcp": 60, "lcp": 60, "total_stall": 100},
+    ]):
+        _seed_run("marginwin00x", 80, t0 - timedelta(minutes=60 - i), iterations=8, crown_subscores=subs)
+    for i in range(2):
+        _seed_run("steady7800x", 78, t0 - timedelta(minutes=40 - i), iterations=8,
+                  crown_subscores={"fcp": 78, "lcp": 78, "total_stall": 78})
+
+    by = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
+    a, b = by["marginwin00x"], by["steady7800x"]
+    # A's median subscore beats B on every crown metric (80 vs 78)…
+    for m in ("fcp", "lcp", "total_stall"):
+        assert a["crown_scores"][m] > b["crown_scores"][m]
+    # …so A's Overall (corner of those medians) is higher — the columns explain the ranking.
+    assert a["overall"] == 80.0 and b["overall"] == 78.0
+    assert a["overall"] > b["overall"]
+    # The Overall IQR brackets the point estimate (corner over p25 / p75 subscores).
+    assert a["overall_p25"] <= a["overall"] <= a["overall_p75"]
 
 
 def test_custom_crown_corners_selected_betterments(client):
