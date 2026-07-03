@@ -126,6 +126,16 @@ LLM-based. See `README.md` for the product overview.
     iterations still needed to reach `correlation.min_iterations`, then **restore the
     baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
     restores on startup). `/api/settings/test-profile`.
+  - `current_test.py` — **Test current for X minutes**: a time-boxed data-collection loop on
+    whatever profile the firewall is **already** on. Unlike the other engines it **never writes
+    the firewall** (it measures the live profile as-is), so there's no baseline to snapshot or
+    restore — `reconcile_interrupted_current_tests` just closes out an orphaned `CurrentTest`
+    row. It benchmarks in short chunks (`runner.CHUNK_ITERATIONS` = 5 iterations each) under the
+    coordinator lock until the deadline (or cancel), so each chunk's data is persisted the moment
+    it finishes. `/api/current/test` (+ `/current/test/cancel`); the Dashboard drives it. Manual
+    runs over 5 iterations chunk the same way (`routes_run._locked_execute_series`): a big request
+    fans out into a series of ≤5-iteration runs so an interruption keeps every completed chunk
+    (`runner.MAX_ITERATIONS` raised to 500; `run_chunk` is the shared build block).
   - `challenger.py` — **Challenger Race**: the adaptive, multi-profile sibling of
     `profile_test`. A time-boxed loop that runs **one iteration at a time** on whatever the
     field can't currently trust against the winner, re-ranks via `rank_challengers`, and

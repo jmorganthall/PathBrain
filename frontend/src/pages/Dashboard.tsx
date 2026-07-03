@@ -21,6 +21,7 @@ import Select from "@mui/material/Select";
 import { api, ApiError } from "../api/client";
 import type {
   AxisSeriesResponse,
+  CurrentTest,
   MonitoringStatus,
   RollingScore,
   RunDetail,
@@ -67,6 +68,10 @@ export default function Dashboard() {
   const [profiles, setProfiles] = useState<SettingsProfile[]>([]);
   const [configFilter, setConfigFilter] = useState<string>(""); // "" = all configs
   const pollRef = useRef<number | null>(null);
+  // "Test current for X minutes": a time-boxed collection session on the live profile.
+  const [testMinutes, setTestMinutes] = useState(15);
+  const [currentTest, setCurrentTest] = useState<CurrentTest | null>(null);
+  const testPollRef = useRef<number | null>(null);
 
   const loadLatest = useCallback(async () => {
     try {
@@ -100,6 +105,7 @@ export default function Dashboard() {
         api.monitoring().then((m) => setMonitoring(m)).catch(() => {}),
         api.settingsImpact().then((i) => setImpact(i)).catch(() => {}),
         api.settingsProfiles().then((p) => setProfiles(p.profiles)).catch(() => {}),
+        api.currentTestStatus().then((t) => setCurrentTest(t.status ? t : null)).catch(() => {}),
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load dashboard");
@@ -112,6 +118,7 @@ export default function Dashboard() {
     loadAll();
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
+      if (testPollRef.current) window.clearInterval(testPollRef.current);
     };
   }, [loadAll]);
 
@@ -159,8 +166,59 @@ export default function Dashboard() {
     }
   }, [poll, iterations, refreshScores]);
 
+  // Poll the timed test until it reaches a terminal state, then refresh scores/latest.
+  const pollTest = useCallback(() => {
+    if (testPollRef.current) window.clearInterval(testPollRef.current);
+    testPollRef.current = window.setInterval(async () => {
+      try {
+        const t = await api.currentTestStatus();
+        setCurrentTest(t.status ? t : null);
+        if (!t.status || !isRunning(t.status)) {
+          if (testPollRef.current) window.clearInterval(testPollRef.current);
+          testPollRef.current = null;
+          refreshScores();
+          loadLatest();
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 2000);
+  }, [refreshScores, loadLatest]);
+
+  const testActive = currentTest != null && currentTest.status != null && isRunning(currentTest.status);
+
+  const handleStartTest = useCallback(async () => {
+    setError(null);
+    try {
+      const t = await api.currentTestStart(testMinutes);
+      setCurrentTest(t);
+      pollTest();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start test");
+    }
+  }, [testMinutes, pollTest]);
+
+  const handleCancelTest = useCallback(async () => {
+    try {
+      await api.currentTestCancel();
+      pollTest();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to cancel test");
+    }
+  }, [pollTest]);
+
+  // Resume polling if a test is already running when the page (re)loads.
+  useEffect(() => {
+    if (testActive && testPollRef.current == null) pollTest();
+  }, [testActive, pollTest]);
+
   const activeRun = running || (latest != null && isRunning(latest.status));
-  const now = useNow(activeRun);
+  const now = useNow(activeRun || testActive);
+  const testStartedMs = currentTest?.started_at ? parseApiDate(currentTest.started_at).getTime() : null;
+  const testElapsedMs = testActive && testStartedMs != null ? Math.max(0, now - testStartedMs) : 0;
+  const testTotalMs = (currentTest?.duration_s ?? 0) * 1000;
+  const testRemainMs = testActive ? Math.max(0, testTotalMs - testElapsedMs) : 0;
+  const testPct = testActive && testTotalMs > 0 ? Math.min(100, (testElapsedMs / testTotalMs) * 100) : 0;
   const latestEtaMs =
     latest && isRunning(latest.status)
       ? runRemainingMs(latest.started_at, latest.iterations, estimate?.per_iteration_ms, now)
@@ -211,7 +269,7 @@ export default function Dashboard() {
                   setIterations(Number.isNaN(n) ? 1 : Math.max(1, Math.min(n, maxIterations)));
                 }}
                 inputProps={{ min: 1, max: maxIterations }}
-                disabled={activeRun}
+                disabled={activeRun || testActive}
                 sx={{ width: 110 }}
               />
             </Tooltip>
@@ -222,7 +280,7 @@ export default function Dashboard() {
               variant="contained"
               startIcon={<PlayArrowIcon />}
               onClick={handleRun}
-              disabled={activeRun}
+              disabled={activeRun || testActive}
             >
               {activeRun ? "Running…" : "Run Benchmark"}
             </Button>
@@ -238,6 +296,76 @@ export default function Dashboard() {
           {error}
         </Alert>
       )}
+
+      {/* Test current settings for X minutes: a time-boxed collection loop on the live
+          profile, chunked into short runs so an interruption keeps its data. */}
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={1.5}
+            alignItems={{ xs: "flex-start", sm: "center" }}
+            justifyContent="space-between"
+          >
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="h6">Test current settings</Typography>
+              <Typography variant="caption" color="text.secondary">
+                Collect data on the live profile for a set time — runs in short chunks so partial
+                progress is never lost. Great for maturing the current profile toward confidence.
+              </Typography>
+            </Box>
+            {testActive ? (
+              <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
+                <Box sx={{ minWidth: 180 }}>
+                  <Typography variant="body2">
+                    {fmtDuration(testRemainMs)} left · {currentTest?.iterations_run ?? 0} iteration
+                    {(currentTest?.iterations_run ?? 0) === 1 ? "" : "s"} · {currentTest?.runs_created ?? 0} run
+                    {(currentTest?.runs_created ?? 0) === 1 ? "" : "s"}
+                  </Typography>
+                  <LinearProgress variant="determinate" value={testPct} sx={{ mt: 0.5, borderRadius: 1 }} />
+                </Box>
+                <Button color="warning" variant="outlined" onClick={handleCancelTest}>
+                  Stop
+                </Button>
+              </Stack>
+            ) : (
+              <Stack direction="row" spacing={1} alignItems="center" flexShrink={0}>
+                <Tooltip title="How long to keep benchmarking the current settings. Data is collected in ~5-iteration chunks and saved as it goes.">
+                  <TextField
+                    label="Minutes"
+                    type="number"
+                    size="small"
+                    value={testMinutes}
+                    onChange={(e) => {
+                      const n = parseInt(e.target.value, 10);
+                      setTestMinutes(Number.isNaN(n) ? 1 : Math.max(1, Math.min(n, 1440)));
+                    }}
+                    inputProps={{ min: 1, max: 1440 }}
+                    disabled={activeRun}
+                    sx={{ width: 110 }}
+                  />
+                </Tooltip>
+                <Button
+                  variant="contained"
+                  startIcon={<PlayArrowIcon />}
+                  onClick={handleStartTest}
+                  disabled={activeRun}
+                >
+                  Test for {testMinutes} min
+                </Button>
+              </Stack>
+            )}
+          </Stack>
+          {currentTest && !testActive && currentTest.status && currentTest.status !== "pending" && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+              Last test {currentTest.status} · collected {currentTest.iterations_run} iteration
+              {currentTest.iterations_run === 1 ? "" : "s"} across {currentTest.runs_created} run
+              {currentTest.runs_created === 1 ? "" : "s"}
+              {currentTest.error ? ` · ${currentTest.error}` : ""}
+            </Typography>
+          )}
+        </CardContent>
+      </Card>
 
       {!loading && impact && impact.changed && impact.significant && (
         <ImpactBanner impact={impact} />

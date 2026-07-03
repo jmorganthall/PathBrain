@@ -54,6 +54,9 @@ async def lifespan(app: FastAPI):
     from .refresh import reconcile_interrupted_refreshes
 
     reconcile_interrupted_refreshes()  # restore the firewall if a profile refresh was interrupted
+    from .current_test import reconcile_interrupted_current_tests
+
+    reconcile_interrupted_current_tests()  # close out any interrupted test-current session
     from .scheduler import start_scheduler, stop_scheduler
 
     start_scheduler()

@@ -717,11 +717,38 @@ export interface BenchmarkConfig {
   browser: BrowserConfig;
   iterations: number;
   monitoring: { enabled: boolean; interval_minutes: number };
+  // Settings-vs-responsiveness correlation. `min_iterations` is the maturity/confidence
+  // threshold: total iterations a profile needs before it's trusted / crownable.
+  correlation: {
+    min_iterations: number;
+    min_runs?: number;
+    significant_change_pct?: number;
+    crown_tie_min_margin?: number;
+    crown_tie_iqr_fraction?: number;
+  };
   experiment: ExperimentConfig;
   rubric_version: string;
   weights: Record<string, number>;
   thresholds: Record<string, Threshold>;
   [key: string]: unknown;
+}
+
+// A "test the current settings for X minutes" session — a time-boxed data-collection loop
+// on the live profile (no firewall write). Chunked into <=5-iteration runs so partial
+// completion keeps its data.
+export interface CurrentTest {
+  id: number;
+  status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
+  label: string | null;
+  duration_s: number;
+  iterations_run: number;
+  runs_created: number;
+  run_ids: number[];
+  error: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  lock_owner?: string | null;
 }
 
 export interface ProviderHealth {

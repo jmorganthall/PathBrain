@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import challenger, jobs, profile_test, refresh, sweep
+from .. import challenger, current_test, jobs, profile_test, refresh, sweep
 from ..database import get_session
 from ..models import Experiment, ExperimentStatus, Run, RunStatus, Sweep
 
@@ -132,6 +132,31 @@ def _active_profile_test_job() -> list[dict]:
     ]
 
 
+def _active_current_test_job() -> list[dict]:
+    if not current_test.active():
+        return []
+    t = current_test.current()
+    if not t or t.get("status") not in ("running", "pending"):
+        return []
+    mins = int((t.get("duration_s") or 0) // 60)
+    collected = t.get("iterations_run") or 0
+    return [
+        {
+            "id": f"current_test-{t['id']}",
+            "kind": "current_test",
+            "label": f"Test current: {t.get('label') or 'live profile'}",
+            "status": "running",
+            "current": collected,
+            "total": None,
+            "message": f"{mins} min on the live profile · {collected} iteration(s) collected",
+            "error": None,
+            "href": "/",
+            "started_at": t.get("started_at") or t.get("created_at"),
+            "finished_at": None,
+        }
+    ]
+
+
 def _active_experiment_job(session: Session) -> list[dict]:
     exp = session.scalars(
         select(Experiment)
@@ -224,6 +249,7 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     adapters += _active_run_jobs(session)
     adapters += _active_sweep_job(session)
     adapters += _active_profile_test_job()
+    adapters += _active_current_test_job()
     adapters += _active_experiment_job(session)
     adapters += _active_challenger_job()
     adapters += _active_refresh_job()

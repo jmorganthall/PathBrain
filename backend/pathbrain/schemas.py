@@ -12,7 +12,14 @@ class RunCreate(BaseModel):
     label: str | None = None
     notes: str | None = None
     # Number of full-suite iterations to run and average. None -> config default.
+    # Requests over runner.CHUNK_ITERATIONS execute as a series of smaller runs.
     iterations: int | None = None
+
+
+class CurrentTestStart(BaseModel):
+    """Start a "test the current settings for X minutes" session."""
+
+    minutes: float
 
 
 class ConfigUpdate(BaseModel):
