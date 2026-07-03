@@ -191,18 +191,25 @@ LLM-based. See `README.md` for the product overview.
     the felt load; v6 used fcp/total_stall/load_event, v5 fcp/perceived_time/inp). It's an
     *intersection* (corner, not mean — one weak metric can't be averaged away), √k-normalized
     so corners of different arity share a scale.
-    A profile's Overall is the **corner over its median crown subscores** (corner-of-medians):
-    `compute_profiles` takes the median, across the profile's runs, of each crown metric's
-    persisted 0–100 subscore, then corners those (`_crown_corner`, the same primitive grading
-    uses). This makes Overall a **monotonic function of exactly the crown-metric columns the
-    table shows** — a profile better on every crown metric necessarily has a higher Overall, so
-    the standings always explain the ranking. (It deliberately does **not** median each run's
-    persisted per-run Overall: that's a *joint* median where `median(corner) ≠ corner(median)`,
-    which let a profile that beat another on all three marginal medians still rank below it —
-    the "columns don't match the Overall" bug.) The per-Score `axis_scores["overall"]` (a
-    per-*run* corner) stays for per-run views + the "vs typical" baseline; the **Overall IQR**
-    (`overall_p25/p75`) is the corner over each crown metric's p25/p75 subscore, so it brackets
-    the point Overall. No re-grade is needed — the subscores are already persisted; only the
+    A profile's Overall is the **corner over its field-normalized raw crown measurements**, NOT
+    the methodology grade (`compute_profiles` normalize pass, `_normalized_crown`). For each
+    crown metric it takes the profile's **median raw value** (e.g. FCP in ms), rescales it to
+    0–100 by the **field's observed best/worst** across all profiles (`_crown_field_bounds` —
+    best→100, worst→0, direction-aware), then corners those. The scale comes from the
+    *measurements themselves*, so **re-grading a metric (moving a `best`/`worst` threshold)
+    can't move the crown** — only re-measuring can. It stays **monotonic in the crown-metric
+    columns** (which show each metric's normalized-raw standing, `crown_norm`): a profile faster
+    on every crown metric necessarily has a higher Overall, so grading never overturns a raw
+    dominance and the standings always explain the ranking. The **Overall IQR**
+    (`overall_p25/p75`) is the corner over each metric's normalized p25/p75 raw quartile, so it
+    brackets the point Overall; the **optimistic ceiling** (`optimistic`, drives heirs + the
+    race) is the corner over each metric's best-case normalized raw (good-side quartile, or
+    median + a small margin for a thin sample). The graded per-metric subscores
+    (`crown_scores`) still power the axis scores + the custom-crown lens, and the per-Score
+    `axis_scores["overall"]` (a per-run graded corner) stays for the "vs typical" baseline.
+    Because the crown reads raw, the field-normalized Overall is **field-relative** (adding a
+    profile re-normalizes the scale). No re-grade is needed — the raw values are already
+    persisted; only the
     cross-run aggregation changed. A **custom crown** (`crown_metrics=` query param,
     `_apply_custom_crown`) corners over any caller-chosen subset of subscores as an
     exploratory `custom_overall` + `custom_best_fingerprint` — a what-if lens over the same
@@ -211,8 +218,8 @@ LLM-based. See `README.md` for the product overview.
     aggregates per profile the median of every axis score *and* every metric we collect
     (`metrics.all_metric_sources`) to power the dynamic quadrant + table column selector.
     The crowned **"best"** is the **confident** profile (total iterations ≥
-    `correlation.min_iterations`) with the **highest Overall** (the corner-of-medians above) —
-    full stop, the profile that wins wins, even by an infinitesimal margin (`_select_crown`).
+    `correlation.min_iterations`) with the **highest Overall** (the field-normalized raw corner
+    above) — full stop, the profile that wins wins, even by an infinitesimal margin (`_select_crown`).
     The verdict is a deterministic argmax of that Overall (exact-tie break: more iterations,
     then most-recently-seen); there is **no hysteresis/stickiness and no steadiness override**.
     The Overall IQR
@@ -238,9 +245,10 @@ LLM-based. See `README.md` for the product overview.
   History, Trends, Compare, Settings Impact (**paginated** sortable table — 25/page —
   with standard **Overall + the crown metrics** columns (the metrics the Overall corners over,
   from the response's `overall_metrics` — fcp/lcp/total_stall under v7 — ranked by each metric's
-  0–100 subscore via a `crown:<metric>` field key, so the pinned columns are the ones that
-  actually *compute* Overall; the headline axes Responsiveness/Smoothness/Speed are a different
-  decomposition that barely tracks the corner, so they're demoted to opt-in) + an optional
+  **field-normalized raw** value via a `crown:<metric>` field key → `crown_norm` (no grading),
+  so the pinned columns are the raw measurements that actually *compute* Overall; the headline
+  axes Responsiveness/Smoothness/Speed are a different graded decomposition, demoted to opt-in)
+  + an optional
   column selector; a **dynamic** any-metric quadrant where X/Y pick the axes, a **Shade**
   picker encodes a third field as dot **opacity** (brighter = better; `ProfileQuadrant`),
   and the crowned profile is ringed — the quadrant now warns when an axis is **saturated**

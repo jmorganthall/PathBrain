@@ -7,8 +7,9 @@ wasted on a fluke), this races every *limited-data* profile against the confiden
 
 1. Snapshot the live firewall settings (the baseline to restore).
 2. Loop, time-boxed, while there's a challenger that could still win:
-   - rank under-minimum profiles by an **optimistic Overall** (feel-trinity corner over
-     each crown metric's upper estimate; see ``optimistic_overall``),
+   - rank under-minimum profiles by an **optimistic Overall** (the field-normalized crown
+     corner over each crown metric's best-case raw estimate; precomputed per profile as
+     ``optimistic`` by ``compute_profiles``),
    - **eliminate** any whose optimistic best-case can't beat the best's Overall,
    - if the crowned incumbent's newest run is **stale** (older than
      ``challenger.incumbent_refresh_minutes``), re-measure IT first so challengers race
@@ -155,17 +156,13 @@ def rank_challengers(
 
     Bootstrap: with no confident best, ``bar`` is None → under-min + no-data all race.
     Factored out of the driver so the selection logic is unit-testable."""
-    from .api.routes_settings import CROWN_METRICS, CROWN_REQUIRED, optimistic_overall
-
     already = already_eliminated or {}
     profiles = {p["fingerprint"]: p for p in field["profiles"]}
     best_fp = field.get("best_fingerprint")
     bar = profiles[best_fp]["overall"] if best_fp else None
-    # The crown metric set comes from compute_profiles (the methodology's overall spec), so
-    # the race's optimistic estimate corners over exactly the metrics the persisted Overall
-    # does — it can't drift from methodology Overall logic.
-    crown_metrics = field.get("overall_metrics") or CROWN_METRICS
-    crown_required = field.get("overall_required") or CROWN_REQUIRED
+    # Each profile's ``optimistic`` ceiling is precomputed by ``compute_profiles`` in the same
+    # field-normalized raw space as ``overall`` (the bar), so the race can't drift from the
+    # crown's Overall logic.
     newly: dict[str, dict] = {}
     scored: list[tuple[tuple, dict, float | None]] = []  # (priority_key, profile, value)
     for fp, p in profiles.items():
@@ -186,7 +183,7 @@ def rank_challengers(
         if p.get("no_data"):
             scored.append(((2, 0.0), p, None))  # lowest priority — fill in the unknowns last
         elif not p["confident"]:
-            opt = optimistic_overall(p.get("crown_spreads") or {}, crown_metrics, crown_required)
+            opt = p.get("optimistic")  # field-normalized ceiling from compute_profiles
             if opt is None:
                 newly[fp] = {"label": p["label"], "reason": "incomplete corner coverage"}
             elif bar is not None and opt < bar:
