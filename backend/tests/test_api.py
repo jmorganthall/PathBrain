@@ -27,6 +27,25 @@ def test_config_roundtrip(client):
     client.post("/api/config/reset")
 
 
+def test_correlation_min_iterations_editable(client):
+    """The confidence threshold is editable via the config PUT and deep-merges, so setting
+    only min_iterations leaves the other correlation knobs intact."""
+    resp = client.get("/api/config")
+    corr = resp.json()["correlation"]
+    assert corr["min_iterations"] == 15  # default
+    keep = corr["crown_tie_min_margin"]
+
+    upd = client.put("/api/config", json={"correlation": {"min_iterations": 25}})
+    assert upd.status_code == 200
+    new_corr = upd.json()["correlation"]
+    assert new_corr["min_iterations"] == 25
+    # Sibling keys are preserved by the deep merge, not wiped.
+    assert new_corr["crown_tie_min_margin"] == keep
+    assert new_corr["significant_change_pct"] == corr["significant_change_pct"]
+
+    client.post("/api/config/reset")
+
+
 def test_score_preview(client):
     # SOPS is perception-led; TTFB at "best" scores 100.
     resp = client.post("/api/score/preview", json={"http": {"ttfb_ms": 1.0}})

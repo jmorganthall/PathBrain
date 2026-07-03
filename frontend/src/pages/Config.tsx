@@ -124,6 +124,8 @@ function countErrors(d: BenchmarkConfig): number {
   if (d.monitoring && !(Number.isInteger(d.monitoring.interval_minutes) && d.monitoring.interval_minutes >= 1)) {
     n += 1;
   }
+  const minIter = d.correlation?.min_iterations;
+  if (minIter != null && !(Number.isInteger(minIter) && minIter >= 1)) n += 1;
   return n;
 }
 
@@ -454,6 +456,36 @@ export default function Config() {
           />
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
             How many times each run repeats the suite and averages (also selectable per run on the Dashboard).
+          </Typography>
+        </CardContent>
+      </Card>
+
+      {/* Confidence */}
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>
+            Confidence
+          </Typography>
+          <NumberField
+            label="Min iterations to confidence"
+            value={d.correlation?.min_iterations ?? 15}
+            onChange={(v) =>
+              setDraft((p) => (p ? { ...p, correlation: { ...p.correlation, min_iterations: v } } : p))
+            }
+            width={220}
+            min={1}
+            error={
+              Number.isInteger(d.correlation?.min_iterations ?? 15) &&
+              (d.correlation?.min_iterations ?? 15) >= 1
+                ? null
+                : "≥ 1"
+            }
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+            Total iterations a profile needs (summed across its runs) before it's treated as{" "}
+            <b>confident</b> — eligible to be crowned the "best" and counted in significance calls.
+            Iterations, not run count, are the unit of signal. Powers the Settings-Impact crown,
+            "Test to minimum", and the challenger race. (<code>correlation.min_iterations</code>)
           </Typography>
         </CardContent>
       </Card>

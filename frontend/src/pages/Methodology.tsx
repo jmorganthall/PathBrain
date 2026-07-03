@@ -336,8 +336,8 @@ export default function Methodology() {
               iterations. Iterations, not run count, are the unit of signal: a {minIterations}
               -iteration run carries far more than a single-iteration one. Below the threshold a
               profile is still measured and shown, but can’t win the crown until it gets there
-              (that’s what “Test to minimum” and the challenger race drive toward). Adjust it via{" "}
-              <code>correlation.min_iterations</code> in the runtime config.
+              (that’s what “Test to minimum” and the challenger race drive toward). Edit it under{" "}
+              <b>Confidence</b> on the Config page (<code>correlation.min_iterations</code>).
             </Typography>
           </CardContent>
         </Card>
