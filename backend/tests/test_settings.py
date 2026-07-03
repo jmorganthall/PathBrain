@@ -354,25 +354,23 @@ def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
         ensure_current_methodology(s, get_config(s))
 
 
-def test_best_is_closest_to_top_right_corner(client):
+def test_overall_follows_the_crown_metrics_not_the_smoothness_axis(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # Profile A: least dead-air (total_stall subscore 90) but slow first response *and*
-    # page-load (fcp/load_event 70). Profile B: a bit more stall (80) but fast to start
-    # *and* finish (fcp/load_event 95) — so it sits closer to the perfect (100,100,100)
-    # corner. "Best" must follow the feel-trinity corner, not one metric alone.
+    # Profile A has the higher *smoothness axis* score but B is faster on every *crown metric*
+    # (fcp/lcp/total_stall). The Overall follows the crown metrics, so B ranks above A — even
+    # though A "looks" smoother on the axis column.
     for i in range(3):
         _seed_run("smoothA0000x", 90, t0 - timedelta(minutes=120 - i),
-                  speed=70, responsiveness=70, iterations=6)
+                  speed=70, responsiveness=70, iterations=6, crown_raw=(300.0, 300.0, 200.0))
     for i in range(3):
         _seed_run("cornerB0000x", 80, t0 - timedelta(minutes=60 - i),
-                  speed=95, responsiveness=95, iterations=6)
+                  speed=95, responsiveness=95, iterations=6, crown_raw=(150.0, 150.0, 100.0))
 
     body = client.get("/api/settings/profiles").json()
     by_fp = {p["fingerprint"]: p for p in body["profiles"]}
-    # Corner profile B wins despite A having the higher smoothness.
-    assert body["best_fingerprint"] == "cornerB0000x"
+    # B faster on all three crown metrics → higher Overall (dominance holds under percentiles).
     assert by_fp["cornerB0000x"]["overall"] > by_fp["smoothA0000x"]["overall"]
-    assert by_fp["smoothA0000x"]["median"] > by_fp["cornerB0000x"]["median"]  # A still smoother
+    assert by_fp["smoothA0000x"]["median"] > by_fp["cornerB0000x"]["median"]  # A still smoother (axis)
     # Each profile exposes its per-axis scores for the dynamic chart.
     assert by_fp["cornerB0000x"]["scores"]["speed"] == 95
     assert by_fp["cornerB0000x"]["scores"]["smoothness"] == 80
@@ -380,25 +378,32 @@ def test_best_is_closest_to_top_right_corner(client):
     assert any(f["key"] == "overall" for f in body["fields"])
 
 
-def test_crown_rewards_balance_over_specialism(client):
-    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # SPEC: aces first-response + perceived-time but is sluggish to interact (inp 40).
-    # Its *mean* feel subscore (100+100+40)/3 ≈ 80 beats BAL's 76 — so a weighted average
-    # would rank SPEC higher. The corner is an *intersection*: SPEC's one weak metric
-    # drags it to ~65 while balanced BAL sits at ~76, so the feel Overall picks BAL.
-    # Proves the crown corner ≠ a mean. (Asserted per-profile; the module DB accumulates
-    # other fixtures' profiles, so we don't assert the global crown here.)
-    for i in range(3):
-        _seed_run("specialist0x", 80, t0 - timedelta(minutes=120 - i), iterations=6,
-                  crown_subscores={"fcp": 100, "total_stall": 100, "lcp": 40})
-    for i in range(3):
-        _seed_run("balanced000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  crown_subscores={"fcp": 76, "total_stall": 76, "lcp": 76})
-
-    by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
-    spec = by_fp["specialist0x"]["crown_scores"]
-    assert sum(spec.values()) / 3 > 76  # SPEC's mean really is higher (not trivial)…
-    assert by_fp["balanced000x"]["overall"] > by_fp["specialist0x"]["overall"]  # …yet BAL's corner wins
+def test_crown_rewards_balance_over_specialism():
+    # The Overall corner is an *intersection*: a specialist that aces two crown metrics but is
+    # dead-last on the third loses to an all-round profile, because the weak axis drags the
+    # corner down more than the two strong axes lift it. Controlled 3-profile field so the
+    # percentiles are deterministic. (Unit test — the corner shape, independent of the DB.)
+    metrics = ["fcp", "lcp", "total_stall"]
+    higher = {m: False for m in metrics}
+    # SPEC is fastest on fcp/lcp but *slowest* on total_stall; BAL is consistently 2nd on all.
+    profiles = [
+        {"metrics": {"fcp": 10, "lcp": 10, "total_stall": 900}},   # SPEC: aces two, worst on one
+        {"metrics": {"fcp": 20, "lcp": 20, "total_stall": 100}},   # BAL: 2nd on everything
+        {"metrics": {"fcp": 30, "lcp": 30, "total_stall": 200}},
+        {"metrics": {"fcp": 40, "lcp": 40, "total_stall": 300}},
+        {"metrics": {"fcp": 50, "lcp": 50, "total_stall": 400}},
+    ]
+    field = _crown_field_values(profiles, metrics)
+    spreads = {m: {"n": 1} for m in metrics}
+    spec = _normalized_crown(profiles[0]["metrics"], spreads, field, higher, metrics, metrics)
+    bal = _normalized_crown(profiles[1]["metrics"], spreads, field, higher, metrics, metrics)
+    # SPEC beats BAL on fcp and lcp (it's fastest)…
+    assert spec["norm"]["fcp"] > bal["norm"]["fcp"]
+    assert spec["norm"]["lcp"] > bal["norm"]["lcp"]
+    # …but is far worse on total_stall…
+    assert spec["norm"]["total_stall"] < bal["norm"]["total_stall"]
+    # …so the balanced profile wins the corner — one weak axis can't be averaged away.
+    assert bal["overall"] > spec["overall"]
 
 
 def test_crown_corners_over_the_raw_trinity(client):
@@ -453,40 +458,53 @@ def test_overall_ranks_by_raw_measurements_dominance(client):
     assert fast["overall_p25"] <= fast["overall"] <= fast["overall_p75"]
 
 
-# ── Field-normalized raw crown helpers (no grading, no thresholds) ───────────────────
+# ── Percentile-normalized raw crown helpers (no grading, no thresholds) ──────────────
 
 from pathbrain.api.routes_settings import (  # noqa: E402
-    _crown_field_bounds,
-    _normalize_raw,
+    _crown_field_values,
     _normalized_crown,
+    _percentile_norm,
 )
 
 
-def test_normalize_raw_scales_by_field_best_worst():
-    # best -> 100, worst -> 0, linear between, clamped. Direction is encoded by which end is
-    # passed as "best" (lower-is-better: best=min).
-    assert _normalize_raw(100, best=100, worst=300) == 100.0
-    assert _normalize_raw(300, best=100, worst=300) == 0.0
-    assert _normalize_raw(200, best=100, worst=300) == 50.0
-    assert _normalize_raw(50, best=100, worst=300) == 100.0   # clamps at best
-    assert _normalize_raw(100, best=100, worst=100) == 100.0  # no field spread → not penalized
-    assert _normalize_raw(None, 1, 2) is None
+def test_percentile_norm_is_rank_based_and_direction_aware():
+    field = [100, 200, 300, 400]
+    # Lower-is-better: smallest value beats the whole field → ~top percentile; largest → bottom.
+    assert _percentile_norm(100, field, higher=False) > _percentile_norm(400, field, higher=False)
+    assert _percentile_norm(200, field, higher=False) > _percentile_norm(300, field, higher=False)
+    # Higher-is-better flips the ordering.
+    assert _percentile_norm(400, field, higher=True) > _percentile_norm(100, field, higher=True)
+    # A value's percentile does NOT depend on magnitude, only rank: compressing the field's
+    # spread (one outlier) can't change the ordering.
+    assert _percentile_norm(None, field, higher=False) is None
+    assert _percentile_norm(50, [50], higher=False) == 100.0  # single-profile field
+
+
+def test_percentile_norm_equalizes_spread_so_no_metric_dominates():
+    # The point of rank normalization: a metric with a huge magnitude spread and one with a
+    # tiny spread map to the SAME set of percentiles, so neither can dominate the corner.
+    wide = [10, 500, 1000]      # total_stall-like: big magnitudes
+    narrow = [300, 301, 302]    # fcp-like: tightly clustered
+    assert (
+        _percentile_norm(500, wide, higher=False)
+        == _percentile_norm(301, narrow, higher=False)
+    )  # the middle profile ranks the same on both, regardless of magnitude
 
 
 def test_normalized_crown_is_monotonic_and_threshold_free():
-    # The crown corner takes ONLY raw measurements + field bounds + direction — never a
-    # methodology best/worst threshold — so re-grading a metric cannot change it.
+    # The crown corner takes ONLY raw measurements + the field distribution + direction —
+    # never a methodology best/worst threshold — so re-grading a metric cannot change it.
     metrics = ["fcp", "lcp", "total_stall"]
     higher = {m: False for m in metrics}  # all lower-is-better
     profiles = [
         {"metrics": {"fcp": 200, "lcp": 240, "total_stall": 100}},
         {"metrics": {"fcp": 300, "lcp": 360, "total_stall": 400}},
     ]
-    bounds = _crown_field_bounds(profiles, metrics, higher)
+    field = _crown_field_values(profiles, metrics)
     spreads = {m: {"p25": None, "p75": None, "n": 1} for m in metrics}
-    fast = _normalized_crown(profiles[0]["metrics"], spreads, bounds, higher, metrics, metrics)
-    slow = _normalized_crown(profiles[1]["metrics"], spreads, bounds, higher, metrics, metrics)
-    # Faster on all three → higher on every normalized axis → higher corner.
+    fast = _normalized_crown(profiles[0]["metrics"], spreads, field, higher, metrics, metrics)
+    slow = _normalized_crown(profiles[1]["metrics"], spreads, field, higher, metrics, metrics)
+    # Faster on all three → higher percentile on every axis → higher corner.
     assert fast["overall"] > slow["overall"]
     for m in metrics:
         assert fast["norm"][m] >= slow["norm"][m]
@@ -497,8 +515,8 @@ def test_normalized_crown_is_monotonic_and_threshold_free():
 def test_normalized_crown_missing_required_metric_is_none():
     metrics = ["fcp", "lcp", "total_stall"]
     higher = {m: False for m in metrics}
-    bounds = {"fcp": (100, 300)}  # only fcp has a field
-    res = _normalized_crown({"fcp": 150}, {}, bounds, higher, metrics, metrics)
+    field = {"fcp": [100, 300]}  # only fcp has a field distribution
+    res = _normalized_crown({"fcp": 150}, {}, field, higher, metrics, metrics)
     assert res["overall"] is None  # lcp/total_stall absent → no corner
 
 
@@ -841,25 +859,25 @@ def test_crown_clear_winner_has_no_co_leaders():
     assert co == ["hi"]  # only the crown; "lo" is clearly beaten, not a co-leader
 
 
-def test_profiles_endpoint_crowns_highest_median_and_lists_co_leaders(client, monkeypatch):
-    # End-to-end: two confident profiles a hair apart in median but overlapping bands. The
-    # higher median is crowned (even by a hair); the other is returned as a co-leader. Seed
-    # them as the module's top profiles (Overall ~96) so they're the global crown contenders.
+def test_profiles_endpoint_flags_co_leaders_on_a_tie(client, monkeypatch):
+    # End-to-end: two confident profiles with identical raw crown measurements → identical
+    # Overall → a statistical tie. Seed them as the fastest in the field (raw ~1 ms) so they're
+    # the global crown contenders; one is crowned (tie-break), the other flagged co-leader.
     import pathbrain.api.routes_settings as rs
 
     monkeypatch.setattr(rs, "_current_fingerprint", lambda: None)
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # steady: six runs all at Overall 96 → tight band, median 96.
     for i in range(6):
-        _seed_run("tiesteady0x", 96, t0 - timedelta(minutes=200 - i), iterations=3, overall=96)
-    # winner: a hair higher median (~97) with a wide run-to-run spread (94..100).
-    for i, o in enumerate([94, 100, 94, 100, 97, 97]):
-        _seed_run("tiewinner0x", o, t0 - timedelta(minutes=150 - i), iterations=3, overall=o)
+        _seed_run("tieaaa0000x", 80, t0 - timedelta(minutes=200 - i), iterations=3,
+                  crown_raw=(1.0, 1.0, 1.0))
+    for i in range(6):
+        _seed_run("tiebbb0000x", 80, t0 - timedelta(minutes=100 - i), iterations=3,
+                  crown_raw=(1.0, 1.0, 1.0))
 
     body = client.get("/api/settings/profiles").json()
     co = set(body["co_leaders"])
-    # The higher-median profile is crowned even though its lead is within the noise band…
-    assert body["best_fingerprint"] == "tiewinner0x"
-    # …and the near-tied steady profile is flagged as a co-leader (informational).
-    assert "tiesteady0x" in co
-    assert "tiewinner0x" not in co  # the crown itself is excluded from its co-leaders
+    best = body["best_fingerprint"]
+    assert best in {"tieaaa0000x", "tiebbb0000x"}          # one of our (tied, fastest) pair wins
+    other = "tiebbb0000x" if best == "tieaaa0000x" else "tieaaa0000x"
+    assert other in co                                      # the tied twin is flagged co-leader
+    assert best not in co                                   # the crown is excluded from its own co-leaders

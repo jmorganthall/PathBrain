@@ -191,13 +191,17 @@ LLM-based. See `README.md` for the product overview.
     the felt load; v6 used fcp/total_stall/load_event, v5 fcp/perceived_time/inp). It's an
     *intersection* (corner, not mean — one weak metric can't be averaged away), √k-normalized
     so corners of different arity share a scale.
-    A profile's Overall is the **corner over its field-normalized raw crown measurements**, NOT
-    the methodology grade (`compute_profiles` normalize pass, `_normalized_crown`). For each
-    crown metric it takes the profile's **median raw value** (e.g. FCP in ms), rescales it to
-    0–100 by the **field's observed best/worst** across all profiles (`_crown_field_bounds` —
-    best→100, worst→0, direction-aware), then corners those. The scale comes from the
-    *measurements themselves*, so **re-grading a metric (moving a `best`/`worst` threshold)
-    can't move the crown** — only re-measuring can. It stays **monotonic in the crown-metric
+    A profile's Overall is the **corner over its field-percentile-normalized raw crown
+    measurements**, NOT the methodology grade (`compute_profiles` normalize pass,
+    `_normalized_crown`). For each crown metric it takes the profile's **median raw value** (e.g.
+    FCP in ms) and maps it to its **percentile within the field's distribution**
+    (`_percentile_norm` / `_crown_field_values` — mid-rank empirical CDF, direction-aware), then
+    corners those. **Percentile (rank) normalization gives every metric equal, uniform spread, so
+    no single metric can dominate the corner** — the failure mode of a min/max rescale, where one
+    fast/slow outlier compresses FCP/LCP and `total_stall` (spread more evenly) steamrolls them.
+    The scale is the measurements' *ranking*, so **re-grading a metric can't move the crown** —
+    only re-measuring can (trade-off: it's magnitude-blind — a 1 ms edge and a 200 ms edge both
+    mean "one rank better"). It stays **monotonic in the crown-metric
     columns** (which show each metric's normalized-raw standing, `crown_norm`): a profile faster
     on every crown metric necessarily has a higher Overall, so grading never overturns a raw
     dominance and the standings always explain the ranking. The **Overall IQR**
