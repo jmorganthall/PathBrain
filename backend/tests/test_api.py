@@ -68,6 +68,39 @@ def test_config_test_apply_round_trips(client):
     assert any(p.get("quantum") == body["original"] for p in after["pipes"])
 
 
+def test_access_check_reports_capabilities(client):
+    """The access check reports read (view) + write capabilities per credential.
+
+    On the mock provider every read succeeds and the reversible write round-trips, so all
+    reported capabilities are allowed (ok=True)."""
+    resp = client.post("/api/config/access-check")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["provider"] == "mock"
+    assert body["wrote"] is True
+    by_key = {c["key"]: c for c in body["checks"]}
+    # Base read probes + the write round-trip are present and pass on the mock.
+    assert by_key["read_shaper"]["ok"] is True
+    assert by_key["read_shaper"]["category"] == "view"
+    assert by_key["snapshot"]["ok"] is True
+    assert by_key["write_shaper"]["ok"] is True
+    assert by_key["write_shaper"]["category"] == "write"
+    # And the write test genuinely restored the original value.
+    after = client.post("/api/config/discover").json()
+    assert all(p.get("quantum") == 1514 for p in after["pipes"] if p.get("uuid") == "mock-download")
+
+
+def test_access_check_skip_write_is_non_destructive(client):
+    """include_write=false reports write as a declared (not live-tested) capability and
+    never touches the firewall."""
+    resp = client.post("/api/config/access-check", json={"include_write": False})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["wrote"] is False
+    write = next(c for c in body["checks"] if c["key"] == "write_shaper")
+    assert "writable field" in write["detail"]
+
+
 def test_discover_provider_failure_returns_502(client, monkeypatch):
     """A failing provider should yield a 502 with a useful message, not a 500."""
 

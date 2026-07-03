@@ -57,6 +57,67 @@ class ConfigProvider(ABC):
 
         return list(WRITABLE_FIELDS)
 
+    def access_checks(self) -> list[dict]:
+        """Probe what the configured credentials can actually *read*, as a list of
+        capability results — a firewall-permissions self-test.
+
+        Each entry is ``{key, label, category, ok, detail, optional?, endpoint?}``:
+        ``category`` is ``"view"`` (config reads) or ``"diagnostics"`` (perf/telemetry
+        reads); ``ok`` is ``True``/``False`` (or ``None`` when a probe can't decide, e.g.
+        the endpoint isn't present on this firewall build). This method is **read-only /
+        non-destructive** — the reversible *write* probe lives in the ``apply()`` round-trip
+        the config route runs separately, so calling ``access_checks()`` never changes the
+        firewall.
+
+        The base implementation exercises the generic read path (``discover``/``snapshot``);
+        providers with richer APIs (CPU / bandwidth / diagnostics endpoints) override to add
+        those probes so the UI can show, per credential, exactly which reads succeed.
+        """
+        checks: list[dict] = []
+        try:
+            configs = self.discover()
+            checks.append(
+                {
+                    "key": "read_shaper",
+                    "label": "Read shaper config",
+                    "category": "view",
+                    "ok": True,
+                    "detail": f"{len(configs)} shaper pipe(s) readable",
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 — a failed probe is a reportable result
+            checks.append(
+                {
+                    "key": "read_shaper",
+                    "label": "Read shaper config",
+                    "category": "view",
+                    "ok": False,
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        try:
+            self.snapshot()
+            checks.append(
+                {
+                    "key": "snapshot",
+                    "label": "Snapshot full config",
+                    "category": "view",
+                    "ok": True,
+                    "detail": "full configuration snapshot readable",
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            checks.append(
+                {
+                    "key": "snapshot",
+                    "label": "Snapshot full config",
+                    "category": "view",
+                    "ok": False,
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        return checks
+
     def apply(self, changes: dict) -> dict:
         """Apply a single shaper parameter change and reconfigure.
 

@@ -1,5 +1,6 @@
 // Small typed API client for the PathBrain backend. Uses plain fetch.
 import type {
+  AccessCheckResult,
   AxisSeriesResponse,
   BenchmarkConfig,
   ConfigSnapshot,
@@ -210,6 +211,11 @@ export const api = {
   providerHealth: () => request<ProviderHealth>("/config/provider"),
   discover: () => request<DiscoverResponse>("/config/discover", { method: "POST" }),
   testApply: () => request<TestApplyResult>("/config/test-apply", { method: "POST" }),
+  accessCheck: (includeWrite = true) =>
+    request<AccessCheckResult>("/config/access-check", {
+      method: "POST",
+      body: JSON.stringify({ include_write: includeWrite }),
+    }),
 
   // Shotgun Sweep
   sweepPipes: () => request<{ pipes: SweepPipe[] }>("/sweep/pipes"),

@@ -589,6 +589,26 @@ export interface TestApplyResult {
   steps: TestApplyStep[];
 }
 
+// Firewall-credential permissions self-test: what the configured API key can read/write.
+export type AccessCheckCategory = "view" | "diagnostics" | "write";
+
+export interface AccessCheck {
+  key: string;
+  label: string;
+  category: AccessCheckCategory;
+  ok: boolean | null; // true = allowed, false = denied, null = indeterminate/not tested
+  detail: string;
+  optional?: boolean;
+  endpoint?: string;
+  write_result?: TestApplyResult;
+}
+
+export interface AccessCheckResult {
+  provider: string;
+  wrote: boolean;
+  checks: AccessCheck[];
+}
+
 // ── Historical trends (day-of-week × hour-of-day baselines) ──────────────────
 export interface TrendCell {
   weekday: number; // 0 = Mon … 6 = Sun

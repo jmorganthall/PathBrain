@@ -63,20 +63,13 @@ def _discover_target(provider, uuid_hint: str | None):
     return configs, target
 
 
-@router.post("/config/test-apply")
-def test_apply(
-    body: dict | None = Body(default=None), session: Session = Depends(get_session)
-) -> dict:
-    """Prove the firewall *write* path works, reversibly: nudge quantum by +1 then
-    set it straight back, verifying the change took effect at each step.
-
-    This is the only safe way to confirm ``provider.apply()`` round-trips before
-    arming an experiment. It snapshots the baseline first and *always* attempts to
-    restore the original value; if restore fails it says so loudly with the value to
-    set back by hand. Optional body: ``{"pipe_uuid": str}`` to target a specific pipe.
-    """
-    provider = get_provider()
-    uuid_hint = (body or {}).get("pipe_uuid")
+def _write_roundtrip(provider, session: Session, uuid_hint: str | None) -> dict:
+    """Prove the firewall *write* path works, reversibly: nudge quantum by +1 then set it
+    straight back, verifying the change took effect at each step. Snapshots the baseline
+    first and *always* attempts to restore. Raises ``HTTPException`` on the hard
+    pre-conditions (discovery failure / no numeric-quantum pipe) so callers can surface
+    them; otherwise returns the detailed result dict. Shared by ``test_apply`` (the button)
+    and the access check (its write probe)."""
     steps: list[dict] = []
 
     try:
@@ -166,6 +159,96 @@ def test_apply(
     result["ok"] = bool(result["changed"] and result["restored"])
     log.info("test-apply via %s: ok=%s (quantum %s↔%s)", provider.name, result["ok"], original, test_value)
     return result
+
+
+@router.post("/config/test-apply")
+def test_apply(
+    body: dict | None = Body(default=None), session: Session = Depends(get_session)
+) -> dict:
+    """Verify the firewall *write* path, reversibly (see ``_write_roundtrip``).
+
+    This is the only safe way to confirm ``provider.apply()`` round-trips before arming an
+    experiment. Optional body: ``{"pipe_uuid": str}`` to target a specific pipe.
+    """
+    return _write_roundtrip(get_provider(), session, (body or {}).get("pipe_uuid"))
+
+
+@router.post("/config/access-check")
+def access_check(
+    body: dict | None = Body(default=None), session: Session = Depends(get_session)
+) -> dict:
+    """Report exactly what the configured firewall credential can *do* — a permissions
+    self-test that answers "does this API key have read-only access to performance data,
+    or only what it needs to write the shaper?".
+
+    Runs the provider's read-only capability probes (``access_checks()`` — config reads
+    plus, for OPNsense, the CPU / interface-throughput / system-resource diagnostics
+    endpoints) and, unless ``{"include_write": false}``, the same reversible +1/−1 write
+    round-trip as ``test-apply`` folded in as a ``write_shaper`` capability. Optional body:
+    ``{"pipe_uuid": str, "include_write": bool}``.
+
+    Returns ``{provider, wrote, checks: [{key, label, category, ok, detail, ...}]}`` so the
+    UI can render a pass/fail breakdown per capability.
+    """
+    provider = get_provider()
+    body = body or {}
+    include_write = body.get("include_write", True)
+    uuid_hint = body.get("pipe_uuid")
+
+    checks = list(provider.access_checks())
+
+    if include_write:
+        try:
+            wr = _write_roundtrip(provider, session, uuid_hint)
+            checks.append(
+                {
+                    "key": "write_shaper",
+                    "label": "Write shaper config",
+                    "category": "write",
+                    "ok": bool(wr.get("ok")),
+                    "detail": (
+                        f"reversible round-trip {wr.get('param')} "
+                        f"{wr.get('original')}→{wr.get('test_value')}→{wr.get('original')}"
+                        + ("" if wr.get("restored") else " — ⚠ original may not be restored")
+                    ),
+                    "write_result": wr,
+                }
+            )
+        except HTTPException as exc:
+            # Couldn't run the write probe (discovery failed / no numeric-quantum pipe).
+            # That's a reportable capability result, not a failure of the whole check.
+            checks.append(
+                {
+                    "key": "write_shaper",
+                    "label": "Write shaper config",
+                    "category": "write",
+                    "ok": None,
+                    "detail": f"could not test: {exc.detail}",
+                }
+            )
+    else:
+        writable = provider.writable_fields()
+        checks.append(
+            {
+                "key": "write_shaper",
+                "label": "Write shaper config",
+                "category": "write",
+                "ok": bool(writable) or None,
+                "detail": (
+                    f"provider declares {len(writable)} writable field(s): "
+                    f"{', '.join(writable)} — run with the write test to verify the credential"
+                    if writable
+                    else "this provider cannot apply changes"
+                ),
+            }
+        )
+
+    ok_count = sum(1 for c in checks if c.get("ok") is True)
+    log.info(
+        "access-check via %s: %d/%d capabilities ok (write tested=%s)",
+        provider.name, ok_count, len(checks), include_write,
+    )
+    return {"provider": provider.name, "wrote": bool(include_write), "checks": checks}
 
 
 @router.post("/config/discover", response_model=DiscoverOut)

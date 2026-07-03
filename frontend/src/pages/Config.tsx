@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import Accordion from "@mui/material/Accordion";
+import AccordionDetails from "@mui/material/AccordionDetails";
+import AccordionSummary from "@mui/material/AccordionSummary";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -25,9 +28,16 @@ import Typography from "@mui/material/Typography";
 import SaveIcon from "@mui/icons-material/Save";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import TravelExploreIcon from "@mui/icons-material/TravelExplore";
+import VerifiedUserIcon from "@mui/icons-material/VerifiedUser";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import CancelIcon from "@mui/icons-material/Cancel";
+import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 
 import { api } from "../api/client";
 import type {
+  AccessCheck,
+  AccessCheckResult,
   BenchmarkConfig,
   ConfigSnapshot,
   FqCodelPipe,
@@ -141,6 +151,93 @@ function buildPayload(d: BenchmarkConfig): BenchmarkConfig {
   };
 }
 
+const ACCESS_CATEGORY_LABEL: Record<AccessCheck["category"], string> = {
+  view: "View data",
+  diagnostics: "Performance / diagnostics",
+  write: "Write config",
+};
+const ACCESS_CATEGORY_ORDER: AccessCheck["category"][] = ["view", "diagnostics", "write"];
+
+/** ✓ / ✗ / — icon for an access-check result (null = indeterminate). */
+function AccessStatusIcon({ ok }: { ok: boolean | null }) {
+  if (ok === true) return <CheckCircleIcon fontSize="small" color="success" />;
+  if (ok === false) return <CancelIcon fontSize="small" color="error" />;
+  return <HelpOutlineIcon fontSize="small" color="disabled" />;
+}
+
+/** Expandable breakdown of what the firewall credential could and couldn't do. */
+function AccessChecksPanel({
+  result,
+  onClose,
+}: {
+  result: AccessCheckResult;
+  onClose: () => void;
+}) {
+  const okCount = result.checks.filter((c) => c.ok === true).length;
+  const denied = result.checks.filter((c) => c.ok === false).length;
+  return (
+    <Accordion defaultExpanded disableGutters variant="outlined">
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ pr: 1 }}>
+          <VerifiedUserIcon fontSize="small" color="action" />
+          <Typography variant="subtitle2">
+            Credential access — {result.provider}
+          </Typography>
+          <Chip size="small" color="success" variant="outlined" label={`${okCount} allowed`} />
+          {denied > 0 && <Chip size="small" color="error" variant="outlined" label={`${denied} denied`} />}
+        </Stack>
+      </AccordionSummary>
+      <AccordionDetails>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+          What the configured API credential was able to do against the firewall. Denied reads
+          usually mean the API user is missing the matching privilege (e.g. OPNsense
+          Diagnostics) — grant it if you want that data captured with runs.
+        </Typography>
+        {ACCESS_CATEGORY_ORDER.filter((cat) => result.checks.some((c) => c.category === cat)).map(
+          (cat) => (
+            <Box key={cat} sx={{ mb: 1.5 }}>
+              <Typography variant="overline" color="text.secondary">
+                {ACCESS_CATEGORY_LABEL[cat]}
+              </Typography>
+              <Stack spacing={0.75} sx={{ mt: 0.5 }}>
+                {result.checks
+                  .filter((c) => c.category === cat)
+                  .map((c) => (
+                    <Stack key={c.key} direction="row" spacing={1} alignItems="flex-start">
+                      <Box sx={{ mt: "2px" }}>
+                        <AccessStatusIcon ok={c.ok} />
+                      </Box>
+                      <Box>
+                        <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                          {c.label}
+                          {c.optional && (
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              label="optional"
+                              sx={{ ml: 1, height: 18, fontSize: 10 }}
+                            />
+                          )}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-word" }}>
+                          {c.detail}
+                          {c.endpoint ? ` · ${c.endpoint}` : ""}
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  ))}
+              </Stack>
+            </Box>
+          )
+        )}
+        <Button size="small" onClick={onClose} sx={{ mt: 0.5 }}>
+          Dismiss
+        </Button>
+      </AccordionDetails>
+    </Accordion>
+  );
+}
+
 export default function Config() {
   const [draft, setDraft] = useState<BenchmarkConfig | null>(null);
   const [loading, setLoading] = useState(true);
@@ -154,6 +251,8 @@ export default function Config() {
   const [discovering, setDiscovering] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestApplyResult | null>(null);
+  const [checkingAccess, setCheckingAccess] = useState(false);
+  const [accessResult, setAccessResult] = useState<AccessCheckResult | null>(null);
 
   const loadProvider = useCallback(async () => {
     try {
@@ -242,6 +341,22 @@ export default function Config() {
       setError(e instanceof Error ? e.message : "Could not start the re-derive");
     } finally {
       setSaving(false);
+    }
+  }, []);
+
+  const handleAccessCheck = useCallback(async () => {
+    setCheckingAccess(true);
+    setError(null);
+    setAccessResult(null);
+    try {
+      const res = await api.accessCheck(true);
+      setAccessResult(res);
+      const ok = res.checks.filter((c) => c.ok === true).length;
+      setToast(`Access check: ${ok}/${res.checks.length} capabilities available`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Access check failed");
+    } finally {
+      setCheckingAccess(false);
     }
   }, []);
 
@@ -998,14 +1113,26 @@ export default function Config() {
                 </Typography>
               )}
             </Box>
-            <Stack direction="row" spacing={1} alignItems="center">
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Tooltip title="Probe what the configured firewall credential can actually do: reads (shaper config, and — on OPNsense — CPU / interface throughput / system-resource diagnostics) plus the same reversible +1/−1 write test. Shows a pass/fail breakdown so you can tell whether the key can read performance data or only write the shaper.">
+                <span>
+                  <Button
+                    variant="outlined"
+                    startIcon={<VerifiedUserIcon />}
+                    onClick={handleAccessCheck}
+                    disabled={checkingAccess || testing || discovering}
+                  >
+                    {checkingAccess ? "Checking access…" : "Run access checks"}
+                  </Button>
+                </span>
+              </Tooltip>
               <Tooltip title="Verify PathBrain can WRITE to the firewall: it nudges the first pipe's quantum by +1, confirms the change, then sets it straight back. Safe and reversible — proves the apply path before you arm an experiment.">
                 <span>
                   <Button
                     variant="outlined"
                     startIcon={<RestartAltIcon />}
                     onClick={handleTestApply}
-                    disabled={testing || discovering}
+                    disabled={testing || discovering || checkingAccess}
                   >
                     {testing ? "Testing write…" : "Test config write"}
                   </Button>
@@ -1015,12 +1142,18 @@ export default function Config() {
                 variant="contained"
                 startIcon={<TravelExploreIcon />}
                 onClick={handleDiscover}
-                disabled={discovering || testing}
+                disabled={discovering || testing || checkingAccess}
               >
                 {discovering ? "Discovering…" : "Discover"}
               </Button>
             </Stack>
           </Stack>
+
+          {accessResult && (
+            <Box sx={{ mb: 2 }}>
+              <AccessChecksPanel result={accessResult} onClose={() => setAccessResult(null)} />
+            </Box>
+          )}
 
           {testResult && (
             <Alert

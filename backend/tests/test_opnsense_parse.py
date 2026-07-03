@@ -51,3 +51,49 @@ def test_quantum_change_changes_fingerprint():
     changed_pipe = {**SAMPLE_PIPE, "fqcodel_quantum": "6000"}
     changed = normalize([_pipe_to_config("u", changed_pipe)])
     assert fingerprint(base) != fingerprint(changed)
+
+
+class _FakeResp:
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+
+
+class _FakeClient:
+    """Context-manager stand-in for httpx.Client returning a scripted status per path."""
+
+    def __init__(self, by_path: dict):
+        self._by_path = by_path
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, path: str):
+        status = self._by_path.get(path)
+        if status is None:
+            raise RuntimeError("connection refused")
+        return _FakeResp(status)
+
+
+def test_probe_classifies_access_by_status():
+    """The access probe maps HTTP status → allowed / denied / indeterminate so the UI can
+    tell 'the key can read this' from 'the key lacks the privilege' from 'not on this build'."""
+    from pathbrain.providers.opnsense import OPNsenseProvider
+
+    prov = OPNsenseProvider(base_url="https://fw", api_key="k", api_secret="s")
+    prov._client = lambda: _FakeClient(  # type: ignore[method-assign]
+        {"/ok": 200, "/forbidden": 403, "/missing": 404, "/boom": 500}
+    )
+
+    ok, _ = prov._probe("/ok")
+    assert ok is True
+    denied, detail = prov._probe("/forbidden")
+    assert denied is False and "privilege" in detail
+    unknown, detail = prov._probe("/missing")
+    assert unknown is None and "not present" in detail
+    err, _ = prov._probe("/boom")
+    assert err is False
+    unreachable, detail = prov._probe("/never-configured")
+    assert unreachable is None and "unreachable" in detail

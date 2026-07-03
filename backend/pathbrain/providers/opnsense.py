@@ -24,6 +24,20 @@ _SETTINGS_GET = "/api/trafficshaper/settings/get"
 _SET_PIPE = "/api/trafficshaper/settings/setPipe"
 _RECONFIGURE = "/api/trafficshaper/service/reconfigure"
 
+# Read-only diagnostics/telemetry endpoints to probe for *access* — the perf-data
+# context (firewall CPU, uplink utilization, memory/load) we'd want to capture around a
+# run. These live under OPNsense's Diagnostics privileges, which a trafficshaper-only API
+# user does NOT automatically hold — so probing them tells the operator whether the
+# existing key can read performance data or needs extra grants. Any 2xx proves the
+# privilege; 401/403 = the API user lacks it; 404 = the endpoint isn't on this build. Same
+# "written against the documented API, validate against live hardware" caveat as apply();
+# ``getCPUType`` is a cheap privilege canary (small JSON GET) rather than the SSE cpu stream.
+_DIAG_PROBES = (
+    ("cpu", "Read CPU telemetry", "/api/diagnostics/cpu_usage/getCPUType"),
+    ("traffic", "Read interface throughput", "/api/diagnostics/traffic/interface"),
+    ("sysres", "Read system resources (memory/load)", "/api/diagnostics/system/systemInformation"),
+)
+
 # Map PathBrain's normalized parameter names to OPNsense pipe field names. Must cover every
 # ``shaper_fields.WRITABLE_FIELDS`` entry (enforced by test_shaper_fields, not just this
 # comment) — that's the relationship whose silent drift broke the challenger race.
@@ -190,6 +204,43 @@ class OPNsenseProvider(ConfigProvider):
             rc.raise_for_status()
         log.info("OPNsense applied %s=%s to pipe %s", field, value, uuid)
         return {"provider": self.name, "ok": True, "uuid": uuid, "applied": {field: value}}
+
+    def _probe(self, path: str) -> tuple[bool | None, str]:
+        """GET ``path`` purely to classify *access*, never raising: 2xx → have the
+        privilege; 401/403 → the API user lacks it; 404 → not present on this build
+        (indeterminate); anything else → surfaced as an error string."""
+        try:
+            with self._client() as client:
+                resp = client.get(path)
+        except Exception as exc:  # noqa: BLE001
+            return None, f"unreachable: {type(exc).__name__}: {exc}"
+        code = resp.status_code
+        if 200 <= code < 300:
+            return True, f"HTTP {code} — accessible"
+        if code in (401, 403):
+            return False, f"HTTP {code} — the API user lacks this privilege"
+        if code == 404:
+            return None, "HTTP 404 — endpoint not present on this OPNsense build"
+        return False, f"HTTP {code}"
+
+    def access_checks(self) -> list[dict]:
+        """Config reads (from the base) plus the read-only diagnostics/perf probes, so the
+        UI can show exactly what this credential can and cannot read on the firewall."""
+        checks = super().access_checks()
+        for key, label, path in _DIAG_PROBES:
+            ok, detail = self._probe(path)
+            checks.append(
+                {
+                    "key": f"diag_{key}",
+                    "label": label,
+                    "category": "diagnostics",
+                    "ok": ok,
+                    "optional": True,
+                    "detail": detail,
+                    "endpoint": path,
+                }
+            )
+        return checks
 
     def health(self) -> dict:
         try:
