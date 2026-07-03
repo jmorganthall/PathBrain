@@ -124,10 +124,13 @@ export interface SettingsProfile {
   relative_sops: { delta_median: number; p25: number; p75: number; count: number } | null;
   // Median 0–100 score per axis (speed/smoothness/stability/completion).
   scores: Record<string, number>;
-  // Median 0–100 *subscore* per scored metric (perception-calibrated). Includes the crown
-  // metrics (fcp/lcp/total_stall under v7) — the exact building blocks the Overall corners
-  // over — so the table can show standings for the metrics that actually compute Overall.
+  // Median 0–100 *subscore* per scored metric (perception-calibrated grade). Drives the axis
+  // scores + the custom-crown lens — NOT the canonical Overall (which is raw-based below).
   crown_scores: Record<string, number>;
+  // Each crown metric's raw measurement rescaled to 0–100 by the field's observed best/worst
+  // (no methodology grading) — the exact values the Overall corners over. This is the crown's
+  // scale: it moves only when the measurements do, never when a grading threshold changes.
+  crown_norm: Record<string, number>;
   // Single "closeness to the ideal Speed=100/Smoothness=100 corner" (higher = better);
   // null until both axes exist. This IS the crown basis: the highest Overall among
   // confident profiles is "best".

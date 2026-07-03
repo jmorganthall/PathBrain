@@ -16,9 +16,9 @@ export interface FieldDef {
 }
 
 // Read any numeric field off a profile by key (axis score, run stat, or metric).
-// A ``crown:<metric>`` key resolves to that metric's 0–100 *subscore* (higher = better) —
-// the perception-calibrated building block the Overall corners over — distinct from the
-// raw ``<metric>`` value (e.g. FCP in ms, lower = better) so both can coexist as columns.
+// A ``crown:<metric>`` key resolves to that metric's field-normalized raw value (0–100,
+// higher = better) — the exact quantity the Overall corners over — distinct from the raw
+// ``<metric>`` value (e.g. FCP in ms, lower = better) so both can coexist as columns.
 export function profileValue(p: SettingsProfile, key: string): number | null {
   switch (key) {
     case "overall":
@@ -30,7 +30,7 @@ export function profileValue(p: SettingsProfile, key: string): number | null {
     case "relative_smoothness":
       return p.relative_sops?.delta_median ?? null;
   }
-  if (key.startsWith("crown:")) return p.crown_scores?.[key.slice(6)] ?? null;
+  if (key.startsWith("crown:")) return p.crown_norm?.[key.slice(6)] ?? null;
   if (p.scores && key in p.scores) return p.scores[key];
   return p.metrics?.[key] ?? null;
 }

@@ -87,36 +87,85 @@ def _crown_corner(
 RACE_OPTIMISM_MARGIN = 5.0
 
 
-def optimistic_overall(
-    crown_spreads: dict,
-    metrics: tuple | list = CROWN_METRICS,
-    required: tuple | list = CROWN_REQUIRED,
-    margin: float = RACE_OPTIMISM_MARGIN,
-) -> float | None:
-    """An *upper-bound* Overall for a not-yet-confident profile: the crown corner over each
-    metric's optimistic estimate. Uses the metric p75 (upper quartile) when there are ≥2
-    samples, else ``median + margin`` — so a thin sample gets the benefit of the doubt, and
-    the bound tightens toward the real Overall as iterations accumulate (p75 → median).
-    Drives the racing/elimination decision. ``metrics``/``required`` come from the
-    methodology's ``overall`` spec, so this is the upper-bound analog of the persisted
-    Overall and the race can't drift from it. Returns None unless every required crown
-    metric has at least one sample."""
-    def _opt(sp: dict) -> float:
-        if (sp.get("n") or 0) >= 2 and sp.get("p75") is not None:
-            val = float(sp["p75"])
-        else:
-            val = float(sp["median"]) + margin
-        return min(100.0, val)
+# ── Raw-measurement crown ───────────────────────────────────────────────────────────
+# The Overall/crown is the corner over each crown metric's **raw measurement**, rescaled to
+# 0–100 by the field's observed best/worst — NOT the methodology's perception grade. The
+# scale comes from the measurements themselves, so re-grading a metric (moving a best/worst
+# threshold) can't move the crown; only a real change in the measurements can. The corner
+# still rewards being good on all crown metrics at once (an intersection), and it stays
+# monotonic in the raw values, so the crown-metric columns still explain the ranking.
 
-    if any((crown_spreads.get(k) or {}).get("median") is None for k in required):
-        return None  # missing a required crown metric → not yet comparable on the corner
-    opt: list[float] = []
-    for metric in metrics:
-        sp = crown_spreads.get(metric)
-        if not sp or sp.get("median") is None:
-            continue  # optional metric not sampled → corner over what's present
-        opt.append(_opt(sp))
-    return corner_score(opt)
+def _normalize_raw(value: float | None, best: float | None, worst: float | None) -> float | None:
+    """Rescale a raw measurement to 0–100 by the field's observed best/worst — ``best``→100,
+    ``worst``→0, clamped. ``best``/``worst`` are the raw values that map to 100/0 (already
+    oriented for the metric's direction). None for a missing value; 100 when the field has no
+    spread (``best == worst``) so a flat metric can't drag the corner."""
+    if value is None or best is None or worst is None:
+        return None
+    if best == worst:
+        return 100.0
+    scaled = 100.0 * (float(value) - float(worst)) / (float(best) - float(worst))
+    return max(0.0, min(100.0, scaled))
+
+
+def _crown_field_bounds(profiles: list[dict], metrics, higher: dict) -> dict:
+    """Observed ``(best, worst)`` raw per crown metric across the field — min/max of the
+    profiles' median raw, oriented by direction so ``best`` is the value that should score
+    100 (min for lower-is-better, max for higher-is-better)."""
+    bounds: dict = {}
+    for m in metrics:
+        vals = [p["metrics"][m] for p in profiles if (p.get("metrics") or {}).get(m) is not None]
+        if not vals:
+            continue
+        lo, hi = min(vals), max(vals)
+        bounds[m] = (hi, lo) if higher.get(m) else (lo, hi)
+    return bounds
+
+
+def _round2(x: float | None) -> float | None:
+    return round(x, 2) if x is not None else None
+
+
+def _normalized_crown(
+    median_raw: dict, raw_spreads: dict, bounds: dict, higher: dict,
+    metrics, required, margin: float = RACE_OPTIMISM_MARGIN,
+) -> dict:
+    """Field-normalized crown corners for one profile, all in the same 0–100 raw-normalized
+    space (no grading): the point ``overall`` (corner over each metric's normalized median),
+    the IQR ``p25``/``p75`` (corner over the normalized pessimistic/optimistic raw quartile,
+    so it brackets ``overall``), and the ``optimistic`` ceiling (optimistic quartile, or the
+    normalized median + a small margin for a thin <2-sample metric — the heir/race benefit of
+    the doubt). Also returns the per-metric ``norm`` medians for display. Missing a required
+    metric → that corner is None."""
+    def norm(m, raw):
+        b = bounds.get(m)
+        return _normalize_raw(raw, b[0], b[1]) if b else None
+
+    crown_norm, p25n, p75n, optn = {}, {}, {}, {}
+    for m in metrics:
+        nmed = norm(m, (median_raw or {}).get(m))
+        crown_norm[m] = _round2(nmed)
+        sp = raw_spreads.get(m) or {}
+        n = sp.get("n") or 0
+        # Optimistic raw = the good-side quartile (low for lower-is-better, high otherwise);
+        # pessimistic = the other side. Normalization orients both so optimistic → higher score.
+        good_raw = sp.get("p75") if higher.get(m) else sp.get("p25")
+        bad_raw = sp.get("p25") if higher.get(m) else sp.get("p75")
+        p75n[m] = _round2(norm(m, good_raw) if good_raw is not None else nmed)
+        p25n[m] = _round2(norm(m, bad_raw) if bad_raw is not None else nmed)
+        if n >= 2 and good_raw is not None:
+            optn[m] = _round2(norm(m, good_raw))
+        elif nmed is not None:
+            optn[m] = _round2(min(100.0, nmed + margin))
+        else:
+            optn[m] = None
+    return {
+        "overall": _crown_corner(crown_norm, metrics, required),
+        "p25": _crown_corner(p25n, metrics, required),
+        "p75": _crown_corner(p75n, metrics, required),
+        "optimistic": _crown_corner(optn, metrics, required),
+        "norm": {m: v for m, v in crown_norm.items() if v is not None},
+    }
 
 
 router = APIRouter()
@@ -552,7 +601,7 @@ def _compute_heirs(result: dict, session: Session) -> dict:
         # Heir pool: not-yet-confident (limited data) or confident-but-stale only.
         if confident and not stale:
             continue
-        opt = optimistic_overall(p.get("crown_spreads") or {}, crown_metrics, crown_required)
+        opt = p.get("optimistic")  # field-normalized ceiling, computed in compute_profiles
         # Qualify unless even the optimistic ceiling can't reach the crown. With no crown
         # (bootstrap) or no ceiling estimate yet, keep it — we can't rule it out.
         if crown_overall is not None and opt is not None and opt <= crown_overall:
@@ -624,6 +673,11 @@ def compute_profiles(
     crown_metrics, crown_required = overall_metrics(methodology.definition or {})
     if not crown_metrics:
         crown_metrics, crown_required = list(CROWN_METRICS), list(CROWN_REQUIRED)
+    # Per crown metric: is higher raw better? Drives which end of the field is "best" when
+    # normalizing the raw measurement (the crown's scale). Read from the methodology's metric
+    # defs (all current crown metrics are lower-is-better).
+    _defn_metrics = {m.get("key"): m for m in (methodology.definition or {}).get("metrics", [])}
+    crown_higher = {m: bool((_defn_metrics.get(m) or {}).get("higher_is_better")) for m in crown_metrics}
     # Config-blind baseline: every qualifying run, regardless of profile, defines
     # the time-of-day environment each profile's runs are judged against.
     baseline_points: list[RunPoint] = []
@@ -726,36 +780,23 @@ def compute_profiles(
         # ``crown_scores`` powers display/charting and the custom-crown corner; the
         # trinity subset (``crown_spreads``) drives the challenger's ``optimistic_overall``.
         subscore_medians = {m: round(median(vals), 2) for m, vals in g["subscore_samples"].items() if vals}
-        crown_scores = subscore_medians
+        crown_scores = subscore_medians  # graded subscores — kept for the custom-crown lens only
         crown_spreads = {
             m: {**_spread(vals), "n": len(vals)}
             for m, vals in g["subscore_samples"].items() if vals and m in crown_metrics
         }
-        # Overall = the corner over the profile's **median** crown subscores
-        # (corner-of-medians), using the methodology's corner. This makes Overall a
-        # *monotonic* function of exactly the crown-metric columns the table shows: a profile
-        # better on every crown metric necessarily has a higher Overall, so the standings can
-        # always explain the ranking. (Previously this took the median of each *run's* corner
-        # — a joint median that could rank a profile below another it beat on all three
-        # marginal medians, because median-of-corners ≠ corner-of-medians.) The corner and its
-        # required set come straight from the methodology's ``overall`` spec, over the same
-        # persisted, versioned subscores grading uses — so nothing drifts.
-        overall = _crown_corner(subscore_medians, crown_metrics, crown_required)
-        # Overall IQR, kept consistent with the point estimate: corner over each crown
-        # metric's p25 / p75 subscore. Because the corner is monotonic per axis this brackets
-        # ``overall`` (p25-corner ≤ overall ≤ p75-corner), unlike medianing the per-run
-        # corners (which could sit below the point Overall). Shown as the Overall IQR column
-        # and used to flag statistical ties. p25/p75 collapse to the median for a thin sample.
-        overall_p25_val = _crown_corner(
-            {m: (crown_spreads.get(m) or {}).get("p25") for m in crown_metrics},
-            crown_metrics, crown_required,
-        )
-        overall_p75_val = _crown_corner(
-            {m: (crown_spreads.get(m) or {}).get("p75") for m in crown_metrics},
-            crown_metrics, crown_required,
-        )
         # Per-metric medians — every numeric value we collect, for the chart + columns.
         metrics = {key: round(median(vals), 3) for key, vals in g["metric_samples"].items() if vals}
+        # Raw spread (p25/p75/n) of each crown metric — the inputs to the field-normalized
+        # crown, computed once the whole field is known (second pass below). The crown scores
+        # the *raw measurements*, not the methodology grade.
+        crown_raw = {
+            m: {**_spread(vals), "n": len(vals)}
+            for m, vals in g["metric_samples"].items() if vals and m in crown_metrics
+        }
+        # Overall + its IQR are computed after the loop (they need the field's best/worst to
+        # normalize); placeholders here, filled in the normalize pass.
+        overall = overall_p25_val = overall_p75_val = None
         rel = profile_relative(baseline_points, g["points"], "smoothness", tz_offset, min_samples)
         # Time-adjusted Overall ("vs typical"): how this profile scored vs the day×hour norm.
         # Kept as an informational signal (display + a hook for smarter heir-hunting), not a
@@ -782,8 +823,15 @@ def compute_profiles(
                 "axis_spreads": axis_spreads,
                 "crown_scores": crown_scores,
                 "crown_spreads": crown_spreads,
-                # The single corner "overall" — closeness to the perfect feel corner. This
-                # IS the crown basis: the highest Overall among confident profiles wins.
+                # Raw spread of each crown metric (for the normalize pass) + the normalized
+                # 0–100 medians (filled below) that the crown actually corners over.
+                "crown_raw": crown_raw,
+                "crown_norm": {},
+                # Optimistic ceiling (field-normalized) — filled in the normalize pass; drives
+                # the heirs card + challenger race.
+                "optimistic": None,
+                # The single corner "overall" — closeness to the fastest-on-all-crown-metrics
+                # corner over the raw measurements. This IS the crown basis: highest wins.
                 "overall": overall,
                 # Time-adjusted ("vs typical") Overall — informational, not a crown input.
                 "relative_overall": rel_overall,
@@ -813,8 +861,25 @@ def compute_profiles(
                 },
             }
         )
-    # Rank the table by the corner "overall" (closeness to fastest+smoothest); profiles
-    # missing it (no speed or smoothness yet) fall back to smoothness median, sort last.
+    # ── Normalize pass: field-normalized raw crown ──────────────────────────────────
+    # Now that the whole field is built, rescale each crown metric's raw measurement to 0–100
+    # by the observed best/worst across profiles, then corner. This is the crown's scale — it
+    # comes from the measurements, not any methodology threshold, so re-grading can't move the
+    # crown. Fills each profile's overall / IQR / optimistic ceiling / normalized medians.
+    crown_field = _crown_field_bounds(profiles, crown_metrics, crown_higher)
+    for p in profiles:
+        res = _normalized_crown(
+            p.get("metrics") or {}, p.get("crown_raw") or {}, crown_field, crown_higher,
+            crown_metrics, crown_required,
+        )
+        p["overall"] = res["overall"]
+        p["overall_p25"] = res["p25"]
+        p["overall_p75"] = res["p75"]
+        p["optimistic"] = res["optimistic"]
+        p["crown_norm"] = res["norm"]
+
+    # Rank the table by the raw-normalized corner "overall"; profiles missing it (no crown
+    # metrics captured yet) fall back to smoothness median, sort last.
     profiles.sort(key=lambda p: (p["overall"] is not None, p["overall"] if p["overall"] is not None else p["median"]), reverse=True)
 
     # "Best" = the crown: the confident profile (total iterations ≥ the minimum) with the
@@ -863,6 +928,9 @@ def compute_profiles(
         # Overall exactly.
         "overall_metrics": crown_metrics,
         "overall_required": crown_required,
+        # The field's observed best/worst raw per crown metric — the scale the crown
+        # normalizes over (for transparency: this is what re-measuring, not re-grading, moves).
+        "crown_field": {m: {"best": b[0], "worst": b[1]} for m, b in crown_field.items()},
         # Echo the custom-crown selection (None when not requested) + its winner.
         "crown_metrics": list(custom_crown_metrics) if custom_crown_metrics else None,
         "custom_best_fingerprint": custom_best_fingerprint,

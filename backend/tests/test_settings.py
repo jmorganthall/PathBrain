@@ -71,6 +71,7 @@ def _seed_run(
     responsiveness: float | None = None,
     result_metrics: dict | None = None,
     crown_subscores: dict | None = None,
+    crown_raw: tuple | None = None,
     overall: float | None = None,
 ) -> None:
     with session_scope() as session:
@@ -91,10 +92,6 @@ def _seed_run(
                 completion=completion, completion_metric_values=completion_metrics,
             )
         )
-        # Optional per-plugin derived metrics (the cache the profiles endpoint reads
-        # for its per-metric medians), e.g. {"icmp": {"latency_ms": 12.0}}.
-        for plugin, metrics in (result_metrics or {}).items():
-            session.add(BenchmarkResult(run_id=run.id, plugin=plugin, success=True, metrics=metrics))
         # Settings now reads the (run × methodology) Score: smoothness is the ranking
         # axis. A legacy run (metric_values={}) gets an *incomparable* Score so it's
         # excluded; everything else is comparable with smoothness = the seeded score.
@@ -110,15 +107,11 @@ def _seed_run(
         }
         if completion is not None:
             axes["completion"] = completion
-        # The methodology persists a first-class Overall into axis_scores; inject it when a
-        # test wants to exercise the persisted-Overall path (else compute_profiles falls
-        # back to the live feel-trinity corner over the subscores below).
         if overall is not None:
             axes["overall"] = overall
-        # The crown (v7) corners over fcp × lcp × total_stall. By default map them from the
-        # axis fixture values (fcp←responsiveness, lcp←speed, total_stall←smoothness) so
-        # corner-based assertions read naturally; load_event is kept too (still a scored
-        # Speed metric) for the tests that target it. Tests override via ``crown_subscores``.
+        # The crown (v7) corners over fcp × lcp × total_stall. Subscores drive the *axis*
+        # scores + the custom-crown lens; the canonical Overall now corners the *raw* browser
+        # measurements. Tests override subscores via ``crown_subscores``.
         subs = (
             crown_subscores
             if crown_subscores is not None
@@ -126,6 +119,27 @@ def _seed_run(
                 "fcp": resp_val, "lcp": speed_val, "total_stall": sops, "load_event": speed_val,
             }
         )
+        # Raw crown metrics (browser plugin) — what the field-normalized Overall corners over.
+        # ``crown_raw=(fcp_ms, lcp_ms, total_stall_ms)`` sets them explicitly; otherwise derive
+        # a monotonic default from the crown subscores (higher subscore → faster raw), so a
+        # fixture that only sets subscores still yields a matching raw-based crown ordering.
+        result_metrics = {k: dict(v) for k, v in (result_metrics or {}).items()}
+        browser = dict(result_metrics.get("browser") or {})
+        if crown_raw is not None:
+            # Explicit raw; a None entry means "this crown metric wasn't captured" (so the
+            # profile has no Overall — for the missing-required-metric case).
+            for key, val in zip(("fcp_ms", "lcp_ms", "total_stall_ms"), crown_raw):
+                if val is not None:
+                    browser.setdefault(key, val)
+        else:
+            browser.setdefault("fcp_ms", (100.0 - float(subs.get("fcp", sops))) * 10.0)
+            browser.setdefault("lcp_ms", (100.0 - float(subs.get("lcp", sops))) * 10.0)
+            browser.setdefault("total_stall_ms", (100.0 - float(subs.get("total_stall", sops))) * 10.0)
+        result_metrics["browser"] = browser
+        # Per-plugin derived metrics (the cache the profiles endpoint reads for its per-metric
+        # medians), e.g. {"icmp": {"latency_ms": 12.0}} — plus the browser crown raw above.
+        for plugin, metrics in result_metrics.items():
+            session.add(BenchmarkResult(run_id=run.id, plugin=plugin, success=True, metrics=metrics))
         session.add(
             Score(
                 run_id=run.id, methodology_version=CURRENT_METHODOLOGY, is_at_measure=True,
@@ -387,75 +401,105 @@ def test_crown_rewards_balance_over_specialism(client):
     assert by_fp["balanced000x"]["overall"] > by_fp["specialist0x"]["overall"]  # …yet BAL's corner wins
 
 
-def test_crown_corners_over_the_trinity(client):
+def test_crown_corners_over_the_raw_trinity(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # All three crown metrics present and equal → the corner (√k-normalized) == that value.
+    # A profile with all three crown metrics captured gets a field-normalized Overall over the
+    # *raw* measurements, with a per-metric normalized value for each crown metric.
     for i in range(3):
         _seed_run("trinity000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  crown_subscores={"fcp": 80, "lcp": 80, "total_stall": 80, "load_event": 80})
+                  crown_raw=(200.0, 250.0, 300.0))
 
     by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
     prof = by_fp["trinity000x"]
-    assert prof["overall"] == 80.0  # corner over {80, 80, 80} == 80
-    assert set(prof["crown_scores"]) >= {"fcp", "lcp", "total_stall"}
+    assert prof["overall"] is not None and 0.0 <= prof["overall"] <= 100.0
+    assert set(prof["crown_norm"]) >= {"fcp", "lcp", "total_stall"}  # normalized raw, not grade
     assert prof["confident"]
 
 
 def test_crown_skips_run_missing_required_metric(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # A run missing required crown metrics (only fcp; no total_stall/load_event) can't be
-    # cornered, so it contributes no Overall and can't be crowned — but still aggregates.
+    # A run missing a required *raw* crown metric (only fcp captured; no lcp/total_stall) can't
+    # be cornered, so it contributes no Overall and can't be crowned — but still aggregates.
     for i in range(3):
         _seed_run("nopt000000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  crown_subscores={"fcp": 90})
+                  crown_raw=(120.0, None, None))
 
     body = client.get("/api/settings/profiles").json()
     by_fp = {p["fingerprint"]: p for p in body["profiles"]}
     prof = by_fp["nopt000000x"]
-    assert prof["overall"] is None  # no feel corner → no Overall
+    assert prof["overall"] is None  # no full raw corner → no Overall
     assert body["best_fingerprint"] != "nopt000000x"  # no Overall → can't be crowned
 
 
-def test_overall_is_corner_of_median_subscores(client):
+def test_overall_ranks_by_raw_measurements_dominance(client):
+    # A profile faster on ALL three raw crown metrics must have a higher Overall (the corner is
+    # monotonic in the raw values). Field-relative, so assert the ordering, not exact values.
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    # The profile Overall is the corner over the profile's MEDIAN crown subscores (using the
-    # methodology's corner), so it's a monotonic function of exactly the crown-metric columns
-    # the table shows. Here all three median to 80 → corner(80,80,80) == 80 — regardless of a
-    # stale per-run scalar that was persisted (the crown no longer passes that through).
     for i in range(3):
-        _seed_run("cornermed00x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
-                  overall=42.0, crown_subscores={"fcp": 80, "lcp": 80, "total_stall": 80, "load_event": 80})
-
-    by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
-    assert by_fp["cornermed00x"]["overall"] == 80.0
-
-
-def test_overall_is_monotonic_in_the_crown_metric_columns(client):
-    # The bug this fixes: a profile that beats another on the *median* of every crown metric
-    # must not rank below it on Overall. Profile A's metrics peak on different runs (fcp/lcp
-    # high when total_stall low, and vice-versa), so its per-run corners are depressed — under
-    # the old median-of-corners its Overall fell *below* a steady rival it beats on all three
-    # marginal medians. Corner-of-medians makes Overall monotonic in the displayed columns.
-    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    for i, subs in enumerate([
-        {"fcp": 100, "lcp": 100, "total_stall": 60},
-        {"fcp": 60, "lcp": 60, "total_stall": 100},
-    ]):
-        _seed_run("marginwin00x", 80, t0 - timedelta(minutes=60 - i), iterations=8, crown_subscores=subs)
-    for i in range(2):
-        _seed_run("steady7800x", 78, t0 - timedelta(minutes=40 - i), iterations=8,
-                  crown_subscores={"fcp": 78, "lcp": 78, "total_stall": 78})
+        _seed_run("rawfast000x", 80, t0 - timedelta(minutes=60 - i), iterations=6,
+                  crown_raw=(180.0, 220.0, 100.0))   # faster on all three
+    for i in range(3):
+        _seed_run("rawslow000x", 80, t0 - timedelta(minutes=40 - i), iterations=6,
+                  crown_raw=(300.0, 360.0, 400.0))   # slower on all three
 
     by = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
-    a, b = by["marginwin00x"], by["steady7800x"]
-    # A's median subscore beats B on every crown metric (80 vs 78)…
+    fast, slow = by["rawfast000x"], by["rawslow000x"]
+    # Better raw on every crown metric → strictly higher normalized value on each…
     for m in ("fcp", "lcp", "total_stall"):
-        assert a["crown_scores"][m] > b["crown_scores"][m]
-    # …so A's Overall (corner of those medians) is higher — the columns explain the ranking.
-    assert a["overall"] == 80.0 and b["overall"] == 78.0
-    assert a["overall"] > b["overall"]
-    # The Overall IQR brackets the point estimate (corner over p25 / p75 subscores).
-    assert a["overall_p25"] <= a["overall"] <= a["overall_p75"]
+        assert fast["crown_norm"][m] > slow["crown_norm"][m]
+    # …and therefore a higher Overall (dominance is preserved — grading can't reverse it).
+    assert fast["overall"] > slow["overall"]
+    # The Overall IQR brackets the point estimate (corner over normalized p25/p75 raw).
+    assert fast["overall_p25"] <= fast["overall"] <= fast["overall_p75"]
+
+
+# ── Field-normalized raw crown helpers (no grading, no thresholds) ───────────────────
+
+from pathbrain.api.routes_settings import (  # noqa: E402
+    _crown_field_bounds,
+    _normalize_raw,
+    _normalized_crown,
+)
+
+
+def test_normalize_raw_scales_by_field_best_worst():
+    # best -> 100, worst -> 0, linear between, clamped. Direction is encoded by which end is
+    # passed as "best" (lower-is-better: best=min).
+    assert _normalize_raw(100, best=100, worst=300) == 100.0
+    assert _normalize_raw(300, best=100, worst=300) == 0.0
+    assert _normalize_raw(200, best=100, worst=300) == 50.0
+    assert _normalize_raw(50, best=100, worst=300) == 100.0   # clamps at best
+    assert _normalize_raw(100, best=100, worst=100) == 100.0  # no field spread → not penalized
+    assert _normalize_raw(None, 1, 2) is None
+
+
+def test_normalized_crown_is_monotonic_and_threshold_free():
+    # The crown corner takes ONLY raw measurements + field bounds + direction — never a
+    # methodology best/worst threshold — so re-grading a metric cannot change it.
+    metrics = ["fcp", "lcp", "total_stall"]
+    higher = {m: False for m in metrics}  # all lower-is-better
+    profiles = [
+        {"metrics": {"fcp": 200, "lcp": 240, "total_stall": 100}},
+        {"metrics": {"fcp": 300, "lcp": 360, "total_stall": 400}},
+    ]
+    bounds = _crown_field_bounds(profiles, metrics, higher)
+    spreads = {m: {"p25": None, "p75": None, "n": 1} for m in metrics}
+    fast = _normalized_crown(profiles[0]["metrics"], spreads, bounds, higher, metrics, metrics)
+    slow = _normalized_crown(profiles[1]["metrics"], spreads, bounds, higher, metrics, metrics)
+    # Faster on all three → higher on every normalized axis → higher corner.
+    assert fast["overall"] > slow["overall"]
+    for m in metrics:
+        assert fast["norm"][m] >= slow["norm"][m]
+    # Optimistic ceiling ≥ the point Overall (benefit of the doubt for a thin sample).
+    assert fast["optimistic"] >= fast["overall"]
+
+
+def test_normalized_crown_missing_required_metric_is_none():
+    metrics = ["fcp", "lcp", "total_stall"]
+    higher = {m: False for m in metrics}
+    bounds = {"fcp": (100, 300)}  # only fcp has a field
+    res = _normalized_crown({"fcp": 150}, {}, bounds, higher, metrics, metrics)
+    assert res["overall"] is None  # lcp/total_stall absent → no corner
 
 
 def test_custom_crown_corners_selected_betterments(client):

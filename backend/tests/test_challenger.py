@@ -4,41 +4,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from pathbrain import challenger
-from pathbrain.api.routes_settings import optimistic_overall
 from pathbrain.database import session_scope
 from pathbrain.models import ChallengerRace, ChallengerRaceStatus
 
-
-def _spread(median: float, p75: float, n: int) -> dict:
-    return {"median": median, "p25": median, "p75": p75, "min": median, "max": p75, "n": n}
-
-
-def _crown(median: float, p75: float, n: int) -> dict:
-    return {m: _spread(median, p75, n) for m in ("fcp", "total_stall", "load_event")}
-
-
-# ── optimistic_overall ───────────────────────────────────────────────────────
-
-
-def test_optimistic_overall_uses_p75_band():
-    # A wide, thin sample is optimistic (p75 ≫ median); a tight one is not.
-    tight = optimistic_overall(_crown(80, 80, 10))
-    wide = optimistic_overall(_crown(80, 95, 3))
-    assert wide > tight
-    # The tight band ≈ the plain corner Overall of the medians.
-    assert abs(tight - 80.0) < 0.5
-
-
-def test_optimistic_overall_margin_for_thin_samples():
-    # With <2 samples there's no usable spread, so it gets median + margin benefit.
-    thin = optimistic_overall(_crown(80, 80, 1))
-    plain = optimistic_overall(_crown(80, 80, 10))
-    assert thin > plain  # the 5-point optimism margin lifts a 1-shot challenger
-
-
-def test_optimistic_overall_none_when_missing_a_required_metric():
-    partial = {"fcp": _spread(80, 90, 3)}  # no total_stall/load_event (required crown metrics)
-    assert optimistic_overall(partial) is None
+# The race ranks under-minimum profiles by their ``optimistic`` ceiling — a field-normalized
+# raw crown corner precomputed per profile by ``compute_profiles``. In these unit tests we set
+# ``optimistic`` directly on the synthetic profiles; ``None`` means a required crown metric
+# wasn't captured (incomplete corner coverage → eliminated).
 
 
 # ── rank_challengers ─────────────────────────────────────────────────────────
@@ -51,16 +23,16 @@ def _field(profiles: list[dict], best_fingerprint: str | None) -> dict:
 def test_rank_challengers_selects_leader_and_eliminates():
     field = _field(
         [
-            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0, "crown_spreads": {}},
+            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0},
             # contender: optimistic ~95 ≥ bar 85
             {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-             "crown_spreads": _crown(80, 95, 3)},
+             "optimistic": 95.0},
             # laggard: optimistic ~55 < bar → eliminated
             {"fingerprint": "D", "label": "D", "confident": False, "overall": None,
-             "crown_spreads": _crown(50, 55, 8)},
+             "optimistic": 55.0},
             # incomplete corner coverage (missing required perceived_time) → eliminated
             {"fingerprint": "E", "label": "E", "confident": False, "overall": None,
-             "crown_spreads": {"fcp": _spread(90, 95, 4)}},
+             "optimistic": None},
         ],
         best_fingerprint="B",
     )
@@ -76,9 +48,9 @@ def test_rank_challengers_selects_leader_and_eliminates():
 def test_rank_challengers_respects_already_eliminated():
     field = _field(
         [
-            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0, "crown_spreads": {}},
+            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0},
             {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-             "crown_spreads": _crown(80, 95, 3)},
+             "optimistic": 95.0},
         ],
         best_fingerprint="B",
     )
@@ -88,15 +60,15 @@ def test_rank_challengers_respects_already_eliminated():
 
 def _nodata(fp: str) -> dict:
     return {"fingerprint": fp, "label": fp, "confident": False, "overall": None,
-            "crown_spreads": {}, "last_seen": None, "no_data": True}
+            "last_seen": None, "no_data": True}
 
 
 def test_rank_prioritizes_threat_then_no_data():
     field = _field(
         [
-            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0, "crown_spreads": {}},
+            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0},
             {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-             "crown_spreads": _crown(80, 95, 3)},  # under-min threat to the crown
+             "optimistic": 95.0},  # under-min threat to the crown
             _nodata("N"),  # no current-methodology data — raced, but sampled last
         ],
         best_fingerprint="B",
@@ -118,11 +90,11 @@ def test_rank_excludes_unreachable_profiles():
     field = _field(
         [
             {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
-             "crown_spreads": {}, "settings": [{"scheduler": "fq_codel", "queues": 1}]},
+             "settings": [{"scheduler": "fq_codel", "queues": 1}]},
             {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-             "crown_spreads": _crown(80, 95, 3), "settings": [{"scheduler": "fq_codel", "queues": 1}]},
+             "optimistic": 95.0, "settings": [{"scheduler": "fq_codel", "queues": 1}]},
             {"fingerprint": "X", "label": "X", "confident": False, "overall": None,
-             "crown_spreads": _crown(80, 99, 3), "settings": [{"scheduler": "fq_pie", "queues": 1}]},
+             "optimistic": 99.0, "settings": [{"scheduler": "fq_pie", "queues": 1}]},
         ],
         "B",
     )
@@ -173,7 +145,7 @@ def test_rank_bootstrap_with_no_confident_best():
         [
             _nodata("N"),
             {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-             "crown_spreads": _crown(80, 95, 3)},
+             "optimistic": 95.0},
         ],
         best_fingerprint=None,
     )
@@ -191,13 +163,13 @@ def test_rank_stale_confident_ordered_by_closeness():
     field = _field(
         [
             {"fingerprint": "B", "label": "B", "confident": True, "overall": 90.0,
-             "crown_spreads": {}, "last_seen": fresh},  # the winner
+             "last_seen": fresh},  # the winner
             {"fingerprint": "S1", "label": "S1", "confident": True, "overall": 88.0,
-             "crown_spreads": {}, "last_seen": stale},  # close to winner, stale
+             "last_seen": stale},  # close to winner, stale
             {"fingerprint": "S2", "label": "S2", "confident": True, "overall": 70.0,
-             "crown_spreads": {}, "last_seen": stale},  # far from winner, stale
+             "last_seen": stale},  # far from winner, stale
             {"fingerprint": "F", "label": "F", "confident": True, "overall": 89.0,
-             "crown_spreads": {}, "last_seen": fresh},  # close but fresh → not a contender
+             "last_seen": fresh},  # close but fresh → not a contender
         ],
         best_fingerprint="B",
     )
@@ -218,13 +190,13 @@ def test_rank_full_priority_threat_then_stale_then_no_data():
     field = _field(
         [
             {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
-             "crown_spreads": {}, "last_seen": now.isoformat()},  # the crown
+             "last_seen": now.isoformat()},  # the crown
             {"fingerprint": "T1", "label": "T1", "confident": False, "overall": None,
-             "crown_spreads": _crown(80, 99, 3)},  # under-min, highest ceiling → biggest threat
+             "optimistic": 99.0},  # under-min, highest ceiling → biggest threat
             {"fingerprint": "T2", "label": "T2", "confident": False, "overall": None,
-             "crown_spreads": _crown(80, 90, 3)},  # under-min, lower ceiling
+             "optimistic": 90.0},  # under-min, lower ceiling
             {"fingerprint": "S", "label": "S", "confident": True, "overall": 84.0,
-             "crown_spreads": {}, "last_seen": stale},  # stale-but-nearby incumbent
+             "last_seen": stale},  # stale-but-nearby incumbent
             _nodata("N"),  # no data → filled in last
         ],
         best_fingerprint="B",
@@ -256,18 +228,18 @@ def _drive_with(monkeypatch, *, auto_promote: bool) -> tuple[ChallengerRace, dic
     f1 = _field(
         [
             {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
-             "crown_spreads": {}, "settings": [{"label": "B"}]},
+             "settings": [{"label": "B"}]},
             {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-             "crown_spreads": _crown(80, 96, 3), "settings": [{"label": "C"}]},
+             "optimistic": 96.0, "settings": [{"label": "C"}]},
         ],
         best_fingerprint="B",
     )
     f2 = _field(
         [
             {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
-             "crown_spreads": {}, "settings": [{"label": "B"}]},
+             "settings": [{"label": "B"}]},
             {"fingerprint": "C", "label": "C", "confident": True, "overall": 90.0,
-             "crown_spreads": {}, "settings": [{"label": "C"}]},
+             "settings": [{"label": "C"}]},
         ],
         best_fingerprint="C",
     )
@@ -406,12 +378,12 @@ def test_drive_refreshes_stale_incumbent(monkeypatch):
     stale = (now - timedelta(minutes=120)).isoformat()
     fresh = now.isoformat()
     b_stale = {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
-               "crown_spreads": {}, "settings": [{"label": "B"}], "last_seen": stale}
+               "settings": [{"label": "B"}], "last_seen": stale}
     b_fresh = {**b_stale, "last_seen": fresh}
     c_under = {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-               "crown_spreads": _crown(80, 96, 3), "settings": [{"label": "C"}], "last_seen": fresh}
+               "optimistic": 96.0, "settings": [{"label": "C"}], "last_seen": fresh}
     c_conf = {"fingerprint": "C", "label": "C", "confident": True, "overall": 90.0,
-              "crown_spreads": {}, "settings": [{"label": "C"}], "last_seen": fresh}
+              "settings": [{"label": "C"}], "last_seen": fresh}
     # Step 1: incumbent B is 2h stale → re-measure B first (don't touch a challenger yet).
     # Step 2: B fresh → sample challenger C. Step 3: C confirmed best → winner, race ends.
     f1 = _field([b_stale, c_under], best_fingerprint="B")
@@ -431,11 +403,11 @@ def test_drive_skips_refresh_when_incumbent_fresh(monkeypatch):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     fresh = now.isoformat()
     b_fresh = {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
-               "crown_spreads": {}, "settings": [{"label": "B"}], "last_seen": fresh}
+               "settings": [{"label": "B"}], "last_seen": fresh}
     c_under = {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-               "crown_spreads": _crown(80, 96, 3), "settings": [{"label": "C"}], "last_seen": fresh}
+               "optimistic": 96.0, "settings": [{"label": "C"}], "last_seen": fresh}
     c_conf = {"fingerprint": "C", "label": "C", "confident": True, "overall": 90.0,
-              "crown_spreads": {}, "settings": [{"label": "C"}], "last_seen": fresh}
+              "settings": [{"label": "C"}], "last_seen": fresh}
     f1 = _field([b_fresh, c_under], best_fingerprint="B")
     f2 = _field([b_fresh, c_conf], best_fingerprint="C")
 
@@ -448,10 +420,10 @@ def test_drive_bootstraps_no_data_with_no_confident_best(monkeypatch):
     # No confident best at all (e.g. post-methodology-change): the race still runs and
     # samples the no-data profile, which then becomes the confident winner.
     c_nodata = {"fingerprint": "C", "label": "C", "confident": False, "overall": None,
-                "crown_spreads": {}, "no_data": True, "settings": [{"label": "C"}],
+                "no_data": True, "settings": [{"label": "C"}],
                 "last_seen": None}
     c_conf = {"fingerprint": "C", "label": "C", "confident": True, "overall": 90.0,
-              "crown_spreads": {}, "settings": [{"label": "C"}], "last_seen": None}
+              "settings": [{"label": "C"}], "last_seen": None}
     f1 = _field([c_nodata], best_fingerprint=None)
     f2 = _field([c_conf], best_fingerprint="C")
 

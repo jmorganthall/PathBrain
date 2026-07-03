@@ -1266,14 +1266,14 @@ export default function Settings() {
               The <b>Overall</b> and crown-metric columns show each profile's <b>standing</b> (1 = best)
               among all profiles, colour-graded <span style={{ color: "hsl(120,70%,55%)" }}>green</span>{" "}
               (best) → <span style={{ color: "hsl(0,70%,55%)" }}>red</span> (worst); hover a cell for
-              its raw 0–100 subscore and value. The three columns after Overall are the exact metrics the
-              <b> current methodology</b> corners the Overall over (the crown set), and Overall is the
-              corner of a profile's <i>median</i> subscore on each — so it's <b>monotonic in these three
-              columns</b>: a profile better on all three is guaranteed a higher Overall, and the standings
-              always explain the ranking. (The headline axes Responsiveness/Smoothness/Speed are a
-              different decomposition and stay available via <b>Columns</b>.) Overall itself is a single
-              0–100 measure of how close a profile sits to the ideal corner over those crown metrics, as
-              the methodology defines it. <b>"Best"</b> is the profile with the highest Overall
+              its normalized value and the raw measurement. The three columns after Overall are the
+              crown metrics the <b>current methodology</b> corners the Overall over, scored on their
+              <b> raw measurements</b> — each rescaled 0–100 by the field's observed best/worst, no
+              grading. Overall is the corner of those three, so it's <b>monotonic in these columns</b>
+              (better on all three ⇒ higher Overall) and — because the scale comes from the measurements,
+              not a threshold — <b>re-grading a metric can't move the crown</b>; only re-measuring can.
+              (The headline axes Responsiveness/Smoothness/Speed are a different, graded decomposition and
+              stay available via <b>Columns</b>.) <b>"Best"</b> is the profile with the highest Overall
               that meets the iteration minimum — the winner wins, by any margin (no stickiness, no
               steadiness override). The per-run Overall spread doesn't change who's crowned; it only
               flags a photo finish: profiles within run-to-run noise of the best are shown as
@@ -1454,9 +1454,9 @@ export default function Settings() {
                                 rank == null
                                   ? "No score yet"
                                   : m.metricKey
-                                    ? `${m.label}: score ${raw}${
-                                        rawMetric != null ? ` · ${fmtNumField(rawMetric, unit)}` : ""
-                                      } · rank ${rank} of ${rk.total} · a corner input to Overall`
+                                    ? `${m.label}: normalized ${raw}/100${
+                                        rawMetric != null ? ` (raw ${fmtNumField(rawMetric, unit)})` : ""
+                                      } · rank ${rank} of ${rk.total} · a raw-measurement corner input to Overall`
                                     : `${m.label} ${raw} · rank ${rank} of ${rk.total}`
                               }
                             >
