@@ -124,6 +124,10 @@ export interface SettingsProfile {
   relative_sops: { delta_median: number; p25: number; p75: number; count: number } | null;
   // Median 0–100 score per axis (speed/smoothness/stability/completion).
   scores: Record<string, number>;
+  // Median 0–100 *subscore* per scored metric (perception-calibrated). Includes the crown
+  // metrics (fcp/lcp/total_stall under v7) — the exact building blocks the Overall corners
+  // over — so the table can show standings for the metrics that actually compute Overall.
+  crown_scores: Record<string, number>;
   // Single "closeness to the ideal Speed=100/Smoothness=100 corner" (higher = better);
   // null until both axes exist. This IS the crown basis: the highest Overall among
   // confident profiles is "best".
@@ -277,6 +281,10 @@ export interface SettingsProfilesResponse {
   // The crowned profile: confident and closest to the top-right (fastest+smoothest)
   // corner. Null until a confident profile with both axes exists.
   best_fingerprint: string | null;
+  // The current methodology's crown metric set — the metrics the Overall corners over
+  // (fcp/lcp/total_stall under v7). The table pins these as its standings columns so the
+  // displayed columns are the ones that actually compute Overall.
+  overall_metrics: string[];
   // Fingerprints statistically tied with the crown (co-leaders): the crown's median lead
   // over these is within run-to-run noise, so the UI flags them as a tie rather than
   // implying the crown is decisively better. Excludes the crown itself; empty when the
