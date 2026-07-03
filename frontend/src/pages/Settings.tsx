@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import Alert from "@mui/material/Alert";
@@ -531,7 +531,11 @@ export default function Settings() {
   const [sizeKey, setSizeKey] = useState("total_stall");
   // Scatter-only filter: hide profiles with fewer than this many total iterations, so
   // thin/noisy profiles don't clutter the plot. 0 = show all. Doesn't affect the table.
+  // Defaults to the confidence threshold (min_iterations) on first load — so the plot opens
+  // showing only profiles we actually trust — then respects any manual change (the ref
+  // guards against later polls resetting the user's choice).
   const [minIterPlot, setMinIterPlot] = useState(0);
+  const minIterPlotInit = useRef(false);
   // The profile whose dot was last clicked on the scatter → shows a small act-on-it panel.
   const [scatterFp, setScatterFp] = useState<string | null>(null);
   // Optional extra table columns (dynamic field keys), persisted across reloads.
@@ -628,6 +632,12 @@ export default function Settings() {
       setProfiles(p.profiles);
       setBestDiff(p.best_diff);
       setMinIterations(p.min_iterations);
+      // First load: open the scatter filtered to the confidence threshold. After that,
+      // never override the user's manual value on subsequent polls/refreshes.
+      if (!minIterPlotInit.current) {
+        setMinIterPlot(p.min_iterations);
+        minIterPlotInit.current = true;
+      }
       setBestFingerprint(p.best_fingerprint);
       setCoLeaders(new Set(p.co_leaders ?? []));
       setCurrentFingerprint(p.current_fingerprint);
@@ -1106,7 +1116,7 @@ export default function Settings() {
                     </Button>
                   </span>
                 </Tooltip>
-                <Tooltip title="Hide profiles with fewer than this many total iterations from the scatter (the table below is unaffected). 0 shows all.">
+                <Tooltip title={`Hide profiles with fewer than this many total iterations from the scatter (the table below is unaffected). Defaults to the ${minIterations}-iteration confidence threshold, so the plot opens on profiles we actually trust. Set 0 to show all.`}>
                   <TextField
                     label="Min iterations"
                     type="number"
@@ -1116,6 +1126,7 @@ export default function Settings() {
                       setMinIterPlot(Math.max(0, Math.floor(Number(e.target.value) || 0)))
                     }
                     inputProps={{ min: 0, step: 1, "aria-label": "Minimum iterations to plot" }}
+                    helperText={minIterPlot === minIterations ? "= confidence min" : undefined}
                     sx={{ width: 130 }}
                   />
                 </Tooltip>
@@ -1127,7 +1138,8 @@ export default function Settings() {
             {minIterPlot > 0 && (
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
                 Showing {plotProfiles.length} of {profiles.length} profiles with ≥ {minIterPlot}{" "}
-                iteration{minIterPlot === 1 ? "" : "s"}.
+                iteration{minIterPlot === 1 ? "" : "s"}
+                {minIterPlot === minIterations ? " (the confidence threshold)" : ""}.
               </Typography>
             )}
             <ProfileQuadrant

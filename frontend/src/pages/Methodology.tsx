@@ -123,6 +123,10 @@ function VersionRow({ m }: { m: MethodologySummary }) {
 export default function Methodology() {
   const [current, setCurrent] = useState<MethodologyDetail | null>(null);
   const [versions, setVersions] = useState<MethodologySummary[]>([]);
+  // Confidence threshold — total iterations a profile needs before it's crownable /
+  // comparable (correlation.min_iterations). Lives in runtime config, shown here so the
+  // rubric page states not just how a run is scored but when a profile is trusted.
+  const [minIterations, setMinIterations] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [regrading, setRegrading] = useState(false);
@@ -141,9 +145,14 @@ export default function Methodology() {
 
   const load = useCallback(async () => {
     try {
-      const [cur, list] = await Promise.all([api.methodologyCurrent(), api.methodologies()]);
+      const [cur, list, cfg] = await Promise.all([
+        api.methodologyCurrent(),
+        api.methodologies(),
+        api.config(),
+      ]);
       setCurrent(cur);
       setVersions(list.methodologies);
+      setMinIterations(cfg.correlation?.min_iterations ?? null);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load methodologies");
@@ -310,6 +319,26 @@ export default function Methodology() {
               </Typography>
             )}
             <MetricTable metrics={current.definition.metrics} />
+          </CardContent>
+        </Card>
+      )}
+
+      {minIterations != null && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Typography variant="h6">Confidence</Typography>
+              <Chip size="small" color="info" variant="outlined" label={`${minIterations} iterations`} />
+            </Stack>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+              A profile is treated as <b>confident</b> — eligible to be crowned the “best” and
+              counted in significance calls — once its runs total at least <b>{minIterations}</b>{" "}
+              iterations. Iterations, not run count, are the unit of signal: a {minIterations}
+              -iteration run carries far more than a single-iteration one. Below the threshold a
+              profile is still measured and shown, but can’t win the crown until it gets there
+              (that’s what “Test to minimum” and the challenger race drive toward). Adjust it via{" "}
+              <code>correlation.min_iterations</code> in the runtime config.
+            </Typography>
           </CardContent>
         </Card>
       )}

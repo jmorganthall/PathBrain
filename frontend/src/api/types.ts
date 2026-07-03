@@ -733,6 +733,15 @@ export interface BenchmarkConfig {
   rubric_version: string;
   weights: Record<string, number>;
   thresholds: Record<string, Threshold>;
+  // Settings-vs-responsiveness correlation knobs. `min_iterations` is the confidence
+  // threshold: total iterations a profile needs before it can be crowned / compared.
+  correlation?: {
+    significant_change_pct?: number;
+    min_runs?: number;
+    min_iterations?: number;
+    crown_tie_iqr_fraction?: number;
+    crown_tie_min_margin?: number;
+  };
   [key: string]: unknown;
 }
 
