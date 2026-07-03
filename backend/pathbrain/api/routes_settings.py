@@ -88,38 +88,41 @@ RACE_OPTIMISM_MARGIN = 5.0
 
 
 # ── Raw-measurement crown ───────────────────────────────────────────────────────────
-# The Overall/crown is the corner over each crown metric's **raw measurement**, rescaled to
-# 0–100 by the field's observed best/worst — NOT the methodology's perception grade. The
-# scale comes from the measurements themselves, so re-grading a metric (moving a best/worst
-# threshold) can't move the crown; only a real change in the measurements can. The corner
-# still rewards being good on all crown metrics at once (an intersection), and it stays
-# monotonic in the raw values, so the crown-metric columns still explain the ranking.
+# The Overall/crown is the corner over each crown metric's **raw measurement**, mapped to
+# 0–100 by its **percentile within the field's distribution** — NOT the methodology's
+# perception grade, and NOT a min/max rescale. Percentile (rank) normalization gives every
+# metric an identical, uniform spread by construction, so **no single metric can dominate**
+# the corner (the failure mode of min/max, where one fast/slow outlier compresses a metric
+# and total_stall — spread more evenly — steamrolls FCP/LCP). The scale comes from the
+# measurements' *ranking*, so re-grading a metric can't move the crown; it stays monotonic in
+# the raw values, so the crown-metric columns still explain the ranking. Trade-off: it's
+# magnitude-blind (a 1 ms edge and a 200 ms edge both mean "one rank better").
 
-def _normalize_raw(value: float | None, best: float | None, worst: float | None) -> float | None:
-    """Rescale a raw measurement to 0–100 by the field's observed best/worst — ``best``→100,
-    ``worst``→0, clamped. ``best``/``worst`` are the raw values that map to 100/0 (already
-    oriented for the metric's direction). None for a missing value; 100 when the field has no
-    spread (``best == worst``) so a flat metric can't drag the corner."""
-    if value is None or best is None or worst is None:
+def _percentile_norm(value: float | None, field: list[float], higher: bool) -> float | None:
+    """Map a raw measurement to a 0–100 **percentile** within ``field`` (all profiles' median
+    raw for this metric) — the fraction of the field this value is at least as good as, with
+    half credit for ties (mid-rank empirical CDF). Direction-aware: for lower-is-better, a
+    smaller value beats a larger one. None for a missing value / empty field; 100 for a
+    single-profile field. Uniform by construction, so each metric contributes equal spread."""
+    if value is None or not field:
         return None
-    if best == worst:
+    n = len(field)
+    if n == 1:
         return 100.0
-    scaled = 100.0 * (float(value) - float(worst)) / (float(best) - float(worst))
-    return max(0.0, min(100.0, scaled))
+    worse = sum(1 for x in field if (x < value if higher else x > value))
+    equal = sum(1 for x in field if x == value)
+    return round(100.0 * (worse + 0.5 * equal) / n, 2)
 
 
-def _crown_field_bounds(profiles: list[dict], metrics, higher: dict) -> dict:
-    """Observed ``(best, worst)`` raw per crown metric across the field — min/max of the
-    profiles' median raw, oriented by direction so ``best`` is the value that should score
-    100 (min for lower-is-better, max for higher-is-better)."""
-    bounds: dict = {}
+def _crown_field_values(profiles: list[dict], metrics) -> dict:
+    """Per crown metric, the list of all profiles' median raw values — the distribution each
+    profile is percentile-ranked against."""
+    field: dict = {}
     for m in metrics:
-        vals = [p["metrics"][m] for p in profiles if (p.get("metrics") or {}).get(m) is not None]
-        if not vals:
-            continue
-        lo, hi = min(vals), max(vals)
-        bounds[m] = (hi, lo) if higher.get(m) else (lo, hi)
-    return bounds
+        field[m] = [
+            p["metrics"][m] for p in profiles if (p.get("metrics") or {}).get(m) is not None
+        ]
+    return field
 
 
 def _round2(x: float | None) -> float | None:
@@ -127,19 +130,19 @@ def _round2(x: float | None) -> float | None:
 
 
 def _normalized_crown(
-    median_raw: dict, raw_spreads: dict, bounds: dict, higher: dict,
+    median_raw: dict, raw_spreads: dict, field: dict, higher: dict,
     metrics, required, margin: float = RACE_OPTIMISM_MARGIN,
 ) -> dict:
-    """Field-normalized crown corners for one profile, all in the same 0–100 raw-normalized
-    space (no grading): the point ``overall`` (corner over each metric's normalized median),
-    the IQR ``p25``/``p75`` (corner over the normalized pessimistic/optimistic raw quartile,
-    so it brackets ``overall``), and the ``optimistic`` ceiling (optimistic quartile, or the
-    normalized median + a small margin for a thin <2-sample metric — the heir/race benefit of
-    the doubt). Also returns the per-metric ``norm`` medians for display. Missing a required
-    metric → that corner is None."""
+    """Field-normalized crown corners for one profile, all in the same 0–100 percentile space
+    (no grading): the point ``overall`` (corner over each metric's percentile median), the IQR
+    ``p25``/``p75`` (corner over the percentile of the pessimistic/optimistic raw quartile, so
+    it brackets ``overall``), and the ``optimistic`` ceiling (optimistic quartile percentile,
+    or the median percentile + a small margin for a thin <2-sample metric — the heir/race
+    benefit of the doubt). Also returns the per-metric ``norm`` medians for display. Missing a
+    required metric → that corner is None."""
     def norm(m, raw):
-        b = bounds.get(m)
-        return _normalize_raw(raw, b[0], b[1]) if b else None
+        f = field.get(m)
+        return _percentile_norm(raw, f, bool(higher.get(m))) if f else None
 
     crown_norm, p25n, p75n, optn = {}, {}, {}, {}
     for m in metrics:
@@ -861,12 +864,13 @@ def compute_profiles(
                 },
             }
         )
-    # ── Normalize pass: field-normalized raw crown ──────────────────────────────────
-    # Now that the whole field is built, rescale each crown metric's raw measurement to 0–100
-    # by the observed best/worst across profiles, then corner. This is the crown's scale — it
-    # comes from the measurements, not any methodology threshold, so re-grading can't move the
-    # crown. Fills each profile's overall / IQR / optimistic ceiling / normalized medians.
-    crown_field = _crown_field_bounds(profiles, crown_metrics, crown_higher)
+    # ── Normalize pass: field percentile-normalized raw crown ───────────────────────
+    # Now that the whole field is built, map each crown metric's raw measurement to its
+    # percentile within the field's distribution, then corner. Percentile (rank) normalization
+    # gives every metric equal, uniform spread, so no one metric can dominate the corner. The
+    # scale comes from the measurements' ranking, not any methodology threshold, so re-grading
+    # can't move the crown. Fills each profile's overall / IQR / optimistic / normalized values.
+    crown_field = _crown_field_values(profiles, crown_metrics)
     for p in profiles:
         res = _normalized_crown(
             p.get("metrics") or {}, p.get("crown_raw") or {}, crown_field, crown_higher,
@@ -928,9 +932,17 @@ def compute_profiles(
         # Overall exactly.
         "overall_metrics": crown_metrics,
         "overall_required": crown_required,
-        # The field's observed best/worst raw per crown metric — the scale the crown
-        # normalizes over (for transparency: this is what re-measuring, not re-grading, moves).
-        "crown_field": {m: {"best": b[0], "worst": b[1]} for m, b in crown_field.items()},
+        # The field distribution per crown metric — the ranking the crown percentile-normalizes
+        # over (for transparency: this is what re-measuring, not re-grading, moves). We surface
+        # the observed best/worst/count; the full percentile scale is derived from the field.
+        "crown_field": {
+            m: {
+                "best": (min(v) if v else None) if not crown_higher.get(m) else (max(v) if v else None),
+                "worst": (max(v) if v else None) if not crown_higher.get(m) else (min(v) if v else None),
+                "n": len(v),
+            }
+            for m, v in crown_field.items()
+        },
         # Echo the custom-crown selection (None when not requested) + its winner.
         "crown_metrics": list(custom_crown_metrics) if custom_crown_metrics else None,
         "custom_best_fingerprint": custom_best_fingerprint,

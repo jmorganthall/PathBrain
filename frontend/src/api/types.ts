@@ -127,9 +127,10 @@ export interface SettingsProfile {
   // Median 0–100 *subscore* per scored metric (perception-calibrated grade). Drives the axis
   // scores + the custom-crown lens — NOT the canonical Overall (which is raw-based below).
   crown_scores: Record<string, number>;
-  // Each crown metric's raw measurement rescaled to 0–100 by the field's observed best/worst
-  // (no methodology grading) — the exact values the Overall corners over. This is the crown's
-  // scale: it moves only when the measurements do, never when a grading threshold changes.
+  // Each crown metric's raw measurement mapped to its 0–100 percentile (rank) within the
+  // field (no methodology grading) — the exact values the Overall corners over. Percentile
+  // normalization gives every metric equal spread, so no one metric dominates; the scale
+  // moves only when the measurements do, never when a grading threshold changes.
   crown_norm: Record<string, number>;
   // Single "closeness to the ideal Speed=100/Smoothness=100 corner" (higher = better);
   // null until both axes exist. This IS the crown basis: the highest Overall among

@@ -1268,10 +1268,12 @@ export default function Settings() {
               (best) → <span style={{ color: "hsl(0,70%,55%)" }}>red</span> (worst); hover a cell for
               its normalized value and the raw measurement. The three columns after Overall are the
               crown metrics the <b>current methodology</b> corners the Overall over, scored on their
-              <b> raw measurements</b> — each rescaled 0–100 by the field's observed best/worst, no
-              grading. Overall is the corner of those three, so it's <b>monotonic in these columns</b>
-              (better on all three ⇒ higher Overall) and — because the scale comes from the measurements,
-              not a threshold — <b>re-grading a metric can't move the crown</b>; only re-measuring can.
+              <b> raw measurements</b> — each mapped to its <b>percentile</b> (rank) within the field,
+              no grading. Percentile normalization gives every metric equal spread, so <b>no single
+              metric (e.g. stall) can dominate</b> the corner. Overall is the corner of those three, so
+              it's <b>monotonic in these columns</b> (better on all three ⇒ higher Overall) and — because
+              the scale is the measurements' ranking, not a threshold — <b>re-grading a metric can't move
+              the crown</b>; only re-measuring can.
               (The headline axes Responsiveness/Smoothness/Speed are a different, graded decomposition and
               stay available via <b>Columns</b>.) <b>"Best"</b> is the profile with the highest Overall
               that meets the iteration minimum — the winner wins, by any margin (no stickiness, no
@@ -1454,7 +1456,7 @@ export default function Settings() {
                                 rank == null
                                   ? "No score yet"
                                   : m.metricKey
-                                    ? `${m.label}: normalized ${raw}/100${
+                                    ? `${m.label}: ${raw}th percentile${
                                         rawMetric != null ? ` (raw ${fmtNumField(rawMetric, unit)})` : ""
                                       } · rank ${rank} of ${rk.total} · a raw-measurement corner input to Overall`
                                     : `${m.label} ${raw} · rank ${rank} of ${rk.total}`
