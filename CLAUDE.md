@@ -215,7 +215,11 @@ LLM-based. See `README.md` for the product overview.
   - `api/` — REST routers mounted at `/api`.
 - `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
   History, Trends, Compare, Settings Impact (**paginated** sortable table — 25/page —
-  with standard **Overall / Responsiveness / Smoothness / Speed** columns + an optional
+  with standard **Overall + the crown metrics** columns (the metrics the Overall corners over,
+  from the response's `overall_metrics` — fcp/lcp/total_stall under v7 — ranked by each metric's
+  0–100 subscore via a `crown:<metric>` field key, so the pinned columns are the ones that
+  actually *compute* Overall; the headline axes Responsiveness/Smoothness/Speed are a different
+  decomposition that barely tracks the corner, so they're demoted to opt-in) + an optional
   column selector; a **dynamic** any-metric quadrant where X/Y pick the axes, a **Shade**
   picker encodes a third field as dot **opacity** (brighter = better; `ProfileQuadrant`),
   and the crowned profile is ringed — the quadrant now warns when an axis is **saturated**

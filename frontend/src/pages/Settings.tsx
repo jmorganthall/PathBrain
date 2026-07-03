@@ -629,6 +629,7 @@ export default function Settings() {
       setBestDiff(p.best_diff);
       setMinIterations(p.min_iterations);
       setBestFingerprint(p.best_fingerprint);
+      setOverallMetrics(p.overall_metrics ?? []);
       setCoLeaders(new Set(p.co_leaders ?? []));
       setCurrentFingerprint(p.current_fingerprint);
       setResponseFields(p.fields);
@@ -649,25 +650,23 @@ export default function Settings() {
     load();
   }, [load]);
 
-  // Headline axes come from the *current methodology* (role === "headline"), so the
-  // ranked Overall/axis columns always track whatever the live rubric scores.
-  const [headlineAxes, setHeadlineAxes] = useState<{ key: string; label: string }[]>([]);
-  useEffect(() => {
-    api
-      .methodologyCurrent()
-      .then((m) =>
-        setHeadlineAxes(
-          (m.axes ?? [])
-            .filter((a) => a.role === "headline")
-            .map((a) => ({ key: a.key, label: a.label })),
-        ),
-      )
-      .catch(() => {});
-  }, []);
-  // The columns shown as standings: the first-class Overall, then each headline axis.
+  // The standings columns pin the metrics that actually *compute* the Overall — the current
+  // methodology's crown set (fcp/lcp/total_stall under v7), from the profiles response's
+  // ``overall_metrics``. The headline axes (Responsiveness/Smoothness/Speed) are a different
+  // decomposition that barely correlates with the Overall corner, so they no longer pin here
+  // (still available via Columns). Each crown column ranks by the metric's 0–100 subscore —
+  // the exact building block the corner uses — so a high Overall visibly requires all three.
+  const [overallMetrics, setOverallMetrics] = useState<string[]>([]);
   const rankedMetrics = useMemo(
-    () => [{ key: "overall", label: "Overall" }, ...headlineAxes],
-    [headlineAxes],
+    () => [
+      { key: "overall", label: "Overall", metricKey: null as string | null },
+      ...overallMetrics.map((k) => ({
+        key: `crown:${k}`,
+        label: metricMeta(k).label,
+        metricKey: k as string | null,
+      })),
+    ],
+    [overallMetrics, metricMeta],
   );
   // Per-metric rankings over the *full* profile set (not the current page), so a row's
   // standing is stable across pagination/sorting.
@@ -1264,19 +1263,22 @@ export default function Settings() {
               </Stack>
             </Stack>
             <Typography variant="caption" color="text.secondary">
-              The <b>Overall</b> and axis columns show each profile's <b>standing</b> (1 = best)
+              The <b>Overall</b> and crown-metric columns show each profile's <b>standing</b> (1 = best)
               among all profiles, colour-graded <span style={{ color: "hsl(120,70%,55%)" }}>green</span>{" "}
               (best) → <span style={{ color: "hsl(0,70%,55%)" }}>red</span> (worst); hover a cell for
-              its raw 0–100 score. The axes are whatever the <b>current methodology</b> scores as
-              headline. Overall itself is a single 0–100 measure of how close a profile sits to the
-              ideal corner (fastest <i>and</i> smoothest), as the methodology defines it. <b>"Best"</b> is the profile with the highest median Overall
+              its raw 0–100 subscore and value. The three columns after Overall are the exact metrics the
+              <b> current methodology</b> corners the Overall over (the crown set) — so a profile ranks
+              high on Overall only when it ranks high on all three. (The headline axes
+              Responsiveness/Smoothness/Speed are a different decomposition and stay available via{" "}
+              <b>Columns</b>.) Overall itself is a single 0–100 measure of how close a profile sits to the
+              ideal corner over those crown metrics, as the methodology defines it. <b>"Best"</b> is the profile with the highest median Overall
               that meets the iteration minimum — the winner wins, by any margin (no stickiness, no
               steadiness override). The per-run Overall spread doesn't change who's crowned; it only
               flags a photo finish: profiles within run-to-run noise of the best are shown as
               <b>tied</b>, purely for information. Finding
               challengers that could overtake it is a separate job: the <b>Heirs to the crown</b> card
               and the challenger race rank under-sampled profiles by their <i>optimistic ceiling</i>
-              to decide where to spend iterations. Speed and Smoothness are shown alongside.
+              to decide where to spend iterations.
               Iterations count every measurement sweep — a 15‑iteration run carries far more signal
               than a single‑iteration one. <b>vs typical</b> is the time-adjusted edge: median Overall
               minus the historical norm for the day &amp; hour each run landed on — positive means the
@@ -1311,8 +1313,8 @@ export default function Settings() {
                       order={order}
                       onSort={handleSort}
                     />
-                    {/* Overall + the current methodology's headline axes, shown as
-                        standings (1 = best) — sorting still keys off the raw score. */}
+                    {/* Overall + the current methodology's crown metrics (the corner inputs),
+                        shown as standings (1 = best) — sorting still keys off the raw score. */}
                     {rankedMetrics.map((m) => (
                       <SortHeader
                         key={m.key}
@@ -1433,19 +1435,27 @@ export default function Settings() {
                       </TableCell>
                       <TableCell align="right">{p.count}</TableCell>
                       <TableCell align="right">{p.iterations}</TableCell>
-                      {/* Standings (1 = best) per Overall + headline axis, green→red. The
-                          raw 0–100 score is in the hover title. */}
+                      {/* Standings (1 = best) per Overall + crown metric, green→red. The
+                          raw 0–100 subscore + metric value are in the hover title. */}
                       {rankedMetrics.map((m) => {
                         const rk = rankings[m.key];
                         const rank = rk?.rankByFp[p.fingerprint];
                         const raw = profileValue(p, m.key);
+                        // Crown columns rank by the 0–100 subscore; also surface the raw
+                        // metric value (e.g. FCP in ms) so the standing is legible.
+                        const rawMetric = m.metricKey ? p.metrics?.[m.metricKey] ?? null : null;
+                        const unit = m.metricKey ? metricMeta(m.metricKey).unit ?? "" : "";
                         return (
                           <TableCell key={m.key} align="right">
                             <Tooltip
                               title={
                                 rank == null
                                   ? "No score yet"
-                                  : `${m.label} ${raw} · rank ${rank} of ${rk.total}`
+                                  : m.metricKey
+                                    ? `${m.label}: score ${raw}${
+                                        rawMetric != null ? ` · ${fmtNumField(rawMetric, unit)}` : ""
+                                      } · rank ${rank} of ${rk.total} · a corner input to Overall`
+                                    : `${m.label} ${raw} · rank ${rank} of ${rk.total}`
                               }
                             >
                               <Typography
