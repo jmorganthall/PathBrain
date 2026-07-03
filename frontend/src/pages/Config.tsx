@@ -110,7 +110,10 @@ function countErrors(d: BenchmarkConfig): number {
   bad(vPositive(d.http.timeout_s));
   d.browser.urls.forEach((u) => bad(vHttpUrl(u)));
   bad(vPositive(d.browser.timeout_s));
-  if (!(Number.isInteger(d.iterations) && d.iterations >= 1 && d.iterations <= 20)) n += 1;
+  if (!(Number.isInteger(d.iterations) && d.iterations >= 1 && d.iterations <= 500)) n += 1;
+  if (d.correlation && !(Number.isInteger(d.correlation.min_iterations) && d.correlation.min_iterations >= 1)) {
+    n += 1;
+  }
   if (d.monitoring && !(Number.isInteger(d.monitoring.interval_minutes) && d.monitoring.interval_minutes >= 1)) {
     n += 1;
   }
@@ -284,9 +287,9 @@ export default function Config() {
   const d = draft;
   const errorCount = countErrors(d);
   const iterErr =
-    Number.isInteger(d.iterations) && d.iterations >= 1 && d.iterations <= 20
+    Number.isInteger(d.iterations) && d.iterations >= 1 && d.iterations <= 500
       ? null
-      : "1–20";
+      : "1–500";
 
   return (
     <Box>
@@ -334,11 +337,42 @@ export default function Config() {
             onChange={(v) => setDraft((p) => (p ? { ...p, iterations: v } : p))}
             width={170}
             min={1}
-            max={20}
+            max={500}
             error={iterErr}
           />
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
             How many times each run repeats the suite and averages (also selectable per run on the Dashboard).
+            Requests over 5 iterations are collected as a series of shorter runs so an interruption keeps its data.
+          </Typography>
+        </CardContent>
+      </Card>
+
+      {/* Confidence / maturity */}
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>
+            Confidence
+          </Typography>
+          <NumberField
+            label="Iterations to maturity"
+            value={d.correlation?.min_iterations ?? 15}
+            onChange={(v) =>
+              setDraft((p) =>
+                p ? { ...p, correlation: { ...(p.correlation ?? {}), min_iterations: v } } : p
+              )
+            }
+            width={200}
+            min={1}
+            error={
+              d.correlation && !(Number.isInteger(d.correlation.min_iterations) && d.correlation.min_iterations >= 1)
+                ? "Must be a whole number ≥ 1"
+                : null
+            }
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+            Total iterations a profile must accumulate before it's treated as <b>confident</b> (mature) — the bar
+            for a "best" crown and for significance calls on Settings Impact. Higher = stricter (more data before
+            trusting a profile); lower = faster to judge, noisier.
           </Typography>
         </CardContent>
       </Card>

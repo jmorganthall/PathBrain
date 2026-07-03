@@ -497,3 +497,44 @@ class ProfileRefresh(Base):
     iterations_run: Mapped[int] = mapped_column(Integer, default=0)
     current_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     current_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class CurrentTestStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class CurrentTest(Base):
+    """A "test the current settings for X minutes" session — a time-boxed data-collection
+    loop on whatever profile the firewall is **already** on.
+
+    Unlike ``ProfileTest``/``ChallengerRace`` it never writes the firewall (it measures the
+    live profile as-is), so there is no baseline to snapshot or restore. It just benchmarks
+    the current settings in short chunks (``runner.CHUNK_ITERATIONS`` iterations each) until
+    the deadline, so each chunk's data is persisted the moment it finishes and an interrupted
+    session keeps everything collected so far. A crash leaves nothing to undo —
+    ``reconcile_interrupted_current_tests`` only marks the orphaned row FAILED.
+    """
+
+    __tablename__ = "current_tests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[CurrentTestStatus] = mapped_column(
+        Enum(CurrentTestStatus), default=CurrentTestStatus.PENDING
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # How long to keep collecting (seconds) + a short human label of the profile under test.
+    duration_s: Mapped[int] = mapped_column(Integer, default=300)
+    target_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Live/result progress: total iterations collected, chunk runs created, and their ids.
+    iterations_run: Mapped[int] = mapped_column(Integer, default=0)
+    runs_created: Mapped[int] = mapped_column(Integer, default=0)
+    run_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)

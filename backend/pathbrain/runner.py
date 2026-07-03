@@ -32,7 +32,13 @@ from .scoring import (
 
 log = get_logger("runner")
 
-MAX_ITERATIONS = 20
+MAX_ITERATIONS = 500
+
+# Above this many iterations, a single logical request is split into a series of
+# runs of at most ``CHUNK_ITERATIONS`` each, so an interrupted long series still
+# persists every completed chunk instead of losing the whole thing. Runs of
+# ``CHUNK_ITERATIONS`` or fewer execute as a single run (the historical behaviour).
+CHUNK_ITERATIONS = 5
 
 
 def create_run(
@@ -55,6 +61,25 @@ def create_run(
         session.add(run)
         session.flush()
         return run.id
+
+
+def run_chunk(label: str | None, notes: str | None, iterations: int) -> tuple[int, bool, int]:
+    """Create one run of ``iterations`` and execute it (blocking). Returns
+    ``(run_id, ok, iterations_completed)`` where ``ok`` is True iff the run finished
+    COMPLETE.
+
+    The building block for a chunked series (manual large runs, the timed
+    "test current" engine): the caller loops this under a held coordinator lock,
+    so each chunk is persisted the moment it finishes. ``execute_run`` never
+    raises — it records failures on the row — so ``ok`` is read back from status.
+    """
+    run_id = create_run(label=label, notes=notes, iterations=iterations)
+    execute_run(run_id)
+    with session_scope() as session:
+        run = session.get(Run, run_id)
+        completed = int(run.iterations_completed or 0) if run else 0
+        ok = bool(run and run.status == RunStatus.COMPLETE)
+    return run_id, ok, completed
 
 
 def _metric_stats(values: list[float]) -> dict:

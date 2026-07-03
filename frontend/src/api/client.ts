@@ -13,6 +13,7 @@ import type {
   ProviderHealth,
   RollingScore,
   RunBaseline,
+  CurrentTest,
   RunDetail,
   RunEstimate,
   RunSummary,
@@ -88,6 +89,13 @@ export const api = {
     request<RunDetail>("/run", { method: "POST", body: JSON.stringify(body) }),
   runEstimate: () => request<RunEstimate>("/runs/estimate"),
   cancelRun: (id: number) => request<RunDetail>(`/runs/${id}/cancel`, { method: "POST" }),
+
+  // "Test current for X minutes": time-boxed collection on the live profile.
+  currentTestStart: (minutes: number) =>
+    request<CurrentTest>("/current/test", { method: "POST", body: JSON.stringify({ minutes }) }),
+  currentTestStatus: () => request<CurrentTest>("/current/test"),
+  currentTestCancel: () =>
+    request<{ cancelled: boolean; status: string | null }>("/current/test/cancel", { method: "POST" }),
 
   // Results
   latestResult: () => request<RunDetail>("/results/latest"),
