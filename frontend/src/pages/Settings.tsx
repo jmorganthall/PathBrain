@@ -40,7 +40,6 @@ import Typography from "@mui/material/Typography";
 
 import { api } from "../api/client";
 import type {
-  ApplyProfileChange,
   ChallengerRace,
   CrownHeirs,
   MetricSaturation,
@@ -57,6 +56,7 @@ import type {
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
 import ProfileQuadrant from "../components/ProfileQuadrant";
+import ApplyConfirmDialog, { type ApplyConfirm } from "../components/ApplyConfirmDialog";
 import InsightsIcon from "@mui/icons-material/Insights";
 import PublishIcon from "@mui/icons-material/Publish";
 import RestorePageIcon from "@mui/icons-material/Restore";
@@ -70,15 +70,6 @@ import { buildFields, fmtFieldValue as fmtNumField, profileValue } from "../util
 import type { FieldDef } from "../utils/profileFields";
 import { rankByMetric, rankColor } from "../utils/ranking";
 
-// State for the "Apply this profile" confirmation dialog: the previewed write
-// plan for one profile, awaiting the user's go-ahead.
-interface ApplyConfirm {
-  fingerprint: string;
-  label: string;
-  changes: ApplyProfileChange[];
-  warnings: string[];
-  alreadyApplied: boolean;
-}
 
 export function ImpactBanner({ impact }: { impact: SettingsImpact }) {
   if (!impact.changed || impact.delta_pct == null) return null;
@@ -1667,86 +1658,15 @@ export default function Settings() {
         </Card>
       )}
 
-      <Dialog open={confirm != null} onClose={() => !applying && setConfirm(null)} maxWidth="sm" fullWidth>
-        <DialogTitle>Apply profile to firewall</DialogTitle>
-        <DialogContent>
-          {confirm && (
-            <>
-              <DialogContentText sx={{ mb: 1 }}>
-                Write <b>{confirm.label}</b> to the firewall via the traffic shaper. This changes your
-                live network shaping immediately and isn't auto-undone — to revert, apply a different
-                profile.
-              </DialogContentText>
-              {confirm.alreadyApplied ? (
-                <Alert severity="info" sx={{ mb: 1 }}>
-                  The firewall already matches this profile — there's nothing to write.
-                </Alert>
-              ) : (
-                <TableContainer>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Pipe</TableCell>
-                        <TableCell>Field</TableCell>
-                        <TableCell align="right">From</TableCell>
-                        <TableCell align="right">To</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {confirm.changes.map((c, i) => (
-                        <TableRow key={`${c.pipe_uuid}-${c.field}-${i}`}>
-                          <TableCell>{c.label}</TableCell>
-                          <TableCell>{c.field_label}</TableCell>
-                          <TableCell align="right">
-                            <Typography component="span" variant="body2" color="text.secondary">
-                              {String(c.from ?? "—")}
-                            </Typography>
-                          </TableCell>
-                          <TableCell align="right" sx={{ fontWeight: 700 }}>
-                            {String(c.to ?? "—")}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              )}
-              {confirm.warnings.length > 0 && (
-                <Alert severity="warning" sx={{ mt: 1 }}>
-                  {confirm.warnings.map((w, i) => (
-                    <div key={i}>{w}</div>
-                  ))}
-                </Alert>
-              )}
-            </>
-          )}
-          <FormControlLabel
-            sx={{ mt: 1 }}
-            control={
-              <Checkbox
-                checked={applyRunBenchmark}
-                onChange={(e) => setApplyRunBenchmark(e.target.checked)}
-                disabled={applying}
-              />
-            }
-            label="Run a benchmark after applying (1 iteration)"
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setConfirm(null)} disabled={applying}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            color="warning"
-            startIcon={applying ? <CircularProgress size={16} color="inherit" /> : <PublishIcon />}
-            onClick={handleConfirmApply}
-            disabled={applying || (confirm?.alreadyApplied ?? false)}
-          >
-            {applying ? "Writing…" : "Write to firewall"}
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <ApplyConfirmDialog
+        confirm={confirm}
+        applying={applying}
+        runBenchmark={applyRunBenchmark}
+        onRunBenchmarkChange={setApplyRunBenchmark}
+        onCancel={() => setConfirm(null)}
+        onConfirm={handleConfirmApply}
+        title="Apply profile to firewall"
+      />
 
       <Dialog open={testConfirm != null} onClose={() => setTestConfirm(null)} maxWidth="sm" fullWidth>
         <DialogTitle>Test this profile up to the minimum</DialogTitle>

@@ -15,6 +15,7 @@ import Typography from "@mui/material/Typography";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ScienceIcon from "@mui/icons-material/Science";
+import PublishIcon from "@mui/icons-material/Publish";
 
 import LinearProgress from "@mui/material/LinearProgress";
 import { Link as RouterLink } from "react-router-dom";
@@ -22,6 +23,7 @@ import Link from "@mui/material/Link";
 
 import { api } from "../api/client";
 import type { AiConfig, AiModel, AiSuggestResult, AiSuggestion, ProfileTest } from "../api/types";
+import ApplyConfirmDialog, { type ApplyConfirm } from "../components/ApplyConfirmDialog";
 
 export default function AI() {
   const [cfg, setCfg] = useState<AiConfig | null>(null);
@@ -167,6 +169,56 @@ export default function AI() {
     };
   }, [testActive]);
 
+  // "Apply" — write a suggestion to the firewall PERMANENTLY, reusing the same confirm-diff
+  // dialog as Settings Impact's "Apply this profile" (preview → confirm → commit + benchmark).
+  const [previewingIdx, setPreviewingIdx] = useState<number | null>(null);
+  const [applyConfirm, setApplyConfirm] = useState<ApplyConfirm | null>(null);
+  const [applying, setApplying] = useState(false);
+  const [applyRunBenchmark, setApplyRunBenchmark] = useState(true);
+
+  const previewApply = useCallback(async (s: AiSuggestion, idx: number) => {
+    setPreviewingIdx(idx);
+    setError(null);
+    const settings = s.settings ?? s;
+    const label = `AI: ${String(s.rationale ?? "suggestion").slice(0, 60)}`;
+    try {
+      const r = await api.applySettings({ settings, label, preview: true });
+      setApplyConfirm({
+        fingerprint: r.fingerprint,
+        settings,
+        label: r.label || label,
+        changes: r.changes ?? [],
+        warnings: r.warnings ?? [],
+        alreadyApplied: r.already_applied,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not preview the changes");
+    } finally {
+      setPreviewingIdx(null);
+    }
+  }, []);
+
+  const confirmApply = useCallback(async () => {
+    if (!applyConfirm) return;
+    setApplying(true);
+    setError(null);
+    try {
+      const r = await api.applySettings({
+        settings: applyConfirm.settings,
+        label: applyConfirm.label,
+        preview: false,
+        run_benchmark: applyRunBenchmark,
+      });
+      const base = `Applied ${r.applied?.length ?? 0} change(s) to the firewall — now on ${r.label}`;
+      setToast(applyRunBenchmark ? `${base} · benchmarking now` : base);
+      setApplyConfirm(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to apply to the firewall");
+    } finally {
+      setApplying(false);
+    }
+  }, [applyConfirm, applyRunBenchmark]);
+
   return (
     <Box>
       <Typography variant="h4" sx={{ mb: 1 }}>
@@ -176,10 +228,11 @@ export default function AI() {
         Send your measured profiles (full settings + scoring data) to an LLM via <b>OpenRouter</b> and get
         back proposed shaper profiles that haven't been tested yet — ranked by the model's estimate of the
         chance each beats your current crown. Configure a key and model, tweak the prompt if you like, then
-        ask for suggestions. Each one has a <b>Test to minimum</b> button that applies it to the live
-        firewall (writable fields only), benchmarks it to the confidence minimum, and restores your
-        baseline — flowing the AI's ideas straight into the measurement loop. Nothing is applied without
-        that click.
+        ask for suggestions. Each one has a <b>Test to minimum</b> button (apply → benchmark to the
+        confidence minimum → restore your baseline) and an <b>Apply</b> button that writes it to the
+        firewall <b>permanently</b> — the same confirm-diff dialog as Settings Impact, showing the exact
+        field changes before you commit. Only writable fields are touched, so a suggestion is always
+        reachable, and nothing is applied without your click.
       </Typography>
 
       {error && (
@@ -433,6 +486,21 @@ export default function AI() {
                       </Button>
                       <Button
                         size="small"
+                        color="warning"
+                        startIcon={
+                          previewingIdx === i ? (
+                            <CircularProgress size={14} color="inherit" />
+                          ) : (
+                            <PublishIcon />
+                          )
+                        }
+                        disabled={previewingIdx != null || !s.settings}
+                        onClick={() => previewApply(s, i)}
+                      >
+                        Apply
+                      </Button>
+                      <Button
+                        size="small"
                         startIcon={<ContentCopyIcon />}
                         onClick={() => copy(JSON.stringify(s.settings ?? s, null, 2), "settings")}
                       >
@@ -492,6 +560,16 @@ export default function AI() {
           </CardContent>
         </Card>
       )}
+
+      <ApplyConfirmDialog
+        confirm={applyConfirm}
+        applying={applying}
+        runBenchmark={applyRunBenchmark}
+        onRunBenchmarkChange={setApplyRunBenchmark}
+        onCancel={() => setApplyConfirm(null)}
+        onConfirm={confirmApply}
+        title="Apply suggestion to firewall"
+      />
 
       <Snackbar
         open={toast != null}

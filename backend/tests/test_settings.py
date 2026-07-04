@@ -756,6 +756,73 @@ def test_apply_profile_requires_fingerprint(client):
     assert resp.status_code == 400
 
 
+def test_apply_settings_preview_then_commit(client):
+    """apply-settings applies arbitrary (AI-style) settings permanently — preview lists the
+    exact writes without touching the firewall, commit writes them via the provider."""
+    from pathbrain.providers.mock import _OVERRIDES
+
+    _OVERRIDES.clear()
+    settings = [{"label": "wan-download", "quantum": 4000, "target": "3ms"}]
+
+    prev = client.post(
+        "/api/settings/apply-settings", json={"settings": settings, "preview": True}
+    ).json()
+    assert prev["preview"] is True and prev["already_applied"] is False
+    by_field = {(c["label"], c["param"]): c for c in prev["changes"]}
+    assert by_field[("wan-download", "quantum")]["to"] == 4000
+    assert by_field[("wan-download", "target")]["to"] == "3ms"
+    assert _OVERRIDES == {}  # preview wrote nothing
+
+    resp = client.post(
+        "/api/settings/apply-settings",
+        json={"settings": settings, "run_benchmark": False},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert _OVERRIDES.get("quantum") == 4000 and _OVERRIDES.get("target") == "3ms"
+    _OVERRIDES.clear()
+
+
+def test_apply_settings_canonicalizes_ai_format(client):
+    """An AI's int target ("5" / 5) is canonicalized to the firewall's "<n>ms" on the way in."""
+    from pathbrain.providers.mock import _OVERRIDES
+
+    _OVERRIDES.clear()
+    resp = client.post(
+        "/api/settings/apply-settings",
+        json={"settings": [{"label": "wan-download", "target": 3}], "run_benchmark": False},
+    )
+    assert resp.status_code == 200
+    assert _OVERRIDES.get("target") == "3ms"  # coerced from the int 3
+    _OVERRIDES.clear()
+
+
+def test_apply_settings_rejects_no_op(client):
+    from pathbrain.providers.mock import _OVERRIDES
+
+    _OVERRIDES.clear()
+    resp = client.post("/api/settings/apply-settings", json={"settings": {}})
+    assert resp.status_code == 400
+    assert _OVERRIDES == {}
+
+
+def test_apply_settings_kicks_benchmark(client, monkeypatch):
+    from pathbrain.providers.mock import _OVERRIDES
+    import pathbrain.api.routes_run as routes_run
+
+    _OVERRIDES.clear()
+    kicked: list[int] = []
+    monkeypatch.setattr(routes_run, "_locked_execute", lambda rid: kicked.append(rid))
+
+    body = client.post(
+        "/api/settings/apply-settings",
+        json={"settings": [{"label": "wan-download", "quantum": 4000}], "run_benchmark": True},
+    ).json()
+    assert body["run_id"] is not None and kicked == [body["run_id"]]
+    _OVERRIDES.clear()
+
+
 def test_crown_is_highest_overall_among_confident(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     # "lucky": typically ~82 but occasionally spikes to 99 — high variance, few runs.

@@ -303,6 +303,12 @@ LLM-based. See `README.md` for the product overview.
   firewall's canonical form (unit-string vs int) — the target then fingerprints to what `discover()`
   reports back, which is what the profile-test verify compares against. The optimizer export tells
   the model the exact per-field format up front (`value_format` + a real `example` per shaper field).
+  Each suggestion also has a one-click **Apply** — `POST /api/settings/apply-settings` writes the
+  suggestion to the firewall **permanently** (one-way, no restore; the arbitrary-settings sibling of
+  `apply-profile`): overlays only writable fields onto live, `preview` returns the exact planned
+  writes for the shared **`ApplyConfirmDialog`** (the same confirm-diff UI as Settings-Impact "Apply
+  this profile"), commit applies via `provider.apply()` + kicks a 1-iteration benchmark. Rejects a
+  no-op / unreachable change.
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`,
