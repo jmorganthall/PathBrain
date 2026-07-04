@@ -107,8 +107,13 @@ def _seed_run(
         }
         if completion is not None:
             axes["completion"] = completion
+        # A comparable run persists the first-class Overall (methodology v5+); default it to the
+        # seeded smoothness score for fixtures unless a test sets it explicitly. Mirrors
+        # production, where every comparable run carries axis_scores["overall"].
         if overall is not None:
             axes["overall"] = overall
+        elif comparable:
+            axes["overall"] = sops
         # The crown (v7) corners over fcp × lcp × total_stall. Subscores drive the *axis*
         # scores + the custom-crown lens; the canonical Overall now corners the *raw* browser
         # measurements. Tests override subscores via ``crown_subscores``.
@@ -187,6 +192,29 @@ def test_profiles_and_impact(client):
     assert impact["after"]["fingerprint"] == "bbbbbbbbbbbb"
     assert impact["delta_abs"] > 0
     assert impact["significant"] is True  # ~70 -> ~85 over 5%, both confident
+
+
+def test_best_diff_is_computed_on_overall():
+    # The best-vs-next diff must measure the gap on the Overall (the crown we rank on) and the
+    # time-adjusted Overall — NOT the legacy smoothness median / relative_sops.
+    from pathbrain.api.routes_settings import _best_diff
+
+    profiles = [
+        {"fingerprint": "win", "label": "win", "overall": 90.0,
+         "relative_overall": {"delta_median": 5.0}, "completion": None, "confident": True,
+         "settings": [{"label": "wan", "quantum": 3000}]},
+        {"fingerprint": "runnerup", "label": "runnerup", "overall": 60.0,
+         "relative_overall": {"delta_median": 1.0}, "completion": None, "confident": True,
+         "settings": [{"label": "wan", "quantum": 1514}]},
+    ]
+    bd = _best_diff(profiles, "win")
+    assert bd["best"]["overall"] == 90.0 and bd["comparison"]["overall"] == 60.0
+    assert bd["delta_abs"] == 30.0                 # Overall gap (90 - 60)
+    assert bd["best"]["relative_overall"] == 5.0
+    assert bd["relative_delta"] == 4.0             # time-adjusted Overall gap (5 - 1)
+    # A profile with no crown Overall yields a null delta, not a crash.
+    bd2 = _best_diff([dict(profiles[0]), {**profiles[1], "overall": None}], "win")
+    assert bd2["delta_abs"] is None and bd2["delta_pct"] is None
 
 
 def test_confidence_is_iteration_based(client):

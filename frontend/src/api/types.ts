@@ -197,21 +197,23 @@ export interface ProfileFieldChange {
 export interface ProfileDiffSide {
   fingerprint: string;
   label: string;
-  median: number;
+  // Field-normalized Overall (the crown corner we rank on), null if no crown data.
+  overall: number | null;
   completion: number | null;
-  // Time-adjusted SOPS (median vs the day×hour norm), null if not computable.
-  relative_sops: number | null;
+  // Time-adjusted Overall (median vs the day×hour norm), null if not computable.
+  relative_overall: number | null;
   confident: boolean;
 }
 
 export interface ProfileDiff {
   best: ProfileDiffSide;
   comparison: ProfileDiffSide;
-  delta_abs: number;
+  // Overall gap (best − comparison); null when either side lacks a crown Overall.
+  delta_abs: number | null;
   delta_pct: number | null;
-  // Completion median delta (best − comparison); can move opposite to SOPS.
+  // Completion median delta (best − comparison); can move opposite to the Overall.
   completion_delta: number | null;
-  // Time-adjusted advantage of best over comparison (their relative_sops gap).
+  // Time-adjusted advantage of best over comparison (their relative_overall gap).
   relative_delta: number | null;
   changes: ProfileFieldChange[];
 }

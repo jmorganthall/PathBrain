@@ -1344,7 +1344,7 @@ def _best_diff(profiles: list[dict], best_fingerprint: str | None) -> dict | Non
 
     Returns ``None`` until there are two profiles to compare. ``changes`` describe
     what the *best* profile did relative to the comparison one (e.g. CoDel target
-    10ms → 5ms, direction "lower"), with the resulting SOPS delta.
+    10ms → 5ms, direction "lower"), with the resulting **Overall** delta.
     """
     best_idx = next(
         (i for i, p in enumerate(profiles) if p["fingerprint"] == best_fingerprint), None
@@ -1353,9 +1353,15 @@ def _best_diff(profiles: list[dict], best_fingerprint: str | None) -> dict | Non
         return None
     best = profiles[best_idx]
     comparison = profiles[best_idx + 1]
-    delta_abs = round(best["median"] - comparison["median"], 2)
+    # The gap is measured on the **Overall** (the field-normalized crown corner we rank on),
+    # not the legacy Smoothness median. Either profile's Overall can be None (no crown data),
+    # so the delta is best-effort.
+    best_ov, comp_ov = best.get("overall"), comparison.get("overall")
+    delta_abs = (
+        round(best_ov - comp_ov, 2) if best_ov is not None and comp_ov is not None else None
+    )
     delta_pct = (
-        round((delta_abs / comparison["median"]) * 100, 1) if comparison["median"] else None
+        round((delta_abs / comp_ov) * 100, 1) if delta_abs is not None and comp_ov else None
     )
 
     def _comp_median(p: dict) -> float | None:
@@ -1370,11 +1376,11 @@ def _best_diff(profiles: list[dict], best_fingerprint: str | None) -> dict | Non
     )
 
     def _rel_median(p: dict) -> float | None:
-        r = p.get("relative_sops")
+        r = p.get("relative_overall")
         return r["delta_median"] if r else None
 
     best_rel, comp_rel = _rel_median(best), _rel_median(comparison)
-    # Time-adjusted advantage: the gap once each profile's day/hour environment is
+    # Time-adjusted advantage: the Overall gap once each profile's day/hour environment is
     # removed. Can differ from the raw delta if the two were sampled at different
     # times — that difference is exactly the confound this strips out.
     relative_delta = (
@@ -1384,22 +1390,22 @@ def _best_diff(profiles: list[dict], best_fingerprint: str | None) -> dict | Non
         "best": {
             "fingerprint": best["fingerprint"],
             "label": best["label"],
-            "median": best["median"],
+            "overall": best_ov,
             "completion": best_comp,
-            "relative_sops": best_rel,
+            "relative_overall": best_rel,
             "confident": best["confident"],
         },
         "comparison": {
             "fingerprint": comparison["fingerprint"],
             "label": comparison["label"],
-            "median": comparison["median"],
+            "overall": comp_ov,
             "completion": comp_comp,
-            "relative_sops": comp_rel,
+            "relative_overall": comp_rel,
             "confident": comparison["confident"],
         },
         "delta_abs": delta_abs,
         "delta_pct": delta_pct,
-        # Completion can move opposite to SOPS — surfacing it here is the whole
+        # Completion can move opposite to the Overall — surfacing it here is the whole
         # point (feels-fast vs. raw-completion pulling apart).
         "completion_delta": completion_delta,
         "relative_delta": relative_delta,
@@ -1878,13 +1884,15 @@ def cancel_refresh() -> dict:
 def settings_impact(
     session: Session = Depends(get_session),
     complete_only: bool = Query(
-        True, description="Only consider runs with the latest (paint) SOPS metrics."
+        True, description="Only consider runs comparable under the current methodology."
     ),
 ) -> dict:
     """Compare the current settings profile to the one before the last change.
 
     Like ``/settings/profiles``, defaults to runs scored under the latest rubric so
-    legacy data doesn't skew the before/after medians.
+    legacy data doesn't skew the before/after medians. The before/after medians are the
+    **Overall** (the headline this view ranks on), read from each run's persisted
+    ``axis_scores['overall']``.
     """
     cfg = get_config(session).get("correlation", {}) or {}
     threshold = float(cfg.get("significant_change_pct", 5) or 5)
@@ -1892,14 +1900,14 @@ def settings_impact(
     min_iterations = _min_iterations(session)
     rows = _completed_runs_with_scores(session)
 
-    # Build contiguous segments of runs sharing a fingerprint (chronological).
-    # Before/after medians are Smoothness (the headline this view ranks on).
+    # Build contiguous segments of runs sharing a fingerprint (chronological). Before/after
+    # medians are the Overall (the crown roll-up persisted per run), not the legacy Smoothness.
     segments: list[dict] = []
     for run, score in rows:
         if complete_only and not _comparable(score):
             continue
-        smooth = (score.axis_scores or {}).get("smoothness")
-        if smooth is None:
+        overall = (score.axis_scores or {}).get("overall")
+        if overall is None:
             continue
         fp = run.settings_fingerprint
         if not segments or segments[-1]["fingerprint"] != fp:
@@ -1907,12 +1915,12 @@ def settings_impact(
                 {
                     "fingerprint": fp,
                     "settings": run.settings,
-                    "sops": [],
+                    "scores": [],
                     "iterations": 0,
                     "changed_at": run.created_at,
                 }
             )
-        segments[-1]["sops"].append(smooth)
+        segments[-1]["scores"].append(overall)
         segments[-1]["iterations"] += int(run.iterations or 1)
         segments[-1]["settings"] = run.settings
 
@@ -1926,8 +1934,8 @@ def settings_impact(
         return base
 
     prev, cur = segments[-2], segments[-1]
-    before = round(median(prev["sops"]), 2)
-    after = round(median(cur["sops"]), 2)
+    before = round(median(prev["scores"]), 2)
+    after = round(median(cur["scores"]), 2)
     delta_abs = round(after - before, 2)
     delta_pct = round((delta_abs / before) * 100, 1) if before else None
     # Don't make significance calls until both profiles have enough iterations.
@@ -1947,14 +1955,14 @@ def settings_impact(
             "label": summarize(prev["settings"]),
             "fingerprint": prev["fingerprint"],
             "median": before,
-            "count": len(prev["sops"]),
+            "count": len(prev["scores"]),
             "iterations": prev["iterations"],
         },
         "after": {
             "label": summarize(cur["settings"]),
             "fingerprint": cur["fingerprint"],
             "median": after,
-            "count": len(cur["sops"]),
+            "count": len(cur["scores"]),
             "iterations": cur["iterations"],
         },
     }
