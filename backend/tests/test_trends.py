@@ -147,6 +147,52 @@ def test_profile_relative_none_without_values():
     assert profile_relative(pts, pts, "sops", 0, 3) is None
 
 
+def _wpt(dt: datetime, overall: float, fp: str) -> RunPoint:
+    return RunPoint(created_at=dt, values={"overall": overall}, fingerprint=fp)
+
+
+def test_weather_relative_uses_contemporaneous_window_not_day_hour():
+    from pathbrain.trends import profile_weather_relative
+
+    t1 = datetime(2024, 1, 1, 12, 0)   # Mon 12:00 — an easy moment
+    t2 = datetime(2024, 1, 15, 12, 0)  # Mon 12:00 two weeks later — a degraded moment
+    # Note: t1 and t2 fall in the SAME (weekday, hour) cell, so the day×hour baseline pools them.
+    env1 = [_wpt(t1, 50.0, "env") for _ in range(4)]
+    env2 = [_wpt(t2, 30.0, "env") for _ in range(4)]
+    a_pts = [_wpt(t1, 55.0, "A") for _ in range(3)]   # +5 over its own moment's weather
+    b_pts = [_wpt(t2, 33.0, "B") for _ in range(3)]   # +3 over its own moment's weather
+    baseline = env1 + env2 + a_pts + b_pts
+
+    a = profile_weather_relative(baseline, a_pts, "overall", exclude_fingerprint="A", min_samples=3)
+    b = profile_weather_relative(baseline, b_pts, "overall", exclude_fingerprint="B", min_samples=3)
+    # Each profile is judged against the ±2h window in ABSOLUTE time (drift-neutralizing),
+    # excluding its own runs: A beat its moment by 5, B by 3.
+    assert a["delta_median"] == 5.0 and a["count"] == 3
+    assert b["delta_median"] == 3.0
+    # The two eras share one (weekday, hour) cell, so day×hour would conflate them; the ±2h
+    # weather window keeps them separate and correctly ranks A's edge above B's.
+    assert a["delta_median"] > b["delta_median"]
+
+
+def test_weather_relative_excludes_self_and_requires_a_window():
+    from pathbrain.trends import profile_weather_relative
+
+    t = datetime(2024, 1, 1, 12, 0)
+    # A profile alone in its window has no other runs to compare against → no reading.
+    solo = [_wpt(t, 80.0, "solo") for _ in range(5)]
+    assert (
+        profile_weather_relative(solo, solo, "overall", exclude_fingerprint="solo", min_samples=3)
+        is None
+    )
+    # With other-profile runs present, the profile is kept out of its own baseline: 80 vs the
+    # 60-median of the *other* runs = +20 (not diluted toward 0 by its own 80s).
+    others = [_wpt(t, 60.0, "env") for _ in range(4)]
+    res = profile_weather_relative(
+        others + solo, solo, "overall", exclude_fingerprint="solo", min_samples=3
+    )
+    assert res is not None and res["delta_median"] == 20.0
+
+
 # ── API smoke tests (no live network) ───────────────────────────────────────
 
 

@@ -276,6 +276,8 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.speed?.median ?? null;
     case "relative_overall":
       return p.relative_overall?.delta_median ?? null;
+    case "weather_overall":
+      return p.weather_overall?.delta_median ?? null;
     case "p25":
       return p.p25;
     case "overall_p25":
@@ -337,6 +339,7 @@ const FIXED_COLUMN_KEYS = new Set([
   "iterations",
   "count",
   "relative_overall",
+  "weather_overall",
 ]);
 
 // Group a field list by its `group` for the axis-picker / column menus.
@@ -1309,8 +1312,12 @@ export default function Settings() {
               Iterations count every measurement sweep — a 15‑iteration run carries far more signal
               than a single‑iteration one. <b>vs typical</b> is the time-adjusted edge: median Overall
               minus the historical norm for the day &amp; hour each run landed on — positive means the
-              profile beats its environment; it's informational and no longer affects the crown. Use{" "}
-              <b>Columns</b> to add any other metric we collect, then sort by it.
+              profile beats its environment; it's informational and no longer affects the crown.{" "}
+              <b>vs weather</b> is the sharper version of the same idea: Overall minus the median of all
+              runs within ±2h of each run (the <i>contemporaneous</i> network conditions, excluding
+              this profile's own runs) — so it neutralizes drift, one-off congestion, and sweep-slot
+              bias rather than only recurring day/hour patterns. Also informational, not a crown input.
+              Use <b>Columns</b> to add any other metric we collect, then sort by it.
               {showCompletion && (
                 <>
                   {" "}
@@ -1356,6 +1363,14 @@ export default function Settings() {
                     <SortHeader
                       id="relative_overall"
                       label="vs typical"
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    <SortHeader
+                      id="weather_overall"
+                      label="vs weather"
                       align="right"
                       orderBy={orderBy}
                       order={order}
@@ -1501,6 +1516,9 @@ export default function Settings() {
                       })}
                       <TableCell align="right">
                         <RelativeSopsCell rel={p.relative_overall} confident={p.confident} />
+                      </TableCell>
+                      <TableCell align="right">
+                        <RelativeSopsCell rel={p.weather_overall} confident={p.confident} />
                       </TableCell>
                       <TableCell align="right">
                         {p.overall_p25 != null ? `${p.overall_p25}–${p.overall_p75}` : "—"}

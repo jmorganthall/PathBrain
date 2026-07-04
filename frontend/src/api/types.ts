@@ -139,6 +139,11 @@ export interface SettingsProfile {
   // IQR of the per-run Overall score (its own run-to-run variation). Null until scorable.
   overall_p25: number | null;
   overall_p75: number | null;
+  // Time-adjusted vs the contemporaneous network weather (±2h rolling baseline, excluding the
+  // profile's own runs): how much this profile beat the conditions it actually ran in. More
+  // diagnostic than the day×hour "vs typical" (neutralizes drift + transient congestion).
+  // Informational — not a crown input. Null until any run had a trustworthy window.
+  weather_overall: { delta_median: number; p25: number; p75: number; count: number } | null;
   // Time-adjusted ("vs typical") Overall: how much this profile beats its day×hour norm.
   // Informational only — it does not feed the crown. Null until a usable baseline exists.
   relative_overall: { delta_median: number; p25: number; p75: number; count: number } | null;
