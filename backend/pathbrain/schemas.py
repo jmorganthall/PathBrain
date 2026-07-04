@@ -22,6 +22,23 @@ class CurrentTestStart(BaseModel):
     minutes: float
 
 
+class AiConfigUpdate(BaseModel):
+    """Partial AI settings; only provided fields are saved. A blank ``api_key`` is ignored."""
+
+    api_key: str | None = None
+    model: str | None = None
+    prompt: str | None = None
+
+
+class AiSuggest(BaseModel):
+    """Ask the configured model to propose new profiles from the optimizer export."""
+
+    model: str | None = None       # override the saved model for this call
+    prompt: str | None = None      # override the saved prompt for this call
+    runs_per_profile: int = 50
+    profile_limit: int | None = 25  # top-N profiles by Overall (bounds the payload)
+
+
 class ConfigUpdate(BaseModel):
     """Partial benchmark config; merged over the stored config."""
 
