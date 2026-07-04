@@ -25,7 +25,7 @@ def test_derived_views_match_the_known_model():
         "quantum", "limit", "flows", "target", "interval", "ecn", "download_bandwidth",
     }
     assert set(sf.NON_WRITABLE_FIELDS) == {"upload_bandwidth", "queues", "scheduler"}
-    assert set(sf.SWEEPABLE_FIELDS) == {"quantum", "target"}
+    assert set(sf.SWEEPABLE_FIELDS) == {"quantum", "target", "interval"}
 
 
 def test_writable_fields_are_identity_fields():
@@ -55,3 +55,27 @@ def test_opnsense_can_map_every_writable_field():
 def test_provider_writable_fields_accessor():
     # The single capability accessor returns the registry set by default.
     assert set(MockProvider().writable_fields()) == set(sf.WRITABLE_FIELDS)
+
+
+def test_coerce_value_canonicalizes_to_firewall_format():
+    # Unit fields → BARE int (the firewall keys duration selects by the bare number, e.g. "5",
+    # not "5ms"), regardless of how the value arrives.
+    assert sf.coerce_value("target", "5ms") == 5
+    assert sf.coerce_value("target", 5) == 5
+    assert sf.coerce_value("target", "5") == 5
+    assert sf.coerce_value("target", 5.0) == 5
+    assert sf.coerce_value("interval", 100) == 100
+    assert isinstance(sf.coerce_value("target", "5ms"), int)
+    # Int fields → int (never a string), so the fingerprint matches discover()'s int.
+    assert sf.coerce_value("quantum", "3000") == 3000
+    assert sf.coerce_value("quantum", 3000.0) == 3000
+    assert isinstance(sf.coerce_value("quantum", "3000"), int)
+    # Bool field → bool from common truthy strings.
+    assert sf.coerce_value("ecn", "true") is True
+    assert sf.coerce_value("ecn", "false") is False
+    assert sf.coerce_value("ecn", False) is False
+    # Bandwidth / unknown-format strings pass through untouched.
+    assert sf.coerce_value("download_bandwidth", "100Mbit") == "100Mbit"
+    # Unparseable numeric input degrades to passthrough (no raise).
+    assert sf.coerce_value("target", "fast") == "fast"
+    assert sf.coerce_value("quantum", None) is None

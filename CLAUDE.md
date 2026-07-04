@@ -111,7 +111,8 @@ LLM-based. See `README.md` for the product overview.
     registry's `SWEEPABLE_FIELDS` (quantum × target today). Applies each variant for real,
     benchmarks it, **restores the baseline at the end** (`reconcile_interrupted_sweeps`
     restores on startup too). Variant generation, value formatting (`shaper_fields.format_value`
-    — int vs `"<n>ms"`), apply, label, and restore all iterate `SWEEPABLE_FIELDS`, so marking
+    — the bare-number **wire** value; `format_display` adds the unit for labels only), apply,
+    label, and restore all iterate `SWEEPABLE_FIELDS`, so marking
     another field sweepable in the registry extends the engine with no new branch. The Shotgun
     Sweep **UI** is driven the same way: `GET /api/sweep/fields` returns each sweepable field's
     label/unit/default range (from `ShaperField.sweep_default`) and the page renders a control
@@ -135,7 +136,19 @@ LLM-based. See `README.md` for the product overview.
   - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
     iterations still needed to reach `correlation.min_iterations`, then **restore the
     baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
-    restores on startup). `/api/settings/test-profile`.
+    restores on startup). `/api/settings/test-profile`. The post-apply verify checks the
+    firewall reached the target **semantically** — `plan_apply(target, discover())` must have
+    no remaining *writable* diffs — **not** by exact fingerprint hash, which is format-sensitive
+    and used to false-negative on an externally-supplied target (an AI suggestion), failing
+    before any benchmark ran; a genuinely unaccepted field is reported per-field ("did not
+    accept quantum …"). Field comparison is **numeric** (`settings_profile._field_equal` via
+    `_to_number`), so a duration expressed as `"5ms"`, `"5"`, or `5` all compare equal — the
+    firewall echoes CoDel `target`/`interval` back as the **bare option key** (`"5"`, not
+    `"5ms"`). Correspondingly the value **written** is always the bare number
+    (`_wire_value`/`shaper_fields.format_value`) — writing `"5ms"` to an option-keyed select
+    silently doesn't take (the real "apply didn't happen" bug); `"ms"` is display-only
+    (`format_display`). Each step is written to `ProfileTest.stage` (snapshot → apply → verify →
+    benchmark → restore → done/failed) for a live UI readout.
   - `current_test.py` — **Test current for X minutes**: a time-boxed data-collection loop on
     whatever profile the firewall is **already** on. Unlike the other engines it **never writes
     the firewall** (it measures the live profile as-is), so there's no baseline to snapshot or
@@ -287,14 +300,78 @@ LLM-based. See `README.md` for the product overview.
   `environment_signature` check as the race), so the card never lists a profile the race
   would refuse to apply;
   plus "Test to minimum" and **"Race challengers"**),
-  Experiments, Shotgun Sweep, Config, Methodology, Plugins, Data Dump, Run Detail. A
+  Experiments, Shotgun Sweep, Config, Methodology, Plugins, Data Dump, AI, Run Detail. A
   top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
   (re-grade, sweep, run, profile test, challenger race, …). The **Data Dump** page has two
   exports: the raw run dump (`/api/history/dump`) and the **AI optimizer export**
-  (`GET /api/settings/export/optimizer`, `optimizer_export`) — a profile-centric JSON of each
-  profile's tunable shaper settings → runs → raw scoring metrics, plus the methodology objective
-  (crown metrics + lower-is-better + observed best/worst) and the shaper field model (writable +
-  sweepable fields + ranges), purpose-built to feed an LLM that proposes new, untested profiles.
+  (`GET /api/settings/export/optimizer`, `build_optimizer_export`) — a profile-centric JSON of
+  each profile's **full details** (complete shaper settings + first/last seen) **and scoring
+  data** (percentile Overall + IQR, per-crown-metric percentile, axis scores, raw metric medians,
+  and per-run raw scoring metrics), plus the methodology objective (crown metrics + lower-is-better
+  + observed best/worst) and the shaper field model (writable + sweepable fields + ranges). It also
+  carries a deterministic **`analysis.field_sensitivity`** block (`_field_sensitivity`): for each
+  writable lever **per pipe label** × each crown metric, the Spearman rank correlation across the
+  exported profiles (one (field value, profile-median metric) point per profile), with
+  `metric_direction` (does the metric rise/fall as the field rises) + `effect` (improves/worsens the
+  crown). This is the settings→outcome relationship map computed *server-side* — trustworthy and
+  chartable regardless of the model — handed to the LLM so it reasons over an explicit "this up →
+  that down" map instead of eyeballing raw rows. Each lever is also correlated against the
+  **Overall** itself (the rank-corner we crown on), since a lever can move the Overall while barely
+  correlating with any single raw metric. They're **marginal** (profiles vary several fields
+  at once → possibly confounded), not partial. It **also** carries a deterministic
+  **`analysis.top_profile_signature`** block (`_lever_signature`): for each writable lever, what the
+  **top-Overall quartile** of profiles runs vs the whole field — `pattern` (higher/lower/`sweet_spot`
+  /none), `top_value`+`top_range` (the value the winners share), `field_range`, plus shift /
+  concentration / Cliff's delta. This answers what the correlations **can't**: when every ρ≈0 the
+  winners can still cluster on a specific value (a sweet spot both extremes miss) or run a lever
+  systematically higher/lower — a combination/non-monotone edge a single-lever correlation is
+  blind to (rendered as a **"What the top profiles share"** card on the AI page). It **also**
+  carries **`analysis.coverage_gaps`** (`_coverage_gaps`): levers with a **promising but
+  under-sampled** signal — a directional pattern or suggestive ρ, but too few distinct values
+  measured (or the favored direction runs off the edge of what's been tested). Each is a concrete
+  **data request** (`suggested_values`, `action` extend_lower/extend_higher/resolve, `sweepable`)
+  so the model can **kick back "go measure here" instead of a speculative profile** (the AI returns
+  these as `data_requests`; rendered as a **"What to measure next"** card linking to the Shotgun
+  Sweep). This is the active-experiment layer: a signal is only actionable once resolved.
+  `interval` is now a **sweepable** field so the most common recommendation (sweep CoDel interval)
+  is directly runnable. The prompt also forbids the model from inventing statistics (only cite ρ /
+  medians present in the JSON — a lever with too few distinct values has no `field_sensitivity` row
+  and must be described from `top_profile_signature`). Bounded
+  by `runs_per_profile` and `profile_limit` (top-N by Overall). The **AI** page (`ai.py`,
+  `routes_ai.py`) sends that export to an LLM via **OpenRouter** and shows proposed new profiles:
+  the API key lives in its own `AppConfig` `"ai"` row (isolated from the benchmark config so it
+  never leaks into run snapshots / the data dump; returned **masked** via `ai.public_config`), the
+  model + editable prompt are saved there too. `GET/PUT /api/ai/config`, `DELETE /api/ai/config/key`,
+  `GET /api/ai/models`, `POST /api/ai/suggest` (builds the export, calls OpenRouter chat-completions,
+  best-effort parses `{relationships:[…], suggestions:[{settings, displacement_likelihood, rationale}]}`,
+  **ranked by the model's crown-displacement estimate**). The prompt now runs a **two-step** interp:
+  the model FIRST returns `relationships` — its read of how each lever moves each crown metric
+  (`inverse`/`linear`/`none` + confidence + evidence), grounded in `analysis.field_sensitivity` —
+  THEN proposes suggestions consistent with them. The AI page renders a **"Settings ↔ outcome
+  relationships"** card: the deterministic `field_sensitivity` table (direction + improves/worsens
+  chips, echoed on `/ai/suggest` and the stream `meta` event) plus the model's own interpretation.
+  A **streaming** variant `POST /api/ai/suggest/stream`
+  (`ai.suggest_stream` + `_stream_chat`) returns Server-Sent Events — a `meta` event (with
+  `field_sensitivity`) then
+  `reasoning`/`content` token deltas then a terminal `done` (parsed suggestions + relationships) or `error` — so a
+  long request keeps the connection alive (no timeout) and the AI page shows the model's reasoning +
+  answer live (default on, `Stream` toggle; `client.aiSuggestStream` consumes the SSE via `fetch` +
+  `ReadableStream`). Config secrets are resolved before the generator starts, so it's session-free.
+  Each suggestion has a **one-click "Test to minimum"**:
+  `POST /api/settings/test-settings` (`_apply_writable_overrides` + `TestSettings`) materializes the
+  suggestion onto the **live** profile — overriding **only writable fields** so it's always reachable
+  — then runs a normal profile test (apply → benchmark to `min_iterations` → restore baseline). No
+  firewall write happens for an unreachable or no-op suggestion (rejected up front). Each override
+  value is run through `shaper_fields.coerce_value` so an AI's `"5ms"`/`5`/`"5"` all become the
+  firewall's **bare-number** wire form (CoDel `target`/`interval` are option-keyed selects keyed by
+  the bare number — writing `"5ms"` doesn't take). The optimizer export tells the model the exact
+  per-field format up front (`value_format` + a real `example` per shaper field, pulled live).
+  Each suggestion also has a one-click **Apply** — `POST /api/settings/apply-settings` writes the
+  suggestion to the firewall **permanently** (one-way, no restore; the arbitrary-settings sibling of
+  `apply-profile`): overlays only writable fields onto live, `preview` returns the exact planned
+  writes for the shared **`ApplyConfirmDialog`** (the same confirm-diff UI as Settings-Impact "Apply
+  this profile"), commit applies via `provider.apply()` + kicks a 1-iteration benchmark. Rejects a
+  no-op / unreachable change.
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`,

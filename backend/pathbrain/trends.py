@@ -10,8 +10,11 @@ it — "wins above replacement": ``observed − expected_for_this_time``.
 The environment is best characterised by the infra/completion metrics (latency,
 jitter, loss, throughput, DNS/TCP/TLS): they track internet conditions and are
 largely config-insensitive, so a plain all-history baseline reflects the
-environment rather than the config under test. SOPS (paint) is what the config
-optimises, so its relative reading isolates the config's contribution.
+environment rather than the config under test. The headline **Overall** (and its
+axes) is what the config optimises, so its relative reading isolates the config's
+contribution — this is the "vs typical" edge shown on the Dashboard and Settings
+Impact. (The legacy smoothness/SOPS relative reading is still computed but no longer
+the headline.)
 
 This module is pure aggregation over ``RunPoint`` records (no DB / FastAPI), so it
 is straightforward to unit-test. The API layer (``api/routes_trends.py``) is
@@ -312,8 +315,8 @@ def profile_relative(
     """Time-adjusted summary for a set of runs (e.g. one settings profile).
 
     ``delta_median`` > 0 means runs under this profile beat the time-of-day norm by
-    that many points on average (for a higher-is-better metric like SOPS) — "this
-    config performs above its historical environment". None when no run had a
+    that many points on average (for a higher-is-better metric like the Overall) —
+    "this config performs above its historical environment". None when no run had a
     usable baseline.
     """
     deltas = relative_deltas(baseline_points, target_points, metric_key, tz_offset_min, min_samples)

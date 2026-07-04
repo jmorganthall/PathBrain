@@ -14,11 +14,16 @@ from pathbrain.providers import mock as mock_mod
 
 
 def test_value_formatting_comes_from_the_registry():
-    from pathbrain.shaper_fields import format_value
+    from pathbrain.shaper_fields import format_display, format_value
 
     assert format_value("quantum", 1514.4) == 1514          # int field
-    assert format_value("target", 5.0) == "5ms"             # unit field
-    assert format_value("interval", 100) == "100ms"
+    # The WIRE value is a bare int, even for unit fields — the firewall keys duration selects
+    # by the bare number ("5"), so writing "5ms" silently doesn't take.
+    assert format_value("target", 5.0) == 5
+    assert format_value("interval", 100) == 100
+    # The unit is a DISPLAY concern only.
+    assert format_display("target", 5) == "5ms"
+    assert format_display("quantum", 1514) == "1514"
 
 
 def test_param_combos_pick_up_a_newly_sweepable_field(monkeypatch):
@@ -40,9 +45,9 @@ def test_generate_variants_cartesian():
         "target": {"enabled": True, "min": 3, "max": 5, "step": 1},
     }
     v = sweep_mod.generate_variants(spec)
-    assert len(v) == 9  # [1500,2250,3000] × [3ms,4ms,5ms]
-    assert {"quantum": 1500, "target": "3ms"} in v
-    assert {"quantum": 3000, "target": "5ms"} in v
+    assert len(v) == 9  # [1500,2250,3000] × [3,4,5] ms (bare wire values)
+    assert {"quantum": 1500, "target": 3} in v
+    assert {"quantum": 3000, "target": 5} in v
 
 
 def test_generate_variants_single_param():
@@ -176,11 +181,12 @@ def test_sweep_fields_endpoint_lists_sweepable_fields(client):
     assert resp.status_code == 200
     fields = resp.json()["fields"]
     by_key = {f["key"]: f for f in fields}
-    # Driven by the registry: quantum + target are sweepable today, each with a label,
-    # a unit (quantum none, target "ms"), and a starting range for the UI control.
-    assert set(by_key) == {"quantum", "target"}
+    # Driven by the registry: quantum + target + interval are sweepable today, each with a
+    # label, a unit (quantum none, target/interval "ms"), and a starting range for the UI control.
+    assert set(by_key) == {"quantum", "target", "interval"}
     assert by_key["quantum"]["unit"] is None
     assert by_key["target"]["unit"] == "ms"
+    assert by_key["interval"]["unit"] == "ms"
     assert by_key["quantum"]["default"]["enabled"] is True
     assert {"enabled", "min", "max", "step"} <= set(by_key["target"]["default"])
 

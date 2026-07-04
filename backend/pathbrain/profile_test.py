@@ -46,6 +46,18 @@ def _apply_all(provider, changes: list[dict]) -> None:
         provider.apply({"pipe_uuid": ch["pipe_uuid"], "param": ch["param"], "value": ch["value"]})
 
 
+def _set_stage(pt_id: int, stage: str) -> None:
+    """Record the current step on the row (for the live UI readout) and log it."""
+    log.info("Profile test %s: %s", pt_id, stage)
+    try:
+        with session_scope() as session:
+            pt = session.get(ProfileTest, pt_id)
+            if pt is not None:
+                pt.stage = stage
+    except Exception:  # noqa: BLE001 — a status write must never break the test
+        log.debug("Profile test %s: could not persist stage %r", pt_id, stage, exc_info=True)
+
+
 def start(fingerprint_: str, target_settings: list[dict], label: str, iterations: int) -> int:
     """Launch a profile test. Returns the ``ProfileTest`` id.
 
@@ -61,6 +73,7 @@ def start(fingerprint_: str, target_settings: list[dict], label: str, iterations
             target_label=label,
             iterations=iterations,
             baseline=None,
+            stage="Queued — waiting for any running benchmark to finish",
         )
         session.add(pt)
         session.flush()
@@ -83,6 +96,7 @@ def _drive(pt_id: int) -> None:
         # Hold the coordination lock for the whole session (apply → benchmark →
         # restore). Queues behind any in-progress firewall/benchmark session.
         with coordinator.hold(f"profile-test#{pt_id}"):
+            _set_stage(pt_id, "Reading current firewall settings")
             live = provider.discover()
             baseline = normalize(live)
             with session_scope() as session:
@@ -94,24 +108,47 @@ def _drive(pt_id: int) -> None:
                 target_fp = pt.fingerprint
                 label = pt.target_label or target_fp
             try:
-                # Apply the target profile, then read it back to confirm we reached it.
-                changes, _warnings = plan_apply(target, live)
-                _apply_all(provider, changes)
-                reached_fp = fingerprint(normalize(provider.discover()))
-                if reached_fp != target_fp:
-                    raise RuntimeError(
-                        f"Could not reach the target profile (got {reached_fp}, wanted {target_fp})."
+                # Apply the target profile, then read it back to confirm every writable field
+                # actually took — semantically (via plan_apply), not by exact fingerprint hash,
+                # which is format-sensitive ("5ms" vs 5) and would false-negative on values the
+                # firewall stores in its own representation.
+                changes, warnings = plan_apply(target, live)
+                if changes:
+                    detail = ", ".join(
+                        f"{c['label']}·{c['field']} {c.get('from')}→{c.get('to')}" for c in changes
                     )
+                    _set_stage(pt_id, f"Applying {len(changes)} change(s): {detail}"[:255])
+                    _apply_all(provider, changes)
+                else:
+                    _set_stage(pt_id, "Firewall already on the target profile — no changes to apply")
+
+                _set_stage(pt_id, "Verifying the firewall reached the target")
+                live_after = provider.discover()
+                after = normalize(live_after)
+                remaining, _ = plan_apply(target, live_after)
+                if remaining:
+                    missed = ", ".join(
+                        f"{c['label']}·{c['field']} (wanted {c.get('to')}, is {c.get('from')})"
+                        for c in remaining
+                    )
+                    raise RuntimeError(
+                        f"Firewall did not accept {len(remaining)} field(s): {missed}. "
+                        "The apply did not take — check provider write permissions / field support."
+                    )
+                reached_fp = fingerprint(after)
+                log.info("Profile test %s: firewall reached %s (target %s)", pt_id, reached_fp, target_fp)
 
                 run_id = create_run(
                     label=f"test · {label}",
                     notes=f"Profile test #{pt_id}: top up {target_fp} to the confidence minimum",
                     iterations=iterations,
                 )
-                execute_run(run_id)  # blocking; its own read-before/after integrity applies
                 with session_scope() as session:
                     pt = session.get(ProfileTest, pt_id)
                     pt.run_id = run_id
+                _set_stage(pt_id, f"Benchmarking on the target profile ({iterations} iteration(s))")
+                execute_run(run_id)  # blocking; its own read-before/after integrity applies
+                _set_stage(pt_id, "Benchmark complete")
             except Exception as exc:  # noqa: BLE001 — record + restore, never crash the thread
                 log.exception("Profile test %s failed", pt_id)
                 final_status = ProfileTestStatus.FAILED
@@ -119,6 +156,7 @@ def _drive(pt_id: int) -> None:
             finally:
                 # Always restore the pre-test baseline.
                 try:
+                    _set_stage(pt_id, "Restoring your original settings")
                     restore_changes, _ = plan_apply(baseline, provider.discover())
                     _apply_all(provider, restore_changes)
                     log.info("Profile test %s: restored baseline", pt_id)
@@ -134,6 +172,11 @@ def _drive(pt_id: int) -> None:
             if pt is not None:
                 pt.status = final_status
                 pt.error = err
+                pt.stage = (
+                    "Done — baseline restored"
+                    if final_status == ProfileTestStatus.COMPLETE
+                    else (err or "Failed")
+                )
                 pt.finished_at = datetime.now(timezone.utc)
         _state.update({"active": False, "id": None, "target": None})
         log.info("Profile test %s finished: %s", pt_id, final_status.value)
@@ -148,6 +191,7 @@ def _serialize(pt: ProfileTest) -> dict:
         "iterations": pt.iterations,
         "run_id": pt.run_id,
         "error": pt.error,
+        "stage": pt.stage,
         "created_at": pt.created_at.isoformat() if pt.created_at else None,
         "started_at": pt.started_at.isoformat() if pt.started_at else None,
         "finished_at": pt.finished_at.isoformat() if pt.finished_at else None,

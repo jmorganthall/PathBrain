@@ -29,6 +29,7 @@ import ScatterPlotIcon from "@mui/icons-material/ScatterPlot";
 import ExtensionIcon from "@mui/icons-material/Extension";
 import RuleIcon from "@mui/icons-material/Rule";
 import DataObjectIcon from "@mui/icons-material/DataObject";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 
 import type { ReactNode } from "react";
@@ -98,6 +99,7 @@ const NAV: NavItem[] = [
   { label: "Methodology", to: "/methodology", icon: <RuleIcon /> },
   { label: "Plugins", to: "/plugins", icon: <ExtensionIcon /> },
   { label: "Data Dump", to: "/data-dump", icon: <DataObjectIcon /> },
+  { label: "AI", to: "/ai", icon: <AutoAwesomeIcon /> },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {

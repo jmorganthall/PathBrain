@@ -107,9 +107,14 @@ def _seed_run(
         }
         if completion is not None:
             axes["completion"] = completion
+        # A comparable run persists the first-class Overall (methodology v5+); default it to the
+        # seeded smoothness score for fixtures unless a test sets it explicitly. Mirrors
+        # production, where every comparable run carries axis_scores["overall"].
         if overall is not None:
             axes["overall"] = overall
-        # The crown (v7) corners over fcp × lcp × stall_time. Subscores drive the *axis*
+        elif comparable:
+            axes["overall"] = sops
+        # The crown (v8) corners over fcp × lcp × stall_time. Subscores drive the *axis*
         # scores + the custom-crown lens; the canonical Overall now corners the *raw* browser
         # measurements. Tests override subscores via ``crown_subscores``.
         subs = (
@@ -187,6 +192,29 @@ def test_profiles_and_impact(client):
     assert impact["after"]["fingerprint"] == "bbbbbbbbbbbb"
     assert impact["delta_abs"] > 0
     assert impact["significant"] is True  # ~70 -> ~85 over 5%, both confident
+
+
+def test_best_diff_is_computed_on_overall():
+    # The best-vs-next diff must measure the gap on the Overall (the crown we rank on) and the
+    # time-adjusted Overall — NOT the legacy smoothness median / relative_sops.
+    from pathbrain.api.routes_settings import _best_diff
+
+    profiles = [
+        {"fingerprint": "win", "label": "win", "overall": 90.0,
+         "relative_overall": {"delta_median": 5.0}, "completion": None, "confident": True,
+         "settings": [{"label": "wan", "quantum": 3000}]},
+        {"fingerprint": "runnerup", "label": "runnerup", "overall": 60.0,
+         "relative_overall": {"delta_median": 1.0}, "completion": None, "confident": True,
+         "settings": [{"label": "wan", "quantum": 1514}]},
+    ]
+    bd = _best_diff(profiles, "win")
+    assert bd["best"]["overall"] == 90.0 and bd["comparison"]["overall"] == 60.0
+    assert bd["delta_abs"] == 30.0                 # Overall gap (90 - 60)
+    assert bd["best"]["relative_overall"] == 5.0
+    assert bd["relative_delta"] == 4.0             # time-adjusted Overall gap (5 - 1)
+    # A profile with no crown Overall yields a null delta, not a crash.
+    bd2 = _best_diff([dict(profiles[0]), {**profiles[1], "overall": None}], "win")
+    assert bd2["delta_abs"] is None and bd2["delta_pct"] is None
 
 
 def test_confidence_is_iteration_based(client):
@@ -709,9 +737,10 @@ def test_apply_profile_writes_to_firewall(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
-    # The write went through the provider apply path.
+    # The write went through the provider apply path — target written as the bare number 3
+    # (the firewall's option key), not "3ms".
     assert _OVERRIDES.get("quantum") == 4000
-    assert _OVERRIDES.get("target") == "3ms"
+    assert _OVERRIDES.get("target") == 3
     applied_fields = {a["field_label"] for a in body["applied"]}
     assert {"Quantum", "CoDel target"} <= applied_fields
 
@@ -754,6 +783,78 @@ def test_apply_profile_unknown_fingerprint_404(client):
 def test_apply_profile_requires_fingerprint(client):
     resp = client.post("/api/settings/apply-profile", json={})
     assert resp.status_code == 400
+
+
+def test_apply_settings_preview_then_commit(client):
+    """apply-settings applies arbitrary (AI-style) settings permanently — preview lists the
+    exact writes without touching the firewall, commit writes them via the provider."""
+    from pathbrain.providers.mock import _OVERRIDES
+
+    _OVERRIDES.clear()
+    # An AI-style "3ms" string is accepted but written to the firewall as the bare number 3
+    # (the option key the firewall's duration select actually uses).
+    settings = [{"label": "wan-download", "quantum": 4000, "target": "3ms"}]
+
+    prev = client.post(
+        "/api/settings/apply-settings", json={"settings": settings, "preview": True}
+    ).json()
+    assert prev["preview"] is True and prev["already_applied"] is False
+    by_field = {(c["label"], c["param"]): c for c in prev["changes"]}
+    assert by_field[("wan-download", "quantum")]["to"] == 4000
+    # The planned write value is the bare number, not "3ms".
+    assert by_field[("wan-download", "target")]["value"] == 3
+    assert _OVERRIDES == {}  # preview wrote nothing
+
+    resp = client.post(
+        "/api/settings/apply-settings",
+        json={"settings": settings, "run_benchmark": False},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert _OVERRIDES.get("quantum") == 4000 and _OVERRIDES.get("target") == 3
+    _OVERRIDES.clear()
+
+
+def test_apply_settings_canonicalizes_ai_format(client):
+    """An AI's duration value ("3ms" / "3" / 3) is written as the firewall's bare number 3 —
+    never "3ms", which the firewall's option-keyed select would reject."""
+    from pathbrain.providers.mock import _OVERRIDES
+
+    for raw in ("3ms", "3", 3, 3.0):
+        _OVERRIDES.clear()
+        resp = client.post(
+            "/api/settings/apply-settings",
+            json={"settings": [{"label": "wan-download", "target": raw}], "run_benchmark": False},
+        )
+        assert resp.status_code == 200, raw
+        assert _OVERRIDES.get("target") == 3, raw
+    _OVERRIDES.clear()
+
+
+def test_apply_settings_rejects_no_op(client):
+    from pathbrain.providers.mock import _OVERRIDES
+
+    _OVERRIDES.clear()
+    resp = client.post("/api/settings/apply-settings", json={"settings": {}})
+    assert resp.status_code == 400
+    assert _OVERRIDES == {}
+
+
+def test_apply_settings_kicks_benchmark(client, monkeypatch):
+    from pathbrain.providers.mock import _OVERRIDES
+    import pathbrain.api.routes_run as routes_run
+
+    _OVERRIDES.clear()
+    kicked: list[int] = []
+    monkeypatch.setattr(routes_run, "_locked_execute", lambda rid: kicked.append(rid))
+
+    body = client.post(
+        "/api/settings/apply-settings",
+        json={"settings": [{"label": "wan-download", "quantum": 4000}], "run_benchmark": True},
+    ).json()
+    assert body["run_id"] is not None and kicked == [body["run_id"]]
+    _OVERRIDES.clear()
 
 
 def test_crown_is_highest_overall_among_confident(client):
@@ -902,8 +1003,11 @@ def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
     assert any(f["key"] == "target" and f["suggested_range"] for f in shaper["fields"])
 
     prof = next(p for p in body["profiles"] if p["fingerprint"] == "optexp0000x")
-    assert prof["settings"]                               # the tunable shaper params
+    assert prof["settings"]                               # FULL shaper config (levers + identity)
     assert prof["confident"] and prof["runs"] == 3
+    # Both scoring data AND full details are present per profile.
+    assert "axis_scores" in prof and "overall_iqr" in prof
+    assert prof["first_seen"] and prof["last_seen"]
     # Raw scoring metrics per run (most recent first), with the crown metrics present.
     assert len(prof["run_samples"]) == 3
     sample = prof["run_samples"][0]
@@ -911,6 +1015,9 @@ def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
     # Percentile-normalized crown + raw medians summarize the profile.
     assert set(prof["crown_percentiles"]) >= {"fcp", "lcp", "stall_time"}
     assert prof["metric_medians"]["lcp"] == 250.0
+    # Full-history spread per metric (n = every run) accompanies the capped raw samples.
+    assert prof["metric_distribution"]["fcp"]["n"] == 3
+    assert prof["metric_distribution"]["lcp"]["median"] == 250.0
 
 
 def test_optimizer_export_caps_run_samples(client):
@@ -923,3 +1030,260 @@ def test_optimizer_export_caps_run_samples(client):
     prof = next(p for p in body["profiles"] if p["fingerprint"] == "optcap0000x")
     assert len(prof["run_samples"]) == 2          # capped to the requested limit
     assert prof["run_samples_truncated"] is True  # flagged as truncated (6 runs > 2)
+    # The distribution is computed from ALL 6 runs, not just the 2 sampled — so variance
+    # is always conveyed regardless of the cap.
+    dist = prof["metric_distribution"]["fcp"]
+    assert dist["n"] == 6
+    assert dist["min"] == 300.0 and dist["max"] == 300.0 and dist["median"] == 300.0
+
+
+def test_optimizer_export_distribution_spans_full_history(client):
+    """metric_distribution reports the true spread (min < median < max) across all runs."""
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i, fcp in enumerate((100.0, 200.0, 300.0, 400.0, 500.0)):
+        _seed_run("optdist000x", 80, t0 - timedelta(minutes=50 - i), iterations=3,
+                  crown_raw=(fcp, 340.0, 200.0))
+
+    body = client.get("/api/settings/export/optimizer?runs_per_profile=2").json()
+    prof = next(p for p in body["profiles"] if p["fingerprint"] == "optdist000x")
+    assert len(prof["run_samples"]) == 2          # samples capped
+    dist = prof["metric_distribution"]["fcp"]
+    assert dist["n"] == 5                          # distribution over the full history
+    assert dist["min"] == 100.0 and dist["max"] == 500.0 and dist["median"] == 300.0
+    assert dist["p25"] < dist["median"] < dist["p75"]
+
+
+def test_optimizer_export_top_n_profiles(client):
+    body = client.get("/api/settings/export/optimizer?profile_limit=1").json()
+    assert body["profile_count"] == 1                       # only the top profile by Overall
+    assert body["profile_limit"] == 1
+    assert body["profiles_available"] >= 1                  # but more exist in the field
+    # The one returned is the highest-Overall profile.
+    assert body["profiles"][0]["overall"] is not None
+
+
+def test_field_sensitivity_detects_monotonic_relationships():
+    from pathbrain.api.routes_settings import _field_sensitivity
+
+    meta = {"fcp": {"label": "FCP", "higher_is_better": False}}
+    # quantum rises 1000→5000 while fcp falls 300→150 (perfect inverse → improves the crown);
+    # target is constant so it can't correlate and must be dropped.
+    profiles = [
+        {"settings": [{"label": "Download", "quantum": q, "target": 5}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 300), (2000, 250), (3000, 200), (4000, 180), (5000, 150)]
+    ]
+    rows = _field_sensitivity(profiles, ["fcp"], meta)
+    q_row = next(r for r in rows if r["field"] == "quantum" and r["metric"] == "fcp")
+    assert q_row["pipe"] == "Download"
+    assert q_row["spearman"] == -1.0
+    assert q_row["metric_direction"] == "decreases" and q_row["effect"] == "improves"
+    # A constant lever (target) never appears — no distinct values to correlate.
+    assert not any(r["field"] == "target" for r in rows)
+
+
+def test_field_sensitivity_correlates_against_overall():
+    # The lever is also correlated against the Overall itself (the rank-corner we crown on),
+    # not only the individual raw crown metrics — because that's where "overperformance" lives.
+    from pathbrain.api.routes_settings import _field_sensitivity
+
+    meta = {"fcp": {"label": "FCP", "higher_is_better": False}}
+    # quantum rises while the (higher-is-better) Overall rises too → raising it improves the crown.
+    profiles = [
+        {"settings": [{"label": "Download", "quantum": q}], "metric_medians": {"fcp": f},
+         "overall": ov}
+        for q, f, ov in [(1000, 300, 40), (2000, 250, 55), (3000, 200, 70), (4000, 180, 85)]
+    ]
+    rows = _field_sensitivity(profiles, ["fcp"], meta)
+    ov_row = next(r for r in rows if r["metric"] == "overall")
+    assert ov_row["metric_label"] == "Overall"
+    assert ov_row["spearman"] == 1.0                       # Overall rises with quantum
+    assert ov_row["metric_direction"] == "increases" and ov_row["effect"] == "improves"
+
+
+def test_lever_signature_finds_a_sweet_spot_correlation_misses():
+    # The winners cluster quantum at ~3000 while the field ranges 800–6000 and the rest are
+    # spread across it — a sweet spot a monotone correlation can't see (both extremes are worse).
+    from pathbrain.api.routes_settings import _lever_signature
+
+    top = [{"settings": [{"label": "Download", "quantum": q}], "overall": ov}
+           for q, ov in [(2950, 92), (3000, 90), (3050, 88)]]
+    rest = [{"settings": [{"label": "Download", "quantum": q}], "overall": ov}
+            for q, ov in [(800, 60), (1500, 58), (6000, 55), (5000, 52), (1000, 50),
+                          (4500, 48), (2000, 46), (5500, 44), (900, 42)]]
+    sig = _lever_signature(top + rest)
+    assert sig["available"] is True
+    lev = next(l for l in sig["levers"] if l["field"] == "quantum")
+    assert lev["pattern"] == "sweet_spot"
+    assert 2900 <= lev["top_value"] <= 3100
+    assert lev["field_range"] == [800, 6000]
+
+
+def test_lever_signature_flags_a_higher_run_and_needs_enough_profiles():
+    from pathbrain.api.routes_settings import _lever_signature
+
+    # Winners run quantum systematically higher than the rest.
+    top = [{"settings": [{"label": "Download", "quantum": q}], "overall": ov}
+           for q, ov in [(5500, 92), (5800, 90), (6000, 88)]]
+    rest = [{"settings": [{"label": "Download", "quantum": q}], "overall": ov}
+            for q, ov in [(800, 60), (1000, 58), (1200, 55), (1500, 52), (2000, 50),
+                          (900, 48), (1100, 46), (1300, 44), (1700, 42)]]
+    lev = next(l for l in _lever_signature(top + rest)["levers"] if l["field"] == "quantum")
+    assert lev["pattern"] == "higher" and (lev["shift"] or 0) > 0
+
+    # Too few scored profiles to split → unavailable, not a crash.
+    thin = _lever_signature(top[:2])
+    assert thin["available"] is False and thin["levers"] == []
+
+
+def test_coverage_gaps_kicks_back_a_data_request_for_undersampled_signal():
+    # interval shows a 'lower is better' signal but only 40/60 have been measured — the analysis
+    # should ask to collect data BELOW 40, not propose a finished profile.
+    from pathbrain.api.routes_settings import _coverage_gaps
+
+    profiles = [{"settings": [{"label": "Download", "interval": iv}], "overall": o}
+                for iv, o in [(40, 90), (40, 88), (60, 60), (60, 58), (40, 85), (60, 55)]]
+    fs = [{"pipe": "Download", "field": "interval", "metric": "overall", "spearman": -0.43}]
+    sig = {"levers": [{"pipe": "Download", "field": "interval", "pattern": "lower",
+                       "shift": -1.0, "concentration": 0.2}]}
+    gaps = _coverage_gaps(profiles, fs, sig)
+    g = next(x for x in gaps if x["field"] == "interval")
+    assert g["action"] == "extend_lower"
+    assert g["measured_range"] == [40.0, 60.0]
+    assert g["sweepable"] is True                       # interval is now a sweepable lever
+    assert all(v < 40 for v in g["suggested_values"]) and g["suggested_values"]
+
+
+def test_coverage_gaps_ignores_well_sampled_or_flat_levers():
+    from pathbrain.api.routes_settings import _coverage_gaps
+
+    # quantum with no pattern and no suggestive correlation → not a gap.
+    profiles = [{"settings": [{"label": "Download", "quantum": q}], "overall": o}
+                for q, o in [(1000, 50), (2000, 52), (3000, 51), (4000, 49), (5000, 50)]]
+    fs = [{"pipe": "Download", "field": "quantum", "metric": "overall", "spearman": 0.03}]
+    sig = {"levers": [{"pipe": "Download", "field": "quantum", "pattern": "none"}]}
+    assert _coverage_gaps(profiles, fs, sig) == []
+
+
+def test_field_sensitivity_flags_worsening_and_no_trend():
+    from pathbrain.api.routes_settings import _field_sensitivity
+
+    meta = {"fcp": {"label": "FCP", "higher_is_better": False}}
+    # quantum rises while fcp ALSO rises → raising it worsens the crown.
+    worse = [
+        {"settings": [{"label": "Download", "quantum": q}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 150), (2000, 200), (3000, 250), (4000, 300)]
+    ]
+    r = next(x for x in _field_sensitivity(worse, ["fcp"], meta) if x["field"] == "quantum")
+    assert r["spearman"] == 1.0 and r["effect"] == "worsens" and r["metric_direction"] == "increases"
+
+    # No monotonic trend → reported as "none" (|ρ| below the trend threshold), not improves/worsens.
+    flat = [
+        {"settings": [{"label": "Download", "quantum": q}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 200), (2000, 205), (3000, 199), (4000, 202), (5000, 201)]
+    ]
+    fr = next(x for x in _field_sensitivity(flat, ["fcp"], meta) if x["field"] == "quantum")
+    assert fr["effect"] == "none" and fr["metric_direction"] == "none"
+
+
+def test_field_sensitivity_keeps_pipes_separate_and_needs_enough_points():
+    from pathbrain.api.routes_settings import _field_sensitivity
+
+    meta = {"fcp": {"label": "FCP", "higher_is_better": False}}
+    # Only 3 points (< SENSITIVITY_MIN_POINTS=4) → nothing computed.
+    thin = [
+        {"settings": [{"label": "Download", "quantum": q}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 300), (2000, 200), (3000, 100)]
+    ]
+    assert _field_sensitivity(thin, ["fcp"], meta) == []
+
+    # A Download and an Upload pipe with opposite trends stay independent rows.
+    both = [
+        {
+            "settings": [
+                {"label": "Download", "quantum": q},
+                {"label": "Upload", "quantum": 6000 - q},
+            ],
+            "metric_medians": {"fcp": f},
+        }
+        for q, f in [(1000, 300), (2000, 250), (3000, 200), (4000, 150)]
+    ]
+    rows = _field_sensitivity(both, ["fcp"], meta)
+    dl = next(r for r in rows if r["pipe"] == "Download" and r["field"] == "quantum")
+    ul = next(r for r in rows if r["pipe"] == "Upload" and r["field"] == "quantum")
+    assert dl["spearman"] == -1.0 and ul["spearman"] == 1.0  # mirror-image levers
+
+
+def test_optimizer_export_carries_analysis_block(client):
+    body = client.get("/api/settings/export/optimizer").json()
+    assert "analysis" in body
+    assert "note" in body["analysis"] and "field_sensitivity" in body["analysis"]
+    assert isinstance(body["analysis"]["field_sensitivity"], list)
+
+
+def test_apply_writable_overrides_only_touches_writable_fields():
+    from pathbrain.api.routes_settings import _apply_writable_overrides
+
+    live = [{"label": "wan-download", "quantum": 1514, "target": "5ms",
+             "scheduler": "fq_codel", "queues": 1}]
+    # A per-pipe override changing a writable (quantum) and a non-writable (scheduler) field.
+    out = _apply_writable_overrides(live, [{"label": "wan-download", "quantum": 3000, "scheduler": "HFSC"}])
+    assert out[0]["quantum"] == 3000            # writable → applied
+    assert out[0]["scheduler"] == "fq_codel"    # non-writable → left as live (reachable)
+    # A flat dict applies to every pipe; a duration is canonicalized to the firewall's bare
+    # number (3), not "3ms" — the option key its select actually uses.
+    out2 = _apply_writable_overrides(live, {"target": "3ms"})
+    assert out2[0]["target"] == 3
+
+
+def test_test_settings_rejects_a_no_op(client):
+    from pathbrain.providers import mock as mock_mod
+    mock_mod._OVERRIDES.clear()
+    # Empty overrides → target == live → nothing to change → 400 (never starts a test).
+    resp = client.post("/api/settings/test-settings", json={"settings": {}})
+    assert resp.status_code == 400
+
+
+def test_test_settings_starts_a_test_for_a_writable_change(client, monkeypatch):
+    import pathbrain.api.routes_settings as rs
+    from pathbrain.providers import mock as mock_mod
+    mock_mod._OVERRIDES.clear()
+    calls: dict = {}
+    monkeypatch.setattr(rs.profile_test_mod, "start",
+                        lambda fp, target, label, iters: calls.update(fp=fp, iters=iters) or 55)
+
+    resp = client.post("/api/settings/test-settings",
+                       json={"settings": {"quantum": 6000}, "label": "AI idea"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == 55 and body["iterations"] >= 1
+    assert calls["fp"] == body["fingerprint"]   # materialized fingerprint is what gets tested
+
+
+def test_optimizer_export_includes_all_pipes(client, monkeypatch):
+    # A profile with BOTH a download and an upload pipe must export both — not just download.
+    import pathbrain.api.routes_settings as rs
+
+    two_pipes = [
+        {"label": "Download", "download_bandwidth": "880Mbit", "quantum": 6056, "target": "3ms",
+         "interval": "60ms", "ecn": True, "scheduler": "fq_codel", "queues": 1},
+        {"label": "Upload", "download_bandwidth": "880Mbit", "quantum": 500, "target": "3ms",
+         "interval": "60ms", "ecn": True, "scheduler": "fq_codel", "queues": 1},
+    ]
+    # compute_profiles reads run.settings; patch the seed to carry both pipes for this fp.
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(3):
+        _seed_run("twopipe000x", 80, t0 - timedelta(minutes=30 - i), iterations=6,
+                  crown_raw=(200.0, 240.0, 150.0))
+    with session_scope() as s:
+        from pathbrain.models import Run
+        for run in s.query(Run).filter(Run.settings_fingerprint == "twopipe000x").all():
+            run.settings = two_pipes
+
+    body = client.get("/api/settings/export/optimizer").json()
+    prof = next(p for p in body["profiles"] if p["fingerprint"] == "twopipe000x")
+    labels = {pipe["label"] for pipe in prof["settings"]}
+    assert labels == {"Download", "Upload"}                 # BOTH directions exported
+    up = next(pipe for pipe in prof["settings"] if pipe["label"] == "Upload")
+    assert up["quantum"] == 500                             # the upload pipe's own params
+    # The export tells the model to tune both directions.
+    assert "upload" in body["shaper_model"]["pipes_note"].lower()

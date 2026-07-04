@@ -15,7 +15,7 @@ import NotificationsIcon from "@mui/icons-material/Notifications";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ErrorIcon from "@mui/icons-material/Error";
 
-import { api } from "../api/client";
+import { api, JOBS_REFRESH_EVENT } from "../api/client";
 import type { Job } from "../api/types";
 import { fmtTimeShort } from "../utils/format";
 
@@ -101,6 +101,14 @@ export default function JobStatus() {
       if (timer.current) clearTimeout(timer.current);
     };
   }, [poll, running, open]);
+
+  // When a job is kicked off anywhere in the app, poll immediately so the badge reflects it
+  // without waiting out the idle interval.
+  useEffect(() => {
+    const onStart = () => void poll();
+    window.addEventListener(JOBS_REFRESH_EVENT, onStart);
+    return () => window.removeEventListener(JOBS_REFRESH_EVENT, onStart);
+  }, [poll]);
 
   return (
     <>

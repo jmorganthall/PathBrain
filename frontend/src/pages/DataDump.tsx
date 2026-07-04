@@ -80,6 +80,7 @@ export default function DataDump() {
 
   // ── AI optimizer export: profiles → runs → raw scoring metrics + the objective/levers ──
   const [runsPerProfile, setRunsPerProfile] = useState(50);
+  const [optProfileLimit, setOptProfileLimit] = useState(25);
   const [optExport, setOptExport] = useState<OptimizerExport | null>(null);
   const [optLoading, setOptLoading] = useState(false);
   const optJson = optExport ? JSON.stringify(optExport, null, 2) : "";
@@ -88,13 +89,18 @@ export default function DataDump() {
     setOptLoading(true);
     setError(null);
     try {
-      setOptExport(await api.optimizerExport(Math.max(1, Math.min(1000, Math.round(runsPerProfile)))));
+      setOptExport(
+        await api.optimizerExport(
+          Math.max(1, Math.min(1000, Math.round(runsPerProfile))),
+          Math.max(1, Math.min(1000, Math.round(optProfileLimit))),
+        ),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to generate the optimizer export");
     } finally {
       setOptLoading(false);
     }
-  }, [runsPerProfile]);
+  }, [runsPerProfile, optProfileLimit]);
 
   const copyOpt = useCallback(async () => {
     if (!optJson) return;
@@ -118,7 +124,7 @@ export default function DataDump() {
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 820 }}>
         A profile-centric JSON built to feed an AI: every profile's <b>tunable shaper settings</b> (the
-        levers), its <b>runs with the raw scoring metrics</b> (fcp / lcp / total_stall in ms, and every
+        levers), its <b>runs with the raw scoring metrics</b> (fcp / lcp / stall_time in ms, and every
         other scored metric), plus the <b>objective</b> (which metrics are the crown, lower-is-better,
         and the best values achieved so far) and the <b>shaper field model</b> (which params are writable
         and their sensible ranges). Hand it to a model and ask it to propose new, untested profiles likely
@@ -128,6 +134,16 @@ export default function DataDump() {
       <Card sx={{ mb: 3 }}>
         <CardContent>
           <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+            <TextField
+              label="Top profiles"
+              type="number"
+              size="small"
+              value={optProfileLimit}
+              onChange={(e) => setOptProfileLimit(parseInt(e.target.value || "0", 10))}
+              inputProps={{ min: 1, max: 1000 }}
+              sx={{ width: 150 }}
+              helperText="Best N by Overall"
+            />
             <TextField
               label="Runs per profile"
               type="number"

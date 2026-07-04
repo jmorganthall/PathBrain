@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session, defer, selectinload
 
 from ..config_store import get_config
 from ..database import get_session
-from ..methodology import ensure_current_methodology
+from ..methodology import ensure_current_methodology, overall_metrics
 from ..models import BenchmarkResult, Run, RunStatus, Score
 from ..trends import (
     TREND_METRICS,
@@ -135,11 +135,18 @@ def trends_relative(
         if reading is not None:
             metrics[key] = reading
 
+    # The current methodology's crown measurements (what we rank on today) — so the UI can
+    # feature the same "vs typical" matrix for them + the Overall without hardcoding a set
+    # that drifts when the methodology changes.
+    methodology = ensure_current_methodology(session, get_config(session))
+    crown, _ = overall_metrics(methodology.definition or {})
+
     return {
         "weekday": weekday,
         "hour": hour,
         "window_hours": window_hours,
         "window_days": days,
         "min_samples": min_samples,
+        "crown_metrics": list(crown),
         "metrics": metrics,
     }

@@ -40,7 +40,6 @@ import Typography from "@mui/material/Typography";
 
 import { api } from "../api/client";
 import type {
-  ApplyProfileChange,
   ChallengerRace,
   CrownHeirs,
   MetricSaturation,
@@ -57,6 +56,7 @@ import type {
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
 import ProfileQuadrant from "../components/ProfileQuadrant";
+import ApplyConfirmDialog, { type ApplyConfirm } from "../components/ApplyConfirmDialog";
 import InsightsIcon from "@mui/icons-material/Insights";
 import PublishIcon from "@mui/icons-material/Publish";
 import RestorePageIcon from "@mui/icons-material/Restore";
@@ -70,15 +70,6 @@ import { buildFields, fmtFieldValue as fmtNumField, profileValue } from "../util
 import type { FieldDef } from "../utils/profileFields";
 import { rankByMetric, rankColor } from "../utils/ranking";
 
-// State for the "Apply this profile" confirmation dialog: the previewed write
-// plan for one profile, awaiting the user's go-ahead.
-interface ApplyConfirm {
-  fingerprint: string;
-  label: string;
-  changes: ApplyProfileChange[];
-  warnings: string[];
-  alreadyApplied: boolean;
-}
 
 export function ImpactBanner({ impact }: { impact: SettingsImpact }) {
   if (!impact.changed || impact.delta_pct == null) return null;
@@ -93,7 +84,7 @@ export function ImpactBanner({ impact }: { impact: SettingsImpact }) {
     <Alert severity={severity} icon={<InsightsIcon />} sx={{ mb: 2 }}>
       <Typography variant="body2">
         Since the settings changed{impact.changed_at ? ` (${fmtDateTime(impact.changed_at)})` : ""},
-        median Smoothness moved <b>{arrow} {Math.abs(impact.delta_pct)}%</b> (
+        median Overall moved <b>{arrow} {Math.abs(impact.delta_pct)}%</b> (
         {impact.before?.median} → {impact.after?.median}).{" "}
         {collecting
           ? `Collecting data before calling it — ${iBefore}/${iAfter} iterations (need ${need} each).`
@@ -178,7 +169,7 @@ function dirColor(d: ProfileFieldChange["direction"]): string {
 }
 
 // At-a-glance "what the best profile changed" vs the next-ranked one, with the
-// resulting SOPS delta — the seed for experiment suggestions. SOPS is the headline;
+// resulting Overall delta — the seed for experiment suggestions. Overall is the headline;
 // the Completion delta is an opt-in diagnostic (shown only when `showCompletion`).
 export function ProfileDiffCard({
   diff,
@@ -187,26 +178,28 @@ export function ProfileDiffCard({
   diff: ProfileDiff;
   showCompletion: boolean;
 }) {
-  const improved = diff.delta_abs >= 0;
+  const improved = (diff.delta_abs ?? 0) >= 0;
   const distinctPipes = new Set(diff.changes.map((c) => c.pipe)).size;
   return (
     <Card sx={{ mb: 2 }}>
       <CardContent>
         <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
           <Typography variant="subtitle1">What the best profile changed</Typography>
-          <Chip
-            size="small"
-            color={improved ? "success" : "warning"}
-            label={`Smoothness ${improved ? "▲" : "▼"} ${diff.delta_abs >= 0 ? "+" : ""}${diff.delta_abs}${
-              diff.delta_pct != null
-                ? ` (${diff.delta_pct >= 0 ? "+" : ""}${diff.delta_pct}%)`
-                : ""
-            }`}
-          />
+          {diff.delta_abs != null && (
+            <Chip
+              size="small"
+              color={improved ? "success" : "warning"}
+              label={`Overall ${improved ? "▲" : "▼"} ${diff.delta_abs >= 0 ? "+" : ""}${diff.delta_abs}${
+                diff.delta_pct != null
+                  ? ` (${diff.delta_pct >= 0 ? "+" : ""}${diff.delta_pct}%)`
+                  : ""
+              }`}
+            />
+          )}
           {diff.relative_delta != null && (
             <Tooltip
               arrow
-              title="Smoothness gap once each profile's day×hour environment is removed. If this differs from the raw delta, the two profiles were sampled at different times — and this is the fairer number."
+              title="Overall gap once each profile's day×hour environment is removed. If this differs from the raw delta, the two profiles were sampled at different times — and this is the fairer number."
             >
               <Chip
                 size="small"
@@ -281,7 +274,7 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.median;
     case "speed":
       return p.speed?.median ?? null;
-    case "relative_sops":
+    case "relative_overall":
       return p.relative_overall?.delta_median ?? null;
     case "p25":
       return p.p25;
@@ -343,7 +336,7 @@ const FIXED_COLUMN_KEYS = new Set([
   "smoothness",
   "iterations",
   "count",
-  "relative_smoothness",
+  "relative_overall",
 ]);
 
 // Group a field list by its `group` for the axis-picker / column menus.
@@ -1335,7 +1328,7 @@ export default function Settings() {
                       />
                     ))}
                     <SortHeader
-                      id="relative_sops"
+                      id="relative_overall"
                       label="vs typical"
                       align="right"
                       orderBy={orderBy}
@@ -1671,86 +1664,15 @@ export default function Settings() {
         </Card>
       )}
 
-      <Dialog open={confirm != null} onClose={() => !applying && setConfirm(null)} maxWidth="sm" fullWidth>
-        <DialogTitle>Apply profile to firewall</DialogTitle>
-        <DialogContent>
-          {confirm && (
-            <>
-              <DialogContentText sx={{ mb: 1 }}>
-                Write <b>{confirm.label}</b> to the firewall via the traffic shaper. This changes your
-                live network shaping immediately and isn't auto-undone — to revert, apply a different
-                profile.
-              </DialogContentText>
-              {confirm.alreadyApplied ? (
-                <Alert severity="info" sx={{ mb: 1 }}>
-                  The firewall already matches this profile — there's nothing to write.
-                </Alert>
-              ) : (
-                <TableContainer>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Pipe</TableCell>
-                        <TableCell>Field</TableCell>
-                        <TableCell align="right">From</TableCell>
-                        <TableCell align="right">To</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {confirm.changes.map((c, i) => (
-                        <TableRow key={`${c.pipe_uuid}-${c.field}-${i}`}>
-                          <TableCell>{c.label}</TableCell>
-                          <TableCell>{c.field_label}</TableCell>
-                          <TableCell align="right">
-                            <Typography component="span" variant="body2" color="text.secondary">
-                              {String(c.from ?? "—")}
-                            </Typography>
-                          </TableCell>
-                          <TableCell align="right" sx={{ fontWeight: 700 }}>
-                            {String(c.to ?? "—")}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              )}
-              {confirm.warnings.length > 0 && (
-                <Alert severity="warning" sx={{ mt: 1 }}>
-                  {confirm.warnings.map((w, i) => (
-                    <div key={i}>{w}</div>
-                  ))}
-                </Alert>
-              )}
-            </>
-          )}
-          <FormControlLabel
-            sx={{ mt: 1 }}
-            control={
-              <Checkbox
-                checked={applyRunBenchmark}
-                onChange={(e) => setApplyRunBenchmark(e.target.checked)}
-                disabled={applying}
-              />
-            }
-            label="Run a benchmark after applying (1 iteration)"
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setConfirm(null)} disabled={applying}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            color="warning"
-            startIcon={applying ? <CircularProgress size={16} color="inherit" /> : <PublishIcon />}
-            onClick={handleConfirmApply}
-            disabled={applying || (confirm?.alreadyApplied ?? false)}
-          >
-            {applying ? "Writing…" : "Write to firewall"}
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <ApplyConfirmDialog
+        confirm={confirm}
+        applying={applying}
+        runBenchmark={applyRunBenchmark}
+        onRunBenchmarkChange={setApplyRunBenchmark}
+        onCancel={() => setConfirm(null)}
+        onConfirm={handleConfirmApply}
+        title="Apply profile to firewall"
+      />
 
       <Dialog open={testConfirm != null} onClose={() => setTestConfirm(null)} maxWidth="sm" fullWidth>
         <DialogTitle>Test this profile up to the minimum</DialogTitle>

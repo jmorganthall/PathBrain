@@ -27,8 +27,10 @@ export function profileValue(p: SettingsProfile, key: string): number | null {
       return p.iterations;
     case "count":
       return p.count;
-    case "relative_smoothness":
-      return p.relative_sops?.delta_median ?? null;
+    case "relative_overall":
+      // "vs typical" = the time-adjusted **Overall** edge (the axis we crown on today),
+      // matching the pinned column — NOT the legacy smoothness-based relative_sops.
+      return p.relative_overall?.delta_median ?? null;
   }
   if (key.startsWith("crown:")) return p.crown_norm?.[key.slice(6)] ?? null;
   if (p.scores && key in p.scores) return p.scores[key];

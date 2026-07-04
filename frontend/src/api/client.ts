@@ -27,6 +27,10 @@ import type {
   JobsResponse,
   RunScoresResponse,
   ChallengerRace,
+  AiConfig,
+  AiModel,
+  AiStreamEvent,
+  AiSuggestResult,
   DataDump,
   OptimizerExport,
   ProfileTest,
@@ -54,6 +58,21 @@ export const tzOffsetMinutes = () => -new Date().getTimezoneOffset();
 
 const BASE = "/api";
 
+// Fired whenever a call starts a background job (test to minimum, run, race, sweep, …) so the
+// jobs badge can refresh immediately instead of waiting out its idle poll interval.
+export const JOBS_REFRESH_EVENT = "pathbrain:jobs-refresh";
+export const notifyJobsChanged = () => {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(JOBS_REFRESH_EVENT));
+};
+
+// Wrap a job-starting request so a successful start nudges the jobs badge to poll now.
+function startingJob<T>(p: Promise<T>): Promise<T> {
+  return p.then((r) => {
+    notifyJobsChanged();
+    return r;
+  });
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -63,11 +82,43 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  opts?: { timeoutMs?: number },
+): Promise<T> {
+  // Optional client-side timeout so a slow/oversized request fails with a useful message
+  // instead of the browser's opaque "Load failed" after some intermediary drops it.
+  const controller = opts?.timeoutMs ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), opts!.timeoutMs)
+    : null;
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers: { "Content-Type": "application/json" },
+      signal: controller?.signal,
+      ...init,
+    });
+  } catch (e) {
+    // fetch() rejects (TypeError "Load failed" / "Failed to fetch") only when NO HTTP response
+    // arrived: an abort/timeout, a dropped connection, or an oversized request. Translate it
+    // into something actionable rather than surfacing the raw browser text.
+    if (controller?.signal.aborted) {
+      throw new ApiError(
+        0,
+        `Request timed out after ${Math.round((opts!.timeoutMs || 0) / 1000)}s. ` +
+          "The payload may be too large — try fewer profiles or runs per profile.",
+      );
+    }
+    throw new ApiError(
+      0,
+      "Couldn't reach the server (connection dropped or request too large). " +
+        "If you raised the profile / runs-per-profile count, lower it and retry.",
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -87,13 +138,15 @@ export const api = {
 
   // Runs
   triggerRun: (body: { label?: string; notes?: string; iterations?: number }) =>
-    request<RunDetail>("/run", { method: "POST", body: JSON.stringify(body) }),
+    startingJob(request<RunDetail>("/run", { method: "POST", body: JSON.stringify(body) })),
   runEstimate: () => request<RunEstimate>("/runs/estimate"),
   cancelRun: (id: number) => request<RunDetail>(`/runs/${id}/cancel`, { method: "POST" }),
 
   // "Test current for X minutes": time-boxed collection on the live profile.
   currentTestStart: (minutes: number) =>
-    request<CurrentTest>("/current/test", { method: "POST", body: JSON.stringify({ minutes }) }),
+    startingJob(
+      request<CurrentTest>("/current/test", { method: "POST", body: JSON.stringify({ minutes }) }),
+    ),
   currentTestStatus: () => request<CurrentTest>("/current/test"),
   currentTestCancel: () =>
     request<{ cancelled: boolean; status: string | null }>("/current/test/cancel", { method: "POST" }),
@@ -138,7 +191,7 @@ export const api = {
   methodology: (version: string) =>
     request<MethodologyDetail>(`/methodologies/${encodeURIComponent(version)}`),
   runScores: (id: number) => request<RunScoresResponse>(`/score/${id}/methodologies`),
-  regradeHistory: () => request<JobStart>("/score/regrade", { method: "POST" }),
+  regradeHistory: () => startingJob(request<JobStart>("/score/regrade", { method: "POST" })),
   // Fork the current methodology, re-anchor one metric's `best`, and re-grade onto it.
   reanchorMetric: (metricKey: string, best: number) =>
     request<{ version: string; job_id: string }>("/methodologies/reanchor", {
@@ -173,20 +226,24 @@ export const api = {
   // Top a "limited data" profile up to the confidence minimum: applies it, runs the
   // iterations still needed, then restores the prior settings.
   testProfile: (fingerprint: string) =>
-    request<ProfileTestStart>("/settings/test-profile", {
-      method: "POST",
-      body: JSON.stringify({ fingerprint }),
-    }),
+    startingJob(
+      request<ProfileTestStart>("/settings/test-profile", {
+        method: "POST",
+        body: JSON.stringify({ fingerprint }),
+      }),
+    ),
   profileTestCurrent: () =>
     request<{ test: ProfileTest | null }>("/settings/test-profile/current"),
 
   // Challenger race: adaptively test promising limited-data profiles one iteration at
   // a time within a time budget, eliminating any that can't overtake the best.
   startRace: (timeBudgetMinutes: number, autoPromote: boolean) =>
-    request<RaceStart>("/settings/race", {
-      method: "POST",
-      body: JSON.stringify({ time_budget_minutes: timeBudgetMinutes, auto_promote: autoPromote }),
-    }),
+    startingJob(
+      request<RaceStart>("/settings/race", {
+        method: "POST",
+        body: JSON.stringify({ time_budget_minutes: timeBudgetMinutes, auto_promote: autoPromote }),
+      }),
+    ),
   raceCurrent: () => request<{ race: ChallengerRace | null }>("/settings/race"),
   cancelRace: () => request<{ cancelled: boolean }>("/settings/race/cancel", { method: "POST" }),
 
@@ -198,10 +255,12 @@ export const api = {
       `/settings/refresh/preview?iterations=${iterations}` + (top ? `&top=${top}` : ""),
     ),
   startRefresh: (iterations: number, top?: number) =>
-    request<{ id: number; iterations: number; top: number | null }>("/settings/refresh", {
-      method: "POST",
-      body: JSON.stringify(top ? { iterations, top } : { iterations }),
-    }),
+    startingJob(
+      request<{ id: number; iterations: number; top: number | null }>("/settings/refresh", {
+        method: "POST",
+        body: JSON.stringify(top ? { iterations, top } : { iterations }),
+      }),
+    ),
   refreshCurrent: () => request<{ refresh: ProfileRefresh | null }>("/settings/refresh"),
   cancelRefresh: () => request<{ cancelled: boolean }>("/settings/refresh/cancel", { method: "POST" }),
 
@@ -217,8 +276,8 @@ export const api = {
     }),
   resetConfig: () => request<BenchmarkConfig>("/config/reset", { method: "POST" }),
   adoptRubric: () => request<BenchmarkConfig>("/config/adopt-rubric", { method: "POST" }),
-  rescoreHistory: () => request<JobStart>("/score/rescore", { method: "POST" }),
-  rederiveHistory: () => request<JobStart>("/score/rederive", { method: "POST" }),
+  rescoreHistory: () => startingJob(request<JobStart>("/score/rescore", { method: "POST" })),
+  rederiveHistory: () => startingJob(request<JobStart>("/score/rederive", { method: "POST" })),
   providerHealth: () => request<ProviderHealth>("/config/provider"),
   discover: () => request<DiscoverResponse>("/config/discover", { method: "POST" }),
   testApply: () => request<TestApplyResult>("/config/test-apply", { method: "POST" }),
@@ -235,10 +294,12 @@ export const api = {
     dry_run: boolean;
     pipe_uuid?: string | null;
   }) =>
-    request<Sweep>(`/sweep?tz_offset=${tzOffsetMinutes()}`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+    startingJob(
+      request<Sweep>(`/sweep?tz_offset=${tzOffsetMinutes()}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    ),
   sweepCurrent: () =>
     request<{ sweep: Sweep | null }>(`/sweep/current?tz_offset=${tzOffsetMinutes()}`),
   cancelSweep: (id: number) =>
@@ -252,8 +313,111 @@ export const api = {
 
   // Consolidated raw export of the last N runs.
   dataDump: (limit: number) => request<DataDump>(`/history/dump?limit=${limit}`),
-  optimizerExport: (runsPerProfile: number) =>
-    request<OptimizerExport>(`/settings/export/optimizer?runs_per_profile=${runsPerProfile}`),
+  optimizerExport: (runsPerProfile: number, profileLimit?: number) =>
+    request<OptimizerExport>(
+      `/settings/export/optimizer?runs_per_profile=${runsPerProfile}` +
+        (profileLimit ? `&profile_limit=${profileLimit}` : ""),
+      undefined,
+      { timeoutMs: 120_000 },
+    ),
+
+  // AI (OpenRouter)
+  aiConfig: () => request<AiConfig>("/ai/config"),
+  aiSaveConfig: (body: { api_key?: string; model?: string; prompt?: string }) =>
+    request<AiConfig>("/ai/config", { method: "PUT", body: JSON.stringify(body) }),
+  aiClearKey: () => request<AiConfig>("/ai/config/key", { method: "DELETE" }),
+  aiModels: () => request<{ models: AiModel[] }>("/ai/models"),
+  aiSuggest: (body: {
+    model?: string;
+    prompt?: string;
+    runs_per_profile?: number;
+    profile_limit?: number | null;
+  }) =>
+    request<AiSuggestResult>(
+      "/ai/suggest",
+      { method: "POST", body: JSON.stringify(body) },
+      // The server blocks on OpenRouter (its own 180s cap); allow headroom past that so a
+      // slow model returns rather than the browser aborting with an opaque error.
+      { timeoutMs: 240_000 },
+    ),
+  // Streaming variant: the model's reasoning + answer arrive token-by-token as Server-Sent
+  // Events, so a long request never times out and the UI shows progress live. `onEvent` fires
+  // for each event; the promise resolves when the stream closes. Pass a signal to cancel.
+  aiSuggestStream: async (
+    body: { model?: string; prompt?: string; runs_per_profile?: number; profile_limit?: number | null },
+    onEvent: (evt: AiStreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}/ai/suggest/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (e) {
+      if (signal?.aborted) return;
+      throw new ApiError(0, "Couldn't reach the server to start the stream.");
+    }
+    if (!res.ok || !res.body) {
+      let detail = res.statusText;
+      try {
+        const b = await res.json();
+        if (b && typeof b.detail === "string") detail = b.detail;
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(res.status, detail);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // SSE events are separated by a blank line.
+      let sep: number;
+      while ((sep = buf.indexOf("\n\n")) !== -1) {
+        const block = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        for (const line of block.split("\n")) {
+          const t = line.replace(/^\s+/, "");
+          if (!t.startsWith("data:")) continue;
+          const data = t.slice(5).trim();
+          if (!data) continue;
+          try {
+            onEvent(JSON.parse(data) as AiStreamEvent);
+          } catch {
+            /* skip a partial/garbled line */
+          }
+        }
+      }
+    }
+  },
+  // Apply arbitrary settings (e.g. an AI suggestion) to the firewall PERMANENTLY. preview=true
+  // returns the exact planned writes (for the confirm dialog); commit writes + optional benchmark.
+  applySettings: (body: {
+    settings: unknown;
+    label?: string;
+    preview?: boolean;
+    run_benchmark?: boolean;
+  }) =>
+    startingJob(
+      request<ApplyProfileResult>("/settings/apply-settings", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    ),
+  // Apply arbitrary settings (e.g. an AI suggestion) onto the live profile and test to minimum.
+  testSettings: (body: { settings: unknown; label?: string }) =>
+    startingJob(
+      request<{ id: number; fingerprint: string; iterations: number; label: string | null }>(
+        "/settings/test-settings",
+        { method: "POST", body: JSON.stringify(body) },
+      ),
+    ),
 
   // Plugins
   plugins: () => request<PluginInfo[]>("/plugins"),

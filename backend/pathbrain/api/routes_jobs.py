@@ -13,6 +13,8 @@ The adapters don't change those subsystems; they just read state they already ex
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -110,26 +112,64 @@ def _active_sweep_job(session: Session) -> list[dict]:
 
 
 def _active_profile_test_job() -> list[dict]:
-    if not profile_test.active():
-        return []
+    """The most recent profile test as a job entry — shown while running/pending AND for a
+    short window after it finishes, so a fast failure (e.g. the firewall rejecting a field)
+    stays visible with its error instead of blinking out of the dropdown."""
     t = profile_test.current()
-    if not t or t.get("status") not in ("running", "pending"):
+    if not t:
         return []
+    status = t.get("status")
+    label = f"Test to minimum: {t.get('label') or t.get('fingerprint')}"
+    if status in ("running", "pending"):
+        return [
+            {
+                "id": f"profile_test-{t['id']}",
+                "kind": "profile_test",
+                "label": label,
+                "status": "running",
+                "current": None,
+                "total": t.get("iterations"),
+                # The live step readout (snapshot → apply → verify → benchmark → restore).
+                "message": t.get("stage") or f"running {t.get('iterations')} iteration(s)",
+                "error": None,
+                "href": "/settings",
+                "started_at": t.get("started_at") or t.get("created_at"),
+                "finished_at": None,
+            }
+        ]
+    # Finished — keep it in the feed for a few minutes so the outcome is readable.
+    if not _finished_recently(t.get("finished_at"), minutes=5):
+        return []
+    failed = status == "failed"
     return [
         {
             "id": f"profile_test-{t['id']}",
             "kind": "profile_test",
-            "label": f"Test to minimum: {t.get('label') or t.get('fingerprint')}",
-            "status": "running",
+            "label": label,
+            "status": "failed" if failed else "succeeded",
             "current": None,
             "total": t.get("iterations"),
-            "message": f"running {t.get('iterations')} iteration(s), then restoring",
-            "error": None,
+            "message": t.get("stage") or ("failed" if failed else "done — baseline restored"),
+            "error": t.get("error") if failed else None,
             "href": "/settings",
             "started_at": t.get("started_at") or t.get("created_at"),
-            "finished_at": None,
+            "finished_at": t.get("finished_at"),
         }
     ]
+
+
+def _finished_recently(finished_at_iso: str | None, minutes: int) -> bool:
+    """True if an ISO timestamp is within the last ``minutes`` (best-effort; False on parse
+    failure so a bad value simply drops the entry rather than pinning it forever)."""
+    if not finished_at_iso:
+        return False
+    try:
+        ts = datetime.fromisoformat(finished_at_iso)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts) <= timedelta(minutes=minutes)
+    except (ValueError, TypeError):
+        return False
 
 
 def _active_current_test_job() -> list[dict]:

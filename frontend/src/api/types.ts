@@ -197,21 +197,23 @@ export interface ProfileFieldChange {
 export interface ProfileDiffSide {
   fingerprint: string;
   label: string;
-  median: number;
+  // Field-normalized Overall (the crown corner we rank on), null if no crown data.
+  overall: number | null;
   completion: number | null;
-  // Time-adjusted SOPS (median vs the day×hour norm), null if not computable.
-  relative_sops: number | null;
+  // Time-adjusted Overall (median vs the day×hour norm), null if not computable.
+  relative_overall: number | null;
   confident: boolean;
 }
 
 export interface ProfileDiff {
   best: ProfileDiffSide;
   comparison: ProfileDiffSide;
-  delta_abs: number;
+  // Overall gap (best − comparison); null when either side lacks a crown Overall.
+  delta_abs: number | null;
   delta_pct: number | null;
-  // Completion median delta (best − comparison); can move opposite to SOPS.
+  // Completion median delta (best − comparison); can move opposite to the Overall.
   completion_delta: number | null;
-  // Time-adjusted advantage of best over comparison (their relative_sops gap).
+  // Time-adjusted advantage of best over comparison (their relative_overall gap).
   relative_delta: number | null;
   changes: ProfileFieldChange[];
 }
@@ -286,7 +288,7 @@ export interface SettingsProfilesResponse {
   // corner. Null until a confident profile with both axes exists.
   best_fingerprint: string | null;
   // The current methodology's crown metric set — the metrics the Overall corners over
-  // (fcp/lcp/total_stall under v7). The table pins these as its standings columns so the
+  // (fcp/lcp/stall_time under v8). The table pins these as its standings columns so the
   // displayed columns are the ones that actually compute Overall.
   overall_metrics: string[];
   // Fingerprints statistically tied with the crown (co-leaders): the crown's median lead
@@ -318,6 +320,8 @@ export interface ProfileTest {
   iterations: number;
   run_id: number | null;
   error: string | null;
+  // Live step readout: snapshot → apply → verify → benchmark → restore → done/failed.
+  stage: string | null;
   created_at: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -668,6 +672,9 @@ export interface TrendRelativeResponse {
   window_hours: number;
   window_days: number;
   min_samples: number;
+  // The current methodology's crown measurements (what we rank on today), so the UI can
+  // feature the same day×hour "vs typical" matrix for them without a hardcoded set.
+  crown_metrics?: string[];
   metrics: Record<string, TrendRelative>;
 }
 
@@ -1016,3 +1023,144 @@ export interface OptimizerExport {
   runs_per_profile_limit: number;
   [key: string]: unknown;
 }
+
+// AI (OpenRouter) settings, as returned to the UI — the API key is masked to a hint.
+export interface AiConfig {
+  configured: boolean;
+  key_hint: string;
+  model: string;
+  prompt: string;
+  default_prompt: string;
+}
+
+export interface AiModel {
+  id: string;
+  name: string;
+  context_length: number | null;
+  prompt_price: string | null;
+}
+
+// One proposed profile from the model: a settings object (only the fields it's changing) +
+// a rationale. `settings` shape is model-authored, so it's loosely typed.
+export interface AiSuggestion {
+  settings?: Record<string, unknown>;
+  rationale?: string;
+  [key: string]: unknown;
+}
+
+// One deterministic settings→outcome relationship computed server-side (Spearman ρ over the
+// exported profiles): a writable field on a pipe vs a crown metric.
+export interface FieldSensitivity {
+  pipe: string;
+  field: string;
+  field_label: string;
+  metric: string;
+  metric_label: string;
+  spearman: number | null;
+  n: number;
+  distinct_values: number;
+  metric_direction: "increases" | "decreases" | "none";
+  effect: "improves" | "worsens" | "none";
+  summary: string;
+}
+
+// One lever's "what the top-Overall profiles share" contrast (top quartile vs the rest).
+export interface LeverSignature {
+  pipe: string;
+  field: string;
+  field_label: string;
+  pattern: "higher" | "lower" | "sweet_spot" | "none";
+  top_value: number;
+  top_range: [number, number];
+  field_range: [number, number];
+  field_median: number;
+  shift: number | null;
+  concentration: number | null;
+  cliffs_delta: number | null;
+  top_n: number;
+  rest_n: number;
+  summary: string;
+}
+
+export interface TopProfileSignature {
+  available?: boolean;
+  reason?: string;
+  top_profiles?: number;
+  rest_profiles?: number;
+  top_fraction?: number;
+  levers?: LeverSignature[];
+}
+
+// One deterministic "collect more data here" recommendation: a lever with a promising but
+// under-sampled signal, and the values to measure next.
+export interface CoverageGap {
+  pipe: string;
+  field: string;
+  field_label: string;
+  distinct_values: number;
+  measured_range: [number, number];
+  overall_rho: number | null;
+  pattern: "higher" | "lower" | "sweet_spot" | "none" | null;
+  sweepable: boolean;
+  action: "extend_lower" | "extend_higher" | "resolve";
+  suggested_values: number[];
+  rationale: string;
+  priority: number | null;
+}
+
+// The model's own interpreted relationship (its read of the levers), separate from the
+// deterministic map above.
+export interface AiRelationship {
+  pipe?: string;
+  field?: string;
+  metric?: string;
+  direction?: "inverse" | "linear" | "none" | string;
+  confidence?: string;
+  evidence?: string;
+  [key: string]: unknown;
+}
+
+export interface AiSuggestResult {
+  model: string;
+  raw: string;
+  suggestions: AiSuggestion[];
+  // The model's interpreted settings→metric relationships (may be empty if it omitted them).
+  relationships?: AiRelationship[];
+  // The model's data-collection requests (where it wants more data before trusting a signal).
+  data_requests?: Record<string, unknown>[];
+  // The deterministic relationships we computed and sent to the model.
+  field_sensitivity?: FieldSensitivity[];
+  // What the top-Overall profiles share, per lever (catches sweet spots correlations miss).
+  top_profile_signature?: TopProfileSignature;
+  // Deterministic "collect more data here" recommendations (promising but under-sampled levers).
+  coverage_gaps?: CoverageGap[];
+  usage: Record<string, number>;
+  profiles_sent: number | null;
+  // Size of the JSON payload sent to the model, so the UI can show how big the request was.
+  payload_bytes?: number | null;
+}
+
+// One Server-Sent Event from the streaming suggest endpoint (/ai/suggest/stream).
+export type AiStreamEvent =
+  | {
+      type: "meta";
+      profiles_sent: number | null;
+      payload_bytes: number;
+      model: string;
+      field_sensitivity?: FieldSensitivity[];
+      top_profile_signature?: TopProfileSignature;
+      coverage_gaps?: CoverageGap[];
+    }
+  | { type: "reasoning"; delta: string }
+  | { type: "content"; delta: string }
+  | {
+      type: "done";
+      model: string;
+      raw: string;
+      reasoning: string;
+      suggestions: AiSuggestion[];
+      relationships?: AiRelationship[];
+      data_requests?: Record<string, unknown>[];
+      usage: Record<string, number>;
+    }
+  | { type: "error"; error: string };
