@@ -2,7 +2,14 @@
 monkeypatched, so no network is used."""
 from __future__ import annotations
 
+import json
+
 from pathbrain import ai
+
+
+def _sse_events(text: str) -> list[dict]:
+    """Parse the ``data: {json}`` events out of an SSE response body."""
+    return [json.loads(ln[5:].strip()) for ln in text.splitlines() if ln.startswith("data:")]
 
 
 def test_ai_config_masks_the_key(client):
@@ -65,6 +72,57 @@ def test_ai_suggest_parses_suggestions(client, monkeypatch):
     assert body["suggestions"][0]["settings"]["quantum"] == 3000
     assert body["usage"]["total_tokens"] == 42
     assert "profiles_sent" in body
+
+
+def test_ai_suggest_stream_emits_reasoning_content_and_done(client, monkeypatch):
+    client.put("/api/ai/config", json={"api_key": "sk-or-good1111", "model": "test/model"})
+
+    def _fake_stream(api_key, payload, timeout):
+        assert payload["stream"] is True and payload["model"] == "test/model"
+        yield {"choices": [{"delta": {"reasoning": "let me think… "}}]}
+        yield {"choices": [{"delta": {"reasoning": "bigger quantum."}}]}
+        yield {"choices": [{"delta": {"content": '{"suggestions": [{"settings": '}}]}
+        yield {"choices": [{"delta": {"content": '{"quantum": 3000}, "rationale": "x"}]}'}}]}
+        yield {"usage": {"total_tokens": 21}}
+
+    monkeypatch.setattr(ai, "_stream_chat", _fake_stream)
+
+    resp = client.post("/api/ai/suggest/stream", json={"runs_per_profile": 10})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    events = _sse_events(resp.text)
+
+    assert events[0]["type"] == "meta" and "profiles_sent" in events[0]
+    types = [e["type"] for e in events]
+    assert "reasoning" in types and "content" in types
+    done = next(e for e in events if e["type"] == "done")
+    assert done["reasoning"] == "let me think… bigger quantum."
+    assert done["suggestions"][0]["settings"]["quantum"] == 3000
+    assert done["usage"]["total_tokens"] == 21
+
+
+def test_ai_suggest_stream_reports_error_as_event(client, monkeypatch):
+    client.put("/api/ai/config", json={"api_key": "sk-or-bad2222", "model": "test/model"})
+
+    def _boom(api_key, payload, timeout):
+        raise ai.AIError("OpenRouter returned HTTP 401: invalid key")
+        yield  # noqa — makes this a generator so the raise fires on iteration
+
+    monkeypatch.setattr(ai, "_stream_chat", _boom)
+
+    resp = client.post("/api/ai/suggest/stream", json={})
+    assert resp.status_code == 200  # the stream opened; the failure rides inside it
+    err = [e for e in _sse_events(resp.text) if e["type"] == "error"]
+    assert err and "401" in err[0]["error"]
+
+
+def test_ai_suggest_stream_needs_a_key(client):
+    ai_row_clear = client.delete("/api/ai/config/key")
+    assert ai_row_clear.status_code == 200
+    resp = client.post("/api/ai/suggest/stream", json={})
+    assert resp.status_code == 200
+    err = [e for e in _sse_events(resp.text) if e["type"] == "error"]
+    assert err and "API key" in err[0]["error"]
 
 
 def test_ai_suggest_surfaces_openrouter_error(client, monkeypatch):

@@ -6,7 +6,10 @@ page offers, sends it to the chosen model, and returns the parsed profile sugges
 """
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import ai
@@ -49,8 +52,6 @@ def list_models(session: Session = Depends(get_session)) -> dict:
 @router.post("/ai/suggest")
 def suggest(payload: AiSuggest, session: Session = Depends(get_session)) -> dict:
     """Build the optimizer export, send it to the model, and return parsed profile suggestions."""
-    import json
-
     export = build_optimizer_export(session, payload.runs_per_profile, payload.profile_limit)
     # Log the payload size so an oversized-request ceiling (a model's context limit, an upstream
     # body cap) is diagnosable rather than surfacing to the UI as an opaque failure.
@@ -74,3 +75,46 @@ def suggest(payload: AiSuggest, session: Session = Depends(get_session)) -> dict
     result["profiles_sent"] = export.get("profile_count")
     result["payload_bytes"] = payload_bytes
     return result
+
+
+@router.post("/ai/suggest/stream")
+def stream_suggest(payload: AiSuggest, session: Session = Depends(get_session)) -> StreamingResponse:
+    """Stream the suggestion request as Server-Sent Events — the model's reasoning trace and
+    answer arrive token-by-token, so a long request keeps the connection alive (no opaque
+    timeout) and the UI shows progress live.
+
+    Emits ``data: {json}`` events: a first ``{"type":"meta", …}`` (profiles/size), then
+    ``reasoning``/``content`` deltas, then a terminal ``done`` (parsed suggestions) or ``error``.
+    Config secrets are resolved here while the DB session is live; the generator itself is
+    session-free so it can run after the request scope closes."""
+    cfg = ai.get_ai_config(session)
+    api_key = cfg["api_key"]
+    model = payload.model or cfg["model"] or ""
+    prompt = payload.prompt if (payload.prompt and payload.prompt.strip()) else cfg["prompt"]
+    export = build_optimizer_export(session, payload.runs_per_profile, payload.profile_limit)
+    profiles_sent = export.get("profile_count")
+    payload_bytes = len(json.dumps(export))
+    log.info(
+        "AI suggest (stream): %s profile(s), ~%s KB payload, model=%s",
+        profiles_sent, round(payload_bytes / 1024), model or "(saved)",
+    )
+
+    def _sse(obj: dict) -> str:
+        return f"data: {json.dumps(obj)}\n\n"
+
+    def gen():
+        yield _sse({
+            "type": "meta",
+            "profiles_sent": profiles_sent,
+            "payload_bytes": payload_bytes,
+            "model": model,
+        })
+        for evt in ai.suggest_stream(export, api_key, model, prompt):
+            yield _sse(evt)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        # Defeat proxy/browser buffering so events flush as they're produced.
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

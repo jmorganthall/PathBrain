@@ -10,6 +10,8 @@ import CircularProgress from "@mui/material/CircularProgress";
 import Divider from "@mui/material/Divider";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
+import Switch from "@mui/material/Switch";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
@@ -40,6 +42,11 @@ export default function AI() {
   const [result, setResult] = useState<AiSuggestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+
+  // Streaming (SSE) state — the model's live reasoning trace + answer as they arrive.
+  const [streamMode, setStreamMode] = useState(true);
+  const [streamReasoning, setStreamReasoning] = useState("");
+  const [streamContent, setStreamContent] = useState("");
 
   useEffect(() => {
     api
@@ -96,21 +103,60 @@ export default function AI() {
     setSuggesting(true);
     setError(null);
     setResult(null);
+    setStreamReasoning("");
+    setStreamContent("");
+    const body = {
+      model,
+      prompt,
+      runs_per_profile: runsPerProfile,
+      profile_limit: profileLimit || null,
+    };
     try {
-      setResult(
-        await api.aiSuggest({
-          model,
-          prompt,
-          runs_per_profile: runsPerProfile,
-          profile_limit: profileLimit || null,
-        }),
-      );
+      if (!streamMode) {
+        setResult(await api.aiSuggest(body));
+        return;
+      }
+      // Stream: accumulate reasoning + content deltas live, materialize the result on `done`.
+      let reasoning = "";
+      let content = "";
+      let meta: { profiles_sent: number | null; payload_bytes: number } = {
+        profiles_sent: null,
+        payload_bytes: 0,
+      };
+      await api.aiSuggestStream(body, (evt) => {
+        switch (evt.type) {
+          case "meta":
+            meta = { profiles_sent: evt.profiles_sent, payload_bytes: evt.payload_bytes };
+            break;
+          case "reasoning":
+            reasoning += evt.delta;
+            setStreamReasoning(reasoning);
+            break;
+          case "content":
+            content += evt.delta;
+            setStreamContent(content);
+            break;
+          case "error":
+            setError(evt.error);
+            break;
+          case "done":
+            setResult({
+              model: evt.model,
+              raw: evt.raw,
+              suggestions: evt.suggestions,
+              usage: evt.usage,
+              profiles_sent: meta.profiles_sent,
+              payload_bytes: meta.payload_bytes,
+            });
+            break;
+        }
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Suggestion request failed");
     } finally {
       setSuggesting(false);
     }
-  }, [model, prompt, runsPerProfile, profileLimit]);
+  }, [model, prompt, runsPerProfile, profileLimit, streamMode]);
 
   const copy = useCallback(async (text: string, label: string) => {
     try {
@@ -349,14 +395,88 @@ export default function AI() {
             >
               {suggesting ? "Thinking…" : "Suggest profiles"}
             </Button>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={streamMode}
+                  onChange={(e) => setStreamMode(e.target.checked)}
+                  disabled={suggesting}
+                />
+              }
+              label="Stream"
+            />
             {!cfg?.configured && (
               <Typography variant="caption" color="text.secondary">
                 Add an API key and model first.
               </Typography>
             )}
           </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+            Streaming shows the model's reasoning + answer live and keeps a long request from
+            timing out.
+          </Typography>
         </CardContent>
       </Card>
+
+      {suggesting && streamMode && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+              <CircularProgress size={16} />
+              <Typography variant="h6">Streaming…</Typography>
+            </Stack>
+            {streamReasoning && (
+              <>
+                <Typography variant="overline" color="text.secondary">
+                  Reasoning
+                </Typography>
+                <Box
+                  sx={{
+                    maxHeight: 200,
+                    overflow: "auto",
+                    p: 1,
+                    mb: 1,
+                    borderRadius: 1,
+                    bgcolor: "action.hover",
+                    fontFamily: "monospace",
+                    fontSize: 12,
+                    whiteSpace: "pre-wrap",
+                    color: "text.secondary",
+                  }}
+                >
+                  {streamReasoning}
+                </Box>
+              </>
+            )}
+            {streamContent && (
+              <>
+                <Typography variant="overline" color="text.secondary">
+                  Answer
+                </Typography>
+                <Box
+                  sx={{
+                    maxHeight: 260,
+                    overflow: "auto",
+                    p: 1,
+                    borderRadius: 1,
+                    bgcolor: "action.hover",
+                    fontFamily: "monospace",
+                    fontSize: 12,
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {streamContent}
+                </Box>
+              </>
+            )}
+            {!streamReasoning && !streamContent && (
+              <Typography variant="body2" color="text.secondary">
+                Waiting for the model's first tokens…
+              </Typography>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {activeTest && (
         <Card sx={{ mb: 2 }}>

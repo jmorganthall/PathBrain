@@ -1048,3 +1048,18 @@ export interface AiSuggestResult {
   // Size of the JSON payload sent to the model, so the UI can show how big the request was.
   payload_bytes?: number | null;
 }
+
+// One Server-Sent Event from the streaming suggest endpoint (/ai/suggest/stream).
+export type AiStreamEvent =
+  | { type: "meta"; profiles_sent: number | null; payload_bytes: number; model: string }
+  | { type: "reasoning"; delta: string }
+  | { type: "content"; delta: string }
+  | {
+      type: "done";
+      model: string;
+      raw: string;
+      reasoning: string;
+      suggestions: AiSuggestion[];
+      usage: Record<string, number>;
+    }
+  | { type: "error"; error: string };

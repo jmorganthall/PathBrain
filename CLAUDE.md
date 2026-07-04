@@ -301,7 +301,13 @@ LLM-based. See `README.md` for the product overview.
   model + editable prompt are saved there too. `GET/PUT /api/ai/config`, `DELETE /api/ai/config/key`,
   `GET /api/ai/models`, `POST /api/ai/suggest` (builds the export, calls OpenRouter chat-completions,
   best-effort parses `{suggestions:[{settings, displacement_likelihood, rationale}]}`, **ranked by
-  the model's crown-displacement estimate**). Each suggestion has a **one-click "Test to minimum"**:
+  the model's crown-displacement estimate**). A **streaming** variant `POST /api/ai/suggest/stream`
+  (`ai.suggest_stream` + `_stream_chat`) returns Server-Sent Events — a `meta` event then
+  `reasoning`/`content` token deltas then a terminal `done` (parsed suggestions) or `error` — so a
+  long request keeps the connection alive (no timeout) and the AI page shows the model's reasoning +
+  answer live (default on, `Stream` toggle; `client.aiSuggestStream` consumes the SSE via `fetch` +
+  `ReadableStream`). Config secrets are resolved before the generator starts, so it's session-free.
+  Each suggestion has a **one-click "Test to minimum"**:
   `POST /api/settings/test-settings` (`_apply_writable_overrides` + `TestSettings`) materializes the
   suggestion onto the **live** profile — overriding **only writable fields** so it's always reachable
   — then runs a normal profile test (apply → benchmark to `min_iterations` → restore baseline). No
