@@ -914,6 +914,9 @@ def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
     # Percentile-normalized crown + raw medians summarize the profile.
     assert set(prof["crown_percentiles"]) >= {"fcp", "lcp", "total_stall"}
     assert prof["metric_medians"]["lcp"] == 250.0
+    # Full-history spread per metric (n = every run) accompanies the capped raw samples.
+    assert prof["metric_distribution"]["fcp"]["n"] == 3
+    assert prof["metric_distribution"]["lcp"]["median"] == 250.0
 
 
 def test_optimizer_export_caps_run_samples(client):
@@ -926,6 +929,27 @@ def test_optimizer_export_caps_run_samples(client):
     prof = next(p for p in body["profiles"] if p["fingerprint"] == "optcap0000x")
     assert len(prof["run_samples"]) == 2          # capped to the requested limit
     assert prof["run_samples_truncated"] is True  # flagged as truncated (6 runs > 2)
+    # The distribution is computed from ALL 6 runs, not just the 2 sampled — so variance
+    # is always conveyed regardless of the cap.
+    dist = prof["metric_distribution"]["fcp"]
+    assert dist["n"] == 6
+    assert dist["min"] == 300.0 and dist["max"] == 300.0 and dist["median"] == 300.0
+
+
+def test_optimizer_export_distribution_spans_full_history(client):
+    """metric_distribution reports the true spread (min < median < max) across all runs."""
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i, fcp in enumerate((100.0, 200.0, 300.0, 400.0, 500.0)):
+        _seed_run("optdist000x", 80, t0 - timedelta(minutes=50 - i), iterations=3,
+                  crown_raw=(fcp, 340.0, 200.0))
+
+    body = client.get("/api/settings/export/optimizer?runs_per_profile=2").json()
+    prof = next(p for p in body["profiles"] if p["fingerprint"] == "optdist000x")
+    assert len(prof["run_samples"]) == 2          # samples capped
+    dist = prof["metric_distribution"]["fcp"]
+    assert dist["n"] == 5                          # distribution over the full history
+    assert dist["min"] == 100.0 and dist["max"] == 500.0 and dist["median"] == 300.0
+    assert dist["p25"] < dist["median"] < dist["p75"]
 
 
 def test_optimizer_export_top_n_profiles(client):
