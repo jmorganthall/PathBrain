@@ -6,6 +6,7 @@ configurable threshold.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from statistics import median, quantiles
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
@@ -32,6 +33,7 @@ from ..settings_profile import (
     plan_apply,
     summarize,
 )
+from ..shaper_fields import SHAPER_FIELDS, SWEEPABLE_FIELDS, WRITABLE_FIELDS
 from ..trends import RunPoint, profile_relative
 
 # The three headline axes (the temporal phases of a load); their 0–100 scores still
@@ -451,6 +453,123 @@ def settings_profiles(
     result["metric_thresholds"] = _metric_thresholds(definition)
     result["saturation"] = _saturation_report(result["profiles"], definition)
     return result
+
+
+@router.get("/settings/export/optimizer")
+def optimizer_export(
+    session: Session = Depends(get_session),
+    runs_per_profile: int = Query(
+        50, ge=1, le=1000, description="Cap the per-profile run samples (most recent first)."
+    ),
+) -> dict:
+    """A single AI-ready JSON: every profile's **tunable shaper settings** → its **runs** →
+    the **raw metrics used for scoring**, plus the methodology goal and the shaper field model.
+
+    Purpose-built to hand to an LLM: it has the *levers* (which shaper params are writable +
+    their sensible ranges), the *outcomes* (each run's raw fcp/lcp/total_stall and every other
+    scored metric, in ms), and the *objective* (crown metrics + "lower is better" + the observed
+    best/worst achieved so far) — everything needed to propose new, untested profiles likely to
+    score higher. Profile-centric so settings↔performance patterns are explicit.
+    """
+    methodology = ensure_current_methodology(session, get_config(session))
+    defn = methodology.definition or {}
+    crown_metrics, crown_required = overall_metrics(defn)
+    metric_src = all_metric_sources()  # {logical_key: (plugin, source_key)}
+    scored_keys = [m["key"] for m in defn.get("metrics", []) if m.get("key") in metric_src]
+
+    # Per-run raw scoring metrics, grouped by profile (comparable, current-methodology runs).
+    runs_by_fp: dict[str, list[dict]] = {}
+    for run, score in _completed_runs_with_scores(session):
+        if not _comparable(score):
+            continue
+        results_by_plugin = {r.plugin: (r.metrics or {}) for r in run.results}
+        metrics: dict[str, float] = {}
+        for key in scored_keys:
+            plugin, source_key = metric_src[key]
+            val = results_by_plugin.get(plugin, {}).get(source_key)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                metrics[key] = val
+        runs_by_fp.setdefault(run.settings_fingerprint, []).append({
+            "run_id": run.id,
+            "created_at": run.created_at.isoformat() if run.created_at else None,
+            "iterations": int(run.iterations or 1),
+            "metrics": metrics,
+        })
+    for fp, runs in runs_by_fp.items():
+        runs.sort(key=lambda r: r["created_at"] or "", reverse=True)
+        del runs[runs_per_profile:]
+
+    result = compute_profiles(session, complete_only=True)
+    profiles_out = []
+    for p in result["profiles"]:
+        fp = p["fingerprint"]
+        samples = runs_by_fp.get(fp, [])
+        profiles_out.append({
+            "fingerprint": fp,
+            "label": p["label"],
+            # The tunable levers: normalized shaper params per pipe (bandwidth, quantum, target,
+            # interval, ecn, scheduler, queues) — the "inputs" an AI would vary.
+            "settings": p["settings"],
+            "runs": p["count"],
+            "iterations": p["iterations"],
+            "confident": p["confident"],
+            # Outcome summary: percentile-normalized Overall + per-crown-metric percentile +
+            # the raw median of every scored metric (ms). Higher percentile / lower ms = better.
+            "overall": p["overall"],
+            "crown_percentiles": p.get("crown_norm") or {},
+            "metric_medians": p.get("metrics") or {},
+            # The raw scoring metrics per run (most recent first, capped).
+            "run_samples": samples,
+            "run_samples_truncated": len(samples) < p["count"],
+        })
+
+    metric_meta = {
+        m["key"]: {
+            "label": m.get("label"),
+            "unit": m.get("unit"),
+            "higher_is_better": bool(m.get("higher_is_better")),
+            "is_crown_metric": m["key"] in crown_metrics,
+        }
+        for m in defn.get("metrics", []) if m.get("key")
+    }
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "runs_per_profile_limit": runs_per_profile,
+        "profile_count": len(profiles_out),
+        "methodology": {
+            "version": methodology.version,
+            "crown_metrics": crown_metrics,
+            # What "better" means, spelled out for the model.
+            "objective": (
+                "Minimize each crown metric (all are times in ms; lower is better). Overall is "
+                "the corner over each crown metric's percentile within the measured field "
+                "(magnitude-blind rank), 0–100, higher = better. Suggest shaper settings likely "
+                "to reduce the crown metrics below the best observed so far."
+            ),
+            # The best/worst raw actually achieved per crown metric — the frontier to beat.
+            "observed_range": result.get("crown_field") or {},
+            "metrics": metric_meta,
+        },
+        # The shaper field model: which params are writable (an AI may only suggest changes to
+        # these — apply() can't write the rest), plus sensible ranges, so proposals are valid.
+        "shaper_model": {
+            "writable_fields": list(WRITABLE_FIELDS),
+            "sweepable_fields": list(SWEEPABLE_FIELDS),
+            "fields": [
+                {
+                    "key": f.key,
+                    "label": f.label,
+                    "kind": f.kind,
+                    "unit": f.unit,
+                    "writable": f.writable,
+                    "sweepable": f.sweepable,
+                    "suggested_range": f.sweep_default,
+                }
+                for f in SHAPER_FIELDS
+            ],
+        },
+        "profiles": profiles_out,
+    }
 
 
 def _current_fingerprint() -> str | None:

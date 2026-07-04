@@ -28,6 +28,7 @@ import type {
   RunScoresResponse,
   ChallengerRace,
   DataDump,
+  OptimizerExport,
   ProfileTest,
   ProfileTestStart,
   ProfileRefresh,
@@ -248,6 +249,8 @@ export const api = {
 
   // Consolidated raw export of the last N runs.
   dataDump: (limit: number) => request<DataDump>(`/history/dump?limit=${limit}`),
+  optimizerExport: (runsPerProfile: number) =>
+    request<OptimizerExport>(`/settings/export/optimizer?runs_per_profile=${runsPerProfile}`),
 
   // Plugins
   plugins: () => request<PluginInfo[]>("/plugins"),
