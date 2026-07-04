@@ -14,9 +14,10 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import ScienceIcon from "@mui/icons-material/Science";
 
 import { api } from "../api/client";
-import type { AiConfig, AiModel, AiSuggestResult } from "../api/types";
+import type { AiConfig, AiModel, AiSuggestResult, AiSuggestion } from "../api/types";
 
 export default function AI() {
   const [cfg, setCfg] = useState<AiConfig | null>(null);
@@ -114,6 +115,26 @@ export default function AI() {
     }
   }, []);
 
+  const [testingIdx, setTestingIdx] = useState<number | null>(null);
+  const testSuggestion = useCallback(
+    async (s: AiSuggestion, idx: number) => {
+      setTestingIdx(idx);
+      setError(null);
+      try {
+        const r = await api.testSettings({
+          settings: s.settings ?? s,
+          label: `AI: ${String(s.rationale ?? "suggestion").slice(0, 60)}`,
+        });
+        setToast(`Testing to minimum (${r.iterations} iterations) — watch on Settings Impact`);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not start the test");
+      } finally {
+        setTestingIdx(null);
+      }
+    },
+    [],
+  );
+
   return (
     <Box>
       <Typography variant="h4" sx={{ mb: 1 }}>
@@ -121,9 +142,12 @@ export default function AI() {
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 860 }}>
         Send your measured profiles (full settings + scoring data) to an LLM via <b>OpenRouter</b> and get
-        back proposed shaper profiles that haven't been tested yet — candidates likely to score faster than
-        anything you've measured. Configure a key and model, tweak the prompt if you like, then ask for
-        suggestions. Nothing is applied to the firewall automatically — you review the ideas and test them.
+        back proposed shaper profiles that haven't been tested yet — ranked by the model's estimate of the
+        chance each beats your current crown. Configure a key and model, tweak the prompt if you like, then
+        ask for suggestions. Each one has a <b>Test to minimum</b> button that applies it to the live
+        firewall (writable fields only), benchmarks it to the confidence minimum, and restores your
+        baseline — flowing the AI's ideas straight into the measurement loop. Nothing is applied without
+        that click.
       </Typography>
 
       {error && (
@@ -272,41 +296,72 @@ export default function AI() {
             )}
 
             <Stack spacing={1.5}>
-              {result.suggestions.map((s, i) => (
-                <Box key={i} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
-                  <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
-                    <Box sx={{ minWidth: 0 }}>
-                      {s.rationale && (
-                        <Typography variant="body2" sx={{ mb: 1 }}>
-                          {String(s.rationale)}
-                        </Typography>
-                      )}
-                      <Box
-                        component="pre"
-                        sx={{
-                          m: 0,
-                          p: 1,
-                          fontSize: 12,
-                          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                          bgcolor: "background.default",
-                          borderRadius: 1,
-                          overflow: "auto",
-                          whiteSpace: "pre-wrap",
-                        }}
-                      >
-                        {JSON.stringify(s.settings ?? s, null, 2)}
-                      </Box>
-                    </Box>
-                    <Button
-                      size="small"
-                      startIcon={<ContentCopyIcon />}
-                      onClick={() => copy(JSON.stringify(s.settings ?? s, null, 2), "settings")}
+              {result.suggestions.map((s, i) => {
+                const likelihood =
+                  typeof s.displacement_likelihood === "number"
+                    ? (s.displacement_likelihood as number)
+                    : null;
+                return (
+                  <Box key={i} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      alignItems="center"
+                      sx={{ mb: 1 }}
+                      flexWrap="wrap"
+                      useFlexGap
                     >
-                      Copy
-                    </Button>
-                  </Stack>
-                </Box>
-              ))}
+                      <Chip size="small" label={`#${i + 1}`} />
+                      {likelihood != null && (
+                        <Chip
+                          size="small"
+                          color={likelihood >= 60 ? "success" : likelihood >= 30 ? "warning" : "default"}
+                          label={`${Math.round(likelihood)}% chance to beat crown`}
+                        />
+                      )}
+                      <Box sx={{ flex: 1 }} />
+                      <Button
+                        size="small"
+                        variant="contained"
+                        startIcon={
+                          testingIdx === i ? <CircularProgress size={14} color="inherit" /> : <ScienceIcon />
+                        }
+                        disabled={testingIdx != null || !s.settings}
+                        onClick={() => testSuggestion(s, i)}
+                      >
+                        Test to minimum
+                      </Button>
+                      <Button
+                        size="small"
+                        startIcon={<ContentCopyIcon />}
+                        onClick={() => copy(JSON.stringify(s.settings ?? s, null, 2), "settings")}
+                      >
+                        Copy
+                      </Button>
+                    </Stack>
+                    {s.rationale && (
+                      <Typography variant="body2" sx={{ mb: 1 }}>
+                        {String(s.rationale)}
+                      </Typography>
+                    )}
+                    <Box
+                      component="pre"
+                      sx={{
+                        m: 0,
+                        p: 1,
+                        fontSize: 12,
+                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                        bgcolor: "background.default",
+                        borderRadius: 1,
+                        overflow: "auto",
+                        whiteSpace: "pre-wrap",
+                      }}
+                    >
+                      {JSON.stringify(s.settings ?? s, null, 2)}
+                    </Box>
+                  </Box>
+                );
+              })}
             </Stack>
 
             <Divider sx={{ my: 2 }} />

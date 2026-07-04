@@ -287,8 +287,12 @@ LLM-based. See `README.md` for the product overview.
   never leaks into run snapshots / the data dump; returned **masked** via `ai.public_config`), the
   model + editable prompt are saved there too. `GET/PUT /api/ai/config`, `DELETE /api/ai/config/key`,
   `GET /api/ai/models`, `POST /api/ai/suggest` (builds the export, calls OpenRouter chat-completions,
-  best-effort parses `{suggestions:[{settings, rationale}]}`). Nothing is auto-applied — suggestions
-  are display-only for the user to review and test.
+  best-effort parses `{suggestions:[{settings, displacement_likelihood, rationale}]}`, **ranked by
+  the model's crown-displacement estimate**). Each suggestion has a **one-click "Test to minimum"**:
+  `POST /api/settings/test-settings` (`_apply_writable_overrides` + `TestSettings`) materializes the
+  suggestion onto the **live** profile — overriding **only writable fields** so it's always reachable
+  — then runs a normal profile test (apply → benchmark to `min_iterations` → restore baseline). No
+  firewall write happens for an unreachable or no-op suggestion (rejected up front).
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`,

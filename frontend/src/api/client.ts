@@ -270,6 +270,12 @@ export const api = {
     runs_per_profile?: number;
     profile_limit?: number | null;
   }) => request<AiSuggestResult>("/ai/suggest", { method: "POST", body: JSON.stringify(body) }),
+  // Apply arbitrary settings (e.g. an AI suggestion) onto the live profile and test to minimum.
+  testSettings: (body: { settings: unknown; label?: string }) =>
+    request<{ id: number; fingerprint: string; iterations: number; label: string | null }>(
+      "/settings/test-settings",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
 
   // Plugins
   plugins: () => request<PluginInfo[]>("/plugins"),

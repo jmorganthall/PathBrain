@@ -24,6 +24,7 @@ from ..metrics import all_metric_sources
 from ..models import BenchmarkResult, Run, RunStatus, Score
 from ..providers import get_provider
 from ..runner import MAX_ITERATIONS
+from ..schemas import TestSettings
 from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import (
     diff_profiles,
@@ -1372,6 +1373,64 @@ def test_profile(
         "current_iterations": current_iters,
         "min_iterations": min_iterations,
     }
+
+
+def _apply_writable_overrides(live_norm: list[dict], suggested) -> list[dict]:
+    """Build a full normalized profile from the live one, overriding ONLY writable fields with a
+    suggestion — so the result is always reachable (non-writable topology stays as live).
+    ``suggested`` is a list of per-pipe objects (each with a ``label`` matching a live pipe) or a
+    single flat dict applied to every pipe."""
+    by_label: dict = {}
+    flat: dict = {}
+    if isinstance(suggested, list):
+        for s in suggested:
+            if isinstance(s, dict):
+                by_label[s.get("label")] = s
+    elif isinstance(suggested, dict):
+        flat = suggested
+    out: list[dict] = []
+    for pipe in live_norm:
+        p = dict(pipe)
+        override = by_label.get(pipe.get("label")) or flat
+        for f in WRITABLE_FIELDS:
+            if isinstance(override, dict) and override.get(f) is not None:
+                p[f] = override[f]
+        out.append(p)
+    return out
+
+
+@router.post("/settings/test-settings")
+def test_settings(payload: TestSettings, session: Session = Depends(get_session)) -> dict:
+    """Apply an *arbitrary* set of shaper settings (e.g. an AI suggestion) onto the live profile —
+    overriding only writable fields — then benchmark it to the confidence minimum and restore the
+    baseline (a normal profile test under the coordinator lock). Rejects a no-op or a change that
+    touches a non-writable field up front, so we never apply something unreachable."""
+    try:
+        live = get_provider().discover()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not read the live firewall: {exc}") from exc
+    live_norm = normalize(live)
+    target = _apply_writable_overrides(live_norm, payload.settings)
+    target_fp = fingerprint(target)
+    if target_fp == fingerprint(live_norm):
+        raise HTTPException(
+            status_code=400, detail="Those settings match the current profile — nothing to change."
+        )
+    if environment_signature(target) != environment_signature(live_norm):
+        raise HTTPException(
+            status_code=400, detail="Unreachable: the suggestion changes a non-writable field."
+        )
+    iterations = min(MAX_ITERATIONS, _min_iterations(session))
+    try:
+        test_id = profile_test_mod.start(
+            target_fp, target, payload.label or "AI suggestion", iterations
+        )
+    except RuntimeError as exc:  # another firewall/benchmark session already running
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not start the test: {exc}") from exc
+    log.info("Test-settings %s started (fp %s, %s iteration(s))", test_id, target_fp, iterations)
+    return {"id": test_id, "fingerprint": target_fp, "iterations": iterations, "label": payload.label}
 
 
 @router.get("/settings/test-profile/current")
