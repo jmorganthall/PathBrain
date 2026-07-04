@@ -102,3 +102,20 @@ def test_parse_suggestions_tolerates_prose_and_fences():
     prose = 'Sure! {"suggestions":[{"settings":{"target":"5ms"}}]} hope that helps'
     assert ai._parse_suggestions(prose)[0]["settings"]["target"] == "5ms"
     assert ai._parse_suggestions("no json here") == []
+
+
+def test_ai_suggest_ranks_by_displacement_likelihood(client, monkeypatch):
+    client.put("/api/ai/config", json={"api_key": "sk-or-rank9999", "model": "test/model"})
+
+    def _fake(url, api_key, payload, timeout):
+        content = (
+            '{"suggestions": ['
+            '{"settings": [], "displacement_likelihood": 30},'
+            '{"settings": [], "displacement_likelihood": 90},'
+            '{"settings": [], "displacement_likelihood": 60}]}'
+        )
+        return {"choices": [{"message": {"content": content}}]}
+
+    monkeypatch.setattr(ai, "_request", _fake)
+    body = client.post("/api/ai/suggest", json={}).json()
+    assert [s["displacement_likelihood"] for s in body["suggestions"]] == [90, 60, 30]

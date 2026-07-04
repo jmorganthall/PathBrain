@@ -22,6 +22,17 @@ class CurrentTestStart(BaseModel):
     minutes: float
 
 
+class TestSettings(BaseModel):
+    """Apply an arbitrary set of shaper settings (e.g. an AI suggestion) and test to minimum.
+
+    ``settings`` is a list of per-pipe overrides (each with a ``label`` matching a live pipe)
+    or a single flat dict of writable fields applied to every pipe. Only *writable* fields are
+    applied — the result is always reachable from the live environment."""
+
+    settings: Any
+    label: str | None = None
+
+
 class AiConfigUpdate(BaseModel):
     """Partial AI settings; only provided fields are saved. A blank ``api_key`` is ignored."""
 

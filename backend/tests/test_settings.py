@@ -935,3 +935,41 @@ def test_optimizer_export_top_n_profiles(client):
     assert body["profiles_available"] >= 1                  # but more exist in the field
     # The one returned is the highest-Overall profile.
     assert body["profiles"][0]["overall"] is not None
+
+
+def test_apply_writable_overrides_only_touches_writable_fields():
+    from pathbrain.api.routes_settings import _apply_writable_overrides
+
+    live = [{"label": "wan-download", "quantum": 1514, "target": "5ms",
+             "scheduler": "fq_codel", "queues": 1}]
+    # A per-pipe override changing a writable (quantum) and a non-writable (scheduler) field.
+    out = _apply_writable_overrides(live, [{"label": "wan-download", "quantum": 3000, "scheduler": "HFSC"}])
+    assert out[0]["quantum"] == 3000            # writable → applied
+    assert out[0]["scheduler"] == "fq_codel"    # non-writable → left as live (reachable)
+    # A flat dict applies to every pipe.
+    out2 = _apply_writable_overrides(live, {"target": "3ms"})
+    assert out2[0]["target"] == "3ms"
+
+
+def test_test_settings_rejects_a_no_op(client):
+    from pathbrain.providers import mock as mock_mod
+    mock_mod._OVERRIDES.clear()
+    # Empty overrides → target == live → nothing to change → 400 (never starts a test).
+    resp = client.post("/api/settings/test-settings", json={"settings": {}})
+    assert resp.status_code == 400
+
+
+def test_test_settings_starts_a_test_for_a_writable_change(client, monkeypatch):
+    import pathbrain.api.routes_settings as rs
+    from pathbrain.providers import mock as mock_mod
+    mock_mod._OVERRIDES.clear()
+    calls: dict = {}
+    monkeypatch.setattr(rs.profile_test_mod, "start",
+                        lambda fp, target, label, iters: calls.update(fp=fp, iters=iters) or 55)
+
+    resp = client.post("/api/settings/test-settings",
+                       json={"settings": {"quantum": 6000}, "label": "AI idea"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == 55 and body["iterations"] >= 1
+    assert calls["fp"] == body["fingerprint"]   # materialized fingerprint is what gets tested

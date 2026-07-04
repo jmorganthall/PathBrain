@@ -36,8 +36,21 @@ You will be given JSON with:
 Study how the settings correlate with the measured crown metrics. Then propose 3-5 NEW shaper profiles (settings combinations we have NOT tested) likely to reduce the crown metrics below the best observed so far.
 
 Respond with ONLY a JSON object of exactly this shape (no prose outside the JSON):
-{"suggestions": [{"settings": {"download_bandwidth": "880Mbit", "quantum": 3000, "target": "5ms", "interval": "60ms", "ecn": true}, "rationale": "why this should be faster"}]}
-Use the same field names and value formats you see in the profiles' `settings`. Only include fields you are changing plus the identity fields needed to define the profile."""
+{"suggestions": [
+  {
+    "settings": [
+      {"label": "<the exact pipe label from a profile's settings, e.g. the download pipe>", "quantum": 3000, "target": "5ms", "interval": "60ms", "ecn": true}
+    ],
+    "displacement_likelihood": 72,
+    "rationale": "why this should beat the current best"
+  }
+]}
+
+Rules:
+- Each suggestion's `settings` is a LIST with one object per pipe you are changing. Reference the pipe by its exact `label` from the profiles' `settings` (there is typically a download pipe and an upload pipe, and they may use different values).
+- Set ONLY fields listed in `shaper_model.writable_fields`; leave every non-writable field alone. Use the same value formats you see (e.g. `target` like "5ms", `quantum` an integer).
+- `displacement_likelihood` is your 0-100 estimate of the chance this profile beats the current crown.
+- Order the suggestions by `displacement_likelihood`, highest first."""
 
 
 def _row(session: Session) -> AppConfig | None:
@@ -177,12 +190,22 @@ def suggest(session: Session, export: dict, model: str | None = None, prompt: st
     resp = _request(f"{OPENROUTER_BASE}/chat/completions", api_key, payload, timeout=180)
     choice = (resp.get("choices") or [{}])[0]
     raw = ((choice.get("message") or {}).get("content")) or ""
+    suggestions = _parse_suggestions(raw)
+    # Rank by the model's own crown-displacement estimate (highest first).
+    suggestions.sort(key=lambda s: -_as_float(s.get("displacement_likelihood")))
     return {
         "model": model,
         "raw": raw,
-        "suggestions": _parse_suggestions(raw),
+        "suggestions": suggestions,
         "usage": resp.get("usage") or {},
     }
+
+
+def _as_float(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _parse_suggestions(text: str) -> list[dict]:
