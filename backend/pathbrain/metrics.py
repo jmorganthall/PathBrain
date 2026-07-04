@@ -250,6 +250,101 @@ METRICS: list[MetricDef] = [
             "exposed no Long Animation Frame / long-task data. Lower is better."
         ),
     ),
+    # ── Navigation waterfall (display-only; additive, independent load phases) ──
+    # The load split into non-overlapping phase durations that tile navigationStart →
+    # load, from the raw W3C Navigation Timing marks + FCP/LCP (interpret/waterfall.py).
+    # These telescope: stall+dns+tcp+tls+request == nav_ttfb_cumulative (responseStart),
+    # the network-confounded prefix baked into every paint milestone. Not scored — they
+    # exist to make the DNS/TLS/TTFB-vs-render breakdown visible (the waterfall view).
+    MetricDef(
+        "nav_stall", "browser", "nav_stall_ms", "Pre-connect stall", unit="ms",
+        description=(
+            "Time before DNS even starts — redirects, request queueing and connection "
+            "blocking (navigationStart → domainLookupStart). Lower is better."
+        ),
+    ),
+    MetricDef(
+        "nav_dns", "browser", "nav_dns_ms", "DNS (page nav)", unit="ms",
+        description=(
+            "DNS resolution phase of the real page navigation (domainLookupStart → "
+            "domainLookupEnd) — distinct from the standalone DNS probe. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "nav_tcp", "browser", "nav_tcp_ms", "TCP connect (page nav)", unit="ms",
+        description=(
+            "TCP handshake phase of the page navigation, excluding TLS (connectStart → "
+            "secureConnectionStart). An independent phase — no longer overlapping TLS. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "nav_tls", "browser", "nav_tls_ms", "TLS (page nav)", unit="ms",
+        description=(
+            "TLS handshake phase of the page navigation (secureConnectionStart → "
+            "connectEnd); 0 on a non-HTTPS connection. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "nav_request", "browser", "nav_request_ms", "Request / TTFB wait", unit="ms",
+        description=(
+            "Request send + server processing until the first response byte (connectEnd → "
+            "responseStart) — the 'wait' phase, once the connection is open. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "nav_response", "browser", "nav_response_ms", "Response download", unit="ms",
+        description=(
+            "Downloading the document body, first byte to last (responseStart → "
+            "responseEnd). Lower is better."
+        ),
+    ),
+    MetricDef(
+        "nav_render", "browser", "nav_render_ms", "Render to first paint", unit="ms",
+        description=(
+            "The render residual: from the document finishing download to First Contentful "
+            "Paint (responseEnd → FCP). The part of 'time to paint' that network shaping "
+            "cannot move. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "nav_fcp_lcp", "browser", "nav_fcp_lcp_ms", "First → largest paint", unit="ms",
+        description=(
+            "Time between the first content painting and the largest content painting "
+            "(FCP → LCP). Lower is better."
+        ),
+    ),
+    MetricDef(
+        "nav_lcp_load", "browser", "nav_lcp_load_ms", "Largest paint → load", unit="ms",
+        description=(
+            "From the largest contentful paint to the page-load event (LCP → loadEventEnd). "
+            "Lower is better."
+        ),
+    ),
+    MetricDef(
+        "nav_ttfb_cumulative", "browser", "nav_ttfb_cumulative_ms", "TTFB (cumulative)", unit="ms",
+        description=(
+            "The whole network prefix up to the first response byte (== stall+DNS+TCP+TLS+"
+            "request). This is the network-'weather'-confounded time that is baked into every "
+            "paint milestone — the reason a profile can post a better LCP purely because DNS/"
+            "TLS were fast at that moment. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "nav_fcp_independent", "browser", "nav_fcp_independent_ms", "FCP after first byte", unit="ms",
+        description=(
+            "First Contentful Paint minus the cumulative TTFB (FCP − responseStart) — the "
+            "network-independent paint work. Compare profiles on this to strip out network "
+            "weather from time-to-first-content. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "nav_lcp_independent", "browser", "nav_lcp_independent_ms", "LCP after first byte", unit="ms",
+        description=(
+            "Largest Contentful Paint minus the cumulative TTFB (LCP − responseStart) — the "
+            "network-independent 'main content visible' time. The apples-to-apples LCP once "
+            "network setup is removed. Lower is better."
+        ),
+    ),
     # ── Pixel-based visual metrics (display-only; require the opt-in filmstrip) ──
     # Demoted from SOPS in favor of the byte-arrival smoothness metrics, which
     # isolate the network layer without the CPU cost of per-frame screencast.
@@ -279,6 +374,10 @@ METRICS: list[MetricDef] = [
 DISPLAY_ORDER = [
     "dns", "tcp", "tls",                                  # connection setup
     "ttfb", "download", "transfer",                       # response
+    # navigation waterfall — the load's independent phases, in wall-clock order
+    "nav_stall", "nav_dns", "nav_tcp", "nav_tls", "nav_request", "nav_response",
+    "nav_render", "nav_fcp_lcp", "nav_lcp_load",
+    "nav_ttfb_cumulative", "nav_fcp_independent", "nav_lcp_independent",
     "fcp", "speed_index", "dom_content_loaded", "lcp",    # paint trajectory
     "load_event", "render", "paint_cadence", "cls",       # completion + smoothness
     "inp",                                                # interaction (after load)

@@ -33,6 +33,7 @@ import { ImpactBanner } from "./Settings";
 import ScoreGauge from "../components/ScoreGauge";
 import SubscoreBreakdown from "../components/SubscoreBreakdown";
 import SeriesChart from "../components/SeriesChart";
+import Waterfall from "../components/Waterfall";
 import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
@@ -583,6 +584,27 @@ export default function Dashboard() {
               )}
             </CardContent>
           </Card>
+
+          {(() => {
+            const bm = latest.results?.find((r) => r.plugin === "browser")?.metrics ?? null;
+            if (!bm) return null;
+            return (
+              <Card sx={{ gridColumn: { md: "1 / -1" } }}>
+                <CardContent>
+                  <Typography variant="h6" gutterBottom>
+                    Load waterfall (latest run)
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+                    The page load split into independent phases. The cool bars up to{" "}
+                    <b>first byte</b> are network setup (DNS/TCP/TLS/TTFB) — the time that gets baked
+                    into FCP &amp; LCP and swings with network conditions. The warm bars are the
+                    render/paint work that firewall shaping can&apos;t move.
+                  </Typography>
+                  <Waterfall metrics={bm} />
+                </CardContent>
+              </Card>
+            );
+          })()}
 
           <Card sx={{ gridColumn: { md: "1 / -1" } }}>
             <CardContent>

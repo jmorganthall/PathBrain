@@ -33,6 +33,7 @@ import type {
 import { sopsColor } from "../theme";
 import ScoreGauge from "../components/ScoreGauge";
 import SubscoreBreakdown from "../components/SubscoreBreakdown";
+import Waterfall from "../components/Waterfall";
 import StatusChip from "../components/StatusChip";
 import JsonViewer from "../components/JsonViewer";
 import Loading from "../components/Loading";
@@ -366,6 +367,27 @@ export default function RunDetail() {
           </CardContent>
         </Card>
       </Box>
+
+      {(() => {
+        const bm = run.results.find((r) => r.plugin === "browser")?.metrics ?? null;
+        if (!bm) return null;
+        return (
+          <Card sx={{ mb: 2 }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Load waterfall
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+                This run&apos;s page load as independent, non-overlapping phases (median across
+                iterations). Everything up to <b>first byte</b> is network setup that is baked into
+                FCP &amp; LCP; the warm bars are the render/paint residual. Compare the{" "}
+                <b>after-first-byte</b> figures across profiles to strip out network weather.
+              </Typography>
+              <Waterfall metrics={bm} />
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {runScores.length > 0 && (
         <Card sx={{ mb: 2 }}>

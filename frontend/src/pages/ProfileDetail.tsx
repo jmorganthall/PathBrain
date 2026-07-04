@@ -30,6 +30,7 @@ import type {
   SettingsProfile,
 } from "../api/types";
 import SeriesChart from "../components/SeriesChart";
+import Waterfall from "../components/Waterfall";
 import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
@@ -267,6 +268,23 @@ export default function ProfileDetail() {
       )}
 
       <Box sx={{ display: "grid", gap: 2 }}>
+        {profile?.metrics && profile.metrics["nav_response"] != null && (
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Load waterfall (median)
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+                This profile&apos;s median page load, split into independent phases. The cool bars up
+                to <b>first byte</b> are network setup (DNS/TCP/TLS/TTFB) baked into FCP &amp; LCP —
+                they swing with network conditions, not shaping. Judge this profile&apos;s paint on
+                the <b>after-first-byte</b> figures, which remove that network prefix.
+              </Typography>
+              <Waterfall metrics={profile.metrics} />
+            </CardContent>
+          </Card>
+        )}
+
         <Card>
           <CardContent>
             <Typography variant="h6" gutterBottom>

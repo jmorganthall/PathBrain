@@ -19,13 +19,16 @@ from statistics import mean, pstdev
 # safe — it imports Playwright lazily inside run()).
 from ..plugins.benchmark_browser import compute_navigation_metrics, extract_paint_metrics
 from .smoothness import smoothness_metrics
+from .waterfall import navigation_phases
 
-# derive-v5: smoothness now also emits `stall_time_ms` — the *absolute* cumulative dead-air
-# (summed duration of every completion gap over a fixed perceptible-stall threshold), an
-# actual per-run measurement that replaces the relative `total_stall` as the v8 crown's stall
-# dimension. Purely additive (no existing formula changed), so history re-grades from raw.
-# (derive-v4 added total_stall_ms.)
-DERIVATION_VERSION = "derive-v5"
+# derive-v6: the browser derivation now also emits the navigation-timing *waterfall* —
+# an additive, non-overlapping phase decomposition of the load (stall/DNS/TCP/TLS/request/
+# response/render/paint) plus the network-independent roll-ups (`nav_ttfb_cumulative_ms`,
+# `nav_fcp_independent_ms`, `nav_lcp_independent_ms`). Purely additive: computed from the
+# already-captured raw nav marks + FCP/LCP, so history re-derives with no re-collection, and
+# no existing formula changed. Display-only (silver-layer measurables); gold scoring untouched.
+# (derive-v5 added stall_time_ms; derive-v4 added total_stall_ms.)
+DERIVATION_VERSION = "derive-v6"
 
 
 def _round(v: float | None, n: int = 3) -> float | None:
@@ -188,6 +191,9 @@ def _derive_browser(raw: dict, artifact_dir: str | None) -> dict:
         m.update(
             smoothness_metrics(u.get("nav"), u.get("resources"), paint, u.get("loaf"))
         )
+        # Navigation-timing waterfall: additive, independent phase durations + the
+        # network-independent paint roll-ups, from the raw nav marks + FCP/LCP.
+        m.update(navigation_phases(u.get("nav"), paint))
         for k, v in m.items():
             if v is not None:
                 acc[k].append(float(v))

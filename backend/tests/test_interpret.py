@@ -151,3 +151,56 @@ def test_rederive_recomputes_metrics_from_raw():
         assert run.score.metric_values.get("ttfb") == 50.0
         assert run.score.derivation_version
         assert run.score.sops > 0
+
+
+def test_navigation_phases_additive_and_telescoping():
+    """The waterfall phases tile navigationStart→load and the network prefix telescopes."""
+    from pathbrain.interpret.waterfall import SEGMENT_KEYS, navigation_phases
+
+    nav = {
+        "startTime": 0, "domainLookupStart": 5, "domainLookupEnd": 12,
+        "connectStart": 12, "secureConnectionStart": 20, "connectEnd": 40,
+        "requestStart": 41, "responseStart": 95, "responseEnd": 130, "loadEventEnd": 900,
+    }
+    p = navigation_phases(nav, {"fcp": 200.0, "lcp": 400.0})
+
+    # Segments are non-overlapping and tile [0, loadEventEnd].
+    assert round(sum(p[k] for k in SEGMENT_KEYS), 3) == 900.0
+    # TCP excludes TLS (they used to overlap); TLS is its own phase.
+    assert p["nav_tcp_ms"] == 8.0 and p["nav_tls_ms"] == 20.0
+    # The network prefix telescopes exactly to responseStart (cumulative TTFB).
+    prefix = sum(
+        p[k] for k in ("nav_stall_ms", "nav_dns_ms", "nav_tcp_ms", "nav_tls_ms", "nav_request_ms")
+    )
+    assert round(prefix, 3) == p["nav_ttfb_cumulative_ms"] == 95.0
+    # Render residual + network-independent roll-ups.
+    assert p["nav_render_ms"] == 70.0  # responseEnd(130) -> FCP(200)
+    assert p["nav_fcp_independent_ms"] == 105.0  # FCP(200) - responseStart(95)
+    assert p["nav_lcp_independent_ms"] == 305.0  # LCP(400) - responseStart(95)
+
+
+def test_navigation_phases_no_tls_and_empty():
+    from pathbrain.interpret.waterfall import navigation_phases
+
+    # Non-HTTPS: secureConnectionStart == 0 -> all connect time is TCP, TLS is 0.
+    nav = {"domainLookupStart": 5, "domainLookupEnd": 12, "connectStart": 12,
+           "secureConnectionStart": 0, "connectEnd": 40,
+           "responseStart": 95, "responseEnd": 130}
+    p = navigation_phases(nav, {})
+    assert p["nav_tcp_ms"] == 28.0 and p["nav_tls_ms"] == 0.0
+    # An empty nav yields no phases (rather than fabricated zeros).
+    assert navigation_phases({}, {"fcp": 200.0}) == {}
+
+
+def test_derive_browser_emits_navigation_waterfall():
+    raw = {"urls": {"u": {
+        "nav": {"domainLookupStart": 5, "domainLookupEnd": 12, "connectStart": 12,
+                "secureConnectionStart": 20, "connectEnd": 40, "responseStart": 95,
+                "responseEnd": 130, "loadEventEnd": 900},
+        "paint": {"fcp": 200.0, "lcp": 400.0, "cls_entries": []},
+        "total_render_ms": 1500.0, "filmstrip": [],
+    }}}
+    m = derive("browser", raw)
+    assert m["nav_dns_ms"] == 7.0
+    assert m["nav_ttfb_cumulative_ms"] == 95.0
+    assert m["nav_lcp_independent_ms"] == 305.0
