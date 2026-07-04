@@ -212,7 +212,7 @@ def _ss_v9_assignments() -> dict:
     N/S), not opaque milestone sums. Two scored-metric swaps feed the new crown:
 
       * Smoothness: the absolute ``stall_time`` → the ratio ``jank_fraction`` (fraction of the
-        responseStart→LCP window spent in perceptible ≥200ms stalls) — weather-immune by
+        responseStart→loadEventEnd window spent in perceptible ≥200ms stalls) — weather-immune by
         normalization. ``stall_time`` returns to a display-only diagnostic (as ``total_stall`` did
         when ``stall_time`` superseded it).
       * Speed: newly score ``nav_response`` — body delivery (responseStart→responseEnd), the one
@@ -398,7 +398,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         },
     },
     "speed-smoothness-v9": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v7: adds jank_fraction + the nav waterfall
+        "derivation_version": DERIVATION_VERSION,  # v9 introduced at derive-v7; derive-v8 fixed jank's window
         "notes": (
             "Rework the crown to rank on *rank-eligible measurements* instead of opaque paint sums. "
             "FCP and LCP are what a human means by 'fast', but each silently bundles DNS+TCP+TLS+"
@@ -408,7 +408,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "Overall now corners over three independent, attributable dimensions of the felt load: "
             "nav_response (body delivery, responseStart→responseEnd — the SQM-facing phase shaping "
             "actually moves) × byte_earliness (did content arrive early and progressively) × "
-            "jank_fraction (fraction of the time-to-main-content spent frozen — the weather-immune "
+            "jank_fraction (fraction of the delivery window responseStart→loadEventEnd spent frozen — the weather-immune "
             "ratio form of stall). Delivery is absolute ms, its weather handled by interleaved "
             "measurement (the challenger race + stale-refresh keep profiles contemporaneous), NOT a "
             "rank-time lens; jank is a ratio, weather-immune by construction. In the scored axes "

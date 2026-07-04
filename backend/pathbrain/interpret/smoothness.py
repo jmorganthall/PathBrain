@@ -148,14 +148,16 @@ def jank_fraction(
     threshold_ms: float = STALL_PERCEPTIBLE_MS,
 ) -> float | None:
     """Share of the delivery window spent in *perceptible* stalls — the weather-immune,
-    **ratio** form of :func:`stall_time`. "How much of the time-to-main-content was jank?"
+    **ratio** form of :func:`stall_time`. "What fraction of the load was dead-air?"
 
     Numerator: the portion of ``[window_start, window_end]`` covered by inter-completion
     gaps that are themselves ``>= threshold_ms`` (a real stall — the same fixed 200 ms
-    yardstick :func:`stall_time` uses). Denominator: the window span. The intended window
-    is ``responseStart → LCP`` (first byte → main content): it deliberately excludes the
-    DNS/TCP/TLS *setup* prefix, so a slow-setup run can't dilute the fraction through the
-    denominator (that would re-import network weather).
+    yardstick :func:`stall_time` uses). Denominator: the window span. The window is
+    ``responseStart → loadEventEnd`` (first byte → page-load): it excludes the DNS/TCP/TLS
+    *setup* prefix (so a slow-setup run can't dilute the fraction through the denominator and
+    re-import network weather) but spans the **whole delivery**, since the stalls the numerator
+    counts run to ``loadEventEnd`` — on a fast-painting page the dead-air sits in the post-LCP
+    tail, so a window that stopped at LCP would report 0 despite real stalls.
 
     Why a ratio: a uniformly slower load inflates both the frozen time and the window span,
     so the bulk pace cancels — unlike the absolute ``stall_time`` (which drifts with server
@@ -445,13 +447,16 @@ def smoothness_metrics(
         # threshold — an *actual per-run measurement* (no per-run median), the v8 crown's
         # cumulative-stall dimension so profiles compare on measured values, not deviations.
         "stall_time_ms": stall_time(series),
-        # The *ratio* form: fraction of the delivery window (responseStart → LCP, falling
-        # back to loadEventEnd) spent frozen. Weather-immune by normalization — the
-        # rank-eligible sibling of the absolute stall_time (which is kept for display).
+        # The *ratio* form: fraction of the delivery window (responseStart → loadEventEnd)
+        # spent frozen. The window must span the SAME domain the stalls live in — the whole
+        # completion series runs to loadEventEnd, and on a fast-painting page the dead-air is
+        # in the *post-LCP* tail, so a window that stopped at LCP missed it and read 0. Uses
+        # loadEventEnd (falling back to LCP only if it's absent). Weather-immune by
+        # normalization — the rank-eligible sibling of the absolute stall_time (kept for display).
         "jank_fraction": jank_fraction(
             series,
             _f(nav.get("responseStart")),
-            _f(paint.get("lcp")) if _f(paint.get("lcp")) is not None else _f(nav.get("loadEventEnd")),
+            _f(nav.get("loadEventEnd")) if _f(nav.get("loadEventEnd")) is not None else _f(paint.get("lcp")),
         ),
         "cadence_cov": cadence_cov(series),
         "byte_earliness_ms": byte_earliness(resources, start),

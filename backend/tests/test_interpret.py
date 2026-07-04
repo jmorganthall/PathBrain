@@ -248,3 +248,21 @@ def test_derive_browser_emits_jank_fraction():
     }}}
     m = derive("browser", raw)
     assert "jank_fraction" in m and 0.0 <= m["jank_fraction"] <= 1.0
+
+
+def test_jank_window_covers_post_lcp_stalls():
+    """Regression: a fast-painting page whose dead-air is AFTER LCP must still show jank.
+    The window is responseStart→loadEventEnd (not →LCP), so post-LCP stalls are counted."""
+    from pathbrain.interpret.smoothness import smoothness_metrics
+
+    nav = {"responseStart": 150.0, "responseEnd": 200.0, "loadEventEnd": 590.0}
+    paint = {"fcp": 290.0, "lcp": 310.0}  # LCP fires early (~310ms)
+    # Resources: fast up to ~210ms, then a big gap until the load boundary (a post-LCP stall).
+    resources = [{"responseEnd": t, "transferSize": 1000} for t in (160, 180, 210)]
+    m = smoothness_metrics(nav, resources, paint, {})
+    # stall_time sees the post-LCP dead-air…
+    assert m["stall_time_ms"] > 200.0
+    # …and jank now does too (a →LCP window would have read 0 despite the real stall).
+    assert m["jank_fraction"] > 0.0
+    # It's a fraction of responseStart→loadEventEnd (150→590 = 440ms), so bounded and sane.
+    assert 0.0 < m["jank_fraction"] <= 1.0

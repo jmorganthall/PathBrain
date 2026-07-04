@@ -241,10 +241,11 @@ METRICS: list[MetricDef] = [
         "jank_fraction", "browser", "jank_fraction", "Jank fraction",
         description=(
             "The *ratio* form of stall time: the fraction of the delivery window "
-            "(responseStart → main content / LCP) spent in perceptible ≥200ms stalls — 'how much "
-            "of the wait for main content was jank' (0–1). Normalizing by the window cancels the "
-            "load's absolute pace, so — unlike the absolute stall_time — it stands largely "
-            "weather-independent, making it the rank-eligible stall measure. Lower is smoother."
+            "(responseStart → page-load) spent in perceptible ≥200ms stalls — 'how much of the "
+            "load was dead-air' (0–1). Spans to loadEventEnd so it captures post-paint stalls too "
+            "(a fast-painting page's dead-air is in the post-LCP tail). Normalizing by the window "
+            "cancels the load's absolute pace, so — unlike the absolute stall_time — it stands "
+            "largely weather-independent, making it the rank-eligible stall measure. Lower is smoother."
         ),
     ),
     MetricDef(
