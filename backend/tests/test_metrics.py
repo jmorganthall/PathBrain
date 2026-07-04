@@ -65,3 +65,59 @@ def test_metrics_endpoint(client):
     assert "metrics" in body and len(body["metrics"]) == len(metrics.METRICS)
     fcp = next(m for m in body["metrics"] if m["key"] == "fcp")
     assert fcp["source_key"] == "fcp_ms" and fcp["axis"] == "sops"
+
+
+def test_ledger_covers_every_metric_with_a_valid_role():
+    """Every metric is assigned exactly one ledger bucket (import-invariant, re-checked)."""
+    assert set(metrics.METRIC_ROLES) == {m.key for m in metrics.METRICS}
+    assert set(metrics.METRIC_ROLES.values()) <= metrics.VALID_ROLES
+
+
+def test_ledger_classification_anchors():
+    """Lock the classification so a mis-tag (or the probe/nav name confusion) is caught."""
+    r = metrics.role_of
+    # W — the scored dns/tcp/tls/ttfb are independent *probe* instruments, not nav phases.
+    for k in ("ttfb", "dns", "tcp", "tls", "latency", "jitter", "packet_loss", "download", "transfer"):
+        assert r(k) == metrics.ROLE_WEATHER, k
+    # N — navigation phases; body delivery is the crown-eligible one.
+    assert r("nav_request") == metrics.ROLE_NETWORK   # the *nav* TTFB phase (≠ probe ttfb)
+    assert r("nav_response") == metrics.ROLE_NETWORK   # body delivery (SQM-facing)
+    # C — client CPU: the render residual and interaction/layout, shaping-immune.
+    for k in ("nav_render", "inp", "cls"):
+        assert r(k) == metrics.ROLE_CLIENT, k
+    # S — byte-arrival shape.
+    for k in ("stall_time", "longest_stall", "delivery_gini", "cadence_cov", "byte_earliness"):
+        assert r(k) == metrics.ROLE_SHAPE, k
+    # O — opaque milestone sums (kept for display, never ranked).
+    for k in ("fcp", "lcp", "render", "load_event"):
+        assert r(k) == metrics.ROLE_COMPOSITE, k
+
+
+def test_rank_eligibility_gate():
+    assert metrics.rank_eligible("nav_response") is True   # delivery — network, rankable
+    assert metrics.rank_eligible("delivery_gini") is True  # ratio shape, rankable
+    assert metrics.rank_eligible("ttfb") is False          # probe instrument (weather)
+    assert metrics.rank_eligible("fcp") is False           # opaque milestone
+    assert metrics.rank_eligible("cls") is False           # client health-check
+
+
+def test_completion_axis_is_exactly_the_weather_bucket():
+    """The Completion axis is the explicit infra/weather axis — every member is a W probe."""
+    for k in metrics.metric_sources(metrics.COMPLETION):
+        assert metrics.role_of(k) == metrics.ROLE_WEATHER, k
+
+
+def test_headline_ledger_violations_are_the_phase3_backlog():
+    """The SOPS headline currently scores metrics the ledger says can't be ranked. This
+    pins that KNOWN set (the crown rework's to-do) so no *new* violation slips in — and
+    empties to {} exactly when Phase 3 removes them, at which point the check can become a
+    hard import assert. `ineligible_scored` is the same guard that flags scored-TTFB."""
+    sops_keys = list(metrics.metric_sources(metrics.SOPS))
+    violations = metrics.ineligible_scored(sops_keys)
+    assert violations == {
+        "ttfb": "W",    # a probe instrument scored in Responsiveness — the headline confound
+        "fcp": "O", "lcp": "O", "render": "O",  # opaque milestone sums
+        "cls": "C", "inp": "C",                  # client health-checks
+    }
+    # Nothing outside the known set — a brand-new ineligible scored metric fails here.
+    assert set(violations) == {"ttfb", "fcp", "lcp", "render", "cls", "inp"}

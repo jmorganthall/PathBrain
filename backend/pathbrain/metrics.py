@@ -372,6 +372,100 @@ METRICS: list[MetricDef] = [
 ]
 
 
+# ── Ledger buckets: each measurable's provenance / controllability role ───────
+# This is a *governance* classification, orthogonal to the temporal axes: axes group
+# by phase-of-the-load (Responsiveness/Smoothness/Speed), buckets group by where a
+# measurement comes from and whether shaping can move it. The axes ignored this
+# boundary — which is how a weather instrument (probe TTFB) ended up scored inside the
+# Responsiveness headline. Buckets sit between silver and gold: a tag on each derived
+# measurable that governs whether it may enter the headline/crown ranking at all.
+#
+#   W  Weather instrument   independent probe socket; settings-independent by
+#                           construction. Feeds the ±2h rolling baseline; never ranked.
+#   N  Network phase        a navigation-timing phase. Body delivery (responseStart→
+#                           responseEnd) is the crown-eligible one; the setup phases
+#                           (dns/tcp/tls/request) + prefix roll-up are weather-dominated.
+#   C  Client               client CPU (render/paint/interaction/layout). Shaping-immune;
+#                           an instrument health-check (should be flat across profiles).
+#   S  Shape statistic      byte-arrival shape. Ratio members (gini/cadence) rank raw;
+#                           absolute-gap members (stall_time/longest_stall) still drift
+#                           with server pacing and need the weather lens even post-anchor.
+#   O  Opaque milestone     a sum that spans buckets (FCP/LCP/load/render/…). What a human
+#                           means by "fast", but unattributable — display only, never ranked.
+ROLE_WEATHER = "W"
+ROLE_NETWORK = "N"
+ROLE_CLIENT = "C"
+ROLE_SHAPE = "S"
+ROLE_COMPOSITE = "O"
+VALID_ROLES = {ROLE_WEATHER, ROLE_NETWORK, ROLE_CLIENT, ROLE_SHAPE, ROLE_COMPOSITE}
+
+# Roles that may enter headline / crown ranking. W (instrument) and C (client health-
+# check) are excluded on principle; O (opaque sums) are unattributable so display-only.
+# Note this is the *coarse* gate that keeps the clearly-ineligible out — the finer
+# positive selection (delivery within N; ratio-vs-absolute within S) is the crown's job.
+RANKABLE_ROLES = {ROLE_NETWORK, ROLE_SHAPE}
+
+# The ledger. One entry per metric (completeness asserted below, shaper_fields-style:
+# adding a metric forces a bucket choice). The single readable view of the partition.
+METRIC_ROLES: dict[str, str] = {
+    # W — weather instruments: independent probe sockets, their own DNS/connect/request,
+    # so they share only the slow "weather" mode with the browser and belong in a baseline.
+    "ttfb": ROLE_WEATHER,   # the HTTP-probe socket TTFB — NOT the nav TTFB phase (that's nav_request)
+    "dns": ROLE_WEATHER, "tcp": ROLE_WEATHER, "tls": ROLE_WEATHER,
+    "latency": ROLE_WEATHER, "jitter": ROLE_WEATHER, "packet_loss": ROLE_WEATHER,
+    "download": ROLE_WEATHER, "transfer": ROLE_WEATHER,
+    # N — navigation network phases (the additive waterfall).
+    "nav_stall": ROLE_NETWORK, "nav_dns": ROLE_NETWORK, "nav_tcp": ROLE_NETWORK,
+    "nav_tls": ROLE_NETWORK, "nav_request": ROLE_NETWORK, "nav_ttfb_cumulative": ROLE_NETWORK,
+    "nav_response": ROLE_NETWORK,  # body delivery — the SQM-facing, crown-eligible phase
+    # C — client CPU (shaping-immune; instrument health-checks).
+    "nav_render": ROLE_CLIENT, "inp": ROLE_CLIENT, "cls": ROLE_CLIENT,
+    # S — byte-arrival shape statistics.
+    "byte_earliness": ROLE_SHAPE, "cadence_cov": ROLE_SHAPE, "delivery_gini": ROLE_SHAPE,
+    "perceived_time": ROLE_SHAPE, "longest_stall": ROLE_SHAPE, "stall_time": ROLE_SHAPE,
+    "total_stall": ROLE_SHAPE, "network_stall": ROLE_SHAPE, "render_stall": ROLE_SHAPE,
+    "unknown_stall": ROLE_SHAPE,
+    # O — opaque milestone sums (span buckets → display only, never ranked).
+    "fcp": ROLE_COMPOSITE, "lcp": ROLE_COMPOSITE, "render": ROLE_COMPOSITE,
+    "dom_content_loaded": ROLE_COMPOSITE, "load_event": ROLE_COMPOSITE,
+    "speed_index": ROLE_COMPOSITE, "paint_cadence": ROLE_COMPOSITE,
+    "nav_fcp_lcp": ROLE_COMPOSITE, "nav_lcp_load": ROLE_COMPOSITE,
+    "nav_fcp_after_ttfb": ROLE_COMPOSITE, "nav_lcp_after_ttfb": ROLE_COMPOSITE,
+}
+
+
+def role_of(key: str) -> str | None:
+    """The ledger bucket (``W``/``N``/``C``/``S``/``O``) for a metric key, or None."""
+    return METRIC_ROLES.get(key)
+
+
+def rank_eligible(key: str) -> bool:
+    """True if a metric may enter headline/crown ranking (its role is N or S)."""
+    return METRIC_ROLES.get(key) in RANKABLE_ROLES
+
+
+def ineligible_scored(keys) -> dict[str, str]:
+    """``{key: role}`` for any of ``keys`` that must NOT be ranked (a weather instrument,
+    client health-check, or opaque milestone sum). Empty == the set is crown-clean. This
+    is the executable guard: run it over a methodology's headline/crown metrics and a
+    non-empty result names exactly what's leaking network weather (or client noise) into
+    the ranking — e.g. scored ``ttfb`` (a probe) in the Responsiveness axis."""
+    return {k: METRIC_ROLES[k] for k in keys if METRIC_ROLES.get(k) not in RANKABLE_ROLES and k in METRIC_ROLES}
+
+
+# Executable invariants (shaper_fields-style: at import *and* in test_metrics).
+assert set(METRIC_ROLES.values()) <= VALID_ROLES, (
+    f"Unknown ledger role(s): {set(METRIC_ROLES.values()) - VALID_ROLES}"
+)
+_ROLE_KEYS = set(METRIC_ROLES)
+_METRIC_KEYS = {m.key for m in METRICS}
+assert _ROLE_KEYS == _METRIC_KEYS, (
+    "Every metric needs exactly one ledger bucket. "
+    f"Missing a bucket: {sorted(_METRIC_KEYS - _ROLE_KEYS)}; "
+    f"bucketed but not a metric: {sorted(_ROLE_KEYS - _METRIC_KEYS)}"
+)
+
+
 # The order metrics happen / make sense to read in: connection setup → response →
 # paint → load → interaction → network quality. Drives the UI ordering (score
 # breakdown + plugin results) so the sequence reads chronologically, not by weight.
@@ -451,6 +545,7 @@ def catalog() -> list[dict]:
             "worst": m.worst,
             "higher_is_better": m.higher_is_better,
             "order": _order(m.key),
+            "role": METRIC_ROLES.get(m.key),
         }
         for m in METRICS
     ]
