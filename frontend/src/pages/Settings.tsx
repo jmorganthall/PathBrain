@@ -1090,18 +1090,6 @@ export default function Settings() {
                     </Badge>
                   </span>
                 </Tooltip>
-                <Tooltip title="Apply each stored profile and benchmark it for a chosen number of iterations, then restore your current settings. Use after a methodology change to collect fresh, comparable data for every profile.">
-                  <span>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      onClick={() => setRefreshOpen(true)}
-                      disabled={raceRunning || testRunning || refreshRunning || applying}
-                    >
-                      Re-run all profiles
-                    </Button>
-                  </span>
-                </Tooltip>
                 <Tooltip title="Hide profiles with fewer than this many total iterations from the scatter (the table below is unaffected). 0 shows all.">
                   <TextField
                     label="Min iterations"
@@ -1215,6 +1203,27 @@ export default function Settings() {
                 description="Once runs capture your firewall settings (OPNsense provider with traffic-shaper access), each distinct configuration appears here with its score distribution. If you have older runs from before capture, use 'Attribute unstamped runs'."
               />
             )}
+            {/* Even with no *comparable* profile, "Re-run profiles" is the way out: it re-runs the
+                stored profiles (all of them, or the top-N winner-first) to collect fresh data
+                comparable under the current methodology. Surfaced here so the empty state isn't a
+                dead end right after a methodology change quarantines history. */}
+            {diag && diag.distinct_profiles > 0 && (
+              <Stack direction="row" justifyContent="center" sx={{ mt: 2 }}>
+                <Tooltip title="Apply each stored profile and benchmark it for a chosen number of iterations, then restore your current settings. Limit to the top-N (winner-first) to re-run the best performers first — the fastest way to rebuild comparable data after a methodology change.">
+                  <span>
+                    <Button
+                      variant="contained"
+                      color="secondary"
+                      startIcon={<ScienceIcon />}
+                      onClick={() => setRefreshOpen(true)}
+                      disabled={raceRunning || testRunning || refreshRunning || applying}
+                    >
+                      Re-run profiles ({diag.distinct_profiles})
+                    </Button>
+                  </span>
+                </Tooltip>
+              </Stack>
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -1257,6 +1266,23 @@ export default function Settings() {
                   onClick={() => setShowCompletion((v) => !v)}
                   label={showCompletion ? "Hide completion detail" : "Show completion detail"}
                 />
+                {/* Re-run profiles lives here (not in the scatter card) so it's reachable even with
+                    <2 comparable profiles — exactly the state right after a methodology change
+                    quarantines history, when re-collecting comparable data matters most. It runs
+                    over all stored profiles, so it never needs the scatter's ≥2-comparable gate. */}
+                <Tooltip title="Apply each stored profile and benchmark it for a chosen number of iterations, then restore your current settings. Limit to the top-N (winner-first) to re-run the best performers first. Use after a methodology change to collect fresh, comparable data.">
+                  <span>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<ScienceIcon />}
+                      onClick={() => setRefreshOpen(true)}
+                      disabled={raceRunning || testRunning || refreshRunning || applying}
+                    >
+                      Re-run profiles
+                    </Button>
+                  </span>
+                </Tooltip>
               </Stack>
             </Stack>
             <Typography variant="caption" color="text.secondary">
@@ -1784,7 +1810,7 @@ export default function Settings() {
       </Dialog>
 
       <Dialog open={refreshOpen} onClose={() => setRefreshOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Re-run all profiles</DialogTitle>
+        <DialogTitle>Re-run profiles</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
             Applies each stored profile to the firewall and benchmarks it for the chosen
@@ -1843,7 +1869,7 @@ export default function Settings() {
             onClick={handleStartRefresh}
             disabled={refreshPreview != null && refreshPreview.profiles === 0}
           >
-            Re-run all profiles
+            {refreshTop ? `Re-run top ${refreshTop}` : "Re-run all profiles"}
           </Button>
         </DialogActions>
       </Dialog>
