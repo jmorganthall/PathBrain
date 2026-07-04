@@ -131,7 +131,9 @@ def stall_time(series: list[float], *, threshold_ms: float = STALL_PERCEPTIBLE_M
     So profile-to-profile comparison is a direct comparison of measured dead-air, not of
     averages-of-averages. Parameterized only by the fixed perception threshold (a methodology
     constant, not data-derived). ``None`` when there's no gap to measure (fewer than two
-    completions); ``0.0`` for a load with no perceptible stall (a real, comparable measurement)."""
+    completions); ``0.0`` for a load with no perceptible stall (a real, comparable measurement).
+    (Note: :func:`jank_fraction` is the ratio form used by the crown; ``stall_time`` is the
+    absolute display diagnostic.)"""
     gaps = _gaps(series)
     if not gaps:
         return None
@@ -161,14 +163,15 @@ def jank_fraction(
     (perceptually grounded, not scale-relative like Gini/CoV), a slower load pushes more gaps
     across that bar, so this is *far* less weather-sensitive than the absolute — but not
     perfectly flat. Whether the residual needs a weather lens is an empirical call (re-derive
-    drift ρ). Bounded ``[0, 1]``; ``None`` when the window is missing or shorter than one
-    perceptible stall (too brief to host jank)."""
+    drift ρ). Bounded ``[0, 1]``. Returns ``0.0`` for a positive window with no perceptible
+    stall (a real "no jank" reading, so fast loads stay comparable — not quarantined); ``None``
+    only when there is no delivery window at all (missing/degenerate bounds)."""
     ws, we = _f(window_start), _f(window_end)
-    if ws is None or we is None:
-        return None
+    if ws is None or we is None or we <= ws:
+        return None  # no delivery window at all → genuinely unmeasurable
     span = we - ws
-    if span < threshold_ms:  # too short to contain even one perceptible stall
-        return None
+    # A positive-but-short window can't host a perceptible stall → 0.0 is a real reading
+    # ("no jank"), not "unknown" — so a fast load stays comparable, not quarantined.
     frozen = 0.0
     for a, b in zip(series, series[1:]):
         if (b - a) >= threshold_ms:

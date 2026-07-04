@@ -44,7 +44,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v8"
+CURRENT_METHODOLOGY = "speed-smoothness-v9"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -207,6 +207,28 @@ def _ss_v6_assignments() -> dict:
     return a
 
 
+def _ss_v9_assignments() -> dict:
+    """v8 rubric reworked so the crown ranks only *rank-eligible* measurements (ledger roles
+    N/S), not opaque milestone sums. Two scored-metric swaps feed the new crown:
+
+      * Smoothness: the absolute ``stall_time`` → the ratio ``jank_fraction`` (fraction of the
+        responseStart→LCP window spent in perceptible ≥200ms stalls) — weather-immune by
+        normalization. ``stall_time`` returns to a display-only diagnostic (as ``total_stall`` did
+        when ``stall_time`` superseded it).
+      * Speed: newly score ``nav_response`` — body delivery (responseStart→responseEnd), the one
+        SQM-facing network phase, the part shaping actually moves. Absolute ms (weather handled by
+        interleaved measurement, not a rank-time lens).
+
+    ``byte_earliness`` stays scored on Responsiveness. FCP/LCP/TTFB stay scored on their axes as
+    display decompositions — they just leave the crown. Thresholds are reasoned, calibratable
+    defaults (Methodology re-anchor)."""
+    a = _ss_v8_assignments()
+    del a["stall_time"]  # absolute → display-only; the ratio jank_fraction takes the scored slot
+    a["jank_fraction"] = {"axis": SMOOTHNESS, "weight": 30, "best": 0.0, "worst": 0.5}
+    a["nav_response"] = {"axis": SPEED, "weight": 25, "best": 100.0, "worst": 2000.0}
+    return a
+
+
 def _ss_v8_assignments() -> dict:
     """v6/v7 rubric with the Smoothness cumulative-stall metric swapped from the *relative*
     ``total_stall`` (excess of each gap over the run's own median pace — an average baked into
@@ -351,7 +373,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         },
     },
     "speed-smoothness-v8": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v5: adds stall_time_ms
+        "derivation_version": "derive-v5",  # frozen: published under derive-v5 (adds stall_time_ms)
         "notes": (
             "Swap the crown's cumulative-stall leg from the *relative* total_stall (excess of "
             "each completion gap over the run's OWN median pace — an average baked into the "
@@ -373,6 +395,35 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "method": "corner",
             "metrics": ["fcp", "lcp", "stall_time"],
             "required": ["fcp", "lcp", "stall_time"],
+        },
+    },
+    "speed-smoothness-v9": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v7: adds jank_fraction + the nav waterfall
+        "notes": (
+            "Rework the crown to rank on *rank-eligible measurements* instead of opaque paint sums. "
+            "FCP and LCP are what a human means by 'fast', but each silently bundles DNS+TCP+TLS+"
+            "TTFB (network weather) with client render, so ranking on them credits a profile for "
+            "network conditions its shaper didn't cause (run-level FCP and probe-TTFB are ~"
+            "uncorrelated because the probes ride separate sockets — the confound is real). The "
+            "Overall now corners over three independent, attributable dimensions of the felt load: "
+            "nav_response (body delivery, responseStart→responseEnd — the SQM-facing phase shaping "
+            "actually moves) × byte_earliness (did content arrive early and progressively) × "
+            "jank_fraction (fraction of the time-to-main-content spent frozen — the weather-immune "
+            "ratio form of stall). Delivery is absolute ms, its weather handled by interleaved "
+            "measurement (the challenger race + stale-refresh keep profiles contemporaneous), NOT a "
+            "rank-time lens; jank is a ratio, weather-immune by construction. In the scored axes "
+            "jank_fraction takes Smoothness's stall slot (stall_time → display-only, as total_stall "
+            "was) and nav_response is newly scored on Speed; FCP/LCP/TTFB stay scored as display "
+            "decompositions but leave the crown. Thresholds are calibratable defaults. derive-v7 "
+            "adds jank_fraction + the nav waterfall and is purely additive, so history re-grades "
+            "straight from raw — re-derive first to backfill the new measurements, then re-grade."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v9_assignments(),
+        "overall": {
+            "method": "corner",
+            "metrics": ["nav_response", "byte_earliness", "jank_fraction"],
+            "required": ["nav_response", "byte_earliness", "jank_fraction"],
         },
     },
 }

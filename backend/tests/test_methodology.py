@@ -121,13 +121,14 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v8_rubric():
-    # The published-now methodology is speed-smoothness-v8: identical axes/thresholds to v6/v7,
-    # but the Smoothness cumulative-stall metric swaps from the *relative* total_stall (excess
-    # over each run's own median pace) to the *absolute* stall_time (summed duration of every
-    # gap over a fixed 200ms threshold — an actual per-run measurement). Overall now corners
-    # over FCP × LCP × stall_time.
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v8"
+def test_current_methodology_is_v9_rubric():
+    # The published-now methodology is speed-smoothness-v9: the crown moves off the opaque paint
+    # sums (FCP/LCP) onto rank-eligible measurements. jank_fraction (the weather-immune ratio
+    # form of stall) takes Smoothness's scored stall slot (stall_time → display-only), nav_response
+    # (body delivery) is newly scored on Speed, and the Overall corners over nav_response ×
+    # byte_earliness × jank_fraction. FCP/LCP/TTFB stay scored on their axes as display
+    # decompositions but leave the crown.
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v9"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
@@ -143,16 +144,17 @@ def test_current_methodology_is_v8_rubric():
         "ttfb": ("responsiveness", 15, 30.0, 1800.0),
         "fcp": ("responsiveness", 25, 150.0, 3000.0),
         "byte_earliness": ("responsiveness", 30, 150.0, 5000.0),
-        # speed — time-to-last + interactive + the built-in page-load time
+        # speed — time-to-last + interactive + delivery (newly scored)
         "lcp": ("speed", 40, 150.0, 4000.0),
         "render": ("speed", 20, 500.0, 8000.0),
         "inp": ("speed", 40, 50.0, 500.0),
         "load_event": ("speed", 20, 800.0, 8000.0),
+        "nav_response": ("speed", 25, 100.0, 2000.0),   # body delivery — the SQM-facing phase
         # stability — CLS only
         "cls": ("stability", 50, 0.0, 0.25),
-        # smoothness — total_stall (relative) replaced by stall_time (absolute) in the scored slot
+        # smoothness — the ratio jank_fraction takes the scored stall slot (stall_time → display)
         "longest_stall": ("smoothness", 40, 25.0, 2000.0),
-        "stall_time": ("smoothness", 30, 0.0, 3000.0),
+        "jank_fraction": ("smoothness", 30, 0.0, 0.5),
         "cadence_cov": ("smoothness", 15, 0.2, 2.5),
         "delivery_gini": ("smoothness", 15, 0.1, 0.7),
     }
@@ -160,31 +162,34 @@ def test_current_methodology_is_v8_rubric():
         m = by_key[key]
         assert (m["axis"], m["weight"], m["best"], m["worst"]) == (axis, weight, best, worst), key
 
-    # perceived_time and (now) total_stall are retained but no longer scored (display-only).
+    # perceived_time, total_stall and (now) stall_time are retained but no longer scored.
     assert by_key["perceived_time"]["axis"] is None
     assert by_key["total_stall"]["axis"] is None
+    assert by_key["stall_time"]["axis"] is None
 
     # The universal `required` field is materialized onto every metric that defines the
-    # Overall/crown (v8: fcp × lcp × stall_time) plus the flagged longest_stall — so the
-    # frozen snapshot self-describes exactly what comparability enforces.
-    for key in ("fcp", "lcp", "stall_time", "longest_stall"):
+    # Overall/crown (v9: nav_response × byte_earliness × jank_fraction) plus the flagged
+    # longest_stall — so the frozen snapshot self-describes exactly what comparability enforces.
+    for key in ("nav_response", "byte_earliness", "jank_fraction", "longest_stall"):
         assert by_key[key]["required"] is True, key
     # A scored-but-optional metric is NOT required (it redistributes when missing → partial).
-    assert by_key["byte_earliness"]["required"] is False
+    # fcp/lcp are still scored but, having left the crown, are no longer required.
+    assert by_key["fcp"]["required"] is False
+    assert by_key["lcp"]["required"] is False
     assert by_key["render"]["required"] is False
     assert {a["key"] for a in d["axes"]} == {
         "responsiveness", "speed", "smoothness", "stability", "completion"
     }
-    # Display-only metrics carry no axis (e.g. latency, transfer, speed_index, total_stall).
-    for k in ("latency", "transfer", "speed_index", "network_stall", "total_stall"):
+    # Display-only metrics carry no axis (e.g. latency, transfer, speed_index, stall_time).
+    for k in ("latency", "transfer", "speed_index", "network_stall", "stall_time"):
         assert by_key[k]["axis"] is None
 
-    # v8's crown: the corner over FCP × LCP × stall_time (load_event stays a scored Speed
-    # metric but is not a crown metric; stall_time is the absolute cumulative-stall dimension).
+    # v9's crown: the corner over nav_response × byte_earliness × jank_fraction — body delivery
+    # (the SQM-facing phase) × early progressive arrival × the weather-immune jank ratio.
     assert d["overall"] == {
         "method": "corner",
-        "metrics": ["fcp", "lcp", "stall_time"],
-        "required": ["fcp", "lcp", "stall_time"],
+        "metrics": ["nav_response", "byte_earliness", "jank_fraction"],
+        "required": ["nav_response", "byte_earliness", "jank_fraction"],
     }
 
 

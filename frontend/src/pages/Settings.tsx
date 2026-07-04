@@ -520,11 +520,11 @@ export default function Settings() {
   // Scored metrics whose 'best' is too lenient to rank profiles (saturating >50%).
   const [saturation, setSaturation] = useState<MetricSaturation[]>([]);
   // Dynamic quadrant axes — default to the Overall scoring corner's three inputs
-  // (v8: FCP × LCP × stall-time), with the third encoded as Shade opacity; the
-  // crowned profile is ringed. So the default view demonstrates how Overall is scored.
-  const [xKey, setXKey] = useState("fcp");
-  const [yKey, setYKey] = useState("lcp");
-  const [sizeKey, setSizeKey] = useState("stall_time");
+  // (v9: delivery × byte-earliness × jank-fraction), with the third encoded as Shade
+  // opacity; the crowned profile is ringed. So the default view demonstrates how Overall is scored.
+  const [xKey, setXKey] = useState("nav_response");
+  const [yKey, setYKey] = useState("byte_earliness");
+  const [sizeKey, setSizeKey] = useState("jank_fraction");
   // Scatter-only filter: hide profiles with fewer than this many total iterations, so
   // thin/noisy profiles don't clutter the plot. 0 = show all. Doesn't affect the table.
   const [minIterPlot, setMinIterPlot] = useState(0);

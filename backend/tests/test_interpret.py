@@ -228,9 +228,12 @@ def test_jank_fraction_bounds_and_guards():
     assert jank_fraction([0.0, 5000.0], 0.0, 1000.0) == 1.0
     # No perceptible stall → 0.0 (a real, comparable reading).
     assert jank_fraction([0.0, 100.0, 200.0], 0.0, 1000.0) == 0.0
-    # Missing / too-short window → None (can't host a perceptible stall).
+    # A short positive window is still a real reading (0.0 = no jank), so fast loads
+    # stay comparable rather than quarantined.
+    assert jank_fraction([0.0, 100.0, 200.0], 0.0, 100.0) == 0.0
+    # Missing / degenerate window → None (genuinely unmeasurable).
     assert jank_fraction([0.0, 900.0], None, 900.0) is None
-    assert jank_fraction([0.0, 900.0], 0.0, 100.0) is None
+    assert jank_fraction([0.0, 900.0], 100.0, 100.0) is None
 
 
 def test_derive_browser_emits_jank_fraction():

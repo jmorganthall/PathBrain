@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from pathbrain.database import session_scope
+from pathbrain.metrics import all_metric_sources
 from pathbrain.methodology import (
     CURRENT_METHODOLOGY,
     METHODOLOGY_REGISTRY,
@@ -114,32 +115,28 @@ def _seed_run(
             axes["overall"] = overall
         elif comparable:
             axes["overall"] = sops
-        # The crown (v8) corners over fcp × lcp × stall_time. Subscores drive the *axis*
-        # scores + the custom-crown lens; the canonical Overall now corners the *raw* browser
-        # measurements. Tests override subscores via ``crown_subscores``.
-        subs = (
-            crown_subscores
-            if crown_subscores is not None
-            else {
-                "fcp": resp_val, "lcp": speed_val, "stall_time": sops, "load_event": speed_val,
-            }
-        )
+        # The crown corners over the *current* methodology's metric set (v9:
+        # nav_response × byte_earliness × jank_fraction). Subscores drive the *axis* scores +
+        # the custom-crown lens; the canonical Overall corners the *raw* browser measurements.
+        # Derived crown-agnostically so this fixture tracks the methodology, not a frozen set.
+        crown = _crown_metrics()
+        crown_src = [all_metric_sources()[m][1] for m in crown]  # source keys, e.g. nav_response_ms
+        subs = crown_subscores if crown_subscores is not None else {m: sops for m in crown}
         # Raw crown metrics (browser plugin) — what the field-normalized Overall corners over.
-        # ``crown_raw=(fcp_ms, lcp_ms, stall_time_ms)`` sets them explicitly; otherwise derive
-        # a monotonic default from the crown subscores (higher subscore → faster raw), so a
-        # fixture that only sets subscores still yields a matching raw-based crown ordering.
+        # ``crown_raw`` sets them explicitly, positionally by crown order; a None entry means
+        # "this crown metric wasn't captured" (so the profile has no Overall — the
+        # missing-required-metric case). Otherwise derive a monotonic default from the crown
+        # subscores (higher subscore → lower/faster raw) so a subscore-only fixture still yields
+        # a matching raw-based crown ordering.
         result_metrics = {k: dict(v) for k, v in (result_metrics or {}).items()}
         browser = dict(result_metrics.get("browser") or {})
         if crown_raw is not None:
-            # Explicit raw; a None entry means "this crown metric wasn't captured" (so the
-            # profile has no Overall — for the missing-required-metric case).
-            for key, val in zip(("fcp_ms", "lcp_ms", "stall_time_ms"), crown_raw):
+            for src, val in zip(crown_src, crown_raw):
                 if val is not None:
-                    browser.setdefault(key, val)
+                    browser.setdefault(src, val)
         else:
-            browser.setdefault("fcp_ms", (100.0 - float(subs.get("fcp", sops))) * 10.0)
-            browser.setdefault("lcp_ms", (100.0 - float(subs.get("lcp", sops))) * 10.0)
-            browser.setdefault("stall_time_ms", (100.0 - float(subs.get("stall_time", sops))) * 10.0)
+            for m, src in zip(crown, crown_src):
+                browser.setdefault(src, (100.0 - float(subs.get(m, sops))) * 10.0)
         result_metrics["browser"] = browser
         # Per-plugin derived metrics (the cache the profiles endpoint reads for its per-metric
         # medians), e.g. {"icmp": {"latency_ms": 12.0}} — plus the browser crown raw above.
@@ -357,17 +354,17 @@ def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
     r = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 500})
     assert r.status_code == 202
     out = r.json()
-    assert out["version"] == "speed-smoothness-v8+load_event-best500"
+    assert out["version"] == "speed-smoothness-v9+load_event-best500"
     assert out["job_id"] == "job-test"
 
     # The fork is now current: only load_event's 'best' changed; fcp and the Overall crown
-    # spec carry over from v6 untouched (append-only — a new version, not an edit).
+    # spec carry over untouched (append-only — a new version, not an edit).
     cur = client.get("/api/methodologies/current").json()
-    assert cur["version"] == "speed-smoothness-v8+load_event-best500"
+    assert cur["version"] == "speed-smoothness-v9+load_event-best500"
     metrics = {m["key"]: m for m in cur["definition"]["metrics"]}
     assert metrics["load_event"]["best"] == 500.0
     assert metrics["fcp"]["best"] == 150.0  # untouched
-    assert cur["definition"]["overall"]["metrics"] == ["fcp", "lcp", "stall_time"]
+    assert cur["definition"]["overall"]["metrics"] == ["nav_response", "byte_earliness", "jank_fraction"]
 
     # Guard: 'best' can't cross to the wrong side of 'worst' (would invert the curve).
     bad = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 99999})
@@ -445,7 +442,7 @@ def test_crown_corners_over_the_raw_trinity(client):
     by_fp = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
     prof = by_fp["trinity000x"]
     assert prof["overall"] is not None and 0.0 <= prof["overall"] <= 100.0
-    assert set(prof["crown_norm"]) >= {"fcp", "lcp", "stall_time"}  # normalized raw, not grade
+    assert set(prof["crown_norm"]) >= set(_crown_metrics())  # normalized raw, not grade
     assert prof["confident"]
 
 
@@ -478,7 +475,7 @@ def test_overall_ranks_by_raw_measurements_dominance(client):
     by = {p["fingerprint"]: p for p in client.get("/api/settings/profiles").json()["profiles"]}
     fast, slow = by["rawfast000x"], by["rawslow000x"]
     # Better raw on every crown metric → strictly higher normalized value on each…
-    for m in ("fcp", "lcp", "stall_time"):
+    for m in _crown_metrics():
         assert fast["crown_norm"][m] > slow["crown_norm"][m]
     # …and therefore a higher Overall (dominance is preserved — grading can't reverse it).
     assert fast["overall"] > slow["overall"]
@@ -996,8 +993,8 @@ def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
     # Top-level: objective + the levers an AI may tune.
     assert "generated_at" in body and body["profile_count"] >= 1
     meth = body["methodology"]
-    assert set(meth["crown_metrics"]) == {"fcp", "lcp", "stall_time"}
-    assert "objective" in meth and meth["metrics"]["fcp"]["is_crown_metric"] is True
+    assert set(meth["crown_metrics"]) == set(_crown_metrics())
+    assert "objective" in meth and meth["metrics"]["nav_response"]["is_crown_metric"] is True
     shaper = body["shaper_model"]
     assert "quantum" in shaper["writable_fields"]        # a lever apply() can write
     assert any(f["key"] == "target" and f["suggested_range"] for f in shaper["fields"])
@@ -1011,13 +1008,14 @@ def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
     # Raw scoring metrics per run (most recent first), with the crown metrics present.
     assert len(prof["run_samples"]) == 3
     sample = prof["run_samples"][0]
-    assert sample["metrics"]["fcp"] == 210.0 and sample["metrics"]["stall_time"] == 140.0
+    # crown_raw is positional by crown order → nav_response=210, byte_earliness=250, jank=140.
+    assert sample["metrics"]["nav_response"] == 210.0 and sample["metrics"]["jank_fraction"] == 140.0
     # Percentile-normalized crown + raw medians summarize the profile.
-    assert set(prof["crown_percentiles"]) >= {"fcp", "lcp", "stall_time"}
-    assert prof["metric_medians"]["lcp"] == 250.0
+    assert set(prof["crown_percentiles"]) >= set(_crown_metrics())
+    assert prof["metric_medians"]["byte_earliness"] == 250.0
     # Full-history spread per metric (n = every run) accompanies the capped raw samples.
-    assert prof["metric_distribution"]["fcp"]["n"] == 3
-    assert prof["metric_distribution"]["lcp"]["median"] == 250.0
+    assert prof["metric_distribution"]["nav_response"]["n"] == 3
+    assert prof["metric_distribution"]["byte_earliness"]["median"] == 250.0
 
 
 def test_optimizer_export_caps_run_samples(client):
@@ -1032,7 +1030,7 @@ def test_optimizer_export_caps_run_samples(client):
     assert prof["run_samples_truncated"] is True  # flagged as truncated (6 runs > 2)
     # The distribution is computed from ALL 6 runs, not just the 2 sampled — so variance
     # is always conveyed regardless of the cap.
-    dist = prof["metric_distribution"]["fcp"]
+    dist = prof["metric_distribution"]["nav_response"]
     assert dist["n"] == 6
     assert dist["min"] == 300.0 and dist["max"] == 300.0 and dist["median"] == 300.0
 
@@ -1047,7 +1045,7 @@ def test_optimizer_export_distribution_spans_full_history(client):
     body = client.get("/api/settings/export/optimizer?runs_per_profile=2").json()
     prof = next(p for p in body["profiles"] if p["fingerprint"] == "optdist000x")
     assert len(prof["run_samples"]) == 2          # samples capped
-    dist = prof["metric_distribution"]["fcp"]
+    dist = prof["metric_distribution"]["nav_response"]
     assert dist["n"] == 5                          # distribution over the full history
     assert dist["min"] == 100.0 and dist["max"] == 500.0 and dist["median"] == 300.0
     assert dist["p25"] < dist["median"] < dist["p75"]
