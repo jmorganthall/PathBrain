@@ -30,7 +30,7 @@ DEFAULT_PROMPT = """You are a network QoS / SQM tuning expert optimizing FQ-CoDe
 
 You will be given JSON with:
 - `methodology`: the objective — which metrics are the "crown" (what we optimize), that lower is better (times in ms), and the best value achieved so far per crown metric.
-- `shaper_model`: the tunable parameters. You may ONLY change fields listed in `writable_fields`; leave the others exactly as they are. Respect each field's kind/unit and stay within its suggested range. CRITICAL — return every value in the EXACT format the firewall expects, shown per field as `value_format` with a real `example`: `target`/`interval` are strings like `"5ms"` (NOT the number `5`), `quantum`/`limit`/`flows` are plain integers like `3000` (NOT strings), `ecn` is a boolean, bandwidth is a string like `"100Mbit"`. Copy the format of each field's `example` verbatim.
+- `shaper_model`: the tunable parameters. You may ONLY change fields listed in `writable_fields`; leave the others exactly as they are. Respect each field's kind/unit and stay within its suggested range. CRITICAL — return every value in the EXACT format the firewall expects, shown per field as `value_format` with a real `example`: `target`/`interval` are plain integers in milliseconds (`5`, NOT the string `"5ms"` — the firewall keys these by the bare number), `quantum`/`limit`/`flows` are plain integers like `3000`, `ecn` is a boolean, bandwidth is a string like `"100Mbit"`. Copy the format of each field's `example` verbatim.
 - `profiles`: every settings profile we have tested, with its full shaper `settings`, the raw per-run measurements (`run_samples`, the latest runs), and `metric_distribution` — the spread of each metric over ALL of that profile's runs (n/min/p25/median/p75/max). Prefer a profile that is reliably fast (low median AND tight p25–p75) over one that is only occasionally fast (low min but wide spread); a wide distribution means high variance, not a dependable win.
 
 IMPORTANT — the shaper has SEPARATE pipes per direction. Each profile's `settings` is a list of pipes, one per direction, each identified by its `label` (typically a "Download" pipe and an "Upload" pipe). Every pipe has its OWN independently-tunable quantum / target / interval / ecn / limit / flows AND its own bandwidth (stored in the pipe's `download_bandwidth` field — that field is simply "this pipe's bandwidth" regardless of direction; `upload_bandwidth` is unused/null). **Upload shaping matters as much as download** — bufferbloat and latency under upload load hurt responsiveness — so tune BOTH pipes, not just the download one.
@@ -41,8 +41,8 @@ Respond with ONLY a JSON object of exactly this shape (no prose outside the JSON
 {"suggestions": [
   {
     "settings": [
-      {"label": "<the exact Download pipe label from a profile>", "quantum": 3000, "target": "5ms", "interval": "60ms", "ecn": true},
-      {"label": "<the exact Upload pipe label from a profile>", "quantum": 600, "target": "5ms", "interval": "60ms", "ecn": true}
+      {"label": "<the exact Download pipe label from a profile>", "quantum": 3000, "target": 5, "interval": 60, "ecn": true},
+      {"label": "<the exact Upload pipe label from a profile>", "quantum": 600, "target": 5, "interval": 60, "ecn": true}
     ],
     "displacement_likelihood": 72,
     "rationale": "why this should beat the current best — cover both directions"
@@ -51,7 +51,7 @@ Respond with ONLY a JSON object of exactly this shape (no prose outside the JSON
 
 Rules:
 - Each suggestion's `settings` is a LIST with one object PER PIPE. Include BOTH the download and the upload pipe (referenced by their exact `label` from the profiles' `settings`) whenever a profile has both — a suggestion that only tunes one direction is incomplete.
-- Set ONLY fields listed in `shaper_model.writable_fields`; leave every non-writable field alone. Use the same value formats you see (e.g. `target` like "5ms", `quantum` an integer).
+- Set ONLY fields listed in `shaper_model.writable_fields`; leave every non-writable field alone. Use the same value formats you see (e.g. `target`/`interval` bare integer milliseconds like 5, `quantum` an integer).
 - `displacement_likelihood` is your 0-100 estimate of the chance this profile beats the current crown.
 - Order the suggestions by `displacement_likelihood`, highest first."""
 

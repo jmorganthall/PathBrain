@@ -24,7 +24,7 @@ from ..metrics import all_metric_sources
 from ..models import BenchmarkResult, Run, RunStatus, Score
 from ..providers import get_provider
 from ..runner import MAX_ITERATIONS
-from ..schemas import TestSettings
+from ..schemas import ApplySettings, TestSettings
 from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import (
     diff_profiles,
@@ -659,8 +659,8 @@ def _field_format_hint(f) -> str:
     match the firewall's own representation rather than a look-alike."""
     if f.kind == "bool":
         return "boolean (true/false)"
-    if f.unit:  # target / interval
-        return f'string "<integer>{f.unit}" (e.g. "5{f.unit}")'
+    if f.unit:  # target / interval — the firewall keys these by the bare number
+        return f'integer in {f.unit} (bare number, unquoted — e.g. 5, NOT "5{f.unit}")'
     if f.kind == "int":
         return "integer (no units, unquoted)"
     if f.key in ("download_bandwidth", "upload_bandwidth"):
@@ -1347,26 +1347,7 @@ def apply_profile(
             "already_applied": not changes,
         }
 
-    applied: list[dict] = []
-    for ch in changes:
-        try:
-            provider.apply({"pipe_uuid": ch["pipe_uuid"], "param": ch["param"], "value": ch["value"]})
-        except NotImplementedError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"The {provider.name} provider can't write changes.",
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            log.exception("apply-profile write failed on %s after %s change(s)", ch["param"], len(applied))
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    f"Applied {len(applied)} change(s), then failed on "
-                    f"{ch['field_label']}: {type(exc).__name__}: {exc}. The firewall may be "
-                    "partially changed — re-apply once the issue is resolved."
-                ),
-            ) from exc
-        applied.append({"label": ch["label"], "field_label": ch["field_label"], "to": ch["to"]})
+    applied = _write_changes(provider, changes)
 
     # Best-effort: report the fingerprint the firewall is now on.
     resulting_fp = None
@@ -1400,6 +1381,114 @@ def apply_profile(
         "applied": applied,
         "warnings": warnings,
         "already_applied": not changes,
+        "resulting_fingerprint": resulting_fp,
+        "run_id": run_id,
+    }
+
+
+def _write_changes(provider, changes: list[dict]) -> list[dict]:
+    """Apply a planned change list to the firewall via ``provider.apply()`` (the only sanctioned
+    write path), returning the applied summaries. Raises ``HTTPException`` on the first failure —
+    reporting how many writes already landed so a partial apply is visible. Shared by the
+    apply-profile and apply-settings endpoints."""
+    applied: list[dict] = []
+    for ch in changes:
+        try:
+            provider.apply({"pipe_uuid": ch["pipe_uuid"], "param": ch["param"], "value": ch["value"]})
+        except NotImplementedError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"The {provider.name} provider can't write changes.",
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            log.exception("apply write failed on %s after %s change(s)", ch["param"], len(applied))
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Applied {len(applied)} change(s), then failed on "
+                    f"{ch['field_label']}: {type(exc).__name__}: {exc}. The firewall may be "
+                    "partially changed — re-apply once the issue is resolved."
+                ),
+            ) from exc
+        applied.append({"label": ch["label"], "field_label": ch["field_label"], "to": ch["to"]})
+    return applied
+
+
+@router.post("/settings/apply-settings")
+def apply_settings(
+    payload: ApplySettings,
+    background: BackgroundTasks,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Write an **arbitrary** set of shaper settings (e.g. an AI suggestion) to the firewall
+    **permanently** — the same one-way apply as ``apply-profile``, but for settings that aren't a
+    stored profile yet. Overlays only *writable* fields onto the live profile (so it's always
+    reachable), then:
+
+    * ``preview: true`` → returns the exact planned field writes without touching the firewall,
+      for the confirm dialog (the same ``ApplyProfileResult`` shape the profile apply uses).
+    * commit → applies via ``provider.apply()`` and, with ``run_benchmark`` (default true), kicks a
+      single-iteration benchmark on the new settings in the background.
+
+    Like apply-profile this is a one-way write (to revert, apply another profile); unlike
+    ``test-settings`` it does **not** restore a baseline. Rejects a no-op / unreachable change."""
+    provider = get_provider()
+    try:
+        live = provider.discover()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"{provider.name} discovery failed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    live_norm = normalize(live)
+    target = _apply_writable_overrides(live_norm, payload.settings)
+    if environment_signature(target) != environment_signature(live_norm):
+        raise HTTPException(
+            status_code=400, detail="Unreachable: the settings change a non-writable field."
+        )
+    changes, warnings = plan_apply(target, live)
+    label = payload.label or summarize(target)
+    target_fp = fingerprint(target)
+
+    if payload.preview:
+        return {
+            "preview": True,
+            "fingerprint": target_fp,
+            "label": label,
+            "changes": changes,
+            "warnings": warnings,
+            "already_applied": not changes,
+        }
+    if not changes:
+        raise HTTPException(
+            status_code=400, detail="Those settings match the current profile — nothing to change."
+        )
+
+    applied = _write_changes(provider, changes)
+    resulting_fp = None
+    try:
+        resulting_fp = fingerprint(normalize(provider.discover()))
+    except Exception:  # noqa: BLE001
+        log.warning("apply-settings post-verify discovery failed", exc_info=True)
+
+    run_id = None
+    if payload.run_benchmark:
+        from ..runner import create_run
+        from .routes_run import _locked_execute
+
+        run_id = create_run(
+            label=f"apply · {label}", notes=f"Benchmark after applying settings {target_fp}", iterations=1,
+        )
+        background.add_task(_locked_execute, run_id)
+
+    log.info("Applied settings %s: %s change(s)%s", target_fp, len(applied),
+             f"; benchmark run {run_id}" if run_id else "")
+    return {
+        "ok": True,
+        "fingerprint": target_fp,
+        "label": label,
+        "applied": applied,
+        "warnings": warnings,
+        "already_applied": False,
         "resulting_fingerprint": resulting_fp,
         "run_id": run_id,
     }

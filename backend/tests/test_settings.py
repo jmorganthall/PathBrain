@@ -709,9 +709,10 @@ def test_apply_profile_writes_to_firewall(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
-    # The write went through the provider apply path.
+    # The write went through the provider apply path — target written as the bare number 3
+    # (the firewall's option key), not "3ms".
     assert _OVERRIDES.get("quantum") == 4000
-    assert _OVERRIDES.get("target") == "3ms"
+    assert _OVERRIDES.get("target") == 3
     applied_fields = {a["field_label"] for a in body["applied"]}
     assert {"Quantum", "CoDel target"} <= applied_fields
 
@@ -754,6 +755,78 @@ def test_apply_profile_unknown_fingerprint_404(client):
 def test_apply_profile_requires_fingerprint(client):
     resp = client.post("/api/settings/apply-profile", json={})
     assert resp.status_code == 400
+
+
+def test_apply_settings_preview_then_commit(client):
+    """apply-settings applies arbitrary (AI-style) settings permanently — preview lists the
+    exact writes without touching the firewall, commit writes them via the provider."""
+    from pathbrain.providers.mock import _OVERRIDES
+
+    _OVERRIDES.clear()
+    # An AI-style "3ms" string is accepted but written to the firewall as the bare number 3
+    # (the option key the firewall's duration select actually uses).
+    settings = [{"label": "wan-download", "quantum": 4000, "target": "3ms"}]
+
+    prev = client.post(
+        "/api/settings/apply-settings", json={"settings": settings, "preview": True}
+    ).json()
+    assert prev["preview"] is True and prev["already_applied"] is False
+    by_field = {(c["label"], c["param"]): c for c in prev["changes"]}
+    assert by_field[("wan-download", "quantum")]["to"] == 4000
+    # The planned write value is the bare number, not "3ms".
+    assert by_field[("wan-download", "target")]["value"] == 3
+    assert _OVERRIDES == {}  # preview wrote nothing
+
+    resp = client.post(
+        "/api/settings/apply-settings",
+        json={"settings": settings, "run_benchmark": False},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert _OVERRIDES.get("quantum") == 4000 and _OVERRIDES.get("target") == 3
+    _OVERRIDES.clear()
+
+
+def test_apply_settings_canonicalizes_ai_format(client):
+    """An AI's duration value ("3ms" / "3" / 3) is written as the firewall's bare number 3 —
+    never "3ms", which the firewall's option-keyed select would reject."""
+    from pathbrain.providers.mock import _OVERRIDES
+
+    for raw in ("3ms", "3", 3, 3.0):
+        _OVERRIDES.clear()
+        resp = client.post(
+            "/api/settings/apply-settings",
+            json={"settings": [{"label": "wan-download", "target": raw}], "run_benchmark": False},
+        )
+        assert resp.status_code == 200, raw
+        assert _OVERRIDES.get("target") == 3, raw
+    _OVERRIDES.clear()
+
+
+def test_apply_settings_rejects_no_op(client):
+    from pathbrain.providers.mock import _OVERRIDES
+
+    _OVERRIDES.clear()
+    resp = client.post("/api/settings/apply-settings", json={"settings": {}})
+    assert resp.status_code == 400
+    assert _OVERRIDES == {}
+
+
+def test_apply_settings_kicks_benchmark(client, monkeypatch):
+    from pathbrain.providers.mock import _OVERRIDES
+    import pathbrain.api.routes_run as routes_run
+
+    _OVERRIDES.clear()
+    kicked: list[int] = []
+    monkeypatch.setattr(routes_run, "_locked_execute", lambda rid: kicked.append(rid))
+
+    body = client.post(
+        "/api/settings/apply-settings",
+        json={"settings": [{"label": "wan-download", "quantum": 4000}], "run_benchmark": True},
+    ).json()
+    assert body["run_id"] is not None and kicked == [body["run_id"]]
+    _OVERRIDES.clear()
 
 
 def test_crown_is_highest_overall_among_confident(client):
@@ -970,9 +1043,10 @@ def test_apply_writable_overrides_only_touches_writable_fields():
     out = _apply_writable_overrides(live, [{"label": "wan-download", "quantum": 3000, "scheduler": "HFSC"}])
     assert out[0]["quantum"] == 3000            # writable → applied
     assert out[0]["scheduler"] == "fq_codel"    # non-writable → left as live (reachable)
-    # A flat dict applies to every pipe.
+    # A flat dict applies to every pipe; a duration is canonicalized to the firewall's bare
+    # number (3), not "3ms" — the option key its select actually uses.
     out2 = _apply_writable_overrides(live, {"target": "3ms"})
-    assert out2[0]["target"] == "3ms"
+    assert out2[0]["target"] == 3
 
 
 def test_test_settings_rejects_a_no_op(client):

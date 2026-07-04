@@ -23,7 +23,7 @@ from .models import Run, RunStatus, Sweep, SweepStatus
 from .providers import get_provider
 from .runner import create_run, execute_run
 from .settings_profile import normalize
-from .shaper_fields import SWEEPABLE_FIELDS, format_value
+from .shaper_fields import SWEEPABLE_FIELDS, format_display, format_value
 
 log = get_logger("sweep")
 
@@ -154,11 +154,12 @@ def _label(variant: dict, pipe_label: str | None = None) -> str:
     parts = []
     if pipe_label:
         parts.append(str(pipe_label))
-    # One short tag per swept field present (e.g. q1514 t5ms), in registry order.
+    # One short tag per swept field present (e.g. q1514 t5ms), in registry order. The variant
+    # value is the bare wire number; format_display re-adds the unit for the human label.
     for key in SWEEPABLE_FIELDS:
         val = variant.get(key)
         if val is not None:
-            parts.append(f"{key[0]}{val}")
+            parts.append(f"{key[0]}{format_display(key, val)}")
     return "sweep · " + " ".join(parts)
 
 

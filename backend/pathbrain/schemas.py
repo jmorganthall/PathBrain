@@ -33,6 +33,18 @@ class TestSettings(BaseModel):
     label: str | None = None
 
 
+class ApplySettings(BaseModel):
+    """Apply an arbitrary set of shaper settings (e.g. an AI suggestion) to the firewall
+    **permanently** (one-way write, no baseline restore). ``settings`` is a per-pipe override
+    list or a flat writable dict, like ``TestSettings``. ``preview`` returns the planned writes
+    without touching the firewall; ``run_benchmark`` kicks a 1-iteration benchmark after applying."""
+
+    settings: Any
+    label: str | None = None
+    preview: bool = False
+    run_benchmark: bool = True
+
+
 class AiConfigUpdate(BaseModel):
     """Partial AI settings; only provided fields are saved. A blank ``api_key`` is ignored."""
 

@@ -336,6 +336,20 @@ export const api = {
       // slow model returns rather than the browser aborting with an opaque error.
       { timeoutMs: 240_000 },
     ),
+  // Apply arbitrary settings (e.g. an AI suggestion) to the firewall PERMANENTLY. preview=true
+  // returns the exact planned writes (for the confirm dialog); commit writes + optional benchmark.
+  applySettings: (body: {
+    settings: unknown;
+    label?: string;
+    preview?: boolean;
+    run_benchmark?: boolean;
+  }) =>
+    startingJob(
+      request<ApplyProfileResult>("/settings/apply-settings", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    ),
   // Apply arbitrary settings (e.g. an AI suggestion) onto the live profile and test to minimum.
   testSettings: (body: { settings: unknown; label?: string }) =>
     startingJob(
