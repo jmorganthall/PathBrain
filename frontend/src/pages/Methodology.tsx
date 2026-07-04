@@ -126,6 +126,7 @@ export default function Methodology() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [regrading, setRegrading] = useState(false);
+  const [rederiving, setRederiving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   // A pending re-anchor proposal, deep-linked from the Settings-Impact saturation alert
   // (?reanchor=<metric>&best=<suggested>). The 'best' is editable before publishing.
@@ -168,6 +169,18 @@ export default function Methodology() {
     }
   }, []);
 
+  const handleRederive = useCallback(async () => {
+    setRederiving(true);
+    try {
+      await api.rederiveHistory();
+      setToast("Re-derive started — track its progress in the jobs menu (top right) ↗");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not start the re-derive");
+    } finally {
+      setRederiving(false);
+    }
+  }, []);
+
   const proposalMetric =
     reanchorKey && current
       ? current.definition.metrics.find((m) => m.key === reanchorKey) ?? null
@@ -207,18 +220,54 @@ export default function Methodology() {
         sx={{ mb: 1 }}
       >
         <Typography variant="h4">Methodology</Typography>
-        <Tooltip title="Score every run from its preserved raw observations under the current methodology. Never changes a run's at-measure (capture-time) score; writes the at-present score.">
-          <span>
-            <Button
-              variant="outlined"
-              startIcon={regrading ? <CircularProgress size={16} /> : <RestartAltIcon />}
-              onClick={handleRegrade}
-              disabled={regrading}
-            >
-              {regrading ? "Re-grading…" : "Re-grade history under current"}
-            </Button>
-          </span>
-        </Tooltip>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+          <Tooltip
+            arrow
+            title={
+              <>
+                <strong>Refresh the measurements (silver layer).</strong> Re-runs interpretation
+                over each run's stored raw, rewriting its cached metric values. Run this after the{" "}
+                <em>derivation</em> changes — a new measurement or a changed formula — so it lands on
+                history without re-collecting. This is what backfills newly-added metrics (e.g. the
+                navigation waterfall, jank fraction) into past runs. Doesn't change the rubric.
+              </>
+            }
+          >
+            <span>
+              <Button
+                variant="outlined"
+                startIcon={rederiving ? <CircularProgress size={16} /> : <RestartAltIcon />}
+                onClick={handleRederive}
+                disabled={rederiving}
+              >
+                {rederiving ? "Re-deriving…" : "Re-derive history from raw"}
+              </Button>
+            </span>
+          </Tooltip>
+          <Tooltip
+            arrow
+            title={
+              <>
+                <strong>Re-score under the current methodology (gold layer).</strong> Scores every
+                run from its preserved raw under the current rubric, writing the at-present score;
+                never touches a run's at-measure (capture-time) score. Run this after publishing a
+                new methodology (new weights, thresholds, or crown). Changes the score, not the
+                measurements — re-derive first if you also added a new measurement the rubric needs.
+              </>
+            }
+          >
+            <span>
+              <Button
+                variant="outlined"
+                startIcon={regrading ? <CircularProgress size={16} /> : <RestartAltIcon />}
+                onClick={handleRegrade}
+                disabled={regrading}
+              >
+                {regrading ? "Re-grading…" : "Re-grade history under current"}
+              </Button>
+            </span>
+          </Tooltip>
+        </Stack>
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         How raw observations become a score, versioned. Raw data is the instrumented truth; the
