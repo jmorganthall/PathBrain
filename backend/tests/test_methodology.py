@@ -121,11 +121,13 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v7_rubric():
-    # The published-now methodology is speed-smoothness-v7: identical axes/thresholds to v6,
-    # but the crown swaps its completion leg from load_event (technical page-load) to lcp
-    # (perceptual "main content visible"). Overall now corners over FCP × LCP × total_stall.
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v7"
+def test_current_methodology_is_v8_rubric():
+    # The published-now methodology is speed-smoothness-v8: identical axes/thresholds to v6/v7,
+    # but the Smoothness cumulative-stall metric swaps from the *relative* total_stall (excess
+    # over each run's own median pace) to the *absolute* stall_time (summed duration of every
+    # gap over a fixed 200ms threshold — an actual per-run measurement). Overall now corners
+    # over FCP × LCP × stall_time.
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v8"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
@@ -141,16 +143,16 @@ def test_current_methodology_is_v7_rubric():
         "ttfb": ("responsiveness", 15, 30.0, 1800.0),
         "fcp": ("responsiveness", 25, 150.0, 3000.0),
         "byte_earliness": ("responsiveness", 30, 150.0, 5000.0),
-        # speed — time-to-last + interactive + the newly-scored built-in page-load time
+        # speed — time-to-last + interactive + the built-in page-load time
         "lcp": ("speed", 40, 150.0, 4000.0),
         "render": ("speed", 20, 500.0, 8000.0),
         "inp": ("speed", 40, 50.0, 500.0),
         "load_event": ("speed", 20, 800.0, 8000.0),
         # stability — CLS only
         "cls": ("stability", 50, 0.0, 0.25),
-        # smoothness — perceived_time replaced by cumulative total_stall
+        # smoothness — total_stall (relative) replaced by stall_time (absolute) in the scored slot
         "longest_stall": ("smoothness", 40, 25.0, 2000.0),
-        "total_stall": ("smoothness", 30, 0.0, 3000.0),
+        "stall_time": ("smoothness", 30, 0.0, 3000.0),
         "cadence_cov": ("smoothness", 15, 0.2, 2.5),
         "delivery_gini": ("smoothness", 15, 0.1, 0.7),
     }
@@ -158,13 +160,14 @@ def test_current_methodology_is_v7_rubric():
         m = by_key[key]
         assert (m["axis"], m["weight"], m["best"], m["worst"]) == (axis, weight, best, worst), key
 
-    # perceived_time is retained but no longer scored (display-only diagnostic).
+    # perceived_time and (now) total_stall are retained but no longer scored (display-only).
     assert by_key["perceived_time"]["axis"] is None
+    assert by_key["total_stall"]["axis"] is None
 
     # The universal `required` field is materialized onto every metric that defines the
-    # Overall/crown (v7: fcp × lcp × total_stall) plus the flagged longest_stall — so the
+    # Overall/crown (v8: fcp × lcp × stall_time) plus the flagged longest_stall — so the
     # frozen snapshot self-describes exactly what comparability enforces.
-    for key in ("fcp", "lcp", "total_stall", "longest_stall"):
+    for key in ("fcp", "lcp", "stall_time", "longest_stall"):
         assert by_key[key]["required"] is True, key
     # A scored-but-optional metric is NOT required (it redistributes when missing → partial).
     assert by_key["byte_earliness"]["required"] is False
@@ -172,16 +175,16 @@ def test_current_methodology_is_v7_rubric():
     assert {a["key"] for a in d["axes"]} == {
         "responsiveness", "speed", "smoothness", "stability", "completion"
     }
-    # Display-only metrics carry no axis (e.g. latency, transfer, speed_index).
-    for k in ("latency", "transfer", "speed_index", "network_stall"):
+    # Display-only metrics carry no axis (e.g. latency, transfer, speed_index, total_stall).
+    for k in ("latency", "transfer", "speed_index", "network_stall", "total_stall"):
         assert by_key[k]["axis"] is None
 
-    # v7's crown: the corner over FCP × LCP × total_stall (load_event stays a scored Speed
-    # metric — see above — but is no longer a crown metric).
+    # v8's crown: the corner over FCP × LCP × stall_time (load_event stays a scored Speed
+    # metric but is not a crown metric; stall_time is the absolute cumulative-stall dimension).
     assert d["overall"] == {
         "method": "corner",
-        "metrics": ["fcp", "lcp", "total_stall"],
-        "required": ["fcp", "lcp", "total_stall"],
+        "metrics": ["fcp", "lcp", "stall_time"],
+        "required": ["fcp", "lcp", "stall_time"],
     }
 
 

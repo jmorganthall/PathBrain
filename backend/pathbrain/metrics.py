@@ -218,12 +218,22 @@ METRICS: list[MetricDef] = [
         ),
     ),
     MetricDef(
-        "total_stall", "browser", "total_stall_ms", "Total stall time", unit="ms",
+        "total_stall", "browser", "total_stall_ms", "Total stall (relative)", unit="ms",
         description=(
-            "Cumulative dead-air — how much time delivery ran behind its own typical pace "
-            "(the excess of each completion gap over the median gap). The cumulative "
-            "counterpart to the longest single stall, and the crown's standalone stall "
-            "dimension. Steady delivery scores ~0. Lower is better."
+            "Cumulative dead-air *relative to each run's own median pace* — the excess of each "
+            "completion gap over the run's median gap. A relative shape statistic (steady "
+            "delivery scores ~0 regardless of speed). Superseded in the v8 crown by the absolute "
+            "'Stall time'; kept as a display-only diagnostic. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "stall_time", "browser", "stall_time_ms", "Stall time", unit="ms",
+        description=(
+            "Total dead-air as an *actual measurement*: the summed duration of every completion "
+            "gap longer than a fixed perceptible-stall threshold (200ms) — 'how many ms the load "
+            "spent frozen'. Unlike total_stall (relative to each run's own median pace), it uses "
+            "one fixed yardstick for every run, so profiles compare on measured values not "
+            "averages-of-averages. The v8 crown's cumulative-stall dimension. Lower is better."
         ),
     ),
     MetricDef(
@@ -273,7 +283,7 @@ DISPLAY_ORDER = [
     "load_event", "render", "paint_cadence", "cls",       # completion + smoothness
     "inp",                                                # interaction (after load)
     # perceived load smoothness (delivery-curve shape, byte-arrival)
-    "perceived_time", "longest_stall", "cadence_cov",
+    "perceived_time", "longest_stall", "total_stall", "stall_time", "cadence_cov",
     "byte_earliness", "delivery_gini", "network_stall", "render_stall", "unknown_stall",
     "latency", "jitter", "packet_loss",                   # network quality (continuous)
 ]

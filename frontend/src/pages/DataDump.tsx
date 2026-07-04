@@ -124,7 +124,7 @@ export default function DataDump() {
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 820 }}>
         A profile-centric JSON built to feed an AI: every profile's <b>tunable shaper settings</b> (the
-        levers), its <b>runs with the raw scoring metrics</b> (fcp / lcp / total_stall in ms, and every
+        levers), its <b>runs with the raw scoring metrics</b> (fcp / lcp / stall_time in ms, and every
         other scored metric), plus the <b>objective</b> (which metrics are the crown, lower-is-better,
         and the best values achieved so far) and the <b>shaper field model</b> (which params are writable
         and their sensible ranges). Hand it to a model and ask it to propose new, untested profiles likely

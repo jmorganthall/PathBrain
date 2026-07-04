@@ -288,7 +288,7 @@ export interface SettingsProfilesResponse {
   // corner. Null until a confident profile with both axes exists.
   best_fingerprint: string | null;
   // The current methodology's crown metric set — the metrics the Overall corners over
-  // (fcp/lcp/total_stall under v7). The table pins these as its standings columns so the
+  // (fcp/lcp/stall_time under v8). The table pins these as its standings columns so the
   // displayed columns are the ones that actually compute Overall.
   overall_metrics: string[];
   // Fingerprints statistically tied with the crown (co-leaders): the crown's median lead
@@ -385,6 +385,10 @@ export interface ProfileRefreshPreview {
   total_iterations: number;
   per_iteration_ms: number | null;
   estimated_seconds: number | null;
+  // Winner-first context: when set, only the top-N profiles run, ranked by their Overall
+  // under `ranked_by` (the prior methodology). Both null for a full, unranked batch.
+  top?: number | null;
+  ranked_by?: string | null;
 }
 
 export interface VersionInfo {

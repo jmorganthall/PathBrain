@@ -1397,10 +1397,18 @@ def compute_profiles(
         for metric, val in crown_sub.items():
             if val is not None:
                 g["subscore_samples"].setdefault(metric, []).append(float(val))
-        # Every metric's raw value for this run, from the plugin metric caches.
+        # Every metric's raw value for this run, from the plugin metric caches, falling back
+        # to the current-methodology Score's derived metric_values (keyed by logical key) when
+        # the plugin cache predates a metric. A re-grade re-derives from raw into the Score but
+        # does not rewrite BenchmarkResult.metrics, so a run captured before a metric existed
+        # (e.g. stall_time, added in v8) carries it only on the re-graded Score — sourcing it
+        # here lets re-graded history feed the crown normalization + columns, not just fresh
+        # runs. (Same source the completion metrics already read from above.)
         results_by_plugin = {r.plugin: (r.metrics or {}) for r in run.results}
         for key, (plugin, source_key) in metric_src.items():
             val = results_by_plugin.get(plugin, {}).get(source_key)
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                val = mv.get(key)
             if isinstance(val, bool) or not isinstance(val, (int, float)):
                 continue
             g["metric_samples"].setdefault(key, []).append(float(val))
@@ -2112,27 +2120,41 @@ def cancel_race() -> dict:
 @router.get("/settings/refresh/preview")
 def refresh_preview(
     iterations: int = Query(..., description="Benchmark iterations to run per profile."),
+    top: int | None = Query(
+        None, description="Re-run only the top-N profiles (winner-first by prior methodology)."
+    ),
+    rank_by: str | None = Query(
+        None, description="Methodology version to rank by (defaults to the prior methodology)."
+    ),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Preview a 'Re-run all profiles' batch: how many profiles, total iterations, and an
+    """Preview a 'Re-run profiles' batch: how many profiles, total iterations, and an
     estimated duration (from recent runs' per-iteration timing) — so the UI can show
-    'N profiles × M iterations ≈ ~T' before committing."""
-    return refresh_mod.preview(session, iterations)
+    'N profiles × M iterations ≈ ~T' before committing. With ``top`` set, previews a
+    winner-first subset ranked by ``rank_by`` (or the prior methodology)."""
+    return refresh_mod.preview(session, iterations, top=top, rank_by=rank_by)
 
 
 @router.post("/settings/refresh")
 def start_refresh(body: dict = Body(...), session: Session = Depends(get_session)) -> dict:
-    """Start a 'Re-run all profiles' batch: apply each stored profile, run ``iterations``
+    """Start a 'Re-run profiles' batch: apply each stored profile, run ``iterations``
     benchmarks on it, and restore the baseline at the end (see ``refresh.py``).
 
-    Body: ``{"iterations": <number>}``. Returns the refresh id; poll
-    ``GET /settings/refresh`` for status.
+    Body: ``{"iterations": <number>, "top"?: <N>, "rank_by"?: <version>}``. With ``top`` set,
+    only the top-N profiles are re-run, **winner-first** by their Overall under ``rank_by`` (or
+    the prior methodology) — fresh data for the best performers first after a methodology
+    publish. Returns the refresh id; poll ``GET /settings/refresh`` for status.
     """
     iterations = int((body or {}).get("iterations") or 0)
     if iterations <= 0:
         raise HTTPException(status_code=400, detail="iterations must be > 0")
+    top_raw = (body or {}).get("top")
+    top = int(top_raw) if top_raw not in (None, "") else None
+    if top is not None and top <= 0:
+        raise HTTPException(status_code=400, detail="top must be > 0 when provided")
+    rank_by = (body or {}).get("rank_by") or None
     try:
-        refresh_id = refresh_mod.start(iterations)
+        refresh_id = refresh_mod.start(iterations, top=top, rank_by=rank_by)
     except RuntimeError as exc:  # already running, or no profiles
         # "already running" is a conflict; "no profiles" is a bad request.
         status = 409 if "already running" in str(exc) else 400
@@ -2142,7 +2164,7 @@ def start_refresh(body: dict = Body(...), session: Session = Depends(get_session
         raise HTTPException(
             status_code=502, detail=f"Could not start the refresh: {type(exc).__name__}: {exc}"
         ) from exc
-    return {"id": refresh_id, "iterations": iterations}
+    return {"id": refresh_id, "iterations": iterations, "top": top}
 
 
 @router.get("/settings/refresh")

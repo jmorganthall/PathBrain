@@ -34,6 +34,13 @@ PERCEIVED_DEFAULTS = {
 # attribution sums so micro-gaps don't get charged to network or render.
 MIN_STALL_MS = 50.0
 
+# The fixed threshold above which a completion gap counts as a *perceptible* stall for
+# the absolute stall-time metric (:func:`stall_time`). A methodology constant — the same
+# yardstick for every run — grounded in perception (a gap where nothing arrives of a few
+# hundred ms starts to feel like a hitch; 200ms ≈ INP's "good" boundary). Distinct from
+# ``MIN_STALL_MS`` (the attribution micro-gap floor), which is deliberately lower.
+STALL_PERCEPTIBLE_MS = 200.0
+
 
 def _f(v) -> float | None:
     """Coerce to float, or None if not a finite number."""
@@ -109,6 +116,26 @@ def total_stall(series: list[float]) -> float | None:
         return None
     baseline = median(gaps)
     return round(sum(g - baseline for g in gaps if g > baseline), 3)
+
+
+def stall_time(series: list[float], *, threshold_ms: float = STALL_PERCEPTIBLE_MS) -> float | None:
+    """Total *absolute* dead-air: the summed duration of every completion gap that exceeds a
+    fixed perceptible-stall threshold — literally "how many ms the load spent frozen".
+
+    The **actual per-run measurement** counterpart to :func:`total_stall`. Where ``total_stall``
+    subtracts each run's *own median* gap (a relative shape statistic — an average baked into the
+    number, so cross-profile comparison is a comparison of each run's deviation from its own
+    pace), this uses a single fixed yardstick (``threshold_ms``, the same for every run), exactly
+    like FCP/LCP measure an actual timestamp. A gap below the threshold is normal back-to-back
+    delivery and contributes nothing; every gap at or above it contributes its *whole* duration.
+    So profile-to-profile comparison is a direct comparison of measured dead-air, not of
+    averages-of-averages. Parameterized only by the fixed perception threshold (a methodology
+    constant, not data-derived). ``None`` when there's no gap to measure (fewer than two
+    completions); ``0.0`` for a load with no perceptible stall (a real, comparable measurement)."""
+    gaps = _gaps(series)
+    if not gaps:
+        return None
+    return round(sum(g for g in gaps if g >= threshold_ms), 3)
 
 
 def longest_stall_window(series: list[float]) -> tuple[float, float, float] | None:
@@ -370,9 +397,13 @@ def smoothness_metrics(
 
     out: dict[str, float | None] = {
         "longest_stall_ms": longest_stall(series),
-        # Cumulative dead-air beyond the load's own median pace — the standalone stall
-        # dimension (crown input), parameter-free and unweighted. ~0 for steady delivery.
+        # Cumulative dead-air beyond the load's own median pace — a *relative* shape statistic
+        # (parameter-free, unweighted; ~0 for steady delivery). Display-only diagnostic since v8.
         "total_stall_ms": total_stall(series),
+        # Absolute dead-air: summed duration of every gap over a fixed perceptible-stall
+        # threshold — an *actual per-run measurement* (no per-run median), the v8 crown's
+        # cumulative-stall dimension so profiles compare on measured values, not deviations.
+        "stall_time_ms": stall_time(series),
         "cadence_cov": cadence_cov(series),
         "byte_earliness_ms": byte_earliness(resources, start),
         "delivery_gini": delivery_gini(resources, start, end),

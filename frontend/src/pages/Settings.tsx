@@ -517,11 +517,11 @@ export default function Settings() {
   // Scored metrics whose 'best' is too lenient to rank profiles (saturating >50%).
   const [saturation, setSaturation] = useState<MetricSaturation[]>([]);
   // Dynamic quadrant axes — default to the Overall scoring corner's three inputs
-  // (v7: FCP × LCP × total-stall), with the third encoded as Shade opacity; the
+  // (v8: FCP × LCP × stall-time), with the third encoded as Shade opacity; the
   // crowned profile is ringed. So the default view demonstrates how Overall is scored.
   const [xKey, setXKey] = useState("fcp");
   const [yKey, setYKey] = useState("lcp");
-  const [sizeKey, setSizeKey] = useState("total_stall");
+  const [sizeKey, setSizeKey] = useState("stall_time");
   // Scatter-only filter: hide profiles with fewer than this many total iterations, so
   // thin/noisy profiles don't clutter the plot. 0 = show all. Doesn't affect the table.
   const [minIterPlot, setMinIterPlot] = useState(0);
@@ -644,7 +644,7 @@ export default function Settings() {
   }, [load]);
 
   // The standings columns pin the metrics that actually *compute* the Overall — the current
-  // methodology's crown set (fcp/lcp/total_stall under v7), from the profiles response's
+  // methodology's crown set (fcp/lcp/stall_time under v8), from the profiles response's
   // ``overall_metrics``. The headline axes (Responsiveness/Smoothness/Speed) are a different
   // decomposition that barely correlates with the Overall corner, so they no longer pin here
   // (still available via Columns). Each crown column ranks by the metric's 0–100 subscore —
@@ -846,6 +846,9 @@ export default function Settings() {
   // new crown metric.
   const [refreshOpen, setRefreshOpen] = useState(false);
   const [refreshIters, setRefreshIters] = useState(5);
+  // 0 = every profile; N = only the top-N, winner-first by Overall under the prior methodology
+  // (so the best performers get fresh data first after a methodology publish).
+  const [refreshTop, setRefreshTop] = useState(0);
   const [refreshPreview, setRefreshPreview] = useState<ProfileRefreshPreview | null>(null);
   const [activeRefresh, setActiveRefresh] = useState<ProfileRefresh | null>(null);
   const refreshRunning =
@@ -858,7 +861,7 @@ export default function Settings() {
     let cancelled = false;
     (async () => {
       try {
-        const p = await api.refreshPreview(refreshIters);
+        const p = await api.refreshPreview(refreshIters, refreshTop || undefined);
         if (!cancelled) setRefreshPreview(p);
       } catch {
         if (!cancelled) setRefreshPreview(null);
@@ -867,20 +870,21 @@ export default function Settings() {
     return () => {
       cancelled = true;
     };
-  }, [refreshOpen, refreshIters]);
+  }, [refreshOpen, refreshIters, refreshTop]);
 
   const handleStartRefresh = useCallback(async () => {
     setError(null);
     try {
-      await api.startRefresh(refreshIters);
+      await api.startRefresh(refreshIters, refreshTop || undefined);
       setRefreshOpen(false);
-      setToast(`Re-running all profiles · ${refreshIters} iteration(s) each, then restoring`);
+      const scope = refreshTop ? `top ${refreshTop} profile(s), winner-first` : "all profiles";
+      setToast(`Re-running ${scope} · ${refreshIters} iteration(s) each, then restoring`);
       const cur = await api.refreshCurrent();
       setActiveRefresh(cur.refresh);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start the profile refresh");
     }
-  }, [refreshIters]);
+  }, [refreshIters, refreshTop]);
 
   // Poll the active refresh until it finishes, then reload + report the outcome.
   useEffect(() => {
@@ -1785,7 +1789,9 @@ export default function Settings() {
           <DialogContentText sx={{ mb: 2 }}>
             Applies each stored profile to the firewall and benchmarks it for the chosen
             number of iterations, then restores your current settings at the end. Use this
-            to collect fresh, comparable data for every profile after a methodology change.
+            to collect fresh, comparable data after a methodology change. Limit to the top-N
+            profiles to re-run the best performers first (winner-first by their Overall under
+            the prior methodology) instead of blindly sweeping everything.
           </DialogContentText>
           <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
             <Typography variant="body2">Iterations per profile</Typography>
@@ -1801,12 +1807,28 @@ export default function Settings() {
               ))}
             </Select>
           </Stack>
+          <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
+            <Typography variant="body2">Profiles</Typography>
+            <Select
+              size="small"
+              value={refreshTop}
+              onChange={(e) => setRefreshTop(Number(e.target.value))}
+            >
+              <MenuItem value={0}>All profiles</MenuItem>
+              {[3, 5, 10, 20].map((n) => (
+                <MenuItem key={n} value={n}>
+                  Top {n} (winner-first)
+                </MenuItem>
+              ))}
+            </Select>
+          </Stack>
           <Typography variant="body2" color="text.secondary">
             {refreshPreview == null
               ? "Estimating…"
               : refreshPreview.profiles === 0
                 ? "No stored profiles to re-run yet."
                 : `${refreshPreview.profiles} profile(s) × ${refreshPreview.iterations} = ${refreshPreview.total_iterations} iteration(s)` +
+                  (refreshPreview.ranked_by ? ` · ranked by ${refreshPreview.ranked_by}` : "") +
                   (refreshPreview.estimated_seconds != null
                     ? ` · ~${fmtDuration(refreshPreview.estimated_seconds * 1000)} (estimate)`
                     : " · time estimate unavailable (no timing history yet)")}

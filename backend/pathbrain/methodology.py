@@ -44,7 +44,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v7"
+CURRENT_METHODOLOGY = "speed-smoothness-v8"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -207,6 +207,23 @@ def _ss_v6_assignments() -> dict:
     return a
 
 
+def _ss_v8_assignments() -> dict:
+    """v6/v7 rubric with the Smoothness cumulative-stall metric swapped from the *relative*
+    ``total_stall`` (excess of each gap over the run's own median pace — an average baked into
+    the number) to the *absolute* ``stall_time`` (summed duration of every completion gap over a
+    fixed 200ms perceptible-stall threshold). ``stall_time`` is an **actual per-run measurement**
+    against a fixed yardstick — like FCP/LCP measure a real timestamp — so profiles compare on
+    measured dead-air, not on each run's deviation from its own baseline (the "averages of
+    averages" the median version introduced). It takes total_stall's Smoothness slot + weight;
+    ``total_stall`` returns to a display-only diagnostic. Thresholds carry over (best 0 / worst
+    3000ms, calibratable). Derivation bumps to derive-v5 (adds stall_time_ms), which is purely
+    additive, so history re-grades straight from raw."""
+    a = _ss_v6_assignments()
+    del a["total_stall"]  # relative shape stat → back to display-only diagnostic
+    a["stall_time"] = {"axis": SMOOTHNESS, "weight": 30, "best": 0.0, "worst": 3000.0}
+    return a
+
+
 METHODOLOGY_REGISTRY: dict[str, dict] = {
     "speed-smoothness-v1": {
         "derivation_version": "derive-v2",
@@ -284,7 +301,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         },
     },
     "speed-smoothness-v6": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v4: adds total_stall_ms
+        "derivation_version": "derive-v4",  # frozen: published under derive-v4 (adds total_stall_ms)
         "notes": (
             "Decompose the crown into independent, mostly-built-in metrics. The conflated "
             "perceived_time (which baked an uncalibrated 4× stall penalty into a duration) is "
@@ -310,7 +327,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         },
     },
     "speed-smoothness-v7": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v4 — no new metric; lcp already derived
+        "derivation_version": "derive-v4",  # frozen: published under derive-v4 (no new metric; lcp already derived)
         "notes": (
             "Swap the crown's completion leg from load_event (the *technical* page-load: all "
             "resources fetched) to LCP (Largest Contentful Paint — the *perceptual* 'main "
@@ -331,6 +348,31 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "method": "corner",
             "metrics": ["fcp", "lcp", "total_stall"],
             "required": ["fcp", "lcp", "total_stall"],
+        },
+    },
+    "speed-smoothness-v8": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v5: adds stall_time_ms
+        "notes": (
+            "Swap the crown's cumulative-stall leg from the *relative* total_stall (excess of "
+            "each completion gap over the run's OWN median pace — an average baked into the "
+            "metric, so a profile's stall standing is a comparison of deviations-from-own-"
+            "baseline, not of measured values) to the *absolute* stall_time (summed duration of "
+            "every gap over a fixed 200ms perceptible-stall threshold). Like FCP and LCP, "
+            "stall_time is an actual per-run measurement against a fixed yardstick — the same for "
+            "every run — so Settings-Impact compares profiles on real measured dead-air instead "
+            "of averages-of-averages. The Overall now corners over FCP × LCP × stall_time (start "
+            "× main-content-visible × measured dead-air). stall_time takes total_stall's "
+            "Smoothness slot (best 0 / worst 3000ms); total_stall stays a display-only "
+            "diagnostic. derive-v5 adds stall_time_ms and is purely additive, so history "
+            "re-grades straight from raw — every run with resource-timing raw gains an actual "
+            "stall_time; only pre-resource-timing legacy runs stay quarantined."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v8_assignments(),
+        "overall": {
+            "method": "corner",
+            "metrics": ["fcp", "lcp", "stall_time"],
+            "required": ["fcp", "lcp", "stall_time"],
         },
     },
 }
