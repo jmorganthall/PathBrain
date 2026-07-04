@@ -125,7 +125,13 @@ LLM-based. See `README.md` for the product overview.
   - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
     iterations still needed to reach `correlation.min_iterations`, then **restore the
     baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
-    restores on startup). `/api/settings/test-profile`.
+    restores on startup). `/api/settings/test-profile`. The post-apply verify checks the
+    firewall reached the target **semantically** — `plan_apply(target, discover())` must have
+    no remaining *writable* diffs — **not** by exact fingerprint hash, which is format-sensitive
+    (`"5ms"` vs `5`) and used to false-negative on an externally-supplied target (an AI
+    suggestion), failing before any benchmark ran; a genuinely unaccepted field is reported
+    per-field ("did not accept quantum …"). Each step is written to `ProfileTest.stage`
+    (snapshot → apply → verify → benchmark → restore → done/failed) for a live UI readout.
   - `current_test.py` — **Test current for X minutes**: a time-boxed data-collection loop on
     whatever profile the firewall is **already** on. Unlike the other engines it **never writes
     the firewall** (it measures the live profile as-is), so there's no baseline to snapshot or
@@ -292,7 +298,11 @@ LLM-based. See `README.md` for the product overview.
   `POST /api/settings/test-settings` (`_apply_writable_overrides` + `TestSettings`) materializes the
   suggestion onto the **live** profile — overriding **only writable fields** so it's always reachable
   — then runs a normal profile test (apply → benchmark to `min_iterations` → restore baseline). No
-  firewall write happens for an unreachable or no-op suggestion (rejected up front).
+  firewall write happens for an unreachable or no-op suggestion (rejected up front). Each override
+  value is run through `shaper_fields.coerce_value` so an AI's `"5ms"`/`5`/`"5"` all become the
+  firewall's canonical form (unit-string vs int) — the target then fingerprints to what `discover()`
+  reports back, which is what the profile-test verify compares against. The optimizer export tells
+  the model the exact per-field format up front (`value_format` + a real `example` per shaper field).
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`,

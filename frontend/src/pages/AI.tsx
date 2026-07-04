@@ -16,8 +16,12 @@ import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import ScienceIcon from "@mui/icons-material/Science";
 
+import LinearProgress from "@mui/material/LinearProgress";
+import { Link as RouterLink } from "react-router-dom";
+import Link from "@mui/material/Link";
+
 import { api } from "../api/client";
-import type { AiConfig, AiModel, AiSuggestResult, AiSuggestion } from "../api/types";
+import type { AiConfig, AiModel, AiSuggestResult, AiSuggestion, ProfileTest } from "../api/types";
 
 export default function AI() {
   const [cfg, setCfg] = useState<AiConfig | null>(null);
@@ -116,6 +120,7 @@ export default function AI() {
   }, []);
 
   const [testingIdx, setTestingIdx] = useState<number | null>(null);
+  const [activeTest, setActiveTest] = useState<ProfileTest | null>(null);
   const testSuggestion = useCallback(
     async (s: AiSuggestion, idx: number) => {
       setTestingIdx(idx);
@@ -125,10 +130,14 @@ export default function AI() {
           settings: s.settings ?? s,
           label: `AI: ${String(s.rationale ?? "suggestion").slice(0, 60)}`,
         });
-        setToast(
-          `Applied to the firewall — testing to minimum (${r.iterations} iterations), ` +
-            `then restoring. Track it in the jobs menu (top-right) or on Settings Impact.`,
-        );
+        setToast(`Applied to the firewall — testing to minimum (${r.iterations} iterations).`);
+        // Show the live step-by-step readout below (snapshot → apply → verify → benchmark → restore).
+        try {
+          const cur = await api.profileTestCurrent();
+          setActiveTest(cur.test);
+        } catch {
+          /* the panel will pick it up on the next poll */
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not start the test");
       } finally {
@@ -137,6 +146,26 @@ export default function AI() {
     },
     [],
   );
+
+  // Poll the live profile test while one is running, so the user watches it step through
+  // (and sees any failure inline) rather than the job blinking out of the top bar.
+  const testActive = activeTest?.status === "running" || activeTest?.status === "pending";
+  useEffect(() => {
+    if (!testActive) return;
+    let cancelled = false;
+    const id = setInterval(async () => {
+      try {
+        const cur = await api.profileTestCurrent();
+        if (!cancelled) setActiveTest(cur.test);
+      } catch {
+        /* transient; keep the last snapshot */
+      }
+    }, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [testActive]);
 
   return (
     <Box>
@@ -276,6 +305,67 @@ export default function AI() {
         </CardContent>
       </Card>
 
+      {activeTest && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap">
+              <ScienceIcon fontSize="small" />
+              <Typography variant="h6">Live test</Typography>
+              <Chip
+                size="small"
+                label={activeTest.status}
+                color={
+                  activeTest.status === "failed"
+                    ? "error"
+                    : activeTest.status === "complete"
+                      ? "success"
+                      : "primary"
+                }
+              />
+              {activeTest.label && (
+                <Typography variant="body2" color="text.secondary">
+                  {activeTest.label}
+                </Typography>
+              )}
+            </Stack>
+            {testActive && <LinearProgress sx={{ mb: 1.5 }} />}
+            {/* Step-by-step readout so it's clear the firewall is being written and measured. */}
+            <Typography variant="body2" sx={{ mb: 1 }}>
+              {activeTest.stage ||
+                (activeTest.status === "pending" ? "Queued…" : "Working…")}
+            </Typography>
+            {activeTest.status === "failed" && activeTest.error && (
+              <Alert severity="error" sx={{ mb: 1 }}>
+                {activeTest.error}
+              </Alert>
+            )}
+            {activeTest.status === "complete" && (
+              <Alert severity="success" sx={{ mb: 1 }}>
+                Benchmark complete and your original settings were restored.
+                {activeTest.run_id != null && (
+                  <>
+                    {" "}
+                    <Link component={RouterLink} to={`/results/${activeTest.run_id}`}>
+                      View the run
+                    </Link>
+                    .
+                  </>
+                )}
+              </Alert>
+            )}
+            <Typography variant="caption" color="text.secondary">
+              Applies the suggestion to the live firewall (writable fields only), benchmarks{" "}
+              {activeTest.iterations} iteration(s), then restores your baseline. Also shown in the
+              jobs menu (top-right) and on{" "}
+              <Link component={RouterLink} to="/settings">
+                Settings Impact
+              </Link>
+              .
+            </Typography>
+          </CardContent>
+        </Card>
+      )}
+
       {result && (
         <Card>
           <CardContent>
@@ -286,6 +376,13 @@ export default function AI() {
               <Chip size="small" label={result.model} />
               {result.profiles_sent != null && (
                 <Chip size="small" variant="outlined" label={`${result.profiles_sent} profiles sent`} />
+              )}
+              {result.payload_bytes != null && (
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`${Math.round(result.payload_bytes / 1024)} KB payload`}
+                />
               )}
               {typeof result.usage?.total_tokens === "number" && (
                 <Chip size="small" variant="outlined" label={`${result.usage.total_tokens} tokens`} />

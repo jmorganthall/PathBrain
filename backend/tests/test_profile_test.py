@@ -49,6 +49,59 @@ def test_profile_test_runs_and_restores(monkeypatch):
     assert not pt_mod.active()
 
 
+def test_profile_test_verifies_semantically_despite_format(monkeypatch):
+    """A target whose writable value is in a different *format* than discover() reports back
+    (e.g. an AI's int where the firewall stores a string) must still verify as reached — the
+    old exact-fingerprint check false-negatived here and failed before benchmarking."""
+    mock_mod._OVERRIDES.clear()
+    monkeypatch.setattr(runner, "iter_plugins", lambda: [])
+
+    target = normalize(get_provider().discover())
+    # Force a format-mismatched writable value on the download pipe: an int `target`. The mock
+    # stores it and reports it back as the string "7" (str(7)), so fingerprint(target) with the
+    # int != fingerprint(after) with the string — yet they're the same profile.
+    target[0]["target"] = 7
+    target_fp = fingerprint(target)
+
+    test_id = pt_mod.start(target_fp, target, "format-mismatch", iterations=2)
+    pt = _wait_for_finish(test_id)
+
+    assert pt.status == ProfileTestStatus.COMPLETE, pt.error
+    assert pt.run_id is not None
+    assert pt.stage == "Done — baseline restored"
+    # Baseline restored (mock default quantum + target).
+    assert get_provider().discover()[0].quantum == 1514
+    assert not pt_mod.active()
+    mock_mod._OVERRIDES.clear()
+
+
+def test_profile_test_reports_unreached_field(monkeypatch):
+    """When the firewall doesn't accept a change, the test fails with a readable per-field
+    reason instead of an opaque fingerprint mismatch — the step-by-step readout users need."""
+    mock_mod._OVERRIDES.clear()
+    monkeypatch.setattr(runner, "iter_plugins", lambda: [])
+
+    # A provider whose apply() silently drops writes: discover never changes, so the target
+    # is never reached.
+    class _DeafProvider(mock_mod.MockProvider):
+        def apply(self, changes):  # noqa: D401 — swallow the write
+            return {"provider": self.name, "ok": True}
+
+    monkeypatch.setattr("pathbrain.profile_test.get_provider", lambda: _DeafProvider())
+
+    target = normalize(_DeafProvider().discover())
+    target[0]["quantum"] = 4242  # a change the deaf provider will never accept
+    target_fp = fingerprint(target)
+
+    test_id = pt_mod.start(target_fp, target, "deaf", iterations=2)
+    pt = _wait_for_finish(test_id)
+
+    assert pt.status == ProfileTestStatus.FAILED
+    assert "did not accept" in (pt.error or "")
+    assert "quantum" in (pt.error or "")
+    mock_mod._OVERRIDES.clear()
+
+
 def test_reconcile_interrupted_profile_tests_restores():
     mock_mod._OVERRIDES.clear()
     mock_mod._OVERRIDES["quantum"] = 8888  # firewall stranded on a test value

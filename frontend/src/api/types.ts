@@ -318,6 +318,8 @@ export interface ProfileTest {
   iterations: number;
   run_id: number | null;
   error: string | null;
+  // Live step readout: snapshot → apply → verify → benchmark → restore → done/failed.
+  stage: string | null;
   created_at: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -1043,4 +1045,6 @@ export interface AiSuggestResult {
   suggestions: AiSuggestion[];
   usage: Record<string, number>;
   profiles_sent: number | null;
+  // Size of the JSON payload sent to the model, so the UI can show how big the request was.
+  payload_bytes?: number | null;
 }

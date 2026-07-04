@@ -49,7 +49,19 @@ def list_models(session: Session = Depends(get_session)) -> dict:
 @router.post("/ai/suggest")
 def suggest(payload: AiSuggest, session: Session = Depends(get_session)) -> dict:
     """Build the optimizer export, send it to the model, and return parsed profile suggestions."""
+    import json
+
     export = build_optimizer_export(session, payload.runs_per_profile, payload.profile_limit)
+    # Log the payload size so an oversized-request ceiling (a model's context limit, an upstream
+    # body cap) is diagnosable rather than surfacing to the UI as an opaque failure.
+    payload_bytes = len(json.dumps(export))
+    log.info(
+        "AI suggest: %s profile(s), %s runs/profile, ~%s KB payload, model=%s",
+        export.get("profile_count"),
+        payload.runs_per_profile,
+        round(payload_bytes / 1024),
+        payload.model or "(saved)",
+    )
     try:
         result = ai.suggest(session, export, model=payload.model, prompt=payload.prompt)
     except ai.AIError as exc:
@@ -57,6 +69,8 @@ def suggest(payload: AiSuggest, session: Session = Depends(get_session)) -> dict
         msg = str(exc)
         code = 400 if "configured" in msg or "selected" in msg else 502
         raise HTTPException(status_code=code, detail=msg) from exc
-    # Echo how many profiles were sent, so the UI can show what the model saw.
+    # Echo how many profiles were sent + the payload size, so the UI can show what the model saw
+    # (and hint when a big selection is the reason a request is slow/oversized).
     result["profiles_sent"] = export.get("profile_count")
+    result["payload_bytes"] = payload_bytes
     return result

@@ -34,7 +34,7 @@ from ..settings_profile import (
     plan_apply,
     summarize,
 )
-from ..shaper_fields import SHAPER_FIELDS, SWEEPABLE_FIELDS, WRITABLE_FIELDS
+from ..shaper_fields import SHAPER_FIELDS, SWEEPABLE_FIELDS, WRITABLE_FIELDS, coerce_value, field as shaper_field
 from ..trends import RunPoint, profile_relative
 
 # The three headline axes (the temporal phases of a load); their 0–100 scores still
@@ -631,6 +631,10 @@ def build_optimizer_export(
                 "pipe's bandwidth for either direction; 'upload_bandwidth' is unused). Upload "
                 "shaping affects responsiveness under load as much as download."
             ),
+            # Per field: its kind + the EXACT value format the firewall expects on input, with a
+            # live example pulled from a real pipe — so the model returns values in the firewall's
+            # own format (e.g. target "5ms" not 5, quantum 3000 not "3000") instead of a variant we
+            # then have to coerce.
             "fields": [
                 {
                     "key": f.key,
@@ -640,12 +644,39 @@ def build_optimizer_export(
                     "writable": f.writable,
                     "sweepable": f.sweepable,
                     "suggested_range": f.sweep_default,
+                    "value_format": _field_format_hint(f),
+                    "example": _field_example(f.key, selected),
                 }
                 for f in SHAPER_FIELDS
             ],
         },
         "profiles": profiles_out,
     }
+
+
+def _field_format_hint(f) -> str:
+    """A one-line description of the exact input format a shaper field expects, so the AI can
+    match the firewall's own representation rather than a look-alike."""
+    if f.kind == "bool":
+        return "boolean (true/false)"
+    if f.unit:  # target / interval
+        return f'string "<integer>{f.unit}" (e.g. "5{f.unit}")'
+    if f.kind == "int":
+        return "integer (no units, unquoted)"
+    if f.key in ("download_bandwidth", "upload_bandwidth"):
+        return 'bandwidth string like "100Mbit" / "1Gbit"'
+    return "string"
+
+
+def _field_example(key: str, profiles: list[dict]):
+    """A real value for ``key`` taken from the first profile pipe that has one — a concrete
+    template the AI can copy the exact format of."""
+    for p in profiles:
+        for pipe in (p.get("settings") or []):
+            v = pipe.get(key)
+            if v is not None:
+                return v
+    return None
 
 
 def _current_fingerprint() -> str | None:
@@ -1444,7 +1475,9 @@ def _apply_writable_overrides(live_norm: list[dict], suggested) -> list[dict]:
         override = by_label.get(pipe.get("label")) or flat
         for f in WRITABLE_FIELDS:
             if isinstance(override, dict) and override.get(f) is not None:
-                p[f] = override[f]
+                # Canonicalize to the firewall's own format (e.g. "5ms", int quantum) so the
+                # target fingerprint matches what discover() reports back after the apply.
+                p[f] = coerce_value(f, override[f])
         out.append(p)
     return out
 

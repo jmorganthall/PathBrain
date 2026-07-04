@@ -393,6 +393,9 @@ class ProfileTest(Base):
         Enum(ProfileTestStatus), default=ProfileTestStatus.PENDING
     )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Human-readable current step, updated live as the test progresses (snapshot → apply →
+    # verify → benchmark → restore), so the UI can show a step-by-step readout.
+    stage: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # The profile being topped up + a short human label, for the status display.
     fingerprint: Mapped[str] = mapped_column(String(40))
