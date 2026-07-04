@@ -90,7 +90,7 @@ function RelationshipsCard({
                 <TableRow>
                   <TableCell>Pipe</TableCell>
                   <TableCell>Lever</TableCell>
-                  <TableCell>Crown metric</TableCell>
+                  <TableCell>Outcome</TableCell>
                   <TableCell align="right">ρ</TableCell>
                   <TableCell align="center">n</TableCell>
                   <TableCell>Relationship</TableCell>

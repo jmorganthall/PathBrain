@@ -1073,12 +1073,31 @@ def test_field_sensitivity_detects_monotonic_relationships():
         for q, f in [(1000, 300), (2000, 250), (3000, 200), (4000, 180), (5000, 150)]
     ]
     rows = _field_sensitivity(profiles, ["fcp"], meta)
-    q_row = next(r for r in rows if r["field"] == "quantum")
+    q_row = next(r for r in rows if r["field"] == "quantum" and r["metric"] == "fcp")
     assert q_row["pipe"] == "Download"
     assert q_row["spearman"] == -1.0
     assert q_row["metric_direction"] == "decreases" and q_row["effect"] == "improves"
     # A constant lever (target) never appears — no distinct values to correlate.
     assert not any(r["field"] == "target" for r in rows)
+
+
+def test_field_sensitivity_correlates_against_overall():
+    # The lever is also correlated against the Overall itself (the rank-corner we crown on),
+    # not only the individual raw crown metrics — because that's where "overperformance" lives.
+    from pathbrain.api.routes_settings import _field_sensitivity
+
+    meta = {"fcp": {"label": "FCP", "higher_is_better": False}}
+    # quantum rises while the (higher-is-better) Overall rises too → raising it improves the crown.
+    profiles = [
+        {"settings": [{"label": "Download", "quantum": q}], "metric_medians": {"fcp": f},
+         "overall": ov}
+        for q, f, ov in [(1000, 300, 40), (2000, 250, 55), (3000, 200, 70), (4000, 180, 85)]
+    ]
+    rows = _field_sensitivity(profiles, ["fcp"], meta)
+    ov_row = next(r for r in rows if r["metric"] == "overall")
+    assert ov_row["metric_label"] == "Overall"
+    assert ov_row["spearman"] == 1.0                       # Overall rises with quantum
+    assert ov_row["metric_direction"] == "increases" and ov_row["effect"] == "improves"
 
 
 def test_field_sensitivity_flags_worsening_and_no_trend():

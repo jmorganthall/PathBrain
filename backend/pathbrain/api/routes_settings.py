@@ -566,26 +566,36 @@ def _field_sensitivity(
     """Deterministic marginal relationships between the tunable levers and the crown metrics.
 
     For each writable shaper field (kept **per pipe label**, so the Download and Upload legs
-    stay distinct) vs each crown metric, the Spearman rank correlation across the exported
-    profiles — one (field value, profile-median metric) point per profile. This hands the model
-    (and the UI) an explicit "as this field goes up, that metric goes up/down / improves/worsens"
-    map instead of leaving it to eyeball the raw profile table.
+    stay distinct) vs each crown metric **and the Overall itself**, the Spearman rank correlation
+    across the exported profiles — one (field value, profile value) point per profile. This hands
+    the model (and the UI) an explicit "as this field goes up, that goes up/down / improves/worsens"
+    map instead of leaving it to eyeball the raw profile table. The Overall row matters most: a
+    lever can move the Overall (the rank-corner we crown on) while barely correlating with any
+    single raw metric, because the corner compounds small per-metric rank edges.
 
     These are **marginal, not partial** — profiles vary several fields at once, so a correlation
     can be confounded. They're directional evidence to reconcile against, not isolated effects.
     """
-    # points[(pipe_label, field)][metric] = [(field_value, metric_median), …]
+    # Correlate each lever against every crown metric AND against the Overall itself (the
+    # percentile-rank corner we actually crown on). The Overall is often where the signal lives:
+    # a profile wins by compounding small, sub-noise per-metric rank edges into a corner, so a
+    # lever can move the Overall while barely correlating with any single raw metric.
+    meta = dict(metric_meta)
+    meta.setdefault("overall", {"label": "Overall", "higher_is_better": True})
+    targets = list(crown_metrics) + ["overall"]
+    # points[(pipe_label, field)][metric] = [(field_value, metric_value), …]
     points: dict[tuple[str, str], dict[str, list[tuple[float, float]]]] = {}
     for p in profiles_out:
         medians = p.get("metric_medians") or {}
+        overall_val = p.get("overall")
         for pipe in (p.get("settings") or []):
             label = pipe.get("label") or "pipe"
             for fkey in WRITABLE_FIELDS:
                 x = _to_number(fkey, pipe.get(fkey))
                 if x is None:
                     continue
-                for m in crown_metrics:
-                    y = medians.get(m)
+                for m in targets:
+                    y = overall_val if m == "overall" else medians.get(m)
                     if isinstance(y, (int, float)) and not isinstance(y, bool):
                         points.setdefault((label, fkey), {}).setdefault(m, []).append((float(x), float(y)))
 
@@ -601,8 +611,8 @@ def _field_sensitivity(
             rho = _spearman(xs, ys)
             if rho is None:
                 continue
-            higher_better = bool((metric_meta.get(m) or {}).get("higher_is_better"))
-            metric_label = (metric_meta.get(m) or {}).get("label") or m
+            higher_better = bool((meta.get(m) or {}).get("higher_is_better"))
+            metric_label = (meta.get(m) or {}).get("label") or m
             if abs(rho) < SENSITIVITY_TREND_RHO:
                 direction, effect = "none", "none"
             else:
@@ -780,11 +790,13 @@ def build_optimizer_export(
             "note": (
                 "field_sensitivity is a deterministic marginal rank correlation (Spearman ρ) over "
                 "the exported profiles: each row is one writable field on one pipe vs one crown "
-                "metric — 'metric_direction' says whether the metric rises or falls as the field "
-                "rises, 'effect' whether that improves or worsens the crown. MARGINAL, not partial: "
-                "profiles vary several fields at once, so a relationship can be confounded. Use it "
-                "as directional evidence to reconcile your proposals against, not an isolated "
-                "causal effect. ρ∈[-1,1]; |ρ|≥0.3 is reported as a trend, below that as 'none'."
+                "metric OR vs the Overall itself (metric='overall', the rank-corner we crown on) — "
+                "'metric_direction' says whether it rises or falls as the field rises, 'effect' "
+                "whether that improves or worsens the crown. The 'overall' rows matter most: a lever "
+                "can move the Overall while barely correlating with any single raw metric. MARGINAL, "
+                "not partial: profiles vary several fields at once, so a relationship can be "
+                "confounded. Use it as directional evidence, not an isolated causal effect. "
+                "ρ∈[-1,1]; |ρ|≥0.3 is reported as a trend, below that as 'none'."
             ),
             "field_sensitivity": field_sensitivity,
         },
