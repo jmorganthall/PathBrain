@@ -125,7 +125,10 @@ export default function AI() {
           settings: s.settings ?? s,
           label: `AI: ${String(s.rationale ?? "suggestion").slice(0, 60)}`,
         });
-        setToast(`Testing to minimum (${r.iterations} iterations) — watch on Settings Impact`);
+        setToast(
+          `Applied to the firewall — testing to minimum (${r.iterations} iterations), ` +
+            `then restoring. Track it in the jobs menu (top-right) or on Settings Impact.`,
+        );
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not start the test");
       } finally {

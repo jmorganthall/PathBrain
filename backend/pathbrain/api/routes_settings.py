@@ -132,6 +132,36 @@ def _round2(x: float | None) -> float | None:
     return round(x, 2) if x is not None else None
 
 
+def _metric_distribution(runs: list[dict], keys: list[str]) -> dict:
+    """Per metric, the spread across a profile's **whole** run history (n/min/p25/median/p75/max).
+
+    Computed from *all* runs before the per-profile sample cap, so the export always conveys a
+    profile's variance even when ``run_samples`` is truncated to the latest N — the AI sees how
+    reliably (not just how fast at best) a profile performs, without cherry-picking."""
+    out: dict = {}
+    for key in keys:
+        vals = sorted(
+            r["metrics"][key] for r in runs
+            if isinstance(r["metrics"].get(key), (int, float)) and not isinstance(r["metrics"].get(key), bool)
+        )
+        if not vals:
+            continue
+        if len(vals) >= 2:
+            qs = quantiles(vals, n=4, method="inclusive")  # [p25, p50, p75]
+            p25, p75 = _round2(qs[0]), _round2(qs[2])
+        else:
+            p25 = p75 = _round2(vals[0])
+        out[key] = {
+            "n": len(vals),
+            "min": _round2(vals[0]),
+            "p25": p25,
+            "median": _round2(median(vals)),
+            "p75": p75,
+            "max": _round2(vals[-1]),
+        }
+    return out
+
+
 def _normalized_crown(
     median_raw: dict, raw_spreads: dict, field: dict, higher: dict,
     metrics, required, margin: float = RACE_OPTIMISM_MARGIN,
@@ -509,6 +539,11 @@ def build_optimizer_export(
             "iterations": int(run.iterations or 1),
             "metrics": metrics,
         })
+    # Per-metric spread across the *whole* run history (before the sample cap) — so variance is
+    # always conveyed even when run_samples is truncated to the latest N.
+    dist_by_fp: dict[str, dict] = {
+        fp: _metric_distribution(runs, scored_keys) for fp, runs in runs_by_fp.items()
+    }
     for fp, runs in runs_by_fp.items():
         runs.sort(key=lambda r: r["created_at"] or "", reverse=True)
         del runs[runs_per_profile:]
@@ -542,7 +577,10 @@ def build_optimizer_export(
             "crown_percentiles": p.get("crown_norm") or {},
             "axis_scores": p.get("scores") or {},
             "metric_medians": p.get("metrics") or {},
-            # The raw scoring metrics per run (most recent first, capped).
+            # Per-metric spread over ALL of this profile's runs (n/min/p25/median/p75/max) —
+            # the full variance, independent of the run_samples cap. Lower ms = better.
+            "metric_distribution": dist_by_fp.get(fp, {}),
+            # The raw scoring metrics per run (most recent first, capped to runs_per_profile).
             "run_samples": samples,
             "run_samples_truncated": len(samples) < p["count"],
         })

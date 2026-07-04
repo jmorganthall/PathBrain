@@ -57,6 +57,21 @@ export const tzOffsetMinutes = () => -new Date().getTimezoneOffset();
 
 const BASE = "/api";
 
+// Fired whenever a call starts a background job (test to minimum, run, race, sweep, …) so the
+// jobs badge can refresh immediately instead of waiting out its idle poll interval.
+export const JOBS_REFRESH_EVENT = "pathbrain:jobs-refresh";
+export const notifyJobsChanged = () => {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(JOBS_REFRESH_EVENT));
+};
+
+// Wrap a job-starting request so a successful start nudges the jobs badge to poll now.
+function startingJob<T>(p: Promise<T>): Promise<T> {
+  return p.then((r) => {
+    notifyJobsChanged();
+    return r;
+  });
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -90,13 +105,15 @@ export const api = {
 
   // Runs
   triggerRun: (body: { label?: string; notes?: string; iterations?: number }) =>
-    request<RunDetail>("/run", { method: "POST", body: JSON.stringify(body) }),
+    startingJob(request<RunDetail>("/run", { method: "POST", body: JSON.stringify(body) })),
   runEstimate: () => request<RunEstimate>("/runs/estimate"),
   cancelRun: (id: number) => request<RunDetail>(`/runs/${id}/cancel`, { method: "POST" }),
 
   // "Test current for X minutes": time-boxed collection on the live profile.
   currentTestStart: (minutes: number) =>
-    request<CurrentTest>("/current/test", { method: "POST", body: JSON.stringify({ minutes }) }),
+    startingJob(
+      request<CurrentTest>("/current/test", { method: "POST", body: JSON.stringify({ minutes }) }),
+    ),
   currentTestStatus: () => request<CurrentTest>("/current/test"),
   currentTestCancel: () =>
     request<{ cancelled: boolean; status: string | null }>("/current/test/cancel", { method: "POST" }),
@@ -141,7 +158,7 @@ export const api = {
   methodology: (version: string) =>
     request<MethodologyDetail>(`/methodologies/${encodeURIComponent(version)}`),
   runScores: (id: number) => request<RunScoresResponse>(`/score/${id}/methodologies`),
-  regradeHistory: () => request<JobStart>("/score/regrade", { method: "POST" }),
+  regradeHistory: () => startingJob(request<JobStart>("/score/regrade", { method: "POST" })),
   // Fork the current methodology, re-anchor one metric's `best`, and re-grade onto it.
   reanchorMetric: (metricKey: string, best: number) =>
     request<{ version: string; job_id: string }>("/methodologies/reanchor", {
@@ -176,20 +193,24 @@ export const api = {
   // Top a "limited data" profile up to the confidence minimum: applies it, runs the
   // iterations still needed, then restores the prior settings.
   testProfile: (fingerprint: string) =>
-    request<ProfileTestStart>("/settings/test-profile", {
-      method: "POST",
-      body: JSON.stringify({ fingerprint }),
-    }),
+    startingJob(
+      request<ProfileTestStart>("/settings/test-profile", {
+        method: "POST",
+        body: JSON.stringify({ fingerprint }),
+      }),
+    ),
   profileTestCurrent: () =>
     request<{ test: ProfileTest | null }>("/settings/test-profile/current"),
 
   // Challenger race: adaptively test promising limited-data profiles one iteration at
   // a time within a time budget, eliminating any that can't overtake the best.
   startRace: (timeBudgetMinutes: number, autoPromote: boolean) =>
-    request<RaceStart>("/settings/race", {
-      method: "POST",
-      body: JSON.stringify({ time_budget_minutes: timeBudgetMinutes, auto_promote: autoPromote }),
-    }),
+    startingJob(
+      request<RaceStart>("/settings/race", {
+        method: "POST",
+        body: JSON.stringify({ time_budget_minutes: timeBudgetMinutes, auto_promote: autoPromote }),
+      }),
+    ),
   raceCurrent: () => request<{ race: ChallengerRace | null }>("/settings/race"),
   cancelRace: () => request<{ cancelled: boolean }>("/settings/race/cancel", { method: "POST" }),
 
@@ -198,10 +219,12 @@ export const api = {
   refreshPreview: (iterations: number) =>
     request<ProfileRefreshPreview>(`/settings/refresh/preview?iterations=${iterations}`),
   startRefresh: (iterations: number) =>
-    request<{ id: number; iterations: number }>("/settings/refresh", {
-      method: "POST",
-      body: JSON.stringify({ iterations }),
-    }),
+    startingJob(
+      request<{ id: number; iterations: number }>("/settings/refresh", {
+        method: "POST",
+        body: JSON.stringify({ iterations }),
+      }),
+    ),
   refreshCurrent: () => request<{ refresh: ProfileRefresh | null }>("/settings/refresh"),
   cancelRefresh: () => request<{ cancelled: boolean }>("/settings/refresh/cancel", { method: "POST" }),
 
@@ -217,8 +240,8 @@ export const api = {
     }),
   resetConfig: () => request<BenchmarkConfig>("/config/reset", { method: "POST" }),
   adoptRubric: () => request<BenchmarkConfig>("/config/adopt-rubric", { method: "POST" }),
-  rescoreHistory: () => request<JobStart>("/score/rescore", { method: "POST" }),
-  rederiveHistory: () => request<JobStart>("/score/rederive", { method: "POST" }),
+  rescoreHistory: () => startingJob(request<JobStart>("/score/rescore", { method: "POST" })),
+  rederiveHistory: () => startingJob(request<JobStart>("/score/rederive", { method: "POST" })),
   providerHealth: () => request<ProviderHealth>("/config/provider"),
   discover: () => request<DiscoverResponse>("/config/discover", { method: "POST" }),
   testApply: () => request<TestApplyResult>("/config/test-apply", { method: "POST" }),
@@ -235,10 +258,12 @@ export const api = {
     dry_run: boolean;
     pipe_uuid?: string | null;
   }) =>
-    request<Sweep>(`/sweep?tz_offset=${tzOffsetMinutes()}`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+    startingJob(
+      request<Sweep>(`/sweep?tz_offset=${tzOffsetMinutes()}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    ),
   sweepCurrent: () =>
     request<{ sweep: Sweep | null }>(`/sweep/current?tz_offset=${tzOffsetMinutes()}`),
   cancelSweep: (id: number) =>
@@ -272,9 +297,11 @@ export const api = {
   }) => request<AiSuggestResult>("/ai/suggest", { method: "POST", body: JSON.stringify(body) }),
   // Apply arbitrary settings (e.g. an AI suggestion) onto the live profile and test to minimum.
   testSettings: (body: { settings: unknown; label?: string }) =>
-    request<{ id: number; fingerprint: string; iterations: number; label: string | null }>(
-      "/settings/test-settings",
-      { method: "POST", body: JSON.stringify(body) },
+    startingJob(
+      request<{ id: number; fingerprint: string; iterations: number; label: string | null }>(
+        "/settings/test-settings",
+        { method: "POST", body: JSON.stringify(body) },
+      ),
     ),
 
   // Plugins
