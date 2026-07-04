@@ -141,7 +141,10 @@ export default function Waterfall({ metrics, height = 40 }: { metrics: MetricMap
           >
             {parts.map((p) => {
               const w = pct(p.ms as number);
-              const showLabel = w > 11;
+              // Delivery is the SQM-facing phase — the whole point of the view — so it's
+              // always labelled, never clipped, even when it's a thin sliver on an idle run.
+              const isDelivery = p.key === "nav_response";
+              const showLabel = w > 11 || isDelivery;
               return (
                 <Tooltip
                   key={p.key}
@@ -156,7 +159,7 @@ export default function Waterfall({ metrics, height = 40 }: { metrics: MetricMap
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      overflow: "hidden",
+                      overflow: isDelivery ? "visible" : "hidden",
                       cursor: "help",
                       borderRight: "1px solid rgba(0,0,0,0.25)",
                     }}
@@ -165,12 +168,12 @@ export default function Waterfall({ metrics, height = 40 }: { metrics: MetricMap
                       <Typography
                         sx={{
                           fontSize: 10,
-                          fontWeight: 600,
+                          fontWeight: isDelivery ? 700 : 600,
                           color: "rgba(0,0,0,0.82)",
                           px: 0.5,
                           whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
+                          overflow: isDelivery ? "visible" : "hidden",
+                          textOverflow: isDelivery ? "clip" : "ellipsis",
                         }}
                       >
                         {fmtMs(p.ms as number)}
