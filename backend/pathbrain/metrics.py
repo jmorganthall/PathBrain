@@ -292,18 +292,21 @@ METRICS: list[MetricDef] = [
         ),
     ),
     MetricDef(
-        "nav_response", "browser", "nav_response_ms", "Response download", unit="ms",
+        "nav_response", "browser", "nav_response_ms", "Body delivery", unit="ms",
         description=(
-            "Downloading the document body, first byte to last (responseStart → "
-            "responseEnd). Lower is better."
+            "Body delivery: first response byte to last (responseStart → responseEnd). These "
+            "are packet arrivals through your queue — ACK-clocked and spacing-sensitive, the "
+            "single most SQM-facing phase in the whole load (where target/quantum live under "
+            "load) and the crown-eligible network measure. Lower is better."
         ),
     ),
     MetricDef(
-        "nav_render", "browser", "nav_render_ms", "Render to first paint", unit="ms",
+        "nav_render", "browser", "nav_render_ms", "Client render (→FCP)", unit="ms",
         description=(
-            "The render residual: from the document finishing download to First Contentful "
-            "Paint (responseEnd → FCP). The part of 'time to paint' that network shaping "
-            "cannot move. Lower is better."
+            "The client residual: document download done → First Contentful Paint (responseEnd "
+            "→ FCP) — pure client CPU (parse/style/layout/paint), which network shaping cannot "
+            "move. Tracked as an instrument health-check: it should be near-constant across "
+            "profiles; if it varies by profile, the measurement is broken, not the shaper. Lower is better."
         ),
     ),
     MetricDef(
@@ -330,19 +333,20 @@ METRICS: list[MetricDef] = [
         ),
     ),
     MetricDef(
-        "nav_fcp_independent", "browser", "nav_fcp_independent_ms", "FCP after first byte", unit="ms",
+        "nav_fcp_after_ttfb", "browser", "nav_fcp_after_ttfb_ms", "FCP after first byte", unit="ms",
         description=(
-            "First Contentful Paint minus the cumulative TTFB (FCP − responseStart) — the "
-            "network-independent paint work. Compare profiles on this to strip out network "
-            "weather from time-to-first-content. Lower is better."
+            "FCP − responseStart. Strips the DNS/TCP/TLS *setup* confound — but is NOT "
+            "network-independent: it is body delivery (SQM-facing) + client render combined. "
+            "Split it into 'Body delivery' and 'Client render' to separate the phase you can "
+            "shape from the client CPU you can't. Kept as context, not a ranking metric. Lower is better."
         ),
     ),
     MetricDef(
-        "nav_lcp_independent", "browser", "nav_lcp_independent_ms", "LCP after first byte", unit="ms",
+        "nav_lcp_after_ttfb", "browser", "nav_lcp_after_ttfb_ms", "LCP after first byte", unit="ms",
         description=(
-            "Largest Contentful Paint minus the cumulative TTFB (LCP − responseStart) — the "
-            "network-independent 'main content visible' time. The apples-to-apples LCP once "
-            "network setup is removed. Lower is better."
+            "LCP − responseStart. Removes the connection-setup confound, but still mixes "
+            "resource delivery (shapeable) with render delay (client). Context only — the "
+            "rankable network signal is Body delivery, the health-check is Client render. Lower is better."
         ),
     ),
     # ── Pixel-based visual metrics (display-only; require the opt-in filmstrip) ──
@@ -377,7 +381,7 @@ DISPLAY_ORDER = [
     # navigation waterfall — the load's independent phases, in wall-clock order
     "nav_stall", "nav_dns", "nav_tcp", "nav_tls", "nav_request", "nav_response",
     "nav_render", "nav_fcp_lcp", "nav_lcp_load",
-    "nav_ttfb_cumulative", "nav_fcp_independent", "nav_lcp_independent",
+    "nav_ttfb_cumulative", "nav_fcp_after_ttfb", "nav_lcp_after_ttfb",
     "fcp", "speed_index", "dom_content_loaded", "lcp",    # paint trajectory
     "load_event", "render", "paint_cadence", "cls",       # completion + smoothness
     "inp",                                                # interaction (after load)

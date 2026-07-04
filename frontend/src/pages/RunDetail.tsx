@@ -379,9 +379,11 @@ export default function RunDetail() {
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
                 This run&apos;s page load as independent, non-overlapping phases (median across
-                iterations). Everything up to <b>first byte</b> is network setup that is baked into
-                FCP &amp; LCP; the warm bars are the render/paint residual. Compare the{" "}
-                <b>after-first-byte</b> figures across profiles to strip out network weather.
+                iterations). Setup up to <b>first byte</b> is weather-dominated; the amber{" "}
+                <b>Delivery</b> phase (first byte → response done) is the SQM-facing one to judge a
+                profile on; <b>Client render</b> is client CPU that shaping can&apos;t move (it
+                should stay near-constant across profiles — if it doesn&apos;t, suspect the
+                measurement, not the shaper).
               </Typography>
               <Waterfall metrics={bm} />
             </CardContent>

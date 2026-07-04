@@ -275,10 +275,11 @@ export default function ProfileDetail() {
                 Load waterfall (median)
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-                This profile&apos;s median page load, split into independent phases. The cool bars up
-                to <b>first byte</b> are network setup (DNS/TCP/TLS/TTFB) baked into FCP &amp; LCP —
-                they swing with network conditions, not shaping. Judge this profile&apos;s paint on
-                the <b>after-first-byte</b> figures, which remove that network prefix.
+                This profile&apos;s median page load, split into independent phases. Setup up to{" "}
+                <b>first byte</b> (DNS/TCP/TLS/TTFB) is weather-dominated, not shaping. Judge this
+                profile on the amber <b>Delivery</b> phase (first byte → response done) — body
+                delivery through the queue, the one phase your shaper moves. <b>Client render</b> is
+                shaping-immune client CPU and should match across profiles.
               </Typography>
               <Waterfall metrics={profile.metrics} />
             </CardContent>

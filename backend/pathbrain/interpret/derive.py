@@ -23,8 +23,10 @@ from .waterfall import navigation_phases
 
 # derive-v6: the browser derivation now also emits the navigation-timing *waterfall* —
 # an additive, non-overlapping phase decomposition of the load (stall/DNS/TCP/TLS/request/
-# response/render/paint) plus the network-independent roll-ups (`nav_ttfb_cumulative_ms`,
-# `nav_fcp_independent_ms`, `nav_lcp_independent_ms`). Purely additive: computed from the
+# response/render/paint) plus after-first-byte roll-ups (`nav_ttfb_cumulative_ms`,
+# `nav_fcp_after_ttfb_ms`, `nav_lcp_after_ttfb_ms`). The decomposition's key boundary is
+# responseEnd: responseStart→responseEnd is body delivery (SQM-facing, shapeable) while
+# responseEnd→FCP is client CPU (shaping-immune). Purely additive: computed from the
 # already-captured raw nav marks + FCP/LCP, so history re-derives with no re-collection, and
 # no existing formula changed. Display-only (silver-layer measurables); gold scoring untouched.
 # (derive-v5 added stall_time_ms; derive-v4 added total_stall_ms.)

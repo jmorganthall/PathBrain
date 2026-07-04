@@ -11,16 +11,23 @@ measurables underneath the milestone timings.
 Why this exists: FCP/LCP are measured *from navigation start*, so they silently
 **include** DNS + TCP + TLS + request/TTFB. A profile can look faster on LCP purely
 because the network setup happened to be quick at that moment (network "weather"),
-not because shaping helped the render. Splitting the load into phases isolates:
+not because shaping helped. The phases isolate three regimes that get lumped together
+in a paint milestone — and the boundary that matters most is **responseEnd**:
 
-* the **network-confounded prefix** — everything up to the first response byte
-  (``responseStart``), which is baked into every paint milestone, and
-* the **render residual** — ``FCP − responseStart`` and ``LCP − responseStart``, the
-  part firewall shaping cannot move — as first-class, comparable numbers.
+* the **setup prefix** — everything up to the first response byte (``responseStart``),
+  DNS/TCP/TLS/request, which is weather-dominated and baked into every milestone;
+* **body delivery** — ``responseStart → responseEnd``: packet arrivals through the
+  queue, ACK-clocked and spacing-sensitive. The single most SQM-facing phase in the
+  load, and the network measure worth ranking on; and
+* the **client residual** — ``responseEnd → FCP`` (and the LCP render delay): pure
+  client CPU (parse/style/layout/paint), which firewall shaping cannot move. A
+  near-constant health check, not a ranking metric.
 
-The phases telescope exactly: ``stall + dns + tcp + tls + request == responseStart``
-(the cumulative TTFB), and the full chain sums to the load endpoint. Every duration
-is clamped ``>= 0`` and derived purely from the stored raw, so the whole waterfall
+``FCP − responseStart`` is therefore **not** "the part shaping can't move" — it is
+delivery + client combined; only ``responseEnd → FCP`` is the shaping-immune piece.
+The phases telescope exactly (``stall + dns + tcp + tls + request == responseStart``,
+the cumulative TTFB) and the full chain sums to the load endpoint. Every duration is
+clamped ``>= 0`` and derived purely from the stored raw, so the whole waterfall
 re-derives over history with no re-collection. Gold-layer scoring is unaffected —
 these are display-only measurables.
 """
@@ -61,9 +68,11 @@ def navigation_phases(nav: dict | None, paint: dict | None) -> dict[str, float]:
     Returns a flat ``{source_key: ms}`` dict (the same shape the derive layer merges
     into a plugin's metric cache). Emits a phase only when its endpoint mark actually
     exists, so a partial capture yields fewer phases rather than fabricated zeros.
-    Also emits three roll-ups: ``nav_ttfb_cumulative_ms`` (the network-confounded
-    prefix = ``responseStart``) and ``nav_fcp_independent_ms`` / ``nav_lcp_independent_ms``
-    (paint milestones minus that prefix — the network-independent render work).
+    Also emits three roll-ups: ``nav_ttfb_cumulative_ms`` (the setup prefix =
+    ``responseStart``) and ``nav_fcp_after_ttfb_ms`` / ``nav_lcp_after_ttfb_ms`` (paint
+    milestones minus that prefix). The after-TTFB figures are context, not clean
+    residuals — they still contain body delivery (SQM-facing); the shaping-immune part
+    is only ``nav_render_ms`` (responseEnd → FCP).
     """
     nav = nav or {}
     paint = paint or {}
@@ -118,7 +127,7 @@ def navigation_phases(nav: dict | None, paint: dict | None) -> dict[str, float]:
         # into (and confounds) FCP/LCP. Telescopes: == stall+dns+tcp+tls+request.
         out["nav_ttfb_cumulative_ms"] = round(rs, 3)
         if fcp is not None:
-            out["nav_fcp_independent_ms"] = round(max(0.0, fcp - rs), 3)
+            out["nav_fcp_after_ttfb_ms"] = round(max(0.0, fcp - rs), 3)
         if lcp is not None:
-            out["nav_lcp_independent_ms"] = round(max(0.0, lcp - rs), 3)
+            out["nav_lcp_after_ttfb_ms"] = round(max(0.0, lcp - rs), 3)
     return out

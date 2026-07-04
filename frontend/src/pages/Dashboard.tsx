@@ -595,10 +595,11 @@ export default function Dashboard() {
                     Load waterfall (latest run)
                   </Typography>
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-                    The page load split into independent phases. The cool bars up to{" "}
-                    <b>first byte</b> are network setup (DNS/TCP/TLS/TTFB) — the time that gets baked
-                    into FCP &amp; LCP and swings with network conditions. The warm bars are the
-                    render/paint work that firewall shaping can&apos;t move.
+                    The page load split into independent phases. Cool bars up to <b>first byte</b>
+                    {" "}are network setup (DNS/TCP/TLS/TTFB) — weather-dominated, baked into FCP &amp;
+                    LCP. The amber <b>Delivery</b> phase (first byte → response done) is body delivery
+                    through your queue — the one phase your shaper actually moves. The purple bars
+                    after are client render (parse/paint), which shaping can&apos;t touch.
                   </Typography>
                   <Waterfall metrics={bm} />
                 </CardContent>

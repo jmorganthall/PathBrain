@@ -175,8 +175,8 @@ def test_navigation_phases_additive_and_telescoping():
     assert round(prefix, 3) == p["nav_ttfb_cumulative_ms"] == 95.0
     # Render residual + network-independent roll-ups.
     assert p["nav_render_ms"] == 70.0  # responseEnd(130) -> FCP(200)
-    assert p["nav_fcp_independent_ms"] == 105.0  # FCP(200) - responseStart(95)
-    assert p["nav_lcp_independent_ms"] == 305.0  # LCP(400) - responseStart(95)
+    assert p["nav_fcp_after_ttfb_ms"] == 105.0  # FCP(200) - responseStart(95)
+    assert p["nav_lcp_after_ttfb_ms"] == 305.0  # LCP(400) - responseStart(95)
 
 
 def test_navigation_phases_no_tls_and_empty():
@@ -203,4 +203,4 @@ def test_derive_browser_emits_navigation_waterfall():
     m = derive("browser", raw)
     assert m["nav_dns_ms"] == 7.0
     assert m["nav_ttfb_cumulative_ms"] == 95.0
-    assert m["nav_lcp_independent_ms"] == 305.0
+    assert m["nav_lcp_after_ttfb_ms"] == 305.0
