@@ -36,7 +36,7 @@ from ..settings_profile import (
     summarize,
 )
 from ..shaper_fields import SHAPER_FIELDS, SWEEPABLE_FIELDS, WRITABLE_FIELDS, coerce_value, field as shaper_field
-from ..trends import RunPoint, profile_relative
+from ..trends import RunPoint, profile_relative, profile_weather_relative
 
 # The three headline axes (the temporal phases of a load); their 0–100 scores still
 # drive the per-axis display columns, but the **crown** no longer corners over them.
@@ -1348,7 +1348,11 @@ def compute_profiles(
         point_values = {"smoothness": smooth}
         if run_overall is not None:
             point_values["overall"] = run_overall
-        point = RunPoint(created_at=run.created_at, values=point_values)
+        # Fingerprint tags the point so the contemporaneous "network weather" baseline can
+        # exclude a profile from its own baseline (the day×hour baseline ignores it).
+        point = RunPoint(
+            created_at=run.created_at, values=point_values, fingerprint=run.settings_fingerprint
+        )
         baseline_points.append(point)
         g = groups.setdefault(
             run.settings_fingerprint,
@@ -1454,6 +1458,15 @@ def compute_profiles(
         # Kept as an informational signal (display + a hook for smarter heir-hunting), not a
         # crown input — the crown is highest Overall, full stop.
         rel_overall = profile_relative(baseline_points, g["points"], "overall", tz_offset, min_samples)
+        # Time-adjusted Overall vs the *contemporaneous network weather* (±2h rolling baseline in
+        # absolute time, excluding this profile's own runs). Unlike "vs typical" (day×hour), this
+        # neutralizes drift + one-off congestion + sweep-slot bias — the more diagnostic "did this
+        # beat the conditions it actually ran in". Informational Settings-Impact column; NOT a
+        # crown input (the crown stays the raw-percentile corner).
+        weather_overall = profile_weather_relative(
+            baseline_points, g["points"], "overall", exclude_fingerprint=g["fingerprint"],
+            min_samples=min_samples,
+        )
         profiles.append(
             {
                 "fingerprint": g["fingerprint"],
@@ -1487,6 +1500,9 @@ def compute_profiles(
                 "overall": overall,
                 # Time-adjusted ("vs typical") Overall — informational, not a crown input.
                 "relative_overall": rel_overall,
+                # Time-adjusted vs the contemporaneous network weather (±2h rolling) — the more
+                # diagnostic "vs typical", also informational and not a crown input.
+                "weather_overall": weather_overall,
                 # Overall IQR (corner over each crown metric's p25/p75) — brackets Overall.
                 "overall_p25": overall_p25_val,
                 "overall_p75": overall_p75_val,

@@ -106,7 +106,14 @@ LLM-based. See `README.md` for the product overview.
   - `trends.py` — historical baselines by day-of-week × hour-of-day (viewer-local);
     `relative_reading`/`profile_relative` give a time-adjusted "vs typical" delta
     ("wins above replacement"). Powers `/api/trends/*`, the Dashboard delta chip,
-    and the Settings-Impact "vs typical" column.
+    and the Settings-Impact "vs typical" column. A second, sharper baseline —
+    `rolling_baseline_deltas`/`profile_weather_relative` — is the **contemporaneous
+    "network weather"** reading: Overall minus the rolling median of all runs within
+    **±2h in absolute time** (excluding the profile's own runs, `RunPoint.fingerprint`),
+    so it neutralizes drift + one-off congestion + sweep-slot bias rather than only
+    recurring day/hour patterns (which pool Jan and Jul into one cell). Surfaced as the
+    Settings-Impact **"vs weather"** column (`weather_overall`); informational only — like
+    "vs typical" it does **not** feed the crown.
   - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a grid over the
     registry's `SWEEPABLE_FIELDS` (quantum × target today). Applies each variant for real,
     benchmarks it, **restores the baseline at the end** (`reconcile_interrupted_sweeps`
