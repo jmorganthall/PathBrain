@@ -13,6 +13,7 @@ shaper field is a single entry here.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -66,6 +67,48 @@ def format_value(field_key: str, n: float):
     f = _BY_KEY.get(field_key)
     v = int(round(n))
     return f"{v}{f.unit}" if (f and f.unit) else v
+
+
+_LEADING_NUM_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)")
+
+
+def coerce_value(field_key: str, value):
+    """Canonicalize an *externally supplied* field value (an AI suggestion, a hand-typed
+    override) into the exact provider-ready form the firewall reports back on read — so a
+    value round-trips to the same ``fingerprint``. Without this, ``target: "5ms"`` (AI) vs
+    ``target: 5`` (discover) hash differently and the profile-test verify wrongly concludes
+    "could not reach the target".
+
+    - bool fields → ``bool``
+    - int fields → ``int`` (rounded; accepts ``"3000"`` / ``3000.0``)
+    - unit fields (target/interval) → ``"<int><unit>"`` (accepts ``"5ms"``/``5``/``"5"``)
+    - everything else (bandwidth strings, scheduler names) → passthrough unchanged
+
+    Unparseable numeric input is passed through untouched (the caller's diff/apply still
+    sees it) rather than raising, so a malformed suggestion degrades instead of 500-ing."""
+    if value is None:
+        return None
+    f = _BY_KEY.get(field_key)
+    if f is None:
+        return value
+    if f.kind == "bool":
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+    if f.kind == "int" or f.unit:
+        if isinstance(value, bool):  # bool is an int subclass — don't treat True as 1 here
+            return value
+        num: float | None = None
+        if isinstance(value, (int, float)):
+            num = float(value)
+        else:
+            m = _LEADING_NUM_RE.match(str(value))
+            if m:
+                num = float(m.group(1))
+        if num is None:
+            return value  # can't parse — leave as-is
+        return format_value(field_key, num)
+    return value
 
 
 # Derived views — the names the rest of the codebase consumes. Keeping them as derived

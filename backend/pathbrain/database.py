@@ -96,6 +96,9 @@ def _migrate() -> None:
         "challenger_races": {
             "incumbent_refreshes": "INTEGER DEFAULT 0",
         },
+        "profile_tests": {
+            "stage": "VARCHAR(255)",
+        },
         "score_results": {
             "sops_stdev": "FLOAT",
             "sops_min": "FLOAT",

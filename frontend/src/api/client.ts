@@ -81,11 +81,43 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  opts?: { timeoutMs?: number },
+): Promise<T> {
+  // Optional client-side timeout so a slow/oversized request fails with a useful message
+  // instead of the browser's opaque "Load failed" after some intermediary drops it.
+  const controller = opts?.timeoutMs ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), opts!.timeoutMs)
+    : null;
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers: { "Content-Type": "application/json" },
+      signal: controller?.signal,
+      ...init,
+    });
+  } catch (e) {
+    // fetch() rejects (TypeError "Load failed" / "Failed to fetch") only when NO HTTP response
+    // arrived: an abort/timeout, a dropped connection, or an oversized request. Translate it
+    // into something actionable rather than surfacing the raw browser text.
+    if (controller?.signal.aborted) {
+      throw new ApiError(
+        0,
+        `Request timed out after ${Math.round((opts!.timeoutMs || 0) / 1000)}s. ` +
+          "The payload may be too large — try fewer profiles or runs per profile.",
+      );
+    }
+    throw new ApiError(
+      0,
+      "Couldn't reach the server (connection dropped or request too large). " +
+        "If you raised the profile / runs-per-profile count, lower it and retry.",
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -281,6 +313,8 @@ export const api = {
     request<OptimizerExport>(
       `/settings/export/optimizer?runs_per_profile=${runsPerProfile}` +
         (profileLimit ? `&profile_limit=${profileLimit}` : ""),
+      undefined,
+      { timeoutMs: 120_000 },
     ),
 
   // AI (OpenRouter)
@@ -294,7 +328,14 @@ export const api = {
     prompt?: string;
     runs_per_profile?: number;
     profile_limit?: number | null;
-  }) => request<AiSuggestResult>("/ai/suggest", { method: "POST", body: JSON.stringify(body) }),
+  }) =>
+    request<AiSuggestResult>(
+      "/ai/suggest",
+      { method: "POST", body: JSON.stringify(body) },
+      // The server blocks on OpenRouter (its own 180s cap); allow headroom past that so a
+      // slow model returns rather than the browser aborting with an opaque error.
+      { timeoutMs: 240_000 },
+    ),
   // Apply arbitrary settings (e.g. an AI suggestion) onto the live profile and test to minimum.
   testSettings: (body: { settings: unknown; label?: string }) =>
     startingJob(
