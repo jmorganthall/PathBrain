@@ -233,7 +233,18 @@ METRICS: list[MetricDef] = [
             "gap longer than a fixed perceptible-stall threshold (200ms) — 'how many ms the load "
             "spent frozen'. Unlike total_stall (relative to each run's own median pace), it uses "
             "one fixed yardstick for every run, so profiles compare on measured values not "
-            "averages-of-averages. The v8 crown's cumulative-stall dimension. Lower is better."
+            "averages-of-averages. An *absolute* measure — it drifts with server pacing, so the "
+            "rank-eligible sibling is the ratio 'Jank fraction'. Kept for display. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "jank_fraction", "browser", "jank_fraction", "Jank fraction",
+        description=(
+            "The *ratio* form of stall time: the fraction of the delivery window "
+            "(responseStart → main content / LCP) spent in perceptible ≥200ms stalls — 'how much "
+            "of the wait for main content was jank' (0–1). Normalizing by the window cancels the "
+            "load's absolute pace, so — unlike the absolute stall_time — it stands largely "
+            "weather-independent, making it the rank-eligible stall measure. Lower is smoother."
         ),
     ),
     MetricDef(
@@ -423,8 +434,8 @@ METRIC_ROLES: dict[str, str] = {
     # S — byte-arrival shape statistics.
     "byte_earliness": ROLE_SHAPE, "cadence_cov": ROLE_SHAPE, "delivery_gini": ROLE_SHAPE,
     "perceived_time": ROLE_SHAPE, "longest_stall": ROLE_SHAPE, "stall_time": ROLE_SHAPE,
-    "total_stall": ROLE_SHAPE, "network_stall": ROLE_SHAPE, "render_stall": ROLE_SHAPE,
-    "unknown_stall": ROLE_SHAPE,
+    "jank_fraction": ROLE_SHAPE, "total_stall": ROLE_SHAPE, "network_stall": ROLE_SHAPE,
+    "render_stall": ROLE_SHAPE, "unknown_stall": ROLE_SHAPE,
     # O — opaque milestone sums (span buckets → display only, never ranked).
     "fcp": ROLE_COMPOSITE, "lcp": ROLE_COMPOSITE, "render": ROLE_COMPOSITE,
     "dom_content_loaded": ROLE_COMPOSITE, "load_event": ROLE_COMPOSITE,
@@ -480,7 +491,7 @@ DISPLAY_ORDER = [
     "load_event", "render", "paint_cadence", "cls",       # completion + smoothness
     "inp",                                                # interaction (after load)
     # perceived load smoothness (delivery-curve shape, byte-arrival)
-    "perceived_time", "longest_stall", "total_stall", "stall_time", "cadence_cov",
+    "perceived_time", "longest_stall", "total_stall", "stall_time", "jank_fraction", "cadence_cov",
     "byte_earliness", "delivery_gini", "network_stall", "render_stall", "unknown_stall",
     "latency", "jitter", "packet_loss",                   # network quality (continuous)
 ]

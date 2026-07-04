@@ -138,6 +138,44 @@ def stall_time(series: list[float], *, threshold_ms: float = STALL_PERCEPTIBLE_M
     return round(sum(g for g in gaps if g >= threshold_ms), 3)
 
 
+def jank_fraction(
+    series: list[float],
+    window_start: float | None,
+    window_end: float | None,
+    *,
+    threshold_ms: float = STALL_PERCEPTIBLE_MS,
+) -> float | None:
+    """Share of the delivery window spent in *perceptible* stalls — the weather-immune,
+    **ratio** form of :func:`stall_time`. "How much of the time-to-main-content was jank?"
+
+    Numerator: the portion of ``[window_start, window_end]`` covered by inter-completion
+    gaps that are themselves ``>= threshold_ms`` (a real stall — the same fixed 200 ms
+    yardstick :func:`stall_time` uses). Denominator: the window span. The intended window
+    is ``responseStart → LCP`` (first byte → main content): it deliberately excludes the
+    DNS/TCP/TLS *setup* prefix, so a slow-setup run can't dilute the fraction through the
+    denominator (that would re-import network weather).
+
+    Why a ratio: a uniformly slower load inflates both the frozen time and the window span,
+    so the bulk pace cancels — unlike the absolute ``stall_time`` (which drifts with server
+    chunk pacing). One honest caveat: because the numerator keeps a *fixed* 200 ms bar
+    (perceptually grounded, not scale-relative like Gini/CoV), a slower load pushes more gaps
+    across that bar, so this is *far* less weather-sensitive than the absolute — but not
+    perfectly flat. Whether the residual needs a weather lens is an empirical call (re-derive
+    drift ρ). Bounded ``[0, 1]``; ``None`` when the window is missing or shorter than one
+    perceptible stall (too brief to host jank)."""
+    ws, we = _f(window_start), _f(window_end)
+    if ws is None or we is None:
+        return None
+    span = we - ws
+    if span < threshold_ms:  # too short to contain even one perceptible stall
+        return None
+    frozen = 0.0
+    for a, b in zip(series, series[1:]):
+        if (b - a) >= threshold_ms:
+            frozen += _overlap(a, b, ws, we)
+    return round(min(1.0, frozen / span), 4)
+
+
 def longest_stall_window(series: list[float]) -> tuple[float, float, float] | None:
     """``(start, end, duration)`` of the largest inter-completion gap, or ``None``."""
     gaps = _gaps(series)
@@ -404,6 +442,14 @@ def smoothness_metrics(
         # threshold — an *actual per-run measurement* (no per-run median), the v8 crown's
         # cumulative-stall dimension so profiles compare on measured values, not deviations.
         "stall_time_ms": stall_time(series),
+        # The *ratio* form: fraction of the delivery window (responseStart → LCP, falling
+        # back to loadEventEnd) spent frozen. Weather-immune by normalization — the
+        # rank-eligible sibling of the absolute stall_time (which is kept for display).
+        "jank_fraction": jank_fraction(
+            series,
+            _f(nav.get("responseStart")),
+            _f(paint.get("lcp")) if _f(paint.get("lcp")) is not None else _f(nav.get("loadEventEnd")),
+        ),
         "cadence_cov": cadence_cov(series),
         "byte_earliness_ms": byte_earliness(resources, start),
         "delivery_gini": delivery_gini(resources, start, end),

@@ -204,3 +204,44 @@ def test_derive_browser_emits_navigation_waterfall():
     assert m["nav_dns_ms"] == 7.0
     assert m["nav_ttfb_cumulative_ms"] == 95.0
     assert m["nav_lcp_after_ttfb_ms"] == 305.0
+
+
+def test_jank_fraction_ratio_cancels_bulk_pace():
+    """jank_fraction is stall as a fraction of the delivery window — so a uniformly slower
+    load (bulk pace ×2, stall membership unchanged) leaves it flat while absolute stall doubles."""
+    from pathbrain.interpret.smoothness import jank_fraction, stall_time
+
+    series = [0.0, 50.0, 850.0, 900.0]          # one 800ms stall; two 50ms (sub-threshold) gaps
+    jank = jank_fraction(series, 0.0, 900.0)     # window responseStart→LCP = [0, 900]
+    assert jank == round(800.0 / 900.0, 4)       # 0.8889 — 800ms of a 900ms window frozen
+    assert stall_time(series) == 800.0
+
+    slow = [t * 2 for t in series]               # same load, uniformly 2× slower
+    assert jank_fraction(slow, 0.0, 1800.0) == jank   # ratio unchanged — weather cancels
+    assert stall_time(slow) == 1600.0                 # absolute drifts (doubles)
+
+
+def test_jank_fraction_bounds_and_guards():
+    from pathbrain.interpret.smoothness import jank_fraction
+
+    # Bounded to [0,1] even if a stall overruns a short window.
+    assert jank_fraction([0.0, 5000.0], 0.0, 1000.0) == 1.0
+    # No perceptible stall → 0.0 (a real, comparable reading).
+    assert jank_fraction([0.0, 100.0, 200.0], 0.0, 1000.0) == 0.0
+    # Missing / too-short window → None (can't host a perceptible stall).
+    assert jank_fraction([0.0, 900.0], None, 900.0) is None
+    assert jank_fraction([0.0, 900.0], 0.0, 100.0) is None
+
+
+def test_derive_browser_emits_jank_fraction():
+    raw = {"urls": {"u": {
+        "nav": {"responseStart": 100.0, "responseEnd": 200.0, "loadEventEnd": 1100.0},
+        "paint": {"fcp": 150.0, "lcp": 1100.0, "cls_entries": []},
+        "resources": [
+            {"responseEnd": 200.0, "transferSize": 100},
+            {"responseEnd": 1000.0, "transferSize": 100},  # ~800ms stall inside the window
+        ],
+        "total_render_ms": 1200.0, "filmstrip": [],
+    }}}
+    m = derive("browser", raw)
+    assert "jank_fraction" in m and 0.0 <= m["jank_fraction"] <= 1.0
