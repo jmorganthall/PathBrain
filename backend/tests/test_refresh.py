@@ -10,6 +10,7 @@ from pathbrain.models import (
     ProfileRefreshStatus,
     Run,
     RunStatus,
+    Score,
 )
 
 
@@ -123,3 +124,41 @@ def test_preview_estimates_duration():
     assert prev["per_iteration_ms"] is not None
     # total_iterations × per-iteration time + per-profile overhead → a positive estimate.
     assert prev["estimated_seconds"] is not None and prev["estimated_seconds"] > 0
+
+
+def test_winner_first_refresh_ranks_by_prior_methodology_overall():
+    # After a methodology publish, a refresh can re-run only the top-N profiles, ordered by
+    # how well they scored under a prior methodology — so the best performers get fresh,
+    # comparable data first instead of an arbitrary sweep.
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    ver = "test-rank-vX"  # a synthetic prior version we control, so other tests don't collide
+    specs = [("rankhi000000", 90.0), ("rankmid00000", 60.0), ("ranklo000000", 30.0)]
+    with session_scope() as s:
+        for fp, ov in specs:
+            run = Run(
+                status=RunStatus.COMPLETE, created_at=t0, settings_fingerprint=fp,
+                settings=[{"label": "wan", "quantum": 1514}], iterations=1, per_iteration_ms=1000.0,
+            )
+            s.add(run)
+            s.flush()
+            s.add(Score(run_id=run.id, methodology_version=ver,
+                        comparability="exact", axis_scores={"overall": ov}))
+
+    mine = {fp for fp, _ in specs}
+    with session_scope() as s:
+        ranked = refresh.ranked_profiles(s, ver)
+    # Winner-first: highest Overall under `ver` leads; profiles with no score under it sort last.
+    order = [p["fingerprint"] for p in ranked if p["fingerprint"] in mine]
+    assert order == ["rankhi000000", "rankmid00000", "ranklo000000"]
+
+    # preview(top=2) previews only the two best, and echoes the ranking context.
+    with session_scope() as s:
+        prev = refresh.preview(s, 3, top=2, rank_by=ver)
+    assert prev["profiles"] == 2
+    assert prev["top"] == 2 and prev["ranked_by"] == ver
+    assert prev["total_iterations"] == 2 * 3
+    # The two selected are the winners, in order.
+    with session_scope() as s:
+        selected, rank_version = refresh._select(s, top=2, rank_by=ver)
+    assert [p["fingerprint"] for p in selected] == ["rankhi000000", "rankmid00000"]
+    assert rank_version == ver

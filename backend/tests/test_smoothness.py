@@ -20,6 +20,7 @@ from pathbrain.interpret.smoothness import (
     smoothness_metrics,
     smoothness_record,
     stall_attribution_times,
+    stall_time,
     total_stall,
 )
 
@@ -72,6 +73,40 @@ def test_total_stall_counts_dead_air_beyond_rhythm():
     # Need a rhythm to compare against → None with fewer than two gaps.
     assert total_stall([]) is None
     assert total_stall([100.0, 200.0]) is None
+
+
+def test_stall_time_is_absolute_dead_air_against_a_fixed_threshold():
+    smooth_series = completion_series(SMOOTH)   # uniform 100ms gaps
+    chunky_series = completion_series(CHUNKY)   # a single 680ms freeze
+    # Absolute measure (fixed 200ms threshold): the smooth 100ms-gap trickle has no
+    # perceptible stall → 0; the chunky load's 80→760 freeze counts its whole 680ms.
+    assert stall_time(smooth_series) == 0.0
+    assert stall_time(chunky_series) == 680.0
+    # Unlike total_stall, it does NOT subtract the run's own median — it's a fixed yardstick.
+    # A run with two big gaps counts BOTH in full (700 + 500 = 1200), where total_stall would
+    # net one against the median and under-count the cumulative dead air.
+    two_freezes = [0.0, 700.0, 800.0, 1300.0]  # gaps: 700, 100, 500
+    assert stall_time(two_freezes) == 1200.0    # 700 + 500 (100 is below the threshold)
+    assert total_stall(two_freezes) < stall_time(two_freezes)
+    # A gap exactly at the threshold counts; just below does not (custom threshold too).
+    assert stall_time([0.0, 200.0]) == 200.0
+    assert stall_time([0.0, 199.0]) == 0.0
+    assert stall_time([0.0, 100.0], threshold_ms=50.0) == 100.0
+    # 0.0 is a real measurement (no stall); None only when there's no gap to measure.
+    assert stall_time([5.0]) is None
+    assert stall_time([]) is None
+
+
+def test_smoothness_metrics_emits_both_relative_and_absolute_stall():
+    m = smoothness_metrics({"responseStart": 40.0}, CHUNKY, {"fcp": 30.0}, None)
+    # Both stall dimensions ride in the record: the relative total_stall (display-only since
+    # v8) and the absolute stall_time (the v8 crown dimension). They measure different things —
+    # stall_time counts the full 680ms freeze against a fixed 200ms threshold (ignoring sub-
+    # threshold gaps), total_stall nets every gap against the run's own median — so neither
+    # dominates the other in general; here they land near each other on this single-freeze load.
+    assert "total_stall_ms" in m and "stall_time_ms" in m
+    assert m["stall_time_ms"] == 680.0            # the whole freeze, sub-200ms gaps ignored
+    assert m["total_stall_ms"] > 0.0
 
 
 def test_longest_stall_window_points_at_the_plateau():

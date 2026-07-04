@@ -190,14 +190,17 @@ export const api = {
   raceCurrent: () => request<{ race: ChallengerRace | null }>("/settings/race"),
   cancelRace: () => request<{ cancelled: boolean }>("/settings/race/cancel", { method: "POST" }),
 
-  // Re-run all stored profiles: apply each, run a chosen number of iterations, restore
-  // the baseline at the end. `refreshPreview` estimates time before committing.
-  refreshPreview: (iterations: number) =>
-    request<ProfileRefreshPreview>(`/settings/refresh/preview?iterations=${iterations}`),
-  startRefresh: (iterations: number) =>
-    request<{ id: number; iterations: number }>("/settings/refresh", {
+  // Re-run stored profiles: apply each, run a chosen number of iterations, restore the
+  // baseline at the end. `refreshPreview` estimates time before committing. `top` (optional)
+  // re-runs only the top-N profiles, winner-first by their Overall under the prior methodology.
+  refreshPreview: (iterations: number, top?: number) =>
+    request<ProfileRefreshPreview>(
+      `/settings/refresh/preview?iterations=${iterations}` + (top ? `&top=${top}` : ""),
+    ),
+  startRefresh: (iterations: number, top?: number) =>
+    request<{ id: number; iterations: number; top: number | null }>("/settings/refresh", {
       method: "POST",
-      body: JSON.stringify({ iterations }),
+      body: JSON.stringify(top ? { iterations, top } : { iterations }),
     }),
   refreshCurrent: () => request<{ refresh: ProfileRefresh | null }>("/settings/refresh"),
   cancelRefresh: () => request<{ cancelled: boolean }>("/settings/refresh/cancel", { method: "POST" }),

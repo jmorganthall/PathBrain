@@ -29,7 +29,7 @@ from sqlalchemy import select
 from . import coordinator
 from .database import session_scope
 from .logging_config import get_logger
-from .models import ProfileRefresh, ProfileRefreshStatus, Run, RunStatus
+from .models import Methodology, ProfileRefresh, ProfileRefreshStatus, Run, RunStatus, Score
 from .profile_test import _apply_all
 from .providers import get_provider
 from .runner import MAX_ITERATIONS, create_run, execute_run
@@ -76,6 +76,75 @@ def list_profiles(session) -> list[dict]:
     ]
 
 
+# ── Winner-first prioritization ──────────────────────────────────────────────
+# A refresh can re-run a *chosen top N* profiles, ordered by how well they scored under a
+# prior methodology — so after publishing a new methodology (which quarantines history that
+# can't supply a new crown metric), the profiles that were *winning* get fresh, comparable
+# data first, instead of blindly re-running everything in arbitrary order.
+
+
+def _prior_methodology_version(session) -> str | None:
+    """The methodology version a winner-first refresh ranks by: the most recently recorded
+    methodology that isn't the one now current — i.e. the rubric profiles were last judged
+    under before the current publish. ``None`` on a fresh instance with only one methodology."""
+    versions = session.scalars(
+        select(Methodology.version)
+        .where(Methodology.is_current.is_(False))
+        .order_by(Methodology.created_at.desc())
+    ).all()
+    return versions[0] if versions else None
+
+
+def _overall_by_profile(session, version: str) -> dict[str, float]:
+    """Median persisted Overall (``Score.axis_scores['overall']``) per profile fingerprint under
+    a methodology version — the winner-first ranking signal. Reads the same first-class Overall
+    the crown ranks on, so 'top profiles' here means the same thing Settings-Impact showed."""
+    rows = session.execute(
+        select(Run.settings_fingerprint, Score.axis_scores)
+        .join(Score, Score.run_id == Run.id)
+        .where(
+            Run.status == RunStatus.COMPLETE,
+            Run.settings_fingerprint.is_not(None),
+            Score.methodology_version == version,
+        )
+    ).all()
+    buckets: dict[str, list[float]] = {}
+    for fp, axis_scores in rows:
+        ov = (axis_scores or {}).get("overall")
+        if ov is not None:
+            buckets.setdefault(fp, []).append(float(ov))
+    return {fp: median(vals) for fp, vals in buckets.items() if vals}
+
+
+def ranked_profiles(session, rank_version: str | None) -> list[dict]:
+    """Stored profiles ordered best-first by their median persisted Overall under
+    ``rank_version`` (winner-first). Profiles with no comparable score under that version sort
+    last — they still get re-run if within the chosen top-N, just after the known performers.
+    Falls back to the raw list order when there's no ranking version or no scored data for it."""
+    profiles = list_profiles(session)
+    if not rank_version:
+        return profiles
+    overall = _overall_by_profile(session, rank_version)
+    if not overall:
+        return profiles
+    return sorted(
+        profiles,
+        key=lambda p: overall.get(p["fingerprint"], float("-inf")),
+        reverse=True,
+    )
+
+
+def _select(session, top: int | None, rank_by: str | None) -> tuple[list[dict], str | None]:
+    """Resolve the profile work-list + the version it was ranked by. Plain (unranked) list when
+    neither ``top`` nor ``rank_by`` is given; otherwise ranked winner-first (``rank_by`` or the
+    auto-detected prior methodology) and capped to ``top`` when a positive cap is given."""
+    rank_version = rank_by or (_prior_methodology_version(session) if top else None)
+    profiles = ranked_profiles(session, rank_version) if (top or rank_by) else list_profiles(session)
+    if top is not None and top > 0:
+        profiles = profiles[:top]
+    return profiles, rank_version
+
+
 # Rough fixed overhead per profile (apply + read-back verify + final restore), added to
 # the benchmark time so the estimate isn't optimistic. Seconds.
 _PER_PROFILE_OVERHEAD_S = 3.0
@@ -94,13 +163,15 @@ def _median_iteration_ms(session) -> float | None:
     return median(vals) if vals else None
 
 
-def preview(session, iterations: int) -> dict:
+def preview(session, iterations: int, top: int | None = None, rank_by: str | None = None) -> dict:
     """What a refresh would do + how long it'd take: profile count, total iterations, and
     an estimated duration (median per-iteration time × total iterations + per-profile
     apply/restore overhead). ``estimated_seconds`` is None when there's no timing history
-    to base it on."""
+    to base it on. With ``top`` set, previews a winner-first subset (ranked by ``rank_by`` or
+    the auto-detected prior methodology), so the estimate reflects the capped batch."""
     iters = max(1, min(MAX_ITERATIONS, int(iterations)))
-    n_profiles = len(list_profiles(session))
+    profiles, rank_version = _select(session, top, rank_by)
+    n_profiles = len(profiles)
     per_ms = _median_iteration_ms(session)
     total_iterations = n_profiles * iters
     estimated = None
@@ -112,12 +183,21 @@ def preview(session, iterations: int) -> dict:
         "total_iterations": total_iterations,
         "per_iteration_ms": round(per_ms, 1) if per_ms is not None else None,
         "estimated_seconds": estimated,
+        # Winner-first context (null when running the full, unranked batch).
+        "top": top if (top and top > 0) else None,
+        "ranked_by": rank_version,
     }
 
 
-def start(iterations: int) -> int:
-    """Launch a profile refresh that runs ``iterations`` benchmarks on every stored
-    profile. Returns the ``ProfileRefresh`` id.
+def start(iterations: int, top: int | None = None, rank_by: str | None = None) -> int:
+    """Launch a profile refresh that runs ``iterations`` benchmarks on stored profiles.
+    Returns the ``ProfileRefresh`` id.
+
+    With ``top`` set, only the top-N profiles are re-run, ordered **winner-first** by their
+    median persisted Overall under ``rank_by`` (or, when omitted, the prior methodology) — so
+    after a methodology publish, the profiles that were performing best get fresh, comparable
+    data first instead of an arbitrary sweep of everything. Without ``top``/``rank_by`` it
+    re-runs every stored profile (the original behavior).
 
     Raises ``RuntimeError`` if one is already running, or if there are no stored
     profiles. ``iterations`` is clamped to ``1..MAX_ITERATIONS``. The baseline is
@@ -127,7 +207,7 @@ def start(iterations: int) -> int:
         raise RuntimeError("A profile refresh is already running.")
     iters = max(1, min(MAX_ITERATIONS, int(iterations)))
     with session_scope() as session:
-        profiles = list_profiles(session)
+        profiles, rank_version = _select(session, top, rank_by)
         if not profiles:
             raise RuntimeError("No stored profiles to refresh.")
         plan = [{**p, "needed": iters} for p in profiles]
@@ -140,7 +220,11 @@ def start(iterations: int) -> int:
     thread = threading.Thread(target=_drive, args=(rid,), name="pathbrain-refresh", daemon=True)
     _state["thread"] = thread
     thread.start()
-    log.info("Profile refresh %s started: %s profile(s) × %s iteration(s)", rid, len(plan), iters)
+    log.info(
+        "Profile refresh %s started: %s profile(s) × %s iteration(s)%s",
+        rid, len(plan), iters,
+        f" (winner-first top {top} by {rank_version})" if (top and top > 0) else "",
+    )
     return rid
 
 

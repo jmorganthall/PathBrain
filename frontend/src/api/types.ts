@@ -381,6 +381,10 @@ export interface ProfileRefreshPreview {
   total_iterations: number;
   per_iteration_ms: number | null;
   estimated_seconds: number | null;
+  // Winner-first context: when set, only the top-N profiles run, ranked by their Overall
+  // under `ranked_by` (the prior methodology). Both null for a full, unranked batch.
+  top?: number | null;
+  ranked_by?: string | null;
 }
 
 export interface VersionInfo {

@@ -53,10 +53,10 @@ LLM-based. See `README.md` for the product overview.
     agnostic; *which* metrics form *which* axis lives in `methodology.py`.
   - `methodology.py` — **the published, versioned rubric** (derivation + axis
     weights/thresholds + the first-class Overall), append-only. `CURRENT_METHODOLOGY` =
-    `speed-smoothness-v7`, which scores **three headline axes** (the temporal phases of a
+    `speed-smoothness-v8`, which scores **three headline axes** (the temporal phases of a
     load; each metric maps to exactly one axis):
     - **Responsiveness** (time-to-first): byte-earliness (30) + FCP (25) + TTFB (15).
-    - **Smoothness** (steady fill): longest-stall (40, required) + total-stall (30)
+    - **Smoothness** (steady fill): longest-stall (40, required) + stall-time (30)
       + cadence (15) + evenness (15).
     - **Speed** (time-to-last + interactive): LCP (40) + INP (40) + render (20) +
       load-event (20).
@@ -64,7 +64,7 @@ LLM-based. See `README.md` for the product overview.
     kept out of the headline since they barely move human feel. The **Overall** is a
     first-class, versioned roll-up defined here (`overall_from_definition` /
     `corner_score`) and persisted to `Score.axis_scores["overall"]` at scoring time — the
-    corner over **FCP × LCP × total_stall** (quickest first response × perceptual "main
+    corner over **FCP × LCP × stall_time** (quickest first response × perceptual "main
     content visible" × cumulative dead-air): three genuinely independent dimensions of the
     felt load (start / main-content-there / steadiness of the fill between). It's an
     intersection, so a stall pulls the Overall down via the corner geometry, not a hidden
@@ -78,6 +78,16 @@ LLM-based. See `README.md` for the product overview.
     page-load (all resources fetched) for the *perceptual* "main content visible" milestone —
     so the crown corners over three independent dimensions instead of two correlated paint
     milestones + completion (identical axes/thresholds to v6; only the `overall` spec moved).
+    **v8** swaps Smoothness's scored stall metric + the crown's stall leg `total_stall → stall_time`:
+    the *relative* `total_stall` (excess of each completion gap over the run's **own median** pace —
+    an average baked into the metric, so a profile's stall standing is a comparison of
+    deviations-from-own-baseline) is replaced by the *absolute* `stall_time` (summed duration of
+    every gap over a fixed 200ms perceptible-stall threshold; `interpret/smoothness.stall_time`).
+    Like FCP/LCP measure an actual timestamp, `stall_time` is an **actual per-run measurement**
+    against a fixed yardstick — the same for every run — so Settings-Impact compares profiles on
+    real measured dead-air instead of averages-of-averages. `total_stall` stays a display-only
+    diagnostic. derive-v5 adds `stall_time_ms` (purely additive), so history re-grades straight
+    from raw — every run with resource-timing raw gains an actual `stall_time`.
     `runner.score_metrics_under` scores every axis generically via
     `axis_rubric` + `compute_score`, persisting per-axis results + Overall to
     `Score.axis_scores` (JSON). Predecessors (`speed-smoothness-v1..v5`, earlier rubrics)
@@ -165,7 +175,7 @@ LLM-based. See `README.md` for the product overview.
     the `coordinator` lock (so the scheduler defers via `coordinator.busy()`); persisted to
     a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on startup.
     `/api/settings/race` (+ `/race/cancel`).
-  - `refresh.py` — **Re-run all profiles**: the batch sibling of `profile_test`. For
+  - `refresh.py` — **Re-run profiles**: the batch sibling of `profile_test`. For
     each stored profile it applies the settings, benchmarks a **caller-chosen** number of
     iterations, then moves on — **restoring the baseline at the end** (persisted to a
     `ProfileRefresh` row; `reconcile_interrupted_refreshes` restores on startup). One bad
@@ -173,7 +183,11 @@ LLM-based. See `README.md` for the product overview.
     (median per-iteration time × total iterations + per-profile overhead) so the UI can
     show "N profiles × M ≈ ~T" before committing. Own thread under the `coordinator` lock.
     Use it to collect fresh, comparable data after a methodology change quarantines
-    history that can't supply a new crown metric. `/api/settings/refresh`
+    history that can't supply a new crown metric. A **winner-first top-N** mode
+    (`ranked_profiles`/`_select`; `start`/`preview` take `top`+`rank_by`) re-runs only the best
+    performers first — ranked by their persisted Overall under the prior methodology (the
+    `rank_by` version, defaulting to the most-recent non-current methodology) — so the profiles
+    that were winning get fresh data before an arbitrary sweep of everything. `/api/settings/refresh`
     (+ `/refresh/preview`, `/refresh/cancel`).
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
     settings-vs-responsiveness correlation (`/api/settings/*`). Profile confidence is
@@ -186,9 +200,10 @@ LLM-based. See `README.md` for the product overview.
     crown metric set — the few measurements that directly capture human feel, as
     perception-calibrated 0–100 subscores. The set is read from the methodology's `overall`
     spec (`overall_metrics`; module `CROWN_METRICS`/`CROWN_REQUIRED` are only the pre-v5
-    fallback): under **v7** that's **FCP × LCP × total_stall** (quickest first response ×
-    perceptual "main content visible" × cumulative dead-air — three independent dimensions of
-    the felt load; v6 used fcp/total_stall/load_event, v5 fcp/perceived_time/inp). It's an
+    fallback): under **v8** that's **FCP × LCP × stall_time** (quickest first response ×
+    perceptual "main content visible" × absolute measured dead-air — three independent
+    dimensions of the felt load; v7 used fcp/lcp/total_stall, v6 fcp/total_stall/load_event, v5
+    fcp/perceived_time/inp). It's an
     *intersection* (corner, not mean — one weak metric can't be averaged away), √k-normalized
     so corners of different arity share a scale.
     A profile's Overall is the **corner over its field-percentile-normalized raw crown
@@ -248,7 +263,7 @@ LLM-based. See `README.md` for the product overview.
 - `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
   History, Trends, Compare, Settings Impact (**paginated** sortable table — 25/page —
   with standard **Overall + the crown metrics** columns (the metrics the Overall corners over,
-  from the response's `overall_metrics` — fcp/lcp/total_stall under v7 — ranked by each metric's
+  from the response's `overall_metrics` — fcp/lcp/stall_time under v8 — ranked by each metric's
   **field-normalized raw** value via a `crown:<metric>` field key → `crown_norm` (no grading),
   so the pinned columns are the raw measurements that actually *compute* Overall; the headline
   axes Responsiveness/Smoothness/Speed are a different graded decomposition, demoted to opt-in)
@@ -345,8 +360,8 @@ docker compose up --build   # -> http://localhost:8000
      metrics that drive the current Overall. Set the default axis keys in
      `frontend/src/pages/Settings.tsx` (`xKey`/`yKey`/`sizeKey`) to the new crown set —
      the methodology's `overall` spec metrics (`methodology.overall_metrics`), one per
-     X / Y / Shade slot — so the default view demonstrates how Overall is scored. (v7:
-     `fcp` × `lcp` × `total_stall`.)
+     X / Y / Shade slot — so the default view demonstrates how Overall is scored. (v8:
+     `fcp` × `lcp` × `stall_time`.)
 - A run repeats the suite `iterations` times; each headline axis is the **median**
   over iterations, with a confidence band. The Dashboard shows a windowed
   **rolling** score (`/api/score/rolling`, 24h median + IQR) plus a **"vs typical"**
@@ -454,7 +469,11 @@ docker compose up --build   # -> http://localhost:8000
   **v6** decomposed the crown to FCP × total_stall × load_event (dropping the uncalibrated
   `perceived_time`); **v7** swapped the completion leg `load_event → lcp` so the crown is
   **FCP × LCP × total_stall** — three independent dimensions (start / main-content-visible /
-  fill-steadiness) rather than two correlated paint milestones + technical completion. The
+  fill-steadiness) rather than two correlated paint milestones + technical completion; **v8**
+  swapped the stall leg `total_stall → stall_time` — the *relative* dead-air (excess over each
+  run's own median pace, an average baked into the metric) for the *absolute* dead-air (summed
+  duration of every gap over a fixed 200ms threshold, an actual per-run measurement like FCP/LCP),
+  so profiles compare on measured values, not averages-of-averages. The
   crown is the **highest Overall among confident profiles** (the Bayesian/Thompson
   probability-of-best layer was removed — it over-credited thin, high-variance profiles for
   their upper tail; selecting *where to run next* is the separate hunting job). Settings
@@ -466,6 +485,19 @@ docker compose up --build   # -> http://localhost:8000
   (`environment_signature` reachability) and making the sweep/experiment engines **and the
   Shotgun Sweep UI** registry-driven. Run-perf pass: per-plugin iteration caps, reused
   Chromium, bounded networkidle, screenshot/HAR off by default.
+- **Phase 8 (done):** **absolute stall measurement.** Methodology `speed-smoothness-v8`
+  replaces the *relative* `total_stall` (cumulative excess over each run's **own median** gap —
+  an average baked into the metric, so cross-profile comparison compared deviations-from-own-
+  baseline) with the *absolute* `stall_time` (`interpret/smoothness.stall_time`: summed duration
+  of every completion gap over a fixed 200ms perceptible-stall threshold) as the Smoothness
+  scored-stall metric and the crown's stall leg. Like FCP/LCP, `stall_time` is an actual per-run
+  measurement against a fixed yardstick, so Settings-Impact compares profiles on measured
+  dead-air. `derive-v5` adds `stall_time_ms` (purely additive → history re-grades from raw;
+  `compute_profiles` sources the crown's raw values from the re-graded `Score.metric_values` when
+  the plugin cache predates the metric). `total_stall` stays a display-only diagnostic. **"Re-run
+  profiles"** gained a **winner-first top-N** mode (`refresh.ranked_profiles` / `_select`): after
+  a publish, re-run only the best performers first, ranked by their Overall under the prior
+  methodology, instead of an arbitrary sweep.
 - **Next:** speed test / bufferbloat (latency-under-load), multi-parameter Bayesian
   search + interleaved A/B with effect-size/CI + hysteresis, routing intelligence /
   SD-WAN.
