@@ -25,7 +25,7 @@ def test_derived_views_match_the_known_model():
         "quantum", "limit", "flows", "target", "interval", "ecn", "download_bandwidth",
     }
     assert set(sf.NON_WRITABLE_FIELDS) == {"upload_bandwidth", "queues", "scheduler"}
-    assert set(sf.SWEEPABLE_FIELDS) == {"quantum", "target"}
+    assert set(sf.SWEEPABLE_FIELDS) == {"quantum", "target", "interval"}
 
 
 def test_writable_fields_are_identity_fields():

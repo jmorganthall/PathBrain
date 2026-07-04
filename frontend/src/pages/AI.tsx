@@ -40,6 +40,7 @@ import type {
   AiRelationship,
   AiSuggestResult,
   AiSuggestion,
+  CoverageGap,
   FieldSensitivity,
   LeverSignature,
   ProfileTest,
@@ -281,6 +282,64 @@ function TopProfilesCard({ signature }: { signature?: TopProfileSignature }) {
   );
 }
 
+// "What to measure next" — the deterministic active-experiment layer. When a lever shows a
+// promising but under-sampled signal, the highest-value move isn't a speculative profile, it's
+// collecting the data to confirm it. Each row is a concrete data request with the values to run.
+function CoverageGapsCard({ gaps }: { gaps?: CoverageGap[] }) {
+  const rows = (gaps ?? []).filter((g) => g.suggested_values?.length);
+  if (rows.length === 0) return null;
+  const actionLabel: Record<CoverageGap["action"], string> = {
+    extend_lower: "measure lower",
+    extend_higher: "measure higher",
+    resolve: "fill the gap",
+  };
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+          <ScienceIcon fontSize="small" />
+          <Typography variant="h6">What to measure next</Typography>
+        </Stack>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 820 }}>
+          Levers with a <b>promising but under-sampled</b> signal — where the honest answer isn't a
+          new profile, it's <b>collecting more data</b>. Each is a concrete data request; a{" "}
+          <b>sweepable</b> lever can be run directly from the{" "}
+          <RouterLink to="/sweep" style={{ color: "inherit" }}>
+            Shotgun Sweep
+          </RouterLink>
+          .
+        </Typography>
+        <Stack spacing={1.25}>
+          {rows.map((g, i) => (
+            <Box key={i} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
+                <Chip size="small" color="primary" label={`${g.pipe} ${g.field_label}`} />
+                <Chip size="small" variant="outlined" label={actionLabel[g.action]} />
+                {g.sweepable && <Chip size="small" color="success" variant="outlined" label="sweepable" />}
+                <Box sx={{ flex: 1 }} />
+                <Typography variant="caption" color="text.secondary">
+                  measured {g.measured_range[0]}–{g.measured_range[1]} · {g.distinct_values} value(s)
+                </Typography>
+              </Stack>
+              <Typography variant="body2" sx={{ mb: 0.5 }}>
+                {g.rationale}
+              </Typography>
+              <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Typography variant="caption" color="text.secondary">
+                  Try:
+                </Typography>
+                {g.suggested_values.map((v) => (
+                  <Chip key={v} size="small" label={v} sx={{ fontVariantNumeric: "tabular-nums" }} />
+                ))}
+              </Stack>
+            </Box>
+          ))}
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AI() {
   const [cfg, setCfg] = useState<AiConfig | null>(null);
   const [keyInput, setKeyInput] = useState("");
@@ -378,6 +437,7 @@ export default function AI() {
         payload_bytes: number;
         field_sensitivity?: FieldSensitivity[];
         top_profile_signature?: TopProfileSignature;
+        coverage_gaps?: CoverageGap[];
       } = {
         profiles_sent: null,
         payload_bytes: 0,
@@ -390,6 +450,7 @@ export default function AI() {
               payload_bytes: evt.payload_bytes,
               field_sensitivity: evt.field_sensitivity,
               top_profile_signature: evt.top_profile_signature,
+              coverage_gaps: evt.coverage_gaps,
             };
             break;
           case "reasoning":
@@ -409,8 +470,10 @@ export default function AI() {
               raw: evt.raw,
               suggestions: evt.suggestions,
               relationships: evt.relationships,
+              data_requests: evt.data_requests,
               field_sensitivity: meta.field_sensitivity,
               top_profile_signature: meta.top_profile_signature,
+              coverage_gaps: meta.coverage_gaps,
               usage: evt.usage,
               profiles_sent: meta.profiles_sent,
               payload_bytes: meta.payload_bytes,
@@ -805,6 +868,8 @@ export default function AI() {
           </CardContent>
         </Card>
       )}
+
+      {result && <CoverageGapsCard gaps={result.coverage_gaps} />}
 
       {result && (
         <RelationshipsCard

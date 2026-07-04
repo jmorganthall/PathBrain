@@ -79,6 +79,7 @@ def suggest(payload: AiSuggest, session: Session = Depends(get_session)) -> dict
     analysis = export.get("analysis") or {}
     result["field_sensitivity"] = analysis.get("field_sensitivity") or []
     result["top_profile_signature"] = analysis.get("top_profile_signature") or {}
+    result["coverage_gaps"] = analysis.get("coverage_gaps") or []
     return result
 
 
@@ -117,6 +118,7 @@ def stream_suggest(payload: AiSuggest, session: Session = Depends(get_session)) 
             # so the UI can show them immediately (before the model finishes reasoning).
             "field_sensitivity": (export.get("analysis") or {}).get("field_sensitivity") or [],
             "top_profile_signature": (export.get("analysis") or {}).get("top_profile_signature") or {},
+            "coverage_gaps": (export.get("analysis") or {}).get("coverage_gaps") or [],
         })
         for evt in ai.suggest_stream(export, api_key, model, prompt):
             yield _sse(evt)
