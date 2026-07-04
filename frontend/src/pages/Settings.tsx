@@ -1038,7 +1038,10 @@ export default function Settings() {
                         color="inherit"
                         sx={{ p: 0, minWidth: 0, textDecoration: "underline", verticalAlign: "baseline" }}
                         onClick={() =>
-                          navigate(`/methodology?reanchor=${encodeURIComponent(s.key)}&best=${s.suggested_best}`)
+                          navigate(
+                            `/methodology?reanchor=${encodeURIComponent(s.key)}&best=${s.suggested_best}` +
+                              `&saturated=${saturation.filter((x) => x.flagged).length}`,
+                          )
                         }
                       >
                         Re-anchor →

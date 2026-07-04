@@ -3,6 +3,8 @@ import { useSearchParams } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Checkbox from "@mui/material/Checkbox";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
@@ -133,12 +135,19 @@ export default function Methodology() {
   const [searchParams, setSearchParams] = useSearchParams();
   const reanchorKey = searchParams.get("reanchor");
   const suggestedBest = searchParams.get("best");
+  // How many metrics the saturation alert flagged. When more than one, default the re-grade
+  // OFF so the user can re-anchor them all first and re-grade once (a re-grade is heavy).
+  const saturatedCount = Number(searchParams.get("saturated") ?? "1") || 1;
   const [proposalBest, setProposalBest] = useState("");
+  const [regradeNow, setRegradeNow] = useState(true);
   const [publishing, setPublishing] = useState(false);
 
   useEffect(() => {
     if (suggestedBest != null) setProposalBest(suggestedBest);
   }, [suggestedBest]);
+  useEffect(() => {
+    setRegradeNow(saturatedCount <= 1);  // one metric → re-grade now; several → defer
+  }, [saturatedCount, reanchorKey]);
 
   const load = useCallback(async () => {
     try {
@@ -195,8 +204,12 @@ export default function Methodology() {
     }
     setPublishing(true);
     try {
-      const res = await api.reanchorMetric(proposalMetric.key, best);
-      setToast(`Published ${res.version} and started a re-grade — track it in the jobs menu (top right) ↗`);
+      const res = await api.reanchorMetric(proposalMetric.key, best, regradeNow);
+      setToast(
+        regradeNow
+          ? `Published ${res.version} and started a re-grade — track it in the jobs menu (top right) ↗`
+          : `Published ${res.version} (no re-grade yet). Re-anchor any other saturated metrics, then click “Re-grade history under current” once to apply them all.`,
+      );
       setSearchParams({}, { replace: true }); // clear the proposal from the URL
       await load();
     } catch (e) {
@@ -298,7 +311,15 @@ export default function Methodology() {
               From the saturation check on Settings Impact: <b>{proposalMetric.label}</b> already clears
               its “best” for most profiles, so it can’t rank them. Tightening “best” publishes a new
               methodology version (forked from <b>{current?.version}</b> — append-only, nothing edited in
-              place) and re-grades history onto it, so the fastest profile scores highest.
+              place), so the fastest profile scores highest.
+              {saturatedCount > 1 && (
+                <>
+                  {" "}
+                  <b>{saturatedCount} metrics are saturated</b> — re-grading is deferred so you can
+                  re-anchor them all first, then re-grade once (each re-anchor forks the current
+                  version, so they stack).
+                </>
+              )}
             </Typography>
             <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
               <Typography variant="body2">
@@ -322,6 +343,21 @@ export default function Methodology() {
                 }}
                 sx={{ width: 170 }}
               />
+              <Tooltip
+                arrow
+                title="A re-grade re-scores all of history and can take a while. Leave it off to publish now and re-grade once after you've re-anchored every saturated metric."
+              >
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={regradeNow}
+                      onChange={(e) => setRegradeNow(e.target.checked)}
+                    />
+                  }
+                  label="Re-grade now"
+                />
+              </Tooltip>
               <Button
                 variant="contained"
                 color="secondary"
@@ -329,7 +365,11 @@ export default function Methodology() {
                 disabled={publishing}
                 startIcon={publishing ? <CircularProgress size={16} /> : undefined}
               >
-                {publishing ? "Publishing…" : "Publish new version & re-grade"}
+                {publishing
+                  ? "Publishing…"
+                  : regradeNow
+                  ? "Publish new version & re-grade"
+                  : "Publish new version"}
               </Button>
               <Button onClick={() => setSearchParams({}, { replace: true })} disabled={publishing}>
                 Dismiss

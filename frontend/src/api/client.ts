@@ -192,12 +192,16 @@ export const api = {
     request<MethodologyDetail>(`/methodologies/${encodeURIComponent(version)}`),
   runScores: (id: number) => request<RunScoresResponse>(`/score/${id}/methodologies`),
   regradeHistory: () => startingJob(request<JobStart>("/score/regrade", { method: "POST" })),
-  // Fork the current methodology, re-anchor one metric's `best`, and re-grade onto it.
-  reanchorMetric: (metricKey: string, best: number) =>
-    request<{ version: string; job_id: string }>("/methodologies/reanchor", {
-      method: "POST",
-      body: JSON.stringify({ metric_key: metricKey, best }),
-    }),
+  // Fork the current methodology, re-anchor one metric's `best`. Re-grades onto it when
+  // `regrade` is true; when false, publishes only (batch several re-anchors, then re-grade once).
+  reanchorMetric: (metricKey: string, best: number, regrade = true) =>
+    request<{ version: string; job_id: string | null; regrade_deferred?: boolean }>(
+      "/methodologies/reanchor",
+      {
+        method: "POST",
+        body: JSON.stringify({ metric_key: metricKey, best, regrade }),
+      },
+    ),
 
   // Background jobs feed (powers the top-right "running jobs" dropdown)
   jobs: () => request<JobsResponse>("/jobs"),

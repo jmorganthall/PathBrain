@@ -379,6 +379,34 @@ def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
         ensure_current_methodology(s, get_config(s))
 
 
+def test_reanchor_can_defer_the_regrade(client, monkeypatch):
+    # regrade=false publishes the forked version (makes it current) but does NOT kick the heavy
+    # re-grade — so several saturated metrics can be re-anchored first and re-graded once.
+    import pathbrain.api.routes_methodology as rm
+
+    started = []
+    monkeypatch.setattr(rm.jobs, "start", lambda *a, **k: started.append(a) or "job-x")
+
+    r = client.post(
+        "/api/methodologies/reanchor",
+        json={"metric_key": "load_event", "best": 620, "regrade": False},
+    )
+    assert r.status_code == 202
+    out = r.json()
+    assert out["job_id"] is None and out["regrade_deferred"] is True
+    assert started == []  # no re-grade job was started
+    # The fork is still published + current (the override is applied, just not graded yet).
+    assert client.get("/api/methodologies/current").json()["version"] == out["version"]
+
+    # Restore the stock methodology for the shared-DB suite.
+    from pathbrain.config_store import get_config, save_config
+    from pathbrain.methodology import CURRENT_METHODOLOGY, ensure_current_methodology
+
+    with session_scope() as s:
+        save_config(s, {"methodology_version": CURRENT_METHODOLOGY})
+        ensure_current_methodology(s, get_config(s))
+
+
 def test_overall_follows_the_crown_metrics_not_the_smoothness_axis(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     # Profile A has the higher *smoothness axis* score but B is faster on every *crown metric*

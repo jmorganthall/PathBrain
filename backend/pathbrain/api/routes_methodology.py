@@ -76,6 +76,11 @@ def reanchor_threshold(
     id). Body: ``{"metric_key": str, "best": number}``. Returns ``{version, job_id}`` (202)."""
     metric_key = (body or {}).get("metric_key")
     raw_best = (body or {}).get("best")
+    # Whether to kick the (heavy) re-grade now. Defaults on for back-compat / single edits;
+    # the UI sends ``false`` when several metrics are saturated so the user can re-anchor them
+    # all first (each forks the then-current version, so the overrides accumulate) and re-grade
+    # ONCE at the end via the Methodology "Re-grade history under current" button.
+    regrade = bool((body or {}).get("regrade", True))
     if not metric_key or raw_best is None:
         raise HTTPException(status_code=400, detail="metric_key and best are required")
     try:
@@ -137,6 +142,11 @@ def reanchor_threshold(
     save_config(session, {"methodology_version": new_version})
     session.commit()
     log.info("Published re-anchored methodology %s (%s)", new_version, notes)
+
+    # Publish-only when the caller defers the re-grade (batching several re-anchors): the new
+    # version is current, but history isn't re-scored until they run the re-grade explicitly.
+    if not regrade:
+        return {"version": new_version, "job_id": None, "regrade_deferred": True}
 
     # Re-grade history under the new version (background job; surfaces in the jobs feed).
     def task(job: jobs.Job) -> dict:

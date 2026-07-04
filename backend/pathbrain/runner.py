@@ -418,19 +418,64 @@ def score_metrics_under(session, run_id, run_methodology_version, methodology, i
     )
 
 
+def _cached_iteration_metrics(session, run_id: int) -> list[dict[str, dict]] | None:
+    """Per-iteration ``{plugin: metrics}`` from the cached ``details['iteration_metrics']``,
+    read **without loading the large ``raw`` column** — the fast path for re-grade.
+
+    Every run persists its per-iteration derived metrics in ``details`` (at collection and
+    on every re-derive), so when a run's metrics are already current there's no need to
+    re-derive from raw *or* pay the cost of deserializing the raw blobs. Returns ``None``
+    if any result is missing the cache, so the caller falls back to a raw re-derivation."""
+    rows = session.execute(
+        select(BenchmarkResult.plugin, BenchmarkResult.details).where(
+            BenchmarkResult.run_id == run_id
+        )
+    ).all()
+    if not rows:
+        return None
+    by_plugin: dict[str, list[dict]] = {}
+    n_iters = 0
+    for plugin, details in rows:
+        per_iter = (details or {}).get("iteration_metrics")
+        if per_iter is None:
+            return None  # incomplete cache → re-derive from raw instead
+        by_plugin[plugin] = per_iter
+        n_iters = max(n_iters, len(per_iter))
+    return [
+        {p: pi[i] for p, pi in by_plugin.items() if i < len(pi) and pi[i]}
+        for i in range(n_iters)
+    ]
+
+
 def score_run_under(session, run, methodology, artifact_base: str | None = None):
     """Score a run from its preserved raw under a methodology, writing a Score row
     (the at-present record). Never mutates a different version's at-measure row.
 
-    Re-derives metrics from raw (current derivation), then scores every axis the
-    methodology defines (Speed/Smoothness/…). Returns the Score, or ``None`` when the
-    methodology has no recorded definition or the run has no derivable raw."""
+    Scores every axis the methodology defines (Speed/Smoothness/…). **Fast path:** when the
+    run's cached metrics were already derived under the current derivation, they're reused
+    straight from ``details['iteration_metrics']`` — no ``derive()`` calls and no raw-blob
+    load. This is the case right after a re-derive, and for any threshold-only (re-anchor)
+    re-grade, where the derivation is unchanged. Only stale/never-derived runs pay the full
+    raw re-derivation. Returns the Score, or ``None`` when the methodology has no recorded
+    definition or the run has no derivable metrics."""
     if not (methodology.definition or {}).get("metrics"):
         return None  # pre-foundation methodology — definition not recorded
-    iter_metrics = _iteration_plugin_metrics_from_raw(run, artifact_base)
+    iter_metrics: list[dict] | None = None
+    # Reuse the cache only when it reflects the *current* derivation (so a metric added by a
+    # newer derive-vN isn't silently missing). ``run.score`` is the legacy ScoreResult, whose
+    # derivation_version a re-derive stamps to DERIVATION_VERSION; loading it touches no raw.
+    if run.score is not None and run.score.derivation_version == DERIVATION_VERSION:
+        iter_metrics = _cached_iteration_metrics(session, run.id)
     if not iter_metrics:
-        return None  # no raw to interpret
+        iter_metrics = _iteration_plugin_metrics_from_raw(run, artifact_base)  # slow fallback
+    if not iter_metrics:
+        return None  # no metrics to interpret
     return score_metrics_under(session, run.id, run.methodology_version, methodology, iter_metrics)
+
+
+# Commit the re-grade in batches of this many runs (each run is savepoint-isolated), so a
+# long pass isn't bottlenecked on a per-run fsync while staying resumable.
+_REGRADE_COMMIT_EVERY = 100
 
 
 def score_history_under_current(session, progress=None) -> dict:
@@ -457,22 +502,28 @@ def score_history_under_current(session, progress=None) -> dict:
     run_ids = list(session.scalars(select(Run.id).where(Run.status == RunStatus.COMPLETE)))
     total = len(run_ids)
     counts = {"exact": 0, "partial": 0, "incomparable": 0, "scored": 0, "skipped": 0, "errors": 0}
+    # Commit in batches instead of once per run: a per-run commit fsyncs on every one of
+    # (potentially thousands of) runs, which dominated the wall-clock. Each run is wrapped in
+    # a SAVEPOINT so a single malformed run rolls back only itself, not the whole batch — so
+    # the pass stays resumable/robust while committing ~N× less often.
     for i, run_id in enumerate(run_ids):
         try:
-            run = session.get(Run, run_id)
-            score = score_run_under(session, run, methodology, artifact_base)
-            if score is None:
-                counts["skipped"] += 1
-            else:
-                counts["scored"] += 1
-                counts[score.comparability] = counts.get(score.comparability, 0) + 1
-                session.commit()  # persist this run before moving on (resumable progress)
+            with session.begin_nested():  # per-run savepoint
+                run = session.get(Run, run_id)
+                score = score_run_under(session, run, methodology, artifact_base)
+                if score is None:
+                    counts["skipped"] += 1
+                else:
+                    counts["scored"] += 1
+                    counts[score.comparability] = counts.get(score.comparability, 0) + 1
         except Exception:  # noqa: BLE001 — isolate a bad run; never abort the whole pass
             log.exception("Re-grade failed for run %s; skipping", run_id)
-            session.rollback()
             counts["errors"] += 1
+        if (i + 1) % _REGRADE_COMMIT_EVERY == 0:
+            session.commit()
         if progress is not None:
             progress(i + 1, total, f"scored {counts['scored']}/{total}")
+    session.commit()  # flush the final partial batch
     log.info("Re-graded %s run(s) under %s: %s", counts["scored"], methodology.version, counts)
     return {"methodology": methodology.version, "total": total, **counts}
 
