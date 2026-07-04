@@ -1001,3 +1001,14 @@ export interface DataDump {
   limit: number;
   runs: DataDumpRun[];
 }
+
+// Profile-centric AI export: each profile's tunable settings → runs → raw scoring metrics,
+// plus the methodology objective and the shaper field model. Purpose-built to feed an LLM
+// that suggests new (untested) profiles. Typed loosely — the payload is deeply nested and
+// consumed as raw JSON (view / copy / download).
+export interface OptimizerExport {
+  generated_at: string;
+  profile_count: number;
+  runs_per_profile_limit: number;
+  [key: string]: unknown;
+}

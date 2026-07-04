@@ -14,7 +14,20 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DataObjectIcon from "@mui/icons-material/DataObject";
 
 import { api } from "../api/client";
-import type { DataDump as DataDumpPayload } from "../api/types";
+import type { DataDump as DataDumpPayload, OptimizerExport } from "../api/types";
+
+// Save any object as a downloaded .json file.
+function saveJson(obj: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
 // Consolidated raw export: pulls the last N runs (with each plugin's immutable raw
 // observations) into one JSON blob the user can view, copy, or download. The
@@ -65,13 +78,128 @@ export default function DataDump() {
     }
   }, [json]);
 
+  // ── AI optimizer export: profiles → runs → raw scoring metrics + the objective/levers ──
+  const [runsPerProfile, setRunsPerProfile] = useState(50);
+  const [optExport, setOptExport] = useState<OptimizerExport | null>(null);
+  const [optLoading, setOptLoading] = useState(false);
+  const optJson = optExport ? JSON.stringify(optExport, null, 2) : "";
+
+  const generateOpt = useCallback(async () => {
+    setOptLoading(true);
+    setError(null);
+    try {
+      setOptExport(await api.optimizerExport(Math.max(1, Math.min(1000, Math.round(runsPerProfile)))));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to generate the optimizer export");
+    } finally {
+      setOptLoading(false);
+    }
+  }, [runsPerProfile]);
+
+  const copyOpt = useCallback(async () => {
+    if (!optJson) return;
+    try {
+      await navigator.clipboard.writeText(optJson);
+      setToast("Copied optimizer JSON to clipboard");
+    } catch {
+      setToast("Clipboard unavailable — use Download instead");
+    }
+  }, [optJson]);
+
   return (
     <Box>
       <Typography variant="h4" sx={{ mb: 1 }}>
         Data Dump
       </Typography>
+
+      {/* AI optimizer export — the headline export for feeding a model. */}
+      <Typography variant="h6" sx={{ mb: 0.5 }}>
+        AI optimizer export
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 820 }}>
+        A profile-centric JSON built to feed an AI: every profile's <b>tunable shaper settings</b> (the
+        levers), its <b>runs with the raw scoring metrics</b> (fcp / lcp / total_stall in ms, and every
+        other scored metric), plus the <b>objective</b> (which metrics are the crown, lower-is-better,
+        and the best values achieved so far) and the <b>shaper field model</b> (which params are writable
+        and their sensible ranges). Hand it to a model and ask it to propose new, untested profiles likely
+        to score faster than anything measured.
+      </Typography>
+
+      <Card sx={{ mb: 3 }}>
+        <CardContent>
+          <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+            <TextField
+              label="Runs per profile"
+              type="number"
+              size="small"
+              value={runsPerProfile}
+              onChange={(e) => setRunsPerProfile(parseInt(e.target.value || "0", 10))}
+              inputProps={{ min: 1, max: 1000 }}
+              sx={{ width: 170 }}
+              helperText="Most-recent samples per profile"
+            />
+            <Button
+              variant="contained"
+              onClick={generateOpt}
+              disabled={optLoading}
+              startIcon={optLoading ? <CircularProgress size={16} color="inherit" /> : <DataObjectIcon />}
+            >
+              {optLoading ? "Generating…" : "Generate"}
+            </Button>
+            {optExport && (
+              <>
+                <Button
+                  variant="outlined"
+                  startIcon={<DownloadIcon />}
+                  onClick={() =>
+                    saveJson(
+                      optExport,
+                      `pathbrain-optimizer-${optExport.profile_count}profiles-${optExport.generated_at.replace(/[:.]/g, "-")}.json`,
+                    )
+                  }
+                >
+                  Download .json
+                </Button>
+                <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={copyOpt}>
+                  Copy
+                </Button>
+                <Typography variant="caption" color="text.secondary">
+                  {optExport.profile_count} profile(s) · generated {optExport.generated_at}
+                </Typography>
+              </>
+            )}
+          </Stack>
+        </CardContent>
+      </Card>
+
+      {optExport && (
+        <Card sx={{ mb: 3 }}>
+          <CardContent>
+            <Box
+              component="pre"
+              sx={{
+                m: 0,
+                p: 1.5,
+                maxHeight: "50vh",
+                overflow: "auto",
+                fontSize: 12,
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                bgcolor: "background.default",
+                borderRadius: 1,
+                whiteSpace: "pre",
+              }}
+            >
+              {optJson}
+            </Box>
+          </CardContent>
+        </Card>
+      )}
+
+      <Typography variant="h6" sx={{ mb: 0.5 }}>
+        Raw run dump
+      </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 760 }}>
-        Generate a single consolidated JSON of the last <b>N</b> runs, including each run's settings,
+        A single consolidated JSON of the last <b>N</b> runs, including each run's settings,
         score, and the <b>raw observations</b> captured by every plugin (per iteration) — the immutable
         source of truth that the per-run view doesn't expose. Use it for offline analysis, debugging, or
         sharing a reproducible slice of history.

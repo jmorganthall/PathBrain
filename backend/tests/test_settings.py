@@ -881,3 +881,45 @@ def test_profiles_endpoint_flags_co_leaders_on_a_tie(client, monkeypatch):
     other = "tiebbb0000x" if best == "tieaaa0000x" else "tieaaa0000x"
     assert other in co                                      # the tied twin is flagged co-leader
     assert best not in co                                   # the crown is excluded from its own co-leaders
+
+
+def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
+    # The AI export is profile-centric: each profile carries its tunable settings, its runs, and
+    # the raw scoring metrics per run — plus the methodology objective and the shaper field model.
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(3):
+        _seed_run("optexp0000x", 80, t0 - timedelta(minutes=30 - i), iterations=6,
+                  crown_raw=(210.0, 250.0, 140.0))
+
+    body = client.get("/api/settings/export/optimizer").json()
+    # Top-level: objective + the levers an AI may tune.
+    assert "generated_at" in body and body["profile_count"] >= 1
+    meth = body["methodology"]
+    assert set(meth["crown_metrics"]) == {"fcp", "lcp", "total_stall"}
+    assert "objective" in meth and meth["metrics"]["fcp"]["is_crown_metric"] is True
+    shaper = body["shaper_model"]
+    assert "quantum" in shaper["writable_fields"]        # a lever apply() can write
+    assert any(f["key"] == "target" and f["suggested_range"] for f in shaper["fields"])
+
+    prof = next(p for p in body["profiles"] if p["fingerprint"] == "optexp0000x")
+    assert prof["settings"]                               # the tunable shaper params
+    assert prof["confident"] and prof["runs"] == 3
+    # Raw scoring metrics per run (most recent first), with the crown metrics present.
+    assert len(prof["run_samples"]) == 3
+    sample = prof["run_samples"][0]
+    assert sample["metrics"]["fcp"] == 210.0 and sample["metrics"]["total_stall"] == 140.0
+    # Percentile-normalized crown + raw medians summarize the profile.
+    assert set(prof["crown_percentiles"]) >= {"fcp", "lcp", "total_stall"}
+    assert prof["metric_medians"]["lcp"] == 250.0
+
+
+def test_optimizer_export_caps_run_samples(client):
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(6):
+        _seed_run("optcap0000x", 80, t0 - timedelta(minutes=60 - i), iterations=3,
+                  crown_raw=(300.0, 340.0, 200.0))
+
+    body = client.get("/api/settings/export/optimizer?runs_per_profile=2").json()
+    prof = next(p for p in body["profiles"] if p["fingerprint"] == "optcap0000x")
+    assert len(prof["run_samples"]) == 2          # capped to the requested limit
+    assert prof["run_samples_truncated"] is True  # flagged as truncated (6 runs > 2)

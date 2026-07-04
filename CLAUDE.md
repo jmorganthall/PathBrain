@@ -274,7 +274,12 @@ LLM-based. See `README.md` for the product overview.
   plus "Test to minimum" and **"Race challengers"**),
   Experiments, Shotgun Sweep, Config, Methodology, Plugins, Data Dump, Run Detail. A
   top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
-  (re-grade, sweep, run, profile test, challenger race, …).
+  (re-grade, sweep, run, profile test, challenger race, …). The **Data Dump** page has two
+  exports: the raw run dump (`/api/history/dump`) and the **AI optimizer export**
+  (`GET /api/settings/export/optimizer`, `optimizer_export`) — a profile-centric JSON of each
+  profile's tunable shaper settings → runs → raw scoring metrics, plus the methodology objective
+  (crown metrics + lower-is-better + observed best/worst) and the shaper field model (writable +
+  sweepable fields + ranges), purpose-built to feed an LLM that proposes new, untested profiles.
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`,
