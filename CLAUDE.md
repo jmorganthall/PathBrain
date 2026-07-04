@@ -300,8 +300,17 @@ LLM-based. See `README.md` for the product overview.
   `metric_direction` (does the metric rise/fall as the field rises) + `effect` (improves/worsens the
   crown). This is the settings→outcome relationship map computed *server-side* — trustworthy and
   chartable regardless of the model — handed to the LLM so it reasons over an explicit "this up →
-  that down" map instead of eyeballing raw rows. They're **marginal** (profiles vary several fields
-  at once → possibly confounded), not partial. Bounded
+  that down" map instead of eyeballing raw rows. Each lever is also correlated against the
+  **Overall** itself (the rank-corner we crown on), since a lever can move the Overall while barely
+  correlating with any single raw metric. They're **marginal** (profiles vary several fields
+  at once → possibly confounded), not partial. It **also** carries a deterministic
+  **`analysis.top_profile_signature`** block (`_lever_signature`): for each writable lever, what the
+  **top-Overall quartile** of profiles runs vs the whole field — `pattern` (higher/lower/`sweet_spot`
+  /none), `top_value`+`top_range` (the value the winners share), `field_range`, plus shift /
+  concentration / Cliff's delta. This answers what the correlations **can't**: when every ρ≈0 the
+  winners can still cluster on a specific value (a sweet spot both extremes miss) or run a lever
+  systematically higher/lower — a combination/non-monotone edge a single-lever correlation is
+  blind to (rendered as a **"What the top profiles share"** card on the AI page). Bounded
   by `runs_per_profile` and `profile_limit` (top-N by Overall). The **AI** page (`ai.py`,
   `routes_ai.py`) sends that export to an LLM via **OpenRouter** and shows proposed new profiles:
   the API key lives in its own `AppConfig` `"ai"` row (isolated from the benchmark config so it

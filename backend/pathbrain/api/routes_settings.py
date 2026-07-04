@@ -638,6 +638,127 @@ def _field_sensitivity(
     return out
 
 
+# --- What the overperformers share -----------------------------------------------------
+# A monotone rank correlation (above) can't see a *sweet spot* — a lever value the best
+# profiles cluster on while both extremes are worse — or an interaction. This contrast
+# answers "which settings do the top-Overall profiles share?" directly, catching those.
+SIGNATURE_TOP_FRACTION = 0.25    # the top quartile by Overall = "the overperformers"
+SIGNATURE_MIN_PROFILES = 8       # need this many scored profiles to split top/rest at all
+SIGNATURE_MIN_GROUP = 3          # ...and this many on each side of the split
+SIGNATURE_SHIFT_STRONG = 0.5     # |top−rest median| ≥ this many field-IQRs = a clear higher/lower
+SIGNATURE_CONCENTRATION = 0.5    # top IQR ≤ half the field IQR = the top group agrees on a value
+
+
+def _cliffs_delta(a: list[float], b: list[float]) -> float | None:
+    """Cliff's delta / rank-biserial: P(a>b) − P(a<b) ∈ [−1,1]. Scale-free 'do group a's values
+    tend to sit above group b's?' — robust to outliers and to different field scales."""
+    if not a or not b:
+        return None
+    gt = sum(1 for x in a for y in b if x > y)
+    lt = sum(1 for x in a for y in b if x < y)
+    return (gt - lt) / (len(a) * len(b))
+
+
+def _lever_signature(profiles_out: list[dict]) -> dict:
+    """For each writable lever (per pipe label): the value the **top-Overall** profiles share vs
+    the field's full range — the settings the overperformers have in common.
+
+    Complements ``_field_sensitivity``: correlation asks "does raising this lever monotonically
+    help?"; this asks "what do the winners run?", which also catches a **sweet spot** in the
+    middle (top group concentrates on a value both extremes miss) and combination effects a
+    single-lever correlation is blind to. Deterministic; the same data the correlation uses.
+    """
+    ranked = [
+        p for p in profiles_out
+        if isinstance(p.get("overall"), (int, float)) and not isinstance(p.get("overall"), bool)
+    ]
+    ranked.sort(key=lambda p: p["overall"], reverse=True)
+    n = len(ranked)
+    if n < SIGNATURE_MIN_PROFILES:
+        return {"available": False, "reason": f"need ≥{SIGNATURE_MIN_PROFILES} scored profiles, have {n}", "levers": []}
+    top_k = max(SIGNATURE_MIN_GROUP, round(n * SIGNATURE_TOP_FRACTION))
+    top_k = min(top_k, n - SIGNATURE_MIN_GROUP)  # keep ≥ MIN_GROUP in the rest, too
+    top_fps = {id(p) for p in ranked[:top_k]}
+
+    # Per (pipe_label, field): the numeric values in the top group and the rest.
+    top_by: dict[tuple[str, str], list[float]] = {}
+    rest_by: dict[tuple[str, str], list[float]] = {}
+    for p in ranked:
+        bucket = top_by if id(p) in top_fps else rest_by
+        for pipe in (p.get("settings") or []):
+            label = pipe.get("label") or "pipe"
+            for fkey in WRITABLE_FIELDS:
+                v = _to_number(fkey, pipe.get(fkey))
+                if v is not None:
+                    bucket.setdefault((label, fkey), []).append(float(v))
+
+    levers: list[dict] = []
+    for key in set(top_by) | set(rest_by):
+        label, fkey = key
+        top_vals = top_by.get(key, [])
+        rest_vals = rest_by.get(key, [])
+        all_vals = top_vals + rest_vals
+        if len(top_vals) < SIGNATURE_MIN_GROUP or len(rest_vals) < SIGNATURE_MIN_GROUP:
+            continue
+        if len(set(all_vals)) < 2:  # constant field — nothing to share
+            continue
+        top_s, rest_s, all_s = _spread(top_vals), _spread(rest_vals), _spread(all_vals)
+        field_iqr = all_s["p75"] - all_s["p25"] or (all_s["max"] - all_s["min"])
+        if not field_iqr:
+            continue
+        shift = (top_s["median"] - rest_s["median"]) / field_iqr
+        top_iqr = top_s["p75"] - top_s["p25"]
+        concentration = max(0.0, 1.0 - (top_iqr / field_iqr))
+        cliff = _cliffs_delta(top_vals, rest_vals)
+        fld = shaper_field(fkey)
+        field_label = fld.label if fld else fkey
+
+        if abs(shift) >= SIGNATURE_SHIFT_STRONG:
+            pattern = "higher" if shift > 0 else "lower"
+        elif concentration >= SIGNATURE_CONCENTRATION:
+            pattern = "sweet_spot"
+        else:
+            pattern = "none"
+        levers.append({
+            "pipe": label,
+            "field": fkey,
+            "field_label": field_label,
+            "pattern": pattern,             # higher / lower / sweet_spot / none
+            "top_value": top_s["median"],   # the value the overperformers share
+            "top_range": [top_s["p25"], top_s["p75"]],
+            "field_range": [all_s["min"], all_s["max"]],
+            "field_median": all_s["median"],
+            "shift": _round2(shift),                 # signed, in field-IQR units
+            "concentration": _round2(concentration),  # 0..1, higher = top group agrees more
+            "cliffs_delta": _round2(cliff),
+            "top_n": len(top_vals),
+            "rest_n": len(rest_vals),
+            "summary": _signature_summary(label, field_label, pattern, top_s, all_s),
+        })
+    # Most distinctive levers first: a clear higher/lower or a tight shared value.
+    levers.sort(key=lambda l: -max(abs(l["shift"] or 0.0), l["concentration"] or 0.0))
+    return {
+        "available": True,
+        "top_profiles": top_k,
+        "rest_profiles": n - top_k,
+        "top_fraction": SIGNATURE_TOP_FRACTION,
+        "levers": levers,
+    }
+
+
+def _signature_summary(pipe: str, field_label: str, pattern: str, top_s: dict, all_s: dict) -> str:
+    if pattern == "none":
+        return f"Top profiles show no distinctive {pipe} {field_label} — it ranges as widely as the rest."
+    lo, hi = top_s["p25"], top_s["p75"]
+    rng = f"{top_s['median']:g} ({lo:g}–{hi:g})" if lo != hi else f"{top_s['median']:g}"
+    field_rng = f"{all_s['min']:g}–{all_s['max']:g}"
+    if pattern == "higher":
+        return f"Top profiles run {pipe} {field_label} HIGHER — ~{rng} vs the {field_rng} field range."
+    if pattern == "lower":
+        return f"Top profiles run {pipe} {field_label} LOWER — ~{rng} vs the {field_rng} field range."
+    return f"Top profiles concentrate {pipe} {field_label} at ~{rng} — a shared sweet spot within the {field_rng} field range."
+
+
 def build_optimizer_export(
     session: Session, runs_per_profile: int = 50, profile_limit: int | None = None
 ) -> dict:
@@ -727,6 +848,9 @@ def build_optimizer_export(
     # Precomputed settings→outcome relationships (marginal Spearman ρ per writable field × crown
     # metric) so the model reasons over an explicit "this up → that down" map, not just raw rows.
     field_sensitivity = _field_sensitivity(profiles_out, crown_metrics, metric_meta)
+    # What the top-Overall profiles share (top-vs-rest per lever) — catches a sweet spot or a
+    # combination that a monotone correlation can't see.
+    lever_signature = _lever_signature(profiles_out)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "runs_per_profile_limit": runs_per_profile,
@@ -799,6 +923,16 @@ def build_optimizer_export(
                 "ρ∈[-1,1]; |ρ|≥0.3 is reported as a trend, below that as 'none'."
             ),
             "field_sensitivity": field_sensitivity,
+            "top_profile_signature_note": (
+                "top_profile_signature answers a DIFFERENT question than the correlations: for each "
+                "lever, what the top-Overall profiles (top quartile) run vs the whole field. Use it "
+                "when correlations are flat — a lever can show ρ≈0 yet the winners still cluster on a "
+                "specific value ('sweet_spot', both extremes worse) or run it systematically "
+                "higher/lower. 'pattern' is higher/lower/sweet_spot/none; 'top_value'+'top_range' is "
+                "what they share; 'field_range' is the full spread. Prefer proposals that match the "
+                "top profiles' shared values on the distinctive levers."
+            ),
+            "top_profile_signature": lever_signature,
         },
         "profiles": profiles_out,
     }

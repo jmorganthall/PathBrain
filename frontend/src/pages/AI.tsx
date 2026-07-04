@@ -41,7 +41,9 @@ import type {
   AiSuggestResult,
   AiSuggestion,
   FieldSensitivity,
+  LeverSignature,
   ProfileTest,
+  TopProfileSignature,
 } from "../api/types";
 import ApplyConfirmDialog, { type ApplyConfirm } from "../components/ApplyConfirmDialog";
 
@@ -199,6 +201,86 @@ function RelationshipsCard({
   );
 }
 
+// "What the top profiles share" — the deterministic top-vs-rest contrast. Answers the question
+// the correlations can't: when every ρ is ~0 but some profiles still overperform, what settings
+// do the winners have in common? Catches a shared sweet-spot value both extremes miss.
+function TopProfilesCard({ signature }: { signature?: TopProfileSignature }) {
+  if (!signature) return null;
+  const levers = (signature.levers ?? []).filter((l) => l.pattern !== "none");
+  const patternChip = (l: LeverSignature) => {
+    if (l.pattern === "sweet_spot")
+      return { color: "info" as const, label: "sweet spot" };
+    if (l.pattern === "higher") return { color: "success" as const, label: "runs higher" };
+    return { color: "warning" as const, label: "runs lower" };
+  };
+  const fmt = (n: number) => (Math.abs(n) >= 100 ? Math.round(n) : Math.round(n * 100) / 100);
+
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+          <InsightsIcon fontSize="small" />
+          <Typography variant="h6">What the top profiles share</Typography>
+        </Stack>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 820 }}>
+          The settings the <b>top-Overall profiles</b> have in common, vs the rest of the field.
+          This catches what the correlations can't: a lever can show no monotonic trend yet the
+          winners still cluster on a specific value (a <b>sweet spot</b> both extremes miss) or run
+          it systematically higher/lower.
+          {signature.available === false && signature.reason ? ` (${signature.reason})` : ""}
+        </Typography>
+
+        {signature.available === false || levers.length === 0 ? (
+          <Alert severity="info">
+            No lever stood out among the top profiles yet — they don't share a distinctive value
+            beyond what the whole field runs. Collect more profiles that vary the levers, or the
+            edge may be an interaction of several at once.
+          </Alert>
+        ) : (
+          <Box sx={{ overflowX: "auto" }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Pipe</TableCell>
+                  <TableCell>Lever</TableCell>
+                  <TableCell>Top profiles run</TableCell>
+                  <TableCell>Whole field</TableCell>
+                  <TableCell>Pattern</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {levers.map((l, i) => {
+                  const chip = patternChip(l);
+                  return (
+                    <TableRow key={i} hover>
+                      <TableCell>{l.pipe}</TableCell>
+                      <TableCell>{l.field_label}</TableCell>
+                      <TableCell sx={{ fontVariantNumeric: "tabular-nums" }}>
+                        <b>{fmt(l.top_value)}</b>{" "}
+                        <Typography component="span" variant="caption" color="text.secondary">
+                          ({fmt(l.top_range[0])}–{fmt(l.top_range[1])})
+                        </Typography>
+                      </TableCell>
+                      <TableCell sx={{ fontVariantNumeric: "tabular-nums", color: "text.secondary" }}>
+                        {fmt(l.field_range[0])}–{fmt(l.field_range[1])}
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip title={l.summary}>
+                          <Chip size="small" color={chip.color} label={chip.label} />
+                        </Tooltip>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </Box>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AI() {
   const [cfg, setCfg] = useState<AiConfig | null>(null);
   const [keyInput, setKeyInput] = useState("");
@@ -295,6 +377,7 @@ export default function AI() {
         profiles_sent: number | null;
         payload_bytes: number;
         field_sensitivity?: FieldSensitivity[];
+        top_profile_signature?: TopProfileSignature;
       } = {
         profiles_sent: null,
         payload_bytes: 0,
@@ -306,6 +389,7 @@ export default function AI() {
               profiles_sent: evt.profiles_sent,
               payload_bytes: evt.payload_bytes,
               field_sensitivity: evt.field_sensitivity,
+              top_profile_signature: evt.top_profile_signature,
             };
             break;
           case "reasoning":
@@ -326,6 +410,7 @@ export default function AI() {
               suggestions: evt.suggestions,
               relationships: evt.relationships,
               field_sensitivity: meta.field_sensitivity,
+              top_profile_signature: meta.top_profile_signature,
               usage: evt.usage,
               profiles_sent: meta.profiles_sent,
               payload_bytes: meta.payload_bytes,
@@ -727,6 +812,8 @@ export default function AI() {
           relationships={result.relationships}
         />
       )}
+
+      {result && <TopProfilesCard signature={result.top_profile_signature} />}
 
       {result && (
         <Card>
