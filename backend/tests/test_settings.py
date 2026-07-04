@@ -902,8 +902,11 @@ def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
     assert any(f["key"] == "target" and f["suggested_range"] for f in shaper["fields"])
 
     prof = next(p for p in body["profiles"] if p["fingerprint"] == "optexp0000x")
-    assert prof["settings"]                               # the tunable shaper params
+    assert prof["settings"]                               # FULL shaper config (levers + identity)
     assert prof["confident"] and prof["runs"] == 3
+    # Both scoring data AND full details are present per profile.
+    assert "axis_scores" in prof and "overall_iqr" in prof
+    assert prof["first_seen"] and prof["last_seen"]
     # Raw scoring metrics per run (most recent first), with the crown metrics present.
     assert len(prof["run_samples"]) == 3
     sample = prof["run_samples"][0]
@@ -923,3 +926,12 @@ def test_optimizer_export_caps_run_samples(client):
     prof = next(p for p in body["profiles"] if p["fingerprint"] == "optcap0000x")
     assert len(prof["run_samples"]) == 2          # capped to the requested limit
     assert prof["run_samples_truncated"] is True  # flagged as truncated (6 runs > 2)
+
+
+def test_optimizer_export_top_n_profiles(client):
+    body = client.get("/api/settings/export/optimizer?profile_limit=1").json()
+    assert body["profile_count"] == 1                       # only the top profile by Overall
+    assert body["profile_limit"] == 1
+    assert body["profiles_available"] >= 1                  # but more exist in the field
+    # The one returned is the highest-Overall profile.
+    assert body["profiles"][0]["overall"] is not None

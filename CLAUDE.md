@@ -272,14 +272,23 @@ LLM-based. See `README.md` for the product overview.
   `environment_signature` check as the race), so the card never lists a profile the race
   would refuse to apply;
   plus "Test to minimum" and **"Race challengers"**),
-  Experiments, Shotgun Sweep, Config, Methodology, Plugins, Data Dump, Run Detail. A
+  Experiments, Shotgun Sweep, Config, Methodology, Plugins, Data Dump, AI, Run Detail. A
   top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
   (re-grade, sweep, run, profile test, challenger race, …). The **Data Dump** page has two
   exports: the raw run dump (`/api/history/dump`) and the **AI optimizer export**
-  (`GET /api/settings/export/optimizer`, `optimizer_export`) — a profile-centric JSON of each
-  profile's tunable shaper settings → runs → raw scoring metrics, plus the methodology objective
-  (crown metrics + lower-is-better + observed best/worst) and the shaper field model (writable +
-  sweepable fields + ranges), purpose-built to feed an LLM that proposes new, untested profiles.
+  (`GET /api/settings/export/optimizer`, `build_optimizer_export`) — a profile-centric JSON of
+  each profile's **full details** (complete shaper settings + first/last seen) **and scoring
+  data** (percentile Overall + IQR, per-crown-metric percentile, axis scores, raw metric medians,
+  and per-run raw scoring metrics), plus the methodology objective (crown metrics + lower-is-better
+  + observed best/worst) and the shaper field model (writable + sweepable fields + ranges). Bounded
+  by `runs_per_profile` and `profile_limit` (top-N by Overall). The **AI** page (`ai.py`,
+  `routes_ai.py`) sends that export to an LLM via **OpenRouter** and shows proposed new profiles:
+  the API key lives in its own `AppConfig` `"ai"` row (isolated from the benchmark config so it
+  never leaks into run snapshots / the data dump; returned **masked** via `ai.public_config`), the
+  model + editable prompt are saved there too. `GET/PUT /api/ai/config`, `DELETE /api/ai/config/key`,
+  `GET /api/ai/models`, `POST /api/ai/suggest` (builds the export, calls OpenRouter chat-completions,
+  best-effort parses `{suggestions:[{settings, rationale}]}`). Nothing is auto-applied — suggestions
+  are display-only for the user to review and test.
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`,

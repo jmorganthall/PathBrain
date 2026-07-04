@@ -1012,3 +1012,35 @@ export interface OptimizerExport {
   runs_per_profile_limit: number;
   [key: string]: unknown;
 }
+
+// AI (OpenRouter) settings, as returned to the UI — the API key is masked to a hint.
+export interface AiConfig {
+  configured: boolean;
+  key_hint: string;
+  model: string;
+  prompt: string;
+  default_prompt: string;
+}
+
+export interface AiModel {
+  id: string;
+  name: string;
+  context_length: number | null;
+  prompt_price: string | null;
+}
+
+// One proposed profile from the model: a settings object (only the fields it's changing) +
+// a rationale. `settings` shape is model-authored, so it's loosely typed.
+export interface AiSuggestion {
+  settings?: Record<string, unknown>;
+  rationale?: string;
+  [key: string]: unknown;
+}
+
+export interface AiSuggestResult {
+  model: string;
+  raw: string;
+  suggestions: AiSuggestion[];
+  usage: Record<string, number>;
+  profiles_sent: number | null;
+}

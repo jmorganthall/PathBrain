@@ -461,6 +461,9 @@ def optimizer_export(
     runs_per_profile: int = Query(
         50, ge=1, le=1000, description="Cap the per-profile run samples (most recent first)."
     ),
+    profile_limit: int | None = Query(
+        None, ge=1, le=1000, description="Only the top-N profiles by Overall (default: all)."
+    ),
 ) -> dict:
     """A single AI-ready JSON: every profile's **tunable shaper settings** → its **runs** →
     the **raw metrics used for scoring**, plus the methodology goal and the shaper field model.
@@ -471,6 +474,16 @@ def optimizer_export(
     best/worst achieved so far) — everything needed to propose new, untested profiles likely to
     score higher. Profile-centric so settings↔performance patterns are explicit.
     """
+    return build_optimizer_export(session, runs_per_profile, profile_limit)
+
+
+def build_optimizer_export(
+    session: Session, runs_per_profile: int = 50, profile_limit: int | None = None
+) -> dict:
+    """Assemble the AI-ready optimizer export (see ``optimizer_export``). Factored out so the
+    AI-suggestion flow (``ai.suggest``) sends exactly what the export endpoint returns.
+    ``profile_limit`` keeps only the top-N profiles by Overall (they're already ranked), to
+    bound the payload the model has to read."""
     methodology = ensure_current_methodology(session, get_config(session))
     defn = methodology.definition or {}
     crown_metrics, crown_required = overall_metrics(defn)
@@ -500,23 +513,33 @@ def optimizer_export(
         del runs[runs_per_profile:]
 
     result = compute_profiles(session, complete_only=True)
+    # Profiles are already ranked by Overall (best first); keep the top-N when a limit is set.
+    ranked = result["profiles"]
+    selected = ranked[:profile_limit] if profile_limit else ranked
     profiles_out = []
-    for p in result["profiles"]:
+    for p in selected:
         fp = p["fingerprint"]
         samples = runs_by_fp.get(fp, [])
         profiles_out.append({
             "fingerprint": fp,
             "label": p["label"],
-            # The tunable levers: normalized shaper params per pipe (bandwidth, quantum, target,
-            # interval, ecn, scheduler, queues) — the "inputs" an AI would vary.
+            # FULL profile details — the complete shaper config per pipe (bandwidth, quantum,
+            # limit, target, interval, ecn, flows, queues, scheduler): both the tunable levers
+            # an AI would vary and the identity fields that define the profile.
             "settings": p["settings"],
             "runs": p["count"],
             "iterations": p["iterations"],
             "confident": p["confident"],
-            # Outcome summary: percentile-normalized Overall + per-crown-metric percentile +
-            # the raw median of every scored metric (ms). Higher percentile / lower ms = better.
+            "first_seen": p.get("first_seen"),
+            "last_seen": p.get("last_seen"),
+            # SCORING data — how the profile performed. Percentile-normalized Overall (+ IQR),
+            # per-crown-metric percentile, the graded axis scores (responsiveness/smoothness/
+            # speed/…), and the raw median of every scored metric (ms). Higher percentile /
+            # score, lower ms = better.
             "overall": p["overall"],
+            "overall_iqr": {"p25": p.get("overall_p25"), "p75": p.get("overall_p75")},
             "crown_percentiles": p.get("crown_norm") or {},
+            "axis_scores": p.get("scores") or {},
             "metric_medians": p.get("metrics") or {},
             # The raw scoring metrics per run (most recent first, capped).
             "run_samples": samples,
@@ -535,7 +558,9 @@ def optimizer_export(
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "runs_per_profile_limit": runs_per_profile,
-        "profile_count": len(profiles_out),
+        "profile_count": len(profiles_out),        # profiles included in this export
+        "profiles_available": len(ranked),         # total profiles that could be exported
+        "profile_limit": profile_limit,            # None = all; else top-N by Overall
         "methodology": {
             "version": methodology.version,
             "crown_metrics": crown_metrics,

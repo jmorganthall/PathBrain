@@ -80,6 +80,7 @@ export default function DataDump() {
 
   // ── AI optimizer export: profiles → runs → raw scoring metrics + the objective/levers ──
   const [runsPerProfile, setRunsPerProfile] = useState(50);
+  const [optProfileLimit, setOptProfileLimit] = useState(25);
   const [optExport, setOptExport] = useState<OptimizerExport | null>(null);
   const [optLoading, setOptLoading] = useState(false);
   const optJson = optExport ? JSON.stringify(optExport, null, 2) : "";
@@ -88,13 +89,18 @@ export default function DataDump() {
     setOptLoading(true);
     setError(null);
     try {
-      setOptExport(await api.optimizerExport(Math.max(1, Math.min(1000, Math.round(runsPerProfile)))));
+      setOptExport(
+        await api.optimizerExport(
+          Math.max(1, Math.min(1000, Math.round(runsPerProfile))),
+          Math.max(1, Math.min(1000, Math.round(optProfileLimit))),
+        ),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to generate the optimizer export");
     } finally {
       setOptLoading(false);
     }
-  }, [runsPerProfile]);
+  }, [runsPerProfile, optProfileLimit]);
 
   const copyOpt = useCallback(async () => {
     if (!optJson) return;
@@ -128,6 +134,16 @@ export default function DataDump() {
       <Card sx={{ mb: 3 }}>
         <CardContent>
           <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+            <TextField
+              label="Top profiles"
+              type="number"
+              size="small"
+              value={optProfileLimit}
+              onChange={(e) => setOptProfileLimit(parseInt(e.target.value || "0", 10))}
+              inputProps={{ min: 1, max: 1000 }}
+              sx={{ width: 150 }}
+              helperText="Best N by Overall"
+            />
             <TextField
               label="Runs per profile"
               type="number"

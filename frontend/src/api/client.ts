@@ -27,6 +27,9 @@ import type {
   JobsResponse,
   RunScoresResponse,
   ChallengerRace,
+  AiConfig,
+  AiModel,
+  AiSuggestResult,
   DataDump,
   OptimizerExport,
   ProfileTest,
@@ -249,8 +252,24 @@ export const api = {
 
   // Consolidated raw export of the last N runs.
   dataDump: (limit: number) => request<DataDump>(`/history/dump?limit=${limit}`),
-  optimizerExport: (runsPerProfile: number) =>
-    request<OptimizerExport>(`/settings/export/optimizer?runs_per_profile=${runsPerProfile}`),
+  optimizerExport: (runsPerProfile: number, profileLimit?: number) =>
+    request<OptimizerExport>(
+      `/settings/export/optimizer?runs_per_profile=${runsPerProfile}` +
+        (profileLimit ? `&profile_limit=${profileLimit}` : ""),
+    ),
+
+  // AI (OpenRouter)
+  aiConfig: () => request<AiConfig>("/ai/config"),
+  aiSaveConfig: (body: { api_key?: string; model?: string; prompt?: string }) =>
+    request<AiConfig>("/ai/config", { method: "PUT", body: JSON.stringify(body) }),
+  aiClearKey: () => request<AiConfig>("/ai/config/key", { method: "DELETE" }),
+  aiModels: () => request<{ models: AiModel[] }>("/ai/models"),
+  aiSuggest: (body: {
+    model?: string;
+    prompt?: string;
+    runs_per_profile?: number;
+    profile_limit?: number | null;
+  }) => request<AiSuggestResult>("/ai/suggest", { method: "POST", body: JSON.stringify(body) }),
 
   // Plugins
   plugins: () => request<PluginInfo[]>("/plugins"),
