@@ -29,6 +29,7 @@ import type {
   ChallengerRace,
   AiConfig,
   AiModel,
+  AiStreamEvent,
   AiSuggestResult,
   DataDump,
   OptimizerExport,
@@ -336,6 +337,62 @@ export const api = {
       // slow model returns rather than the browser aborting with an opaque error.
       { timeoutMs: 240_000 },
     ),
+  // Streaming variant: the model's reasoning + answer arrive token-by-token as Server-Sent
+  // Events, so a long request never times out and the UI shows progress live. `onEvent` fires
+  // for each event; the promise resolves when the stream closes. Pass a signal to cancel.
+  aiSuggestStream: async (
+    body: { model?: string; prompt?: string; runs_per_profile?: number; profile_limit?: number | null },
+    onEvent: (evt: AiStreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}/ai/suggest/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (e) {
+      if (signal?.aborted) return;
+      throw new ApiError(0, "Couldn't reach the server to start the stream.");
+    }
+    if (!res.ok || !res.body) {
+      let detail = res.statusText;
+      try {
+        const b = await res.json();
+        if (b && typeof b.detail === "string") detail = b.detail;
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(res.status, detail);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // SSE events are separated by a blank line.
+      let sep: number;
+      while ((sep = buf.indexOf("\n\n")) !== -1) {
+        const block = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        for (const line of block.split("\n")) {
+          const t = line.replace(/^\s+/, "");
+          if (!t.startsWith("data:")) continue;
+          const data = t.slice(5).trim();
+          if (!data) continue;
+          try {
+            onEvent(JSON.parse(data) as AiStreamEvent);
+          } catch {
+            /* skip a partial/garbled line */
+          }
+        }
+      }
+    }
+  },
   // Apply arbitrary settings (e.g. an AI suggestion) to the firewall PERMANENTLY. preview=true
   // returns the exact planned writes (for the confirm dialog); commit writes + optional benchmark.
   applySettings: (body: {

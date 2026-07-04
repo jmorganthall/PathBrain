@@ -204,6 +204,105 @@ def suggest(session: Session, export: dict, model: str | None = None, prompt: st
     }
 
 
+def _stream_chat(api_key: str, payload: dict, timeout: int):
+    """Yield parsed JSON chunk objects from OpenRouter's SSE chat-completions stream.
+
+    OpenRouter streams Server-Sent Events: ``data: {json}`` lines, ``:`` keepalive comments,
+    and a terminal ``data: [DONE]``. Raises ``AIError`` on connect/HTTP failure."""
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(  # noqa: S310 — fixed https host
+        f"{OPENROUTER_BASE}/chat/completions", data=data, method="POST"
+    )
+    for k, v in _headers(api_key).items():
+        req.add_header(k, v)
+    req.add_header("Accept", "text/event-stream")
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)  # noqa: S310
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode()[:500]
+        except Exception:  # noqa: BLE001
+            pass
+        log.warning("OpenRouter stream HTTP %s: %s", exc.code, body)
+        raise AIError(f"OpenRouter returned HTTP {exc.code}: {body or exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise AIError(f"Could not reach OpenRouter: {exc.reason}") from exc
+    with resp:
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", "replace").strip()
+            if not line or line.startswith(":"):  # blank / keepalive comment
+                continue
+            if line.startswith("data:"):
+                chunk = line[5:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    yield json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+
+
+def suggest_stream(export: dict, api_key: str, model: str | None, prompt: str | None):
+    """Stream a suggestion request, yielding event dicts as the model produces tokens:
+
+    * ``{"type": "reasoning", "delta": str}`` — a reasoning-trace chunk (reasoning models only),
+    * ``{"type": "content", "delta": str}`` — an answer chunk,
+    * ``{"type": "done", model, raw, reasoning, suggestions, usage}`` — the parsed final result,
+    * ``{"type": "error", "error": str}`` — a user-facing failure.
+
+    Takes the resolved key/model/prompt (NOT a DB session) so it's safe to iterate lazily inside a
+    ``StreamingResponse`` after the request's session has closed. Keeping the connection alive with
+    a token stream also avoids the long-request timeout that a single blocking call hits."""
+    if not api_key:
+        yield {"type": "error", "error": "No OpenRouter API key configured — add one on the AI page first."}
+        return
+    model = (model or "").strip()
+    if not model:
+        yield {"type": "error", "error": "No model selected — pick one on the AI page first."}
+        return
+    instructions = prompt if (prompt is not None and prompt.strip()) else DEFAULT_PROMPT
+    content = f"{instructions}\n\n=== MEASURED DATA (JSON) ===\n{json.dumps(export)}"
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "temperature": 0.4,
+        "stream": True,
+    }
+    acc: list[str] = []
+    reasoning: list[str] = []
+    usage: dict = {}
+    try:
+        for chunk in _stream_chat(api_key, payload, timeout=300):
+            for choice in (chunk.get("choices") or []):
+                delta = choice.get("delta") or {}
+                # Reasoning models stream their trace in `reasoning` (a few use `reasoning_content`).
+                r = delta.get("reasoning") or delta.get("reasoning_content")
+                if r:
+                    reasoning.append(r)
+                    yield {"type": "reasoning", "delta": r}
+                c = delta.get("content")
+                if c:
+                    acc.append(c)
+                    yield {"type": "content", "delta": c}
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+    except AIError as exc:
+        yield {"type": "error", "error": str(exc)}
+        return
+    raw = "".join(acc)
+    suggestions = _parse_suggestions(raw)
+    suggestions.sort(key=lambda s: -_as_float(s.get("displacement_likelihood")))
+    yield {
+        "type": "done",
+        "model": model,
+        "raw": raw,
+        "reasoning": "".join(reasoning),
+        "suggestions": suggestions,
+        "usage": usage,
+    }
+
+
 def _as_float(v) -> float:
     try:
         return float(v)
@@ -243,4 +342,5 @@ __all__ = [
     "clear_api_key",
     "list_models",
     "suggest",
+    "suggest_stream",
 ]
