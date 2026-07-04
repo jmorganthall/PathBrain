@@ -272,7 +272,7 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.median;
     case "speed":
       return p.speed?.median ?? null;
-    case "relative_sops":
+    case "relative_overall":
       return p.relative_overall?.delta_median ?? null;
     case "p25":
       return p.p25;
@@ -334,7 +334,7 @@ const FIXED_COLUMN_KEYS = new Set([
   "smoothness",
   "iterations",
   "count",
-  "relative_smoothness",
+  "relative_overall",
 ]);
 
 // Group a field list by its `group` for the axis-picker / column menus.
@@ -1322,7 +1322,7 @@ export default function Settings() {
                       />
                     ))}
                     <SortHeader
-                      id="relative_sops"
+                      id="relative_overall"
                       label="vs typical"
                       align="right"
                       orderBy={orderBy}

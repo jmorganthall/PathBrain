@@ -66,7 +66,7 @@ _PROFILE_FIELDS = [
     {"key": "completion", "label": "Completion", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "iterations", "label": "Iterations", "unit": "", "higher_is_better": True, "group": "Run stats"},
     {"key": "count", "label": "Runs", "unit": "", "higher_is_better": True, "group": "Run stats"},
-    {"key": "relative_smoothness", "label": "vs typical", "unit": "", "higher_is_better": True, "group": "Run stats"},
+    {"key": "relative_overall", "label": "vs typical (Overall)", "unit": "", "higher_is_better": True, "group": "Run stats"},
 ]
 
 
