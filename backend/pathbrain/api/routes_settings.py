@@ -581,6 +581,18 @@ def build_optimizer_export(
         "shaper_model": {
             "writable_fields": list(WRITABLE_FIELDS),
             "sweepable_fields": list(SWEEPABLE_FIELDS),
+            # The shaper has a SEPARATE pipe per direction. Each profile's `settings` is a list
+            # of pipes (typically a Download and an Upload pipe, by `label`); every pipe has its
+            # OWN tunable quantum/target/interval/ecn/limit/flows and its own bandwidth (in that
+            # pipe's `download_bandwidth` field regardless of direction — `upload_bandwidth` is
+            # unused/null). Upload shaping matters as much as download — tune both pipes.
+            "pipes_note": (
+                "Each profile has one pipe per direction (see each pipe's 'label', e.g. Download "
+                "and Upload). Tune BOTH: every pipe has independent quantum/target/interval/ecn/"
+                "limit/flows and its own bandwidth (the pipe's 'download_bandwidth' field is that "
+                "pipe's bandwidth for either direction; 'upload_bandwidth' is unused). Upload "
+                "shaping affects responsiveness under load as much as download."
+            ),
             "fields": [
                 {
                     "key": f.key,

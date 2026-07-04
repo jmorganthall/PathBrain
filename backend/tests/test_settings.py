@@ -973,3 +973,33 @@ def test_test_settings_starts_a_test_for_a_writable_change(client, monkeypatch):
     body = resp.json()
     assert body["id"] == 55 and body["iterations"] >= 1
     assert calls["fp"] == body["fingerprint"]   # materialized fingerprint is what gets tested
+
+
+def test_optimizer_export_includes_all_pipes(client, monkeypatch):
+    # A profile with BOTH a download and an upload pipe must export both — not just download.
+    import pathbrain.api.routes_settings as rs
+
+    two_pipes = [
+        {"label": "Download", "download_bandwidth": "880Mbit", "quantum": 6056, "target": "3ms",
+         "interval": "60ms", "ecn": True, "scheduler": "fq_codel", "queues": 1},
+        {"label": "Upload", "download_bandwidth": "880Mbit", "quantum": 500, "target": "3ms",
+         "interval": "60ms", "ecn": True, "scheduler": "fq_codel", "queues": 1},
+    ]
+    # compute_profiles reads run.settings; patch the seed to carry both pipes for this fp.
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(3):
+        _seed_run("twopipe000x", 80, t0 - timedelta(minutes=30 - i), iterations=6,
+                  crown_raw=(200.0, 240.0, 150.0))
+    with session_scope() as s:
+        from pathbrain.models import Run
+        for run in s.query(Run).filter(Run.settings_fingerprint == "twopipe000x").all():
+            run.settings = two_pipes
+
+    body = client.get("/api/settings/export/optimizer").json()
+    prof = next(p for p in body["profiles"] if p["fingerprint"] == "twopipe000x")
+    labels = {pipe["label"] for pipe in prof["settings"]}
+    assert labels == {"Download", "Upload"}                 # BOTH directions exported
+    up = next(pipe for pipe in prof["settings"] if pipe["label"] == "Upload")
+    assert up["quantum"] == 500                             # the upload pipe's own params
+    # The export tells the model to tune both directions.
+    assert "upload" in body["shaper_model"]["pipes_note"].lower()

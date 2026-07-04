@@ -31,23 +31,26 @@ DEFAULT_PROMPT = """You are a network QoS / SQM tuning expert optimizing FQ-CoDe
 You will be given JSON with:
 - `methodology`: the objective — which metrics are the "crown" (what we optimize), that lower is better (times in ms), and the best value achieved so far per crown metric.
 - `shaper_model`: the tunable parameters. You may ONLY change fields listed in `writable_fields`; leave the others exactly as they are. Respect each field's kind/unit and stay within its suggested range.
-- `profiles`: every settings profile we have tested, with its shaper `settings` and the raw per-run measurements.
+- `profiles`: every settings profile we have tested, with its full shaper `settings` and the raw per-run measurements.
 
-Study how the settings correlate with the measured crown metrics. Then propose 3-5 NEW shaper profiles (settings combinations we have NOT tested) likely to reduce the crown metrics below the best observed so far.
+IMPORTANT — the shaper has SEPARATE pipes per direction. Each profile's `settings` is a list of pipes, one per direction, each identified by its `label` (typically a "Download" pipe and an "Upload" pipe). Every pipe has its OWN independently-tunable quantum / target / interval / ecn / limit / flows AND its own bandwidth (stored in the pipe's `download_bandwidth` field — that field is simply "this pipe's bandwidth" regardless of direction; `upload_bandwidth` is unused/null). **Upload shaping matters as much as download** — bufferbloat and latency under upload load hurt responsiveness — so tune BOTH pipes, not just the download one.
+
+Study how the settings on BOTH pipes correlate with the measured crown metrics. Then propose 3-5 NEW shaper profiles (settings combinations we have NOT tested) likely to reduce the crown metrics below the best observed so far.
 
 Respond with ONLY a JSON object of exactly this shape (no prose outside the JSON):
 {"suggestions": [
   {
     "settings": [
-      {"label": "<the exact pipe label from a profile's settings, e.g. the download pipe>", "quantum": 3000, "target": "5ms", "interval": "60ms", "ecn": true}
+      {"label": "<the exact Download pipe label from a profile>", "quantum": 3000, "target": "5ms", "interval": "60ms", "ecn": true},
+      {"label": "<the exact Upload pipe label from a profile>", "quantum": 600, "target": "5ms", "interval": "60ms", "ecn": true}
     ],
     "displacement_likelihood": 72,
-    "rationale": "why this should beat the current best"
+    "rationale": "why this should beat the current best — cover both directions"
   }
 ]}
 
 Rules:
-- Each suggestion's `settings` is a LIST with one object per pipe you are changing. Reference the pipe by its exact `label` from the profiles' `settings` (there is typically a download pipe and an upload pipe, and they may use different values).
+- Each suggestion's `settings` is a LIST with one object PER PIPE. Include BOTH the download and the upload pipe (referenced by their exact `label` from the profiles' `settings`) whenever a profile has both — a suggestion that only tunes one direction is incomplete.
 - Set ONLY fields listed in `shaper_model.writable_fields`; leave every non-writable field alone. Use the same value formats you see (e.g. `target` like "5ms", `quantum` an integer).
 - `displacement_likelihood` is your 0-100 estimate of the chance this profile beats the current crown.
 - Order the suggestions by `displacement_likelihood`, highest first."""
