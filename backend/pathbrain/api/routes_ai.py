@@ -76,7 +76,9 @@ def suggest(payload: AiSuggest, session: Session = Depends(get_session)) -> dict
     result["payload_bytes"] = payload_bytes
     # The deterministic settings→outcome relationships we computed and sent — surfaced so the UI
     # can show them regardless of what the model returns.
-    result["field_sensitivity"] = (export.get("analysis") or {}).get("field_sensitivity") or []
+    analysis = export.get("analysis") or {}
+    result["field_sensitivity"] = analysis.get("field_sensitivity") or []
+    result["top_profile_signature"] = analysis.get("top_profile_signature") or {}
     return result
 
 
@@ -111,9 +113,10 @@ def stream_suggest(payload: AiSuggest, session: Session = Depends(get_session)) 
             "profiles_sent": profiles_sent,
             "payload_bytes": payload_bytes,
             "model": model,
-            # The deterministic settings→outcome map we computed and sent, so the UI can show it
-            # immediately (before the model finishes reasoning).
+            # The deterministic settings→outcome map + top-profile signature we computed and sent,
+            # so the UI can show them immediately (before the model finishes reasoning).
             "field_sensitivity": (export.get("analysis") or {}).get("field_sensitivity") or [],
+            "top_profile_signature": (export.get("analysis") or {}).get("top_profile_signature") or {},
         })
         for evt in ai.suggest_stream(export, api_key, model, prompt):
             yield _sse(evt)

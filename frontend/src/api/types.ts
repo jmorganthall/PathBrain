@@ -1060,6 +1060,33 @@ export interface FieldSensitivity {
   summary: string;
 }
 
+// One lever's "what the top-Overall profiles share" contrast (top quartile vs the rest).
+export interface LeverSignature {
+  pipe: string;
+  field: string;
+  field_label: string;
+  pattern: "higher" | "lower" | "sweet_spot" | "none";
+  top_value: number;
+  top_range: [number, number];
+  field_range: [number, number];
+  field_median: number;
+  shift: number | null;
+  concentration: number | null;
+  cliffs_delta: number | null;
+  top_n: number;
+  rest_n: number;
+  summary: string;
+}
+
+export interface TopProfileSignature {
+  available?: boolean;
+  reason?: string;
+  top_profiles?: number;
+  rest_profiles?: number;
+  top_fraction?: number;
+  levers?: LeverSignature[];
+}
+
 // The model's own interpreted relationship (its read of the levers), separate from the
 // deterministic map above.
 export interface AiRelationship {
@@ -1080,6 +1107,8 @@ export interface AiSuggestResult {
   relationships?: AiRelationship[];
   // The deterministic relationships we computed and sent to the model.
   field_sensitivity?: FieldSensitivity[];
+  // What the top-Overall profiles share, per lever (catches sweet spots correlations miss).
+  top_profile_signature?: TopProfileSignature;
   usage: Record<string, number>;
   profiles_sent: number | null;
   // Size of the JSON payload sent to the model, so the UI can show how big the request was.
@@ -1094,6 +1123,7 @@ export type AiStreamEvent =
       payload_bytes: number;
       model: string;
       field_sensitivity?: FieldSensitivity[];
+      top_profile_signature?: TopProfileSignature;
     }
   | { type: "reasoning"; delta: string }
   | { type: "content"; delta: string }

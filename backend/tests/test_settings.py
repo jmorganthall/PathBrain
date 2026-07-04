@@ -1100,6 +1100,41 @@ def test_field_sensitivity_correlates_against_overall():
     assert ov_row["metric_direction"] == "increases" and ov_row["effect"] == "improves"
 
 
+def test_lever_signature_finds_a_sweet_spot_correlation_misses():
+    # The winners cluster quantum at ~3000 while the field ranges 800–6000 and the rest are
+    # spread across it — a sweet spot a monotone correlation can't see (both extremes are worse).
+    from pathbrain.api.routes_settings import _lever_signature
+
+    top = [{"settings": [{"label": "Download", "quantum": q}], "overall": ov}
+           for q, ov in [(2950, 92), (3000, 90), (3050, 88)]]
+    rest = [{"settings": [{"label": "Download", "quantum": q}], "overall": ov}
+            for q, ov in [(800, 60), (1500, 58), (6000, 55), (5000, 52), (1000, 50),
+                          (4500, 48), (2000, 46), (5500, 44), (900, 42)]]
+    sig = _lever_signature(top + rest)
+    assert sig["available"] is True
+    lev = next(l for l in sig["levers"] if l["field"] == "quantum")
+    assert lev["pattern"] == "sweet_spot"
+    assert 2900 <= lev["top_value"] <= 3100
+    assert lev["field_range"] == [800, 6000]
+
+
+def test_lever_signature_flags_a_higher_run_and_needs_enough_profiles():
+    from pathbrain.api.routes_settings import _lever_signature
+
+    # Winners run quantum systematically higher than the rest.
+    top = [{"settings": [{"label": "Download", "quantum": q}], "overall": ov}
+           for q, ov in [(5500, 92), (5800, 90), (6000, 88)]]
+    rest = [{"settings": [{"label": "Download", "quantum": q}], "overall": ov}
+            for q, ov in [(800, 60), (1000, 58), (1200, 55), (1500, 52), (2000, 50),
+                          (900, 48), (1100, 46), (1300, 44), (1700, 42)]]
+    lev = next(l for l in _lever_signature(top + rest)["levers"] if l["field"] == "quantum")
+    assert lev["pattern"] == "higher" and (lev["shift"] or 0) > 0
+
+    # Too few scored profiles to split → unavailable, not a crash.
+    thin = _lever_signature(top[:2])
+    assert thin["available"] is False and thin["levers"] == []
+
+
 def test_field_sensitivity_flags_worsening_and_no_trend():
     from pathbrain.api.routes_settings import _field_sensitivity
 
