@@ -668,6 +668,9 @@ export interface TrendRelativeResponse {
   window_hours: number;
   window_days: number;
   min_samples: number;
+  // The current methodology's crown measurements (what we rank on today), so the UI can
+  // feature the same day×hour "vs typical" matrix for them without a hardcoded set.
+  crown_metrics?: string[];
   metrics: Record<string, TrendRelative>;
 }
 
