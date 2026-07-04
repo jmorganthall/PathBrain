@@ -101,7 +101,8 @@ LLM-based. See `README.md` for the product overview.
     registry's `SWEEPABLE_FIELDS` (quantum × target today). Applies each variant for real,
     benchmarks it, **restores the baseline at the end** (`reconcile_interrupted_sweeps`
     restores on startup too). Variant generation, value formatting (`shaper_fields.format_value`
-    — int vs `"<n>ms"`), apply, label, and restore all iterate `SWEEPABLE_FIELDS`, so marking
+    — the bare-number **wire** value; `format_display` adds the unit for labels only), apply,
+    label, and restore all iterate `SWEEPABLE_FIELDS`, so marking
     another field sweepable in the registry extends the engine with no new branch. The Shotgun
     Sweep **UI** is driven the same way: `GET /api/sweep/fields` returns each sweepable field's
     label/unit/default range (from `ShaperField.sweep_default`) and the page renders a control
@@ -128,10 +129,16 @@ LLM-based. See `README.md` for the product overview.
     restores on startup). `/api/settings/test-profile`. The post-apply verify checks the
     firewall reached the target **semantically** — `plan_apply(target, discover())` must have
     no remaining *writable* diffs — **not** by exact fingerprint hash, which is format-sensitive
-    (`"5ms"` vs `5`) and used to false-negative on an externally-supplied target (an AI
-    suggestion), failing before any benchmark ran; a genuinely unaccepted field is reported
-    per-field ("did not accept quantum …"). Each step is written to `ProfileTest.stage`
-    (snapshot → apply → verify → benchmark → restore → done/failed) for a live UI readout.
+    and used to false-negative on an externally-supplied target (an AI suggestion), failing
+    before any benchmark ran; a genuinely unaccepted field is reported per-field ("did not
+    accept quantum …"). Field comparison is **numeric** (`settings_profile._field_equal` via
+    `_to_number`), so a duration expressed as `"5ms"`, `"5"`, or `5` all compare equal — the
+    firewall echoes CoDel `target`/`interval` back as the **bare option key** (`"5"`, not
+    `"5ms"`). Correspondingly the value **written** is always the bare number
+    (`_wire_value`/`shaper_fields.format_value`) — writing `"5ms"` to an option-keyed select
+    silently doesn't take (the real "apply didn't happen" bug); `"ms"` is display-only
+    (`format_display`). Each step is written to `ProfileTest.stage` (snapshot → apply → verify →
+    benchmark → restore → done/failed) for a live UI readout.
   - `current_test.py` — **Test current for X minutes**: a time-boxed data-collection loop on
     whatever profile the firewall is **already** on. Unlike the other engines it **never writes
     the firewall** (it measures the live profile as-is), so there's no baseline to snapshot or
@@ -300,9 +307,9 @@ LLM-based. See `README.md` for the product overview.
   — then runs a normal profile test (apply → benchmark to `min_iterations` → restore baseline). No
   firewall write happens for an unreachable or no-op suggestion (rejected up front). Each override
   value is run through `shaper_fields.coerce_value` so an AI's `"5ms"`/`5`/`"5"` all become the
-  firewall's canonical form (unit-string vs int) — the target then fingerprints to what `discover()`
-  reports back, which is what the profile-test verify compares against. The optimizer export tells
-  the model the exact per-field format up front (`value_format` + a real `example` per shaper field).
+  firewall's **bare-number** wire form (CoDel `target`/`interval` are option-keyed selects keyed by
+  the bare number — writing `"5ms"` doesn't take). The optimizer export tells the model the exact
+  per-field format up front (`value_format` + a real `example` per shaper field, pulled live).
   Each suggestion also has a one-click **Apply** — `POST /api/settings/apply-settings` writes the
   suggestion to the firewall **permanently** (one-way, no restore; the arbitrary-settings sibling of
   `apply-profile`): overlays only writable fields onto live, `preview` returns the exact planned

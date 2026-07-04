@@ -709,9 +709,10 @@ def test_apply_profile_writes_to_firewall(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
-    # The write went through the provider apply path.
+    # The write went through the provider apply path — target written as the bare number 3
+    # (the firewall's option key), not "3ms".
     assert _OVERRIDES.get("quantum") == 4000
-    assert _OVERRIDES.get("target") == "3ms"
+    assert _OVERRIDES.get("target") == 3
     applied_fields = {a["field_label"] for a in body["applied"]}
     assert {"Quantum", "CoDel target"} <= applied_fields
 
@@ -762,6 +763,8 @@ def test_apply_settings_preview_then_commit(client):
     from pathbrain.providers.mock import _OVERRIDES
 
     _OVERRIDES.clear()
+    # An AI-style "3ms" string is accepted but written to the firewall as the bare number 3
+    # (the option key the firewall's duration select actually uses).
     settings = [{"label": "wan-download", "quantum": 4000, "target": "3ms"}]
 
     prev = client.post(
@@ -770,7 +773,8 @@ def test_apply_settings_preview_then_commit(client):
     assert prev["preview"] is True and prev["already_applied"] is False
     by_field = {(c["label"], c["param"]): c for c in prev["changes"]}
     assert by_field[("wan-download", "quantum")]["to"] == 4000
-    assert by_field[("wan-download", "target")]["to"] == "3ms"
+    # The planned write value is the bare number, not "3ms".
+    assert by_field[("wan-download", "target")]["value"] == 3
     assert _OVERRIDES == {}  # preview wrote nothing
 
     resp = client.post(
@@ -780,21 +784,23 @@ def test_apply_settings_preview_then_commit(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
-    assert _OVERRIDES.get("quantum") == 4000 and _OVERRIDES.get("target") == "3ms"
+    assert _OVERRIDES.get("quantum") == 4000 and _OVERRIDES.get("target") == 3
     _OVERRIDES.clear()
 
 
 def test_apply_settings_canonicalizes_ai_format(client):
-    """An AI's int target ("5" / 5) is canonicalized to the firewall's "<n>ms" on the way in."""
+    """An AI's duration value ("3ms" / "3" / 3) is written as the firewall's bare number 3 —
+    never "3ms", which the firewall's option-keyed select would reject."""
     from pathbrain.providers.mock import _OVERRIDES
 
-    _OVERRIDES.clear()
-    resp = client.post(
-        "/api/settings/apply-settings",
-        json={"settings": [{"label": "wan-download", "target": 3}], "run_benchmark": False},
-    )
-    assert resp.status_code == 200
-    assert _OVERRIDES.get("target") == "3ms"  # coerced from the int 3
+    for raw in ("3ms", "3", 3, 3.0):
+        _OVERRIDES.clear()
+        resp = client.post(
+            "/api/settings/apply-settings",
+            json={"settings": [{"label": "wan-download", "target": raw}], "run_benchmark": False},
+        )
+        assert resp.status_code == 200, raw
+        assert _OVERRIDES.get("target") == 3, raw
     _OVERRIDES.clear()
 
 
@@ -1037,9 +1043,10 @@ def test_apply_writable_overrides_only_touches_writable_fields():
     out = _apply_writable_overrides(live, [{"label": "wan-download", "quantum": 3000, "scheduler": "HFSC"}])
     assert out[0]["quantum"] == 3000            # writable → applied
     assert out[0]["scheduler"] == "fq_codel"    # non-writable → left as live (reachable)
-    # A flat dict applies to every pipe.
+    # A flat dict applies to every pipe; a duration is canonicalized to the firewall's bare
+    # number (3), not "3ms" — the option key its select actually uses.
     out2 = _apply_writable_overrides(live, {"target": "3ms"})
-    assert out2[0]["target"] == "3ms"
+    assert out2[0]["target"] == 3
 
 
 def test_test_settings_rejects_a_no_op(client):

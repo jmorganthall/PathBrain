@@ -21,6 +21,7 @@ from .shaper_fields import (  # noqa: F401 — re-exported for back-compat
     FIELD_LABELS,
     NON_WRITABLE_FIELDS,
     WRITABLE_FIELDS,
+    field as _shaper_field,
 )
 
 # Back-compat alias: the writable subset was historically ``WRITABLE_PARAMS`` here.
@@ -138,6 +139,31 @@ def _same_value(a, b) -> bool:
     return str(a).strip().lower() == str(b).strip().lower()
 
 
+def _field_equal(param: str, a, b) -> bool:
+    """Whether two values of a shaper field are the *same setting*, comparing **numerically**
+    for numeric/unit fields so ``"3ms"`` == ``"3"`` == ``3`` (the firewall echoes a duration
+    select back as the bare number, while a profile / AI value may carry the ``ms`` unit).
+    Falls back to loose string equality for non-numeric fields (scheduler names, etc.)."""
+    fa, fb = _to_number(param, a), _to_number(param, b)
+    if fa is not None and fb is not None:
+        return fa == fb
+    return _same_value(a, b)
+
+
+def _wire_value(param: str, desired):
+    """The exact value to hand ``provider.apply()`` for a field. Numeric/unit fields become a
+    bare int — the firewall's duration selects are keyed by the bare number (``"3"``, not
+    ``"3ms"``), so writing the unit-suffixed string silently doesn't take. ecn → 1/0."""
+    if param == "ecn":
+        return 1 if desired else 0
+    f = _shaper_field(param)
+    if f is not None and (f.kind == "int" or f.unit):
+        n = _to_number(param, desired)
+        if n is not None:
+            return int(round(n))
+    return desired
+
+
 def plan_apply(target: list[dict] | None, live: list[FqCodelConfig]) -> tuple[list[dict], list[str]]:
     """Plan the writes to make the live firewall match a target profile.
 
@@ -172,9 +198,9 @@ def plan_apply(target: list[dict] | None, live: list[FqCodelConfig]) -> tuple[li
         current = match.to_dict()
         for param in WRITABLE_PARAMS:
             desired = pipe.get(param)
-            if desired is None or _same_value(current.get(param), desired):
+            if desired is None or _field_equal(param, current.get(param), desired):
                 continue
-            value = (1 if desired else 0) if param == "ecn" else desired
+            value = _wire_value(param, desired)
             changes.append(
                 {
                     "pipe_uuid": uuid,

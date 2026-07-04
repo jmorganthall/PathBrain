@@ -58,12 +58,14 @@ def test_provider_writable_fields_accessor():
 
 
 def test_coerce_value_canonicalizes_to_firewall_format():
-    # Unit fields → "<int><unit>" string, regardless of how the value arrives.
-    assert sf.coerce_value("target", "5ms") == "5ms"
-    assert sf.coerce_value("target", 5) == "5ms"
-    assert sf.coerce_value("target", "5") == "5ms"
-    assert sf.coerce_value("target", 5.0) == "5ms"
-    assert sf.coerce_value("interval", 100) == "100ms"
+    # Unit fields → BARE int (the firewall keys duration selects by the bare number, e.g. "5",
+    # not "5ms"), regardless of how the value arrives.
+    assert sf.coerce_value("target", "5ms") == 5
+    assert sf.coerce_value("target", 5) == 5
+    assert sf.coerce_value("target", "5") == 5
+    assert sf.coerce_value("target", 5.0) == 5
+    assert sf.coerce_value("interval", 100) == 100
+    assert isinstance(sf.coerce_value("target", "5ms"), int)
     # Int fields → int (never a string), so the fingerprint matches discover()'s int.
     assert sf.coerce_value("quantum", "3000") == 3000
     assert sf.coerce_value("quantum", 3000.0) == 3000

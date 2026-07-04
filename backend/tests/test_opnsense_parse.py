@@ -51,3 +51,29 @@ def test_quantum_change_changes_fingerprint():
     changed_pipe = {**SAMPLE_PIPE, "fqcodel_quantum": "6000"}
     changed = normalize([_pipe_to_config("u", changed_pipe)])
     assert fingerprint(base) != fingerprint(changed)
+
+
+def test_plan_apply_matches_ms_string_to_bare_number_target():
+    """Regression for the real OPNsense failure: the firewall reports ``codel_target`` as the
+    bare number ``"5"`` (its option key), so a profile/AI value of ``"5ms"`` must NOT read as a
+    change (no spurious write) and must NOT leave a phantom "did not accept" diff on verify."""
+    from pathbrain.settings_profile import plan_apply
+
+    live = [_pipe_to_config("u", SAMPLE_PIPE)]  # target "5", interval "100"
+    # Same setting, expressed the way an old profile / AI reply might carry it.
+    target = [{"label": "WAN download", "target": "5ms", "interval": "100ms"}]
+    changes, _warnings = plan_apply(target, live)
+    assert changes == []  # "5ms" == "5" — nothing to write, verify would see no remaining diff
+
+
+def test_plan_apply_writes_bare_number_for_duration_change():
+    """A genuine duration change is written as the firewall's bare option key (3), never "3ms"
+    — writing the unit-suffixed string to an option-keyed select silently doesn't take."""
+    from pathbrain.settings_profile import plan_apply
+
+    live = [_pipe_to_config("u", SAMPLE_PIPE)]  # target "5"
+    target = [{"label": "WAN download", "target": "3ms"}]
+    changes, _warnings = plan_apply(target, live)
+    assert len(changes) == 1
+    assert changes[0]["param"] == "codel_target" or changes[0]["field"] == "target"
+    assert changes[0]["value"] == 3  # bare number, not "3ms"

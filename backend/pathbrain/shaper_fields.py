@@ -60,13 +60,26 @@ def field(key: str) -> ShaperField | None:
     return _BY_KEY.get(key)
 
 
-def format_value(field_key: str, n: float):
-    """Coerce a numeric sweep value into the provider-ready form for a field: an int, or
-    ``"<n><unit>"`` when the field carries a unit (e.g. ``target`` → ``"5ms"``). One place
-    owns the "quantum is an int / target is '<n>ms'" knowledge the sweep used to hardcode."""
+def format_value(field_key: str, n: float) -> int:
+    """The provider-ready **wire** value for a numeric field: a bare int. The firewall's
+    duration fields (CoDel ``target``/``interval``) are select options keyed by the bare number
+    (OPNsense stores/echoes ``"3"``, not ``"3ms"``) — so the *value we write* must be that bare
+    number. The ``"ms"`` unit is a **display** concern only (see ``format_display``). Writing
+    ``"3ms"`` to a field keyed ``"3"`` silently doesn't take, which is exactly the "apply didn't
+    happen" failure it used to cause."""
+    return int(round(n))
+
+
+def format_display(field_key: str, value) -> str:
+    """Human-facing rendering of a field value with its unit (e.g. ``target`` 5 → ``"5ms"``) —
+    for labels and summaries. The wire value stays unit-less (see ``format_value``)."""
     f = _BY_KEY.get(field_key)
-    v = int(round(n))
-    return f"{v}{f.unit}" if (f and f.unit) else v
+    if value is None:
+        return "—"
+    s = str(value)
+    if f and f.unit and not s.endswith(f.unit):
+        return f"{s}{f.unit}"
+    return s
 
 
 _LEADING_NUM_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)")
@@ -81,7 +94,8 @@ def coerce_value(field_key: str, value):
 
     - bool fields → ``bool``
     - int fields → ``int`` (rounded; accepts ``"3000"`` / ``3000.0``)
-    - unit fields (target/interval) → ``"<int><unit>"`` (accepts ``"5ms"``/``5``/``"5"``)
+    - unit fields (target/interval) → bare ``int`` — the firewall's duration selects are keyed
+      by the bare number (``"3"``), NOT ``"3ms"``; accepts ``"5ms"``/``5``/``"5"`` all → ``5``
     - everything else (bandwidth strings, scheduler names) → passthrough unchanged
 
     Unparseable numeric input is passed through untouched (the caller's diff/apply still

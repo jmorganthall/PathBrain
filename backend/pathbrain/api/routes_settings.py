@@ -659,8 +659,8 @@ def _field_format_hint(f) -> str:
     match the firewall's own representation rather than a look-alike."""
     if f.kind == "bool":
         return "boolean (true/false)"
-    if f.unit:  # target / interval
-        return f'string "<integer>{f.unit}" (e.g. "5{f.unit}")'
+    if f.unit:  # target / interval — the firewall keys these by the bare number
+        return f'integer in {f.unit} (bare number, unquoted — e.g. 5, NOT "5{f.unit}")'
     if f.kind == "int":
         return "integer (no units, unquoted)"
     if f.key in ("download_bandwidth", "upload_bandwidth"):
