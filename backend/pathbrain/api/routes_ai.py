@@ -74,6 +74,9 @@ def suggest(payload: AiSuggest, session: Session = Depends(get_session)) -> dict
     # (and hint when a big selection is the reason a request is slow/oversized).
     result["profiles_sent"] = export.get("profile_count")
     result["payload_bytes"] = payload_bytes
+    # The deterministic settings→outcome relationships we computed and sent — surfaced so the UI
+    # can show them regardless of what the model returns.
+    result["field_sensitivity"] = (export.get("analysis") or {}).get("field_sensitivity") or []
     return result
 
 
@@ -108,6 +111,9 @@ def stream_suggest(payload: AiSuggest, session: Session = Depends(get_session)) 
             "profiles_sent": profiles_sent,
             "payload_bytes": payload_bytes,
             "model": model,
+            # The deterministic settings→outcome map we computed and sent, so the UI can show it
+            # immediately (before the model finishes reasoning).
+            "field_sensitivity": (export.get("analysis") or {}).get("field_sensitivity") or [],
         })
         for evt in ai.suggest_stream(export, api_key, model, prompt):
             yield _sse(evt)

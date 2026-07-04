@@ -12,10 +12,20 @@ import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import FormControlLabel from "@mui/material/FormControlLabel";
+import Table from "@mui/material/Table";
+import TableBody from "@mui/material/TableBody";
+import TableCell from "@mui/material/TableCell";
+import TableHead from "@mui/material/TableHead";
+import TableRow from "@mui/material/TableRow";
 import TextField from "@mui/material/TextField";
+import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import InsightsIcon from "@mui/icons-material/Insights";
+import NorthEastIcon from "@mui/icons-material/NorthEast";
+import SouthEastIcon from "@mui/icons-material/SouthEast";
+import RemoveIcon from "@mui/icons-material/Remove";
 import ScienceIcon from "@mui/icons-material/Science";
 import PublishIcon from "@mui/icons-material/Publish";
 
@@ -24,8 +34,170 @@ import { Link as RouterLink } from "react-router-dom";
 import Link from "@mui/material/Link";
 
 import { api } from "../api/client";
-import type { AiConfig, AiModel, AiSuggestResult, AiSuggestion, ProfileTest } from "../api/types";
+import type {
+  AiConfig,
+  AiModel,
+  AiRelationship,
+  AiSuggestResult,
+  AiSuggestion,
+  FieldSensitivity,
+  ProfileTest,
+} from "../api/types";
 import ApplyConfirmDialog, { type ApplyConfirm } from "../components/ApplyConfirmDialog";
+
+// The settings→outcome relationship map. Two views: the deterministic per-field/metric Spearman
+// correlations we computed and sent to the model (trustworthy, AI-independent), and the model's
+// own interpreted relationships. This is the "figure out how the levers relate to the outcomes"
+// step made explicit, rather than buried in the suggestion rationales.
+function RelationshipsCard({
+  sensitivity,
+  relationships,
+}: {
+  sensitivity?: FieldSensitivity[];
+  relationships?: AiRelationship[];
+}) {
+  const rows = sensitivity ?? [];
+  const rels = relationships ?? [];
+  if (rows.length === 0 && rels.length === 0) return null;
+
+  const dirIcon = (d: FieldSensitivity["metric_direction"]) =>
+    d === "increases" ? (
+      <NorthEastIcon fontSize="inherit" />
+    ) : d === "decreases" ? (
+      <SouthEastIcon fontSize="inherit" />
+    ) : (
+      <RemoveIcon fontSize="inherit" />
+    );
+
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+          <InsightsIcon fontSize="small" />
+          <Typography variant="h6">Settings ↔ outcome relationships</Typography>
+        </Stack>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 820 }}>
+          How each tunable lever moves each crown metric across your tested profiles — the
+          interpretation step, computed deterministically (Spearman rank correlation) and sent to
+          the model. These are <b>marginal</b> correlations (profiles vary several fields at once),
+          so read them as directional evidence, not isolated cause and effect.
+        </Typography>
+
+        {rows.length > 0 ? (
+          <Box sx={{ overflowX: "auto" }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Pipe</TableCell>
+                  <TableCell>Lever</TableCell>
+                  <TableCell>Crown metric</TableCell>
+                  <TableCell align="right">ρ</TableCell>
+                  <TableCell align="center">n</TableCell>
+                  <TableCell>Relationship</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {rows.map((r, i) => {
+                  const strong = Math.abs(r.spearman ?? 0) >= 0.6;
+                  return (
+                    <TableRow key={i} hover>
+                      <TableCell>{r.pipe}</TableCell>
+                      <TableCell>{r.field_label}</TableCell>
+                      <TableCell>{r.metric_label}</TableCell>
+                      <TableCell
+                        align="right"
+                        sx={{ fontVariantNumeric: "tabular-nums", fontWeight: strong ? 700 : 400 }}
+                      >
+                        {r.spearman == null ? "—" : r.spearman.toFixed(2)}
+                      </TableCell>
+                      <TableCell align="center" sx={{ color: "text.secondary" }}>
+                        {r.n}
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip title={r.summary}>
+                          <Chip
+                            size="small"
+                            variant={r.effect === "none" ? "outlined" : "filled"}
+                            color={
+                              r.effect === "improves"
+                                ? "success"
+                                : r.effect === "worsens"
+                                  ? "error"
+                                  : "default"
+                            }
+                            icon={
+                              <Box
+                                component="span"
+                                sx={{ display: "inline-flex", fontSize: 14, ml: 0.5 }}
+                              >
+                                {dirIcon(r.metric_direction)}
+                              </Box>
+                            }
+                            label={
+                              r.effect === "none"
+                                ? "no clear trend"
+                                : `metric ${r.metric_direction === "increases" ? "rises" : "falls"} · ${r.effect}`
+                            }
+                          />
+                        </Tooltip>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </Box>
+        ) : (
+          <Alert severity="info" sx={{ mb: rels.length ? 2 : 0 }}>
+            Not enough spread across profiles yet to compute field correlations — collect a few
+            more profiles that vary the writable levers and they'll appear here.
+          </Alert>
+        )}
+
+        {rels.length > 0 && (
+          <Box sx={{ mt: rows.length ? 3 : 0 }}>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              Model's interpretation
+            </Typography>
+            <Stack spacing={0.75}>
+              {rels.map((r, i) => (
+                <Stack
+                  key={i}
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  flexWrap="wrap"
+                  useFlexGap
+                >
+                  <Chip
+                    size="small"
+                    color={
+                      r.direction === "inverse"
+                        ? "success"
+                        : r.direction === "linear"
+                          ? "error"
+                          : "default"
+                    }
+                    variant={r.direction === "none" ? "outlined" : "filled"}
+                    label={`${r.pipe ?? "?"} ${r.field ?? "?"} → ${r.metric ?? "?"}: ${r.direction ?? "?"}`}
+                  />
+                  {r.confidence && (
+                    <Chip size="small" variant="outlined" label={String(r.confidence)} />
+                  )}
+                  {r.evidence && (
+                    <Typography variant="body2" color="text.secondary">
+                      {String(r.evidence)}
+                    </Typography>
+                  )}
+                </Stack>
+              ))}
+            </Stack>
+          </Box>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function AI() {
   const [cfg, setCfg] = useState<AiConfig | null>(null);
@@ -119,14 +291,22 @@ export default function AI() {
       // Stream: accumulate reasoning + content deltas live, materialize the result on `done`.
       let reasoning = "";
       let content = "";
-      let meta: { profiles_sent: number | null; payload_bytes: number } = {
+      let meta: {
+        profiles_sent: number | null;
+        payload_bytes: number;
+        field_sensitivity?: FieldSensitivity[];
+      } = {
         profiles_sent: null,
         payload_bytes: 0,
       };
       await api.aiSuggestStream(body, (evt) => {
         switch (evt.type) {
           case "meta":
-            meta = { profiles_sent: evt.profiles_sent, payload_bytes: evt.payload_bytes };
+            meta = {
+              profiles_sent: evt.profiles_sent,
+              payload_bytes: evt.payload_bytes,
+              field_sensitivity: evt.field_sensitivity,
+            };
             break;
           case "reasoning":
             reasoning += evt.delta;
@@ -144,6 +324,8 @@ export default function AI() {
               model: evt.model,
               raw: evt.raw,
               suggestions: evt.suggestions,
+              relationships: evt.relationships,
+              field_sensitivity: meta.field_sensitivity,
               usage: evt.usage,
               profiles_sent: meta.profiles_sent,
               payload_bytes: meta.payload_bytes,
@@ -537,6 +719,13 @@ export default function AI() {
             </Typography>
           </CardContent>
         </Card>
+      )}
+
+      {result && (
+        <RelationshipsCard
+          sensitivity={result.field_sensitivity}
+          relationships={result.relationships}
+        />
       )}
 
       {result && (

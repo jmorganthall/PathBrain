@@ -27,6 +27,7 @@ from ..runner import MAX_ITERATIONS
 from ..schemas import ApplySettings, TestSettings
 from ..scoring import COMPLETION_METRIC_SOURCES
 from ..settings_profile import (
+    _to_number,
     diff_profiles,
     environment_signature,
     fingerprint,
@@ -508,6 +509,125 @@ def optimizer_export(
     return build_optimizer_export(session, runs_per_profile, profile_limit)
 
 
+# --- Field ↔ outcome sensitivity ------------------------------------------------------
+# A profile whose field value we correlate needs enough distinct points to mean anything.
+SENSITIVITY_MIN_POINTS = 4       # need this many (field value, metric) pairs to correlate
+SENSITIVITY_MIN_DISTINCT = 3     # ...spread over at least this many distinct field values
+SENSITIVITY_TREND_RHO = 0.3      # |ρ| below this reads as "no clear relationship"
+
+
+def _rank(vals: list[float]) -> list[float]:
+    """Average (tie-aware) 1-based ranks — the basis of Spearman's rank correlation."""
+    order = sorted(range(len(vals)), key=lambda i: vals[i])
+    ranks = [0.0] * len(vals)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and vals[order[j + 1]] == vals[order[i]]:
+            j += 1
+        avg = (i + j) / 2.0 + 1.0  # mean 1-based rank shared by the tie group
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg
+        i = j + 1
+    return ranks
+
+
+def _pearson(a: list[float], b: list[float]) -> float | None:
+    """Pearson correlation; ``None`` when undefined (n<3 or a constant column)."""
+    n = len(a)
+    if n < 3:
+        return None
+    ma, mb = sum(a) / n, sum(b) / n
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((x - mb) ** 2 for x in b)
+    if va <= 0 or vb <= 0:
+        return None
+    cov = sum((a[i] - ma) * (b[i] - mb) for i in range(n))
+    return cov / ((va ** 0.5) * (vb ** 0.5))
+
+
+def _spearman(xs: list[float], ys: list[float]) -> float | None:
+    """Spearman rank correlation (Pearson over ranks) — monotonic, magnitude-blind, so it
+    matches how the crown itself ranks profiles."""
+    return _pearson(_rank(xs), _rank(ys))
+
+
+def _sensitivity_summary(pipe: str, field_label: str, metric_label: str, direction: str, effect: str) -> str:
+    if direction == "none":
+        return f"No clear relationship between {pipe} {field_label} and {metric_label}."
+    verb = "rises" if direction == "increases" else "falls"
+    tail = "improves the crown" if effect == "improves" else "worsens the crown"
+    return f"As {pipe} {field_label} increases, {metric_label} {verb} — {tail}."
+
+
+def _field_sensitivity(
+    profiles_out: list[dict], crown_metrics: list[str], metric_meta: dict[str, dict]
+) -> list[dict]:
+    """Deterministic marginal relationships between the tunable levers and the crown metrics.
+
+    For each writable shaper field (kept **per pipe label**, so the Download and Upload legs
+    stay distinct) vs each crown metric, the Spearman rank correlation across the exported
+    profiles — one (field value, profile-median metric) point per profile. This hands the model
+    (and the UI) an explicit "as this field goes up, that metric goes up/down / improves/worsens"
+    map instead of leaving it to eyeball the raw profile table.
+
+    These are **marginal, not partial** — profiles vary several fields at once, so a correlation
+    can be confounded. They're directional evidence to reconcile against, not isolated effects.
+    """
+    # points[(pipe_label, field)][metric] = [(field_value, metric_median), …]
+    points: dict[tuple[str, str], dict[str, list[tuple[float, float]]]] = {}
+    for p in profiles_out:
+        medians = p.get("metric_medians") or {}
+        for pipe in (p.get("settings") or []):
+            label = pipe.get("label") or "pipe"
+            for fkey in WRITABLE_FIELDS:
+                x = _to_number(fkey, pipe.get(fkey))
+                if x is None:
+                    continue
+                for m in crown_metrics:
+                    y = medians.get(m)
+                    if isinstance(y, (int, float)) and not isinstance(y, bool):
+                        points.setdefault((label, fkey), {}).setdefault(m, []).append((float(x), float(y)))
+
+    out: list[dict] = []
+    for (label, fkey), by_metric in points.items():
+        fld = shaper_field(fkey)
+        field_label = fld.label if fld else fkey
+        for m, pts in by_metric.items():
+            xs = [x for x, _ in pts]
+            ys = [y for _, y in pts]
+            if len(pts) < SENSITIVITY_MIN_POINTS or len(set(xs)) < SENSITIVITY_MIN_DISTINCT:
+                continue
+            rho = _spearman(xs, ys)
+            if rho is None:
+                continue
+            higher_better = bool((metric_meta.get(m) or {}).get("higher_is_better"))
+            metric_label = (metric_meta.get(m) or {}).get("label") or m
+            if abs(rho) < SENSITIVITY_TREND_RHO:
+                direction, effect = "none", "none"
+            else:
+                direction = "increases" if rho > 0 else "decreases"
+                # Lower-is-better metric improving when it falls (rho<0) — XOR the metric's own
+                # direction so a higher-is-better crown metric is handled too.
+                effect = "improves" if ((rho < 0) != higher_better) else "worsens"
+            out.append({
+                "pipe": label,
+                "field": fkey,
+                "field_label": field_label,
+                "metric": m,
+                "metric_label": metric_label,
+                "spearman": _round2(rho),
+                "n": len(pts),
+                "distinct_values": len(set(xs)),
+                "metric_direction": direction,  # does the metric rise or fall as the field rises
+                "effect": effect,               # improves / worsens the crown, given lower-is-better
+                "summary": _sensitivity_summary(label, field_label, metric_label, direction, effect),
+            })
+    # Strongest (most confident) monotonic relationships first.
+    out.sort(key=lambda r: -abs(r["spearman"] or 0.0))
+    return out
+
+
 def build_optimizer_export(
     session: Session, runs_per_profile: int = 50, profile_limit: int | None = None
 ) -> dict:
@@ -594,6 +714,9 @@ def build_optimizer_export(
         }
         for m in defn.get("metrics", []) if m.get("key")
     }
+    # Precomputed settings→outcome relationships (marginal Spearman ρ per writable field × crown
+    # metric) so the model reasons over an explicit "this up → that down" map, not just raw rows.
+    field_sensitivity = _field_sensitivity(profiles_out, crown_metrics, metric_meta)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "runs_per_profile_limit": runs_per_profile,
@@ -649,6 +772,21 @@ def build_optimizer_export(
                 }
                 for f in SHAPER_FIELDS
             ],
+        },
+        # Deterministic interpretation layer: how each lever moves each crown metric across the
+        # measured field. Computed here (not left to the model to eyeball) so it's trustworthy
+        # and chartable regardless of the AI. See `_field_sensitivity`.
+        "analysis": {
+            "note": (
+                "field_sensitivity is a deterministic marginal rank correlation (Spearman ρ) over "
+                "the exported profiles: each row is one writable field on one pipe vs one crown "
+                "metric — 'metric_direction' says whether the metric rises or falls as the field "
+                "rises, 'effect' whether that improves or worsens the crown. MARGINAL, not partial: "
+                "profiles vary several fields at once, so a relationship can be confounded. Use it "
+                "as directional evidence to reconcile your proposals against, not an isolated "
+                "causal effect. ρ∈[-1,1]; |ρ|≥0.3 is reported as a trend, below that as 'none'."
+            ),
+            "field_sensitivity": field_sensitivity,
         },
         "profiles": profiles_out,
     }

@@ -1034,6 +1034,81 @@ def test_optimizer_export_top_n_profiles(client):
     assert body["profiles"][0]["overall"] is not None
 
 
+def test_field_sensitivity_detects_monotonic_relationships():
+    from pathbrain.api.routes_settings import _field_sensitivity
+
+    meta = {"fcp": {"label": "FCP", "higher_is_better": False}}
+    # quantum rises 1000→5000 while fcp falls 300→150 (perfect inverse → improves the crown);
+    # target is constant so it can't correlate and must be dropped.
+    profiles = [
+        {"settings": [{"label": "Download", "quantum": q, "target": 5}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 300), (2000, 250), (3000, 200), (4000, 180), (5000, 150)]
+    ]
+    rows = _field_sensitivity(profiles, ["fcp"], meta)
+    q_row = next(r for r in rows if r["field"] == "quantum")
+    assert q_row["pipe"] == "Download"
+    assert q_row["spearman"] == -1.0
+    assert q_row["metric_direction"] == "decreases" and q_row["effect"] == "improves"
+    # A constant lever (target) never appears — no distinct values to correlate.
+    assert not any(r["field"] == "target" for r in rows)
+
+
+def test_field_sensitivity_flags_worsening_and_no_trend():
+    from pathbrain.api.routes_settings import _field_sensitivity
+
+    meta = {"fcp": {"label": "FCP", "higher_is_better": False}}
+    # quantum rises while fcp ALSO rises → raising it worsens the crown.
+    worse = [
+        {"settings": [{"label": "Download", "quantum": q}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 150), (2000, 200), (3000, 250), (4000, 300)]
+    ]
+    r = next(x for x in _field_sensitivity(worse, ["fcp"], meta) if x["field"] == "quantum")
+    assert r["spearman"] == 1.0 and r["effect"] == "worsens" and r["metric_direction"] == "increases"
+
+    # No monotonic trend → reported as "none" (|ρ| below the trend threshold), not improves/worsens.
+    flat = [
+        {"settings": [{"label": "Download", "quantum": q}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 200), (2000, 205), (3000, 199), (4000, 202), (5000, 201)]
+    ]
+    fr = next(x for x in _field_sensitivity(flat, ["fcp"], meta) if x["field"] == "quantum")
+    assert fr["effect"] == "none" and fr["metric_direction"] == "none"
+
+
+def test_field_sensitivity_keeps_pipes_separate_and_needs_enough_points():
+    from pathbrain.api.routes_settings import _field_sensitivity
+
+    meta = {"fcp": {"label": "FCP", "higher_is_better": False}}
+    # Only 3 points (< SENSITIVITY_MIN_POINTS=4) → nothing computed.
+    thin = [
+        {"settings": [{"label": "Download", "quantum": q}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 300), (2000, 200), (3000, 100)]
+    ]
+    assert _field_sensitivity(thin, ["fcp"], meta) == []
+
+    # A Download and an Upload pipe with opposite trends stay independent rows.
+    both = [
+        {
+            "settings": [
+                {"label": "Download", "quantum": q},
+                {"label": "Upload", "quantum": 6000 - q},
+            ],
+            "metric_medians": {"fcp": f},
+        }
+        for q, f in [(1000, 300), (2000, 250), (3000, 200), (4000, 150)]
+    ]
+    rows = _field_sensitivity(both, ["fcp"], meta)
+    dl = next(r for r in rows if r["pipe"] == "Download" and r["field"] == "quantum")
+    ul = next(r for r in rows if r["pipe"] == "Upload" and r["field"] == "quantum")
+    assert dl["spearman"] == -1.0 and ul["spearman"] == 1.0  # mirror-image levers
+
+
+def test_optimizer_export_carries_analysis_block(client):
+    body = client.get("/api/settings/export/optimizer").json()
+    assert "analysis" in body
+    assert "note" in body["analysis"] and "field_sensitivity" in body["analysis"]
+    assert isinstance(body["analysis"]["field_sensitivity"], list)
+
+
 def test_apply_writable_overrides_only_touches_writable_fields():
     from pathbrain.api.routes_settings import _apply_writable_overrides
 

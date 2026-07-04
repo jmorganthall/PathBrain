@@ -32,26 +32,41 @@ You will be given JSON with:
 - `methodology`: the objective — which metrics are the "crown" (what we optimize), that lower is better (times in ms), and the best value achieved so far per crown metric.
 - `shaper_model`: the tunable parameters. You may ONLY change fields listed in `writable_fields`; leave the others exactly as they are. Respect each field's kind/unit and stay within its suggested range. CRITICAL — return every value in the EXACT format the firewall expects, shown per field as `value_format` with a real `example`: `target`/`interval` are plain integers in milliseconds (`5`, NOT the string `"5ms"` — the firewall keys these by the bare number), `quantum`/`limit`/`flows` are plain integers like `3000`, `ecn` is a boolean, bandwidth is a string like `"100Mbit"`. Copy the format of each field's `example` verbatim.
 - `profiles`: every settings profile we have tested, with its full shaper `settings`, the raw per-run measurements (`run_samples`, the latest runs), and `metric_distribution` — the spread of each metric over ALL of that profile's runs (n/min/p25/median/p75/max). Prefer a profile that is reliably fast (low median AND tight p25–p75) over one that is only occasionally fast (low min but wide spread); a wide distribution means high variance, not a dependable win.
+- `analysis.field_sensitivity`: a PRECOMPUTED map of how each tunable lever relates to each crown metric — for every writable field (kept separate per pipe) vs each crown metric, the Spearman rank correlation (`spearman`) across the tested profiles, whether the metric rises or falls as that field increases (`metric_direction`), and whether that `effect` improves or worsens the crown. These are MARGINAL (profiles vary several fields at once, so a relationship can be confounded), so treat them as directional evidence to reconcile your reasoning against — not isolated causal effects. This is the settings→outcome relationship map; ground your interpretation in it rather than eyeballing the raw rows.
 
 IMPORTANT — the shaper has SEPARATE pipes per direction. Each profile's `settings` is a list of pipes, one per direction, each identified by its `label` (typically a "Download" pipe and an "Upload" pipe). Every pipe has its OWN independently-tunable quantum / target / interval / ecn / limit / flows AND its own bandwidth (stored in the pipe's `download_bandwidth` field — that field is simply "this pipe's bandwidth" regardless of direction; `upload_bandwidth` is unused/null). **Upload shaping matters as much as download** — bufferbloat and latency under upload load hurt responsiveness — so tune BOTH pipes, not just the download one.
 
-Study how the settings on BOTH pipes correlate with the measured crown metrics. Then propose 3-5 NEW shaper profiles (settings combinations we have NOT tested) likely to reduce the crown metrics below the best observed so far.
+Work in TWO steps. FIRST interpret the data: for each writable lever on each pipe, decide how it moves each crown metric — grounded in `analysis.field_sensitivity` and confirmed against the profile table. Report that as `relationships`. THEN, using those relationships, propose 3-5 NEW shaper profiles (settings combinations we have NOT tested) likely to reduce the crown metrics below the best observed so far. Tune BOTH pipes.
 
 Respond with ONLY a JSON object of exactly this shape (no prose outside the JSON):
-{"suggestions": [
-  {
-    "settings": [
-      {"label": "<the exact Download pipe label from a profile>", "quantum": 3000, "target": 5, "interval": 60, "ecn": true},
-      {"label": "<the exact Upload pipe label from a profile>", "quantum": 600, "target": 5, "interval": 60, "ecn": true}
-    ],
-    "displacement_likelihood": 72,
-    "rationale": "why this should beat the current best — cover both directions"
-  }
-]}
+{
+  "relationships": [
+    {
+      "pipe": "<the exact pipe label, e.g. Download or Upload>",
+      "field": "<a writable field, e.g. quantum>",
+      "metric": "<a crown metric, e.g. fcp>",
+      "direction": "inverse | linear | none",
+      "confidence": "low | medium | high",
+      "evidence": "what in field_sensitivity / the profiles supports this"
+    }
+  ],
+  "suggestions": [
+    {
+      "settings": [
+        {"label": "<the exact Download pipe label from a profile>", "quantum": 3000, "target": 5, "interval": 60, "ecn": true},
+        {"label": "<the exact Upload pipe label from a profile>", "quantum": 600, "target": 5, "interval": 60, "ecn": true}
+      ],
+      "displacement_likelihood": 72,
+      "rationale": "why this should beat the current best — tie it to the relationships above, cover both directions"
+    }
+  ]
+}
 
 Rules:
+- Fill `relationships` FIRST — it is the interpretation step. Use `direction: "inverse"` when raising the field lowers (improves) the metric, `"linear"` when raising it raises (worsens) the metric, `"none"` when there is no clear trend. Cover the levers that actually move the crown; you need not list every field × metric pair.
 - Each suggestion's `settings` is a LIST with one object PER PIPE. Include BOTH the download and the upload pipe (referenced by their exact `label` from the profiles' `settings`) whenever a profile has both — a suggestion that only tunes one direction is incomplete.
 - Set ONLY fields listed in `shaper_model.writable_fields`; leave every non-writable field alone. Use the same value formats you see (e.g. `target`/`interval` bare integer milliseconds like 5, `quantum` an integer).
+- Each suggestion must be consistent with your `relationships`: move each lever in the direction that improves the crown.
 - `displacement_likelihood` is your 0-100 estimate of the chance this profile beats the current crown.
 - Order the suggestions by `displacement_likelihood`, highest first."""
 
@@ -200,6 +215,7 @@ def suggest(session: Session, export: dict, model: str | None = None, prompt: st
         "model": model,
         "raw": raw,
         "suggestions": suggestions,
+        "relationships": _parse_relationships(raw),
         "usage": resp.get("usage") or {},
     }
 
@@ -299,6 +315,7 @@ def suggest_stream(export: dict, api_key: str, model: str | None, prompt: str | 
         "raw": raw,
         "reasoning": "".join(reasoning),
         "suggestions": suggestions,
+        "relationships": _parse_relationships(raw),
         "usage": usage,
     }
 
@@ -310,18 +327,24 @@ def _as_float(v) -> float:
         return 0.0
 
 
-def _parse_suggestions(text: str) -> list[dict]:
-    """Best-effort extract ``suggestions`` (a list of ``{settings, rationale}``) from the model's
-    reply — tolerant of ```json fences and surrounding prose. Returns [] if nothing parses."""
-    if not text:
-        return []
+def _json_candidates(text: str) -> list[str]:
+    """Ordered JSON-ish substrings to try parsing from a model reply — tolerant of ```json
+    fences and surrounding prose."""
     candidates: list[str] = []
     candidates += re.findall(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", text, re.DOTALL)
     m = re.search(r"\{.*\}", text, re.DOTALL)  # first/outermost object
     if m:
         candidates.append(m.group(0))
     candidates.append(text)
-    for c in candidates:
+    return candidates
+
+
+def _parse_suggestions(text: str) -> list[dict]:
+    """Best-effort extract ``suggestions`` (a list of ``{settings, rationale}``) from the model's
+    reply — tolerant of ```json fences and surrounding prose. Returns [] if nothing parses."""
+    if not text:
+        return []
+    for c in _json_candidates(text):
         try:
             obj = json.loads(c)
         except Exception:  # noqa: BLE001
@@ -330,6 +353,22 @@ def _parse_suggestions(text: str) -> list[dict]:
             return [s for s in obj["suggestions"] if isinstance(s, dict)]
         if isinstance(obj, list):
             return [s for s in obj if isinstance(s, dict)]
+    return []
+
+
+def _parse_relationships(text: str) -> list[dict]:
+    """Best-effort extract the model's interpreted ``relationships`` (its read of how each lever
+    moves each crown metric) from the reply. Returns [] when the model omits them or nothing
+    parses — the suggestions still stand on their own."""
+    if not text:
+        return []
+    for c in _json_candidates(text):
+        try:
+            obj = json.loads(c)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("relationships"), list):
+            return [r for r in obj["relationships"] if isinstance(r, dict)]
     return []
 
 
