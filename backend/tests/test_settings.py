@@ -107,8 +107,13 @@ def _seed_run(
         }
         if completion is not None:
             axes["completion"] = completion
+        # A comparable run persists the first-class Overall (methodology v5+); default it to the
+        # seeded smoothness score for fixtures unless a test sets it explicitly. Mirrors
+        # production, where every comparable run carries axis_scores["overall"].
         if overall is not None:
             axes["overall"] = overall
+        elif comparable:
+            axes["overall"] = sops
         # The crown (v7) corners over fcp × lcp × total_stall. Subscores drive the *axis*
         # scores + the custom-crown lens; the canonical Overall now corners the *raw* browser
         # measurements. Tests override subscores via ``crown_subscores``.
@@ -187,6 +192,29 @@ def test_profiles_and_impact(client):
     assert impact["after"]["fingerprint"] == "bbbbbbbbbbbb"
     assert impact["delta_abs"] > 0
     assert impact["significant"] is True  # ~70 -> ~85 over 5%, both confident
+
+
+def test_best_diff_is_computed_on_overall():
+    # The best-vs-next diff must measure the gap on the Overall (the crown we rank on) and the
+    # time-adjusted Overall — NOT the legacy smoothness median / relative_sops.
+    from pathbrain.api.routes_settings import _best_diff
+
+    profiles = [
+        {"fingerprint": "win", "label": "win", "overall": 90.0,
+         "relative_overall": {"delta_median": 5.0}, "completion": None, "confident": True,
+         "settings": [{"label": "wan", "quantum": 3000}]},
+        {"fingerprint": "runnerup", "label": "runnerup", "overall": 60.0,
+         "relative_overall": {"delta_median": 1.0}, "completion": None, "confident": True,
+         "settings": [{"label": "wan", "quantum": 1514}]},
+    ]
+    bd = _best_diff(profiles, "win")
+    assert bd["best"]["overall"] == 90.0 and bd["comparison"]["overall"] == 60.0
+    assert bd["delta_abs"] == 30.0                 # Overall gap (90 - 60)
+    assert bd["best"]["relative_overall"] == 5.0
+    assert bd["relative_delta"] == 4.0             # time-adjusted Overall gap (5 - 1)
+    # A profile with no crown Overall yields a null delta, not a crash.
+    bd2 = _best_diff([dict(profiles[0]), {**profiles[1], "overall": None}], "win")
+    assert bd2["delta_abs"] is None and bd2["delta_pct"] is None
 
 
 def test_confidence_is_iteration_based(client):
@@ -1032,6 +1060,81 @@ def test_optimizer_export_top_n_profiles(client):
     assert body["profiles_available"] >= 1                  # but more exist in the field
     # The one returned is the highest-Overall profile.
     assert body["profiles"][0]["overall"] is not None
+
+
+def test_field_sensitivity_detects_monotonic_relationships():
+    from pathbrain.api.routes_settings import _field_sensitivity
+
+    meta = {"fcp": {"label": "FCP", "higher_is_better": False}}
+    # quantum rises 1000→5000 while fcp falls 300→150 (perfect inverse → improves the crown);
+    # target is constant so it can't correlate and must be dropped.
+    profiles = [
+        {"settings": [{"label": "Download", "quantum": q, "target": 5}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 300), (2000, 250), (3000, 200), (4000, 180), (5000, 150)]
+    ]
+    rows = _field_sensitivity(profiles, ["fcp"], meta)
+    q_row = next(r for r in rows if r["field"] == "quantum")
+    assert q_row["pipe"] == "Download"
+    assert q_row["spearman"] == -1.0
+    assert q_row["metric_direction"] == "decreases" and q_row["effect"] == "improves"
+    # A constant lever (target) never appears — no distinct values to correlate.
+    assert not any(r["field"] == "target" for r in rows)
+
+
+def test_field_sensitivity_flags_worsening_and_no_trend():
+    from pathbrain.api.routes_settings import _field_sensitivity
+
+    meta = {"fcp": {"label": "FCP", "higher_is_better": False}}
+    # quantum rises while fcp ALSO rises → raising it worsens the crown.
+    worse = [
+        {"settings": [{"label": "Download", "quantum": q}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 150), (2000, 200), (3000, 250), (4000, 300)]
+    ]
+    r = next(x for x in _field_sensitivity(worse, ["fcp"], meta) if x["field"] == "quantum")
+    assert r["spearman"] == 1.0 and r["effect"] == "worsens" and r["metric_direction"] == "increases"
+
+    # No monotonic trend → reported as "none" (|ρ| below the trend threshold), not improves/worsens.
+    flat = [
+        {"settings": [{"label": "Download", "quantum": q}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 200), (2000, 205), (3000, 199), (4000, 202), (5000, 201)]
+    ]
+    fr = next(x for x in _field_sensitivity(flat, ["fcp"], meta) if x["field"] == "quantum")
+    assert fr["effect"] == "none" and fr["metric_direction"] == "none"
+
+
+def test_field_sensitivity_keeps_pipes_separate_and_needs_enough_points():
+    from pathbrain.api.routes_settings import _field_sensitivity
+
+    meta = {"fcp": {"label": "FCP", "higher_is_better": False}}
+    # Only 3 points (< SENSITIVITY_MIN_POINTS=4) → nothing computed.
+    thin = [
+        {"settings": [{"label": "Download", "quantum": q}], "metric_medians": {"fcp": f}}
+        for q, f in [(1000, 300), (2000, 200), (3000, 100)]
+    ]
+    assert _field_sensitivity(thin, ["fcp"], meta) == []
+
+    # A Download and an Upload pipe with opposite trends stay independent rows.
+    both = [
+        {
+            "settings": [
+                {"label": "Download", "quantum": q},
+                {"label": "Upload", "quantum": 6000 - q},
+            ],
+            "metric_medians": {"fcp": f},
+        }
+        for q, f in [(1000, 300), (2000, 250), (3000, 200), (4000, 150)]
+    ]
+    rows = _field_sensitivity(both, ["fcp"], meta)
+    dl = next(r for r in rows if r["pipe"] == "Download" and r["field"] == "quantum")
+    ul = next(r for r in rows if r["pipe"] == "Upload" and r["field"] == "quantum")
+    assert dl["spearman"] == -1.0 and ul["spearman"] == 1.0  # mirror-image levers
+
+
+def test_optimizer_export_carries_analysis_block(client):
+    body = client.get("/api/settings/export/optimizer").json()
+    assert "analysis" in body
+    assert "note" in body["analysis"] and "field_sensitivity" in body["analysis"]
+    assert isinstance(body["analysis"]["field_sensitivity"], list)
 
 
 def test_apply_writable_overrides_only_touches_writable_fields():

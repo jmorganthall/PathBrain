@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Area,
   CartesianGrid,
@@ -24,10 +24,19 @@ import type { TrendHeatmapResponse, TrendRelativeResponse } from "../api/types";
 import TrendHeatmap from "../components/TrendHeatmap";
 import RelativeDelta, { fmtBucket } from "../components/RelativeDelta";
 import Loading from "../components/Loading";
+import { useMetricMeta } from "../utils/metrics";
 
-// Environment-first ordering: the infra metrics describe "how good the internet
-// is right now" (config-insensitive); the score axes come after.
-const METRIC_OPTIONS: { key: string; label: string }[] = [
+// The headline Overall always leads; the crown measurements (what we rank on today) are
+// injected from the methodology at runtime — see `withCrown` — so this never drifts when the
+// crown changes. The score axes and the config-insensitive infra metrics follow.
+const AXIS_OPTIONS: { key: string; label: string }[] = [
+  { key: "responsiveness", label: "Responsiveness" },
+  { key: "smoothness", label: "Smoothness" },
+  { key: "speed", label: "Speed" },
+  { key: "stability", label: "Stability" },
+  { key: "completion", label: "Completion" },
+];
+const INFRA_OPTIONS: { key: string; label: string }[] = [
   { key: "latency", label: "Latency (ping)" },
   { key: "jitter", label: "Jitter" },
   { key: "packet_loss", label: "Packet loss" },
@@ -36,38 +45,32 @@ const METRIC_OPTIONS: { key: string; label: string }[] = [
   { key: "tcp", label: "TCP connect" },
   { key: "tls", label: "TLS handshake" },
   { key: "ttfb", label: "Time to First Byte" },
-  { key: "overall", label: "Overall" },
-  { key: "responsiveness", label: "Responsiveness" },
-  { key: "smoothness", label: "Smoothness" },
-  { key: "speed", label: "Speed" },
-  { key: "stability", label: "Stability" },
-  { key: "completion", label: "Completion" },
-];
-
-// Which metrics to surface in the "right now vs typical" panel (headline Overall +
-// score axes first).
-const RELATIVE_KEYS = [
-  "overall",
-  "responsiveness",
-  "smoothness",
-  "speed",
-  "latency",
-  "jitter",
-  "packet_loss",
-  "transfer",
-  "dns",
-  "tcp",
-  "tls",
-  "ttfb",
 ];
 
 export default function Trends() {
   const theme = useTheme();
-  const [metric, setMetric] = useState("latency");
+  const meta = useMetricMeta();
+  const [metric, setMetric] = useState("overall");
   const [heatmap, setHeatmap] = useState<TrendHeatmapResponse | null>(null);
   const [relative, setRelative] = useState<TrendRelativeResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // The crown measurements (fcp/lcp/total_stall today) come from the methodology via the
+  // relative response, so the picker + "vs typical" panel feature exactly what we rank on now.
+  const crownOptions = useMemo(
+    () => (relative?.crown_metrics ?? []).map((k) => ({ key: k, label: meta(k).label })),
+    [relative, meta],
+  );
+  // Metric picker: Overall → crown measurements → score axes → infra ("weather"). Deduped by
+  // key (first wins) so a crown metric that's also an axis/infra key can't double up.
+  const metricOptions = useMemo(() => {
+    const all = [{ key: "overall", label: "Overall" }, ...crownOptions, ...AXIS_OPTIONS, ...INFRA_OPTIONS];
+    const seen = new Set<string>();
+    return all.filter((o) => (seen.has(o.key) ? false : seen.add(o.key)));
+  }, [crownOptions]);
+  // "Right now vs typical" panel keys, same headline-first ordering.
+  const relativeKeys = useMemo(() => [...new Set(metricOptions.map((o) => o.key))], [metricOptions]);
 
   const loadHeatmap = useCallback(async (m: string) => {
     const h = await api.trendsHeatmap(m);
@@ -110,7 +113,7 @@ export default function Trends() {
           onChange={(e) => setMetric(e.target.value)}
           sx={{ minWidth: 200 }}
         >
-          {METRIC_OPTIONS.map((o) => (
+          {metricOptions.map((o) => (
             <MenuItem key={o.key} value={o.key}>
               {o.label}
             </MenuItem>
@@ -119,9 +122,10 @@ export default function Trends() {
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3, maxWidth: 720 }}>
         How each metric typically behaves by day of week and hour of day — the
-        network's "weather". The infra metrics (ping, jitter, speed) track general
-        internet conditions, so a reading can be judged <em>relative to what's normal
-        for this time</em>, not just in absolute terms.
+        network's "weather". The same baseline covers the headline <b>Overall</b> and
+        the crown measurements we rank on, plus the infra metrics (ping, jitter, speed)
+        that track general internet conditions — so any reading can be judged{" "}
+        <em>relative to what's normal for this time</em>, not just in absolute terms.
       </Typography>
 
       {error && (
@@ -170,7 +174,7 @@ export default function Trends() {
               </Typography>
               {relative && Object.keys(relative.metrics).length > 0 ? (
                 <Box>
-                  {RELATIVE_KEYS.filter((k) => relative.metrics[k]).map((k) => (
+                  {relativeKeys.filter((k) => relative.metrics[k]).map((k) => (
                     <RelativeDelta
                       key={k}
                       reading={relative.metrics[k]}

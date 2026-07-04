@@ -197,21 +197,23 @@ export interface ProfileFieldChange {
 export interface ProfileDiffSide {
   fingerprint: string;
   label: string;
-  median: number;
+  // Field-normalized Overall (the crown corner we rank on), null if no crown data.
+  overall: number | null;
   completion: number | null;
-  // Time-adjusted SOPS (median vs the day×hour norm), null if not computable.
-  relative_sops: number | null;
+  // Time-adjusted Overall (median vs the day×hour norm), null if not computable.
+  relative_overall: number | null;
   confident: boolean;
 }
 
 export interface ProfileDiff {
   best: ProfileDiffSide;
   comparison: ProfileDiffSide;
-  delta_abs: number;
+  // Overall gap (best − comparison); null when either side lacks a crown Overall.
+  delta_abs: number | null;
   delta_pct: number | null;
-  // Completion median delta (best − comparison); can move opposite to SOPS.
+  // Completion median delta (best − comparison); can move opposite to the Overall.
   completion_delta: number | null;
-  // Time-adjusted advantage of best over comparison (their relative_sops gap).
+  // Time-adjusted advantage of best over comparison (their relative_overall gap).
   relative_delta: number | null;
   changes: ProfileFieldChange[];
 }
@@ -666,6 +668,9 @@ export interface TrendRelativeResponse {
   window_hours: number;
   window_days: number;
   min_samples: number;
+  // The current methodology's crown measurements (what we rank on today), so the UI can
+  // feature the same day×hour "vs typical" matrix for them without a hardcoded set.
+  crown_metrics?: string[];
   metrics: Record<string, TrendRelative>;
 }
 
@@ -1039,10 +1044,42 @@ export interface AiSuggestion {
   [key: string]: unknown;
 }
 
+// One deterministic settings→outcome relationship computed server-side (Spearman ρ over the
+// exported profiles): a writable field on a pipe vs a crown metric.
+export interface FieldSensitivity {
+  pipe: string;
+  field: string;
+  field_label: string;
+  metric: string;
+  metric_label: string;
+  spearman: number | null;
+  n: number;
+  distinct_values: number;
+  metric_direction: "increases" | "decreases" | "none";
+  effect: "improves" | "worsens" | "none";
+  summary: string;
+}
+
+// The model's own interpreted relationship (its read of the levers), separate from the
+// deterministic map above.
+export interface AiRelationship {
+  pipe?: string;
+  field?: string;
+  metric?: string;
+  direction?: "inverse" | "linear" | "none" | string;
+  confidence?: string;
+  evidence?: string;
+  [key: string]: unknown;
+}
+
 export interface AiSuggestResult {
   model: string;
   raw: string;
   suggestions: AiSuggestion[];
+  // The model's interpreted settings→metric relationships (may be empty if it omitted them).
+  relationships?: AiRelationship[];
+  // The deterministic relationships we computed and sent to the model.
+  field_sensitivity?: FieldSensitivity[];
   usage: Record<string, number>;
   profiles_sent: number | null;
   // Size of the JSON payload sent to the model, so the UI can show how big the request was.
@@ -1051,7 +1088,13 @@ export interface AiSuggestResult {
 
 // One Server-Sent Event from the streaming suggest endpoint (/ai/suggest/stream).
 export type AiStreamEvent =
-  | { type: "meta"; profiles_sent: number | null; payload_bytes: number; model: string }
+  | {
+      type: "meta";
+      profiles_sent: number | null;
+      payload_bytes: number;
+      model: string;
+      field_sensitivity?: FieldSensitivity[];
+    }
   | { type: "reasoning"; delta: string }
   | { type: "content"; delta: string }
   | {
@@ -1060,6 +1103,7 @@ export type AiStreamEvent =
       raw: string;
       reasoning: string;
       suggestions: AiSuggestion[];
+      relationships?: AiRelationship[];
       usage: Record<string, number>;
     }
   | { type: "error"; error: string };

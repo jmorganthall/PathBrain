@@ -162,6 +162,40 @@ def test_parse_suggestions_tolerates_prose_and_fences():
     assert ai._parse_suggestions("no json here") == []
 
 
+def test_parse_relationships_extracts_the_interpretation_block():
+    reply = (
+        'Here is my read:\n```json\n'
+        '{"relationships":[{"pipe":"Download","field":"quantum","metric":"fcp",'
+        '"direction":"inverse","confidence":"high"}],'
+        '"suggestions":[{"settings":[]}]}\n```'
+    )
+    rels = ai._parse_relationships(reply)
+    assert len(rels) == 1 and rels[0]["field"] == "quantum" and rels[0]["direction"] == "inverse"
+    # Suggestions still parse from the same reply, independently.
+    assert ai._parse_suggestions(reply)[0]["settings"] == []
+    # No relationships block → empty, but the suggestions still stand.
+    assert ai._parse_relationships('{"suggestions":[{"settings":{}}]}') == []
+
+
+def test_ai_suggest_returns_relationships_and_field_sensitivity(client, monkeypatch):
+    client.put("/api/ai/config", json={"api_key": "sk-or-rel11111", "model": "test/model"})
+
+    def _fake(url, api_key, payload, timeout):
+        content = (
+            '{"relationships":[{"pipe":"Download","field":"quantum","metric":"fcp",'
+            '"direction":"inverse"}],"suggestions":[{"settings":[],"displacement_likelihood":50}]}'
+        )
+        return {"choices": [{"message": {"content": content}}]}
+
+    monkeypatch.setattr(ai, "_request", _fake)
+    body = client.post("/api/ai/suggest", json={}).json()
+    # The model's interpretation is parsed through.
+    assert body["relationships"][0]["field"] == "quantum"
+    # The deterministic sensitivity map we computed is echoed back for the UI (list, possibly
+    # empty depending on how much the fixture profiles vary).
+    assert isinstance(body["field_sensitivity"], list)
+
+
 def test_ai_suggest_ranks_by_displacement_likelihood(client, monkeypatch):
     client.put("/api/ai/config", json={"api_key": "sk-or-rank9999", "model": "test/model"})
 

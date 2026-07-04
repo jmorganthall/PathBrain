@@ -84,7 +84,7 @@ export function ImpactBanner({ impact }: { impact: SettingsImpact }) {
     <Alert severity={severity} icon={<InsightsIcon />} sx={{ mb: 2 }}>
       <Typography variant="body2">
         Since the settings changed{impact.changed_at ? ` (${fmtDateTime(impact.changed_at)})` : ""},
-        median Smoothness moved <b>{arrow} {Math.abs(impact.delta_pct)}%</b> (
+        median Overall moved <b>{arrow} {Math.abs(impact.delta_pct)}%</b> (
         {impact.before?.median} → {impact.after?.median}).{" "}
         {collecting
           ? `Collecting data before calling it — ${iBefore}/${iAfter} iterations (need ${need} each).`
@@ -169,7 +169,7 @@ function dirColor(d: ProfileFieldChange["direction"]): string {
 }
 
 // At-a-glance "what the best profile changed" vs the next-ranked one, with the
-// resulting SOPS delta — the seed for experiment suggestions. SOPS is the headline;
+// resulting Overall delta — the seed for experiment suggestions. Overall is the headline;
 // the Completion delta is an opt-in diagnostic (shown only when `showCompletion`).
 export function ProfileDiffCard({
   diff,
@@ -178,26 +178,28 @@ export function ProfileDiffCard({
   diff: ProfileDiff;
   showCompletion: boolean;
 }) {
-  const improved = diff.delta_abs >= 0;
+  const improved = (diff.delta_abs ?? 0) >= 0;
   const distinctPipes = new Set(diff.changes.map((c) => c.pipe)).size;
   return (
     <Card sx={{ mb: 2 }}>
       <CardContent>
         <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
           <Typography variant="subtitle1">What the best profile changed</Typography>
-          <Chip
-            size="small"
-            color={improved ? "success" : "warning"}
-            label={`Smoothness ${improved ? "▲" : "▼"} ${diff.delta_abs >= 0 ? "+" : ""}${diff.delta_abs}${
-              diff.delta_pct != null
-                ? ` (${diff.delta_pct >= 0 ? "+" : ""}${diff.delta_pct}%)`
-                : ""
-            }`}
-          />
+          {diff.delta_abs != null && (
+            <Chip
+              size="small"
+              color={improved ? "success" : "warning"}
+              label={`Overall ${improved ? "▲" : "▼"} ${diff.delta_abs >= 0 ? "+" : ""}${diff.delta_abs}${
+                diff.delta_pct != null
+                  ? ` (${diff.delta_pct >= 0 ? "+" : ""}${diff.delta_pct}%)`
+                  : ""
+              }`}
+            />
+          )}
           {diff.relative_delta != null && (
             <Tooltip
               arrow
-              title="Smoothness gap once each profile's day×hour environment is removed. If this differs from the raw delta, the two profiles were sampled at different times — and this is the fairer number."
+              title="Overall gap once each profile's day×hour environment is removed. If this differs from the raw delta, the two profiles were sampled at different times — and this is the fairer number."
             >
               <Chip
                 size="small"
@@ -272,7 +274,7 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.median;
     case "speed":
       return p.speed?.median ?? null;
-    case "relative_sops":
+    case "relative_overall":
       return p.relative_overall?.delta_median ?? null;
     case "p25":
       return p.p25;
@@ -334,7 +336,7 @@ const FIXED_COLUMN_KEYS = new Set([
   "smoothness",
   "iterations",
   "count",
-  "relative_smoothness",
+  "relative_overall",
 ]);
 
 // Group a field list by its `group` for the axis-picker / column menus.
@@ -1322,7 +1324,7 @@ export default function Settings() {
                       />
                     ))}
                     <SortHeader
-                      id="relative_sops"
+                      id="relative_overall"
                       label="vs typical"
                       align="right"
                       orderBy={orderBy}

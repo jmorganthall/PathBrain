@@ -293,17 +293,32 @@ LLM-based. See `README.md` for the product overview.
   each profile's **full details** (complete shaper settings + first/last seen) **and scoring
   data** (percentile Overall + IQR, per-crown-metric percentile, axis scores, raw metric medians,
   and per-run raw scoring metrics), plus the methodology objective (crown metrics + lower-is-better
-  + observed best/worst) and the shaper field model (writable + sweepable fields + ranges). Bounded
+  + observed best/worst) and the shaper field model (writable + sweepable fields + ranges). It also
+  carries a deterministic **`analysis.field_sensitivity`** block (`_field_sensitivity`): for each
+  writable lever **per pipe label** × each crown metric, the Spearman rank correlation across the
+  exported profiles (one (field value, profile-median metric) point per profile), with
+  `metric_direction` (does the metric rise/fall as the field rises) + `effect` (improves/worsens the
+  crown). This is the settings→outcome relationship map computed *server-side* — trustworthy and
+  chartable regardless of the model — handed to the LLM so it reasons over an explicit "this up →
+  that down" map instead of eyeballing raw rows. They're **marginal** (profiles vary several fields
+  at once → possibly confounded), not partial. Bounded
   by `runs_per_profile` and `profile_limit` (top-N by Overall). The **AI** page (`ai.py`,
   `routes_ai.py`) sends that export to an LLM via **OpenRouter** and shows proposed new profiles:
   the API key lives in its own `AppConfig` `"ai"` row (isolated from the benchmark config so it
   never leaks into run snapshots / the data dump; returned **masked** via `ai.public_config`), the
   model + editable prompt are saved there too. `GET/PUT /api/ai/config`, `DELETE /api/ai/config/key`,
   `GET /api/ai/models`, `POST /api/ai/suggest` (builds the export, calls OpenRouter chat-completions,
-  best-effort parses `{suggestions:[{settings, displacement_likelihood, rationale}]}`, **ranked by
-  the model's crown-displacement estimate**). A **streaming** variant `POST /api/ai/suggest/stream`
-  (`ai.suggest_stream` + `_stream_chat`) returns Server-Sent Events — a `meta` event then
-  `reasoning`/`content` token deltas then a terminal `done` (parsed suggestions) or `error` — so a
+  best-effort parses `{relationships:[…], suggestions:[{settings, displacement_likelihood, rationale}]}`,
+  **ranked by the model's crown-displacement estimate**). The prompt now runs a **two-step** interp:
+  the model FIRST returns `relationships` — its read of how each lever moves each crown metric
+  (`inverse`/`linear`/`none` + confidence + evidence), grounded in `analysis.field_sensitivity` —
+  THEN proposes suggestions consistent with them. The AI page renders a **"Settings ↔ outcome
+  relationships"** card: the deterministic `field_sensitivity` table (direction + improves/worsens
+  chips, echoed on `/ai/suggest` and the stream `meta` event) plus the model's own interpretation.
+  A **streaming** variant `POST /api/ai/suggest/stream`
+  (`ai.suggest_stream` + `_stream_chat`) returns Server-Sent Events — a `meta` event (with
+  `field_sensitivity`) then
+  `reasoning`/`content` token deltas then a terminal `done` (parsed suggestions + relationships) or `error` — so a
   long request keeps the connection alive (no timeout) and the AI page shows the model's reasoning +
   answer live (default on, `Stream` toggle; `client.aiSuggestStream` consumes the SSE via `fetch` +
   `ReadableStream`). Config secrets are resolved before the generator starts, so it's session-free.
