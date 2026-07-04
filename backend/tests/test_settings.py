@@ -1135,6 +1135,35 @@ def test_lever_signature_flags_a_higher_run_and_needs_enough_profiles():
     assert thin["available"] is False and thin["levers"] == []
 
 
+def test_coverage_gaps_kicks_back_a_data_request_for_undersampled_signal():
+    # interval shows a 'lower is better' signal but only 40/60 have been measured — the analysis
+    # should ask to collect data BELOW 40, not propose a finished profile.
+    from pathbrain.api.routes_settings import _coverage_gaps
+
+    profiles = [{"settings": [{"label": "Download", "interval": iv}], "overall": o}
+                for iv, o in [(40, 90), (40, 88), (60, 60), (60, 58), (40, 85), (60, 55)]]
+    fs = [{"pipe": "Download", "field": "interval", "metric": "overall", "spearman": -0.43}]
+    sig = {"levers": [{"pipe": "Download", "field": "interval", "pattern": "lower",
+                       "shift": -1.0, "concentration": 0.2}]}
+    gaps = _coverage_gaps(profiles, fs, sig)
+    g = next(x for x in gaps if x["field"] == "interval")
+    assert g["action"] == "extend_lower"
+    assert g["measured_range"] == [40.0, 60.0]
+    assert g["sweepable"] is True                       # interval is now a sweepable lever
+    assert all(v < 40 for v in g["suggested_values"]) and g["suggested_values"]
+
+
+def test_coverage_gaps_ignores_well_sampled_or_flat_levers():
+    from pathbrain.api.routes_settings import _coverage_gaps
+
+    # quantum with no pattern and no suggestive correlation → not a gap.
+    profiles = [{"settings": [{"label": "Download", "quantum": q}], "overall": o}
+                for q, o in [(1000, 50), (2000, 52), (3000, 51), (4000, 49), (5000, 50)]]
+    fs = [{"pipe": "Download", "field": "quantum", "metric": "overall", "spearman": 0.03}]
+    sig = {"levers": [{"pipe": "Download", "field": "quantum", "pattern": "none"}]}
+    assert _coverage_gaps(profiles, fs, sig) == []
+
+
 def test_field_sensitivity_flags_worsening_and_no_trend():
     from pathbrain.api.routes_settings import _field_sensitivity
 

@@ -1087,6 +1087,23 @@ export interface TopProfileSignature {
   levers?: LeverSignature[];
 }
 
+// One deterministic "collect more data here" recommendation: a lever with a promising but
+// under-sampled signal, and the values to measure next.
+export interface CoverageGap {
+  pipe: string;
+  field: string;
+  field_label: string;
+  distinct_values: number;
+  measured_range: [number, number];
+  overall_rho: number | null;
+  pattern: "higher" | "lower" | "sweet_spot" | "none" | null;
+  sweepable: boolean;
+  action: "extend_lower" | "extend_higher" | "resolve";
+  suggested_values: number[];
+  rationale: string;
+  priority: number | null;
+}
+
 // The model's own interpreted relationship (its read of the levers), separate from the
 // deterministic map above.
 export interface AiRelationship {
@@ -1105,10 +1122,14 @@ export interface AiSuggestResult {
   suggestions: AiSuggestion[];
   // The model's interpreted settings→metric relationships (may be empty if it omitted them).
   relationships?: AiRelationship[];
+  // The model's data-collection requests (where it wants more data before trusting a signal).
+  data_requests?: Record<string, unknown>[];
   // The deterministic relationships we computed and sent to the model.
   field_sensitivity?: FieldSensitivity[];
   // What the top-Overall profiles share, per lever (catches sweet spots correlations miss).
   top_profile_signature?: TopProfileSignature;
+  // Deterministic "collect more data here" recommendations (promising but under-sampled levers).
+  coverage_gaps?: CoverageGap[];
   usage: Record<string, number>;
   profiles_sent: number | null;
   // Size of the JSON payload sent to the model, so the UI can show how big the request was.
@@ -1124,6 +1145,7 @@ export type AiStreamEvent =
       model: string;
       field_sensitivity?: FieldSensitivity[];
       top_profile_signature?: TopProfileSignature;
+      coverage_gaps?: CoverageGap[];
     }
   | { type: "reasoning"; delta: string }
   | { type: "content"; delta: string }
@@ -1134,6 +1156,7 @@ export type AiStreamEvent =
       reasoning: string;
       suggestions: AiSuggestion[];
       relationships?: AiRelationship[];
+      data_requests?: Record<string, unknown>[];
       usage: Record<string, number>;
     }
   | { type: "error"; error: string };

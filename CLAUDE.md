@@ -310,7 +310,18 @@ LLM-based. See `README.md` for the product overview.
   concentration / Cliff's delta. This answers what the correlations **can't**: when every ρ≈0 the
   winners can still cluster on a specific value (a sweet spot both extremes miss) or run a lever
   systematically higher/lower — a combination/non-monotone edge a single-lever correlation is
-  blind to (rendered as a **"What the top profiles share"** card on the AI page). Bounded
+  blind to (rendered as a **"What the top profiles share"** card on the AI page). It **also**
+  carries **`analysis.coverage_gaps`** (`_coverage_gaps`): levers with a **promising but
+  under-sampled** signal — a directional pattern or suggestive ρ, but too few distinct values
+  measured (or the favored direction runs off the edge of what's been tested). Each is a concrete
+  **data request** (`suggested_values`, `action` extend_lower/extend_higher/resolve, `sweepable`)
+  so the model can **kick back "go measure here" instead of a speculative profile** (the AI returns
+  these as `data_requests`; rendered as a **"What to measure next"** card linking to the Shotgun
+  Sweep). This is the active-experiment layer: a signal is only actionable once resolved.
+  `interval` is now a **sweepable** field so the most common recommendation (sweep CoDel interval)
+  is directly runnable. The prompt also forbids the model from inventing statistics (only cite ρ /
+  medians present in the JSON — a lever with too few distinct values has no `field_sensitivity` row
+  and must be described from `top_profile_signature`). Bounded
   by `runs_per_profile` and `profile_limit` (top-N by Overall). The **AI** page (`ai.py`,
   `routes_ai.py`) sends that export to an LLM via **OpenRouter** and shows proposed new profiles:
   the API key lives in its own `AppConfig` `"ai"` row (isolated from the benchmark config so it

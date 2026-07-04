@@ -196,6 +196,25 @@ def test_ai_suggest_returns_relationships_and_field_sensitivity(client, monkeypa
     assert isinstance(body["field_sensitivity"], list)
 
 
+def test_ai_suggest_returns_data_requests_and_coverage_gaps(client, monkeypatch):
+    client.put("/api/ai/config", json={"api_key": "sk-or-dr111111", "model": "test/model"})
+
+    def _fake(url, api_key, payload, timeout):
+        content = (
+            '{"data_requests":[{"pipe":"Download","field":"interval",'
+            '"suggested_values":[20,30],"reason":"lower looks better but only 40/60 measured"}],'
+            '"suggestions":[]}'
+        )
+        return {"choices": [{"message": {"content": content}}]}
+
+    monkeypatch.setattr(ai, "_request", _fake)
+    body = client.post("/api/ai/suggest", json={}).json()
+    # The model's data request (kick-back for more measurement) is parsed through.
+    assert body["data_requests"][0]["field"] == "interval"
+    # The deterministic coverage-gap map we computed is echoed back for the UI.
+    assert isinstance(body["coverage_gaps"], list)
+
+
 def test_ai_suggest_ranks_by_displacement_likelihood(client, monkeypatch):
     client.put("/api/ai/config", json={"api_key": "sk-or-rank9999", "model": "test/model"})
 

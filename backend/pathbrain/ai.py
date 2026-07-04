@@ -34,6 +34,9 @@ You will be given JSON with:
 - `profiles`: every settings profile we have tested, with its full shaper `settings`, the raw per-run measurements (`run_samples`, the latest runs), and `metric_distribution` — the spread of each metric over ALL of that profile's runs (n/min/p25/median/p75/max). Prefer a profile that is reliably fast (low median AND tight p25–p75) over one that is only occasionally fast (low min but wide spread); a wide distribution means high variance, not a dependable win.
 - `analysis.field_sensitivity`: a PRECOMPUTED map of how each tunable lever relates to each crown metric (and to the Overall itself) — for every writable field (kept separate per pipe), the Spearman rank correlation (`spearman`) across the tested profiles, whether the outcome rises or falls as that field increases (`metric_direction`), and whether that `effect` improves or worsens the crown. These are MARGINAL (profiles vary several fields at once, so a relationship can be confounded), so treat them as directional evidence to reconcile your reasoning against — not isolated causal effects. This is the settings→outcome relationship map; ground your interpretation in it rather than eyeballing the raw rows.
 - `analysis.top_profile_signature`: what the BEST profiles have in common. For each lever it compares the top-Overall quartile against the rest of the field: `pattern` is `higher`/`lower`/`sweet_spot`/`none`, `top_value`+`top_range` is the value the winners share, `field_range` the full spread. This catches what the correlations MISS — when `field_sensitivity` shows ρ≈0 for a lever, the winners can still cluster on a specific value (a `sweet_spot`, both extremes worse) or run it systematically higher/lower. When correlations are flat, lean on this: propose settings that match the top profiles' shared values on the distinctive levers.
+- `analysis.coverage_gaps`: levers with a PROMISING but UNDER-SAMPLED signal — a directional pattern or suggestive correlation, but too few distinct values measured (or the favored direction runs off the edge of what's been tested). For these the correct answer is NOT a finished profile — it's a DATA REQUEST: measure the `suggested_values` first (`sweepable`=true means the Shotgun Sweep can run them directly). More data beats a guess. Surface these as `data_requests` and prefer them over speculative suggestions when the underlying signal isn't yet trustworthy.
+
+CRITICAL — do not invent numbers. Only cite statistics (ρ, medians, ranges) that appear verbatim in the JSON. Never fabricate a Spearman ρ for a lever that has no `field_sensitivity` row (a lever with too few distinct values is intentionally omitted — describe it from `top_profile_signature` instead, and say so). Every number in your `evidence`/`rationale` must be traceable to the data.
 
 IMPORTANT — the shaper has SEPARATE pipes per direction. Each profile's `settings` is a list of pipes, one per direction, each identified by its `label` (typically a "Download" pipe and an "Upload" pipe). Every pipe has its OWN independently-tunable quantum / target / interval / ecn / limit / flows AND its own bandwidth (stored in the pipe's `download_bandwidth` field — that field is simply "this pipe's bandwidth" regardless of direction; `upload_bandwidth` is unused/null). **Upload shaping matters as much as download** — bufferbloat and latency under upload load hurt responsiveness — so tune BOTH pipes, not just the download one.
 
@@ -51,6 +54,14 @@ Respond with ONLY a JSON object of exactly this shape (no prose outside the JSON
       "evidence": "what in field_sensitivity / the profiles supports this"
     }
   ],
+  "data_requests": [
+    {
+      "pipe": "<the exact pipe label>",
+      "field": "<a writable field with a promising-but-undersampled signal>",
+      "suggested_values": [20, 30],
+      "reason": "the signal + why more data is needed before trusting it (cite coverage_gaps)"
+    }
+  ],
   "suggestions": [
     {
       "settings": [
@@ -65,6 +76,7 @@ Respond with ONLY a JSON object of exactly this shape (no prose outside the JSON
 
 Rules:
 - Fill `relationships` FIRST — it is the interpretation step. Use `direction: "inverse"` when raising the field lowers (improves) the metric, `"linear"` when raising it raises (worsens) the metric, `"none"` when there is no clear trend. Cover the levers that actually move the crown; you need not list every field × metric pair.
+- Fill `data_requests` from `analysis.coverage_gaps`: when a lever's signal is promising but under-sampled, ask to measure its `suggested_values` rather than proposing a profile built on thin data. An empty list is fine when everything is well-sampled.
 - Each suggestion's `settings` is a LIST with one object PER PIPE. Include BOTH the download and the upload pipe (referenced by their exact `label` from the profiles' `settings`) whenever a profile has both — a suggestion that only tunes one direction is incomplete.
 - Set ONLY fields listed in `shaper_model.writable_fields`; leave every non-writable field alone. Use the same value formats you see (e.g. `target`/`interval` bare integer milliseconds like 5, `quantum` an integer).
 - Each suggestion must be consistent with your `relationships`: move each lever in the direction that improves the crown.
@@ -217,6 +229,7 @@ def suggest(session: Session, export: dict, model: str | None = None, prompt: st
         "raw": raw,
         "suggestions": suggestions,
         "relationships": _parse_relationships(raw),
+        "data_requests": _parse_data_requests(raw),
         "usage": resp.get("usage") or {},
     }
 
@@ -317,6 +330,7 @@ def suggest_stream(export: dict, api_key: str, model: str | None, prompt: str | 
         "reasoning": "".join(reasoning),
         "suggestions": suggestions,
         "relationships": _parse_relationships(raw),
+        "data_requests": _parse_data_requests(raw),
         "usage": usage,
     }
 
@@ -357,10 +371,9 @@ def _parse_suggestions(text: str) -> list[dict]:
     return []
 
 
-def _parse_relationships(text: str) -> list[dict]:
-    """Best-effort extract the model's interpreted ``relationships`` (its read of how each lever
-    moves each crown metric) from the reply. Returns [] when the model omits them or nothing
-    parses — the suggestions still stand on their own."""
+def _parse_list_field(text: str, key: str) -> list[dict]:
+    """Best-effort extract a top-level list of dicts (``key``) from the model reply. Returns []
+    when the model omits it or nothing parses."""
     if not text:
         return []
     for c in _json_candidates(text):
@@ -368,9 +381,21 @@ def _parse_relationships(text: str) -> list[dict]:
             obj = json.loads(c)
         except Exception:  # noqa: BLE001
             continue
-        if isinstance(obj, dict) and isinstance(obj.get("relationships"), list):
-            return [r for r in obj["relationships"] if isinstance(r, dict)]
+        if isinstance(obj, dict) and isinstance(obj.get(key), list):
+            return [x for x in obj[key] if isinstance(x, dict)]
     return []
+
+
+def _parse_relationships(text: str) -> list[dict]:
+    """The model's interpreted ``relationships`` (its read of how each lever moves each crown
+    metric). Returns [] when omitted — the suggestions still stand on their own."""
+    return _parse_list_field(text, "relationships")
+
+
+def _parse_data_requests(text: str) -> list[dict]:
+    """The model's ``data_requests`` — where it wants more data measured before trusting a
+    signal. Returns [] when omitted."""
+    return _parse_list_field(text, "data_requests")
 
 
 __all__ = [

@@ -746,6 +746,124 @@ def _lever_signature(profiles_out: list[dict]) -> dict:
     }
 
 
+# --- Where to collect more data (active experiment design) -----------------------------
+# The most valuable AI output isn't always a finished profile — it's "this lever looks
+# promising but you haven't measured enough to trust it; go collect data HERE." A signal is
+# actionable only once it's resolved, so flag promising-but-undersampled levers.
+COVERAGE_STRONG_RHO = 0.3        # |ρ vs Overall| ≥ this = a clear trend worth resolving
+COVERAGE_SUGGESTIVE_RHO = 0.2    # ...≥ this = suggestive, worth a confirming sweep
+COVERAGE_MIN_DISTINCT = 4        # fewer measured values than this = under-sampled
+
+
+def _coverage_values(fkey: str, lo: float, hi: float, measured: set[float], k: int = 4) -> list[int]:
+    """Up to ``k`` evenly-spaced integer values in (lo, hi] not already measured — the points
+    that would resolve a lever's effect."""
+    if lo is None or hi is None or hi <= lo:
+        return []
+    out: list[int] = []
+    for i in range(1, k + 1):
+        v = int(round(lo + (hi - lo) * i / k))
+        if v not in measured and v not in out:
+            out.append(v)
+    return out
+
+
+def _coverage_gaps(profiles_out: list[dict], field_sensitivity: list[dict], lever_signature: dict) -> list[dict]:
+    """Levers with a promising-but-under-resolved signal — where collecting data beats guessing.
+
+    A lever qualifies when it shows a directional signal (a top-profile pattern, or a suggestive
+    ρ against the Overall) yet is under-sampled (few distinct measured values, or the favored
+    direction runs off the edge of what's been measured). For each, recommend the concrete values
+    to measure next — so the model can 'kick back' a data request instead of a speculative profile.
+    """
+    vals_by: dict[tuple[str, str], list[float]] = {}
+    for p in profiles_out:
+        for pipe in (p.get("settings") or []):
+            label = pipe.get("label") or "pipe"
+            for fkey in WRITABLE_FIELDS:
+                v = _to_number(fkey, pipe.get(fkey))
+                if v is not None:
+                    vals_by.setdefault((label, fkey), []).append(float(v))
+
+    overall_rho = {
+        (r["pipe"], r["field"]): r.get("spearman")
+        for r in field_sensitivity if r.get("metric") == "overall"
+    }
+    sig_by = {(l["pipe"], l["field"]): l for l in (lever_signature.get("levers") or [])}
+
+    gaps: list[dict] = []
+    for (label, fkey), vals in vals_by.items():
+        distinct = sorted(set(vals))
+        n_distinct = len(distinct)
+        if n_distinct < 2:
+            continue  # a constant lever carries no signal to resolve
+        mmin, mmax = distinct[0], distinct[-1]
+        rho = overall_rho.get((label, fkey))
+        sig = sig_by.get((label, fkey)) or {}
+        pattern = sig.get("pattern")
+
+        has_pattern = pattern in ("higher", "lower", "sweet_spot")
+        suggestive = rho is not None and abs(rho) >= COVERAGE_SUGGESTIVE_RHO
+        if not (has_pattern or suggestive):
+            continue
+
+        # Which direction looks better (pattern wins; else infer from ρ sign — Overall is
+        # higher-is-better, so ρ>0 means raising the lever helps).
+        if pattern in ("higher", "lower"):
+            better = pattern
+        elif rho is not None and abs(rho) >= COVERAGE_SUGGESTIVE_RHO:
+            better = "higher" if rho > 0 else "lower"
+        else:
+            better = None  # sweet_spot / just needs resolution
+
+        fld = shaper_field(fkey)
+        field_label = fld.label if fld else fkey
+        sweepable = bool(fld and fld.sweepable)
+        sd = (fld.sweep_default if fld else None) or {}
+        sweep_min, sweep_max = sd.get("min"), sd.get("max")
+        measured = set(distinct)
+
+        # Recommend values in the favored direction, else fill the interior to resolve the trend.
+        if better == "lower" and sweep_min is not None and mmin > sweep_min:
+            action = "extend_lower"
+            suggested = _coverage_values(fkey, sweep_min, mmin, measured)
+            rationale = (f"Top profiles favor lower {field_label}; the lowest you've measured is "
+                         f"{mmin:g}. Measure below it to find the floor.")
+        elif better == "higher" and sweep_max is not None and mmax < sweep_max:
+            action = "extend_higher"
+            suggested = _coverage_values(fkey, mmax, sweep_max, measured)
+            rationale = (f"Top profiles favor higher {field_label}; the highest you've measured is "
+                         f"{mmax:g}. Measure above it to find the ceiling.")
+        elif n_distinct < COVERAGE_MIN_DISTINCT:
+            action = "resolve"
+            suggested = _coverage_values(fkey, mmin, mmax, measured)
+            rationale = (f"{field_label} shows a signal but only {n_distinct} distinct value(s) "
+                         f"measured ({mmin:g}–{mmax:g}) — too few to trust. Add interior values.")
+        else:
+            continue  # already well-sampled in the useful direction
+
+        if not suggested:
+            continue
+        strength = max(abs(rho or 0.0), abs(sig.get("shift") or 0.0), sig.get("concentration") or 0.0)
+        gaps.append({
+            "pipe": label,
+            "field": fkey,
+            "field_label": field_label,
+            "distinct_values": n_distinct,
+            "measured_range": [mmin, mmax],
+            "overall_rho": _round2(rho) if rho is not None else None,
+            "pattern": pattern,
+            "sweepable": sweepable,          # can the Shotgun Sweep run this directly?
+            "action": action,                # extend_lower / extend_higher / resolve
+            "suggested_values": suggested,
+            "rationale": rationale,
+            # Promising signal × how under-sampled it is (fewer values ⇒ more to gain).
+            "priority": _round2(strength * (0.5 + 1.0 / n_distinct)),
+        })
+    gaps.sort(key=lambda g: -(g["priority"] or 0.0))
+    return gaps
+
+
 def _signature_summary(pipe: str, field_label: str, pattern: str, top_s: dict, all_s: dict) -> str:
     if pattern == "none":
         return f"Top profiles show no distinctive {pipe} {field_label} — it ranges as widely as the rest."
@@ -851,6 +969,9 @@ def build_optimizer_export(
     # What the top-Overall profiles share (top-vs-rest per lever) — catches a sweet spot or a
     # combination that a monotone correlation can't see.
     lever_signature = _lever_signature(profiles_out)
+    # Where a promising signal is under-sampled — the levers worth collecting MORE data on
+    # (so the model can 'kick back' a data request instead of a speculative profile).
+    coverage_gaps = _coverage_gaps(profiles_out, field_sensitivity, lever_signature)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "runs_per_profile_limit": runs_per_profile,
@@ -933,6 +1054,16 @@ def build_optimizer_export(
                 "top profiles' shared values on the distinctive levers."
             ),
             "top_profile_signature": lever_signature,
+            "coverage_gaps_note": (
+                "coverage_gaps flags levers with a PROMISING but UNDER-SAMPLED signal — a "
+                "directional pattern or suggestive ρ, but too few distinct values measured (or the "
+                "favored direction runs off the edge of what's been tested). For these, the right "
+                "move is NOT a finished profile — it's a data request: measure the "
+                "`suggested_values` (`sweepable`=true means the Shotgun Sweep can run them directly). "
+                "More data beats a guess. Return these as `data_requests`, ranked by `priority`, and "
+                "prefer them over speculative suggestions when the signal isn't yet trustworthy."
+            ),
+            "coverage_gaps": coverage_gaps,
         },
         "profiles": profiles_out,
     }
