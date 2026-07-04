@@ -21,8 +21,15 @@ from ..scoring import compute_score
 
 router = APIRouter()
 
+from ..logging_config import get_logger  # noqa: E402
+
+log = get_logger("api.score")
+
 # Commit cadence for the long re-score/re-derive passes (resumable progress).
 _COMMIT_EVERY = 25
+# Re-derive commits less often (each run is savepoint-isolated), so a long pass isn't
+# bottlenecked on a per-batch fsync.
+_REDERIVE_COMMIT_EVERY = 100
 
 
 def _attribution(network_ms: float | None, render_ms: float | None, unknown_ms: float | None) -> dict | None:
@@ -82,7 +89,7 @@ def rescore_history() -> dict:
 
 
 @router.post("/score/rederive", status_code=202)
-def rederive_history() -> dict:
+def rederive_history(force: bool = Query(False)) -> dict:
     """Re-derive *and* re-grade every completed run from its stored raw observations,
     **in the background**. Returns ``{job_id}`` immediately.
 
@@ -90,6 +97,12 @@ def rederive_history() -> dict:
     metric scalars): this re-runs the full interpretation, so a new metric or a
     changed derivation formula (e.g. a better Speed Index) lands on history without
     re-collecting. Runs whose raw lacks a signal just don't gain that metric.
+
+    By default it **skips runs already derived under the current derivation version** (their
+    cache is already fresh), so a re-run — or resuming an interrupted pass — only pays for the
+    runs that still need it. Pass ``?force=true`` to re-derive every run regardless (e.g. after
+    a derivation formula change with no version bump). Commits in batches with each run
+    savepoint-isolated, so one malformed run can't abort the pass.
     """
     import os
 
@@ -102,19 +115,44 @@ def rederive_history() -> dict:
             c_weights = cfg.get("completion_weights", {})
             c_thresholds = cfg.get("completion_thresholds", {})
             artifact_base = os.path.abspath(get_settings().artifact_dir)
-            runs = session.scalars(select(Run).where(Run.status == RunStatus.COMPLETE)).all()
+            # Only re-derive stale runs (unless forced): a run whose ScoreResult already carries
+            # the current derivation has a fresh cache, so re-deriving it repeats identical work.
+            q = (
+                select(Run)
+                .join(ScoreResult, ScoreResult.run_id == Run.id)
+                .where(Run.status == RunStatus.COMPLETE)
+            )
+            if not force:
+                q = q.where(
+                    (ScoreResult.derivation_version.is_(None))
+                    | (ScoreResult.derivation_version != DERIVATION_VERSION)
+                )
+            runs = session.scalars(q).all()
             total = len(runs)
             rederived = 0
+            errors = 0
             for i, run in enumerate(runs):
-                if rederive_run(
-                    run, weights, thresholds, rubric_version, c_weights, c_thresholds, artifact_base
-                ):
-                    rederived += 1
-                if (i + 1) % _COMMIT_EVERY == 0:
+                try:
+                    with session.begin_nested():  # per-run savepoint
+                        if rederive_run(
+                            run, weights, thresholds, rubric_version,
+                            c_weights, c_thresholds, artifact_base,
+                        ):
+                            rederived += 1
+                except Exception:  # noqa: BLE001 — isolate a bad run; never abort the pass
+                    log.exception("Re-derive failed for run %s; skipping", run.id)
+                    errors += 1
+                if (i + 1) % _REDERIVE_COMMIT_EVERY == 0:
                     session.commit()
                 job.set_progress(i + 1, total, f"re-derived {rederived}/{total}")
             session.commit()
-            return {"rederived": rederived, "derivation_version": DERIVATION_VERSION}
+            return {
+                "rederived": rederived,
+                "stale_selected": total,
+                "errors": errors,
+                "forced": force,
+                "derivation_version": DERIVATION_VERSION,
+            }
 
     job_id = jobs.start("rederive", "Re-derive history from raw", task, href="/config")
     return {"job_id": job_id}
