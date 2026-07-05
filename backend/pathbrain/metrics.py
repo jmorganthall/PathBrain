@@ -126,7 +126,7 @@ METRICS: list[MetricDef] = [
     # ── Completion: pure-infrastructure timing (diagnostic, never folded into SOPS) ──
     MetricDef(
         "dns", "dns", "lookup_ms", "DNS lookup", unit="ms",
-        axis=COMPLETION, weight=10, best=10.0, worst=150.0,
+        axis=COMPLETION, weight=10, best=0.5, worst=150.0,
         description=(
             "Time to translate a hostname into an IP address. Happens before a page can even "
             "start loading. Lower is better."

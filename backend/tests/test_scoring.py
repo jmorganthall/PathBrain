@@ -16,7 +16,7 @@ PERFECT_SOPS = {
 }
 # All Completion (infra) metrics perfect.
 PERFECT_COMPLETION = {
-    "dns": {"lookup_ms": 1.0},
+    "dns": {"lookup_ms": 0.5},   # the DNS `best` threshold (sub-ms local resolver)
     "tcp": {"connect_ms": 1.0},
     "tls": {"handshake_ms": 1.0},
     "icmp": {"jitter_ms": 0.0, "packet_loss_pct": 0.0},
