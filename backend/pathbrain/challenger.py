@@ -139,8 +139,14 @@ def rank_challengers(
 ) -> tuple:
     """Pure ranking step over an (augmented) ``compute_profiles`` field. Returns
     ``(best_fingerprint, bar, leader, contenders, newly_eliminated)`` — the next profile
-    to sample plus the eliminations. Contenders span, in priority order — defend the
-    crown by confronting the biggest known threat first, not by gambling on the unknowns:
+    to sample plus the eliminations. Each elimination is tagged ``structural`` (True →
+    permanent for the race, e.g. *unreachable*: the live environment's non-writable fields
+    can't change mid-race) or provisional (False → the driver must re-evaluate it every loop:
+    the optimistic-ceiling and corner-coverage tests are **field-relative** — ``optimistic``
+    and ``bar`` are percentile ranks within the *current* field, which re-normalizes as
+    iterations accrue, so a profile ruled out early can re-qualify once the scale shifts).
+    Contenders span, in priority order — defend the crown by confronting the biggest known
+    threat first, not by gambling on the unknowns:
 
     1. **under-minimum** comparable profiles whose *optimistic* Overall ≥ ``bar`` (the
        confident best's Overall, or None in bootstrap) — **highest optimistic first**, so
@@ -175,19 +181,32 @@ def rank_challengers(
         if reachable_env is not None and environment_signature(
             p.get("settings") or []
         ) != reachable_env:
+            # Structural: the live environment's non-writable fields can't change mid-race, so
+            # an unreachable profile stays unreachable — safe for the driver to persist.
             newly[fp] = {
                 "label": p["label"],
                 "reason": "unreachable: scheduler/queues/upload bandwidth differ from the current environment",
+                "structural": True,
             }
             continue
         if p.get("no_data"):
             scored.append(((2, 0.0), p, None))  # lowest priority — fill in the unknowns last
         elif not p["confident"]:
             opt = p.get("optimistic")  # field-normalized ceiling from compute_profiles
+            # Provisional (``structural=False``): both tests are field-relative — ``optimistic``
+            # and ``bar`` are percentile ranks within the *current* field, which re-normalizes as
+            # iterations accrue, and a missing corner metric can fill in once the field has it. So
+            # the driver must NOT freeze these; it recomputes them fresh each loop.
             if opt is None:
-                newly[fp] = {"label": p["label"], "reason": "incomplete corner coverage"}
+                newly[fp] = {
+                    "label": p["label"], "reason": "incomplete corner coverage", "structural": False,
+                }
             elif bar is not None and opt < bar:
-                newly[fp] = {"label": p["label"], "reason": f"best-case Overall {opt} < best {bar}"}
+                newly[fp] = {
+                    "label": p["label"],
+                    "reason": f"best-case Overall {opt} < best {bar}",
+                    "structural": False,
+                }
             else:
                 scored.append(((0, -opt), p, opt))  # biggest threat to the crown first
         elif fp != best_fp and stale_minutes and now is not None and _incumbent_stale(
@@ -284,7 +303,15 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
 
             deadline = time.monotonic() + budget_s
             applied_fp: str | None = None  # baseline is live to start
-            eliminated: dict[str, dict] = {}  # fingerprint -> {label, reason}
+            # Two elimination sets. ``structural_elim`` persists across loops — the environment's
+            # non-writable fields can't change mid-race, so an unreachable profile stays out (fed
+            # back as ``already_eliminated`` so we don't re-check it). ``eliminated`` is the full
+            # *current* set (structural + this loop's provisional) for display/persistence; the
+            # provisional half (optimistic-ceiling < bar / incomplete corner coverage) is
+            # field-relative and recomputed fresh each loop, so a profile isn't frozen out by a
+            # transient percentile verdict from before the field re-normalized.
+            structural_elim: dict[str, dict] = {}
+            eliminated: dict[str, dict] = {}  # fingerprint -> {label, reason, structural}
             iterations_run = 0
             incumbent_refreshes = 0
             initial_confident: set[str] = set()
@@ -304,7 +331,7 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
                 # unreachable (and would otherwise abort the race when we fail to reach it).
                 reachable_env = environment_signature(baseline)
                 best_fp, _bar, leader, _contenders, newly_elim = rank_challengers(
-                    field, eliminated, now=now, stale_minutes=stale_min, reachable_env=reachable_env
+                    field, structural_elim, now=now, stale_minutes=stale_min, reachable_env=reachable_env
                 )
 
                 # A challenger that became the crowned best (wasn't confident at start)
@@ -313,7 +340,13 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
                     winner_fp = best_fp
                     winner_settings = profiles[best_fp].get("settings")
 
-                eliminated.update(newly_elim)
+                # Persist only structural eliminations (unreachable); provisional ones are
+                # field-relative and reconsidered next loop, so a re-normalized field can bring
+                # a contender back. The displayed set is structural + this loop's provisional.
+                structural_elim.update(
+                    {fp: info for fp, info in newly_elim.items() if info.get("structural")}
+                )
+                eliminated = {**structural_elim, **newly_elim}
                 if leader is None:
                     log.info("Challenger race %s: no challenger can still beat the best", race_id)
                     break
