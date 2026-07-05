@@ -354,17 +354,17 @@ def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
     r = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 500})
     assert r.status_code == 202
     out = r.json()
-    assert out["version"] == "speed-smoothness-v9+load_event-best500"
+    assert out["version"] == "speed-smoothness-v10+load_event-best500"
     assert out["job_id"] == "job-test"
 
     # The fork is now current: only load_event's 'best' changed; fcp and the Overall crown
     # spec carry over untouched (append-only — a new version, not an edit).
     cur = client.get("/api/methodologies/current").json()
-    assert cur["version"] == "speed-smoothness-v9+load_event-best500"
+    assert cur["version"] == "speed-smoothness-v10+load_event-best500"
     metrics = {m["key"]: m for m in cur["definition"]["metrics"]}
     assert metrics["load_event"]["best"] == 500.0
     assert metrics["fcp"]["best"] == 150.0  # untouched
-    assert cur["definition"]["overall"]["metrics"] == ["nav_response", "byte_earliness", "jank_fraction"]
+    assert cur["definition"]["overall"]["metrics"] == ["fcp", "lcp", "stall_energy"]
 
     # Guard: 'best' can't cross to the wrong side of 'worst' (would invert the curve).
     bad = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 99999})
@@ -1022,7 +1022,7 @@ def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
     assert "generated_at" in body and body["profile_count"] >= 1
     meth = body["methodology"]
     assert set(meth["crown_metrics"]) == set(_crown_metrics())
-    assert "objective" in meth and meth["metrics"]["nav_response"]["is_crown_metric"] is True
+    assert "objective" in meth and meth["metrics"]["fcp"]["is_crown_metric"] is True
     shaper = body["shaper_model"]
     assert "quantum" in shaper["writable_fields"]        # a lever apply() can write
     assert any(f["key"] == "target" and f["suggested_range"] for f in shaper["fields"])
@@ -1037,13 +1037,13 @@ def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
     assert len(prof["run_samples"]) == 3
     sample = prof["run_samples"][0]
     # crown_raw is positional by crown order → nav_response=210, byte_earliness=250, jank=140.
-    assert sample["metrics"]["nav_response"] == 210.0 and sample["metrics"]["jank_fraction"] == 140.0
+    assert sample["metrics"]["fcp"] == 210.0 and sample["metrics"]["stall_energy"] == 140.0
     # Percentile-normalized crown + raw medians summarize the profile.
     assert set(prof["crown_percentiles"]) >= set(_crown_metrics())
-    assert prof["metric_medians"]["byte_earliness"] == 250.0
+    assert prof["metric_medians"]["lcp"] == 250.0
     # Full-history spread per metric (n = every run) accompanies the capped raw samples.
-    assert prof["metric_distribution"]["nav_response"]["n"] == 3
-    assert prof["metric_distribution"]["byte_earliness"]["median"] == 250.0
+    assert prof["metric_distribution"]["fcp"]["n"] == 3
+    assert prof["metric_distribution"]["lcp"]["median"] == 250.0
 
 
 def test_optimizer_export_caps_run_samples(client):
@@ -1058,7 +1058,7 @@ def test_optimizer_export_caps_run_samples(client):
     assert prof["run_samples_truncated"] is True  # flagged as truncated (6 runs > 2)
     # The distribution is computed from ALL 6 runs, not just the 2 sampled — so variance
     # is always conveyed regardless of the cap.
-    dist = prof["metric_distribution"]["nav_response"]
+    dist = prof["metric_distribution"]["fcp"]
     assert dist["n"] == 6
     assert dist["min"] == 300.0 and dist["max"] == 300.0 and dist["median"] == 300.0
 
@@ -1073,7 +1073,7 @@ def test_optimizer_export_distribution_spans_full_history(client):
     body = client.get("/api/settings/export/optimizer?runs_per_profile=2").json()
     prof = next(p for p in body["profiles"] if p["fingerprint"] == "optdist000x")
     assert len(prof["run_samples"]) == 2          # samples capped
-    dist = prof["metric_distribution"]["nav_response"]
+    dist = prof["metric_distribution"]["fcp"]
     assert dist["n"] == 5                          # distribution over the full history
     assert dist["min"] == 100.0 and dist["max"] == 500.0 and dist["median"] == 300.0
     assert dist["p25"] < dist["median"] < dist["p75"]

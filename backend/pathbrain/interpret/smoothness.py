@@ -140,6 +140,29 @@ def stall_time(series: list[float], *, threshold_ms: float = STALL_PERCEPTIBLE_M
     return round(sum(g for g in gaps if g >= threshold_ms), 3)
 
 
+def stall_energy(series: list[float]) -> float | None:
+    """Smoothness as the **L2 magnitude of the in-load fill gaps**: ``√(Σ gap²)``.
+
+    The gaps between consecutive resource completions are the waits between visible fills.
+    Their *sum* is just the load duration (useless as a stall measure); their *max* is the
+    single worst hang (:func:`longest_stall`, blind to how often it stuttered). The
+    root-sum-square sits exactly between: squaring means the biggest gap dominates (so it
+    tracks the worst freeze), but every additional stall still raises it (so it captures
+    accumulation), while tiny gaps vanish under the square (so no arbitrary threshold is
+    needed). For a fixed load time it is minimised when the gaps are all equal (a perfectly
+    even, "zipper" fill) and grows as the wait concentrates into chunky stalls — i.e. it is
+    the single number that rewards a load that filled in both *quickly* and *consistently*.
+
+    Absolute ms (not a scale-free ratio), so it keeps real time — a slower, chunkier load
+    scores higher. Lower is smoother. ``None`` with no gap to measure (fewer than two
+    completions); ``0.0``-ish for a load whose fills were effectively instant end-to-end.
+    Requires the series to already be bounded to the load window (derive-v9+)."""
+    gaps = _gaps(series)
+    if not gaps:
+        return None
+    return round(math.sqrt(sum(g * g for g in gaps)), 3)
+
+
 def jank_fraction(
     series: list[float],
     window_start: float | None,
@@ -469,6 +492,9 @@ def smoothness_metrics(
         # threshold — an *actual per-run measurement* (no per-run median), the v8 crown's
         # cumulative-stall dimension so profiles compare on measured values, not deviations.
         "stall_time_ms": stall_time(series),
+        # Smoothness of the fill: √(Σ gap²) over the in-load gaps — the worst hang AND the
+        # accumulation of stalls in one, threshold-free, absolute ms. The v10 crown's smoothness leg.
+        "stall_energy_ms": stall_energy(series),
         # The *ratio* form: fraction of the delivery window (responseStart → loadEventEnd)
         # spent frozen. The window must span the SAME domain the stalls live in — the whole
         # completion series runs to loadEventEnd, and on a fast-painting page the dead-air is

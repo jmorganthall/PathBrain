@@ -44,7 +44,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v9"
+CURRENT_METHODOLOGY = "speed-smoothness-v10"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -204,6 +204,19 @@ def _ss_v6_assignments() -> dict:
     a["total_stall"] = {"axis": SMOOTHNESS, "weight": 30, "best": 0.0, "worst": 3000.0}
     # Speed: the recognized "page load time" (loadEventEnd) as the honest time-to-done.
     a["load_event"] = {"axis": SPEED, "weight": 20, "best": 800.0, "worst": 8000.0}
+    return a
+
+
+def _ss_v10_assignments() -> dict:
+    """v8 rubric with the Smoothness scored-stall metric = ``stall_energy`` (√Σgap², the L2
+    magnitude of the in-load fill gaps — the worst hang *and* the accumulation of stalls in one,
+    threshold-free). It replaces ``stall_time`` (→ display-only) exactly as ``stall_time`` replaced
+    ``total_stall``. Crown corners over FCP × LCP × stall_energy: first content painted (native
+    FCP) × main content loaded (native LCP) × how smoothly the fill happened between them. This
+    reverts v9's crown-chasing swaps (delivery / jank_fraction) back to display-only."""
+    a = _ss_v8_assignments()
+    del a["stall_time"]  # absolute-thresholded sum → display-only diagnostic
+    a["stall_energy"] = {"axis": SMOOTHNESS, "weight": 30, "best": 0.0, "worst": 2000.0}
     return a
 
 
@@ -424,6 +437,32 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "method": "corner",
             "metrics": ["nav_response", "byte_earliness", "jank_fraction"],
             "required": ["nav_response", "byte_earliness", "jank_fraction"],
+        },
+    },
+    "speed-smoothness-v10": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v10: adds stall_energy
+        "notes": (
+            "Return the crown to the three things a human directly experiences, ranked on their "
+            "felt outcome rather than on what the shaper can move: FCP (initial content appears) × "
+            "LCP (main content loaded) × stall_energy (how smoothly it filled in between). FCP and "
+            "LCP are *native* browser paint timestamps, not abstractions. The smoothness leg is "
+            "stall_energy = √(Σ gap²) over the in-load gaps between resource completions — the L2 "
+            "magnitude: the worst single hang plus the accumulation of stalls in one threshold-free, "
+            "absolute number (a load's felt smoothness is set by its worst freeze AND how often it "
+            "stuttered; the sum of gaps is just duration, the max ignores frequency, √Σgap² captures "
+            "both). It's minimised by a quick, even 'zipper' fill and rises as the wait clumps into "
+            "chunky stalls. stall_energy takes the Smoothness scored-stall slot (stall_time → "
+            "display-only). This reverts v9's crown-chasing legs (delivery/jank_fraction) — those "
+            "were chosen for shaper-movability, which is a measurement concern, not what the crown "
+            "should measure. derive-v10 adds stall_energy and is purely additive, so history "
+            "re-grades straight from raw."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v10_assignments(),
+        "overall": {
+            "method": "corner",
+            "metrics": ["fcp", "lcp", "stall_energy"],
+            "required": ["fcp", "lcp", "stall_energy"],
         },
     },
 }
