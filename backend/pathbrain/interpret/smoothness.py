@@ -408,6 +408,22 @@ def _window_bounds(nav: dict, paint: dict, series: list[float]) -> tuple[float |
     return start, end
 
 
+def resources_within_load(resources: list | None, load_end: float | None) -> list[dict]:
+    """Live resources whose ``responseEnd`` is at or before the page-load event.
+
+    The whole smoothness instrument measures the **initial page load**, not what trickles
+    in afterward. Lazy images, analytics beacons and prefetches that complete long after
+    ``loadEventEnd`` otherwise (a) inflate the stall metrics with a single late-arriving
+    resource — a gap of "nothing loaded" between the real load and a background fetch that
+    the user never waited for — and (b) skew byte-arrival (byte_earliness/gini) with bytes
+    that weren't part of the load. Bounding to ``loadEventEnd`` makes every smoothness metric
+    describe the load the user actually experienced. No cap when loadEventEnd is missing."""
+    live = _live_resources(resources)
+    if load_end is None or load_end <= 0:
+        return live
+    return [r for r in live if (_f(r.get("responseEnd")) or 0.0) <= load_end]
+
+
 def smoothness_metrics(
     nav: dict | None,
     resources: list | None,
@@ -427,8 +443,14 @@ def smoothness_metrics(
     loaf_source = loaf_obj.get("source")
     pp = {**PERCEIVED_DEFAULTS, **(perceived_params or {})}
 
+    # Bound the instrument to the page load: drop resources that complete after loadEventEnd
+    # (lazy/background fetches the user never waited for), which otherwise inflate the stall
+    # metrics and skew byte-arrival. Every metric below reads this bounded set.
+    load_end = _f(nav.get("loadEventEnd"))
+    res = resources_within_load(resources, load_end)
+
     series = completion_series(
-        resources,
+        res,
         fcp=paint.get("fcp"),
         doc_response_end=nav.get("responseEnd"),
         load_event_end=nav.get("loadEventEnd"),
@@ -436,7 +458,7 @@ def smoothness_metrics(
     start, end = _window_bounds(nav, paint, series)
     # Occupancy events: real completions + the first paint (no synthetic boundaries,
     # so injected loadEventEnd doesn't mark the tail slice "occupied" for free).
-    events = completion_series(resources, fcp=paint.get("fcp"))
+    events = completion_series(res, fcp=paint.get("fcp"))
 
     out: dict[str, float | None] = {
         "longest_stall_ms": longest_stall(series),
@@ -459,8 +481,8 @@ def smoothness_metrics(
             _f(nav.get("loadEventEnd")) if _f(nav.get("loadEventEnd")) is not None else _f(paint.get("lcp")),
         ),
         "cadence_cov": cadence_cov(series),
-        "byte_earliness_ms": byte_earliness(resources, start),
-        "delivery_gini": delivery_gini(resources, start, end),
+        "byte_earliness_ms": byte_earliness(res, start),
+        "delivery_gini": delivery_gini(res, start, end),
         # perceived_time_ms is kept as a display-only diagnostic (no longer scored): the
         # crown's "done" dimension is the built-in load_event (loadEventEnd), not a bespoke
         # un-penalized window — fewer metrics to maintain, a recognized "page load time".

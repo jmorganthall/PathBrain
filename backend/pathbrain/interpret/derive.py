@@ -29,11 +29,12 @@ from .waterfall import navigation_phases
 # responseEnd→FCP is client CPU (shaping-immune). Purely additive: computed from the
 # already-captured raw nav marks + FCP/LCP, so history re-derives with no re-collection, and
 # no existing formula changed. Display-only (silver-layer measurables); gold scoring untouched.
-# derive-v7 added `jank_fraction` — the weather-immune *ratio* form of stall_time. derive-v8
-# fixes its window: responseStart→**loadEventEnd** (was →LCP), since the stalls it counts run
-# to loadEventEnd and on a fast-painting page sit in the post-LCP tail — a →LCP window read 0
-# despite real dead-air. Re-derives from raw. (derive-v5 added stall_time_ms; v4 total_stall_ms.)
-DERIVATION_VERSION = "derive-v8"
+# derive-v7 added `jank_fraction`; derive-v8 fixed its window (→loadEventEnd). derive-v9 bounds
+# the WHOLE smoothness instrument to the page load: resources completing after loadEventEnd
+# (lazy images / analytics beacons the user never waited for) are dropped, so a single late
+# background fetch no longer inflates the stall metrics or skews byte-arrival — every smoothness
+# metric now describes the load actually experienced. Re-derives from raw.
+DERIVATION_VERSION = "derive-v9"
 
 
 def _round(v: float | None, n: int = 3) -> float | None:
