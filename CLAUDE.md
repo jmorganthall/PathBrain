@@ -220,7 +220,14 @@ LLM-based. See `README.md` for the product overview.
     so a profile differing in those is unreproducible — `rank_challengers(reachable_env=…)`
     eliminates it ("unreachable: …") instead of letting `_apply_profile` abort the whole race
     on a fingerprint it can't reach (`_apply_profile` now verifies the *writable* params took,
-    not the full fingerprint; `environment_signature` hashes the non-writable fields). At the
+    not the full fingerprint; `environment_signature` hashes the non-writable fields).
+    Eliminations are tagged **structural vs provisional** (`rank_challengers` sets `structural`):
+    only *structural* ones (unreachable — the live environment can't change mid-race) are
+    **persisted** across loops; *provisional* ones (optimistic-ceiling < bar / incomplete corner
+    coverage) are **re-evaluated every loop**, because the crown/optimistic space is a
+    **field-relative percentile rank** that re-normalizes as iterations accrue — so a contender
+    ruled out early can re-qualify once the field shifts, instead of being frozen out by a
+    transient verdict (`_drive` persists only the structural set). At the
     end it **restores the baseline**, or applies the winner when `auto_promote`. Own thread under
     the `coordinator` lock (so the scheduler defers via `coordinator.busy()`); persisted to
     a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on startup.

@@ -647,7 +647,7 @@ export default function Settings() {
   }, [load]);
 
   // The standings columns pin the metrics that actually *compute* the Overall — the current
-  // methodology's crown set (fcp/lcp/stall_time under v8), from the profiles response's
+  // methodology's crown set (fcp/lcp/stall_energy under v10), from the profiles response's
   // ``overall_metrics``. The headline axes (Responsiveness/Smoothness/Speed) are a different
   // decomposition that barely correlates with the Overall corner, so they no longer pin here
   // (still available via Columns). Each crown column ranks by the metric's 0–100 subscore —

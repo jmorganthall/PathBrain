@@ -108,6 +108,36 @@ def test_rank_excludes_unreachable_profiles():
     assert leader["fingerprint"] == "C"
 
 
+def test_eliminations_tag_structural_vs_provisional():
+    # The driver relies on this tag: only *structural* eliminations (unreachable — the live
+    # environment can't change mid-race) may be frozen. *Provisional* ones (optimistic < bar /
+    # incomplete corner coverage) are field-relative — the percentile scale re-normalizes as
+    # iterations accrue — so the driver must re-evaluate them each loop rather than persist them.
+    from pathbrain.settings_profile import environment_signature
+
+    reachable = environment_signature([{"scheduler": "fq_codel", "queues": 1}])
+    field = _field(
+        [
+            {"fingerprint": "B", "label": "B", "confident": True, "overall": 85.0,
+             "settings": [{"scheduler": "fq_codel", "queues": 1}]},
+            # provisional: best-case ceiling below the bar
+            {"fingerprint": "D", "label": "D", "confident": False, "overall": None,
+             "optimistic": 55.0, "settings": [{"scheduler": "fq_codel", "queues": 1}]},
+            # provisional: missing a required crown metric (no ceiling)
+            {"fingerprint": "E", "label": "E", "confident": False, "overall": None,
+             "optimistic": None, "settings": [{"scheduler": "fq_codel", "queues": 1}]},
+            # structural: unreachable environment
+            {"fingerprint": "X", "label": "X", "confident": False, "overall": None,
+             "optimistic": 99.0, "settings": [{"scheduler": "fq_pie", "queues": 1}]},
+        ],
+        best_fingerprint="B",
+    )
+    _, _, _, _, newly = challenger.rank_challengers(field, {}, reachable_env=reachable)
+    assert newly["X"]["structural"] is True     # unreachable → persist
+    assert newly["D"]["structural"] is False    # optimistic < bar → re-evaluate
+    assert newly["E"]["structural"] is False    # incomplete coverage → re-evaluate
+
+
 def test_apply_profile_tolerates_nonwritable_mismatch(monkeypatch):
     # Writable params took (no planned change remains) but the read-back fingerprint
     # differs — a non-writable field. Must NOT abort the race; just log and proceed.

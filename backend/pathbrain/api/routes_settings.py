@@ -44,8 +44,8 @@ _CORNER_AXES = ("responsiveness", "smoothness", "speed")
 
 # The crown corners over a small set of per-metric 0–100 subscores (perception-calibrated
 # by the scoring engine, carried on every Score). The **authoritative** set is always the
-# current methodology's ``overall`` spec (``methodology.overall_metrics`` — under v7,
-# FCP × LCP × total_stall). These module constants are ONLY a static FALLBACK for a
+# current methodology's ``overall`` spec (``methodology.overall_metrics`` — under v10,
+# FCP × LCP × stall_energy). These module constants are ONLY a static FALLBACK for a
 # methodology that has no overall spec at all (pre-v5); they intentionally don't track the
 # current crown. Everything that corners — the live ``_crown_corner`` fallback,
 # ``crown_spreads``, ``optimistic_overall``, and the challenger race — reads the
@@ -1086,8 +1086,8 @@ def _heir_count(session: Session) -> int:
 
 def _metric_thresholds(definition: dict) -> dict[str, dict]:
     """Per-metric *effective* best/worst/direction under the current methodology — the
-    thresholds the score actually uses (v6 re-anchors fcp→150ms, load_event→800ms, …),
-    NOT the catalog defaults. Lets the quadrant flag an axis as **saturated**: when every
+    thresholds the score actually uses (a version may re-anchor a metric's 'best', e.g.
+    fcp→150ms), NOT the catalog defaults. Lets the quadrant flag an axis as **saturated**: when every
     profile already sits past 'best', the raw spread the user is reading carries no score
     signal (the crown isn't decided there). Keyed by metric key."""
     out: dict[str, dict] = {}
@@ -1183,8 +1183,6 @@ def _compute_heirs(result: dict, session: Session) -> dict:
 
     profiles = result.get("profiles", [])
     best_fp = result.get("best_fingerprint")
-    crown_metrics = result.get("overall_metrics") or list(CROWN_METRICS)
-    crown_required = result.get("overall_required") or list(CROWN_REQUIRED)
     min_iterations = result.get("min_iterations") or _min_iterations(session)
     stale_minutes = challenger_mod._contender_stale_minutes(session)
     limit = _heir_count(session)
@@ -1270,11 +1268,12 @@ def compute_profiles(
     tz_offset: int = 0,
     custom_crown_metrics: list[str] | None = None,
 ) -> dict:
-    """Aggregate completed runs into per-profile rows ranked by the feel-trinity corner
+    """Aggregate completed runs into per-profile rows ranked by the crown corner
     Overall, with the crowned ``best_fingerprint``. Shared by the ``/settings/profiles``
     endpoint and the challenger race (``challenger.py``) so both rank profiles with
     identical logic. Each profile carries ``axis_spreads`` ({axis: {median,p25,p75,n}})
-    for the display columns and ``crown_spreads`` (same shape, keyed by ``CROWN_METRICS``)
+    for the display columns and ``crown_spreads`` (same shape, keyed by the methodology's
+    resolved crown metrics — ``overall_metrics``, not the module fallback ``CROWN_METRICS``)
     so a caller can compute an ``optimistic_overall`` for not-yet-confident profiles."""
     min_runs = _min_runs(session)
     min_iterations = _min_iterations(session)
