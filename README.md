@@ -51,7 +51,7 @@ settings are actually best?* — into an empirical, measured answer.
 > **Philosophy:** Empirical. Never assume. Never rely on folklore. Every
 > optimization is tested, measured, scored, and historically tracked.
 
-### The score: three perceptual axes (methodology `speed-smoothness-v6`)
+### The score: three perceptual axes (methodology `speed-smoothness-v10`)
 
 PathBrain scores the **three temporal phases of a page load** as independent
 0–100 axes, rather than blending them into one number. (The original single
@@ -62,7 +62,7 @@ normalized to a 0–100 subscore against configurable *best/worst* thresholds
 | Axis | Answers | Metrics (weights) |
 | --- | --- | --- |
 | **Responsiveness** | How fast does the *first* content appear? | byte-earliness (30) · FCP (25) · TTFB (15) |
-| **Smoothness** | How steadily does it fill in (minimized wait)? | longest-stall (40, required) · total-stall (30) · cadence (15) · evenness (15) |
+| **Smoothness** | How steadily does it fill in (minimized wait)? | longest-stall (40, required) · stall-energy (30) · cadence (15) · evenness (15) |
 | **Speed** | How soon is it *fully visible + interaction-ready*? | LCP (40) · INP (40) · render (20) · load-event (20) |
 
 Plus two **secondary** axes: **Stability** (layout shift / CLS) and **Completion**
@@ -72,13 +72,17 @@ headline axes since they barely move human feel.
 **Overall** is a single higher-is-better roll-up — and since `speed-smoothness-v5`
 it's a **first-class, versioned, persisted** quantity, not just a presentation
 measure. It's the **corner** (closeness to the perfect 100-corner) over a small,
-hand-picked **crown metric set** — under v6 that's **FCP × total-stall × load-event**
-(quickest first response × cumulative dead-air × page-load time). It's an
-*intersection*, not a mean: one weak metric pulls Overall down through the corner
-geometry and can't be averaged away. The crowned **"best"** profile is the confident
-one with the highest **probability of being the true best** (a Bayesian/Thompson
-Monte-Carlo over each profile's posterior), so it weighs both *how good* and *how
-sure*.
+hand-picked **crown metric set** — under v10 that's **FCP × LCP × stall-energy**:
+the three things a human directly experiences — shows initial progress fastest (FCP)
+× loads fastest (LCP) × does so most smoothly (stall-energy = `√(Σ gap²)` over the
+in-load gaps, the worst hang plus the accumulation of stalls in one number). FCP and
+LCP are *native* browser paint timestamps. It's an *intersection*, not a mean: one
+weak metric pulls Overall down through the corner geometry and can't be averaged away.
+The crowned **"best"** profile is simply the confident profile (≥ `min_iterations`
+total) with the **highest Overall** — a deterministic argmax, no hysteresis. (An
+earlier Bayesian/Thompson "probability-of-best" verdict was removed: it over-credited
+thin, high-variance profiles for their upper tail; picking *where to run next* is the
+separate hunting job the challenger race + "Heirs to the crown" handle.)
 
 Design choices:
 
@@ -95,7 +99,7 @@ Plugins are **pure sensors** that store raw observations; all interpretation
 the axis scores themselves) lives in a separate, **versioned methodology** layer —
 so a new metric, a re-weight, or an axis re-partition is published as a new
 methodology version and re-graded over history straight from raw, without
-re-collecting (`POST /api/score/regrade`). `speed-smoothness-v6` is the
+re-collecting (`POST /api/score/regrade`). `speed-smoothness-v10` is the
 published-now version. A too-lenient threshold can even be **re-anchored from the
 UI** (`POST /api/methodologies/reanchor` forks the current version with a tightened
 `best` and re-grades), and every shaper field PathBrain reads/writes/sweeps is
@@ -112,9 +116,9 @@ can't drift apart.
   (headless-Chromium nav/paint timing + a **filmstrip**, with screenshot & HAR).
 - 🧮 **Three perceptual axes** — perception-calibrated **log curve** (Weber–Fechner):
   **Responsiveness** (time-to-first), **Smoothness** (the steady fill, led by byte-
-  arrival metrics — longest-stall/total-stall/cadence/evenness), and **Speed** (time-to-
-  last + interactive), plus a first-class **Overall** corner (v6: FCP × total-stall ×
-  load-event). Raw-only collection + a **versioned methodology**: `POST /api/score/regrade`
+  arrival metrics — longest-stall/stall-energy/cadence/evenness), and **Speed** (time-to-
+  last + interactive), plus a first-class **Overall** corner (v10: FCP × LCP ×
+  stall-energy). Raw-only collection + a **versioned methodology**: `POST /api/score/regrade`
   re-scores history from raw under any published methodology — without re-collecting.
 - 🌦️ **Historical trends + "vs typical"** — per-metric baselines by day-of-week ×
   hour-of-day (`/api/trends/*`); the Dashboard, a dedicated **Trends** page, and
@@ -137,10 +141,9 @@ can't drift apart.
 - 🔍 **OPNsense discovery + settings correlation** — each run captures the live
   FQ-CoDel/SQM settings + a **fingerprint**; runs group into **profiles** with their
   score distribution and a **significant-change** banner (effect ≥ threshold). The
-  **crowned "best"** profile is the confident one with the highest **probability of being
-  the true best** over its **Overall** — the v6 corner over **FCP × total-stall ×
-  load-event** — so "best" is genuinely *starts fast, stays smooth, **and** finishes
-  fast*. The quadrant is **dynamic** (plot any two numeric fields we collect; the crowned
+  **crowned "best"** profile is the confident one with the highest **Overall** — the v10
+  corner over **FCP × LCP × stall-energy** — so "best" is genuinely *starts fast, loads
+  fast, **and** fills in smoothly*. The quadrant is **dynamic** (plot any two numeric fields we collect; the crowned
   profile is ringed; a **Shade** picker encodes a third field as dot **opacity** — brighter
   = better — and it **warns when an axis is saturated**, i.e. every profile already past
   the methodology's `best` threshold so the spread carries no score signal), and the
@@ -490,10 +493,12 @@ docker-compose*.yml  Build (.yml) and pull-from-GHCR (.ghcr.yml) deploys
       versioned methodology layer; byte-arrival smoothness metrics lead the score. The
       headline split into **Responsiveness / Smoothness / Speed** + an **Overall**
       roll-up; the Overall is first-class & persisted since `speed-smoothness-v5` and the
-      crown decomposed to **FCP × total-stall × load-event** in **`speed-smoothness-v6`**
-      (the published-now version); `regrade` re-scores history from raw.
-- [x] **Crown intelligence + unified field model:** the crown is the **probability-of-
-      best** profile; a **"Heirs to the crown"** card surfaces reachable contenders that
+      crown is the corner over **FCP × LCP × stall-energy** as of **`speed-smoothness-v10`**
+      (the published-now version — `√Σgap²` smoothness, from-first-principles felt outcome);
+      `regrade` re-scores history from raw.
+- [x] **Crown intelligence + unified field model:** the crown is the confident profile with
+      the **highest Overall** (deterministic argmax); a **"Heirs to the crown"** card
+      surfaces reachable contenders that
       could still dethrone it; a **saturation check** flags too-lenient thresholds with a
       one-click **re-anchor**; **"Re-run all profiles"** collects fresh comparable data;
       and every shaper field is declared once in a **`shaper_fields` registry** that the

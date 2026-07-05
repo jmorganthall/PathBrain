@@ -19,10 +19,15 @@ LLM-based. See `README.md` for the product overview.
   - `interpret/` — **the interpretation layer** (`derive.py`, versioned
     `DERIVATION_VERSION`). Turns raw observations → scoreable metric values:
     `jitter`=stddev(RTTs), `latency`=mean, `transfer`=bytes·8/dl, the **byte-arrival
-    smoothness** metrics (`smoothness.py`: longest stall / cadence CoV / byte
-    earliness / delivery Gini / perceived time / network-vs-render stall attribution,
-    all from Resource Timing + LoAF — no pixels), and the pixel diagnostics (Speed
-    Index / paint cadence / CLS from the optional filmstrip); `fcp`/`lcp` are identity
+    smoothness** metrics (`smoothness.py`: longest stall / **stall energy** (`√Σgap²`, the
+    crown's smoothness leg) / stall time / cadence CoV / byte earliness / delivery Gini /
+    perceived time / jank fraction / network-vs-render stall attribution, all from Resource
+    Timing + LoAF — no pixels; the whole instrument is **bounded to the page load**,
+    `resources_within_load`, so a late background fetch can't inflate the stall metrics),
+    the **navigation waterfall** (`waterfall.py`: the load's independent phases —
+    `nav_dns`/`nav_tcp`/`nav_tls`/`nav_request`/`nav_response`/`nav_render` — from Navigation
+    Timing marks, so DNS/TCP/TLS setup can be split out from render), and the pixel diagnostics
+    (Speed Index / paint cadence / CLS from the optional filmstrip); `fcp`/`lcp` are identity
     pass-throughs. This is the **only** place interpretation lives, so a new metric or
     changed formula can be re-derived over history without re-collecting.
   - `providers/` — firewall config discovery + **apply** (`opnsense.py`,
@@ -46,17 +51,26 @@ LLM-based. See `README.md` for the product overview.
     direction, `marks_latest`) is defined once; `METRIC_SOURCES`, the config
     weights/thresholds, `LATEST_METRIC_KEYS`, and the `/api/metrics` catalog (which
     the frontend's `MetricCatalogProvider`/`useMetricMeta` consume) are all derived
-    from it. Adding a measurement = one entry here (+ the plugin emitting it).
+    from it. Adding a measurement = one entry here (+ the plugin emitting it). It also holds
+    the **metric ledger** (`METRIC_ROLES`): every metric is bucketed into exactly one role —
+    **W** weather instrument (probe sockets: dns/tcp/tls/latency/jitter/loss/download), **N**
+    navigation network phase (the `nav_*` waterfall), **C** client CPU (render/inp/cls,
+    shaping-immune), **S** byte-arrival shape statistic (stall_energy/longest_stall/…), **O**
+    opaque milestone sum (fcp/lcp/load_event — span multiple buckets). `RANKABLE_ROLES = {N, S}`
+    is the coarse gate (`rank_eligible`/`ineligible_scored`) that keeps weather + opaque metrics
+    out of *automatic* headline/axis ranking; the crown may still explicitly name an `O` metric
+    (v10 corners over FCP/LCP by design). Completeness is asserted at import — adding a metric
+    forces a role choice.
   - `scoring/engine.py` — the generic score **primitive**: `compute_score` takes a
     metric set + weights + thresholds and returns a 0–100 weighted average on a
     perception-calibrated log curve, redistributing missing-metric weight. Axis-
     agnostic; *which* metrics form *which* axis lives in `methodology.py`.
   - `methodology.py` — **the published, versioned rubric** (derivation + axis
     weights/thresholds + the first-class Overall), append-only. `CURRENT_METHODOLOGY` =
-    `speed-smoothness-v8`, which scores **three headline axes** (the temporal phases of a
+    `speed-smoothness-v10`, which scores **three headline axes** (the temporal phases of a
     load; each metric maps to exactly one axis):
     - **Responsiveness** (time-to-first): byte-earliness (30) + FCP (25) + TTFB (15).
-    - **Smoothness** (steady fill): longest-stall (40, required) + stall-time (30)
+    - **Smoothness** (steady fill): longest-stall (40, required) + stall-energy (30)
       + cadence (15) + evenness (15).
     - **Speed** (time-to-last + interactive): LCP (40) + INP (40) + render (20) +
       load-event (20).
@@ -64,10 +78,15 @@ LLM-based. See `README.md` for the product overview.
     kept out of the headline since they barely move human feel. The **Overall** is a
     first-class, versioned roll-up defined here (`overall_from_definition` /
     `corner_score`) and persisted to `Score.axis_scores["overall"]` at scoring time — the
-    corner over **FCP × LCP × stall_time** (quickest first response × perceptual "main
-    content visible" × cumulative dead-air): three genuinely independent dimensions of the
-    felt load (start / main-content-there / steadiness of the fill between). It's an
-    intersection, so a stall pulls the Overall down via the corner geometry, not a hidden
+    corner over **FCP × LCP × stall_energy** (quickest first response × perceptual "main
+    content visible" × smoothness of the fill between): the three things a human directly
+    experiences — shows initial progress fastest × loads fastest × does so most smoothly.
+    FCP and LCP are *native* browser paint timestamps (not abstractions); `stall_energy`
+    (`interpret/smoothness.stall_energy`) is `√(Σ gap²)` over the in-load gaps between resource
+    completions — the L2 magnitude that captures the worst single hang **and** the accumulation
+    of stalls in one threshold-free, absolute-ms number (the sum of gaps is just load duration,
+    the max ignores frequency; √Σgap² captures both, minimised by a quick even "zipper" fill).
+    It's an intersection, so a stall pulls the Overall down via the corner geometry, not a hidden
     weight. `load_event` stays a scored Speed metric but is no longer a crown metric. v5 introduced the first-class Overall (then fcp/perceived_time/inp) and
     re-anchored the time-to-content `best` thresholds (TTFB 30, FCP 150, byte-earliness
     150, LCP 150ms); **v6** decomposed the crown — `perceived_time` (which baked an
@@ -88,6 +107,17 @@ LLM-based. See `README.md` for the product overview.
     real measured dead-air instead of averages-of-averages. `total_stall` stays a display-only
     diagnostic. derive-v5 adds `stall_time_ms` (purely additive), so history re-grades straight
     from raw — every run with resource-timing raw gains an actual `stall_time`.
+    **v9** (short-lived) reworked the crown to rank only *rank-eligible* ledger roles (see the
+    `metrics.py` W/N/C/S/O ledger below), swapping the crown legs to `nav_response`/
+    `byte_earliness`/`jank_fraction` — chosen for shaper-movability. **v10** reverts that: it
+    returns the crown to **FCP × LCP × stall_energy** (the first-principles felt outcome —
+    what the human experiences, not what the shaper can move) and takes `stall_energy` as the
+    Smoothness scored-stall metric (`stall_time` → display-only, exactly as `stall_time`
+    replaced `total_stall`). The crown deliberately corners over FCP/LCP even though they're
+    ledger role `O` (opaque milestones): the coarse rank-eligibility gate keeps weather/opaque
+    metrics out of *automatic* headline inclusion, but the crown explicitly names its metrics —
+    the finer positive selection is the crown's job. `derive-v10` adds `stall_energy_ms`
+    (purely additive → history re-grades straight from raw).
     `runner.score_metrics_under` scores every axis generically via
     `axis_rubric` + `compute_score`, persisting per-axis results + Overall to
     `Score.axis_scores` (JSON). Predecessors (`speed-smoothness-v1..v5`, earlier rubrics)
@@ -220,9 +250,10 @@ LLM-based. See `README.md` for the product overview.
     crown metric set — the few measurements that directly capture human feel, as
     perception-calibrated 0–100 subscores. The set is read from the methodology's `overall`
     spec (`overall_metrics`; module `CROWN_METRICS`/`CROWN_REQUIRED` are only the pre-v5
-    fallback): under **v8** that's **FCP × LCP × stall_time** (quickest first response ×
-    perceptual "main content visible" × absolute measured dead-air — three independent
-    dimensions of the felt load; v7 used fcp/lcp/total_stall, v6 fcp/total_stall/load_event, v5
+    fallback): under **v10** that's **FCP × LCP × stall_energy** (quickest first response ×
+    perceptual "main content visible" × smoothness of the fill, `√Σgap²` — three independent
+    dimensions of the felt load; v9 used nav_response/byte_earliness/jank_fraction, v8
+    fcp/lcp/stall_time, v7 fcp/lcp/total_stall, v6 fcp/total_stall/load_event, v5
     fcp/perceived_time/inp). It's an
     *intersection* (corner, not mean — one weak metric can't be averaged away), √k-normalized
     so corners of different arity share a scale.
@@ -233,7 +264,7 @@ LLM-based. See `README.md` for the product overview.
     (`_percentile_norm` / `_crown_field_values` — mid-rank empirical CDF, direction-aware), then
     corners those. **Percentile (rank) normalization gives every metric equal, uniform spread, so
     no single metric can dominate the corner** — the failure mode of a min/max rescale, where one
-    fast/slow outlier compresses FCP/LCP and `total_stall` (spread more evenly) steamrolls them.
+    fast/slow outlier compresses FCP/LCP and `stall_energy` (spread more evenly) steamrolls them.
     The scale is the measurements' *ranking*, so **re-grading a metric can't move the crown** —
     only re-measuring can (trade-off: it's magnitude-blind — a 1 ms edge and a 200 ms edge both
     mean "one rank better"). It stays **monotonic in the crown-metric
@@ -283,7 +314,7 @@ LLM-based. See `README.md` for the product overview.
 - `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
   History, Trends, Compare, Settings Impact (**paginated** sortable table — 25/page —
   with standard **Overall + the crown metrics** columns (the metrics the Overall corners over,
-  from the response's `overall_metrics` — fcp/lcp/stall_time under v8 — ranked by each metric's
+  from the response's `overall_metrics` — fcp/lcp/stall_energy under v10 — ranked by each metric's
   **field-normalized raw** value via a `crown:<metric>` field key → `crown_norm` (no grading),
   so the pinned columns are the raw measurements that actually *compute* Overall; the headline
   axes Responsiveness/Smoothness/Speed are a different graded decomposition, demoted to opt-in)
@@ -444,8 +475,8 @@ docker compose up --build   # -> http://localhost:8000
      metrics that drive the current Overall. Set the default axis keys in
      `frontend/src/pages/Settings.tsx` (`xKey`/`yKey`/`sizeKey`) to the new crown set —
      the methodology's `overall` spec metrics (`methodology.overall_metrics`), one per
-     X / Y / Shade slot — so the default view demonstrates how Overall is scored. (v8:
-     `fcp` × `lcp` × `stall_time`.)
+     X / Y / Shade slot — so the default view demonstrates how Overall is scored. (v10:
+     `fcp` × `lcp` × `stall_energy`.)
 - A run repeats the suite `iterations` times; each headline axis is the **median**
   over iterations, with a confidence band. The Dashboard shows a windowed
   **rolling** score (`/api/score/rolling`, 24h median + IQR) plus a **"vs typical"**
@@ -582,9 +613,27 @@ docker compose up --build   # -> http://localhost:8000
   profiles"** gained a **winner-first top-N** mode (`refresh.ranked_profiles` / `_select`): after
   a publish, re-run only the best performers first, ranked by their Overall under the prior
   methodology, instead of an arbitrary sweep.
-- **Next:** speed test / bufferbloat (latency-under-load), multi-parameter Bayesian
-  search + interleaved A/B with effect-size/CI + hysteresis, routing intelligence /
-  SD-WAN.
+- **Phase 9 (done):** **bronze-layer completeness + first-principles crown.** Added the
+  **navigation waterfall** (`interpret/waterfall.py`: the load's independent phases —
+  nav_dns/tcp/tls/request/response/render from Navigation Timing marks, surfaced as a
+  left-to-right waterfall on Dashboard + Run Detail) so the network setup chain baked into
+  FCP/LCP is visible; the **metric ledger** (`metrics.METRIC_ROLES`, roles W/N/C/S/O +
+  `RANKABLE_ROLES`) that keeps weather instruments and opaque milestones out of *automatic*
+  ranking; fixed **`jank_fraction`** (was 0 everywhere — the smoothness instrument counted
+  post-load background resources; `resources_within_load` now bounds the whole instrument to
+  `loadEventEnd`, derive-v9). Methodology **v9** (short-lived) chased shaper-movability
+  (nav_response/byte_earliness/jank_fraction); **v10** reverts to first principles —
+  **FCP × LCP × stall_energy** (`√Σgap²`, the L2 magnitude of the in-load gaps = worst hang +
+  accumulation in one threshold-free number), the three things a human directly experiences
+  (fastest initial progress × fastest load × smoothest fill), *not* what the shaper can move.
+  `stall_energy` takes the Smoothness scored-stall slot (`stall_time` → display-only);
+  derive-v10 is purely additive. Re-anchored the **DNS `best` threshold** 10ms → 0.5ms (a
+  sub-ms local resolver saturated the old 10ms; a Completion diagnostic only). Re-grade + re-
+  derive were sped up (skip-if-current filter + batched savepoint commits) and each got its
+  own Methodology-page button with a tooltip explaining bronze/silver/gold.
+- **Next:** speed test / bufferbloat (latency-under-load) — the missing harness to actually
+  test shaper response (fq_codel is inert on an idle link); multi-parameter Bayesian
+  search + interleaved A/B with effect-size/CI + hysteresis, routing intelligence / SD-WAN.
 
 ⚠️ Firewall **writes** go only through `provider.apply()`. Seven callers use it, all
 snapshot/restore or are reversible: the experiment engine (disarmed + dry-run by
