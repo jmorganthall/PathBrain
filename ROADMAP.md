@@ -53,9 +53,12 @@ self-contained**: every run already co-measures the weather right next to the cr
   move — `nav_dns/nav_tcp/nav_tls`, `latency/jitter/packet_loss`, probe `dns/tcp/tls`. Never
   `download`/`transfer` (bandwidth is a knob) or `nav_response` (SQM-facing delivery), or we
   subtract away real profile effect. Same-socket nav phases beat separate-socket probes.
-- **Then:** surface `weather_adjusted_overall` next to the current `weather_overall` to compare,
-  and eventually rank/eliminate on the adjusted values (the real "don't discard a good profile
-  that ran in bad weather" win).
+- **Then:** eventually rank/eliminate on the adjusted values (the real "don't discard a good
+  profile that ran in bad weather" win) — once the sensitivity numbers justify it.
+- **DONE (step 2):** display-only `weather_adjusted_overall` — the Overall re-cornered over
+  setup-stripped fcp/lcp (each run's own `nav_dns+nav_tcp+nav_tls` subtracted; stall_energy raw),
+  per-run and self-contained, in the same percentile space as Overall. Surfaced as the
+  **"Weather-adj"** column in Settings-Impact (sortable, next to "vs weather"). Not a crown input.
 - **DONE (step 1):** `GET /api/settings/weather-sensitivity` (`routes_settings._weather_sensitivity`)
   — the deterministic validation block: per-covariate × crown-metric Spearman ρ, pooled **and**
   within-profile (holds the profile fixed = the causal signal), so we can see which crown metrics

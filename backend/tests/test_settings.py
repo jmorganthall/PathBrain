@@ -1276,6 +1276,32 @@ def test_weather_sensitivity_detects_within_profile_correlation(client):
     assert lat_fcp["metric_direction"] == "increases"
 
 
+def test_weather_adjusted_overall_strips_setup_weather(client):
+    # Two profiles with identical raw FCP/LCP/stall_energy, so their raw Overall ties. One ran
+    # under heavy connection-setup weather (nav dns+tcp+tls), the other under almost none.
+    # Stripping the setup weather leaves the heavy-weather profile with a much faster
+    # profile-attributable paint → a higher weather_adjusted_overall, even though raw Overall is
+    # equal. (Display-only — the canonical Overall / crown is unaffected.)
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    crown = _crown_metrics()  # [fcp, lcp, stall_energy]
+    raw = tuple({"fcp": 500.0, "lcp": 800.0, "stall_energy": 300.0}[m] for m in crown)
+    for i in range(6):
+        when = t0 - timedelta(minutes=60 - i)
+        _seed_run("wadjheavy001", 80.0, when, iterations=3, crown_raw=raw,
+                  result_metrics={"browser": {"nav_dns_ms": 100.0, "nav_tcp_ms": 100.0, "nav_tls_ms": 100.0}})
+        _seed_run("wadjlight001", 80.0, when, iterations=3, crown_raw=raw,
+                  result_metrics={"browser": {"nav_dns_ms": 3.0, "nav_tcp_ms": 3.0, "nav_tls_ms": 4.0}})
+
+    profiles = client.get("/api/settings/profiles").json()["profiles"]
+    heavy = next(p for p in profiles if p["fingerprint"] == "wadjheavy001")
+    light = next(p for p in profiles if p["fingerprint"] == "wadjlight001")
+    # Same raw crown inputs → identical raw Overall…
+    assert heavy["overall"] == light["overall"]
+    # …but the setup-stripped adjusted Overall ranks the heavy-weather profile strictly higher.
+    assert heavy["weather_adjusted_overall"] is not None
+    assert heavy["weather_adjusted_overall"] > light["weather_adjusted_overall"]
+
+
 def test_apply_writable_overrides_only_touches_writable_fields():
     from pathbrain.api.routes_settings import _apply_writable_overrides
 

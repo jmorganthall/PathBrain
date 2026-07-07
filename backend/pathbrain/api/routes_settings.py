@@ -67,6 +67,7 @@ _PROFILE_FIELDS = [
     {"key": "iterations", "label": "Iterations", "unit": "", "higher_is_better": True, "group": "Run stats"},
     {"key": "count", "label": "Runs", "unit": "", "higher_is_better": True, "group": "Run stats"},
     {"key": "relative_overall", "label": "vs typical (Overall)", "unit": "", "higher_is_better": True, "group": "Run stats"},
+    {"key": "weather_adjusted_overall", "label": "Weather-adj Overall", "unit": "score", "higher_is_better": True, "group": "Scores"},
 ]
 
 
@@ -89,6 +90,17 @@ def _crown_corner(
 # Optimism margin (points) given to a corner axis with too few samples to have a
 # spread — the benefit of the doubt that keeps a 1-shot challenger in the race.
 RACE_OPTIMISM_MARGIN = 5.0
+
+# ── Weather-adjusted Overall (display-only, per-run, self-contained) ──────────────────
+# A metric-based "vs weather" that doesn't infer conditions from other profiles' runs (the ±2h
+# neighbour-pool `weather_overall` is contaminated by *which* profiles we ran). Instead it strips
+# the connection-setup weather each run co-measures on its OWN socket: FCP/LCP are milestone sums
+# that bake in dns+tcp+tls, so subtracting this run's nav setup phases leaves the part the profile
+# actually influences. Cornered exactly like `overall` (same percentile space), so it ranks
+# alongside it. Shape metrics (stall_energy) are post-first-byte and carried through unadjusted.
+# **Informational only — never feeds crowning or elimination.**
+_SETUP_WEATHER_PHASES = ("nav_dns", "nav_tcp", "nav_tls")   # the load's own connection-setup chain
+_SETUP_ADJUSTED_METRICS = {"fcp", "lcp"}                      # milestone sums that bake in setup weather
 
 
 # ── Raw-measurement crown ───────────────────────────────────────────────────────────
@@ -1454,6 +1466,9 @@ def compute_profiles(
     # defs (all current crown metrics are lower-is-better).
     _defn_metrics = {m.get("key"): m for m in (methodology.definition or {}).get("metrics", [])}
     crown_higher = {m: bool((_defn_metrics.get(m) or {}).get("higher_is_better")) for m in crown_metrics}
+    # Keys needed per-run for the weather-adjusted crown: the crown metrics + the setup phases we
+    # subtract from fcp/lcp. Captured alongside metric_samples in the run loop.
+    _crown_adj_keys = set(crown_metrics) | set(_SETUP_WEATHER_PHASES)
     # Config-blind baseline: every qualifying run, regardless of profile, defines
     # the time-of-day environment each profile's runs are judged against.
     baseline_points: list[RunPoint] = []
@@ -1505,6 +1520,9 @@ def compute_profiles(
                 # …and per-metric 0–100 subscore samples (every scored metric), so the
                 # canonical crown and any custom corner share one set of building blocks.
                 "subscore_samples": {},
+                # …plus the per-run weather-adjusted crown raw (setup-stripped fcp/lcp, raw
+                # stall_energy) for the display-only `weather_adjusted_overall`.
+                "crown_adj_samples": {},
                 "first_seen": run.created_at,
                 "last_seen": run.created_at,
             },
@@ -1541,6 +1559,7 @@ def compute_profiles(
         # here lets re-graded history feed the crown normalization + columns, not just fresh
         # runs. (Same source the completion metrics already read from above.)
         results_by_plugin = {r.plugin: (r.metrics or {}) for r in run.results}
+        run_vals: dict[str, float] = {}  # this run's values for the weather-adjust keys
         for key, (plugin, source_key) in metric_src.items():
             val = results_by_plugin.get(plugin, {}).get(source_key)
             if isinstance(val, bool) or not isinstance(val, (int, float)):
@@ -1548,6 +1567,22 @@ def compute_profiles(
             if isinstance(val, bool) or not isinstance(val, (int, float)):
                 continue
             g["metric_samples"].setdefault(key, []).append(float(val))
+            if key in _crown_adj_keys:
+                run_vals[key] = float(val)
+        # Weather-adjusted crown raw for this run: strip the connection-setup weather (this run's
+        # own nav dns+tcp+tls) from the paint milestones; carry shape metrics through unadjusted.
+        # A run without the nav waterfall can't be setup-adjusted, so it's left out of that
+        # metric's adjusted samples (never fabricated).
+        setup = sum(run_vals[p] for p in _SETUP_WEATHER_PHASES if p in run_vals)
+        has_setup = any(p in run_vals for p in _SETUP_WEATHER_PHASES)
+        for m in crown_metrics:
+            if m not in run_vals:
+                continue
+            if m in _SETUP_ADJUSTED_METRICS:
+                if has_setup:
+                    g["crown_adj_samples"].setdefault(m, []).append(max(0.0, run_vals[m] - setup))
+            else:
+                g["crown_adj_samples"].setdefault(m, []).append(run_vals[m])
         g["settings"] = run.settings
         g["last_seen"] = run.created_at
 
@@ -1582,6 +1617,9 @@ def compute_profiles(
             m: {**_spread(vals), "n": len(vals)}
             for m, vals in g["metric_samples"].items() if vals and m in crown_metrics
         }
+        # Median weather-adjusted crown raw (setup-stripped fcp/lcp, raw stall_energy) — cornered
+        # against the field in the normalize pass into the display-only weather_adjusted_overall.
+        crown_adj = {m: round(median(vals), 3) for m, vals in g["crown_adj_samples"].items() if vals}
         # Overall + its IQR are computed after the loop (they need the field's best/worst to
         # normalize); placeholders here, filled in the normalize pass.
         overall = overall_p25_val = overall_p75_val = None
@@ -1624,6 +1662,9 @@ def compute_profiles(
                 # 0–100 medians (filled below) that the crown actually corners over.
                 "crown_raw": crown_raw,
                 "crown_norm": {},
+                # Median weather-adjusted crown raw (display-only) → weather_adjusted_overall below.
+                "crown_adj": crown_adj,
+                "weather_adjusted_overall": None,
                 # Optimistic ceiling (field-normalized) — filled in the normalize pass; drives
                 # the heirs card + challenger race.
                 "optimistic": None,
@@ -1678,6 +1719,21 @@ def compute_profiles(
         p["overall_p75"] = res["p75"]
         p["optimistic"] = res["optimistic"]
         p["crown_norm"] = res["norm"]
+
+    # Display-only weather-adjusted Overall: the SAME percentile-corner as `overall`, but over the
+    # setup-stripped crown raw (fcp/lcp minus each run's own connection-setup weather). Its own
+    # field so the percentile scale reflects the adjusted values. Never touches crowning.
+    adj_field = {
+        m: [p["crown_adj"][m] for p in profiles if (p.get("crown_adj") or {}).get(m) is not None]
+        for m in crown_metrics
+    }
+    for p in profiles:
+        adj = p.get("crown_adj") or {}
+        adj_norm = {
+            m: _percentile_norm(adj.get(m), adj_field.get(m), bool(crown_higher.get(m)))
+            for m in crown_metrics if adj_field.get(m)
+        }
+        p["weather_adjusted_overall"] = _crown_corner(adj_norm, crown_metrics, crown_required)
 
     # Rank the table by the raw-normalized corner "overall"; profiles missing it (no crown
     # metrics captured yet) fall back to smoothness median, sort last.

@@ -278,6 +278,8 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.relative_overall?.delta_median ?? null;
     case "weather_overall":
       return p.weather_overall?.delta_median ?? null;
+    case "weather_adjusted_overall":
+      return p.weather_adjusted_overall ?? null;
     case "p25":
       return p.p25;
     case "overall_p25":
@@ -340,6 +342,7 @@ const FIXED_COLUMN_KEYS = new Set([
   "count",
   "relative_overall",
   "weather_overall",
+  "weather_adjusted_overall",
 ]);
 
 // Group a field list by its `group` for the axis-picker / column menus.
@@ -1319,7 +1322,11 @@ export default function Settings() {
               <b>vs weather</b> is the sharper version of the same idea: Overall minus the median of all
               runs within ±2h of each run (the <i>contemporaneous</i> network conditions, excluding
               this profile's own runs) — so it neutralizes drift, one-off congestion, and sweep-slot
-              bias rather than only recurring day/hour patterns. Also informational, not a crown input.
+              bias rather than only recurring day/hour patterns. Also informational, not a crown input.{" "}
+              <b>Weather-adj</b> is a metric-based, per-run take on the same question: the Overall
+              re-cornered after subtracting each run's own connection-setup weather (nav DNS+TCP+TLS)
+              from FCP/LCP — self-contained, so it isn't skewed by which other profiles ran nearby.
+              Same 0–100 scale as Overall; informational only, never a crown input.
               Use <b>Columns</b> to add any other metric we collect, then sort by it.
               {showCompletion && (
                 <>
@@ -1374,6 +1381,14 @@ export default function Settings() {
                     <SortHeader
                       id="weather_overall"
                       label="vs weather"
+                      align="right"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                    />
+                    <SortHeader
+                      id="weather_adjusted_overall"
+                      label="Weather-adj"
                       align="right"
                       orderBy={orderBy}
                       order={order}
@@ -1522,6 +1537,9 @@ export default function Settings() {
                       </TableCell>
                       <TableCell align="right">
                         <RelativeSopsCell rel={p.weather_overall} confident={p.confident} />
+                      </TableCell>
+                      <TableCell align="right">
+                        {p.weather_adjusted_overall != null ? p.weather_adjusted_overall.toFixed(1) : "—"}
                       </TableCell>
                       <TableCell align="right">
                         {p.overall_p25 != null ? `${p.overall_p25}–${p.overall_p75}` : "—"}
