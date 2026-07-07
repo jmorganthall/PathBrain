@@ -40,15 +40,32 @@ def normalize(configs: list[FqCodelConfig]) -> list[dict]:
         extra = d.get("extra") or {}
         item = {k: d.get(k) for k in CANON_FIELDS}
         item["label"] = extra.get("description") or extra.get("pipe") or extra.get("direction")
+        # Whether the pipe's shaping is switched on. Not a CANON_FIELDS identity value (it
+        # never re-keys a normal profile — see fingerprint()), but carried so the baseline
+        # "SQM off" test's runs form their own profile and the UI can label them.
+        item["enabled"] = extra.get("enabled")
         out.append(item)
     return out
 
 
 def fingerprint(normalized: list[dict]) -> str:
-    """Stable short hash of the profile-defining fields (order-independent)."""
+    """Stable short hash of the profile-defining fields (order-independent).
+
+    A pipe with SQM switched **off** is a genuinely different profile from the same shaper
+    parameters with SQM on, so the baseline "SQM off" test's runs must not merge into the
+    matching shaped profile. ``enabled`` is deliberately not a ``CANON_FIELDS`` identity
+    value: the disabled-pipe marker below is appended **only when some pipe is off**, so an
+    ordinary all-enabled profile hashes byte-for-byte as it always has (no history re-key)."""
     core = [{k: p.get(k) for k in CANON_FIELDS} for p in normalized]
     core.sort(key=lambda x: json.dumps(x, sort_keys=True, default=str))
     blob = json.dumps(core, sort_keys=True, default=str)
+    disabled = sorted(
+        json.dumps({k: p.get(k) for k in CANON_FIELDS}, sort_keys=True, default=str)
+        for p in normalized
+        if p.get("enabled") is False
+    )
+    if disabled:
+        blob += "\x00sqm_off:" + json.dumps(disabled)
     return hashlib.sha1(blob.encode()).hexdigest()[:12]
 
 
@@ -223,6 +240,8 @@ def summarize(normalized: list[dict] | None) -> str:
     parts: list[str] = []
     for p in normalized:
         seg: list[str] = []
+        if p.get("enabled") is False:
+            seg.append("SQM off")
         if p.get("download_bandwidth"):
             seg.append(str(p["download_bandwidth"]))
         if p.get("quantum") is not None:

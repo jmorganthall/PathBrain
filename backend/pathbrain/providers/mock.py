@@ -10,6 +10,9 @@ from .base import ConfigProvider, FqCodelConfig
 # Module-level so applied changes persist across get_provider() calls and are
 # reflected by discover() — lets the experiment engine be exercised end-to-end.
 _OVERRIDES: dict[str, object] = {}
+# Per-pipe on/off (SQM enabled) state, keyed by the pipe uuid, so the baseline
+# "SQM off" test can disable each pipe and see it reflected by discover().
+_PIPE_ENABLED: dict[str, bool] = {}
 
 
 class MockProvider(ConfigProvider):
@@ -36,7 +39,12 @@ class MockProvider(ConfigProvider):
                 flows=1024,
                 queues=1,
                 scheduler="fq_codel",
-                extra={"pipe": "wan-download", "direction": "download", "uuid": "mock-download"},
+                extra={
+                    "pipe": "wan-download",
+                    "direction": "download",
+                    "uuid": "mock-download",
+                    "enabled": _PIPE_ENABLED.get("mock-download", True),
+                },
             ),
             FqCodelConfig(
                 download_bandwidth="40Mbit",
@@ -49,7 +57,13 @@ class MockProvider(ConfigProvider):
                 flows=1024,
                 queues=1,
                 scheduler="fq_codel",
-                extra={"pipe": "wan-upload", "direction": "upload"},
+                # No uuid on purpose — mirrors an OPNsense pipe apply() can't target, and
+                # exercises the "flagged, not applied" path in plan_apply / the tests.
+                extra={
+                    "pipe": "wan-upload",
+                    "direction": "upload",
+                    "enabled": _PIPE_ENABLED.get("mock-upload", True),
+                },
             ),
         ]
 
@@ -67,3 +81,10 @@ class MockProvider(ConfigProvider):
             raise ValueError("apply() requires a 'param'")
         _OVERRIDES[param] = value
         return {"provider": self.name, "applied": {param: value}, "ok": True}
+
+    def set_pipe_enabled(self, pipe_uuid: str | None, enabled: bool) -> dict:
+        # Key by uuid where present; a uuid-less pipe (the mock upload) can't be targeted,
+        # mirroring apply()'s own limitation — so its toggle is a recorded no-op.
+        uuid = pipe_uuid or "mock-upload"
+        _PIPE_ENABLED[uuid] = bool(enabled)
+        return {"provider": self.name, "ok": True, "uuid": uuid, "enabled": bool(enabled)}

@@ -57,6 +57,9 @@ async def lifespan(app: FastAPI):
     from .current_test import reconcile_interrupted_current_tests
 
     reconcile_interrupted_current_tests()  # close out any interrupted test-current session
+    from .baseline_test import reconcile_interrupted_baseline_tests
+
+    reconcile_interrupted_baseline_tests()  # re-enable SQM if a baseline test was interrupted
     from .scheduler import start_scheduler, stop_scheduler
 
     start_scheduler()

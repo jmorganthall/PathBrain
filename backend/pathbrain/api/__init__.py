@@ -5,6 +5,7 @@ from fastapi import APIRouter
 
 from . import (
     routes_ai,
+    routes_baseline,
     routes_config,
     routes_experiments,
     routes_history,
@@ -39,3 +40,4 @@ api_router.include_router(routes_trends.router, tags=["trends"])
 api_router.include_router(routes_sweep.router, tags=["sweep"])
 api_router.include_router(routes_jobs.router, tags=["jobs"])
 api_router.include_router(routes_ai.router, tags=["ai"])
+api_router.include_router(routes_baseline.router, tags=["baseline"])

@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import challenger, current_test, jobs, profile_test, refresh, sweep
+from .. import baseline_test, challenger, current_test, jobs, profile_test, refresh, sweep
 from ..database import get_session
 from ..models import Experiment, ExperimentStatus, Run, RunStatus, Sweep
 
@@ -197,6 +197,50 @@ def _active_current_test_job() -> list[dict]:
     ]
 
 
+def _active_baseline_test_job() -> list[dict]:
+    """The most recent baseline (SQM off) test — shown while running/pending AND for a short
+    window after it finishes, so a failure stays visible with its error and stage readout."""
+    t = baseline_test.current()
+    if not t:
+        return []
+    status = t.get("status")
+    label = f"Baseline · SQM off ({t.get('trigger') or 'manual'})"
+    if status in ("running", "pending"):
+        return [
+            {
+                "id": f"baseline_test-{t['id']}",
+                "kind": "baseline_test",
+                "label": label,
+                "status": "running",
+                "current": t.get("iterations_run") or 0,
+                "total": t.get("iterations"),
+                "message": t.get("stage") or "running",
+                "error": None,
+                "href": "/baseline",
+                "started_at": t.get("started_at") or t.get("created_at"),
+                "finished_at": None,
+            }
+        ]
+    if not _finished_recently(t.get("finished_at"), minutes=5):
+        return []
+    failed = status == "failed"
+    return [
+        {
+            "id": f"baseline_test-{t['id']}",
+            "kind": "baseline_test",
+            "label": label,
+            "status": "failed" if failed else "succeeded",
+            "current": t.get("iterations_run") or 0,
+            "total": t.get("iterations"),
+            "message": t.get("stage") or ("failed" if failed else "done — SQM restored"),
+            "error": t.get("error") if failed else None,
+            "href": "/baseline",
+            "started_at": t.get("started_at") or t.get("created_at"),
+            "finished_at": t.get("finished_at"),
+        }
+    ]
+
+
 def _active_experiment_job(session: Session) -> list[dict]:
     exp = session.scalars(
         select(Experiment)
@@ -290,6 +334,7 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     adapters += _active_sweep_job(session)
     adapters += _active_profile_test_job()
     adapters += _active_current_test_job()
+    adapters += _active_baseline_test_job()
     adapters += _active_experiment_job(session)
     adapters += _active_challenger_job()
     adapters += _active_refresh_job()

@@ -771,6 +771,39 @@ export interface CurrentTest {
   lock_owner?: string | null;
 }
 
+export interface BaselinePipeState {
+  uuid: string | null;
+  label: string | null;
+  enabled: boolean;
+}
+
+export interface BaselineTest {
+  id: number;
+  status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
+  trigger: "manual" | "scheduled" | string;
+  iterations: number;
+  settle_s: number;
+  iterations_run: number;
+  runs_created: number;
+  run_ids: number[];
+  baseline: BaselinePipeState[];
+  error: string | null;
+  stage: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  lock_owner?: string | null;
+}
+
+export interface BaselineConfig {
+  enabled: boolean;
+  hour: number;
+  minute: number;
+  iterations: number;
+  settle_seconds: number;
+  next_run_at: string | null;
+}
+
 export interface ProviderHealth {
   provider: string;
   ok: boolean;

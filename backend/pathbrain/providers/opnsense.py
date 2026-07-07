@@ -191,6 +191,30 @@ class OPNsenseProvider(ConfigProvider):
         log.info("OPNsense applied %s=%s to pipe %s", field, value, uuid)
         return {"provider": self.name, "ok": True, "uuid": uuid, "applied": {field: value}}
 
+    def set_pipe_enabled(self, pipe_uuid: str | None, enabled: bool) -> dict:
+        """Toggle one pipe's ``enabled`` flag and reconfigure (turn SQM off/on).
+
+        Mirrors :meth:`apply`'s read-modify-write of a single pipe field, but drives the
+        structural ``enabled`` flag rather than a shaper parameter — so it isn't part of
+        the writable shaper-field model. Used by the baseline test to disable shaping."""
+        data = self._get(_SETTINGS_GET)
+        pipes = (((data or {}).get("ts") or {}).get("pipes") or {}).get("pipe") or {}
+        uuid = pipe_uuid or (next(iter(pipes)) if pipes else None)
+        if not uuid or uuid not in pipes:
+            raise RuntimeError("Target shaper pipe not found")
+
+        pipe = pipes[uuid]
+        payload = {k: (_selected(v) if isinstance(v, dict) else v) or "" for k, v in pipe.items()}
+        payload["enabled"] = "1" if enabled else "0"
+
+        with self._client() as client:
+            resp = client.post(f"{_SET_PIPE}/{uuid}", json={"pipe": payload})
+            resp.raise_for_status()
+            rc = client.post(_RECONFIGURE, json={})
+            rc.raise_for_status()
+        log.info("OPNsense set pipe %s enabled=%s", uuid, enabled)
+        return {"provider": self.name, "ok": True, "uuid": uuid, "enabled": enabled}
+
     def health(self) -> dict:
         try:
             self._get(_SETTINGS_GET)

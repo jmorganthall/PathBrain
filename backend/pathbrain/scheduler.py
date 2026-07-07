@@ -31,7 +31,52 @@ log = get_logger("scheduler")
 
 _TICK_SECONDS = 15
 
-_state: dict = {"last_run_at": None, "thread": None, "stop": None}
+_state: dict = {"last_run_at": None, "thread": None, "stop": None, "baseline_last_date": None}
+
+
+def _baseline_config() -> dict:
+    with session_scope() as session:
+        return get_config(session).get("baseline_test", {}) or {}
+
+
+def _maybe_run_baseline() -> bool:
+    """Kick the nightly baseline (SQM off) test if it's armed and due this local minute.
+
+    Returns True if a baseline test was started this tick (so the caller can yield the tick).
+    The engine holds the coordination lock itself and queues behind any in-progress session;
+    we only guard against double-firing within the same day and while one is already active.
+    Local (container-TZ) time is used, matching the experiment window convention.
+    """
+    from . import baseline_test
+
+    if baseline_test.active():
+        return False
+    cfg = _baseline_config()
+    if not cfg.get("enabled"):
+        return False
+    now = datetime.now()  # naive local time (container TZ)
+    today = now.date().isoformat()
+    if _state.get("baseline_last_date") == today:
+        return False  # already fired today
+    try:
+        hour = int(cfg.get("hour", 1))
+        minute = int(cfg.get("minute", 0))
+    except (TypeError, ValueError):
+        return False
+    if now.hour != hour or now.minute != minute:
+        return False
+    try:
+        iterations = max(1, int(cfg.get("iterations", 10) or 10))
+        settle = max(0, int(cfg.get("settle_seconds", 30) or 0))
+        baseline_test.start(iterations, settle, trigger="scheduled")
+        _state["baseline_last_date"] = today
+        log.info("Scheduler kicked nightly baseline (SQM off) test")
+        return True
+    except Exception:  # noqa: BLE001 — never let a scheduling hiccup kill the loop
+        log.exception("Scheduler: could not start nightly baseline test")
+        # Stamp the date anyway so we don't retry every tick this minute.
+        _state["baseline_last_date"] = today
+        return False
 
 
 def _active_run_exists() -> bool:
@@ -92,6 +137,12 @@ def _loop(stop: threading.Event) -> None:
             from . import experiment
 
             if experiment.step():
+                stop.wait(_TICK_SECONDS)
+                continue
+
+            # Nightly baseline (SQM off) test, if armed + due. Its engine holds the
+            # coordination lock and queues, so yield the tick once it's kicked.
+            if _maybe_run_baseline():
                 stop.wait(_TICK_SECONDS)
                 continue
 

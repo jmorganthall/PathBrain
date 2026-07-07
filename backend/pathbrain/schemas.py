@@ -22,6 +22,24 @@ class CurrentTestStart(BaseModel):
     minutes: float
 
 
+class BaselineTestStart(BaseModel):
+    """Start an on-demand baseline (SQM off) test. Omitted values fall back to the configured
+    ``baseline_test`` defaults."""
+
+    iterations: int | None = None
+    settle_seconds: int | None = None
+
+
+class BaselineScheduleUpdate(BaseModel):
+    """Update the nightly baseline-test schedule + defaults (all fields optional)."""
+
+    enabled: bool | None = None
+    hour: int | None = None
+    minute: int | None = None
+    iterations: int | None = None
+    settle_seconds: int | None = None
+
+
 class TestSettings(BaseModel):
     """Apply an arbitrary set of shaper settings (e.g. an AI suggestion) and test to minimum.
 
