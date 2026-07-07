@@ -20,7 +20,7 @@ from ..config_store import get_config
 from ..database import get_session
 from ..logging_config import get_logger
 from ..methodology import corner_score, ensure_current_methodology, overall_metrics
-from ..metrics import all_metric_sources
+from ..metrics import METRIC_ROLES, ROLE_WEATHER, all_metric_sources
 from ..models import BenchmarkResult, Run, RunStatus, Score
 from ..providers import get_provider
 from ..runner import MAX_ITERATIONS
@@ -509,6 +509,30 @@ def optimizer_export(
     return build_optimizer_export(session, runs_per_profile, profile_limit)
 
 
+@router.get("/settings/weather-sensitivity")
+def weather_sensitivity(session: Session = Depends(get_session)) -> dict:
+    """How much the *network weather* moves each crown metric — the metric-based read that a
+    self-contained "vs weather" would be built on.
+
+    For each co-measured weather covariate (probe instruments + the load's own connection-setup
+    phases) × each crown metric, the Spearman ρ across per-run points — both pooled and
+    **within-profile** (holding the profile fixed, the causal signal). Informational only; no
+    scores change. Use it to confirm whether a weather adjustment is worth building and which
+    covariates (the ``clean`` ones) to build it from."""
+    methodology = ensure_current_methodology(session, get_config(session))
+    defn = methodology.definition or {}
+    crown_metrics, _ = overall_metrics(defn)
+    metric_meta = {
+        m["key"]: {
+            "label": m.get("label"),
+            "unit": m.get("unit"),
+            "higher_is_better": bool(m.get("higher_is_better")),
+        }
+        for m in defn.get("metrics", []) if m.get("key")
+    }
+    return _weather_sensitivity(session, crown_metrics, metric_meta)
+
+
 # --- Field ↔ outcome sensitivity ------------------------------------------------------
 # A profile whose field value we correlate needs enough distinct points to mean anything.
 SENSITIVITY_MIN_POINTS = 4       # need this many (field value, metric) pairs to correlate
@@ -607,6 +631,144 @@ def _field_sensitivity(
     # Strongest (most confident) monotonic relationships first.
     out.sort(key=lambda r: -abs(r["spearman"] or 0.0))
     return out
+
+
+# --- Metric-based "vs weather": how much do conditions move the crown metrics? ----------
+# The current "vs weather" (trends.profile_weather_relative) infers conditions from the rolling
+# median of *other profiles' runs* — contaminated by which profiles we happened to run. This is
+# the first, informational step toward a self-contained replacement: use the weather signals each
+# run *co-measures* (probe instruments + the load's own connection-setup phases) and quantify how
+# much each crown metric actually responds to them. Deterministic, changes no scores; validates
+# whether a weather adjustment is worth building and which covariates to build it from.
+_WEATHER_SHAPED = {"download", "transfer", "nav_response"}   # the shaper moves these — never adjust with them
+_WEATHER_NAV_SETUP = ["nav_dns", "nav_tcp", "nav_tls", "nav_request", "nav_response"]
+WEATHER_WITHIN_MIN_POINTS = 5   # runs one profile needs before its within-profile ρ is trusted
+
+
+def _weather_covariates() -> list[tuple[str, bool]]:
+    """``(covariate_key, clean)`` — the ambient signals co-measured on every run. ``clean`` =
+    profile-orthogonal (usable to weather-adjust); ``not clean`` = the shaper itself moves it
+    (bandwidth caps download/transfer; nav_response is the SQM-facing delivery phase), so it's
+    shown for transparency but must never adjust a metric or we'd subtract real profile effect.
+    Two families: probe instruments (ledger role W — independent sockets) and the load's own
+    connection-setup phases (role N, RTT-dominated path weather on the *same* socket as FCP/LCP,
+    the causally cleaner proxy)."""
+    keys = [k for k, r in METRIC_ROLES.items() if r == ROLE_WEATHER] + _WEATHER_NAV_SETUP
+    seen: set[str] = set()
+    out: list[tuple[str, bool]] = []
+    for k in keys:
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append((k, k not in _WEATHER_SHAPED))
+    return out
+
+
+def _weather_sensitivity(
+    session: Session, crown_metrics: list[str], metric_meta: dict[str, dict]
+) -> dict:
+    """For each weather covariate × crown metric, the Spearman ρ across **per-run** points,
+    computed two ways:
+
+      * ``pooled`` — over every comparable run (marginal: mixes the weather effect with
+        between-profile differences), and
+      * ``within_profile`` — ρ computed *within each profile* (across its own runs, holding the
+        profile fixed) then median-aggregated. This partials the profile out, so it's the
+        causally meaningful "does weather move this metric" signal.
+
+    A high within-profile |ρ| means the crown metric is weather-sensitive and worth adjusting for;
+    ≈0 means it's already weather-robust (e.g. a separate-socket probe vs FCP, which ride
+    different sockets) and an adjustment would do nothing. Covariates are tagged ``clean`` (usable
+    to adjust) vs shaped (transparency only). Purely informational — no scores change."""
+    metric_src = all_metric_sources()
+    covariates = _weather_covariates()
+    needed = set(crown_metrics) | {k for k, _ in covariates}
+
+    # Per-run values (crown + covariates), grouped by profile for the within-profile pass. Same
+    # source compute_profiles reads: the plugin metric cache, falling back to the re-graded
+    # Score.metric_values when the cache predates a metric.
+    runs_by_fp: dict[str, list[dict[str, float]]] = {}
+    for run, score in _completed_runs_with_scores(session):
+        if not _comparable(score):
+            continue
+        results_by_plugin = {r.plugin: (r.metrics or {}) for r in run.results}
+        mv = score.metric_values or {}
+        vals: dict[str, float] = {}
+        for key in needed:
+            plugin_src = metric_src.get(key)
+            v = results_by_plugin.get(plugin_src[0], {}).get(plugin_src[1]) if plugin_src else None
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                v = mv.get(key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                vals[key] = float(v)
+        if vals:
+            runs_by_fp.setdefault(run.settings_fingerprint, []).append(vals)
+
+    all_runs = [v for runs in runs_by_fp.values() for v in runs]
+
+    rows: list[dict] = []
+    for cov, clean in covariates:
+        cov_label = (metric_meta.get(cov) or {}).get("label") or cov
+        for m in crown_metrics:
+            m_meta = metric_meta.get(m) or {}
+            pooled_pts = [(r[cov], r[m]) for r in all_runs if cov in r and m in r]
+            pooled_rho = (
+                _spearman([x for x, _ in pooled_pts], [y for _, y in pooled_pts])
+                if len(pooled_pts) >= SENSITIVITY_MIN_POINTS else None
+            )
+            within: list[float] = []
+            for runs in runs_by_fp.values():
+                pts = [(r[cov], r[m]) for r in runs if cov in r and m in r]
+                if len(pts) < WEATHER_WITHIN_MIN_POINTS or len({x for x, _ in pts}) < 2:
+                    continue
+                rho = _spearman([x for x, _ in pts], [y for _, y in pts])
+                if rho is not None:
+                    within.append(rho)
+            within_rho = round(median(within), 3) if within else None
+            if pooled_rho is None and within_rho is None:
+                continue
+            # Direction/sensitivity read off the causal (within-profile) ρ when we have it.
+            ref = within_rho if within_rho is not None else pooled_rho
+            if ref is None or abs(ref) < SENSITIVITY_TREND_RHO:
+                direction, sensitive = "none", False
+            else:
+                direction, sensitive = ("increases" if ref > 0 else "decreases"), True
+            rows.append({
+                "covariate": cov,
+                "covariate_label": cov_label,
+                "clean": clean,                       # False = shaper-moved; never adjust with it
+                "role": METRIC_ROLES.get(cov),
+                "metric": m,
+                "metric_label": m_meta.get("label") or m,
+                "metric_higher_is_better": bool(m_meta.get("higher_is_better")),
+                "pooled_spearman": _round2(pooled_rho),
+                "pooled_n": len(pooled_pts),
+                "within_profile_spearman": within_rho,
+                "within_profile_profiles": len(within),
+                "metric_direction": direction,        # does the metric rise/fall as weather rises
+                "weather_sensitive": sensitive,       # |ρ| ≥ trend threshold → adjustment matters
+            })
+    # Strongest causal weather sensitivity first (within-profile ρ, else pooled).
+    rows.sort(
+        key=lambda r: -abs(
+            r["within_profile_spearman"]
+            if r["within_profile_spearman"] is not None
+            else (r["pooled_spearman"] or 0.0)
+        )
+    )
+    return {
+        "crown_metrics": list(crown_metrics),
+        "covariates": [
+            {"key": k, "clean": c, "role": METRIC_ROLES.get(k),
+             "label": (metric_meta.get(k) or {}).get("label") or k}
+            for k, c in covariates
+        ],
+        "within_profile_min_points": WEATHER_WITHIN_MIN_POINTS,
+        "trend_rho": SENSITIVITY_TREND_RHO,
+        "runs_analyzed": len(all_runs),
+        "profiles_analyzed": len(runs_by_fp),
+        "rows": rows,
+    }
 
 
 # --- What the overperformers share -----------------------------------------------------

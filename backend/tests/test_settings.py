@@ -1246,6 +1246,36 @@ def test_optimizer_export_carries_analysis_block(client):
     assert isinstance(body["analysis"]["field_sensitivity"], list)
 
 
+def test_weather_sensitivity_detects_within_profile_correlation(client):
+    # One profile, many runs, where the ambient latency (icmp) and FCP (browser) rise together.
+    # The within-profile Spearman should surface that FCP is weather-sensitive to latency, while a
+    # constant covariate (jitter) produces no trustworthy correlation and is dropped.
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    crown = _crown_metrics()  # [fcp, lcp, stall_energy] under v10
+    for i in range(8):
+        fcp = 300.0 + i * 40.0          # FCP climbs with the weather…
+        latency = 10.0 + i * 3.0        # …as measured latency climbs in lockstep (ρ = +1)
+        crown_raw = tuple(fcp if m == "fcp" else (600.0 if m == "lcp" else 300.0) for m in crown)
+        _seed_run(
+            "weatherfp0001", 80.0, t0 - timedelta(minutes=80 - i), iterations=2,
+            crown_raw=crown_raw,
+            result_metrics={"icmp": {"latency_ms": latency, "jitter_ms": 5.0}},
+        )
+
+    body = client.get("/api/settings/weather-sensitivity").json()
+    # Static covariate tagging: latency is a clean (profile-orthogonal) covariate the model may
+    # adjust with; bandwidth-shaped signals are flagged so they're never used to adjust.
+    assert any(c["key"] == "latency" and c["clean"] for c in body["covariates"])
+    assert any(c["key"] == "download" and not c["clean"] for c in body["covariates"])
+
+    # Our profile is the only one with ≥5 runs carrying both latency and FCP, so the within-profile
+    # median for (latency, fcp) reflects its perfect positive correlation.
+    lat_fcp = next(r for r in body["rows"] if r["covariate"] == "latency" and r["metric"] == "fcp")
+    assert lat_fcp["within_profile_spearman"] >= 0.9
+    assert lat_fcp["weather_sensitive"] is True
+    assert lat_fcp["metric_direction"] == "increases"
+
+
 def test_apply_writable_overrides_only_touches_writable_fields():
     from pathbrain.api.routes_settings import _apply_writable_overrides
 
