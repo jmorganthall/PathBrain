@@ -144,6 +144,10 @@ export interface SettingsProfile {
   // diagnostic than the day×hour "vs typical" (neutralizes drift + transient congestion).
   // Informational — not a crown input. Null until any run had a trustworthy window.
   weather_overall: { delta_median: number; p25: number; p75: number; count: number } | null;
+  // Display-only metric-based "vs weather": the Overall re-cornered over setup-stripped fcp/lcp
+  // (each run's own nav dns+tcp+tls subtracted) — per-run and self-contained, unlike the ±2h
+  // neighbour baseline above. Same 0–100 space as `overall`; NOT a crown input. Null until scorable.
+  weather_adjusted_overall: number | null;
   // Time-adjusted ("vs typical") Overall: how much this profile beats its day×hour norm.
   // Informational only — it does not feed the crown. Null until a usable baseline exists.
   relative_overall: { delta_median: number; p25: number; p75: number; count: number } | null;

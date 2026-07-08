@@ -1246,6 +1246,62 @@ def test_optimizer_export_carries_analysis_block(client):
     assert isinstance(body["analysis"]["field_sensitivity"], list)
 
 
+def test_weather_sensitivity_detects_within_profile_correlation(client):
+    # One profile, many runs, where the ambient latency (icmp) and FCP (browser) rise together.
+    # The within-profile Spearman should surface that FCP is weather-sensitive to latency, while a
+    # constant covariate (jitter) produces no trustworthy correlation and is dropped.
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    crown = _crown_metrics()  # [fcp, lcp, stall_energy] under v10
+    for i in range(8):
+        fcp = 300.0 + i * 40.0          # FCP climbs with the weather…
+        latency = 10.0 + i * 3.0        # …as measured latency climbs in lockstep (ρ = +1)
+        crown_raw = tuple(fcp if m == "fcp" else (600.0 if m == "lcp" else 300.0) for m in crown)
+        _seed_run(
+            "weatherfp0001", 80.0, t0 - timedelta(minutes=80 - i), iterations=2,
+            crown_raw=crown_raw,
+            result_metrics={"icmp": {"latency_ms": latency, "jitter_ms": 5.0}},
+        )
+
+    body = client.get("/api/settings/weather-sensitivity").json()
+    # Static covariate tagging: latency is a clean (profile-orthogonal) covariate the model may
+    # adjust with; bandwidth-shaped signals are flagged so they're never used to adjust.
+    assert any(c["key"] == "latency" and c["clean"] for c in body["covariates"])
+    assert any(c["key"] == "download" and not c["clean"] for c in body["covariates"])
+
+    # Our profile is the only one with ≥5 runs carrying both latency and FCP, so the within-profile
+    # median for (latency, fcp) reflects its perfect positive correlation.
+    lat_fcp = next(r for r in body["rows"] if r["covariate"] == "latency" and r["metric"] == "fcp")
+    assert lat_fcp["within_profile_spearman"] >= 0.9
+    assert lat_fcp["weather_sensitive"] is True
+    assert lat_fcp["metric_direction"] == "increases"
+
+
+def test_weather_adjusted_overall_strips_setup_weather(client):
+    # Two profiles with identical raw FCP/LCP/stall_energy, so their raw Overall ties. One ran
+    # under heavy connection-setup weather (nav dns+tcp+tls), the other under almost none.
+    # Stripping the setup weather leaves the heavy-weather profile with a much faster
+    # profile-attributable paint → a higher weather_adjusted_overall, even though raw Overall is
+    # equal. (Display-only — the canonical Overall / crown is unaffected.)
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    crown = _crown_metrics()  # [fcp, lcp, stall_energy]
+    raw = tuple({"fcp": 500.0, "lcp": 800.0, "stall_energy": 300.0}[m] for m in crown)
+    for i in range(6):
+        when = t0 - timedelta(minutes=60 - i)
+        _seed_run("wadjheavy001", 80.0, when, iterations=3, crown_raw=raw,
+                  result_metrics={"browser": {"nav_dns_ms": 100.0, "nav_tcp_ms": 100.0, "nav_tls_ms": 100.0}})
+        _seed_run("wadjlight001", 80.0, when, iterations=3, crown_raw=raw,
+                  result_metrics={"browser": {"nav_dns_ms": 3.0, "nav_tcp_ms": 3.0, "nav_tls_ms": 4.0}})
+
+    profiles = client.get("/api/settings/profiles").json()["profiles"]
+    heavy = next(p for p in profiles if p["fingerprint"] == "wadjheavy001")
+    light = next(p for p in profiles if p["fingerprint"] == "wadjlight001")
+    # Same raw crown inputs → identical raw Overall…
+    assert heavy["overall"] == light["overall"]
+    # …but the setup-stripped adjusted Overall ranks the heavy-weather profile strictly higher.
+    assert heavy["weather_adjusted_overall"] is not None
+    assert heavy["weather_adjusted_overall"] > light["weather_adjusted_overall"]
+
+
 def test_apply_writable_overrides_only_touches_writable_fields():
     from pathbrain.api.routes_settings import _apply_writable_overrides
 

@@ -31,6 +31,10 @@ export function profileValue(p: SettingsProfile, key: string): number | null {
       // "vs typical" = the time-adjusted **Overall** edge (the axis we crown on today),
       // matching the pinned column — NOT the legacy smoothness-based relative_sops.
       return p.relative_overall?.delta_median ?? null;
+    case "weather_adjusted_overall":
+      // Display-only metric-based "vs weather": the Overall re-cornered over setup-stripped
+      // fcp/lcp (per-run, self-contained). Same 0–100 space as Overall; not a crown input.
+      return p.weather_adjusted_overall ?? null;
   }
   if (key.startsWith("crown:")) return p.crown_norm?.[key.slice(6)] ?? null;
   if (p.scores && key in p.scores) return p.scores[key];
