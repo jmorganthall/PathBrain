@@ -196,6 +196,20 @@ LLM-based. See `README.md` for the product overview.
     runs over 5 iterations chunk the same way (`routes_run._locked_execute_series`): a big request
     fans out into a series of ≤5-iteration runs so an interruption keeps every completed chunk
     (`runner.MAX_ITERATIONS` raised to 500; `run_chunk` is the shared build block).
+  - `baseline_test.py` — **Test baseline behavior (SQM off)**: measure the *unshaped* link to
+    see what the shaper is actually buying. Snapshots each pipe's on/off state, **disables SQM on
+    every pipe** (`provider.set_pipe_enabled`, the pipe on/off toggle — a firewall write *separate*
+    from the shaper-field `apply()` model, since `enabled` isn't a profile-identity field), waits a
+    configurable **settle** interval, benchmarks a configurable number of iterations (chunked like
+    `current_test` so partial data persists), then **restores each pipe's prior state** — always,
+    in a `finally` (persisted to a `BaselineTest` row; `reconcile_interrupted_baseline_tests`
+    re-enables SQM on startup). Runs on demand **or** on a nightly schedule (`config.baseline_test`:
+    `enabled`/`hour`/`minute`/`iterations`/`settle_seconds`, gated in `scheduler.py` by local
+    container-TZ time). A disabled pipe fingerprints as its own profile (`settings_profile.fingerprint`
+    folds an "sqm_off" marker **only when a pipe is off**, so normal all-enabled profiles keep their
+    exact historical hash), so SQM-off runs form a distinct "SQM off" profile instead of polluting
+    the shaped one. Own thread under the `coordinator` lock. `/api/baseline/*` + the **Baseline
+    (SQM off)** tab.
   - `challenger.py` — **Challenger Race**: the adaptive, multi-profile sibling of
     `profile_test`. A time-boxed loop that runs **one iteration at a time** on whatever the
     field can't currently trust against the winner, re-ranks via `rank_challengers`, and
@@ -345,7 +359,10 @@ LLM-based. See `README.md` for the product overview.
   `environment_signature` check as the race), so the card never lists a profile the race
   would refuse to apply;
   plus "Test to minimum" and **"Race challengers"**),
-  Experiments, Shotgun Sweep, Config, Methodology, Plugins, Data Dump, AI, Run Detail. A
+  Experiments, Shotgun Sweep, **Baseline (SQM off)** (the "Test baseline behavior" tab: arm the
+  nightly schedule — time/iterations/settle all configurable — or run one on demand, with a live
+  stage readout; `Baseline.tsx`, `/api/baseline/*`), Config, Methodology, Plugins, Data Dump, AI,
+  Run Detail. A
   top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
   (re-grade, sweep, run, profile test, challenger race, …). The **Data Dump** page has two
   exports: the raw run dump (`/api/history/dump`) and the **AI optimizer export**
@@ -653,11 +670,17 @@ winner when `auto_promote` — baseline persisted + reconciled on startup), and 
 **profile refresh** (`refresh.py`: for each stored profile apply → benchmark N
 iterations → next, restoring the baseline at the end — baseline persisted + reconciled
 on startup). Keep new write paths to `provider.apply()` and always snapshot/restore.
+The **one** firewall write that is *not* a `provider.apply()` shaper-param change is the
+pipe on/off toggle `provider.set_pipe_enabled()` — used only by the **baseline test**
+(`baseline_test.py`: snapshot pipe states → disable SQM on every pipe → settle → benchmark →
+restore, persisted + reconciled on startup). It's deliberately separate because `enabled`
+isn't a profile-identity/writable shaper field; it still obeys the same snapshot/restore +
+coordinator-lock discipline.
 
 ⚠️ Any **apply-firewall + benchmark** session must hold the `coordinator.py` lock so
 two never overlap (user-triggered ones — sweep, profile test, challenger race, profile
-refresh, manual `/api/run` — `hold` and queue; periodic ones — monitoring, experiment —
-`try_hold` and defer).
+refresh, baseline test, manual `/api/run` — `hold` and queue; periodic ones — monitoring,
+experiment, the nightly baseline test — `try_hold`/`hold` and defer/queue).
 `runner.execute_run` independently re-reads the firewall fingerprint **after** the
 run and FAILs it on drift (the read-before/read-after integrity check), so "what we
 tested" always matches "what we thought". A profile is **confident** once its runs

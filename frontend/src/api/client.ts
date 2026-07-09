@@ -1,6 +1,8 @@
 // Small typed API client for the PathBrain backend. Uses plain fetch.
 import type {
   AxisSeriesResponse,
+  BaselineConfig,
+  BaselineTest,
   BenchmarkConfig,
   ConfigSnapshot,
   DiscoverResponse,
@@ -150,6 +152,18 @@ export const api = {
   currentTestStatus: () => request<CurrentTest>("/current/test"),
   currentTestCancel: () =>
     request<{ cancelled: boolean; status: string | null }>("/current/test/cancel", { method: "POST" }),
+
+  // Baseline (SQM off) test: disable shaping on every pipe, settle, benchmark, restore.
+  baselineConfig: () => request<BaselineConfig>("/baseline/config"),
+  baselineConfigSave: (body: Partial<Omit<BaselineConfig, "next_run_at">>) =>
+    request<BaselineConfig>("/baseline/config", { method: "PUT", body: JSON.stringify(body) }),
+  baselineTestStart: (body: { iterations?: number; settle_seconds?: number }) =>
+    startingJob(
+      request<BaselineTest>("/baseline/test", { method: "POST", body: JSON.stringify(body) }),
+    ),
+  baselineTestStatus: () => request<BaselineTest>("/baseline/test"),
+  baselineTestCancel: () =>
+    request<{ cancelled: boolean; status: string | null }>("/baseline/test/cancel", { method: "POST" }),
 
   // Results
   latestResult: () => request<RunDetail>("/results/latest"),

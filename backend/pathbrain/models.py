@@ -502,6 +502,57 @@ class ProfileRefresh(Base):
     current_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
+class BaselineTestStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class BaselineTest(Base):
+    """A "test baseline (SQM off) behavior" session — measures the unshaped link.
+
+    It snapshots each shaper pipe's on/off state, **disables SQM on every pipe**, waits a
+    configurable settle time for the link to stabilize, benchmarks the unshaped path for a
+    configurable number of iterations (in ``runner.CHUNK_ITERATIONS`` chunks so partial data
+    persists), then **restores each pipe's prior state** — always, in a ``finally``. Like
+    ``ProfileTest``/``Sweep`` the row persists the pre-test pipe states so a crash mid-test can
+    still re-enable SQM on startup (``reconcile_interrupted_baseline_tests``).
+
+    Runs either on demand or on a nightly schedule (``config.baseline_test``). Because a
+    disabled pipe fingerprints as its own profile (see ``settings_profile.fingerprint``), the
+    collected runs group into a distinct "SQM off" profile instead of polluting the shaped one.
+    """
+
+    __tablename__ = "baseline_tests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[BaselineTestStatus] = mapped_column(
+        Enum(BaselineTestStatus), default=BaselineTestStatus.PENDING
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Human-readable current step (snapshot → disable → settle → benchmark → restore).
+    stage: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # How this test was kicked off: "manual" (on-demand) or "scheduled" (nightly).
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")
+
+    # Configuration for this run.
+    iterations: Mapped[int] = mapped_column(Integer, default=10)
+    settle_s: Mapped[int] = mapped_column(Integer, default=30)
+
+    # Pre-test per-pipe on/off state to restore: [{uuid, label, enabled}].
+    baseline: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    # Live/result progress: total iterations collected, chunk runs created, and their ids.
+    iterations_run: Mapped[int] = mapped_column(Integer, default=0)
+    runs_created: Mapped[int] = mapped_column(Integer, default=0)
+    run_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
 class CurrentTestStatus(str, enum.Enum):
     PENDING = "pending"
     RUNNING = "running"

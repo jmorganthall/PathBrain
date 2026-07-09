@@ -151,6 +151,19 @@ DEFAULT_CONFIG: dict = {
         "crown_tie_iqr_fraction": 0.5,
         "crown_tie_min_margin": 0.5,
     },
+    # Baseline "SQM off" test: occasionally disable shaping on every pipe and benchmark the
+    # unshaped link, to see what SQM is actually buying. When `enabled`, the scheduler kicks
+    # one nightly at the configured local (container TZ) `hour`:`minute`; it disables SQM on
+    # all pipes, waits `settle_seconds` for the link to stabilize, benchmarks `iterations`
+    # iterations, then restores each pipe's prior state. All quantities are also overridable
+    # per on-demand ("run now") request.
+    "baseline_test": {
+        "enabled": False,
+        "hour": 1,
+        "minute": 0,
+        "iterations": 10,
+        "settle_seconds": 30,
+    },
     # Historical trends: baseline a metric over this many days of history, judge a
     # run against the median over the last `window_hours`, and require at least
     # `min_samples` runs in a (weekday, hour) bucket before trusting its baseline
