@@ -36,7 +36,7 @@ from ..settings_profile import (
     summarize,
 )
 from ..shaper_fields import SHAPER_FIELDS, SWEEPABLE_FIELDS, WRITABLE_FIELDS, coerce_value, field as shaper_field
-from ..trends import RunPoint, profile_relative, profile_weather_relative
+from ..trends import RunPoint, profile_relative
 
 # The three headline axes (the temporal phases of a load); their 0–100 scores still
 # drive the per-axis display columns, but the **crown** no longer corners over them.
@@ -67,6 +67,7 @@ _PROFILE_FIELDS = [
     {"key": "iterations", "label": "Iterations", "unit": "", "higher_is_better": True, "group": "Run stats"},
     {"key": "count", "label": "Runs", "unit": "", "higher_is_better": True, "group": "Run stats"},
     {"key": "relative_overall", "label": "vs typical (Overall)", "unit": "", "higher_is_better": True, "group": "Run stats"},
+    {"key": "pct_vs_sqm_off", "label": "% vs SQM off", "unit": "%", "higher_is_better": True, "group": "Scores"},
     {"key": "weather_adjusted_overall", "label": "Weather-adj Overall", "unit": "score", "higher_is_better": True, "group": "Scores"},
 ]
 
@@ -1628,15 +1629,6 @@ def compute_profiles(
         # Kept as an informational signal (display + a hook for smarter heir-hunting), not a
         # crown input — the crown is highest Overall, full stop.
         rel_overall = profile_relative(baseline_points, g["points"], "overall", tz_offset, min_samples)
-        # Time-adjusted Overall vs the *contemporaneous network weather* (±2h rolling baseline in
-        # absolute time, excluding this profile's own runs). Unlike "vs typical" (day×hour), this
-        # neutralizes drift + one-off congestion + sweep-slot bias — the more diagnostic "did this
-        # beat the conditions it actually ran in". Informational Settings-Impact column; NOT a
-        # crown input (the crown stays the raw-percentile corner).
-        weather_overall = profile_weather_relative(
-            baseline_points, g["points"], "overall", exclude_fingerprint=g["fingerprint"],
-            min_samples=min_samples,
-        )
         profiles.append(
             {
                 "fingerprint": g["fingerprint"],
@@ -1673,9 +1665,9 @@ def compute_profiles(
                 "overall": overall,
                 # Time-adjusted ("vs typical") Overall — informational, not a crown input.
                 "relative_overall": rel_overall,
-                # Time-adjusted vs the contemporaneous network weather (±2h rolling) — the more
-                # diagnostic "vs typical", also informational and not a crown input.
-                "weather_overall": weather_overall,
+                # "% vs SQM off" (filled after the normalize pass, once every Overall is final).
+                "pct_vs_sqm_off": None,
+                "is_sqm_off": False,
                 # Overall IQR (corner over each crown metric's p25/p75) — brackets Overall.
                 "overall_p25": overall_p25_val,
                 "overall_p75": overall_p75_val,
@@ -1735,6 +1727,27 @@ def compute_profiles(
         }
         p["weather_adjusted_overall"] = _crown_corner(adj_norm, crown_metrics, crown_required)
 
+    # ── "% vs SQM off" ──────────────────────────────────────────────────────────────
+    # How much each profile's Overall beats (or trails) running with SQM *off* — the honest
+    # baseline for what shaping is buying. It's computed straight from the same field-normalized
+    # Overall the crown ranks on, so it's wired into the scoring methodology: change the crown
+    # metrics (a new methodology) → Overall re-ranks → this % re-derives with it, no separate
+    # knob to keep in sync. The bar is the best Overall among measured "SQM off" profiles (any
+    # pipe with shaping disabled — see settings_profile.fingerprint). Positive = this profile is
+    # that % better than the unshaped link; negative = worse. None when there's no baseline yet
+    # or the profile has no Overall.
+    def _is_sqm_off(p: dict) -> bool:
+        return any((pipe or {}).get("enabled") is False for pipe in (p.get("settings") or []))
+
+    sqm_off_overalls = [p["overall"] for p in profiles if _is_sqm_off(p) and p["overall"] is not None]
+    baseline_overall = max(sqm_off_overalls) if sqm_off_overalls else None
+    for p in profiles:
+        p["is_sqm_off"] = _is_sqm_off(p)
+        if baseline_overall and baseline_overall > 0 and p["overall"] is not None:
+            p["pct_vs_sqm_off"] = round((p["overall"] - baseline_overall) / baseline_overall * 100, 1)
+        else:
+            p["pct_vs_sqm_off"] = None
+
     # Rank the table by the raw-normalized corner "overall"; profiles missing it (no crown
     # metrics captured yet) fall back to smoothness median, sort last.
     profiles.sort(key=lambda p: (p["overall"] is not None, p["overall"] if p["overall"] is not None else p["median"]), reverse=True)
@@ -1775,6 +1788,9 @@ def compute_profiles(
         "min_runs": min_runs,
         "min_iterations": min_iterations,
         "complete_only": complete_only,
+        # The "SQM off" baseline Overall the "% vs SQM off" column is measured against (best
+        # Overall among measured SQM-off profiles), or null if no baseline test has run yet.
+        "sqm_off_overall": baseline_overall,
         "best_fingerprint": best_fingerprint,
         # Fingerprints statistically tied with the crown (co-leaders) — the crown's median
         # lead over these is within run-to-run noise, so the UI flags them as a tie instead

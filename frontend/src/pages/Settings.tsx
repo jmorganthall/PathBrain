@@ -159,6 +159,55 @@ function RelativeSopsCell({
   );
 }
 
+// "% vs SQM off": how far this profile's Overall beats (green) or trails (red) the honest
+// unshaped baseline. Derived from the same Overall the crown ranks on, so it moves with the
+// methodology. The baseline profile itself is labelled "baseline"; "—" when no SQM-off test
+// has run yet (or the profile has no Overall).
+function PctVsSqmOffCell({
+  pct,
+  isSqmOff,
+  confident,
+}: {
+  pct: number | null;
+  isSqmOff: boolean;
+  confident: boolean;
+}) {
+  if (isSqmOff) {
+    return (
+      <Tooltip arrow title="This is the SQM-off baseline every other profile's “% vs SQM off” is measured against.">
+        <Typography component="span" variant="caption" color="text.secondary" sx={{ cursor: "help" }}>
+          baseline
+        </Typography>
+      </Tooltip>
+    );
+  }
+  if (pct == null) {
+    return (
+      <Typography component="span" variant="caption" color="text.secondary">
+        —
+      </Typography>
+    );
+  }
+  const neutral = Math.abs(pct) < 0.5;
+  const color = neutral ? "text.secondary" : pct > 0 ? "success.main" : "error.main";
+  const arrow = neutral ? "" : pct > 0 ? "▲ " : "▼ ";
+  return (
+    <Tooltip
+      arrow
+      title="Percent improvement of this profile's Overall over running with SQM off. Positive (green) = shaping helps; negative (red) = this profile is worse than turning SQM off. Computed from the methodology's Overall, so it re-derives when the methodology changes."
+    >
+      <Typography
+        component="span"
+        sx={{ color, fontWeight: 700, opacity: confident ? 1 : 0.6, cursor: "help" }}
+      >
+        {arrow}
+        {pct > 0 ? "+" : ""}
+        {pct}%
+      </Typography>
+    </Tooltip>
+  );
+}
+
 function dirArrow(d: ProfileFieldChange["direction"]): string {
   return d === "higher" ? "↑" : d === "lower" ? "↓" : "≠";
 }
@@ -276,8 +325,8 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.speed?.median ?? null;
     case "relative_overall":
       return p.relative_overall?.delta_median ?? null;
-    case "weather_overall":
-      return p.weather_overall?.delta_median ?? null;
+    case "pct_vs_sqm_off":
+      return p.pct_vs_sqm_off ?? null;
     case "weather_adjusted_overall":
       return p.weather_adjusted_overall ?? null;
     case "p25":
@@ -341,7 +390,7 @@ const FIXED_COLUMN_KEYS = new Set([
   "iterations",
   "count",
   "relative_overall",
-  "weather_overall",
+  "pct_vs_sqm_off",
   "weather_adjusted_overall",
 ]);
 
@@ -492,6 +541,10 @@ export default function Settings() {
   // Default to runs scored under the latest (paint) rubric so legacy data — which
   // scores its SOPS off a thinner metric set and reads high — doesn't skew things.
   const [completeOnly, setCompleteOnly] = useState(true);
+  // Hide "dead weight" profiles that rank worse than running with SQM off: if a shaper
+  // profile can't even beat the unshaped link, it's not worth looking at. On by default;
+  // only has an effect once a baseline "SQM off" profile has been measured.
+  const [hideBelowBaseline, setHideBelowBaseline] = useState(true);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -556,10 +609,23 @@ export default function Settings() {
     const m = new Map(allFields.map((f) => [f.key, f]));
     return (k: string) => m.get(k);
   }, [allFields]);
-  // Profiles shown on the scatter, after the min-iterations filter (table is unaffected).
+  // Whether any "SQM off" baseline profile has been measured (enables the hide filter).
+  const hasBaseline = useMemo(() => (profiles ?? []).some((p) => p.is_sqm_off), [profiles]);
+  // Drop profiles that rank worse than the SQM-off baseline (pct_vs_sqm_off < 0) when the
+  // toggle is on — a shaper profile that can't beat the unshaped link isn't worth showing.
+  // Baseline profiles and unscored ones (null %) are always kept. No baseline yet ⇒ no-op.
+  const filteredProfiles = useMemo(() => {
+    if (!profiles) return profiles;
+    if (!hideBelowBaseline) return profiles;
+    return profiles.filter(
+      (p) => p.is_sqm_off || p.pct_vs_sqm_off == null || p.pct_vs_sqm_off >= 0
+    );
+  }, [profiles, hideBelowBaseline]);
+  const hiddenCount = (profiles?.length ?? 0) - (filteredProfiles?.length ?? 0);
+  // Profiles shown on the scatter, after the baseline + min-iterations filters.
   const plotProfiles = useMemo(
-    () => (profiles ?? []).filter((p) => p.iterations >= minIterPlot),
-    [profiles, minIterPlot]
+    () => (filteredProfiles ?? []).filter((p) => p.iterations >= minIterPlot),
+    [filteredProfiles, minIterPlot]
   );
 
   const toggleColumn = useCallback((key: string) => {
@@ -598,8 +664,11 @@ export default function Settings() {
   }, []);
 
   const sortedProfiles = useMemo(
-    () => (profiles ? [...profiles].sort((a, b) => compareProfiles(a, b, orderBy, order)) : profiles),
-    [profiles, orderBy, order]
+    () =>
+      filteredProfiles
+        ? [...filteredProfiles].sort((a, b) => compareProfiles(a, b, orderBy, order))
+        : filteredProfiles,
+    [filteredProfiles, orderBy, order]
   );
 
   // Paginate the (sorted) profiles table — 25/page by default. Sorting + the column
@@ -1245,7 +1314,10 @@ export default function Settings() {
               spacing={1}
               sx={{ mb: 0.5 }}
             >
-              <Typography variant="h6">Profiles ({profiles.length})</Typography>
+              <Typography variant="h6">
+                Profiles ({rowCount}
+                {hideBelowBaseline && hiddenCount > 0 ? ` of ${profiles.length}` : ""})
+              </Typography>
               <Stack direction="row" spacing={1} alignItems="center">
                 <Button
                   size="small"
@@ -1336,6 +1408,27 @@ export default function Settings() {
                 </>
               )}
             </Typography>
+            <FormControlLabel
+              sx={{ mt: 0.5 }}
+              control={
+                <Checkbox
+                  size="small"
+                  checked={hideBelowBaseline}
+                  disabled={!hasBaseline}
+                  onChange={(e) => setHideBelowBaseline(e.target.checked)}
+                />
+              }
+              label={
+                <Typography variant="body2" color="text.secondary">
+                  Hide profiles worse than <b>SQM off</b>
+                  {hasBaseline
+                    ? hideBelowBaseline && hiddenCount > 0
+                      ? ` — hiding ${hiddenCount} profile${hiddenCount === 1 ? "" : "s"} that don't beat the unshaped link`
+                      : " (a shaper profile that can't beat turning SQM off isn't worth keeping)"
+                    : " — run a Baseline (SQM off) test first to enable this"}
+                </Typography>
+              }
+            />
             <TableContainer sx={{ mt: 1 }}>
               <Table size="small">
                 <TableHead>
@@ -1379,8 +1472,8 @@ export default function Settings() {
                       onSort={handleSort}
                     />
                     <SortHeader
-                      id="weather_overall"
-                      label="vs weather"
+                      id="pct_vs_sqm_off"
+                      label="% vs SQM off"
                       align="right"
                       orderBy={orderBy}
                       order={order}
@@ -1536,7 +1629,11 @@ export default function Settings() {
                         <RelativeSopsCell rel={p.relative_overall} confident={p.confident} />
                       </TableCell>
                       <TableCell align="right">
-                        <RelativeSopsCell rel={p.weather_overall} confident={p.confident} />
+                        <PctVsSqmOffCell
+                          pct={p.pct_vs_sqm_off}
+                          isSqmOff={p.is_sqm_off}
+                          confident={p.confident}
+                        />
                       </TableCell>
                       <TableCell align="right">
                         {p.weather_adjusted_overall != null ? p.weather_adjusted_overall.toFixed(1) : "—"}
