@@ -139,11 +139,14 @@ export interface SettingsProfile {
   // IQR of the per-run Overall score (its own run-to-run variation). Null until scorable.
   overall_p25: number | null;
   overall_p75: number | null;
-  // Time-adjusted vs the contemporaneous network weather (±2h rolling baseline, excluding the
-  // profile's own runs): how much this profile beat the conditions it actually ran in. More
-  // diagnostic than the day×hour "vs typical" (neutralizes drift + transient congestion).
-  // Informational — not a crown input. Null until any run had a trustworthy window.
-  weather_overall: { delta_median: number; p25: number; p75: number; count: number } | null;
+  // "% vs SQM off": percent improvement of this profile's Overall over the honest unshaped
+  // baseline (the best Overall among measured "SQM off" profiles). Positive = shaping helps;
+  // negative = this profile is worse than turning SQM off. Derived from the methodology's
+  // Overall, so it re-derives when the methodology changes. Null when no baseline exists yet
+  // or the profile has no Overall.
+  pct_vs_sqm_off: number | null;
+  // True when this profile is itself an "SQM off" baseline (a pipe with shaping disabled).
+  is_sqm_off: boolean;
   // Display-only metric-based "vs weather": the Overall re-cornered over setup-stripped fcp/lcp
   // (each run's own nav dns+tcp+tls subtracted) — per-run and self-contained, unlike the ±2h
   // neighbour baseline above. Same 0–100 space as `overall`; NOT a crown input. Null until scorable.
@@ -293,6 +296,9 @@ export interface SettingsProfilesResponse {
   // Total iterations a profile needs to be "confident" (the unit of signal).
   min_iterations: number;
   complete_only: boolean;
+  // The "SQM off" baseline Overall that "% vs SQM off" is measured against (best Overall
+  // among measured SQM-off profiles). Null until a baseline test has run.
+  sqm_off_overall: number | null;
   // The crowned profile: confident and closest to the top-right (fastest+smoothest)
   // corner. Null until a confident profile with both axes exists.
   best_fingerprint: string | null;

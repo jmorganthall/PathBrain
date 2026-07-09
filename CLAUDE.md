@@ -141,9 +141,10 @@ LLM-based. See `README.md` for the product overview.
     "network weather"** reading: Overall minus the rolling median of all runs within
     **±2h in absolute time** (excluding the profile's own runs, `RunPoint.fingerprint`),
     so it neutralizes drift + one-off congestion + sweep-slot bias rather than only
-    recurring day/hour patterns (which pool Jan and Jul into one cell). Surfaced as the
-    Settings-Impact **"vs weather"** column (`weather_overall`); informational only — like
-    "vs typical" it does **not** feed the crown.
+    recurring day/hour patterns (which pool Jan and Jul into one cell). `profile_weather_relative`
+    (`weather_overall`) is retained as a library reading but **no longer surfaced** — the
+    Settings-Impact "vs weather" column was replaced by the **"% vs SQM off"** column (see
+    below); the metric-based **"Weather-adj"** column (`weather_adjusted_overall`) stays.
   - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a grid over the
     registry's `SWEEPABLE_FIELDS` (quantum × target today). Applies each variant for real,
     benchmarks it, **restores the baseline at the end** (`reconcile_interrupted_sweeps`
@@ -339,7 +340,14 @@ LLM-based. See `README.md` for the product overview.
   **field-normalized raw** value via a `crown:<metric>` field key → `crown_norm` (no grading),
   so the pinned columns are the raw measurements that actually *compute* Overall; the headline
   axes Responsiveness/Smoothness/Speed are a different graded decomposition, demoted to opt-in)
-  + an optional
+  plus a **"% vs SQM off"** column (`pct_vs_sqm_off`, server-computed in `compute_profiles`):
+  each profile's Overall improvement over the honest unshaped baseline — the best Overall among
+  measured "SQM off" profiles (`is_sqm_off`; response `sqm_off_overall`) — green when shaping
+  helps, red when the profile is *worse* than turning SQM off. It's derived straight from the
+  methodology's Overall, so it re-derives when the methodology changes (no separate knob). A
+  **"Hide profiles worse than SQM off"** checkbox (on by default; inert until a baseline exists)
+  drops every profile with `pct_vs_sqm_off < 0` from the table + scatter — dead weight we don't
+  care about. (This replaced the old "vs weather" column.) Plus an optional
   column selector; a **dynamic** any-metric quadrant where X/Y pick the axes, a **Shade**
   picker encodes a third field as dot **opacity** (brighter = better; `ProfileQuadrant`),
   and the crowned profile is ringed — the quadrant now warns when an axis is **saturated**

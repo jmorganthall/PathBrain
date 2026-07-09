@@ -74,13 +74,14 @@ def _seed_run(
     crown_subscores: dict | None = None,
     crown_raw: tuple | None = None,
     overall: float | None = None,
+    settings: list[dict] | None = None,
 ) -> None:
     with session_scope() as session:
         run = Run(
             status=RunStatus.COMPLETE,
             created_at=when,
             settings_fingerprint=fp,
-            settings=[{"label": "wan", "quantum": 1514}],
+            settings=settings if settings is not None else [{"label": "wan", "quantum": 1514}],
             iterations=iterations,
         )
         session.add(run)
@@ -915,6 +916,71 @@ def test_profiles_expose_time_adjusted_overall(client):
     assert "relative_overall" in p
     if p["relative_overall"] is not None:
         assert set(p["relative_overall"]) >= {"delta_median", "p25", "p75", "count"}
+
+
+def _wipe_runs() -> None:
+    """Clear all runs/scores so a test asserting a *global* property (the SQM-off bar) isn't
+    perturbed by profiles other tests left in the shared session-scoped DB."""
+    with session_scope() as session:
+        session.query(Score).delete()
+        session.query(ScoreResult).delete()
+        session.query(BenchmarkResult).delete()
+        session.query(Run).delete()
+
+
+def test_pct_vs_sqm_off_is_computed_from_overall(client):
+    _wipe_runs()
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    crown = _crown_metrics()
+
+    def raws(v: float) -> tuple:
+        # All crown metrics are lower-is-better, so a smaller raw ⇒ better ⇒ higher Overall.
+        return tuple(float(v) for _ in crown)
+
+    sqm_off_settings = [
+        {"label": "wan-download", "quantum": 1514, "enabled": False},
+        {"label": "wan-upload", "quantum": 300, "enabled": False},
+    ]
+    # A baseline SQM-off profile (middle), a faster shaped profile, and a slower one.
+    for i in range(4):
+        _seed_run("sqmoffbase", 60, t0 - timedelta(minutes=40 - i), iterations=4,
+                  crown_raw=raws(300), settings=sqm_off_settings)
+        _seed_run("betterfp", 90, t0 - timedelta(minutes=40 - i), iterations=4, crown_raw=raws(50))
+        _seed_run("worsefp", 30, t0 - timedelta(minutes=40 - i), iterations=4, crown_raw=raws(600))
+
+    body = client.get("/api/settings/profiles").json()
+    by = {p["fingerprint"]: p for p in body["profiles"]}
+
+    # The baseline is flagged and sets the response-level bar; shaped profiles aren't.
+    assert by["sqmoffbase"]["is_sqm_off"] is True
+    assert by["betterfp"]["is_sqm_off"] is False
+    assert body["sqm_off_overall"] is not None
+    assert body["sqm_off_overall"] == by["sqmoffbase"]["overall"]
+
+    # % vs SQM off: faster-than-baseline is positive (green), slower is negative (red).
+    assert by["betterfp"]["pct_vs_sqm_off"] > 0
+    assert by["worsefp"]["pct_vs_sqm_off"] < 0
+    assert by["sqmoffbase"]["pct_vs_sqm_off"] == 0  # baseline vs itself
+
+    # It's derived straight from Overall vs the baseline Overall — check the arithmetic.
+    base = body["sqm_off_overall"]
+    expected = round((by["betterfp"]["overall"] - base) / base * 100, 1)
+    assert by["betterfp"]["pct_vs_sqm_off"] == expected
+
+    # And the old "vs weather" field is gone.
+    assert "weather_overall" not in by["betterfp"]
+
+
+def test_pct_vs_sqm_off_null_without_a_baseline(client):
+    _wipe_runs()
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    for i in range(3):
+        _seed_run("nobasefp", 80, t0 - timedelta(minutes=20 - i), iterations=3)
+    body = client.get("/api/settings/profiles").json()
+    # No SQM-off profile has been measured, so there's no bar and no percentages.
+    assert body["sqm_off_overall"] is None
+    assert body["profiles"][0]["pct_vs_sqm_off"] is None
+    assert body["profiles"][0]["is_sqm_off"] is False
 
 
 # ── Crown = highest median Overall; ties are informational only ─────────────────────
