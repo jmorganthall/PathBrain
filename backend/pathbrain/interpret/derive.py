@@ -34,9 +34,11 @@ from .waterfall import navigation_phases
 # magnitude): the worst hang plus the accumulation of stalls in one threshold-free number, the
 # v10 crown's smoothness leg. derive-v11 adds `worst_void_fraction` — the longest void within the
 # FCP→LCP window as a fraction of that window (the "pregnant pause" index): the scale-free evenness
-# of the journey to main content, the v11 crown's smoothness leg. Both purely additive; re-derive
-# from raw.
-DERIVATION_VERSION = "derive-v11"
+# of the journey to main content, the v11 crown's smoothness leg. derive-v12 widens that metric's
+# window LCP→loadEventEnd (on a fast link FCP→LCP is near-instant, so the felt pause is in the
+# post-LCP settle the LCP window missed) — a formula change, so a re-derive updates the value from
+# raw. Re-derive from raw after publishing.
+DERIVATION_VERSION = "derive-v12"
 
 
 def _round(v: float | None, n: int = 3) -> float | None:

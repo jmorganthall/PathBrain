@@ -44,7 +44,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v11"
+CURRENT_METHODOLOGY = "speed-smoothness-v12"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -237,6 +237,23 @@ def _ss_v11_assignments() -> dict:
     a = _ss_v10_assignments()
     del a["stall_energy"]  # absolute L2 magnitude → display-only diagnostic
     a["worst_void_fraction"] = {"axis": SMOOTHNESS, "weight": 30, "best": 0.0, "worst": 0.6}
+    return a
+
+
+def _ss_v12_assignments() -> dict:
+    """v11 rubric, re-anchoring two saturated ``best`` thresholds to the fastest values actually
+    measured (so a fast link no longer pins them at 99–100 with no headroom to show a tuning gain):
+    DNS ``best`` 1.0 → 0.8ms (a Completion diagnostic, 91% saturated) and page-load (``load_event``)
+    ``best`` 800 → 556.2ms (a scored Speed metric, 100% saturated). Crown metrics/thresholds are
+    unchanged — these two are secondary axis metrics, so the re-anchor sharpens the Completion/Speed
+    axis subscores + clears the saturation warnings without touching the Overall (which corners over
+    field-percentile-normalized *raw* crown measurements, immune to grading). Pairs with derive-v12,
+    which widens the crown's ``worst_void_fraction`` smoothness leg from the FCP→LCP window to
+    FCP→loadEventEnd (same metric key, wider window — the felt pause on a fast link is in the
+    post-LCP settle, which the LCP-bounded window missed and read 0)."""
+    a = _ss_v11_assignments()
+    a["dns"] = {**a["dns"], "best": 0.8}                   # 1.0 → 0.8ms (fastest measured)
+    a["load_event"] = {**a["load_event"], "best": 556.2}  # 800 → 556.2ms (fastest measured)
     return a
 
 
@@ -486,7 +503,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         },
     },
     "speed-smoothness-v11": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v11: adds worst_void_fraction
+        "derivation_version": "derive-v11",  # frozen: adds worst_void_fraction (FCP→LCP window)
         "notes": (
             "Refine the crown's smoothness leg to measure the *journey from FCP to LCP*, not the "
             "whole-load dead-air. The felt difference between two profiles with identical fast FCP "
@@ -510,6 +527,37 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         ),
         "axes": _SS_V4_AXES,
         "assignments": _ss_v11_assignments(),
+        "overall": {
+            "method": "corner",
+            "metrics": ["fcp", "lcp", "worst_void_fraction"],
+            "required": ["fcp", "lcp", "worst_void_fraction"],
+        },
+    },
+    "speed-smoothness-v12": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v12: widens worst_void_fraction to FCP→load
+        "notes": (
+            "Two changes, both driven by fast-link measurements. (1) Widen the crown's smoothness "
+            "leg. worst_void_fraction stays the crown metric (FCP × LCP × worst_void_fraction) but "
+            "its window widens from FCP→LCP to FCP→loadEventEnd (derive-v12). On a fast link the "
+            "largest paint lands almost immediately after the first (FCP→LCP ~tens of ms), so there "
+            "is no pre-LCP journey to have a pause in — the felt dead-air is in the *post-LCP "
+            "settle*, which the LCP-bounded window missed entirely and read 0 for nearly every "
+            "profile (an inert crown leg). Ending at the load event captures where the pause "
+            "actually lives, while the resources_within_load bound still excludes the post-load "
+            "background trickle. This is NOT a revert to v10's stall_energy: the metric stays "
+            "scale-free (a *fraction* of the window), so — unlike absolute √Σgap² ms — it doesn't "
+            "correlate with the load duration and doesn't double-count a slow load's freeze on both "
+            "the LCP and smoothness legs. Only the window reverts; the form that fixed the "
+            "double-count stays. (2) Re-anchor two saturated best thresholds to the fastest measured "
+            "value so a fast link no longer pins them at 99–100: DNS best 1.0 → 0.8ms (Completion "
+            "diagnostic, 91% saturated) and page-load best 800 → 556.2ms (scored Speed, 100% "
+            "saturated). Both are secondary axis metrics, so this sharpens their subscores + clears "
+            "the saturation warnings without moving the Overall. derive-v12 changes "
+            "worst_void_fraction's value (a formula change), so re-derive from raw first, then "
+            "re-grade."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v12_assignments(),
         "overall": {
             "method": "corner",
             "metrics": ["fcp", "lcp", "worst_void_fraction"],

@@ -286,6 +286,8 @@ def relative_deltas(
     metric_key: str,
     tz_offset_min: int,
     min_samples: int,
+    *,
+    buckets: dict[tuple[int, int], list[float]] | None = None,
 ) -> list[float]:
     """Per-run ``value − baseline_median(its weekday,hour)`` for ``target_points``.
 
@@ -294,8 +296,13 @@ def relative_deltas(
     against the most specific time context that has enough history. This is the core
     of *time-adjusting* a settings profile: it removes the day/hour environment a run
     happened to land in, leaving the config's own contribution.
+
+    ``buckets`` lets a caller pass the day×hour bucketing of ``baseline_points`` when it's
+    invariant across many calls (e.g. time-adjusting every profile against the same field):
+    the bucketing is O(all runs), so recomputing it per profile is quadratic — pass it once.
     """
-    buckets = bucket_values(baseline_points, metric_key, tz_offset_min)
+    if buckets is None:
+        buckets = bucket_values(baseline_points, metric_key, tz_offset_min)
     deltas: list[float] = []
     for p in target_points:
         v = p.values.get(metric_key)
@@ -315,6 +322,8 @@ def profile_relative(
     metric_key: str,
     tz_offset_min: int,
     min_samples: int,
+    *,
+    buckets: dict[tuple[int, int], list[float]] | None = None,
 ) -> dict | None:
     """Time-adjusted summary for a set of runs (e.g. one settings profile).
 
@@ -322,8 +331,14 @@ def profile_relative(
     that many points on average (for a higher-is-better metric like the Overall) —
     "this config performs above its historical environment". None when no run had a
     usable baseline.
+
+    Pass ``buckets`` (the precomputed day×hour bucketing of ``baseline_points`` for
+    ``metric_key``) when calling this once per profile against a shared field, to avoid
+    re-bucketing all runs per profile — see :func:`relative_deltas`.
     """
-    deltas = relative_deltas(baseline_points, target_points, metric_key, tz_offset_min, min_samples)
+    deltas = relative_deltas(
+        baseline_points, target_points, metric_key, tz_offset_min, min_samples, buckets=buckets
+    )
     if not deltas:
         return None
     s = sorted(deltas)

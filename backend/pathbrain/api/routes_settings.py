@@ -36,7 +36,7 @@ from ..settings_profile import (
     summarize,
 )
 from ..shaper_fields import SHAPER_FIELDS, SWEEPABLE_FIELDS, WRITABLE_FIELDS, coerce_value, field as shaper_field
-from ..trends import RunPoint, profile_relative
+from ..trends import RunPoint, bucket_values, profile_relative
 
 # The three headline axes (the temporal phases of a load); their 0–100 scores still
 # drive the per-axis display columns, but the **crown** no longer corners over them.
@@ -1587,6 +1587,14 @@ def compute_profiles(
         g["settings"] = run.settings
         g["last_seen"] = run.created_at
 
+    # Precompute the day×hour bucketing of the whole field ONCE per metric. The time-adjusted
+    # "vs typical" reading below is computed for every profile against this same shared baseline,
+    # and bucketing is O(all runs) — doing it inside the per-profile loop made the endpoint
+    # O(profiles × runs) (the reason Settings-Impact got slow as profiles piled up). Build it here,
+    # reuse it for every profile.
+    smoothness_buckets = bucket_values(baseline_points, "smoothness", tz_offset)
+    overall_buckets = bucket_values(baseline_points, "overall", tz_offset)
+
     profiles = []
     for g in groups.values():
         count = len(g["smoothness"])
@@ -1624,11 +1632,17 @@ def compute_profiles(
         # Overall + its IQR are computed after the loop (they need the field's best/worst to
         # normalize); placeholders here, filled in the normalize pass.
         overall = overall_p25_val = overall_p75_val = None
-        rel = profile_relative(baseline_points, g["points"], "smoothness", tz_offset, min_samples)
+        rel = profile_relative(
+            baseline_points, g["points"], "smoothness", tz_offset, min_samples,
+            buckets=smoothness_buckets,
+        )
         # Time-adjusted Overall ("vs typical"): how this profile scored vs the day×hour norm.
         # Kept as an informational signal (display + a hook for smarter heir-hunting), not a
         # crown input — the crown is highest Overall, full stop.
-        rel_overall = profile_relative(baseline_points, g["points"], "overall", tz_offset, min_samples)
+        rel_overall = profile_relative(
+            baseline_points, g["points"], "overall", tz_offset, min_samples,
+            buckets=overall_buckets,
+        )
         profiles.append(
             {
                 "fingerprint": g["fingerprint"],
