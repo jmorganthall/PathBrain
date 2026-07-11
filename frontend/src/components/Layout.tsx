@@ -7,6 +7,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Divider from "@mui/material/Divider";
 import Drawer from "@mui/material/Drawer";
 import IconButton from "@mui/material/IconButton";
+import Link from "@mui/material/Link";
 import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
@@ -79,6 +80,63 @@ function UpdateChip() {
         sx={{ mr: 1 }}
       />
     </Tooltip>
+  );
+}
+
+// Subtle footer showing the running build, so "which version am I on?" is answerable in the UI
+// (not just via /api/version). The build SHA is the key line for verifying a deploy took; the
+// update-check note explains why the top-bar chip is silent when the container can't reach GitHub.
+function VersionFooter() {
+  const [info, setInfo] = useState<VersionInfo | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .version()
+      .then((v) => alive && setInfo(v))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  // Stamped images (built by CI) carry a short SHA; a local/unstamped build shows "local".
+  const build = info ? info.git_sha_short ?? "local" : "…";
+  const mono = { fontFamily: "monospace", fontSize: "0.95em" } as const;
+  return (
+    <Box
+      component="footer"
+      sx={{ mt: 6, pt: 2, borderTop: 1, borderColor: "divider", textAlign: "center" }}
+    >
+      <Typography variant="caption" color="text.disabled">
+        PathBrain{info?.version ? ` ${info.version}` : ""} · build{" "}
+        <Box component="span" sx={mono}>
+          {build}
+        </Box>
+        {info?.update_available ? (
+          <>
+            {" · "}
+            <Link
+              href={info.compare_url ?? undefined}
+              target="_blank"
+              rel="noopener noreferrer"
+              color="warning.main"
+              underline="hover"
+            >
+              update available ({info.latest_sha_short})
+            </Link>
+          </>
+        ) : info?.update_check === false ? (
+          " · update check disabled"
+        ) : info?.error ? (
+          <Tooltip title={`Update check couldn't reach GitHub: ${info.error}`}>
+            <Box component="span" sx={{ cursor: "help" }}>
+              {" · update check offline"}
+            </Box>
+          </Tooltip>
+        ) : info?.latest_sha_short ? (
+          " · up to date"
+        ) : null}
+      </Typography>
+    </Box>
   );
 }
 
@@ -221,6 +279,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       >
         <Toolbar />
         {children}
+        <VersionFooter />
       </Box>
     </Box>
   );
