@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import Alert from "@mui/material/Alert";
@@ -362,6 +362,7 @@ function SortHeader({
   orderBy,
   order,
   onSort,
+  tip,
 }: {
   id: SortKey;
   label: ReactNode;
@@ -369,13 +370,23 @@ function SortHeader({
   orderBy: SortKey;
   order: SortDir;
   onSort: (key: SortKey) => void;
+  tip?: ReactNode;  // hover explanation of what this column measures
 }) {
   const active = orderBy === id;
+  const sortLabel = (
+    <TableSortLabel active={active} direction={active ? order : "asc"} onClick={() => onSort(id)}>
+      {label}
+    </TableSortLabel>
+  );
   return (
     <TableCell align={align} sortDirection={active ? order : false}>
-      <TableSortLabel active={active} direction={active ? order : "asc"} onClick={() => onSort(id)}>
-        {label}
-      </TableSortLabel>
+      {tip ? (
+        <Tooltip title={tip} arrow enterDelay={300}>
+          <span>{sortLabel}</span>
+        </Tooltip>
+      ) : (
+        sortLabel
+      )}
     </TableCell>
   );
 }
@@ -393,6 +404,30 @@ const FIXED_COLUMN_KEYS = new Set([
   "pct_vs_sqm_off",
   "weather_adjusted_overall",
 ]);
+
+// Hover explanations for the fixed (non-metric) profile-table columns, so each header says what
+// it measures. Crown-metric + user-added columns get their tips from the metric catalog instead.
+const COLUMN_TIPS: Record<string, string> = {
+  label:
+    "The firewall shaper profile — its distinguishing SQM settings. Runs with identical settings group into one profile.",
+  count: "Number of completed benchmark runs on this profile.",
+  iterations:
+    "Total benchmark iterations across all runs — the unit of confidence. A profile becomes 'confident' once it reaches the minimum iterations; more iterations = more trustworthy.",
+  overall:
+    "The headline score: closeness to the perfect corner over the crown metrics (FCP × LCP × Pregnant pause), scored on each metric's percentile rank within the field. An intersection — one weak metric can't be averaged away. Shown as a standing (1 = best); the highest Overall is crowned.",
+  relative_overall:
+    "This profile's Overall vs the day-of-week × hour-of-day historical norm — 'wins above replacement', so running in an easy time slot doesn't flatter it. Informational, never a crown input.",
+  pct_vs_sqm_off:
+    "How much better this profile's Overall is than the honest unshaped baseline (the best measured 'SQM off' profile). Green = shaping helps; red = worse than turning SQM off. Needs a Baseline (SQM off) test to populate.",
+  weather_adjusted_overall:
+    "Overall recomputed after stripping each run's own connection-setup weather (nav DNS+TCP+TLS) out of FCP/LCP, so a profile isn't credited or penalized for network conditions its shaper didn't cause. Informational, never a crown input.",
+  overall_p25:
+    "The p25–p75 spread of this profile's per-run Overall — how steady the felt experience is run-to-run. A tight band means reliable; a wide band means noisy.",
+  min: "The best and worst single-run Smoothness scores observed for this profile (the primary ranking axis's range).",
+  completion:
+    "Secondary Completion score from the raw connection probes (DNS/TCP/TLS/jitter/loss). A diagnostic only — it doesn't decide ranking and can move opposite to the headline.",
+  last_seen: "When this profile was most recently benchmarked.",
+};
 
 // Group a field list by its `group` for the axis-picker / column menus.
 function groupFields(fields: FieldDef[]): { name: string; items: FieldDef[] }[] {
@@ -575,12 +610,16 @@ export default function Settings() {
   const [metricThresholds, setMetricThresholds] = useState<Record<string, MetricThreshold>>({});
   // Scored metrics whose 'best' is too lenient to rank profiles (saturating >50%).
   const [saturation, setSaturation] = useState<MetricSaturation[]>([]);
-  // Dynamic quadrant axes — default to the Overall scoring corner's three inputs
-  // (v11: FCP × LCP × worst_void_fraction), with the third encoded as Shade opacity; the crowned
-  // profile is ringed. So the default view demonstrates how Overall is scored.
-  const [xKey, setXKey] = useState("fcp");
-  const [yKey, setYKey] = useState("lcp");
-  const [sizeKey, setSizeKey] = useState("worst_void_fraction");
+  // Dynamic quadrant axes — X/Y/Shade default to the current methodology's crown metric set
+  // (the Overall scoring corner's inputs), pulled from the profiles response's `overall_metrics`
+  // rather than hardcoded, so the default view always demonstrates how *this* methodology's Overall
+  // is scored and needs no frontend edit when the crown changes. Empty until the first load fills
+  // them from the crown; a manual axis pick (`axesTouched`) freezes them so a reload won't clobber
+  // the user's choice.
+  const [xKey, setXKey] = useState("");
+  const [yKey, setYKey] = useState("");
+  const [sizeKey, setSizeKey] = useState("");
+  const axesTouched = useRef(false);
   // Scatter-only filter: hide profiles with fewer than this many total iterations, so
   // thin/noisy profiles don't clutter the plot. 0 = show all. Doesn't affect the table.
   const [minIterPlot, setMinIterPlot] = useState(0);
@@ -595,6 +634,12 @@ export default function Settings() {
     }
   });
   const [colMenu, setColMenu] = useState<HTMLElement | null>(null);
+  // The current methodology's crown metric set (from the profiles response's `overall_metrics`,
+  // fcp/lcp/worst_void_fraction under v11). Declared up here (before the column memos) because the
+  // crown metrics are pinned as their own standings columns, so they must be excluded from the
+  // optional raw-column menu — otherwise a crown metric renders twice (once as a standing, once as
+  // a raw value) with the same header, which reads as a duplicate column.
+  const [overallMetrics, setOverallMetrics] = useState<string[]>([]);
   // Profiles table sort. Defaults to Overall (corner) descending — so the crowned,
   // closest-to-top-right profile is on top.
   const [orderBy, setOrderBy] = useState<SortKey>("overall");
@@ -637,18 +682,24 @@ export default function Settings() {
   }, []);
 
   // Fields offered in the column menu (excluding those with a fixed column), and the
-  // currently-selected extra columns resolved to field defs.
+  // currently-selected extra columns resolved to field defs. A column is "already shown" if it's a
+  // fixed column OR one of the crown metrics (pinned as its own standings column) — filtering both
+  // out is what keeps a crown metric from appearing twice (standing + raw) with an identical label.
+  const shownColumnKeys = useMemo(
+    () => new Set<string>([...FIXED_COLUMN_KEYS, ...overallMetrics]),
+    [overallMetrics]
+  );
   const columnMenuFields = useMemo(
-    () => allFields.filter((f) => !FIXED_COLUMN_KEYS.has(f.key)),
-    [allFields]
+    () => allFields.filter((f) => !shownColumnKeys.has(f.key)),
+    [allFields, shownColumnKeys]
   );
   const extraFields = useMemo(
     () =>
       extraCols
-        .filter((k) => !FIXED_COLUMN_KEYS.has(k))  // never duplicate a now-standard column
+        .filter((k) => !shownColumnKeys.has(k))  // never duplicate a standard/crown column
         .map((k) => fieldByKey(k))
         .filter((f): f is FieldDef => f != null),
-    [extraCols, fieldByKey]
+    [extraCols, fieldByKey, shownColumnKeys]
   );
 
   const handleSort = useCallback((key: SortKey) => {
@@ -718,20 +769,38 @@ export default function Settings() {
     load();
   }, [load]);
 
+  // Wire the quadrant axes to the crown metric set: X = crown[0], Y = crown[1], Shade = crown[2].
+  // Runs whenever the crown changes (methodology bump) but only until the user manually picks an
+  // axis — so the default view is always the current Overall's corner without a hardcoded metric.
+  useEffect(() => {
+    if (axesTouched.current || overallMetrics.length === 0) return;
+    setXKey(overallMetrics[0] ?? "");
+    setYKey(overallMetrics[1] ?? overallMetrics[0] ?? "");
+    setSizeKey(overallMetrics[2] ?? "");
+  }, [overallMetrics]);
+
+  // A manual axis pick freezes the axes so a reload can't clobber the user's choice.
+  const pickX = useCallback((k: string) => { axesTouched.current = true; setXKey(k); }, []);
+  const pickY = useCallback((k: string) => { axesTouched.current = true; setYKey(k); }, []);
+  const pickShade = useCallback((k: string) => { axesTouched.current = true; setSizeKey(k); }, []);
+
   // The standings columns pin the metrics that actually *compute* the Overall — the current
   // methodology's crown set (fcp/lcp/worst_void_fraction under v11), from the profiles response's
   // ``overall_metrics``. The headline axes (Responsiveness/Smoothness/Speed) are a different
   // decomposition that barely correlates with the Overall corner, so they no longer pin here
   // (still available via Columns). Each crown column ranks by the metric's 0–100 subscore —
   // the exact building block the corner uses — so a high Overall visibly requires all three.
-  const [overallMetrics, setOverallMetrics] = useState<string[]>([]);
+  // (`overallMetrics` state is declared above, next to the column-menu memos that depend on it.)
   const rankedMetrics = useMemo(
     () => [
-      { key: "overall", label: "Overall", metricKey: null as string | null },
+      { key: "overall", label: "Overall", metricKey: null as string | null, tip: COLUMN_TIPS.overall },
       ...overallMetrics.map((k) => ({
         key: `crown:${k}`,
         label: metricMeta(k).label,
         metricKey: k as string | null,
+        // A crown metric's column shows its standing (1 = best); the tip is the metric's own
+        // catalog description plus what the standing means, so each crown column is self-explaining.
+        tip: `${metricMeta(k).description} Shown as a standing (1 = best) by this crown metric across profiles — hover a cell for the profile's normalized value + raw median. Overall is the corner over these.`,
       })),
     ],
     [overallMetrics, metricMeta],
@@ -1181,9 +1250,9 @@ export default function Settings() {
                     sx={{ width: 130 }}
                   />
                 </Tooltip>
-                <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={setXKey} />
-                <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={setYKey} />
-                <AxisSelect label="Shade" value={sizeKey} fields={allFields} onChange={setSizeKey} />
+                <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={pickX} />
+                <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={pickY} />
+                <AxisSelect label="Shade" value={sizeKey} fields={allFields} onChange={pickShade} />
               </Stack>
             </Stack>
             {minIterPlot > 0 && (
@@ -1235,6 +1304,35 @@ export default function Settings() {
                         {sp.iterations === 1 ? "" : "s"}
                         {sp.confident ? "" : " · limited data"}
                       </Typography>
+                      {/* The crown metrics that compute this profile's Overall — driven entirely by
+                          the methodology's `overall_metrics`, so this breakdown tracks the crown with
+                          no hardcoding. Each chip is the metric's standing (1 = best) + raw median. */}
+                      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 0.75 }}>
+                        {rankedMetrics
+                          .filter((m) => m.metricKey)
+                          .map((m) => {
+                            const rk = rankings[m.key];
+                            const rank = rk?.rankByFp[sp.fingerprint];
+                            const rawMetric = sp.metrics?.[m.metricKey as string] ?? null;
+                            const unit = metricMeta(m.metricKey as string).unit ?? "";
+                            return (
+                              <Tooltip key={m.key} title={m.tip}>
+                                <Chip
+                                  size="small"
+                                  variant="outlined"
+                                  sx={{ cursor: "help", borderColor: rankColor(rank, rk?.total ?? 0) }}
+                                  label={
+                                    <>
+                                      <b>{metricMeta(m.metricKey as string).label}</b>{" "}
+                                      #{rank ?? "—"}
+                                      {rawMetric != null ? ` · ${fmtNumField(rawMetric, unit)}` : ""}
+                                    </>
+                                  }
+                                />
+                              </Tooltip>
+                            );
+                          })}
+                      </Box>
                     </Box>
                     <Button
                       size="small"
@@ -1433,7 +1531,7 @@ export default function Settings() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <SortHeader id="label" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} />
+                    <SortHeader id="label" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} tip={COLUMN_TIPS.label} />
                     <SortHeader
                       id="count"
                       label="Runs"
@@ -1441,6 +1539,7 @@ export default function Settings() {
                       orderBy={orderBy}
                       order={order}
                       onSort={handleSort}
+                      tip={COLUMN_TIPS.count}
                     />
                     <SortHeader
                       id="iterations"
@@ -1449,6 +1548,7 @@ export default function Settings() {
                       orderBy={orderBy}
                       order={order}
                       onSort={handleSort}
+                      tip={COLUMN_TIPS.iterations}
                     />
                     {/* Overall + the current methodology's crown metrics (the corner inputs),
                         shown as standings (1 = best) — sorting still keys off the raw score. */}
@@ -1461,6 +1561,7 @@ export default function Settings() {
                         orderBy={orderBy}
                         order={order}
                         onSort={handleSort}
+                        tip={m.tip}
                       />
                     ))}
                     <SortHeader
@@ -1470,6 +1571,7 @@ export default function Settings() {
                       orderBy={orderBy}
                       order={order}
                       onSort={handleSort}
+                      tip={COLUMN_TIPS.relative_overall}
                     />
                     <SortHeader
                       id="pct_vs_sqm_off"
@@ -1478,6 +1580,7 @@ export default function Settings() {
                       orderBy={orderBy}
                       order={order}
                       onSort={handleSort}
+                      tip={COLUMN_TIPS.pct_vs_sqm_off}
                     />
                     <SortHeader
                       id="weather_adjusted_overall"
@@ -1486,6 +1589,7 @@ export default function Settings() {
                       orderBy={orderBy}
                       order={order}
                       onSort={handleSort}
+                      tip={COLUMN_TIPS.weather_adjusted_overall}
                     />
                     <SortHeader
                       id="overall_p25"
@@ -1494,6 +1598,7 @@ export default function Settings() {
                       orderBy={orderBy}
                       order={order}
                       onSort={handleSort}
+                      tip={COLUMN_TIPS.overall_p25}
                     />
                     <SortHeader
                       id="min"
@@ -1502,6 +1607,7 @@ export default function Settings() {
                       orderBy={orderBy}
                       order={order}
                       onSort={handleSort}
+                      tip={COLUMN_TIPS.min}
                     />
                     {extraFields.map((f) => (
                       <SortHeader
@@ -1512,6 +1618,7 @@ export default function Settings() {
                         orderBy={orderBy}
                         order={order}
                         onSort={handleSort}
+                        tip={metricMeta(f.key).description}
                       />
                     ))}
                     {showCompletion && (
@@ -1522,6 +1629,7 @@ export default function Settings() {
                         orderBy={orderBy}
                         order={order}
                         onSort={handleSort}
+                        tip={COLUMN_TIPS.completion}
                       />
                     )}
                     <SortHeader
@@ -1530,6 +1638,7 @@ export default function Settings() {
                       orderBy={orderBy}
                       order={order}
                       onSort={handleSort}
+                      tip={COLUMN_TIPS.last_seen}
                     />
                     <TableCell align="right">Apply</TableCell>
                   </TableRow>
