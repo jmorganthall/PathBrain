@@ -218,6 +218,18 @@ METRICS: list[MetricDef] = [
         ),
     ),
     MetricDef(
+        "network_stall_all", "browser", "network_stall_all_ms", "Network stall (all gaps)", unit="ms",
+        description=(
+            "Network-attributed dead-air with NO minimum-gap floor — the sum of every inter-resource "
+            "gap not covered by a long main-thread task, including the sub-perceptible RTT/handoff "
+            "gaps that 'Network stall time' (50ms floor) discards. On a fast link the resource "
+            "waterfall is gated by round trips (DNS/TCP/TLS/request + ACK pacing), and fq_codel's "
+            "fairness/AQM moves the timing of those handoffs — this measures exactly that share, "
+            "render excluded. Deliberately below human perception: the point is to rank the best "
+            "profile, not to match 'does a human notice'. The v13 crown's smoothness leg. Lower is better."
+        ),
+    ),
+    MetricDef(
         "total_stall", "browser", "total_stall_ms", "Total stall (relative)", unit="ms",
         description=(
             "Cumulative dead-air *relative to each run's own median pace* — the excess of each "
@@ -464,6 +476,7 @@ METRIC_ROLES: dict[str, str] = {
     "perceived_time": ROLE_SHAPE, "longest_stall": ROLE_SHAPE, "stall_time": ROLE_SHAPE,
     "stall_energy": ROLE_SHAPE, "jank_fraction": ROLE_SHAPE, "total_stall": ROLE_SHAPE,
     "worst_void_fraction": ROLE_SHAPE,  # scale-free FCP→LCP evenness — rank-eligible (v11 crown leg)
+    "network_stall_all": ROLE_SHAPE,    # floor-free network-attributed dead-air — v13 crown leg
     "network_stall": ROLE_SHAPE, "render_stall": ROLE_SHAPE, "unknown_stall": ROLE_SHAPE,
     # O — opaque milestone sums (span buckets → display only, never ranked).
     "fcp": ROLE_COMPOSITE, "lcp": ROLE_COMPOSITE, "render": ROLE_COMPOSITE,
@@ -521,7 +534,7 @@ DISPLAY_ORDER = [
     "inp",                                                # interaction (after load)
     # perceived load smoothness (delivery-curve shape, byte-arrival)
     "perceived_time", "longest_stall", "stall_energy", "worst_void_fraction", "total_stall", "stall_time", "jank_fraction", "cadence_cov",
-    "byte_earliness", "delivery_gini", "network_stall", "render_stall", "unknown_stall",
+    "byte_earliness", "delivery_gini", "network_stall", "network_stall_all", "render_stall", "unknown_stall",
     "latency", "jitter", "packet_loss",                   # network quality (continuous)
 ]
 

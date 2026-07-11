@@ -640,6 +640,16 @@ def smoothness_metrics(
         # Stall time we can't attribute (no LoAF/longtask support). Kept so the
         # network/render split isn't silently overcounted as "no stall".
         out["unknown_stall_ms"] = attr["unknown_ms"]
+        # Floor-free network-attributed dead-air: the SAME attribution, but with NO minimum-gap
+        # floor (``min_stall_ms=0``) — so it sums every network-attributed inter-resource gap,
+        # including the sub-perceptible RTT/handoff gaps that ``network_stall_ms`` (50ms floor)
+        # discards. Deliberately below human perception: the goal is to CROWN the best profile,
+        # not to match "does a human notice a hitch". It isolates the part shaping actually moves
+        # (render-covered time is excluded via LoAF overlap, exactly like network_stall). The
+        # v13 crown's smoothness leg.
+        out["network_stall_all_ms"] = stall_attribution_times(
+            series, loaf, loaf_source, min_stall_ms=0.0
+        )["network_ms"]
     return {k: v for k, v in out.items() if v is not None}
 
 
