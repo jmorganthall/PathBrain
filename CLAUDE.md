@@ -516,12 +516,13 @@ docker compose up --build   # -> http://localhost:8000
      Only pre-raw-collection legacy runs (no raw) can't be re-derived — they stay
      quarantined as legacy. There is deliberately no "physically re-run every profile"
      batch; re-grading from raw is the supported way to bring history onto a new rubric.
-  2. **Update the quadrant defaults.** The Settings-Impact quadrant should open on the
-     metrics that drive the current Overall. Set the default axis keys in
-     `frontend/src/pages/Settings.tsx` (`xKey`/`yKey`/`sizeKey`) to the new crown set —
-     the methodology's `overall` spec metrics (`methodology.overall_metrics`), one per
-     X / Y / Shade slot — so the default view demonstrates how Overall is scored. (v11:
-     `fcp` × `lcp` × `worst_void_fraction`.)
+  2. **No frontend edit needed.** The Settings-Impact view is fully crown-driven off the
+     profiles response's `overall_metrics` (the methodology's `overall` spec, exposed by the
+     API): the pinned **standings columns**, the **quadrant default axes** (X/Y/Shade =
+     crown[0]/[1]/[2], until the user manually picks an axis), and the **scatter dot-selection
+     panel's** per-metric breakdown all read that one set, so a crown change (new methodology)
+     re-wires the whole view automatically with zero `Settings.tsx` edits. Keep it that way —
+     don't hardcode a crown metric key in the frontend.
 - A run repeats the suite `iterations` times; each headline axis is the **median**
   over iterations, with a confidence band. The Dashboard shows a windowed
   **rolling** score (`/api/score/rolling`, 24h median + IQR) plus a **"vs typical"**
