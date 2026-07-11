@@ -285,7 +285,7 @@ def longest_void_diagnostic(
     won't move it). ``None`` when there's no series to measure."""
     nav = nav or {}
     paint = paint or {}
-    loaf_obj = loaf_obj or {}
+    loaf_obj = loaf_obj if isinstance(loaf_obj, dict) else {}
     load_end = _f(nav.get("loadEventEnd"))
     res = resources_within_load(resources, load_end)
     series = completion_series(

@@ -178,6 +178,38 @@ def test_longest_void_diagnostic_locates_and_attributes_the_pause():
     assert longest_void_diagnostic({}, [], {}, None) is None
 
 
+def test_pause_diagnostics_unwraps_the_stored_iterations_raw():
+    # Regression: BenchmarkResult.raw is {"iterations": [<per-iter {"urls": ...}>, ...]}, NOT a bare
+    # {"urls": ...}. _pause_diagnostics must unwrap "iterations" or the card is empty for every run.
+    from types import SimpleNamespace
+    from pathbrain.api.routes_results import _pause_diagnostics
+
+    nav = {"responseStart": 165.0, "responseEnd": 300.0, "loadEventEnd": 597.0}
+    paint = {"fcp": 250.0, "lcp": 260.0}
+    resources = [{"responseEnd": t} for t in (180.0, 210.0, 300.0, 560.0)]
+    loaf = {"source": "longtask", "entries": [{"startTime": 300.0, "duration": 200.0}]}
+    per_iter = {"urls": {"https://a/": {"nav": nav, "paint": paint, "resources": resources, "loaf": loaf}}}
+    browser = SimpleNamespace(plugin="browser", raw={"iterations": [per_iter, per_iter]})
+    run = SimpleNamespace(results=[browser])
+
+    diags = _pause_diagnostics(run)
+    assert diags is not None and len(diags) == 1
+    d = diags[0]
+    assert d["url"] == "https://a/"
+    assert d["phase"] == "lcp_load"          # the felt pause is the post-LCP settle
+    assert d["attribution"] == "render"      # main-thread, not byte delivery
+    assert d["duration_ms"] == 260.0
+
+    # A list-shaped loaf (some browsers) must NOT crash the run-detail page — degrade to "unknown".
+    per_iter_bad = {"urls": {"x": {"nav": nav, "paint": paint, "resources": resources, "loaf": [1, 2]}}}
+    run_bad = SimpleNamespace(results=[SimpleNamespace(plugin="browser", raw={"iterations": [per_iter_bad]})])
+    bad = _pause_diagnostics(run_bad)
+    assert bad and bad[0]["attribution"] == "unknown"
+
+    # No browser raw at all → None (card hidden, not an error).
+    assert _pause_diagnostics(SimpleNamespace(results=[])) is None
+
+
 def test_longest_stall_window_points_at_the_plateau():
     window = longest_stall_window(completion_series(CHUNKY))
     assert window is not None

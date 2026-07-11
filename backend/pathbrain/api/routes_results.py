@@ -49,17 +49,34 @@ def _current_overall(session: Session, run_id: int) -> float | None:
 
 def _pause_diagnostics(run: Run) -> list[dict] | None:
     """Per-URL "where's the pause?" diagnostic from the browser result's raw observations —
-    the single longest void's location + phase + network/render attribution. Best-effort: any
-    URL whose raw can't produce a void is skipped; None when there's no browser raw at all."""
+    the single longest void's location + phase + network/render attribution.
+
+    The stored ``BenchmarkResult.raw`` is ``{"iterations": [<per-iteration raw>, ...]}`` (the
+    runner wraps each iteration's ``{"urls": {...}}`` under ``iterations``), so we unwrap that and
+    aggregate per URL, keeping the **worst (longest) void** across iterations as the representative
+    pause. Best-effort: any URL/iteration whose raw can't produce a void is skipped; None when
+    there's no usable browser raw at all."""
     browser = next((r for r in run.results if r.plugin == "browser"), None)
     raw = getattr(browser, "raw", None) or {}
-    out: list[dict] = []
-    for url, u in (raw.get("urls") or {}).items():
-        if not isinstance(u, dict):
+    # Back-compat: accept a bare ``{"urls": ...}`` too, in case a caller passes an unwrapped raw.
+    iterations = raw.get("iterations") or ([raw] if raw.get("urls") else [])
+    by_url: dict[str, dict] = {}
+    for it in iterations:
+        if not isinstance(it, dict):
             continue
-        diag = longest_void_diagnostic(u.get("nav"), u.get("resources"), u.get("paint"), u.get("loaf"))
-        if diag is not None:
-            out.append({"url": url, **diag})
+        for url, u in (it.get("urls") or {}).items():
+            if not isinstance(u, dict):
+                continue
+            try:
+                diag = longest_void_diagnostic(u.get("nav"), u.get("resources"), u.get("paint"), u.get("loaf"))
+            except Exception:  # noqa: BLE001 — a diagnostic must never break the run detail page
+                diag = None
+            if diag is None:
+                continue
+            prev = by_url.get(url)
+            if prev is None or diag["duration_ms"] > prev["duration_ms"]:
+                by_url[url] = diag
+    out = [{"url": url, **d} for url, d in by_url.items()]
     return out or None
 
 
