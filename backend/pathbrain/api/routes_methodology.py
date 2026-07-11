@@ -17,7 +17,14 @@ from .. import jobs
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
 from ..logging_config import get_logger
-from ..methodology import ensure_current_methodology, serialize, summarize
+from ..methodology import (
+    CURRENT_METHODOLOGY,
+    METHODOLOGY_REGISTRY,
+    current_version,
+    ensure_current_methodology,
+    serialize,
+    summarize,
+)
 from ..models import Methodology
 from ..runner import score_history_under_current
 
@@ -37,11 +44,21 @@ def list_methodologies(session: Session = Depends(get_session)) -> dict:
     Lazily records the current methodology so a fresh instance still shows the
     interpretation in play before any re-grade has happened.
     """
-    ensure_current_methodology(session, get_config(session))
+    config = get_config(session)
+    ensure_current_methodology(session, config)
     rows = session.scalars(
         select(Methodology).order_by(Methodology.is_current.desc(), Methodology.created_at.desc())
     ).all()
-    return {"methodologies": [summarize(r) for r in rows], "count": len(rows)}
+    pinned = (config or {}).get("methodology_version") or None
+    return {
+        "methodologies": [summarize(r) for r in rows],
+        "count": len(rows),
+        # Which version scores runs "at present", where it comes from, and whether it's the newest
+        # the shipped code offers — so the GUI can show/repair a stale pin without an API poke.
+        "current_version": current_version(config),
+        "code_default": CURRENT_METHODOLOGY,   # the version this build ships as latest
+        "pinned": pinned,                       # config override, if any (else None → follows code)
+    }
 
 
 @router.get("/methodologies/current")
@@ -157,3 +174,39 @@ def reanchor_threshold(
         "regrade", f"Re-grade under {new_version}", task, href="/methodology"
     )
     return {"version": new_version, "job_id": job_id}
+
+
+@router.post("/methodologies/set-current", status_code=202)
+def set_current_methodology(
+    body: dict = Body(...), session: Session = Depends(get_session)
+) -> dict:
+    """Choose which published methodology scores runs **at present** — the GUI control for the
+    ``config.methodology_version`` pin, so nobody has to poke the API to change it.
+
+    ``{"version": "<id>"}`` pins that version; ``{"version": null}`` (or picking the shipped
+    ``code_default``) **clears** the pin so scoring follows whatever methodology this build ships as
+    latest. The chosen version is marked current and history is re-graded under it (background job),
+    exactly like the re-anchor path. NB: a version that changed the *derivation* (a formula/window,
+    not just a threshold) also needs a **re-derive** first — use the re-derive button — since a
+    re-grade alone reads the cached derived values. Body: ``{"version": str | null}``. Returns
+    ``{version, job_id}`` (202)."""
+    version = (body or {}).get("version")
+    # Clearing: null/empty, or explicitly choosing the code default → unpin (follow shipped latest).
+    if not version or version == CURRENT_METHODOLOGY:
+        save_config(session, {"methodology_version": None})
+    else:
+        # Only a *published* version (a code-registry snapshot or an already-recorded row, e.g. a
+        # re-anchor fork) may be selected — never an arbitrary string.
+        if version not in METHODOLOGY_REGISTRY and session.get(Methodology, version) is None:
+            raise HTTPException(status_code=404, detail=f"No methodology '{version}'")
+        save_config(session, {"methodology_version": version})
+    row = ensure_current_methodology(session, get_config(session))
+    session.commit()
+    log.info("Set current methodology → %s (pin=%r)", row.version, version or None)
+
+    def task(job: jobs.Job) -> dict:
+        with session_scope() as s:
+            return score_history_under_current(s, progress=job.set_progress)
+
+    job_id = jobs.start("regrade", f"Re-grade under {row.version}", task, href="/methodology")
+    return {"version": row.version, "job_id": job_id}

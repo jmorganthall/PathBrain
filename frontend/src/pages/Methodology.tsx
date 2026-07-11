@@ -8,6 +8,7 @@ import FormControlLabel from "@mui/material/FormControlLabel";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
+import MenuItem from "@mui/material/MenuItem";
 import CircularProgress from "@mui/material/CircularProgress";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
@@ -141,6 +142,11 @@ export default function Methodology() {
   const [proposalBest, setProposalBest] = useState("");
   const [regradeNow, setRegradeNow] = useState(true);
   const [publishing, setPublishing] = useState(false);
+  // Which methodology scores runs "at present": the effective version, the version this build
+  // ships as latest (code_default), and the config pin (null → follows the build). Lets the page
+  // show + repair a stale pin (e.g. stuck on v10 after upgrading) without an API poke.
+  const [pinState, setPinState] = useState<{ current: string; codeDefault: string; pinned: string | null } | null>(null);
+  const [switching, setSwitching] = useState(false);
 
   useEffect(() => {
     if (suggestedBest != null) setProposalBest(suggestedBest);
@@ -154,6 +160,11 @@ export default function Methodology() {
       const [cur, list] = await Promise.all([api.methodologyCurrent(), api.methodologies()]);
       setCurrent(cur);
       setVersions(list.methodologies);
+      setPinState({
+        current: list.current_version ?? cur.version,
+        codeDefault: list.code_default ?? cur.version,
+        pinned: list.pinned ?? null,
+      });
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load methodologies");
@@ -189,6 +200,21 @@ export default function Methodology() {
       setRederiving(false);
     }
   }, []);
+
+  const handleSetCurrent = useCallback(async (version: string | null) => {
+    setSwitching(true);
+    try {
+      const res = await api.setCurrentMethodology(version);
+      setToast(
+        `Now scoring under ${res.version} — a re-grade started (jobs menu, top right ↗). If this version changed a formula, run “Re-derive” first.`,
+      );
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not change the methodology");
+    } finally {
+      setSwitching(false);
+    }
+  }, [load]);
 
   const proposalMetric =
     reanchorKey && current
@@ -294,6 +320,78 @@ export default function Methodology() {
           {error}
         </Alert>
       )}
+
+      {pinState && (() => {
+        const stale = pinState.current !== pinState.codeDefault;
+        return (
+          <Card sx={{ mb: 2, ...(stale ? { border: 1, borderColor: "warning.main" } : {}) }}>
+            <CardContent>
+              <Stack
+                direction={{ xs: "column", sm: "row" }}
+                justifyContent="space-between"
+                alignItems={{ xs: "flex-start", sm: "center" }}
+                spacing={1}
+              >
+                <Box>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Typography variant="h6">Active methodology</Typography>
+                    {pinState.pinned ? (
+                      <Chip size="small" color="warning" variant="outlined" label="pinned" />
+                    ) : (
+                      <Chip size="small" color="success" variant="outlined" label="latest" />
+                    )}
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary">
+                    Runs are scored “at present” under <b>{pinState.current}</b>
+                    {pinState.pinned ? " (pinned in config)" : ""}. This build ships{" "}
+                    <b>{pinState.codeDefault}</b> as the latest rubric.
+                  </Typography>
+                </Box>
+                {stale && (
+                  <Button
+                    variant="contained"
+                    color="warning"
+                    onClick={() => handleSetCurrent(null)}
+                    disabled={switching}
+                  >
+                    {switching ? "Switching…" : `Adopt latest (${pinState.codeDefault})`}
+                  </Button>
+                )}
+              </Stack>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1.5 }} alignItems={{ sm: "center" }}>
+                <TextField
+                  select
+                  size="small"
+                  label="Score under"
+                  value={pinState.current}
+                  onChange={(e) => handleSetCurrent(e.target.value)}
+                  disabled={switching}
+                  sx={{ minWidth: 300 }}
+                >
+                  {versions.map((v) => (
+                    <MenuItem key={v.version} value={v.version}>
+                      {v.version}
+                      {v.version === pinState.codeDefault ? " · latest" : ""}
+                    </MenuItem>
+                  ))}
+                </TextField>
+                {pinState.pinned && (
+                  <Button variant="outlined" onClick={() => handleSetCurrent(null)} disabled={switching}>
+                    Clear pin
+                  </Button>
+                )}
+              </Stack>
+              {stale && (
+                <Typography variant="caption" color="warning.main" sx={{ display: "block", mt: 1 }}>
+                  You’re pinned to an older rubric — none of the newer methodology’s changes (crown,
+                  thresholds, window) are active until you adopt the latest. After switching, re-grade
+                  (and re-derive first if the version changed a formula) to score history under it.
+                </Typography>
+              )}
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {reanchorKey && !proposalMetric && (
         <Alert severity="info" sx={{ mb: 2 }} onClose={() => setSearchParams({}, { replace: true })}>

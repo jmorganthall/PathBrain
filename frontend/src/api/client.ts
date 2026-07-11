@@ -216,6 +216,15 @@ export const api = {
         body: JSON.stringify({ metric_key: metricKey, best, regrade }),
       },
     ),
+  // Pick which published methodology scores runs "at present" (the config pin). Pass null to clear
+  // the pin and follow the shipped latest. Re-grades history under the choice (background job).
+  setCurrentMethodology: (version: string | null) =>
+    startingJob(
+      request<{ version: string; job_id: string | null }>("/methodologies/set-current", {
+        method: "POST",
+        body: JSON.stringify({ version }),
+      }),
+    ),
 
   // Background jobs feed (powers the top-right "running jobs" dropdown)
   jobs: () => request<JobsResponse>("/jobs"),
