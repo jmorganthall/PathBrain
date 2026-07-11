@@ -171,6 +171,10 @@ class RunDetail(BaseModel):
     # (``Score.axis_scores['overall']``) — the headline figure shown in the gauge.
     # None when the run isn't comparable / not yet scored under the current methodology.
     overall: float | None = None
+    # "Where's the pause?" diagnostic (one entry per browser URL): the single longest void in the
+    # load, which phase it falls in (pre_fcp / fcp_lcp / lcp_load / post_load), and its network-vs-
+    # render attribution — so the felt pause is locatable without guessing at a crown metric.
+    pause_diagnostics: list[dict[str, Any]] | None = None
 
 
 class RunBaselineOut(BaseModel):

@@ -149,6 +149,35 @@ def test_smoothness_metrics_emits_both_relative_and_absolute_stall():
     assert m["total_stall_ms"] > 0.0
 
 
+def test_longest_void_diagnostic_locates_and_attributes_the_pause():
+    from pathbrain.interpret.smoothness import longest_void_diagnostic
+    # FCP 307, LCP 348, load 572; the biggest void (410→504) sits in the post-LCP settle.
+    nav = {"responseStart": 165.0, "responseEnd": 300.0, "loadEventEnd": 572.0}
+    paint = {"fcp": 307.0, "lcp": 348.0}
+    resources = [{"responseEnd": t} for t in (320.0, 410.0, 504.0, 560.0)]
+    # A long task covering the void → render-bound (shaping can't move it).
+    render = longest_void_diagnostic(nav, resources, paint,
+                                     {"source": "longtask", "entries": [{"startTime": 410.0, "duration": 100.0}]})
+    assert render["duration_ms"] == 94.0
+    assert render["phase"] == "lcp_load"          # post-LCP settle, not FCP→LCP
+    assert render["attribution"] == "render"
+    # Same void, no long task → a network (byte-delivery) gap.
+    net = longest_void_diagnostic(nav, resources, paint, {"source": "longtask", "entries": []})
+    assert net["attribution"] == "network"
+    # No LoAF/longtask support at all → can't attribute (don't guess).
+    assert longest_void_diagnostic(nav, resources, paint, None)["attribution"] == "unknown"
+    # A void before first paint is phased pre_fcp: the 50→300 gap dominates while the post-FCP
+    # completions stay dense up to the load event (so no larger later gap steals the "longest").
+    early = longest_void_diagnostic(
+        {"loadEventEnd": 390.0},
+        [{"responseEnd": t} for t in (50.0, 300.0, 340.0, 360.0, 380.0)],
+        {"fcp": 320.0, "lcp": 340.0}, None,
+    )
+    assert early["phase"] == "pre_fcp"
+    # Nothing to measure → None.
+    assert longest_void_diagnostic({}, [], {}, None) is None
+
+
 def test_longest_stall_window_points_at_the_plateau():
     window = longest_stall_window(completion_series(CHUNKY))
     assert window is not None

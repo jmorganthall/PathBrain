@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ..config_store import get_config
 from ..database import get_session
 from ..methodology import ensure_current_methodology
+from ..interpret.smoothness import longest_void_diagnostic
 from ..metrics import has_latest_metrics
 from ..models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
 from ..schemas import BenchmarkResultOut, RunBaselineOut, RunDetail, ScoreOut
@@ -46,6 +47,22 @@ def _current_overall(session: Session, run_id: int) -> float | None:
     return (score.axis_scores or {}).get("overall")
 
 
+def _pause_diagnostics(run: Run) -> list[dict] | None:
+    """Per-URL "where's the pause?" diagnostic from the browser result's raw observations —
+    the single longest void's location + phase + network/render attribution. Best-effort: any
+    URL whose raw can't produce a void is skipped; None when there's no browser raw at all."""
+    browser = next((r for r in run.results if r.plugin == "browser"), None)
+    raw = getattr(browser, "raw", None) or {}
+    out: list[dict] = []
+    for url, u in (raw.get("urls") or {}).items():
+        if not isinstance(u, dict):
+            continue
+        diag = longest_void_diagnostic(u.get("nav"), u.get("resources"), u.get("paint"), u.get("loaf"))
+        if diag is not None:
+            out.append({"url": url, **diag})
+    return out or None
+
+
 def _serialize_run(run: Run, overall: float | None = None) -> RunDetail:
     return RunDetail(
         id=run.id,
@@ -65,6 +82,7 @@ def _serialize_run(run: Run, overall: float | None = None) -> RunDetail:
         results=[BenchmarkResultOut.model_validate(r) for r in run.results],
         score=_serialize_score(run.score),
         overall=overall,
+        pause_diagnostics=_pause_diagnostics(run),
     )
 
 
