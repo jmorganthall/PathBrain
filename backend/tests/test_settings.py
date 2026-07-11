@@ -355,17 +355,17 @@ def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
     r = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 500})
     assert r.status_code == 202
     out = r.json()
-    assert out["version"] == "speed-smoothness-v10+load_event-best500"
+    assert out["version"] == "speed-smoothness-v11+load_event-best500"
     assert out["job_id"] == "job-test"
 
     # The fork is now current: only load_event's 'best' changed; fcp and the Overall crown
     # spec carry over untouched (append-only — a new version, not an edit).
     cur = client.get("/api/methodologies/current").json()
-    assert cur["version"] == "speed-smoothness-v10+load_event-best500"
+    assert cur["version"] == "speed-smoothness-v11+load_event-best500"
     metrics = {m["key"]: m for m in cur["definition"]["metrics"]}
     assert metrics["load_event"]["best"] == 500.0
     assert metrics["fcp"]["best"] == 150.0  # untouched
-    assert cur["definition"]["overall"]["metrics"] == ["fcp", "lcp", "stall_energy"]
+    assert cur["definition"]["overall"]["metrics"] == ["fcp", "lcp", "worst_void_fraction"]
 
     # Guard: 'best' can't cross to the wrong side of 'worst' (would invert the curve).
     bad = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 99999})
@@ -1081,7 +1081,7 @@ def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     for i in range(3):
         _seed_run("optexp0000x", 80, t0 - timedelta(minutes=30 - i), iterations=6,
-                  crown_raw=(210.0, 250.0, 140.0))
+                  crown_raw=(210.0, 250.0, 0.3))
 
     body = client.get("/api/settings/export/optimizer").json()
     # Top-level: objective + the levers an AI may tune.
@@ -1102,8 +1102,8 @@ def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
     # Raw scoring metrics per run (most recent first), with the crown metrics present.
     assert len(prof["run_samples"]) == 3
     sample = prof["run_samples"][0]
-    # crown_raw is positional by crown order → nav_response=210, byte_earliness=250, jank=140.
-    assert sample["metrics"]["fcp"] == 210.0 and sample["metrics"]["stall_energy"] == 140.0
+    # crown_raw is positional by crown order → fcp=210, lcp=250, worst_void_fraction=0.3.
+    assert sample["metrics"]["fcp"] == 210.0 and sample["metrics"]["worst_void_fraction"] == 0.3
     # Percentile-normalized crown + raw medians summarize the profile.
     assert set(prof["crown_percentiles"]) >= set(_crown_metrics())
     assert prof["metric_medians"]["lcp"] == 250.0
@@ -1343,14 +1343,14 @@ def test_weather_sensitivity_detects_within_profile_correlation(client):
 
 
 def test_weather_adjusted_overall_strips_setup_weather(client):
-    # Two profiles with identical raw FCP/LCP/stall_energy, so their raw Overall ties. One ran
+    # Two profiles with identical raw FCP/LCP/worst_void_fraction, so their raw Overall ties. One ran
     # under heavy connection-setup weather (nav dns+tcp+tls), the other under almost none.
     # Stripping the setup weather leaves the heavy-weather profile with a much faster
     # profile-attributable paint → a higher weather_adjusted_overall, even though raw Overall is
     # equal. (Display-only — the canonical Overall / crown is unaffected.)
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    crown = _crown_metrics()  # [fcp, lcp, stall_energy]
-    raw = tuple({"fcp": 500.0, "lcp": 800.0, "stall_energy": 300.0}[m] for m in crown)
+    crown = _crown_metrics()  # [fcp, lcp, worst_void_fraction]
+    raw = tuple({"fcp": 500.0, "lcp": 800.0, "worst_void_fraction": 0.3}[m] for m in crown)
     for i in range(6):
         when = t0 - timedelta(minutes=60 - i)
         _seed_run("wadjheavy001", 80.0, when, iterations=3, crown_raw=raw,

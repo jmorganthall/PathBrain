@@ -22,6 +22,7 @@ from pathbrain.interpret.smoothness import (
     stall_attribution_times,
     stall_time,
     total_stall,
+    worst_void_fraction,
 )
 
 
@@ -95,6 +96,39 @@ def test_stall_time_is_absolute_dead_air_against_a_fixed_threshold():
     # 0.0 is a real measurement (no stall); None only when there's no gap to measure.
     assert stall_time([5.0]) is None
     assert stall_time([]) is None
+
+
+def test_worst_void_fraction_flags_the_pregnant_pause_between_fcp_and_lcp():
+    # Two loads with IDENTICAL fast FCP (100) and LCP (700), so LCP-time can't tell them apart.
+    # The felt difference is the shape of the journey between them.
+    fcp, lcp = 100.0, 700.0
+    # Steady, consistent progress: completions every ~120ms → no perceptible pause → ~0.
+    smooth = [100.0, 220.0, 340.0, 460.0, 580.0, 700.0]
+    assert worst_void_fraction(smooth, fcp, lcp) == 0.0
+    # Fast FCP, then a "pregnant pause" (150→600 = 450ms of nothing), then a lurch to LCP.
+    # 450 / 600 = 0.75 of the journey was one dead void — scale-free, so it captures the
+    # *evenness* independent of the (identical) LCP endpoint.
+    lurch = [100.0, 150.0, 600.0, 650.0, 700.0]
+    assert worst_void_fraction(lurch, fcp, lcp) == 0.75
+    # An empty middle (nothing completes between FCP and LCP) is the worst case → the whole span.
+    assert worst_void_fraction([100.0, 700.0], fcp, lcp) == 1.0
+    # Scale-free: a gap under the 200ms perceptible threshold isn't a felt pause → 0.0, and this
+    # also cleanly handles a near-instant FCP→LCP (the whole tiny span is sub-threshold).
+    assert worst_void_fraction([100.0, 250.0, 400.0, 550.0, 700.0], fcp, lcp) == 0.0
+    assert worst_void_fraction([100.0, 120.0], 100.0, 120.0) == 0.0
+    # None when the window is undefined (missing/degenerate LCP) — no journey to measure.
+    assert worst_void_fraction(lurch, fcp, None) is None
+    assert worst_void_fraction(lurch, 700.0, 100.0) is None
+
+
+def test_smoothness_metrics_emits_the_v11_crown_leg():
+    # worst_void_fraction rides in the numeric record so the derive layer / crown can read it.
+    # FCP=30, LCP=850; CHUNKY has a big freeze (80→760) inside the FCP→LCP window.
+    m = smoothness_metrics({"responseStart": 40.0}, CHUNKY, {"fcp": 30.0, "lcp": 850.0}, None)
+    assert "worst_void_fraction" in m and m["worst_void_fraction"] > 0.5
+    # Absent (not fabricated) when LCP is missing — no window to measure.
+    m2 = smoothness_metrics({"responseStart": 40.0}, CHUNKY, {"fcp": 30.0}, None)
+    assert "worst_void_fraction" not in m2
 
 
 def test_smoothness_metrics_emits_both_relative_and_absolute_stall():

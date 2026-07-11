@@ -44,7 +44,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v10"
+CURRENT_METHODOLOGY = "speed-smoothness-v11"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -217,6 +217,26 @@ def _ss_v10_assignments() -> dict:
     a = _ss_v8_assignments()
     del a["stall_time"]  # absolute-thresholded sum → display-only diagnostic
     a["stall_energy"] = {"axis": SMOOTHNESS, "weight": 30, "best": 0.0, "worst": 2000.0}
+    return a
+
+
+def _ss_v11_assignments() -> dict:
+    """v10 rubric with the Smoothness scored-stall metric = ``worst_void_fraction`` (the
+    "pregnant pause" index: the longest void within the FCP→LCP window as a fraction of that
+    window). It replaces ``stall_energy`` (→ display-only) exactly as ``stall_energy`` replaced
+    ``stall_time``. Crown corners over FCP × LCP × worst_void_fraction: first content painted
+    (native FCP) × main content loaded (native LCP) × how *evenly* the fill progressed between
+    them. Where ``stall_energy`` was absolute ms — and so correlated with LCP, double-counting a
+    slow load's freeze on both the LCP and smoothness legs — ``worst_void_fraction`` is scale-free
+    (a fraction of the FCP→LCP span), so it measures *only* evenness, decoupled from how long the
+    journey took. A fast-but-lurching load (good FCP, good LCP, dead middle) now scores badly on
+    the smoothness leg even though its endpoints are good; a load that dawdles evenly scores well
+    here and is caught only by its slow LCP. Best 0 / worst 0.6 (a gap taking ≥60% of the FCP→LCP
+    span is a dominant pause), calibratable. derive-v11 adds worst_void_fraction and is purely
+    additive, so history re-grades straight from raw."""
+    a = _ss_v10_assignments()
+    del a["stall_energy"]  # absolute L2 magnitude → display-only diagnostic
+    a["worst_void_fraction"] = {"axis": SMOOTHNESS, "weight": 30, "best": 0.0, "worst": 0.6}
     return a
 
 
@@ -411,7 +431,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         },
     },
     "speed-smoothness-v9": {
-        "derivation_version": DERIVATION_VERSION,  # v9 introduced at derive-v7; derive-v8 fixed jank's window
+        "derivation_version": "derive-v8",  # frozen: v9 introduced at derive-v7; derive-v8 fixed jank's window
         "notes": (
             "Rework the crown to rank on *rank-eligible measurements* instead of opaque paint sums. "
             "FCP and LCP are what a human means by 'fast', but each silently bundles DNS+TCP+TLS+"
@@ -440,7 +460,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         },
     },
     "speed-smoothness-v10": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v10: adds stall_energy
+        "derivation_version": "derive-v10",  # frozen: adds stall_energy
         "notes": (
             "Return the crown to the three things a human directly experiences, ranked on their "
             "felt outcome rather than on what the shaper can move: FCP (initial content appears) × "
@@ -463,6 +483,37 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "method": "corner",
             "metrics": ["fcp", "lcp", "stall_energy"],
             "required": ["fcp", "lcp", "stall_energy"],
+        },
+    },
+    "speed-smoothness-v11": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v11: adds worst_void_fraction
+        "notes": (
+            "Refine the crown's smoothness leg to measure the *journey from FCP to LCP*, not the "
+            "whole-load dead-air. The felt difference between two profiles with identical fast FCP "
+            "and LCP is the shape of the middle: one fills in with steady, consistent progress; the "
+            "other paints, sits through a 'pregnant pause' where nothing arrives, then lurches to "
+            "LCP. v10's stall_energy (√Σgap² over the whole in-load fill, absolute ms) missed this "
+            "two ways: it spanned past LCP (punishing a post-content tail the user never felt) and, "
+            "being absolute, it correlated with LCP — double-counting a slow load's freeze on both "
+            "the LCP and smoothness legs. The new leg is worst_void_fraction: the single longest "
+            "void within the FCP→LCP window as a *fraction* of that window (the pregnant-pause "
+            "index). Scale-free by construction, so it measures ONLY the evenness of the fill, "
+            "decoupled from how long the journey took (that stays LCP's job) — which makes the "
+            "three crown legs genuinely independent (when it starts × when it's done × how steady "
+            "the trip was) and kills the double-count. A fast-but-lurching load now scores badly on "
+            "smoothness even with a good LCP; a load that dawdles evenly scores well here and is "
+            "caught only by its slow LCP. The Overall corners over FCP × LCP × worst_void_fraction. "
+            "worst_void_fraction takes stall_energy's Smoothness slot (best 0 / worst 0.6, "
+            "calibratable); stall_energy stays a display-only diagnostic (as stall_time did when "
+            "stall_energy superseded it). derive-v11 adds worst_void_fraction and is purely "
+            "additive, so history re-grades straight from raw."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v11_assignments(),
+        "overall": {
+            "method": "corner",
+            "metrics": ["fcp", "lcp", "worst_void_fraction"],
+            "required": ["fcp", "lcp", "worst_void_fraction"],
         },
     },
 }

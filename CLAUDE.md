@@ -67,10 +67,10 @@ LLM-based. See `README.md` for the product overview.
     agnostic; *which* metrics form *which* axis lives in `methodology.py`.
   - `methodology.py` — **the published, versioned rubric** (derivation + axis
     weights/thresholds + the first-class Overall), append-only. `CURRENT_METHODOLOGY` =
-    `speed-smoothness-v10`, which scores **three headline axes** (the temporal phases of a
+    `speed-smoothness-v11`, which scores **three headline axes** (the temporal phases of a
     load; each metric maps to exactly one axis):
     - **Responsiveness** (time-to-first): byte-earliness (30) + FCP (25) + TTFB (15).
-    - **Smoothness** (steady fill): longest-stall (40, required) + stall-energy (30)
+    - **Smoothness** (steady fill): longest-stall (40, required) + worst-void-fraction (30)
       + cadence (15) + evenness (15).
     - **Speed** (time-to-last + interactive): LCP (40) + INP (40) + render (20) +
       load-event (20).
@@ -78,15 +78,21 @@ LLM-based. See `README.md` for the product overview.
     kept out of the headline since they barely move human feel. The **Overall** is a
     first-class, versioned roll-up defined here (`overall_from_definition` /
     `corner_score`) and persisted to `Score.axis_scores["overall"]` at scoring time — the
-    corner over **FCP × LCP × stall_energy** (quickest first response × perceptual "main
-    content visible" × smoothness of the fill between): the three things a human directly
-    experiences — shows initial progress fastest × loads fastest × does so most smoothly.
-    FCP and LCP are *native* browser paint timestamps (not abstractions); `stall_energy`
-    (`interpret/smoothness.stall_energy`) is `√(Σ gap²)` over the in-load gaps between resource
-    completions — the L2 magnitude that captures the worst single hang **and** the accumulation
-    of stalls in one threshold-free, absolute-ms number (the sum of gaps is just load duration,
-    the max ignores frequency; √Σgap² captures both, minimised by a quick even "zipper" fill).
-    It's an intersection, so a stall pulls the Overall down via the corner geometry, not a hidden
+    corner over **FCP × LCP × worst_void_fraction** (quickest first response × perceptual "main
+    content visible" × how *evenly* the fill progressed between them): the three things a human
+    directly experiences — shows initial progress fastest × loads fastest × does so most smoothly.
+    FCP and LCP are *native* browser paint timestamps (not abstractions); `worst_void_fraction`
+    (`interpret/smoothness.worst_void_fraction`) is the **"pregnant pause" index** — the single
+    longest void between resource completions **within the FCP→LCP window**, as a *fraction* of
+    that window. It captures the felt quality of the journey to main content: two loads with
+    identical fast FCP and LCP feel completely different if one fills in with steady progress and
+    the other paints, sits through a dead pause, then lurches to LCP. It's deliberately
+    **scale-free** so it measures *only* the evenness of the fill, decoupled from how long the
+    journey took (that stays LCP's job) — which makes the three crown legs genuinely independent
+    (when it starts × when it's done × how steady the trip was) and avoids the double-count v10's
+    absolute `stall_energy` had with LCP. Near-0 = consistent progress; near-1 = one gap dominated
+    the span; a sub-perceptible worst gap (or a near-instant FCP→LCP) reads 0.0. It's an
+    intersection, so a lurching fill pulls the Overall down via the corner geometry, not a hidden
     weight. `load_event` stays a scored Speed metric but is no longer a crown metric. v5 introduced the first-class Overall (then fcp/perceived_time/inp) and
     re-anchored the time-to-content `best` thresholds (TTFB 30, FCP 150, byte-earliness
     150, LCP 150ms); **v6** decomposed the crown — `perceived_time` (which baked an
@@ -112,11 +118,18 @@ LLM-based. See `README.md` for the product overview.
     `byte_earliness`/`jank_fraction` — chosen for shaper-movability. **v10** reverts that: it
     returns the crown to **FCP × LCP × stall_energy** (the first-principles felt outcome —
     what the human experiences, not what the shaper can move) and takes `stall_energy` as the
-    Smoothness scored-stall metric (`stall_time` → display-only, exactly as `stall_time`
-    replaced `total_stall`). The crown deliberately corners over FCP/LCP even though they're
-    ledger role `O` (opaque milestones): the coarse rank-eligibility gate keeps weather/opaque
-    metrics out of *automatic* headline inclusion, but the crown explicitly names its metrics —
-    the finer positive selection is the crown's job. `derive-v10` adds `stall_energy_ms`
+    Smoothness scored-stall metric. The crown deliberately corners over FCP/LCP even though
+    they're ledger role `O` (opaque milestones): the coarse rank-eligibility gate keeps
+    weather/opaque metrics out of *automatic* headline inclusion, but the crown explicitly names
+    its metrics — the finer positive selection is the crown's job. **v11** refines the crown's
+    smoothness leg `stall_energy → worst_void_fraction`: `stall_energy` was absolute ms (√Σgap²
+    over the whole in-load fill), which spanned past LCP (punishing a post-content tail the user
+    never felt) and, being absolute, *correlated* with LCP — double-counting a slow load's freeze
+    on both the LCP and smoothness legs. `worst_void_fraction` is the *scale-free* longest void
+    **within the FCP→LCP window** as a fraction of it, so it measures only the evenness of the
+    journey to main content, decoupled from the LCP endpoint — a fast-but-lurching load now scores
+    badly on smoothness even with a good LCP (`stall_energy` → display-only, exactly as
+    `stall_time` replaced `total_stall`). `derive-v11` adds `worst_void_fraction`
     (purely additive → history re-grades straight from raw).
     `runner.score_metrics_under` scores every axis generically via
     `axis_rubric` + `compute_score`, persisting per-axis results + Overall to
@@ -272,11 +285,11 @@ LLM-based. See `README.md` for the product overview.
     crown metric set — the few measurements that directly capture human feel, as
     perception-calibrated 0–100 subscores. The set is read from the methodology's `overall`
     spec (`overall_metrics`; module `CROWN_METRICS`/`CROWN_REQUIRED` are only the pre-v5
-    fallback): under **v10** that's **FCP × LCP × stall_energy** (quickest first response ×
-    perceptual "main content visible" × smoothness of the fill, `√Σgap²` — three independent
-    dimensions of the felt load; v9 used nav_response/byte_earliness/jank_fraction, v8
-    fcp/lcp/stall_time, v7 fcp/lcp/total_stall, v6 fcp/total_stall/load_event, v5
-    fcp/perceived_time/inp). It's an
+    fallback): under **v11** that's **FCP × LCP × worst_void_fraction** (quickest first response ×
+    perceptual "main content visible" × how *evenly* the fill progressed between them, the
+    scale-free "pregnant pause" index — three independent dimensions of the felt load; v10 used
+    fcp/lcp/stall_energy, v9 nav_response/byte_earliness/jank_fraction, v8 fcp/lcp/stall_time, v7
+    fcp/lcp/total_stall, v6 fcp/total_stall/load_event, v5 fcp/perceived_time/inp). It's an
     *intersection* (corner, not mean — one weak metric can't be averaged away), √k-normalized
     so corners of different arity share a scale.
     A profile's Overall is the **corner over its field-percentile-normalized raw crown
@@ -336,7 +349,7 @@ LLM-based. See `README.md` for the product overview.
 - `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
   History, Trends, Compare, Settings Impact (**paginated** sortable table — 25/page —
   with standard **Overall + the crown metrics** columns (the metrics the Overall corners over,
-  from the response's `overall_metrics` — fcp/lcp/stall_energy under v10 — ranked by each metric's
+  from the response's `overall_metrics` — fcp/lcp/worst_void_fraction under v11 — ranked by each metric's
   **field-normalized raw** value via a `crown:<metric>` field key → `crown_norm` (no grading),
   so the pinned columns are the raw measurements that actually *compute* Overall; the headline
   axes Responsiveness/Smoothness/Speed are a different graded decomposition, demoted to opt-in)
@@ -507,8 +520,8 @@ docker compose up --build   # -> http://localhost:8000
      metrics that drive the current Overall. Set the default axis keys in
      `frontend/src/pages/Settings.tsx` (`xKey`/`yKey`/`sizeKey`) to the new crown set —
      the methodology's `overall` spec metrics (`methodology.overall_metrics`), one per
-     X / Y / Shade slot — so the default view demonstrates how Overall is scored. (v10:
-     `fcp` × `lcp` × `stall_energy`.)
+     X / Y / Shade slot — so the default view demonstrates how Overall is scored. (v11:
+     `fcp` × `lcp` × `worst_void_fraction`.)
 - A run repeats the suite `iterations` times; each headline axis is the **median**
   over iterations, with a confidence band. The Dashboard shows a windowed
   **rolling** score (`/api/score/rolling`, 24h median + IQR) plus a **"vs typical"**
@@ -663,6 +676,20 @@ docker compose up --build   # -> http://localhost:8000
   sub-ms local resolver saturated the old 10ms; a Completion diagnostic only). Re-grade + re-
   derive were sped up (skip-if-current filter + batched savepoint commits) and each got its
   own Methodology-page button with a tooltip explaining bronze/silver/gold.
+- **Phase 10 (done):** **the FCP→LCP journey crown.** Methodology `speed-smoothness-v11` refines
+  the crown's smoothness leg from the absolute `stall_energy` to `worst_void_fraction`
+  (`interpret/smoothness.worst_void_fraction`) — the **"pregnant pause" index**: the single
+  longest void between resource completions **within the FCP→LCP window**, as a fraction of that
+  window. The felt difference between two profiles with identical fast FCP and LCP is the *shape*
+  of the journey between them — steady consistent progress vs FCP → dead pause → lurch to LCP.
+  `stall_energy` missed this two ways: it spanned past LCP (punishing a post-content tail the user
+  never felt) and, being absolute ms, correlated with LCP — double-counting a slow load's freeze
+  on both the LCP and smoothness legs. `worst_void_fraction` is **scale-free**, so it measures
+  *only* the evenness of the fill, decoupled from how long the journey took (LCP's job) — making
+  the three crown legs genuinely independent (when it starts × when it's done × how steady the
+  trip was). Crown = FCP × LCP × worst_void_fraction; `stall_energy` → display-only. `derive-v11`
+  adds `worst_void_fraction` (purely additive → history re-grades straight from raw). Re-grade
+  history + re-check crownings against felt experience to validate.
 - **Next:** speed test / bufferbloat (latency-under-load) — the missing harness to actually
   test shaper response (fq_codel is inert on an idle link); multi-parameter Bayesian
   search + interleaved A/B with effect-size/CI + hysteresis, routing intelligence / SD-WAN.

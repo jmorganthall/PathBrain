@@ -576,11 +576,11 @@ export default function Settings() {
   // Scored metrics whose 'best' is too lenient to rank profiles (saturating >50%).
   const [saturation, setSaturation] = useState<MetricSaturation[]>([]);
   // Dynamic quadrant axes — default to the Overall scoring corner's three inputs
-  // (v10: FCP × LCP × stall_energy), with the third encoded as Shade opacity; the crowned
+  // (v11: FCP × LCP × worst_void_fraction), with the third encoded as Shade opacity; the crowned
   // profile is ringed. So the default view demonstrates how Overall is scored.
   const [xKey, setXKey] = useState("fcp");
   const [yKey, setYKey] = useState("lcp");
-  const [sizeKey, setSizeKey] = useState("stall_energy");
+  const [sizeKey, setSizeKey] = useState("worst_void_fraction");
   // Scatter-only filter: hide profiles with fewer than this many total iterations, so
   // thin/noisy profiles don't clutter the plot. 0 = show all. Doesn't affect the table.
   const [minIterPlot, setMinIterPlot] = useState(0);
@@ -719,7 +719,7 @@ export default function Settings() {
   }, [load]);
 
   // The standings columns pin the metrics that actually *compute* the Overall — the current
-  // methodology's crown set (fcp/lcp/stall_energy under v10), from the profiles response's
+  // methodology's crown set (fcp/lcp/worst_void_fraction under v11), from the profiles response's
   // ``overall_metrics``. The headline axes (Responsiveness/Smoothness/Speed) are a different
   // decomposition that barely correlates with the Overall corner, so they no longer pin here
   // (still available via Columns). Each crown column ranks by the metric's 0–100 subscore —

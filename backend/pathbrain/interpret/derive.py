@@ -32,8 +32,11 @@ from .waterfall import navigation_phases
 # derive-v7 added jank_fraction; v8 fixed its window; v9 bounded the smoothness instrument to
 # the page load. derive-v10 adds `stall_energy` — √(Σ gap²) over the in-load fill gaps (the L2
 # magnitude): the worst hang plus the accumulation of stalls in one threshold-free number, the
-# v10 crown's smoothness leg. Purely additive; re-derives from raw.
-DERIVATION_VERSION = "derive-v10"
+# v10 crown's smoothness leg. derive-v11 adds `worst_void_fraction` — the longest void within the
+# FCP→LCP window as a fraction of that window (the "pregnant pause" index): the scale-free evenness
+# of the journey to main content, the v11 crown's smoothness leg. Both purely additive; re-derive
+# from raw.
+DERIVATION_VERSION = "derive-v11"
 
 
 def _round(v: float | None, n: int = 3) -> float | None:
