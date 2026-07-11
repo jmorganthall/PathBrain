@@ -117,7 +117,10 @@ class BenchmarkResult(Base):
     # Immutable raw observations the plugin captured, per iteration:
     # ``{"iterations": [<plugin-specific raw payload>, ...]}``. The source of truth —
     # every value in ``metrics`` is derived from here, so a new metric or a changed
-    # formula can be re-derived across history without re-collecting.
+    # formula can be re-derived across history without re-collecting. Read it through
+    # ``raw_access.stored_iterations`` / ``browser_url_observations`` — the single readers of this
+    # nesting — never by indexing ``raw["urls"]``/``raw["iterations"]`` ad hoc (that drift is what
+    # silently emptied the pause-diagnostic card).
     raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     run: Mapped["Run"] = relationship(back_populates="results")
