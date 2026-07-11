@@ -317,19 +317,20 @@ def test_metric_thresholds_expose_effective_v6_anchors(client):
     body = client.get("/api/settings/profiles").json()
     thresholds = body["metric_thresholds"]
     # v6 re-anchors fcp's "best" to 150ms (vs the catalog default of 1800) — the saturation
-    # check must use the methodology's effective threshold, not the registry default.
+    # check must use the methodology's effective threshold, not the registry default. v12
+    # re-anchors load_event's "best" 800 → 556.2ms (was 100% saturated).
     assert thresholds["fcp"]["best"] == 150.0
-    assert thresholds["load_event"]["best"] == 800.0
+    assert thresholds["load_event"]["best"] == 556.2
     assert thresholds["fcp"]["higher_is_better"] is False
 
 
 def test_saturation_flags_too_lenient_threshold(client):
-    # load_event "best" is 800ms; seed profiles whose page-load mostly clears it (so the
+    # load_event "best" is 556.2ms (v12); seed profiles whose page-load mostly clears it (so the
     # metric pins at ~100 and can't rank them). >50% saturated must flag the metric and
     # suggest re-anchoring 'best' down to the fastest profile measured.
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    for fp, ms in [("sat0000001x", 500.0), ("sat0000002x", 600.0),
-                   ("sat0000003x", 650.0), ("sat0000004x", 700.0)]:
+    for fp, ms in [("sat0000001x", 300.0), ("sat0000002x", 400.0),
+                   ("sat0000003x", 450.0), ("sat0000004x", 500.0)]:
         _seed_run(fp, 80, t0 - timedelta(minutes=60), iterations=6,
                   result_metrics={"browser": {"load_event_ms": ms}})
     # One profile genuinely slower than 'best' (does not saturate).
@@ -340,8 +341,8 @@ def test_saturation_flags_too_lenient_threshold(client):
     le = next(s for s in body["saturation"] if s["key"] == "load_event")
     assert le["flagged"] is True
     assert le["saturated_fraction"] == 0.8        # 4 of 5 profiles already past 'best'
-    assert le["best"] == 800.0
-    assert le["suggested_best"] == 500.0          # re-anchor to the fastest measured
+    assert le["best"] == 556.2
+    assert le["suggested_best"] == 300.0          # re-anchor to the fastest measured
     # stall_time has best=0 (a physical floor) — never flagged/re-anchored even if "saturated".
     assert all(s["key"] != "stall_time" for s in body["saturation"])
 
@@ -355,13 +356,13 @@ def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
     r = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 500})
     assert r.status_code == 202
     out = r.json()
-    assert out["version"] == "speed-smoothness-v11+load_event-best500"
+    assert out["version"] == "speed-smoothness-v12+load_event-best500"
     assert out["job_id"] == "job-test"
 
     # The fork is now current: only load_event's 'best' changed; fcp and the Overall crown
     # spec carry over untouched (append-only — a new version, not an edit).
     cur = client.get("/api/methodologies/current").json()
-    assert cur["version"] == "speed-smoothness-v11+load_event-best500"
+    assert cur["version"] == "speed-smoothness-v12+load_event-best500"
     metrics = {m["key"]: m for m in cur["definition"]["metrics"]}
     assert metrics["load_event"]["best"] == 500.0
     assert metrics["fcp"]["best"] == 150.0  # untouched

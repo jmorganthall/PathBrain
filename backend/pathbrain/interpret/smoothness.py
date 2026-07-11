@@ -166,39 +166,51 @@ def stall_energy(series: list[float]) -> float | None:
 def worst_void_fraction(
     series: list[float],
     fcp: float | None,
-    lcp: float | None,
+    load_end: float | None,
     *,
     threshold_ms: float = STALL_PERCEPTIBLE_MS,
 ) -> float | None:
     """The *pregnant pause* index: the single longest void between resource completions
-    **within the FCP→LCP window**, as a fraction of that window's duration.
+    **within the FCP→load window** (first paint → ``loadEventEnd``), as a fraction of that
+    window's duration.
 
-    This measures the felt quality of the journey between first paint and main content —
-    the interval where a human is watching the page fill in. Two loads with identical
-    (fast) FCP and LCP can feel completely different: one fills in with steady, consistent
-    progress; the other paints FCP, sits through a "pregnant pause" where nothing arrives,
-    then lurches to LCP. Both endpoints are the same; the *shape* of the middle is not.
+    This measures the felt quality of the journey from first paint to a loaded page — the
+    whole interval a human is watching content fill in. Two loads with identical timing
+    endpoints can feel completely different: one fills in with steady, consistent progress;
+    the other paints, sits through a "pregnant pause" where nothing arrives, then lurches the
+    rest of the page in. Same endpoints; the *shape* of the middle is not.
+
+    The window runs to ``loadEventEnd`` (not LCP): on a fast link where the largest paint
+    lands almost immediately after the first (a near-instant FCP→LCP), there is no pre-LCP
+    journey to have a pause in — the felt dead-air is in the *post-LCP settle*, which a window
+    that stopped at LCP misses entirely (reading 0). Ending at the load event captures where
+    the pause actually lives while the ``resources_within_load`` bound still excludes the
+    post-load background trickle the user never waited for.
 
     It is deliberately **scale-free** — the fraction of the window taken by the worst gap,
-    not its absolute duration. That decouples it from *how long* the window was (which is
-    LCP's job) so it measures *only* the evenness of the fill: a load that dawdles evenly
-    scores well here (and is caught by the slow LCP), while a fast-but-lurching load scores
-    badly here even though its LCP is good. Perfectly steady progress → ~0; one gap that
-    dominates the whole FCP→LCP span → ~1.
+    not its absolute duration. That decouples it from *how long* the load took (LCP/load-event
+    already carry that) so it measures *only* the evenness of the fill: a load that dawdles
+    evenly scores well here (and is caught by its slow LCP/load), while a fast-but-lurching
+    load scores badly even with good endpoints. Steady progress → ~0; one gap that dominates
+    the whole span → ~1. Unlike v10's absolute ``stall_energy`` (√Σgap² in ms, which
+    correlated with the load duration and double-counted a slow load's freeze), the fraction
+    stays independent of the endpoints — so widening the window back over the tail does *not*
+    re-introduce that double-count.
 
-    A gap shorter than ``threshold_ms`` isn't a perceptible pause, so a window whose worst
-    gap is sub-threshold returns ``0.0`` (a smooth journey) — which also cleanly handles a
-    near-instant FCP→LCP (the whole tiny span is below the threshold). ``None`` when FCP or
-    LCP is missing, or LCP isn't after FCP. Lower is smoother."""
-    s, e = _f(fcp), _f(lcp)
+    A gap shorter than ``threshold_ms`` isn't a perceptible pause, so a window whose worst gap
+    is sub-threshold returns ``0.0`` (a smooth load) — which also cleanly handles a near-
+    instant load (the whole tiny span is below the threshold). ``None`` when FCP or the load
+    event is missing, or the load event isn't after FCP. Lower is smoother."""
+    s, e = _f(fcp), _f(load_end)
     if s is None or e is None or e <= s:
         return None
     span = e - s
-    # Completions strictly inside the window, bracketed by FCP and LCP as the endpoints, so
-    # the gaps tile the whole [FCP, LCP] span (the series carries FCP but not LCP).
+    # Completions strictly inside the window, bracketed by FCP and loadEventEnd as the
+    # endpoints, so the gaps tile the whole [FCP, load] span (the series carries FCP but the
+    # injected loadEventEnd == e is dropped by the strict `<` and re-added as the endpoint).
     window = [s] + [t for t in series if s < t < e] + [e]
     worst = max(_gaps(window))
-    # Sub-perceptible worst gap → no felt pause (also covers a tiny, near-instant window).
+    # Sub-perceptible worst gap → no felt pause (also covers a tiny, near-instant load).
     if worst < threshold_ms:
         return 0.0
     return round(worst / span, 4)
@@ -536,11 +548,12 @@ def smoothness_metrics(
         # Smoothness of the fill: √(Σ gap²) over the in-load gaps — the worst hang AND the
         # accumulation of stalls in one, threshold-free, absolute ms. The v10 crown's smoothness leg.
         "stall_energy_ms": stall_energy(series),
-        # The pregnant-pause index: the longest void within the FCP→LCP window as a fraction
-        # of that window — scale-free, so it measures the *evenness* of the journey to main
-        # content independent of how long it took (that's LCP's job). The v11 crown's
-        # smoothness leg: a fast-but-lurching load scores badly here even with a good LCP.
-        "worst_void_fraction": worst_void_fraction(series, paint.get("fcp"), paint.get("lcp")),
+        # The pregnant-pause index: the longest void within the FCP→load window as a fraction
+        # of that window — scale-free, so it measures the *evenness* of the whole load journey
+        # independent of how long it took. The crown's smoothness leg (v12 widened the window
+        # LCP→loadEventEnd: on a fast link FCP→LCP is near-instant, so the felt pause is in the
+        # post-LCP settle, which the LCP-bounded window missed).
+        "worst_void_fraction": worst_void_fraction(series, paint.get("fcp"), nav.get("loadEventEnd")),
         # The *ratio* form: fraction of the delivery window (responseStart → loadEventEnd)
         # spent frozen. The window must span the SAME domain the stalls live in — the whole
         # completion series runs to loadEventEnd, and on a fast-painting page the dead-air is

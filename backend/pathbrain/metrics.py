@@ -252,14 +252,16 @@ METRICS: list[MetricDef] = [
     MetricDef(
         "worst_void_fraction", "browser", "worst_void_fraction", "Pregnant pause",
         description=(
-            "The single longest void between resource completions *within the FCP→LCP window*, "
-            "as a fraction of that window (0–1). Measures the felt quality of the journey from "
-            "first paint to main content: two loads with identical fast FCP and LCP feel totally "
+            "The single longest void between resource completions *within the FCP→load window* "
+            "(first paint → page-load event), as a fraction of that window (0–1). Measures the felt "
+            "quality of the whole load journey: two loads with identical timing feel totally "
             "different if one fills in with steady progress and the other paints, sits through a "
-            "'pregnant pause', then lurches to LCP. Scale-free — it captures the *evenness* of the "
-            "fill independent of how long it took (that's LCP's job), so a fast-but-lurching load "
-            "scores badly here even with a good LCP. Near-0 = consistent progress; near-1 = one "
-            "gap dominated the whole span. The v11 crown's smoothness leg. Lower is smoother."
+            "'pregnant pause', then lurches the rest in. Scale-free — it captures the *evenness* of "
+            "the fill independent of how long it took (LCP/load carry that), so a fast-but-lurching "
+            "load scores badly here even with good endpoints. The window runs to loadEventEnd, not "
+            "LCP: on a fast link FCP→LCP is near-instant, so the felt pause is in the post-LCP "
+            "settle. Near-0 = consistent progress; near-1 = one gap dominated the span. The crown's "
+            "smoothness leg. Lower is smoother."
         ),
     ),
     MetricDef(

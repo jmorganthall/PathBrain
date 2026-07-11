@@ -121,20 +121,20 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v11_rubric():
-    # The published-now methodology is speed-smoothness-v11: the crown's smoothness leg becomes
-    # worst_void_fraction (the "pregnant pause" index — the longest void within the FCP→LCP window
-    # as a fraction of that window). Scale-free, so it measures the *evenness* of the journey to
-    # main content decoupled from how long it took (that's LCP's job), fixing v10's stall_energy
-    # double-count with LCP. Crown = FCP × LCP × worst_void_fraction; stall_energy → display-only.
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v11"
+def test_current_methodology_is_v12_rubric():
+    # The published-now methodology is speed-smoothness-v12: the crown's smoothness leg stays
+    # worst_void_fraction (the "pregnant pause" index) but its window widens FCP→LCP → FCP→load
+    # (derive-v12) — on a fast link FCP→LCP is near-instant, so the felt pause is in the post-LCP
+    # settle the LCP window missed. Plus two saturated `best` re-anchors: DNS 1.0 → 0.8ms and
+    # page-load 800 → 556.2ms. Crown metrics unchanged (FCP × LCP × worst_void_fraction).
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v12"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
 
     expected = {
-        # completion (unchanged)
-        "dns": ("completion", 10, 1.0, 150.0),
+        # completion — DNS `best` re-anchored 1.0 → 0.8ms (was 91% saturated)
+        "dns": ("completion", 10, 0.8, 150.0),
         "tcp": ("completion", 15, 5.0, 250.0),
         "tls": ("completion", 20, 5.0, 500.0),
         "jitter": ("completion", 5, 0.5, 30.0),
@@ -143,11 +143,11 @@ def test_current_methodology_is_v11_rubric():
         "ttfb": ("responsiveness", 15, 30.0, 1800.0),
         "fcp": ("responsiveness", 25, 150.0, 3000.0),
         "byte_earliness": ("responsiveness", 30, 150.0, 5000.0),
-        # speed — time-to-last + interactive + page-load
+        # speed — time-to-last + interactive + page-load (`load_event` best re-anchored 800 → 556.2)
         "lcp": ("speed", 40, 150.0, 4000.0),
         "render": ("speed", 20, 500.0, 8000.0),
         "inp": ("speed", 40, 50.0, 500.0),
-        "load_event": ("speed", 20, 800.0, 8000.0),
+        "load_event": ("speed", 20, 556.2, 8000.0),
         # stability — CLS only
         "cls": ("stability", 50, 0.0, 0.25),
         # smoothness — worst_void_fraction (pregnant-pause index) takes the scored stall slot
