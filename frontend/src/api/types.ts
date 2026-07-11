@@ -502,6 +502,20 @@ export interface RunBaseline {
   metrics: Record<string, Record<string, number>>;
 }
 
+// "Where's the pause?" diagnostic: the single longest void in one page load, which phase it
+// falls in, and whether it's byte-delivery (network) or main-thread (render) bound.
+export interface PauseDiagnostic {
+  url: string;
+  start_ms: number;
+  end_ms: number;
+  duration_ms: number;
+  phase: "pre_fcp" | "fcp_lcp" | "lcp_load" | "post_load";
+  attribution: "network" | "render" | "mixed" | "unknown" | null;
+  fcp_ms: number | null;
+  lcp_ms: number | null;
+  load_ms: number | null;
+}
+
 export interface RunDetail extends RunSummary {
   notes?: string | null;
   error?: string | null;
@@ -510,6 +524,7 @@ export interface RunDetail extends RunSummary {
   config_used?: Record<string, unknown> | null;
   results: BenchmarkResult[];
   score: ScoreOut | null;
+  pause_diagnostics?: PauseDiagnostic[] | null;
 }
 
 export interface SeriesPoint {

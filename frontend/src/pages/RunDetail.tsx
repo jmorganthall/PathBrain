@@ -391,6 +391,77 @@ export default function RunDetail() {
         );
       })()}
 
+      {run.pause_diagnostics && run.pause_diagnostics.length > 0 && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Where&apos;s the pause?
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+              The single longest <b>void</b> in each page load — the biggest stretch where nothing
+              finished — with <b>where</b> it falls (before first paint, between first paint and main
+              content, the post-LCP settle, or after load) and <b>what</b> caused it:{" "}
+              <b>render</b> = the main thread was busy (shaping can&apos;t move it),{" "}
+              <b>network</b> = a byte-delivery gap (the tunable part). This locates a felt &ldquo;it
+              starts then hangs&rdquo; pause so we can tell a delivery stall from a render stall.
+            </Typography>
+            <Stack spacing={1}>
+              {run.pause_diagnostics.map((d, i) => {
+                const phaseLabel: Record<string, string> = {
+                  pre_fcp: "before first paint",
+                  fcp_lcp: "first paint → main content",
+                  lcp_load: "post-LCP settle",
+                  post_load: "after load",
+                };
+                const attrColor =
+                  d.attribution === "render"
+                    ? "warning"
+                    : d.attribution === "network"
+                      ? "info"
+                      : "default";
+                return (
+                  <Box
+                    key={`${d.url}-${i}`}
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: 1,
+                      p: 1,
+                      borderRadius: 1,
+                      border: 1,
+                      borderColor: "divider",
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ minWidth: 0, flex: 1 }} noWrap title={d.url}>
+                      {d.url}
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                      {Math.round(d.duration_ms)}ms void
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      @ {Math.round(d.start_ms)}–{Math.round(d.end_ms)}ms
+                    </Typography>
+                    <Chip size="small" variant="outlined" label={phaseLabel[d.phase] ?? d.phase} />
+                    <Chip
+                      size="small"
+                      color={attrColor as "warning" | "info" | "default"}
+                      variant={d.attribution === "render" || d.attribution === "network" ? "filled" : "outlined"}
+                      label={d.attribution ?? "unknown"}
+                    />
+                    <Typography variant="caption" color="text.secondary">
+                      FCP {d.fcp_ms != null ? Math.round(d.fcp_ms) : "—"} · LCP{" "}
+                      {d.lcp_ms != null ? Math.round(d.lcp_ms) : "—"} · load{" "}
+                      {d.load_ms != null ? Math.round(d.load_ms) : "—"}
+                    </Typography>
+                  </Box>
+                );
+              })}
+            </Stack>
+          </CardContent>
+        </Card>
+      )}
+
       {runScores.length > 0 && (
         <Card sx={{ mb: 2 }}>
           <CardContent>

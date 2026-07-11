@@ -266,6 +266,61 @@ def longest_stall_window(series: list[float]) -> tuple[float, float, float] | No
     return (series[i], series[i + 1], gaps[i])
 
 
+def longest_void_diagnostic(
+    nav: dict | None,
+    resources: list | None,
+    paint: dict | None,
+    loaf_obj: dict | None,
+) -> dict | None:
+    """*Where is the pause?* — locate the single longest void in the load and classify **which
+    part of the load it falls in** and **what caused it** (network vs render).
+
+    A pure diagnostic, not a scored metric: it answers the question every crown-metric swap has
+    been guessing at — is the felt pause in byte delivery (a gap where nothing arrived) or on the
+    main thread (a long render task with no completion), and does it land before FCP, between FCP
+    and LCP, in the post-LCP settle, or after load. The void is the largest gap between resource
+    completions in the load-bounded series (:func:`longest_stall_window`); its phase is decided by
+    the void's midpoint against the FCP / LCP / loadEventEnd milestones; its attribution reuses
+    :func:`attribute_stall` (a void overlapped by a Long Animation Frame is render-bound — shaping
+    won't move it). ``None`` when there's no series to measure."""
+    nav = nav or {}
+    paint = paint or {}
+    loaf_obj = loaf_obj or {}
+    load_end = _f(nav.get("loadEventEnd"))
+    res = resources_within_load(resources, load_end)
+    series = completion_series(
+        res,
+        fcp=paint.get("fcp"),
+        doc_response_end=nav.get("responseEnd"),
+        load_event_end=nav.get("loadEventEnd"),
+    )
+    window = longest_stall_window(series)
+    if window is None:
+        return None
+    start, end, dur = window
+    fcp, lcp = _f(paint.get("fcp")), _f(paint.get("lcp"))
+    mid = (start + end) / 2.0  # classify by the void's midpoint
+    if fcp is not None and mid < fcp:
+        phase = "pre_fcp"          # before the first paint (connection/TTFB region)
+    elif lcp is not None and mid < lcp:
+        phase = "fcp_lcp"          # between first paint and main content
+    elif load_end is not None and mid <= load_end:
+        phase = "lcp_load"         # the post-LCP settle (largest paint → page load)
+    else:
+        phase = "post_load"        # after the load event (background trickle)
+    attribution = attribute_stall(window, loaf_obj.get("entries") or [], loaf_obj.get("source"))
+    return {
+        "start_ms": round(start, 1),
+        "end_ms": round(end, 1),
+        "duration_ms": round(dur, 1),
+        "phase": phase,
+        "attribution": attribution,   # network | render | mixed | unknown | None
+        "fcp_ms": round(fcp, 1) if fcp is not None else None,
+        "lcp_ms": round(lcp, 1) if lcp is not None else None,
+        "load_ms": round(load_end, 1) if load_end is not None else None,
+    }
+
+
 # ── R4: cadence regularity ───────────────────────────────────────────────────
 
 
