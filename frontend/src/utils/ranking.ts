@@ -10,6 +10,11 @@ export interface MetricRanking {
   rankByFp: Record<string, number>;
   // How many profiles actually have a value for this metric (the "of N" denominator).
   total: number;
+  // Distinct values across the field. When ≤ 1 with 2+ profiles the metric has NO spread —
+  // every profile ties at rank 1, so a "#1" standing is meaningless (it isn't discriminating
+  // anything). `inert` flags exactly that case so the UI can say "no signal" instead of "#1".
+  distinct: number;
+  inert: boolean;
 }
 
 // All current axis scores are higher-is-better, so the highest value is rank 1.
@@ -30,7 +35,8 @@ export function rankByMetric(profiles: SettingsProfile[], key: string): MetricRa
     }
     rankByFp[it.fp] = rank;
   }
-  return { rankByFp, total: withVal.length };
+  const distinct = new Set(withVal.map((x) => x.v)).size;
+  return { rankByFp, total: withVal.length, distinct, inert: withVal.length > 1 && distinct <= 1 };
 }
 
 // rank 1 → green, last → red, linearly through amber. A single-profile pool is "best".

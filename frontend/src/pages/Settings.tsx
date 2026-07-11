@@ -1552,18 +1552,27 @@ export default function Settings() {
                     />
                     {/* Overall + the current methodology's crown metrics (the corner inputs),
                         shown as standings (1 = best) — sorting still keys off the raw score. */}
-                    {rankedMetrics.map((m) => (
-                      <SortHeader
-                        key={m.key}
-                        id={m.key}
-                        label={m.label}
-                        align="right"
-                        orderBy={orderBy}
-                        order={order}
-                        onSort={handleSort}
-                        tip={m.tip}
-                      />
-                    ))}
+                    {rankedMetrics.map((m) => {
+                      // Flag a crown column with no spread (identical across every profile) right in
+                      // the header, so "no signal" cells below read as expected, not broken.
+                      const inert = !!rankings[m.key]?.inert;
+                      return (
+                        <SortHeader
+                          key={m.key}
+                          id={m.key}
+                          label={inert ? `${m.label} ⚠` : m.label}
+                          align="right"
+                          orderBy={orderBy}
+                          order={order}
+                          onSort={handleSort}
+                          tip={
+                            inert
+                              ? `${m.label} is identical for every profile here — it has no spread, so it can't rank profiles and isn't discriminating the crown on this data. ${m.tip}`
+                              : m.tip
+                          }
+                        />
+                      );
+                    })}
                     <SortHeader
                       id="relative_overall"
                       label="vs typical"
@@ -1707,28 +1716,37 @@ export default function Settings() {
                         // metric value (e.g. FCP in ms) so the standing is legible.
                         const rawMetric = m.metricKey ? p.metrics?.[m.metricKey] ?? null : null;
                         const unit = m.metricKey ? metricMeta(m.metricKey).unit ?? "" : "";
+                        // A crown metric with no spread (identical for every profile) ranks everyone
+                        // #1 — which reads as "great" but means "no signal". Show that honestly.
+                        const inert = !!rk?.inert;
                         return (
                           <TableCell key={m.key} align="right">
                             <Tooltip
                               title={
-                                rank == null
-                                  ? "No score yet"
-                                  : m.metricKey
-                                    ? `${m.label}: ${raw}th percentile${
-                                        rawMetric != null ? ` (raw ${fmtNumField(rawMetric, unit)})` : ""
-                                      } · rank ${rank} of ${rk.total} · a raw-measurement corner input to Overall`
-                                    : `${m.label} ${raw} · rank ${rank} of ${rk.total}`
+                                inert
+                                  ? `${m.label}: identical for every profile${
+                                      rawMetric != null ? ` (${fmtNumField(rawMetric, unit)})` : ""
+                                    } — no spread, so it can't rank anything and isn't discriminating the crown on this data.`
+                                  : rank == null
+                                    ? "No score yet"
+                                    : m.metricKey
+                                      ? `${m.label}: ${raw}th percentile${
+                                          rawMetric != null ? ` (raw ${fmtNumField(rawMetric, unit)})` : ""
+                                        } · rank ${rank} of ${rk.total} · a raw-measurement corner input to Overall`
+                                      : `${m.label} ${raw} · rank ${rank} of ${rk.total}`
                               }
                             >
                               <Typography
                                 component="span"
                                 sx={{
                                   fontWeight: m.key === "overall" ? 800 : 700,
-                                  color: rankColor(rank, rk?.total ?? 0),
+                                  fontStyle: inert ? "italic" : undefined,
+                                  fontSize: inert ? "0.8rem" : undefined,
+                                  color: inert ? "text.disabled" : rankColor(rank, rk?.total ?? 0),
                                   cursor: "help",
                                 }}
                               >
-                                {rank ?? "—"}
+                                {inert ? "no signal" : rank ?? "—"}
                               </Typography>
                             </Tooltip>
                           </TableCell>
