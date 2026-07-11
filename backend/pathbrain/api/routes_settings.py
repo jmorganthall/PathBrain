@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from statistics import median, quantiles
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, defer, selectinload
 
 from .. import challenger as challenger_mod
@@ -379,25 +379,29 @@ def settings_diagnostics(session: Session = Depends(get_session)) -> dict:
     Lets us tell apart "old runs never captured" (lots of nulls) from "fingerprint
     changes every run" (lots of distinct fingerprints).
     """
-    completed = session.scalars(
-        select(Run).where(Run.status == RunStatus.COMPLETE).order_by(Run.created_at.desc())
+    # Only the identity columns are needed (id/created_at/label/fingerprint) — not each run's
+    # `settings` JSON. Pull just those so counting all history doesn't load every run's blob.
+    completed = session.execute(
+        select(Run.id, Run.created_at, Run.label, Run.settings_fingerprint)
+        .where(Run.status == RunStatus.COMPLETE)
+        .order_by(Run.created_at.desc())
     ).all()
     stamped = [r for r in completed if r.settings_fingerprint]
     distinct = {r.settings_fingerprint for r in stamped}
-    # How many completed runs are comparable under the current methodology.
+    # How many completed runs are comparable under the current methodology — a SQL COUNT on the
+    # `comparability` column (only "incomparable" is excluded; NULL counts as comparable, matching
+    # methodology.is_comparable), instead of materializing every Score row + its JSON to count.
     methodology = ensure_current_methodology(session, get_config(session))
-    with_latest = sum(
-        1
-        for score in session.scalars(
-            select(Score)
-            .join(Run, Run.id == Score.run_id)
-            .where(
-                Run.status == RunStatus.COMPLETE,
-                Score.methodology_version == methodology.version,
-            )
+    with_latest = session.scalar(
+        select(func.count())
+        .select_from(Score)
+        .join(Run, Run.id == Score.run_id)
+        .where(
+            Run.status == RunStatus.COMPLETE,
+            Score.methodology_version == methodology.version,
+            Score.comparability.is_distinct_from("incomparable"),
         )
-        if _comparable(score)
-    )
+    ) or 0
     recent = [
         {
             "id": r.id,
@@ -2431,31 +2435,48 @@ def settings_impact(
     threshold = float(cfg.get("significant_change_pct", 5) or 5)
     min_runs = int(cfg.get("min_runs", 5) or 5)
     min_iterations = _min_iterations(session)
-    rows = _completed_runs_with_scores(session)
+    # This view only needs each run's Overall + fingerprint/settings/iterations — NOT its plugin
+    # results or the Score's other JSON blobs. Pull just those columns (no `selectinload(results)`,
+    # so we don't load + JSON-decode every BenchmarkResult across all history to compute a
+    # before/after median of the last two segments).
+    methodology = ensure_current_methodology(session, get_config(session))
+    rows = session.execute(
+        select(
+            Run.settings_fingerprint, Run.settings, Run.iterations, Run.created_at,
+            Score.axis_scores, Score.comparability,
+        )
+        .join(Score, Score.run_id == Run.id)
+        .where(
+            Run.status == RunStatus.COMPLETE,
+            Run.settings_fingerprint.is_not(None),
+            Score.methodology_version == methodology.version,
+        )
+        .order_by(Run.created_at)
+    ).all()
 
     # Build contiguous segments of runs sharing a fingerprint (chronological). Before/after
     # medians are the Overall (the crown roll-up persisted per run), not the legacy Smoothness.
     segments: list[dict] = []
-    for run, score in rows:
-        if complete_only and not _comparable(score):
+    for fp, settings, iterations, created_at, axis_scores, comparability in rows:
+        # Same rule as methodology.is_comparable, on the bare column: only "incomparable" is excluded.
+        if complete_only and comparability == "incomparable":
             continue
-        overall = (score.axis_scores or {}).get("overall")
+        overall = (axis_scores or {}).get("overall")
         if overall is None:
             continue
-        fp = run.settings_fingerprint
         if not segments or segments[-1]["fingerprint"] != fp:
             segments.append(
                 {
                     "fingerprint": fp,
-                    "settings": run.settings,
+                    "settings": settings,
                     "scores": [],
                     "iterations": 0,
-                    "changed_at": run.created_at,
+                    "changed_at": created_at,
                 }
             )
         segments[-1]["scores"].append(overall)
-        segments[-1]["iterations"] += int(run.iterations or 1)
-        segments[-1]["settings"] = run.settings
+        segments[-1]["iterations"] += int(iterations or 1)
+        segments[-1]["settings"] = settings
 
     base = {
         "changed": False,
