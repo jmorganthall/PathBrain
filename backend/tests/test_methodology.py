@@ -121,13 +121,13 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v10_rubric():
-    # The published-now methodology is speed-smoothness-v10: the crown returns to the three things
-    # a human directly experiences — FCP (initial content) × LCP (main content loaded) ×
-    # stall_energy (how smoothly it filled). FCP/LCP are native paint timestamps; stall_energy =
-    # √(Σ gap²) over the in-load gaps takes the Smoothness scored-stall slot (stall_time →
-    # display-only). v9's crown-chasing legs (nav_response / jank_fraction) revert to display-only.
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v10"
+def test_current_methodology_is_v11_rubric():
+    # The published-now methodology is speed-smoothness-v11: the crown's smoothness leg becomes
+    # worst_void_fraction (the "pregnant pause" index — the longest void within the FCP→LCP window
+    # as a fraction of that window). Scale-free, so it measures the *evenness* of the journey to
+    # main content decoupled from how long it took (that's LCP's job), fixing v10's stall_energy
+    # double-count with LCP. Crown = FCP × LCP × worst_void_fraction; stall_energy → display-only.
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v11"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
@@ -150,9 +150,10 @@ def test_current_methodology_is_v10_rubric():
         "load_event": ("speed", 20, 800.0, 8000.0),
         # stability — CLS only
         "cls": ("stability", 50, 0.0, 0.25),
-        # smoothness — stall_energy (√Σgap²) takes the scored stall slot (stall_time → display)
+        # smoothness — worst_void_fraction (pregnant-pause index) takes the scored stall slot
+        # (stall_energy → display-only)
         "longest_stall": ("smoothness", 40, 25.0, 2000.0),
-        "stall_energy": ("smoothness", 30, 0.0, 2000.0),
+        "worst_void_fraction": ("smoothness", 30, 0.0, 0.6),
         "cadence_cov": ("smoothness", 15, 0.2, 2.5),
         "delivery_gini": ("smoothness", 15, 0.1, 0.7),
     }
@@ -160,13 +161,13 @@ def test_current_methodology_is_v10_rubric():
         m = by_key[key]
         assert (m["axis"], m["weight"], m["best"], m["worst"]) == (axis, weight, best, worst), key
 
-    # perceived_time, total_stall, stall_time — and now v9's reverted legs — are display-only.
-    for k in ("perceived_time", "total_stall", "stall_time", "jank_fraction", "nav_response"):
+    # perceived_time, total_stall, stall_time, stall_energy — and v9's reverted legs — display-only.
+    for k in ("perceived_time", "total_stall", "stall_time", "stall_energy", "jank_fraction", "nav_response"):
         assert by_key[k]["axis"] is None, k
 
     # The universal `required` field is materialized onto every metric that defines the
-    # Overall/crown (v10: FCP × LCP × stall_energy) plus the flagged longest_stall.
-    for key in ("fcp", "lcp", "stall_energy", "longest_stall"):
+    # Overall/crown (v11: FCP × LCP × worst_void_fraction) plus the flagged longest_stall.
+    for key in ("fcp", "lcp", "worst_void_fraction", "longest_stall"):
         assert by_key[key]["required"] is True, key
     # A scored-but-optional metric is NOT required (it redistributes when missing → partial).
     assert by_key["byte_earliness"]["required"] is False
@@ -174,16 +175,16 @@ def test_current_methodology_is_v10_rubric():
     assert {a["key"] for a in d["axes"]} == {
         "responsiveness", "speed", "smoothness", "stability", "completion"
     }
-    # Display-only metrics carry no axis (e.g. latency, transfer, speed_index, stall_time).
-    for k in ("latency", "transfer", "speed_index", "network_stall", "stall_time"):
+    # Display-only metrics carry no axis (e.g. latency, transfer, speed_index, stall_energy).
+    for k in ("latency", "transfer", "speed_index", "network_stall", "stall_energy"):
         assert by_key[k]["axis"] is None
 
-    # v10's crown: the corner over FCP × LCP × stall_energy — initial content × main content
-    # loaded × smoothness of the fill (worst hang + accumulation, native milestones + L2 stall).
+    # v11's crown: the corner over FCP × LCP × worst_void_fraction — initial content × main content
+    # loaded × how *evenly* the fill progressed between them (the scale-free pregnant-pause index).
     assert d["overall"] == {
         "method": "corner",
-        "metrics": ["fcp", "lcp", "stall_energy"],
-        "required": ["fcp", "lcp", "stall_energy"],
+        "metrics": ["fcp", "lcp", "worst_void_fraction"],
+        "required": ["fcp", "lcp", "worst_void_fraction"],
     }
 
 

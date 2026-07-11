@@ -218,8 +218,8 @@ def test_trends_relative_endpoint(client):
     assert 0 <= body["weekday"] <= 6
     assert 0 <= body["hour"] <= 23
     # The response advertises the current methodology's crown measurements so the UI can
-    # feature the day×hour "vs typical" matrix for them (v10: fcp/lcp/stall_energy).
-    assert set(body["crown_metrics"]) == {"fcp", "lcp", "stall_energy"}
+    # feature the day×hour "vs typical" matrix for them (v11: fcp/lcp/worst_void_fraction).
+    assert set(body["crown_metrics"]) == {"fcp", "lcp", "worst_void_fraction"}
     # Every crown measurement is a trendable metric, so the same matrix applies to it.
     from pathbrain.trends import TREND_METRICS
     assert all(m in TREND_METRICS for m in body["crown_metrics"])

@@ -163,6 +163,47 @@ def stall_energy(series: list[float]) -> float | None:
     return round(math.sqrt(sum(g * g for g in gaps)), 3)
 
 
+def worst_void_fraction(
+    series: list[float],
+    fcp: float | None,
+    lcp: float | None,
+    *,
+    threshold_ms: float = STALL_PERCEPTIBLE_MS,
+) -> float | None:
+    """The *pregnant pause* index: the single longest void between resource completions
+    **within the FCP→LCP window**, as a fraction of that window's duration.
+
+    This measures the felt quality of the journey between first paint and main content —
+    the interval where a human is watching the page fill in. Two loads with identical
+    (fast) FCP and LCP can feel completely different: one fills in with steady, consistent
+    progress; the other paints FCP, sits through a "pregnant pause" where nothing arrives,
+    then lurches to LCP. Both endpoints are the same; the *shape* of the middle is not.
+
+    It is deliberately **scale-free** — the fraction of the window taken by the worst gap,
+    not its absolute duration. That decouples it from *how long* the window was (which is
+    LCP's job) so it measures *only* the evenness of the fill: a load that dawdles evenly
+    scores well here (and is caught by the slow LCP), while a fast-but-lurching load scores
+    badly here even though its LCP is good. Perfectly steady progress → ~0; one gap that
+    dominates the whole FCP→LCP span → ~1.
+
+    A gap shorter than ``threshold_ms`` isn't a perceptible pause, so a window whose worst
+    gap is sub-threshold returns ``0.0`` (a smooth journey) — which also cleanly handles a
+    near-instant FCP→LCP (the whole tiny span is below the threshold). ``None`` when FCP or
+    LCP is missing, or LCP isn't after FCP. Lower is smoother."""
+    s, e = _f(fcp), _f(lcp)
+    if s is None or e is None or e <= s:
+        return None
+    span = e - s
+    # Completions strictly inside the window, bracketed by FCP and LCP as the endpoints, so
+    # the gaps tile the whole [FCP, LCP] span (the series carries FCP but not LCP).
+    window = [s] + [t for t in series if s < t < e] + [e]
+    worst = max(_gaps(window))
+    # Sub-perceptible worst gap → no felt pause (also covers a tiny, near-instant window).
+    if worst < threshold_ms:
+        return 0.0
+    return round(worst / span, 4)
+
+
 def jank_fraction(
     series: list[float],
     window_start: float | None,
@@ -495,6 +536,11 @@ def smoothness_metrics(
         # Smoothness of the fill: √(Σ gap²) over the in-load gaps — the worst hang AND the
         # accumulation of stalls in one, threshold-free, absolute ms. The v10 crown's smoothness leg.
         "stall_energy_ms": stall_energy(series),
+        # The pregnant-pause index: the longest void within the FCP→LCP window as a fraction
+        # of that window — scale-free, so it measures the *evenness* of the journey to main
+        # content independent of how long it took (that's LCP's job). The v11 crown's
+        # smoothness leg: a fast-but-lurching load scores badly here even with a good LCP.
+        "worst_void_fraction": worst_void_fraction(series, paint.get("fcp"), paint.get("lcp")),
         # The *ratio* form: fraction of the delivery window (responseStart → loadEventEnd)
         # spent frozen. The window must span the SAME domain the stalls live in — the whole
         # completion series runs to loadEventEnd, and on a fast-painting page the dead-air is

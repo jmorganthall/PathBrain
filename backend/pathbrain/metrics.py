@@ -250,6 +250,19 @@ METRICS: list[MetricDef] = [
         ),
     ),
     MetricDef(
+        "worst_void_fraction", "browser", "worst_void_fraction", "Pregnant pause",
+        description=(
+            "The single longest void between resource completions *within the FCP→LCP window*, "
+            "as a fraction of that window (0–1). Measures the felt quality of the journey from "
+            "first paint to main content: two loads with identical fast FCP and LCP feel totally "
+            "different if one fills in with steady progress and the other paints, sits through a "
+            "'pregnant pause', then lurches to LCP. Scale-free — it captures the *evenness* of the "
+            "fill independent of how long it took (that's LCP's job), so a fast-but-lurching load "
+            "scores badly here even with a good LCP. Near-0 = consistent progress; near-1 = one "
+            "gap dominated the whole span. The v11 crown's smoothness leg. Lower is smoother."
+        ),
+    ),
+    MetricDef(
         "jank_fraction", "browser", "jank_fraction", "Jank fraction",
         description=(
             "The *ratio* form of stall time: the fraction of the delivery window "
@@ -448,6 +461,7 @@ METRIC_ROLES: dict[str, str] = {
     "byte_earliness": ROLE_SHAPE, "cadence_cov": ROLE_SHAPE, "delivery_gini": ROLE_SHAPE,
     "perceived_time": ROLE_SHAPE, "longest_stall": ROLE_SHAPE, "stall_time": ROLE_SHAPE,
     "stall_energy": ROLE_SHAPE, "jank_fraction": ROLE_SHAPE, "total_stall": ROLE_SHAPE,
+    "worst_void_fraction": ROLE_SHAPE,  # scale-free FCP→LCP evenness — rank-eligible (v11 crown leg)
     "network_stall": ROLE_SHAPE, "render_stall": ROLE_SHAPE, "unknown_stall": ROLE_SHAPE,
     # O — opaque milestone sums (span buckets → display only, never ranked).
     "fcp": ROLE_COMPOSITE, "lcp": ROLE_COMPOSITE, "render": ROLE_COMPOSITE,
@@ -504,7 +518,7 @@ DISPLAY_ORDER = [
     "load_event", "render", "paint_cadence", "cls",       # completion + smoothness
     "inp",                                                # interaction (after load)
     # perceived load smoothness (delivery-curve shape, byte-arrival)
-    "perceived_time", "longest_stall", "stall_energy", "total_stall", "stall_time", "jank_fraction", "cadence_cov",
+    "perceived_time", "longest_stall", "stall_energy", "worst_void_fraction", "total_stall", "stall_time", "jank_fraction", "cadence_cov",
     "byte_earliness", "delivery_gini", "network_stall", "render_stall", "unknown_stall",
     "latency", "jitter", "packet_loss",                   # network quality (continuous)
 ]
