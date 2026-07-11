@@ -23,6 +23,7 @@ from .interpret import DERIVATION_VERSION, derive
 from .logging_config import get_logger
 from .models import BenchmarkResult, Run, RunStatus, ScoreResult
 from .plugins import BenchmarkPlugin, PluginResult, iter_plugins
+from .raw_access import stored_iterations
 from .scoring import (
     COMPLETION_METRIC_SOURCES,
     METRIC_SOURCES,
@@ -288,7 +289,7 @@ def rederive_run(
     derived_by_plugin: dict[str, list[dict]] = {}
     n_iters = 0
     for res in run.results:
-        raws = (res.raw or {}).get("iterations") or []
+        raws = stored_iterations(res.raw)
         per_iter = [derive(res.plugin, r or {}, artifact_base) for r in raws]
         derived_by_plugin[res.plugin] = per_iter
         n_iters = max(n_iters, len(per_iter))
@@ -328,7 +329,7 @@ def _iteration_plugin_metrics_from_raw(run, artifact_base: str | None) -> list[d
     by_plugin: dict[str, list[dict]] = {}
     n_iters = 0
     for res in run.results:
-        raws = (res.raw or {}).get("iterations") or []
+        raws = stored_iterations(res.raw)
         per_iter = [derive(res.plugin, r or {}, artifact_base) for r in raws]
         by_plugin[res.plugin] = per_iter
         n_iters = max(n_iters, len(per_iter))

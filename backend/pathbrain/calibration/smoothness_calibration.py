@@ -25,6 +25,7 @@ import sys
 from dataclasses import dataclass
 
 from ..interpret.smoothness import PERCEIVED_DEFAULTS, completion_series, perceived_time
+from ..raw_access import browser_url_observations
 
 # Candidate w_unoccupied/w_occupied ratios to search (w_occupied is fixed at 1.0;
 # only the ratio matters for ranking loads against each other).
@@ -117,18 +118,17 @@ def fit_perceived_weights(
 def loads_from_browser_raw(browser_raw: dict | None) -> list[Load]:
     """Reduce a browser BenchmarkResult.raw to per-(iteration, URL) loads."""
     loads: list[Load] = []
-    for it in (browser_raw or {}).get("iterations") or []:
-        for u in ((it or {}).get("urls") or {}).values():
-            if not isinstance(u, dict) or "nav" not in u:
-                continue
-            nav = u.get("nav") or {}
-            paint = u.get("paint") or {}
-            events = completion_series(u.get("resources"), fcp=paint.get("fcp"))
-            start = nav.get("responseStart") or paint.get("fcp")
-            end = nav.get("loadEventEnd")
-            if start is None or end is None or not events:
-                continue
-            loads.append(Load(events=events, start=float(start), end=float(end)))
+    for _i, _url, u in browser_url_observations(browser_raw):
+        if "nav" not in u:
+            continue
+        nav = u.get("nav") or {}
+        paint = u.get("paint") or {}
+        events = completion_series(u.get("resources"), fcp=paint.get("fcp"))
+        start = nav.get("responseStart") or paint.get("fcp")
+        end = nav.get("loadEventEnd")
+        if start is None or end is None or not events:
+            continue
+        loads.append(Load(events=events, start=float(start), end=float(end)))
     return loads
 
 

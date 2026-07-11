@@ -22,6 +22,7 @@ from ..database import get_session
 from ..interpret.smoothness import PERCEIVED_DEFAULTS, smoothness_record
 from ..logging_config import get_logger
 from ..models import BenchmarkResult, Run, RunStatus, ScoreResult
+from ..raw_access import browser_url_observations
 from ..settings_profile import summarize
 
 router = APIRouter()
@@ -83,18 +84,16 @@ def _records_from_raw(browser: BenchmarkResult, perceived_params: dict) -> list[
     metric cache can't hold) are recomputed here — and recomputed under whatever
     perceived-time weights the caller passes, without re-running the benchmark."""
     out: list[dict] = []
-    iterations = (browser.raw or {}).get("iterations") or []
-    for i, it in enumerate(iterations):
-        for url, u in ((it or {}).get("urls") or {}).items():
-            if not isinstance(u, dict) or "nav" not in u:
-                continue
-            rec = smoothness_record(
-                u.get("nav"), u.get("resources"), u.get("paint"), u.get("loaf"),
-                perceived_params=perceived_params,
-            )
-            rec["iteration"] = i
-            rec["url"] = url
-            out.append(rec)
+    for i, url, u in browser_url_observations(browser.raw):
+        if "nav" not in u:
+            continue
+        rec = smoothness_record(
+            u.get("nav"), u.get("resources"), u.get("paint"), u.get("loaf"),
+            perceived_params=perceived_params,
+        )
+        rec["iteration"] = i
+        rec["url"] = url
+        out.append(rec)
     return out
 
 
