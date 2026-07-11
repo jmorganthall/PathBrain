@@ -105,6 +105,34 @@ def test_methodologies_endpoint_lists_current(client):
     assert "longest_stall" in current["required_metrics"]
 
 
+def test_set_current_methodology_pins_and_clears_from_the_gui(client, monkeypatch):
+    # The GUI control for the config methodology_version pin — so nobody edits config via the API.
+    import pathbrain.api.routes_methodology as rm
+
+    monkeypatch.setattr(rm.jobs, "start", lambda *a, **k: "job-test")
+
+    # Baseline: no pin → current follows the shipped code default, "pinned" is null.
+    body = client.get("/api/methodologies").json()
+    assert body["code_default"] == "speed-smoothness-v12"
+    assert body["current_version"] == "speed-smoothness-v12"
+    assert body["pinned"] is None
+
+    # Pin to an older *published* version.
+    r = client.post("/api/methodologies/set-current", json={"version": "speed-smoothness-v10"})
+    assert r.status_code == 202 and r.json()["version"] == "speed-smoothness-v10"
+    body = client.get("/api/methodologies").json()
+    assert body["pinned"] == "speed-smoothness-v10" and body["current_version"] == "speed-smoothness-v10"
+
+    # Clearing (null) → back to the shipped latest, pin removed.
+    r = client.post("/api/methodologies/set-current", json={"version": None})
+    assert r.status_code == 202 and r.json()["version"] == "speed-smoothness-v12"
+    body = client.get("/api/methodologies").json()
+    assert body["pinned"] is None and body["current_version"] == "speed-smoothness-v12"
+
+    # An unknown version is rejected, not silently pinned.
+    assert client.post("/api/methodologies/set-current", json={"version": "nope"}).status_code == 404
+
+
 def test_methodology_current_returns_full_definition(client):
     resp = client.get("/api/methodologies/current")
     assert resp.status_code == 200

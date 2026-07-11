@@ -995,6 +995,12 @@ export interface MethodologyDetail extends MethodologySummary {
 export interface MethodologiesResponse {
   methodologies: MethodologySummary[];
   count: number;
+  // Which version scores runs "at present", the version this build ships as latest, and the
+  // config pin (null when unpinned → follows code_default). current_version < code_default ⇒
+  // pinned to an older rubric.
+  current_version?: string;
+  code_default?: string;
+  pinned?: string | null;
 }
 
 export type Comparability = "exact" | "partial" | "incomparable";
