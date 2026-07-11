@@ -113,8 +113,8 @@ def test_set_current_methodology_pins_and_clears_from_the_gui(client, monkeypatc
 
     # Baseline: no pin → current follows the shipped code default, "pinned" is null.
     body = client.get("/api/methodologies").json()
-    assert body["code_default"] == "speed-smoothness-v12"
-    assert body["current_version"] == "speed-smoothness-v12"
+    assert body["code_default"] == "speed-smoothness-v13"
+    assert body["current_version"] == "speed-smoothness-v13"
     assert body["pinned"] is None
 
     # Pin to an older *published* version.
@@ -125,9 +125,9 @@ def test_set_current_methodology_pins_and_clears_from_the_gui(client, monkeypatc
 
     # Clearing (null) → back to the shipped latest, pin removed.
     r = client.post("/api/methodologies/set-current", json={"version": None})
-    assert r.status_code == 202 and r.json()["version"] == "speed-smoothness-v12"
+    assert r.status_code == 202 and r.json()["version"] == "speed-smoothness-v13"
     body = client.get("/api/methodologies").json()
-    assert body["pinned"] is None and body["current_version"] == "speed-smoothness-v12"
+    assert body["pinned"] is None and body["current_version"] == "speed-smoothness-v13"
 
     # An unknown version is rejected, not silently pinned.
     assert client.post("/api/methodologies/set-current", json={"version": "nope"}).status_code == 404
@@ -149,13 +149,14 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v12_rubric():
-    # The published-now methodology is speed-smoothness-v12: the crown's smoothness leg stays
-    # worst_void_fraction (the "pregnant pause" index) but its window widens FCP→LCP → FCP→load
-    # (derive-v12) — on a fast link FCP→LCP is near-instant, so the felt pause is in the post-LCP
-    # settle the LCP window missed. Plus two saturated `best` re-anchors: DNS 1.0 → 0.8ms and
-    # page-load 800 → 556.2ms. Crown metrics unchanged (FCP × LCP × worst_void_fraction).
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v12"
+def test_current_methodology_is_v13_rubric():
+    # The published-now methodology is speed-smoothness-v13: the crown's smoothness leg becomes
+    # network_stall_all (floor-free network-attributed dead-air) — worst_void_fraction read 0 for
+    # every profile on a fast link (its 200ms floor discards the RTT/handoff gaps), so it couldn't
+    # rank anything. network_stall_all drops the floor and isolates the network share fq_codel moves.
+    # Crown = FCP × LCP × network_stall_all; worst_void_fraction → display-only. (v12's dns/load_event
+    # re-anchors carry over.)
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v13"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
@@ -178,10 +179,10 @@ def test_current_methodology_is_v12_rubric():
         "load_event": ("speed", 20, 556.2, 8000.0),
         # stability — CLS only
         "cls": ("stability", 50, 0.0, 0.25),
-        # smoothness — worst_void_fraction (pregnant-pause index) takes the scored stall slot
-        # (stall_energy → display-only)
+        # smoothness — network_stall_all (floor-free network dead-air) takes the scored stall slot
+        # (worst_void_fraction → display-only)
         "longest_stall": ("smoothness", 40, 25.0, 2000.0),
-        "worst_void_fraction": ("smoothness", 30, 0.0, 0.6),
+        "network_stall_all": ("smoothness", 30, 0.0, 2000.0),
         "cadence_cov": ("smoothness", 15, 0.2, 2.5),
         "delivery_gini": ("smoothness", 15, 0.1, 0.7),
     }
@@ -189,13 +190,13 @@ def test_current_methodology_is_v12_rubric():
         m = by_key[key]
         assert (m["axis"], m["weight"], m["best"], m["worst"]) == (axis, weight, best, worst), key
 
-    # perceived_time, total_stall, stall_time, stall_energy — and v9's reverted legs — display-only.
-    for k in ("perceived_time", "total_stall", "stall_time", "stall_energy", "jank_fraction", "nav_response"):
+    # perceived_time, total_stall, stall_time, stall_energy, worst_void_fraction — display-only.
+    for k in ("perceived_time", "total_stall", "stall_time", "stall_energy", "worst_void_fraction", "jank_fraction"):
         assert by_key[k]["axis"] is None, k
 
     # The universal `required` field is materialized onto every metric that defines the
-    # Overall/crown (v11: FCP × LCP × worst_void_fraction) plus the flagged longest_stall.
-    for key in ("fcp", "lcp", "worst_void_fraction", "longest_stall"):
+    # Overall/crown (v13: FCP × LCP × network_stall_all) plus the flagged longest_stall.
+    for key in ("fcp", "lcp", "network_stall_all", "longest_stall"):
         assert by_key[key]["required"] is True, key
     # A scored-but-optional metric is NOT required (it redistributes when missing → partial).
     assert by_key["byte_earliness"]["required"] is False
@@ -203,16 +204,17 @@ def test_current_methodology_is_v12_rubric():
     assert {a["key"] for a in d["axes"]} == {
         "responsiveness", "speed", "smoothness", "stability", "completion"
     }
-    # Display-only metrics carry no axis (e.g. latency, transfer, speed_index, stall_energy).
-    for k in ("latency", "transfer", "speed_index", "network_stall", "stall_energy"):
+    # Display-only metrics carry no axis (e.g. latency, transfer, speed_index, worst_void_fraction).
+    # network_stall (50ms floor) stays display-only; network_stall_all (floor-free) is the scored one.
+    for k in ("latency", "transfer", "speed_index", "network_stall", "worst_void_fraction"):
         assert by_key[k]["axis"] is None
 
-    # v11's crown: the corner over FCP × LCP × worst_void_fraction — initial content × main content
-    # loaded × how *evenly* the fill progressed between them (the scale-free pregnant-pause index).
+    # v13's crown: the corner over FCP × LCP × network_stall_all — initial content × main content
+    # loaded × floor-free network-attributed dead-air (the SQM-movable resource-handoff gaps).
     assert d["overall"] == {
         "method": "corner",
-        "metrics": ["fcp", "lcp", "worst_void_fraction"],
-        "required": ["fcp", "lcp", "worst_void_fraction"],
+        "metrics": ["fcp", "lcp", "network_stall_all"],
+        "required": ["fcp", "lcp", "network_stall_all"],
     }
 
 

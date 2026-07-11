@@ -37,8 +37,10 @@ from .waterfall import navigation_phases
 # of the journey to main content, the v11 crown's smoothness leg. derive-v12 widens that metric's
 # window LCP→loadEventEnd (on a fast link FCP→LCP is near-instant, so the felt pause is in the
 # post-LCP settle the LCP window missed) — a formula change, so a re-derive updates the value from
-# raw. Re-derive from raw after publishing.
-DERIVATION_VERSION = "derive-v12"
+# raw. derive-v13 adds `network_stall_all` — network-attributed dead-air with NO minimum-gap floor
+# (every network-attributed inter-resource gap, incl. sub-perceptible RTT/handoff gaps), the v13
+# crown's smoothness leg. Purely additive; re-derives from raw.
+DERIVATION_VERSION = "derive-v13"
 
 
 def _round(v: float | None, n: int = 3) -> float | None:

@@ -44,7 +44,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v12"
+CURRENT_METHODOLOGY = "speed-smoothness-v13"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -254,6 +254,22 @@ def _ss_v12_assignments() -> dict:
     a = _ss_v11_assignments()
     a["dns"] = {**a["dns"], "best": 0.8}                   # 1.0 → 0.8ms (fastest measured)
     a["load_event"] = {**a["load_event"], "best": 556.2}  # 800 → 556.2ms (fastest measured)
+    return a
+
+
+def _ss_v13_assignments() -> dict:
+    """v12 rubric with the Smoothness scored-stall metric = ``network_stall_all`` (floor-free
+    network-attributed dead-air) in place of ``worst_void_fraction`` (→ display-only). On a fast
+    link the felt/measured "pauses" are RTT-gated resource handoffs, and ``worst_void_fraction``
+    read 0 for every profile because its 200ms perceptible floor discards those sub-perceptible
+    gaps — so it couldn't rank anything. ``network_stall_all`` drops the floor entirely and isolates
+    the network-attributed share (render excluded via LoAF overlap), so it registers the handoff
+    gaps fq_codel actually moves and discriminates profiles. The crown corners over FCP × LCP ×
+    network_stall_all. Deliberately sub-perceptible: the objective is to rank the *best* profile,
+    not to gate on human-noticeable stalls."""
+    a = _ss_v12_assignments()
+    del a["worst_void_fraction"]  # 200ms-floored scale-free void → display-only (inert on fast links)
+    a["network_stall_all"] = {"axis": SMOOTHNESS, "weight": 30, "best": 0.0, "worst": 2000.0}
     return a
 
 
@@ -534,7 +550,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         },
     },
     "speed-smoothness-v12": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v12: widens worst_void_fraction to FCP→load
+        "derivation_version": "derive-v12",  # frozen: widens worst_void_fraction to FCP→load
         "notes": (
             "Two changes, both driven by fast-link measurements. (1) Widen the crown's smoothness "
             "leg. worst_void_fraction stays the crown metric (FCP × LCP × worst_void_fraction) but "
@@ -562,6 +578,30 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "method": "corner",
             "metrics": ["fcp", "lcp", "worst_void_fraction"],
             "required": ["fcp", "lcp", "worst_void_fraction"],
+        },
+    },
+    "speed-smoothness-v13": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v13: adds network_stall_all
+        "notes": (
+            "Swap the crown's smoothness leg to network-attributed stall with NO floor. On a fast "
+            "link worst_void_fraction read 0 for every profile — its 200ms perceptible-stall floor "
+            "discards exactly the sub-perceptible RTT/handoff gaps that a page load on fiber is made "
+            "of (the waterfall is gated by round trips — DNS/TCP/TLS/request + ACK pacing — not "
+            "bandwidth), so it couldn't rank anything. network_stall_all sums every network-"
+            "attributed inter-resource gap with the minimum-gap floor dropped to 0, isolating the "
+            "share fq_codel's fairness/AQM actually moves (render-covered time excluded via LoAF "
+            "overlap). It is deliberately below human perception: the objective is to CROWN the best "
+            "profile by measured network dead-air, not to gate on human-noticeable hitches. The "
+            "Overall corners over FCP × LCP × network_stall_all; worst_void_fraction → display-only "
+            "(joining stall_energy/stall_time/total_stall). derive-v13 adds network_stall_all and is "
+            "purely additive, so history re-grades straight from raw."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v13_assignments(),
+        "overall": {
+            "method": "corner",
+            "metrics": ["fcp", "lcp", "network_stall_all"],
+            "required": ["fcp", "lcp", "network_stall_all"],
         },
     },
 }

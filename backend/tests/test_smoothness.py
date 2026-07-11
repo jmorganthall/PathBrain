@@ -178,6 +178,25 @@ def test_longest_void_diagnostic_locates_and_attributes_the_pause():
     assert longest_void_diagnostic({}, [], {}, None) is None
 
 
+def test_network_stall_all_drops_the_floor_and_isolates_network():
+    # v13 crown leg: network-attributed dead-air with NO minimum-gap floor, so it counts the
+    # sub-50ms RTT/handoff gaps that network_stall (50ms floor) discards — the point is to rank
+    # the best profile, not to gate on human-perceptible stalls.
+    nav = {"responseStart": 40.0, "loadEventEnd": 900.0}
+    paint = {"fcp": 30.0, "lcp": 90.0}
+    # Small (sub-50ms) gaps + a couple of big ones; one big gap covered by a long task → render.
+    res = [{"responseEnd": t} for t in (50, 80, 140, 160, 300, 760, 800)]
+    loaf = {"source": "longtask", "entries": [{"startTime": 300.0, "duration": 400.0}]}  # covers 300→700
+    m = smoothness_metrics(nav, res, paint, loaf)
+    # Floor-free counts every network-attributed gap, so it strictly exceeds the 50ms-floored one.
+    assert m["network_stall_all_ms"] > m["network_stall_ms"] > 0.0
+    # Render-covered time is excluded from the network share (the long task's overlap goes to render).
+    assert m["render_stall_ms"] > 0.0
+    # Without long-task support at all, nothing is attributed to network (→ 0), not fabricated.
+    m2 = smoothness_metrics(nav, res, paint, None)
+    assert m2.get("network_stall_all_ms", 0.0) == 0.0 and m2["unknown_stall_ms"] > 0.0
+
+
 def test_longest_stall_window_points_at_the_plateau():
     window = longest_stall_window(completion_series(CHUNKY))
     assert window is not None
