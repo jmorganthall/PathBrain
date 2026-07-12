@@ -635,21 +635,32 @@ def smoothness_metrics(
     # 0ms-of-stall is meaningful, but only when we actually measured a load.
     if len(series) >= 2:
         attr = stall_attribution_times(series, loaf, loaf_source)
-        out["network_stall_ms"] = attr["network_ms"]
-        out["render_stall_ms"] = attr["render_ms"]
-        # Stall time we can't attribute (no LoAF/longtask support). Kept so the
-        # network/render split isn't silently overcounted as "no stall".
+        # Stall time we can't attribute (no LoAF/longtask support). Always meaningful — it
+        # says "there was dead-air but we can't split it," so it's kept whether or not we
+        # have provenance.
         out["unknown_stall_ms"] = attr["unknown_ms"]
-        # Floor-free network-attributed dead-air: the SAME attribution, but with NO minimum-gap
-        # floor (``min_stall_ms=0``) — so it sums every network-attributed inter-resource gap,
-        # including the sub-perceptible RTT/handoff gaps that ``network_stall_ms`` (50ms floor)
-        # discards. Deliberately below human perception: the goal is to CROWN the best profile,
-        # not to match "does a human notice a hitch". It isolates the part shaping actually moves
-        # (render-covered time is excluded via LoAF overlap, exactly like network_stall). The
-        # v13 crown's smoothness leg.
-        out["network_stall_all_ms"] = stall_attribution_times(
-            series, loaf, loaf_source, min_stall_ms=0.0
-        )["network_ms"]
+        if loaf_source is not None:
+            # We can genuinely separate network- from render-attributed stall. WITHOUT
+            # LoAF/longtask provenance (``loaf_source is None``) that split is *unmeasurable* —
+            # every gap collapses into ``unknown`` and ``network_ms`` degenerates to 0. Emitting
+            # that 0 would score an un-attributable run a **perfect** network_stall_all (the v13
+            # crown's smoothness leg), letting pre-LoAF history out-rank real measurements — the
+            # "unmeasurable = perfect" bug that dropped the crowned profile in ranking once fresh,
+            # attributable runs arrived. Unmeasurable ≠ 0: omit these so the run carries no value
+            # for the crown metric and ``comparability`` quarantines it as *incomparable*, exactly
+            # as intended when a methodology's crown metric can't be computed from a run's raw.
+            out["network_stall_ms"] = attr["network_ms"]
+            out["render_stall_ms"] = attr["render_ms"]
+            # Floor-free network-attributed dead-air: the SAME attribution, but with NO minimum-gap
+            # floor (``min_stall_ms=0``) — so it sums every network-attributed inter-resource gap,
+            # including the sub-perceptible RTT/handoff gaps that ``network_stall_ms`` (50ms floor)
+            # discards. Deliberately below human perception: the goal is to CROWN the best profile,
+            # not to match "does a human notice a hitch". It isolates the part shaping actually moves
+            # (render-covered time is excluded via LoAF overlap, exactly like network_stall). The
+            # v13 crown's smoothness leg.
+            out["network_stall_all_ms"] = stall_attribution_times(
+                series, loaf, loaf_source, min_stall_ms=0.0
+            )["network_ms"]
     return {k: v for k, v in out.items() if v is not None}
 
 

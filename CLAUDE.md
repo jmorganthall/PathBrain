@@ -577,6 +577,26 @@ docker compose up --build   # -> http://localhost:8000
   can't silently leave stale-but-valid-looking scores. (`marks_latest`/`has_latest_metrics`
   is the separate, static at-measure legacy marker — still `longest_stall` — used only for
   the per-run Run-Detail "legacy" badge, not for gating scored aggregations.)
+- **Unmeasurable ≠ a sentinel value — the interpret layer must omit, not fabricate.** The
+  comparability gate only quarantines on an **absent** required metric (`mv.get(k) is None`),
+  so the *whole* guarantee rests on the `interpret` layer emitting **nothing** for a metric it
+  can't genuinely compute — never a default like `0`. A metric fabricated as a "perfect" value
+  for a run that couldn't measure it slips past the gate and, worse, out-ranks real measurements
+  (the crown's lower-is-better legs treat `0` as best). The concrete bug this rule was written
+  for: `network_stall_all` (v13 crown leg) needs LoAF/longtask provenance to split network- vs
+  render-attributed dead-air; a pre-instrument run has `loaf_source is None`, so the split is
+  unmeasurable — `stall_attribution_times` degenerated `network_ms` to `0`, handing those runs a
+  perfect smoothness leg. They ranked #1 until fresh, attributable runs arrived and dragged the
+  crowned profile down the standings (the "best drops to 65th over time" report). Fix (derive-v14):
+  `smoothness_metrics` omits `network_stall_ms`/`render_stall_ms`/`network_stall_all_ms` when
+  `loaf_source is None`, so those runs are quarantined `incomparable` instead. Two import-run tests
+  enshrine the guarantee: `test_every_current_crown_metric_gates_comparability` (dropping *any*
+  current crown metric → `incomparable`) and `test_unmeasurable_crown_metric_is_quarantined` (a
+  no-LoAF browser raw derives *without* the crown leg → quarantined end-to-end). **When adding a
+  crown/required metric, its derive function must return `None`/omit on absent input** — the tests
+  will fail if it fabricates. After a change like this, re-derive (drop the bogus values from raw)
+  then re-grade (re-quarantine), then optionally **Re-run top-N profiles** (Settings → Re-run
+  profiles, winner-first `top`+`rank_by`) to collect fresh comparable data on the best performers.
 - **Current vs. legacy scoring (no dual-score machinery).** A run scored before
   the current rubric (no longest-stall / byte-arrival metrics —
   `metrics.has_latest_metrics`, keyed off `marks_latest`, now `longest_stall`) isn't
@@ -735,6 +755,24 @@ docker compose up --build   # -> http://localhost:8000
   gained an **"Active methodology"** card to switch/adopt/clear the `methodology_version` pin from
   the GUI (`POST /api/methodologies/set-current`) — no API poke — plus a subtle build-version footer
   and centralized stored-raw access (`raw_access.py`).
+- **Phase 13 (done):** **close the "unmeasurable = perfect" comparability leak.** A crowned
+  profile kept dropping in the standings over time (in one case to 65th) even with hundreds of
+  runs — historical measurements scored radically better than fresh ones. Root cause: the v13
+  crown leg `network_stall_all` was fabricated as a *perfect* `0` for any run without LoAF/longtask
+  provenance (`loaf_source is None` → `stall_attribution_times` routes all gap time to `unknown`
+  and returns `network_ms=0`). Pre-instrument history rode that bogus 0 to #1 until fresh,
+  attributable runs arrived and dragged the applied profile down. **derive-v14** stops synthesizing
+  the network/render attribution metrics when provenance is absent — `smoothness_metrics` omits
+  `network_stall_ms`/`render_stall_ms`/`network_stall_all_ms`, so `comparability` quarantines those
+  runs `incomparable` and `compute_profiles` drops them from crown ranking (the correct behavior:
+  a run that can't compute the crown metric is comparable to nothing). The crown still pools across
+  **all** times (comparing profiles across every scenario is the point — deliberately no
+  recency-window / weather de-confound). Enshrined the guarantee against recurrence with two tests
+  (`test_every_current_crown_metric_gates_comparability`, `test_unmeasurable_crown_metric_is_quarantined`)
+  and the **"unmeasurable ≠ a sentinel value"** convention: any crown/required metric's derive
+  function must omit on absent input, never default. Post-change workflow: re-derive → re-grade →
+  **Re-run top-N profiles** (the existing winner-first `refresh` with `top`+`rank_by`) to rebuild
+  fresh comparable data on the best performers after old runs quarantine.
 - **Next:** multi-parameter Bayesian search + interleaved A/B with effect-size/CI + hysteresis;
   routing intelligence / SD-WAN. (Latency-under-load/bufferbloat is explicitly **out of scope**.)
 
