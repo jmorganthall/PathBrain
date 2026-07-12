@@ -192,9 +192,15 @@ def test_network_stall_all_drops_the_floor_and_isolates_network():
     assert m["network_stall_all_ms"] > m["network_stall_ms"] > 0.0
     # Render-covered time is excluded from the network share (the long task's overlap goes to render).
     assert m["render_stall_ms"] > 0.0
-    # Without long-task support at all, nothing is attributed to network (→ 0), not fabricated.
+    # Without LoAF/longtask support at all, the network-vs-render split is UNMEASURABLE, so the
+    # attribution metrics are OMITTED (not fabricated as a perfect 0). Emitting 0 for the crown's
+    # network_stall_all leg would hand a pre-LoAF run a perfect smoothness score and let it out-rank
+    # real measurements — so an un-attributable run must instead carry no value (→ quarantined
+    # incomparable). All the dead-air is reported as unattributed.
     m2 = smoothness_metrics(nav, res, paint, None)
-    assert m2.get("network_stall_all_ms", 0.0) == 0.0 and m2["unknown_stall_ms"] > 0.0
+    assert "network_stall_all_ms" not in m2
+    assert "network_stall_ms" not in m2 and "render_stall_ms" not in m2
+    assert m2["unknown_stall_ms"] > 0.0
 
 
 def test_longest_stall_window_points_at_the_plateau():

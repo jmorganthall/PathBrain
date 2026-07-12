@@ -40,7 +40,14 @@ from .waterfall import navigation_phases
 # raw. derive-v13 adds `network_stall_all` — network-attributed dead-air with NO minimum-gap floor
 # (every network-attributed inter-resource gap, incl. sub-perceptible RTT/handoff gaps), the v13
 # crown's smoothness leg. Purely additive; re-derives from raw.
-DERIVATION_VERSION = "derive-v13"
+# derive-v14 **stops synthesizing** the network/render attribution metrics
+# (network_stall/render_stall/network_stall_all) when a run has no LoAF/longtask provenance
+# (`loaf_source is None`): the network-vs-render split is genuinely unmeasurable there, so emitting
+# network_stall_all=0 handed pre-LoAF runs a *perfect* crown-leg score and let them out-rank real
+# measurements (the crowned profile dropping in rank once fresh, attributable runs arrived). They're
+# now omitted, so `comparability` quarantines those runs as incomparable instead of scoring them
+# wrong. A formula/emission change → re-derive from raw to drop the bogus zeros from history.
+DERIVATION_VERSION = "derive-v14"
 
 
 def _round(v: float | None, n: int = 3) -> float | None:

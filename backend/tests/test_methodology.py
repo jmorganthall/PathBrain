@@ -253,6 +253,77 @@ def test_comparability_gates_on_crown_metrics():
     assert comparability(d, no_byte)[0] == "partial"
 
 
+def test_every_current_crown_metric_gates_comparability():
+    """Systematic guarantee (the general half): under the CURRENT methodology, a run missing
+    ANY single crown metric is quarantined ``incomparable`` — never silently scored. This is
+    the gate that must hold for every methodology forever: if a new version's crown metric
+    can't be produced from a run's raw, that run drops out rather than scoring on a partial
+    crown. Pairs with ``test_unmeasurable_crown_metric_is_quarantined`` (the derive half:
+    an unmeasurable metric is *omitted*, not fabricated, so this gate actually fires)."""
+    from pathbrain.methodology import comparability, overall_metrics
+
+    d = build_definition_from_spec(METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY])
+    crown, _ = overall_metrics(d)
+    assert crown, "current methodology must declare crown metrics"
+    full = {m["key"]: 1.0 for m in d["metrics"] if m.get("axis")}
+    assert comparability(d, full)[0] == "exact"
+    for metric in crown:
+        without = {k: v for k, v in full.items() if k != metric}
+        tag, missing = comparability(d, without)
+        assert tag == "incomparable" and metric in missing, (
+            f"dropping crown metric {metric!r} must quarantine the run, not score it"
+        )
+
+
+def test_unmeasurable_crown_metric_is_quarantined():
+    """Systematic guarantee (the derive half): a browser run whose raw can't produce a crown
+    metric OMITS it (rather than fabricating a sentinel), so ``comparability`` quarantines it.
+
+    Concretely the v13 crown leg ``network_stall_all`` needs LoAF/longtask provenance to split
+    network- from render-attributed dead-air. A run captured before that instrument existed has
+    ``loaf_source is None`` — the split is genuinely unmeasurable. Derive must therefore omit the
+    metric (so the run is incomparable), NOT emit ``0`` (a *perfect* score that let pre-LoAF
+    history out-rank real measurements — the crowned profile dropping in rank once fresh,
+    attributable runs arrived). FCP/LCP are still present, so this proves the run is quarantined
+    *specifically* for the unmeasurable crown leg, not for missing everything."""
+    from pathbrain.interpret import derive
+    from pathbrain.metrics import all_metric_sources
+    from pathbrain.methodology import comparability, overall_metrics
+
+    # A real browser load with resources and paints, but NO LoAF/longtask provenance.
+    raw = {
+        "urls": {
+            "https://example.com": {
+                "nav": {"responseStart": 40.0, "loadEventEnd": 900.0},
+                "paint": {"fcp": 300.0, "lcp": 350.0},
+                "resources": [{"responseEnd": t} for t in (50, 80, 140, 300, 760, 800)],
+                "loaf": {"source": None, "entries": []},
+            }
+        }
+    }
+    derived = derive("browser", raw)
+    # The attribution metrics are omitted — not fabricated as 0.
+    assert "network_stall_all_ms" not in derived
+    assert "network_stall_ms" not in derived and "render_stall_ms" not in derived
+    # …but the identity paint metrics ARE present.
+    assert derived.get("fcp_ms") is not None and derived.get("lcp_ms") is not None
+
+    # End-to-end: map derived → logical metric_values the way a Score carries them, then run the
+    # real comparability gate for the current methodology. The unmeasurable crown leg quarantines.
+    sources = all_metric_sources()
+    metric_values = {
+        key: derived.get(source_key)
+        for key, (plugin, source_key) in sources.items()
+        if plugin == "browser"
+    }
+    d = build_definition_from_spec(METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY])
+    crown, _ = overall_metrics(d)
+    assert metric_values.get("fcp") is not None and metric_values.get("lcp") is not None
+    tag, missing = comparability(d, metric_values)
+    assert tag == "incomparable"
+    assert "network_stall_all" in missing and "network_stall_all" in crown
+
+
 def test_required_metric_keys_is_the_single_required_set():
     from pathbrain.methodology import required_metric_keys
 
