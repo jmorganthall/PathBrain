@@ -414,19 +414,23 @@ def test_saturation_flags_too_lenient_threshold(client):
 def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
     # Don't run the heavy background re-grade in the test; just confirm the publish.
     import pathbrain.api.routes_methodology as rm
+    from pathbrain.methodology import CURRENT_METHODOLOGY
 
     monkeypatch.setattr(rm.jobs, "start", lambda *a, **k: "job-test")
 
+    # The fork name derives from whatever's current — assert the *shape*, not a copied literal,
+    # so a methodology bump doesn't ripple into this test.
+    expected_fork = f"{CURRENT_METHODOLOGY}+load_event-best500"
     r = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 500})
     assert r.status_code == 202
     out = r.json()
-    assert out["version"] == "speed-smoothness-v13+load_event-best500"
+    assert out["version"] == expected_fork
     assert out["job_id"] == "job-test"
 
     # The fork is now current: only load_event's 'best' changed; fcp and the Overall crown
     # spec carry over untouched (append-only — a new version, not an edit).
     cur = client.get("/api/methodologies/current").json()
-    assert cur["version"] == "speed-smoothness-v13+load_event-best500"
+    assert cur["version"] == expected_fork
     metrics = {m["key"]: m for m in cur["definition"]["metrics"]}
     assert metrics["load_event"]["best"] == 500.0
     assert metrics["fcp"]["best"] == 150.0  # untouched
