@@ -113,8 +113,10 @@ def test_set_current_methodology_pins_and_clears_from_the_gui(client, monkeypatc
 
     # Baseline: no pin → current follows the shipped code default, "pinned" is null.
     body = client.get("/api/methodologies").json()
-    assert body["code_default"] == "speed-smoothness-v13"
-    assert body["current_version"] == "speed-smoothness-v13"
+    # Assert against the single source of truth, not a hand-copied literal — a methodology bump
+    # must touch only CURRENT_METHODOLOGY + its registry entry, never echoed version strings here.
+    assert body["code_default"] == CURRENT_METHODOLOGY
+    assert body["current_version"] == CURRENT_METHODOLOGY
     assert body["pinned"] is None
 
     # Pin to an older *published* version.
@@ -125,9 +127,9 @@ def test_set_current_methodology_pins_and_clears_from_the_gui(client, monkeypatc
 
     # Clearing (null) → back to the shipped latest, pin removed.
     r = client.post("/api/methodologies/set-current", json={"version": None})
-    assert r.status_code == 202 and r.json()["version"] == "speed-smoothness-v13"
+    assert r.status_code == 202 and r.json()["version"] == CURRENT_METHODOLOGY
     body = client.get("/api/methodologies").json()
-    assert body["pinned"] is None and body["current_version"] == "speed-smoothness-v13"
+    assert body["pinned"] is None and body["current_version"] == CURRENT_METHODOLOGY
 
     # An unknown version is rejected, not silently pinned.
     assert client.post("/api/methodologies/set-current", json={"version": "nope"}).status_code == 404
@@ -149,14 +151,12 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v13_rubric():
-    # The published-now methodology is speed-smoothness-v13: the crown's smoothness leg becomes
-    # network_stall_all (floor-free network-attributed dead-air) — worst_void_fraction read 0 for
-    # every profile on a fast link (its 200ms floor discards the RTT/handoff gaps), so it couldn't
-    # rank anything. network_stall_all drops the floor and isolates the network share fq_codel moves.
-    # Crown = FCP × LCP × network_stall_all; worst_void_fraction → display-only. (v12's dns/load_event
-    # re-anchors carry over.)
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v13"
+def test_current_methodology_is_v14_rubric():
+    # The published-now methodology is speed-smoothness-v14. Its rubric is IDENTICAL to v13 (crown =
+    # FCP × LCP × network_stall_all, same axes/weights/thresholds) — v14 is a *comparability boundary*
+    # for the derive-v14 fix (network_stall_all is omitted, not fabricated as 0, when a run lacks
+    # LoAF/longtask provenance), not a rubric change. So every threshold below is v13's, unchanged.
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v14"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}

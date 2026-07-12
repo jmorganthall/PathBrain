@@ -44,7 +44,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v13"
+CURRENT_METHODOLOGY = "speed-smoothness-v14"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -581,7 +581,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         },
     },
     "speed-smoothness-v13": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v13: adds network_stall_all
+        "derivation_version": "derive-v13",  # frozen: adds network_stall_all (fabricated 0 pre-v14)
         "notes": (
             "Swap the crown's smoothness leg to network-attributed stall with NO floor. On a fast "
             "link worst_void_fraction read 0 for every profile — its 200ms perceptible-stall floor "
@@ -595,6 +595,36 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "Overall corners over FCP × LCP × network_stall_all; worst_void_fraction → display-only "
             "(joining stall_energy/stall_time/total_stall). derive-v13 adds network_stall_all and is "
             "purely additive, so history re-grades straight from raw."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v13_assignments(),
+        "overall": {
+            "method": "corner",
+            "metrics": ["fcp", "lcp", "network_stall_all"],
+            "required": ["fcp", "lcp", "network_stall_all"],
+        },
+    },
+    "speed-smoothness-v14": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v14: omit network_stall_all when unmeasurable
+        "notes": (
+            "Same rubric as v13 (crown = FCP × LCP × network_stall_all, identical axes/weights/"
+            "thresholds) — this version exists to mark a **comparability boundary**, not a rubric "
+            "change. Under v13 + derive-v13 the crown leg network_stall_all was fabricated as a "
+            "perfect 0 for any run without LoAF/longtask provenance (loaf_source is None → the "
+            "network-vs-render split is unmeasurable, so stall_attribution_times routed all gap time "
+            "to 'unknown' and returned network_ms=0). Because the metric is lower-is-better, that 0 "
+            "was the *best possible* score: pre-instrument history rode it to #1 and out-ranked real "
+            "measurements, so a crowned profile slid down the standings over time as fresh, "
+            "attributable runs arrived (the 'best drops to 65th' report). derive-v14 stops "
+            "synthesizing the attribution metrics (network_stall/render_stall/network_stall_all) when "
+            "provenance is absent — smoothness_metrics omits them — so comparability quarantines those "
+            "runs as *incomparable* instead of scoring them wrong. Publishing v14 forces every run to "
+            "be freshly graded under the corrected derivation (new Score rows), so no stale v13 Score "
+            "with a fabricated 0 can linger. Follow-through: re-derive (drop the bogus 0s from raw) → "
+            "re-grade (re-quarantine) → Re-run top-N profiles (winner-first refresh) to rebuild fresh "
+            "comparable data on the best performers. The crown still pools across ALL times by design "
+            "— comparing profiles across every scenario is the point; no recency-window/weather "
+            "de-confound."
         ),
         "axes": _SS_V4_AXES,
         "assignments": _ss_v13_assignments(),
