@@ -324,6 +324,61 @@ def rederive_run(
     )
 
 
+def _derivation_matches(a, b, *, rel: float = 1e-4, absr: float = 1e-6) -> bool:
+    """Do a stored and a freshly re-derived metric value agree? Both missing → yes; one
+    missing → no; numbers compared with a tiny tolerance (rounding across store/reload),
+    everything else by equality."""
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) <= max(absr, rel * max(abs(float(a)), abs(float(b))))
+    return a == b
+
+
+def verify_run_derivation(run, artifact_base: str | None = None) -> dict:
+    """**Read-only** integrity audit: re-derive every metric from the run's immutable raw and
+    diff it against the value currently stored on the run's plugin results.
+
+    This is the ground-truth test for "are we keeping the same data the same": a metric whose
+    stored value doesn't reproduce from raw under the *current* derivation is a run carrying a
+    **stale-formula value** — captured (or last derived) under an older ``DERIVATION_VERSION`` and
+    never re-derived, so it's no longer like-for-like with fresh runs. Mutates nothing (unlike
+    ``rederive_run``); it only reports. ``drift`` lists every metric that disagrees."""
+    report: dict = {
+        "run_id": run.id,
+        "current_derivation": DERIVATION_VERSION,
+        # The derivation the stored values were last produced under (None if never scored).
+        "stored_derivation": getattr(run.score, "derivation_version", None) if run.score else None,
+        "plugins": [],
+        "drift": [],
+        "checked": 0,
+    }
+    for res in run.results:
+        raws = stored_iterations(res.raw)
+        per_iter = [derive(res.plugin, r or {}, artifact_base) for r in raws]
+        rederived = _median_values(per_iter) if per_iter else {}
+        stored = res.metrics or {}
+        rows = []
+        for key in sorted(set(rederived) | set(stored)):
+            sv, rv = stored.get(key), rederived.get(key)
+            match = _derivation_matches(sv, rv)
+            report["checked"] += 1
+            delta = (
+                round(float(rv) - float(sv), 4)
+                if isinstance(sv, (int, float)) and isinstance(rv, (int, float))
+                else None
+            )
+            row = {"key": key, "stored": sv, "rederived": rv, "match": match, "delta": delta}
+            rows.append(row)
+            if not match:
+                report["drift"].append({"plugin": res.plugin, **row})
+        report["plugins"].append({"plugin": res.plugin, "metrics": rows})
+    report["consistent"] = not report["drift"]
+    return report
+
+
 def _iteration_plugin_metrics_from_raw(run, artifact_base: str | None) -> list[dict[str, dict]]:
     """Re-derive each iteration's ``plugin -> metrics`` from the run's stored raw."""
     by_plugin: dict[str, list[dict]] = {}

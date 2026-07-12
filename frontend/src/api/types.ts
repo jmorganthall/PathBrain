@@ -432,6 +432,23 @@ export interface UpdateConfig {
   token_set: boolean;
 }
 
+export interface DerivationCohort {
+  checked: number;
+  drifting: number;
+  consistent: boolean;
+  drift_metrics: string[];
+}
+
+export interface DerivationAudit {
+  fingerprint: string;
+  total_runs: number;
+  current_derivation: string;
+  oldest: DerivationCohort;
+  newest: DerivationCohort;
+  consistent: boolean;
+  stale_history: boolean;
+}
+
 export interface UpdateConnectionTest extends UpdateConfig {
   reachable: boolean;
   status: "ok" | "unreachable" | "not_configured";

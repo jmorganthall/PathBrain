@@ -61,6 +61,23 @@ def _locked_execute_series(first_run_id: int, total: int, label: str | None, not
                 break
 
 
+@router.get("/runs/{run_id}/verify-derivation")
+def verify_run_derivation(run_id: int, session: Session = Depends(get_session)) -> dict:
+    """Read-only integrity audit for one run: re-derive every metric from its immutable raw and
+    diff against the stored value. ``consistent: true`` means the stored metrics reproduce exactly
+    from raw under the current derivation (like-for-like preserved); ``drift`` lists any metric
+    whose stored value predates the current derivation and was never re-derived."""
+    from ..config import get_settings
+    from ..runner import verify_run_derivation as _verify
+
+    run = session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    if not run.results:
+        raise HTTPException(status_code=400, detail=f"Run {run_id} has no stored raw to verify")
+    return _verify(run, get_settings().artifact_dir)
+
+
 @router.post("/runs/{run_id}/cancel", response_model=RunDetail)
 def cancel_run(run_id: int, session: Session = Depends(get_session)) -> RunDetail:
     """Mark an in-progress run as failed (manual stop / unstick a hung run)."""

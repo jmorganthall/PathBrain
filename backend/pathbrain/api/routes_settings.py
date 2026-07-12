@@ -371,6 +371,76 @@ def _completed_runs_with_scores(session: Session):
     ).all()
 
 
+@router.get("/settings/profiles/{fingerprint}/verify-derivation")
+def verify_profile_derivation(
+    fingerprint: str,
+    sample: int = Query(15, ge=1, le=100, description="Runs to check per cohort (oldest/newest)."),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Read-only data-integrity audit for a profile — the ground-truth answer to "are we keeping
+    the same data the same?"
+
+    Samples the profile's **oldest** and **newest** runs, re-derives each run's metrics from its
+    immutable raw under the current derivation, and reports whether the stored values reproduce.
+    If the *oldest* cohort drifts while the *newest* is clean, historical runs are carrying values
+    computed under a formula that has since changed and were never re-derived — old and new are not
+    like-for-like, and the fix is a full re-derive. Mutates nothing."""
+    from ..config import get_settings
+    from ..interpret import DERIVATION_VERSION
+    from ..runner import verify_run_derivation as _verify
+
+    art = get_settings().artifact_dir
+    total = session.scalar(
+        select(func.count()).select_from(Run).where(
+            Run.status == RunStatus.COMPLETE, Run.settings_fingerprint == fingerprint
+        )
+    ) or 0
+    if total == 0:
+        raise HTTPException(status_code=404, detail=f"No completed runs for profile {fingerprint}")
+
+    base = (
+        select(Run)
+        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint == fingerprint)
+        .options(selectinload(Run.results))
+    )
+    oldest = list(session.scalars(base.order_by(Run.created_at.asc()).limit(sample)).all())
+    seen = {r.id for r in oldest}
+    newest = [r for r in session.scalars(base.order_by(Run.created_at.desc()).limit(sample)).all() if r.id not in seen]
+
+    def _cohort(rows: list) -> dict:
+        checked = drifting = 0
+        drift_keys: dict[str, int] = {}
+        for run in rows:
+            if not run.results:
+                continue
+            rep = _verify(run, art)
+            checked += 1
+            if rep["drift"]:
+                drifting += 1
+                for d in rep["drift"]:
+                    drift_keys[d["key"]] = drift_keys.get(d["key"], 0) + 1
+        return {
+            "checked": checked,
+            "drifting": drifting,
+            "consistent": drifting == 0,
+            # Which metrics drifted, most-common first — the ones whose formula changed under them.
+            "drift_metrics": sorted(drift_keys, key=lambda k: -drift_keys[k]),
+        }
+
+    old_c, new_c = _cohort(oldest), _cohort(newest)
+    return {
+        "fingerprint": fingerprint,
+        "total_runs": total,
+        "current_derivation": DERIVATION_VERSION,
+        "oldest": old_c,
+        "newest": new_c,
+        # The headline: everything checked reproduces from raw → like-for-like preserved.
+        "consistent": old_c["consistent"] and new_c["consistent"],
+        # The tell the user is hunting: historical runs drift while fresh ones don't.
+        "stale_history": (not old_c["consistent"]) and new_c["consistent"],
+    }
+
+
 @router.get("/settings/diagnostics")
 def settings_diagnostics(session: Session = Depends(get_session)) -> dict:
     """Visibility into settings capture: how many runs are stamped, how many
