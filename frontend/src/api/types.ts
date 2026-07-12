@@ -516,6 +516,26 @@ export interface PauseDiagnostic {
   load_ms: number | null;
 }
 
+// Profile-level roll-up of the "Where's the pause?" diagnostic — the median longest void per URL
+// across a profile's runs, with the dominant phase and network/render attribution split.
+export interface ProfilePauseUrl {
+  url: string;
+  runs: number;
+  median_void_ms: number;
+  phase: "pre_fcp" | "fcp_lcp" | "lcp_load" | "post_load";
+  phase_fraction: number;
+  attribution: "network" | "render" | "mixed" | "unknown" | null;
+  network_fraction: number | null;
+  render_fraction: number | null;
+}
+
+export interface ProfilePauseRollup {
+  fingerprint: string;
+  runs: number;
+  run_cap: number;
+  urls: ProfilePauseUrl[];
+}
+
 export interface RunDetail extends RunSummary {
   notes?: string | null;
   error?: string | null;

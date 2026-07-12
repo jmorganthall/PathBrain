@@ -1,11 +1,12 @@
 """Results endpoints: fetch a run's full detail (metrics + score)."""
 from __future__ import annotations
 
+from collections import Counter
 from statistics import mean, median
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from ..config_store import get_config
 from ..database import get_session
@@ -114,6 +115,62 @@ def get_result(run_id: int, session: Session = Depends(get_session)) -> RunDetai
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return _serialize_run(run, _current_overall(session, run.id))
+
+
+# Cap the raw reads for a profile's pause roll-up — the browser raw is heavy, and the median over
+# the most recent N runs is representative without loading a profile's entire history.
+PROFILE_PAUSE_RUN_LIMIT = 40
+
+
+@router.get("/results/profile/{fingerprint}/pauses")
+def profile_pause_rollup(fingerprint: str, session: Session = Depends(get_session)) -> dict:
+    """Aggregate the per-URL "where's the pause?" diagnostic across a profile's recent runs — the
+    profile-level roll-up of the run-detail card. For each URL it reports the typical (median)
+    longest void, the dominant phase (where it falls: pre_fcp / fcp_lcp / lcp_load / post_load), and
+    the network-vs-render attribution split — so a profile shows WHERE its pauses concentrate and
+    WHAT causes them, not just a single run. Reads at most ``PROFILE_PAUSE_RUN_LIMIT`` recent runs."""
+    runs = session.scalars(
+        select(Run)
+        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint == fingerprint)
+        .order_by(Run.created_at.desc())
+        .limit(PROFILE_PAUSE_RUN_LIMIT)
+        .options(selectinload(Run.results))
+    ).all()
+    by_url: dict[str, dict] = {}
+    used = 0
+    for run in runs:
+        diags = _pause_diagnostics(run)  # per-URL worst void for this run (already iteration-aware)
+        if not diags:
+            continue
+        used += 1
+        for d in diags:
+            b = by_url.setdefault(d["url"], {"durations": [], "phases": [], "attrs": []})
+            b["durations"].append(d["duration_ms"])
+            b["phases"].append(d["phase"])
+            if d.get("attribution"):
+                b["attrs"].append(d["attribution"])
+    urls: list[dict] = []
+    for url, b in by_url.items():
+        durs, phases, attrs = b["durations"], b["phases"], b["attrs"]
+        phase = Counter(phases).most_common(1)[0][0]
+        net = sum(1 for a in attrs if a == "network")
+        rnd = sum(1 for a in attrs if a == "render")
+        urls.append(
+            {
+                "url": url,
+                "runs": len(durs),
+                "median_void_ms": round(median(durs), 1),
+                "phase": phase,
+                "phase_fraction": round(phases.count(phase) / len(phases), 2),
+                # Dominant cause + the network/render split, so "is this profile's pause shapeable?"
+                # is answerable at a glance (network = SQM-movable; render = client CPU it can't move).
+                "attribution": Counter(attrs).most_common(1)[0][0] if attrs else None,
+                "network_fraction": round(net / len(attrs), 2) if attrs else None,
+                "render_fraction": round(rnd / len(attrs), 2) if attrs else None,
+            }
+        )
+    urls.sort(key=lambda x: -x["median_void_ms"])
+    return {"fingerprint": fingerprint, "runs": used, "run_cap": PROFILE_PAUSE_RUN_LIMIT, "urls": urls}
 
 
 def _average_metrics(

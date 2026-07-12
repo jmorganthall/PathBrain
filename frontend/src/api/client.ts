@@ -35,6 +35,7 @@ import type {
   AiSuggestResult,
   DataDump,
   OptimizerExport,
+  ProfilePauseRollup,
   ProfileTest,
   ProfileTestStart,
   ProfileRefresh,
@@ -205,6 +206,9 @@ export const api = {
   methodology: (version: string) =>
     request<MethodologyDetail>(`/methodologies/${encodeURIComponent(version)}`),
   runScores: (id: number) => request<RunScoresResponse>(`/score/${id}/methodologies`),
+  // Profile-level roll-up of the "Where's the pause?" diagnostic across the profile's runs.
+  profilePauses: (fingerprint: string) =>
+    request<ProfilePauseRollup>(`/results/profile/${encodeURIComponent(fingerprint)}/pauses`),
   regradeHistory: () => startingJob(request<JobStart>("/score/regrade", { method: "POST" })),
   // Fork the current methodology, re-anchor one metric's `best`. Re-grades onto it when
   // `regrade` is true; when false, publishes only (batch several re-anchors, then re-grade once).

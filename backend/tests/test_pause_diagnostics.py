@@ -10,17 +10,20 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
 from pathbrain.database import session_scope
 from pathbrain.models import BenchmarkResult, Run, RunStatus
 from pathbrain.raw_access import browser_url_observations, stored_iterations
 
 
-def _persist_browser_run(raw: dict) -> int:
+def _persist_browser_run(raw: dict, fingerprint: str | None = None) -> int:
     with session_scope() as session:
         run = Run(
             status=RunStatus.COMPLETE,
             created_at=datetime.now(timezone.utc).replace(tzinfo=None),
             iterations=2,
+            settings_fingerprint=fingerprint,
             settings=[{"label": "wan", "quantum": 1514}],
         )
         session.add(run)
@@ -64,6 +67,35 @@ def test_results_endpoint_survives_a_list_shaped_loaf(client):
 def test_results_endpoint_no_browser_raw_hides_the_card(client):
     run_id = _persist_browser_run({"iterations": []})
     assert client.get(f"/api/results/{run_id}").json()["pause_diagnostics"] is None
+
+
+def test_profile_pause_rollup_aggregates_across_runs(client):
+    # The profile-level roll-up of the run-detail card: per URL, the median void + dominant phase +
+    # network/render split across the profile's runs.
+    fp = "pauseroll01x"
+    try:
+        for _ in range(3):
+            _persist_browser_run({"iterations": [_PER_ITER]}, fingerprint=fp)  # 260ms lcp_load render void
+
+        body = client.get(f"/api/results/profile/{fp}/pauses").json()
+        assert body["fingerprint"] == fp and body["runs"] == 3
+        u = next(x for x in body["urls"] if x["url"] == "https://a/")
+        assert u["runs"] == 3
+        assert u["median_void_ms"] == 260.0
+        assert u["phase"] == "lcp_load" and u["phase_fraction"] == 1.0
+        assert u["attribution"] == "render" and u["render_fraction"] == 1.0 and u["network_fraction"] == 0.0
+
+        # A fingerprint with no browser runs → empty roll-up, not an error.
+        empty = client.get("/api/results/profile/nope/pauses").json()
+        assert empty["runs"] == 0 and empty["urls"] == []
+    finally:
+        # Clean up the fingerprinted rows so this test can't pollute the shared test DB's
+        # profile/diagnostic counts that other suites assert on.
+        with session_scope() as s:
+            for run in list(s.scalars(select(Run).where(Run.settings_fingerprint == fp))):
+                for r in list(run.results):
+                    s.delete(r)
+                s.delete(run)
 
 
 def test_raw_access_readers_agree_on_the_stored_nesting():
