@@ -27,6 +27,7 @@ import { api } from "../api/client";
 import type {
   ApplyProfileResult,
   AxisSeriesResponse,
+  DerivationAudit,
   ProfilePauseRollup,
   RunSummary,
   SettingsProfile,
@@ -71,6 +72,23 @@ export default function ProfileDetail() {
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Read-only data-integrity audit (re-derive oldest+newest runs from raw, diff vs stored).
+  const [audit, setAudit] = useState<DerivationAudit | null>(null);
+  const [auditing, setAuditing] = useState(false);
+  const [auditErr, setAuditErr] = useState<string | null>(null);
+  const runAudit = useCallback(async () => {
+    setAuditing(true);
+    setAuditErr(null);
+    setAudit(null);
+    try {
+      setAudit(await api.verifyProfileDerivation(fingerprint));
+    } catch (e) {
+      setAuditErr(e instanceof Error ? e.message : "Audit failed");
+    } finally {
+      setAuditing(false);
+    }
+  }, [fingerprint]);
 
   // Apply (preview → confirm → commit) state.
   const [applyPreview, setApplyPreview] = useState<ApplyProfileResult | null>(null);
@@ -302,6 +320,58 @@ export default function ProfileDetail() {
           </CardContent>
         </Card>
       )}
+
+      {/* Data-integrity audit: prove old and new runs are like-for-like by re-deriving each from
+          its immutable raw and diffing against the stored value. */}
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+            <Typography variant="h6" sx={{ flexGrow: 1 }}>
+              Data integrity
+            </Typography>
+            <Tooltip title="Re-derive this profile's oldest & newest runs from their immutable raw and check the stored metrics still reproduce. Read-only — changes nothing.">
+              <span>
+                <Button size="small" variant="outlined" onClick={runAudit} disabled={auditing}>
+                  {auditing ? "Verifying…" : "Verify old vs new"}
+                </Button>
+              </span>
+            </Tooltip>
+          </Stack>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: audit || auditErr ? 1.5 : 0 }}>
+            Checks whether a metric means the same thing across time — that stored values reproduce
+            exactly from raw under the current derivation. If old runs drift while new ones don&apos;t,
+            history was computed under a formula that has since changed and needs a re-derive.
+          </Typography>
+          {auditErr && <Alert severity="error">{auditErr}</Alert>}
+          {audit && (
+            <Box>
+              <Alert severity={audit.consistent ? "success" : audit.stale_history ? "warning" : "error"} sx={{ mb: 1 }}>
+                {audit.consistent
+                  ? `Like-for-like: all sampled runs reproduce exactly from raw (derivation ${audit.current_derivation}).`
+                  : audit.stale_history
+                    ? "Stale history: older runs were computed under a formula that has since changed and were never re-derived. Run Re-derive (Methodology page) to bring them onto the current derivation."
+                    : "Drift detected: some runs don't reproduce from raw under the current derivation."}
+              </Alert>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                {([["Oldest runs", audit.oldest], ["Newest runs", audit.newest]] as const).map(
+                  ([label, c]) => (
+                    <Box key={label} sx={{ flex: 1 }}>
+                      <Typography variant="subtitle2">{label}</Typography>
+                      <Typography variant="body2" color={c.consistent ? "success.main" : "warning.main"}>
+                        {c.checked - c.drifting}/{c.checked} reproduce from raw
+                        {c.drifting > 0 && ` · drift: ${c.drift_metrics.join(", ")}`}
+                      </Typography>
+                    </Box>
+                  ),
+                )}
+              </Stack>
+              <Typography variant="caption" color="text.disabled" sx={{ display: "block", mt: 1 }}>
+                {audit.total_runs} total run{audit.total_runs === 1 ? "" : "s"} · sampled oldest &amp; newest
+              </Typography>
+            </Box>
+          )}
+        </CardContent>
+      </Card>
 
       <Box sx={{ display: "grid", gap: 2 }}>
         {profile?.metrics && profile.metrics["nav_response"] != null && (

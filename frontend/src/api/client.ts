@@ -36,6 +36,7 @@ import type {
   DataDump,
   OptimizerExport,
   ProfilePauseRollup,
+  DerivationAudit,
   ProfileTest,
   ProfileTestStart,
   ProfileRefresh,
@@ -212,6 +213,12 @@ export const api = {
   // Profile-level roll-up of the "Where's the pause?" diagnostic across the profile's runs.
   profilePauses: (fingerprint: string) =>
     request<ProfilePauseRollup>(`/results/profile/${encodeURIComponent(fingerprint)}/pauses`),
+  // Read-only data-integrity audit: re-derive a profile's oldest + newest runs from raw and
+  // report whether the stored metrics reproduce (are old and new runs like-for-like?).
+  verifyProfileDerivation: (fingerprint: string) =>
+    request<DerivationAudit>(
+      `/settings/profiles/${encodeURIComponent(fingerprint)}/verify-derivation`,
+    ),
   regradeHistory: () => startingJob(request<JobStart>("/score/regrade", { method: "POST" })),
   // Fork the current methodology, re-anchor one metric's `best`. Re-grades onto it when
   // `regrade` is true; when false, publishes only (batch several re-anchors, then re-grade once).
