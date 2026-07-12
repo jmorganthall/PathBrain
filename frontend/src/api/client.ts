@@ -245,6 +245,10 @@ export const api = {
     request<SettingsImpact>(`/settings/impact?complete_only=${completeOnly}`),
   settingsBackfill: () =>
     request<{ updated: number; fingerprint: string }>("/settings/backfill", { method: "POST" }),
+  // Recompute every run's settings fingerprint from its own captured settings — collapses all
+  // "SQM off" runs into one profile (keeps the data, just re-keys the grouping).
+  settingsRefingerprint: () =>
+    request<{ scanned: number; rekeyed: number }>("/settings/refingerprint", { method: "POST" }),
   settingsDiagnostics: () => request<SettingsDiagnostics>("/settings/diagnostics"),
   // Write a stored profile to the firewall. preview=true returns the planned
   // field changes without writing, so the UI can confirm an exact diff first.

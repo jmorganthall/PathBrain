@@ -55,6 +55,70 @@ def test_fingerprint_stable_and_distinct():
     assert fingerprint(changed) != fp1
 
 
+def test_sqm_off_collapses_to_one_fingerprint_regardless_of_inert_fields():
+    from pathbrain.settings_profile import SQM_OFF_FINGERPRINT
+
+    base = normalize(MockProvider().discover())
+    # Two SQM-off configs whose (inert) shaper fields differ → must collapse to ONE profile.
+    off_a = [{**dict(p), "enabled": False} for p in base]
+    off_b = [{**dict(p), "enabled": False, "quantum": 6000, "target": "10ms"} for p in base]
+    assert fingerprint(off_a) == fingerprint(off_b) == SQM_OFF_FINGERPRINT
+    # An ordinary all-enabled profile is untouched (no history re-key) and never collides with off.
+    assert fingerprint(base) != SQM_OFF_FINGERPRINT
+    # The label reads cleanly as "SQM off" without the inert field values.
+    assert "SQM off" in summarize(off_b) and "q6000" not in summarize(off_b)
+
+
+def test_refingerprint_rekeys_sqm_off_history_into_one_profile(client):
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from pathbrain.database import session_scope
+    from pathbrain.models import Run, RunStatus
+    from pathbrain.settings_profile import SQM_OFF_FINGERPRINT
+
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # The endpoint re-keys EVERY run in the (shared) test DB, so snapshot the other rows' fingerprints
+    # and restore them afterward — this test must not disturb fixtures other tests rely on.
+    with session_scope() as s:
+        before = {r.id: r.settings_fingerprint for r in s.scalars(select(Run)).all()}
+    ids: list[int] = []
+    try:
+        # Two SQM-off runs stamped (as history was) with DIFFERENT stale fingerprints, and one
+        # ordinary shaped run whose fingerprint is already correct.
+        with session_scope() as s:
+            for fp, settings in [
+                ("stale_off_1x", [{"label": "wan", "quantum": 1514, "enabled": False}]),
+                ("stale_off_2x", [{"label": "wan", "quantum": 6000, "enabled": False}]),
+                ("shapedfp0001", [{"label": "wan", "quantum": 1514, "enabled": True}]),
+            ]:
+                run = Run(status=RunStatus.COMPLETE, created_at=t0, iterations=1,
+                          settings_fingerprint=fp, settings=settings)
+                s.add(run)
+                s.flush()
+                ids.append(run.id)
+
+        body = client.post("/api/settings/refingerprint").json()
+        assert body["rekeyed"] >= 2  # both SQM-off runs re-keyed (the shaped one may already match)
+
+        with session_scope() as s:
+            fps = {rid: s.get(Run, rid).settings_fingerprint for rid in ids}
+        # Both SQM-off runs now share the single canonical SQM-off fingerprint.
+        assert fps[ids[0]] == fps[ids[1]] == SQM_OFF_FINGERPRINT
+        # The shaped run is not collapsed into SQM off.
+        assert fps[ids[2]] != SQM_OFF_FINGERPRINT
+    finally:
+        with session_scope() as s:
+            # Delete this test's runs, and restore every pre-existing run's fingerprint the endpoint
+            # may have re-keyed, so the shared DB is exactly as other tests left it.
+            for rid in ids:
+                row = s.get(Run, rid)
+                if row is not None:
+                    s.delete(row)
+            for r in s.scalars(select(Run)).all():
+                if r.id in before and r.settings_fingerprint != before[r.id]:
+                    r.settings_fingerprint = before[r.id]
+
+
 def test_summarize_is_human_readable():
     s = summarize(normalize(MockProvider().discover()))
     assert "q" in s and ":" in s

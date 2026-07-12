@@ -450,6 +450,33 @@ def backfill_settings(session: Session = Depends(get_session)) -> dict:
     return {"updated": len(runs), "fingerprint": fp}
 
 
+@router.post("/settings/refingerprint")
+def refingerprint_runs(session: Session = Depends(get_session)) -> dict:
+    """Recompute every run's ``settings_fingerprint`` from its *own* captured settings — a one-shot
+    re-key of history under the current fingerprint scheme, preserving all the underlying data.
+
+    Its effect today is to **collapse all "SQM off" runs into the single canonical SQM-off
+    profile**: their fingerprints used to vary with the (inert) shaper field values the firewall
+    echoes back while disabled, splintering the baseline into many one-off profiles. Ordinary
+    shaped profiles hash identically under the new and old scheme, so they are left untouched — only
+    SQM-off (and any other newly-collapsing) runs change their grouping key."""
+    runs = session.scalars(
+        select(Run).where(Run.status == RunStatus.COMPLETE, Run.settings.is_not(None))
+    ).all()
+    rekeyed = 0
+    for run in runs:
+        try:
+            new_fp = fingerprint(run.settings or [])
+        except Exception:  # noqa: BLE001 — one odd row must not abort the whole re-key
+            continue
+        if new_fp != run.settings_fingerprint:
+            run.settings_fingerprint = new_fp
+            rekeyed += 1
+    session.commit()
+    log.info("Re-fingerprinted %d of %d completed runs", rekeyed, len(runs))
+    return {"scanned": len(runs), "rekeyed": rekeyed}
+
+
 @router.get("/settings/profiles")
 def settings_profiles(
     session: Session = Depends(get_session),

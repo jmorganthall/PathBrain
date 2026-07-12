@@ -60,6 +60,7 @@ import ApplyConfirmDialog, { type ApplyConfirm } from "../components/ApplyConfir
 import InsightsIcon from "@mui/icons-material/Insights";
 import PublishIcon from "@mui/icons-material/Publish";
 import RestorePageIcon from "@mui/icons-material/Restore";
+import MergeIcon from "@mui/icons-material/CallMerge";
 import ScienceIcon from "@mui/icons-material/Science";
 import ViewColumnIcon from "@mui/icons-material/ViewColumn";
 import CheckIcon from "@mui/icons-material/Check";
@@ -826,6 +827,23 @@ export default function Settings() {
     }
   }, [load]);
 
+  const handleRefingerprint = useCallback(async () => {
+    setBusy(true);
+    try {
+      const r = await api.settingsRefingerprint();
+      setToast(
+        r.rekeyed > 0
+          ? `Re-keyed ${r.rekeyed} run(s) — all "SQM off" runs now share one profile`
+          : `Nothing to merge — all ${r.scanned} run(s) already grouped correctly`,
+      );
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Merge failed");
+    } finally {
+      setBusy(false);
+    }
+  }, [load]);
+
   // Step 1: fetch the exact field changes (preview, no write) and open the dialog.
   const handleApplyClick = useCallback(async (p: SettingsProfile) => {
     setPreviewFp(p.fingerprint);
@@ -1068,18 +1086,32 @@ export default function Settings() {
         sx={{ mb: 1 }}
       >
         <Typography variant="h4">Settings Impact</Typography>
-        <Tooltip title="Stamp the current firewall settings onto past runs that captured none (e.g. before discovery worked). Only do this if the firewall is unchanged since those runs.">
-          <span>
-            <Button
-              startIcon={<RestorePageIcon />}
-              onClick={handleBackfill}
-              disabled={busy}
-              size="small"
-            >
-              Attribute unstamped runs
-            </Button>
-          </span>
-        </Tooltip>
+        <Stack direction="row" spacing={1}>
+          <Tooltip title="Stamp the current firewall settings onto past runs that captured none (e.g. before discovery worked). Only do this if the firewall is unchanged since those runs.">
+            <span>
+              <Button
+                startIcon={<RestorePageIcon />}
+                onClick={handleBackfill}
+                disabled={busy}
+                size="small"
+              >
+                Attribute unstamped runs
+              </Button>
+            </span>
+          </Tooltip>
+          <Tooltip title="Recompute every run's profile grouping from its own captured settings. Its effect is to merge all “SQM off” runs into one profile (their fingerprints used to vary with the inert shaper values the firewall echoes while disabled). Existing data is kept — only the grouping key changes; shaped profiles are untouched.">
+            <span>
+              <Button
+                startIcon={<MergeIcon />}
+                onClick={handleRefingerprint}
+                disabled={busy}
+                size="small"
+              >
+                Merge SQM-off profiles
+              </Button>
+            </span>
+          </Tooltip>
+        </Stack>
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
         How your firewall/SQM configuration profiles correlate with the Seat of Pants Score. Each run
