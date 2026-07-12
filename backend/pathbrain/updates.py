@@ -11,7 +11,9 @@ network policy) just leaves ``update_available`` false with an ``error`` note.
 from __future__ import annotations
 
 import json
+import socket
 import time
+import urllib.error
 import urllib.request
 
 from . import __version__
@@ -65,6 +67,9 @@ def version_info() -> dict:
         "latest_sha": None,
         "latest_sha_short": None,
         "compare_url": None,
+        # Whether a one-click self-update is wired up (Watchtower HTTP API configured). The UI
+        # only offers the "Update now" button when this is true; otherwise the chip is a link.
+        "self_update": bool((settings.watchtower_url or "").strip()),
         "error": None,
     }
     if not settings.update_check:
@@ -80,3 +85,55 @@ def version_info() -> dict:
             info["update_available"] = True
             info["compare_url"] = f"https://github.com/{settings.update_repo}/compare/{git_sha}...{latest}"
     return info
+
+
+# Connection-level failures that mean "the request reached Watchtower and it recreated *this*
+# container out from under us" (expected on a successful self-update) rather than "Watchtower is
+# unreachable". A reset/dropped/timed-out connection after the request was sent → treat as
+# triggered; a refused connection or DNS failure → Watchtower isn't there → real error.
+_DROPPED_MIDWAY = (ConnectionResetError, socket.timeout, TimeoutError)
+
+
+def trigger_update() -> dict:
+    """Ask Watchtower to pull the newer image and recreate this container (one-click update).
+
+    POSTs to ``{watchtower_url}/v1/update`` with the configured ``Bearer`` token — Watchtower's
+    HTTP API. Returns ``{"triggered": bool, "detail"/"error": str}``; never raises. Because a
+    *successful* update recreates PathBrain's own container, Watchtower often severs the response
+    mid-flight — a dropped/reset/timed-out connection is therefore reported as **triggered**, while
+    a refused connection (Watchtower not listening) or an auth error (bad token) is a real failure
+    surfaced to the caller. Idempotent from the user's side: Watchtower no-ops when the image is
+    already current."""
+    settings = get_settings()
+    base = (settings.watchtower_url or "").strip().rstrip("/")
+    token = (settings.watchtower_token or "").strip()
+    if not base:
+        return {"triggered": False, "error": "Watchtower is not configured (set PATHBRAIN_WATCHTOWER_URL)."}
+
+    url = f"{base}/v1/update"
+    headers = {"User-Agent": "PathBrain-self-update"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, method="POST", headers=headers, data=b"")
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 — operator-configured URL
+            body = resp.read(2048).decode("utf-8", "replace").strip()
+        log.info("Watchtower update triggered (HTTP %s)", resp.status)
+        return {"triggered": True, "detail": body or f"Watchtower accepted the update (HTTP {resp.status})."}
+    except urllib.error.HTTPError as exc:
+        # Watchtower answered with an error status — most commonly 401 (bad/missing token).
+        hint = " — check PATHBRAIN_WATCHTOWER_TOKEN" if exc.code in (401, 403) else ""
+        log.warning("Watchtower update rejected: HTTP %s%s", exc.code, hint)
+        return {"triggered": False, "error": f"Watchtower returned HTTP {exc.code}{hint}."}
+    except urllib.error.URLError as exc:
+        reason = exc.reason
+        if isinstance(reason, _DROPPED_MIDWAY):
+            # The request landed and the update recreated us before the response came back.
+            log.info("Watchtower connection dropped after request (%s) — treating as triggered", reason)
+            return {"triggered": True, "detail": "Update triggered; PathBrain is restarting."}
+        log.warning("Could not reach Watchtower at %s: %s", url, reason)
+        return {"triggered": False, "error": f"Could not reach Watchtower at {base}: {reason}."}
+    except _DROPPED_MIDWAY as exc:  # bare socket timeout not wrapped in URLError
+        log.info("Watchtower connection dropped after request (%s) — treating as triggered", exc)
+        return {"triggered": True, "detail": "Update triggered; PathBrain is restarting."}

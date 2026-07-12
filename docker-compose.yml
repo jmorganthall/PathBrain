@@ -27,6 +27,12 @@ services:
       PATHBRAIN_OPNSENSE_API_KEY: "${PATHBRAIN_OPNSENSE_API_KEY:-}"
       PATHBRAIN_OPNSENSE_API_SECRET: "${PATHBRAIN_OPNSENSE_API_SECRET:-}"
       PATHBRAIN_OPNSENSE_VERIFY_TLS: "${PATHBRAIN_OPNSENSE_VERIFY_TLS:-false}"
+
+      # One-click self-update via Watchtower's HTTP API (both must be set to enable the
+      # "Update now" button). URL is the Watchtower HTTP API base; token is its
+      # WATCHTOWER_HTTP_API_TOKEN. Keep the token in a .env file, not committed here.
+      PATHBRAIN_WATCHTOWER_URL: "${PATHBRAIN_WATCHTOWER_URL:-}"
+      PATHBRAIN_WATCHTOWER_TOKEN: "${PATHBRAIN_WATCHTOWER_TOKEN:-}"
     volumes:
       - pathbrain-data:/data
 

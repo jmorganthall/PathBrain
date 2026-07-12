@@ -43,6 +43,7 @@ import type {
   RaceStart,
   SettingsImpact,
   VersionInfo,
+  UpdateTriggerResult,
   SettingsProfilesResponse,
   Sweep,
   SweepField,
@@ -301,6 +302,9 @@ export const api = {
 
   // Build identity + best-effort "newer build available to pull" check.
   version: () => request<VersionInfo>("/version"),
+
+  // One-click self-update: ask Watchtower to pull the newer image and recreate this container.
+  triggerUpdate: () => request<UpdateTriggerResult>("/update/trigger", { method: "POST" }),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),

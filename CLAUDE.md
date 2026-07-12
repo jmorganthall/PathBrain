@@ -478,6 +478,17 @@ LLM-based. See `README.md` for the product overview.
   default branch (GitHub API; on by default, `PATHBRAIN_UPDATE_CHECK=false` to disable).
   The top-bar `UpdateChip` shows "Update available" (→ the GitHub compare) when the
   branch has moved past the running build — i.e. a newer `:latest` image is pullable.
+- **One-click self-update via Watchtower** (`updates.trigger_update`, `POST /api/update/trigger`):
+  when `PATHBRAIN_WATCHTOWER_URL` (+ optional `PATHBRAIN_WATCHTOWER_TOKEN`) is set, the
+  `UpdateChip` gains an **"Update now"** button (gated on `version_info()["self_update"]`) that
+  POSTs to `{url}/v1/update` with a `Bearer` token — Watchtower's HTTP API — telling it to pull the
+  newer image and recreate this container. Because a *successful* update severs the response as the
+  container is recreated, a dropped/reset/timed-out connection is reported as **triggered** (the
+  frontend then polls `/api/version` until the backend returns on a new `git_sha` and hard-reloads);
+  a **refused** connection (Watchtower not listening) or an **auth** error (bad token → HTTP 401) is
+  a real failure surfaced to the user. Endpoint returns `409` when unconfigured, `502` when
+  unreachable/rejected. Both env vars live in `config.py` (infra settings) + the compose files +
+  `.env.example`; empty URL (default) leaves the chip a plain link.
 
 ## Commands
 

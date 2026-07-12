@@ -103,6 +103,27 @@ def version() -> dict:
     return version_info()
 
 
+@app.post("/api/update/trigger")
+def trigger_update():
+    """One-click self-update: ask Watchtower to pull the newer image and recreate this container.
+
+    Returns ``{"triggered": true, "detail": ...}`` on success (the container will restart shortly),
+    or ``409`` when Watchtower isn't configured / a ``502`` when it's unreachable or rejects the
+    token. A successful update may sever this very response as the container is recreated — the
+    frontend treats a dropped connection on this call as "update in progress"."""
+    from fastapi import HTTPException
+
+    from .updates import trigger_update as _trigger
+
+    result = _trigger()
+    if result.get("triggered"):
+        return result
+    error = result.get("error") or "Update could not be triggered."
+    # Not configured → 409 (nothing to call); reachable-but-failed → 502 (upstream problem).
+    status = 409 if "not configured" in error else 502
+    raise HTTPException(status_code=status, detail=error)
+
+
 # -- Browser-engine artifacts (screenshots, HAR) --------------------------
 _artifact_dir = os.path.abspath(settings.artifact_dir)
 os.makedirs(_artifact_dir, exist_ok=True)
