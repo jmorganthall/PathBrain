@@ -23,7 +23,7 @@ from .interpret import DERIVATION_VERSION, derive
 from .logging_config import get_logger
 from .models import BenchmarkResult, Run, RunStatus, ScoreResult
 from .plugins import BenchmarkPlugin, PluginResult, iter_plugins
-from .raw_access import stored_iterations
+from .raw_access import browser_url_observations, stored_iterations
 from .scoring import (
     COMPLETION_METRIC_SOURCES,
     METRIC_SOURCES,
@@ -377,6 +377,77 @@ def verify_run_derivation(run, artifact_base: str | None = None) -> dict:
         report["plugins"].append({"plugin": res.plugin, "metrics": rows})
     report["consistent"] = not report["drift"]
     return report
+
+
+def browser_collection_shape(runs: list) -> dict:
+    """Summarize **what a cohort of runs actually collected** in their browser raw — the
+    *ingredients*, not the derived metrics.
+
+    The derivation audit proves the recipe (raw → metric) is unchanged; this exposes the thing it
+    can't see: whether the *raw itself* is the same kind of measurement over time. Different URL
+    set, LoAF added/dropped, or a shift in page composition (resource counts) all mean old and new
+    runs aren't measuring the same thing — even when each one faithfully reproduces from its own
+    raw. Returns the URL set, LoAF coverage + sources, and the median resource count per URL."""
+    from collections import defaultdict
+
+    url_runs: dict[str, int] = defaultdict(int)      # runs that loaded each URL
+    url_resources: dict[str, list] = defaultdict(list)  # per-observation resource counts by URL
+    obs_total = 0
+    loaf_present = 0
+    loaf_sources: set[str] = set()
+    for run in runs:
+        seen_urls: set[str] = set()
+        for res in getattr(run, "results", None) or []:
+            if res.plugin != "browser":
+                continue
+            for _i, url, obs in browser_url_observations(res.raw):
+                obs_total += 1
+                seen_urls.add(url)
+                url_resources[url].append(len(obs.get("resources") or []))
+                loaf = obs.get("loaf")
+                src = loaf.get("source") if isinstance(loaf, dict) else None
+                if src:
+                    loaf_present += 1
+                    loaf_sources.add(str(src))
+        for u in seen_urls:
+            url_runs[u] += 1
+    return {
+        "runs": len(runs),
+        "urls": sorted(url_runs),
+        "loaf_present_frac": round(loaf_present / obs_total, 3) if obs_total else 0.0,
+        "loaf_sources": sorted(loaf_sources),
+        "median_resources": {u: round(median(v), 1) for u, v in url_resources.items() if v},
+    }
+
+
+def compare_collection_shapes(old: dict, new: dict) -> dict:
+    """Diff two cohorts' collection shapes into a plain verdict: which URLs appeared/disappeared,
+    whether LoAF coverage flipped, and any URL whose page composition (median resource count)
+    shifted materially. ``changed`` is the headline — did the raw ingredients drift old→new?"""
+    old_urls, new_urls = set(old.get("urls") or []), set(new.get("urls") or [])
+    added = sorted(new_urls - old_urls)
+    removed = sorted(old_urls - new_urls)
+    # LoAF coverage: a material flip (e.g. old runs predate LoAF capture) or a different source set.
+    lo, ln = old.get("loaf_present_frac", 0.0), new.get("loaf_present_frac", 0.0)
+    loaf_changed = abs(lo - ln) >= 0.25 or set(old.get("loaf_sources") or []) != set(new.get("loaf_sources") or [])
+    # Page composition: for URLs in both cohorts, flag a >20% (and ≥2-resource) shift in the median.
+    om, nm = old.get("median_resources") or {}, new.get("median_resources") or {}
+    resource_shift = {}
+    for u in sorted(old_urls & new_urls):
+        a, b = om.get(u), nm.get(u)
+        if a is None or b is None:
+            continue
+        if abs(a - b) >= 2 and abs(a - b) / max(a, b, 1) > 0.2:
+            resource_shift[u] = {"old": a, "new": b}
+    changed = bool(added or removed or loaf_changed or resource_shift)
+    return {
+        "urls_added": added,
+        "urls_removed": removed,
+        "loaf_changed": loaf_changed,
+        "loaf_present": {"old": lo, "new": ln},
+        "resource_shift": resource_shift,
+        "changed": changed,
+    }
 
 
 def _iteration_plugin_metrics_from_raw(run, artifact_base: str | None) -> list[dict[str, dict]]:

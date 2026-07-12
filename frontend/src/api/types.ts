@@ -439,6 +439,25 @@ export interface DerivationCohort {
   drift_metrics: string[];
 }
 
+export interface CollectionShape {
+  runs: number;
+  urls: string[];
+  loaf_present_frac: number;
+  loaf_sources: string[];
+  median_resources: Record<string, number>;
+}
+
+export interface CollectionComparison {
+  urls_added: string[];
+  urls_removed: string[];
+  loaf_changed: boolean;
+  loaf_present: { old: number; new: number };
+  resource_shift: Record<string, { old: number; new: number }>;
+  changed: boolean;
+  oldest: CollectionShape;
+  newest: CollectionShape;
+}
+
 export interface DerivationAudit {
   fingerprint: string;
   total_runs: number;
@@ -447,6 +466,7 @@ export interface DerivationAudit {
   newest: DerivationCohort;
   consistent: boolean;
   stale_history: boolean;
+  collection: CollectionComparison;
 }
 
 export interface UpdateConnectionTest extends UpdateConfig {

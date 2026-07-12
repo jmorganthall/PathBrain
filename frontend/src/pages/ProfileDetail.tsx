@@ -365,6 +365,44 @@ export default function ProfileDetail() {
                   ),
                 )}
               </Stack>
+              {/* Ingredients check: did we collect the SAME raw old vs new? (URLs / LoAF / composition) */}
+              {audit.collection && (
+                <Box sx={{ mt: 2, pt: 1.5, borderTop: 1, borderColor: "divider" }}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Raw collection (ingredients)
+                  </Typography>
+                  <Alert severity={audit.collection.changed ? "warning" : "success"} sx={{ mb: audit.collection.changed ? 1 : 0 }}>
+                    {audit.collection.changed
+                      ? "The raw we collect changed between old and new runs — even with a faithful derivation, these runs aren't measuring the same thing."
+                      : "Same ingredients: old and new runs loaded the same URLs, with the same LoAF coverage and page composition."}
+                  </Alert>
+                  {audit.collection.changed && (
+                    <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+                      {audit.collection.urls_added.length > 0 && (
+                        <Typography variant="body2" color="warning.main">
+                          URLs only in new runs: {audit.collection.urls_added.join(", ")}
+                        </Typography>
+                      )}
+                      {audit.collection.urls_removed.length > 0 && (
+                        <Typography variant="body2" color="warning.main">
+                          URLs only in old runs: {audit.collection.urls_removed.join(", ")}
+                        </Typography>
+                      )}
+                      {audit.collection.loaf_changed && (
+                        <Typography variant="body2" color="warning.main">
+                          LoAF coverage changed: old {Math.round(audit.collection.loaf_present.old * 100)}% → new{" "}
+                          {Math.round(audit.collection.loaf_present.new * 100)}% of observations
+                        </Typography>
+                      )}
+                      {Object.entries(audit.collection.resource_shift).map(([url, s]) => (
+                        <Typography key={url} variant="body2" color="warning.main">
+                          {url}: page composition shifted {s.old} → {s.new} median resources
+                        </Typography>
+                      ))}
+                    </Stack>
+                  )}
+                </Box>
+              )}
               <Typography variant="caption" color="text.disabled" sx={{ display: "block", mt: 1 }}>
                 {audit.total_runs} total run{audit.total_runs === 1 ? "" : "s"} · sampled oldest &amp; newest
               </Typography>

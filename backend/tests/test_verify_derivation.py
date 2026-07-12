@@ -139,3 +139,79 @@ def test_profile_rollup_all_consistent(client):
 
 def test_profile_rollup_unknown_404(client):
     assert client.get("/api/settings/profiles/nope/verify-derivation").status_code == 404
+
+
+# ── collection-shape (ingredients) comparison ────────────────────────────────
+
+
+def _persist_raw_at(fingerprint: str, created: datetime, per_iter: dict) -> int:
+    """Persist a browser run with a caller-chosen raw payload (to vary the *ingredients*)."""
+    fresh = _median_values([derive("browser", per_iter), derive("browser", per_iter)])
+    with session_scope() as session:
+        run = Run(
+            status=RunStatus.COMPLETE,
+            created_at=created,
+            iterations=2,
+            settings_fingerprint=fingerprint,
+            settings=[{"label": "wan", "quantum": 1514}],
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            BenchmarkResult(
+                run_id=run.id, plugin="browser", success=True, metrics=fresh,
+                raw={"iterations": [per_iter, per_iter]},
+            )
+        )
+        return run.id
+
+
+def test_collection_shape_flags_a_changed_url_set(client):
+    # Old runs loaded one URL; new runs a different URL — same faithful derivation, different
+    # ingredients. The audit must flag the collection change even though derivation is consistent.
+    fp = "collurlchange"
+    old_iter = {"urls": {"https://old/": {"nav": _NAV, "paint": _PAINT, "resources": _RES, "loaf": _LOAF}}}
+    new_iter = {"urls": {"https://new/": {"nav": _NAV, "paint": _PAINT, "resources": _RES, "loaf": _LOAF}}}
+    base = datetime(2026, 1, 1, 12, 0, 0)
+    for i in range(3):
+        _persist_raw_at(fp, base.replace(day=1 + i), old_iter)
+    for i in range(3):
+        _persist_raw_at(fp, base.replace(month=6, day=1 + i), new_iter)
+
+    body = client.get(f"/api/settings/profiles/{fp}/verify-derivation?sample=3").json()
+    # Derivation is faithful …
+    assert body["consistent"] is True
+    # … but the ingredients changed: the URL set differs old→new.
+    coll = body["collection"]
+    assert coll["changed"] is True
+    assert "https://new/" in coll["urls_added"]
+    assert "https://old/" in coll["urls_removed"]
+
+
+def test_collection_shape_flags_loaf_added_over_time(client):
+    # Early runs predate LoAF capture (source None); later runs have it. That's a real collection
+    # change — the crown's network-stall leg is only measurable once LoAF exists.
+    fp = "collloafadd"
+    no_loaf = {"urls": {"https://a/": {"nav": _NAV, "paint": _PAINT, "resources": _RES, "loaf": {"source": None, "entries": []}}}}
+    with_loaf = {"urls": {"https://a/": {"nav": _NAV, "paint": _PAINT, "resources": _RES, "loaf": _LOAF}}}
+    base = datetime(2026, 1, 1, 12, 0, 0)
+    for i in range(3):
+        _persist_raw_at(fp, base.replace(day=1 + i), no_loaf)
+    for i in range(3):
+        _persist_raw_at(fp, base.replace(month=6, day=1 + i), with_loaf)
+
+    coll = client.get(f"/api/settings/profiles/{fp}/verify-derivation?sample=3").json()["collection"]
+    assert coll["loaf_changed"] is True
+    assert coll["loaf_present"]["old"] == 0.0 and coll["loaf_present"]["new"] == 1.0
+    assert coll["changed"] is True
+
+
+def test_collection_shape_same_ingredients_not_flagged(client):
+    fp = "collstable"
+    same = {"urls": {"https://a/": {"nav": _NAV, "paint": _PAINT, "resources": _RES, "loaf": _LOAF}}}
+    base = datetime(2026, 2, 1, 12, 0, 0)
+    for i in range(6):
+        _persist_raw_at(fp, base.replace(day=1 + i), same)
+    coll = client.get(f"/api/settings/profiles/{fp}/verify-derivation?sample=3").json()["collection"]
+    assert coll["changed"] is False
+    assert coll["urls_added"] == [] and coll["urls_removed"] == []
