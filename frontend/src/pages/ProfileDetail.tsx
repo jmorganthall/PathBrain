@@ -26,6 +26,7 @@ import { api } from "../api/client";
 import type {
   ApplyProfileResult,
   AxisSeriesResponse,
+  ProfilePauseRollup,
   RunSummary,
   SettingsProfile,
 } from "../api/types";
@@ -59,6 +60,7 @@ export default function ProfileDetail() {
   const [currentFp, setCurrentFp] = useState<string | null>(null);
   const [bestFp, setBestFp] = useState<string | null>(null);
   const [series, setSeries] = useState<AxisSeriesResponse | null>(null);
+  const [pauses, setPauses] = useState<ProfilePauseRollup | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -103,6 +105,8 @@ export default function ProfileDetail() {
         setTotal(c.count);
         await loadPage(0, rowsPerPage);
         setPage(0);
+        // Best-effort pause roll-up (reads raw across runs, so don't block the page on it).
+        api.profilePauses(fingerprint).then(setPauses).catch(() => setPauses(null));
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load profile");
       } finally {
@@ -282,6 +286,71 @@ export default function ProfileDetail() {
                 shaping-immune client CPU and should match across profiles.
               </Typography>
               <Waterfall metrics={profile.metrics} />
+            </CardContent>
+          </Card>
+        )}
+
+        {pauses && pauses.urls.length > 0 && (
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Where&apos;s the pause? (median across {pauses.runs} run{pauses.runs === 1 ? "" : "s"})
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+                The longest <b>void</b> in each page load — where nothing finished — rolled up across
+                this profile&apos;s runs: typical duration, where it falls, and whether it&apos;s{" "}
+                <b>network</b> (byte-delivery, the part your shaper moves) or <b>render</b> (main
+                thread, shaping-immune). This is what the crown&apos;s network-stall leg is built on.
+              </Typography>
+              <Stack spacing={1}>
+                {pauses.urls.map((d) => {
+                  const phaseLabel: Record<string, string> = {
+                    pre_fcp: "before first paint",
+                    fcp_lcp: "first paint → main content",
+                    lcp_load: "post-LCP settle",
+                    post_load: "after load",
+                  };
+                  const netPct = d.network_fraction != null ? Math.round(d.network_fraction * 100) : null;
+                  const attrColor =
+                    d.attribution === "render" ? "warning" : d.attribution === "network" ? "info" : "default";
+                  return (
+                    <Box
+                      key={d.url}
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        gap: 1,
+                        p: 1,
+                        borderRadius: 1,
+                        border: 1,
+                        borderColor: "divider",
+                      }}
+                    >
+                      <Typography variant="body2" sx={{ minWidth: 0, flex: 1 }} noWrap title={d.url}>
+                        {d.url}
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        {Math.round(d.median_void_ms)}ms void
+                      </Typography>
+                      <Chip size="small" variant="outlined" label={phaseLabel[d.phase] ?? d.phase} />
+                      <Chip
+                        size="small"
+                        color={attrColor as "warning" | "info" | "default"}
+                        variant={d.attribution === "render" || d.attribution === "network" ? "filled" : "outlined"}
+                        label={
+                          netPct != null && d.attribution
+                            ? `${d.attribution} · ${netPct}% network`
+                            : d.attribution ?? "unknown"
+                        }
+                      />
+                      <Typography variant="caption" color="text.secondary">
+                        {d.runs} run{d.runs === 1 ? "" : "s"}
+                      </Typography>
+                    </Box>
+                  );
+                })}
+              </Stack>
             </CardContent>
           </Card>
         )}
