@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 import { Link as RouterLink, useLocation } from "react-router-dom";
 import AppBar from "@mui/material/AppBar";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
+import Alert from "@mui/material/Alert";
+import Snackbar from "@mui/material/Snackbar";
 import Tooltip from "@mui/material/Tooltip";
 import Divider from "@mui/material/Divider";
 import Drawer from "@mui/material/Drawer";
@@ -37,15 +41,21 @@ import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 import type { ReactNode } from "react";
 
 import JobStatus from "./JobStatus";
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
 import type { VersionInfo } from "../api/types";
 
 const DRAWER_WIDTH = 240;
 
 // Top-bar chip that appears only when a newer build is available to pull. Polls the
-// backend's cached /api/version (hourly) so it never hammers GitHub.
+// backend's cached /api/version (hourly) so it never hammers GitHub. When one-click
+// self-update is wired up (Watchtower configured → info.self_update), it also offers an
+// "Update now" button that tells Watchtower to pull the new image and recreate this container.
 function UpdateChip() {
   const [info, setInfo] = useState<VersionInfo | null>(null);
+  // idle → triggering (POST in flight) → updating (container recreating; poll for it to return).
+  const [phase, setPhase] = useState<"idle" | "triggering" | "updating">("idle");
+  const [snack, setSnack] = useState<{ msg: string; sev: "info" | "error" } | null>(null);
+
   useEffect(() => {
     let alive = true;
     const check = () =>
@@ -60,26 +70,111 @@ function UpdateChip() {
       clearInterval(t);
     };
   }, []);
+
+  // While the update is in flight the container is being recreated, so the backend goes away and
+  // comes back on the new image. Poll until it answers on a *different* build (or with nothing left
+  // to update), then hard-reload so the UI matches the new backend.
+  useEffect(() => {
+    if (phase !== "updating") return;
+    const fromSha = info?.git_sha_short ?? null;
+    const t = setInterval(() => {
+      api
+        .version()
+        .then((v) => {
+          if ((v.git_sha_short && v.git_sha_short !== fromSha) || !v.update_available) {
+            window.location.reload();
+          }
+        })
+        .catch(() => {}); // still restarting — keep waiting
+    }, 4000);
+    return () => clearInterval(t);
+  }, [phase, info?.git_sha_short]);
+
   if (!info?.update_available) return null;
   const tip = `A newer build is available to pull (ghcr.io/jmorganthall/pathbrain:latest).\nThis build: ${
     info.git_sha_short ?? "unknown"
   } · latest: ${info.latest_sha_short ?? "?"}`;
+
+  const onUpdate = () => {
+    setPhase("triggering");
+    api
+      .triggerUpdate()
+      .then((r) => {
+        setPhase("updating");
+        setSnack({ msg: r.detail || "Update triggered — PathBrain is restarting…", sev: "info" });
+      })
+      .catch((e) => {
+        // A *successful* update severs this very request as the container is recreated, so a
+        // dropped connection (ApiError status 0) means "it's happening", not a failure. Only a real
+        // HTTP error from a still-alive backend (Watchtower unreachable / bad token → 502/409) is
+        // surfaced as an error.
+        if (e instanceof ApiError && e.status === 0) {
+          setPhase("updating");
+          setSnack({ msg: "Update triggered — PathBrain is restarting…", sev: "info" });
+        } else {
+          setPhase("idle");
+          setSnack({ msg: e instanceof Error ? e.message : "Update failed to start.", sev: "error" });
+        }
+      });
+  };
+
   return (
-    <Tooltip title={tip}>
-      <Chip
-        icon={<SystemUpdateAltIcon />}
-        label="Update available"
-        color="warning"
-        size="small"
-        variant="outlined"
-        component="a"
-        clickable
-        href={info.compare_url ?? undefined}
-        target="_blank"
-        rel="noopener noreferrer"
-        sx={{ mr: 1 }}
-      />
-    </Tooltip>
+    <>
+      <Tooltip title={tip}>
+        <Chip
+          icon={<SystemUpdateAltIcon />}
+          label="Update available"
+          color="warning"
+          size="small"
+          variant="outlined"
+          component="a"
+          clickable
+          href={info.compare_url ?? undefined}
+          target="_blank"
+          rel="noopener noreferrer"
+          sx={{ mr: 1 }}
+        />
+      </Tooltip>
+      {info.self_update && (
+        <Tooltip title="Pull the newer image and restart PathBrain via Watchtower">
+          <span>
+            <Button
+              size="small"
+              variant="contained"
+              color="warning"
+              onClick={onUpdate}
+              disabled={phase !== "idle"}
+              startIcon={
+                phase === "idle" ? (
+                  <SystemUpdateAltIcon />
+                ) : (
+                  <CircularProgress size={14} color="inherit" />
+                )
+              }
+              sx={{ mr: 1 }}
+            >
+              {phase === "idle" ? "Update now" : phase === "triggering" ? "Starting…" : "Updating…"}
+            </Button>
+          </span>
+        </Tooltip>
+      )}
+      <Snackbar
+        open={!!snack}
+        autoHideDuration={phase === "updating" ? null : 8000}
+        onClose={() => setSnack(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        {snack ? (
+          <Alert
+            severity={snack.sev}
+            variant="filled"
+            onClose={phase === "updating" ? undefined : () => setSnack(null)}
+          >
+            {snack.msg}
+          </Alert>
+        ) : undefined}
+      </Snackbar>
+    </>
   );
 }
 

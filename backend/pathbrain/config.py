@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     update_repo: str = "jmorganthall/PathBrain"
     update_branch: str = "main"
 
+    # One-click self-update via Watchtower's HTTP API. When both are set, the "Update available"
+    # chip offers an "Update now" button that POSTs to ``{watchtower_url}/v1/update`` with a
+    # ``Bearer`` token, telling Watchtower to pull the newer image and recreate this container.
+    # ``watchtower_url`` is the base URL of the Watchtower HTTP API (e.g. http://192.168.2.6:8998);
+    # ``watchtower_token`` is its ``WATCHTOWER_HTTP_API_TOKEN``. Empty ``watchtower_url`` (default)
+    # disables the button — the chip stays a link to the GitHub compare.
+    watchtower_url: str = ""
+    watchtower_token: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

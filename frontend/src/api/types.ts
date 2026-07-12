@@ -415,7 +415,15 @@ export interface VersionInfo {
   latest_sha: string | null;
   latest_sha_short: string | null;
   compare_url: string | null;
+  // True when a one-click self-update is wired up (Watchtower HTTP API configured); the
+  // "Update now" button is shown only then.
+  self_update: boolean;
   error: string | null;
+}
+
+export interface UpdateTriggerResult {
+  triggered: boolean;
+  detail?: string;
 }
 
 export interface ImpactSide {

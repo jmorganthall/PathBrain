@@ -1,6 +1,8 @@
 """Tests for the version / update-awareness check (best-effort, cached)."""
 from __future__ import annotations
 
+import urllib.error
+
 from pathbrain import updates
 from pathbrain.config import get_settings
 
@@ -77,4 +79,109 @@ def test_disabled_skips_network(monkeypatch):
     info = updates.version_info()
     assert info["update_check"] is False
     assert info["update_available"] is False
+    get_settings.cache_clear()
+
+
+# ── one-click self-update via Watchtower ─────────────────────────────────────
+
+
+class _FakeResp:
+    """Minimal urlopen() context manager for a successful Watchtower response."""
+
+    def __init__(self, status=200, body=b"Updated PathBrain"):
+        self.status = status
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, n=-1):
+        return self._body
+
+
+def test_self_update_flag_reflects_watchtower_config(monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.setenv("PATHBRAIN_UPDATE_CHECK", "false")  # skip the network SHA check
+    # No Watchtower configured → self_update false.
+    monkeypatch.delenv("PATHBRAIN_WATCHTOWER_URL", raising=False)
+    assert updates.version_info()["self_update"] is False
+    get_settings.cache_clear()
+    # URL set → the UI offers the button.
+    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+    assert updates.version_info()["self_update"] is True
+    get_settings.cache_clear()
+
+
+def test_trigger_update_not_configured(monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.delenv("PATHBRAIN_WATCHTOWER_URL", raising=False)
+    out = updates.trigger_update()
+    assert out["triggered"] is False and "not configured" in out["error"]
+    get_settings.cache_clear()
+
+
+def test_trigger_update_success_sends_bearer_token(monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998/")  # trailing slash trimmed
+    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_TOKEN", "s3cr3t")
+    seen = {}
+
+    def fake_urlopen(req, timeout=0):
+        seen["url"] = req.full_url
+        seen["method"] = req.get_method()
+        seen["auth"] = req.get_header("Authorization")
+        return _FakeResp()
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    out = updates.trigger_update()
+    assert out["triggered"] is True
+    assert seen["url"] == "http://192.168.2.6:8998/v1/update"  # no double slash
+    assert seen["method"] == "POST"
+    assert seen["auth"] == "Bearer s3cr3t"
+    get_settings.cache_clear()
+
+
+def test_trigger_update_bad_token_surfaces_auth_error(monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_TOKEN", "wrong")
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    out = updates.trigger_update()
+    assert out["triggered"] is False
+    assert "401" in out["error"] and "TOKEN" in out["error"]
+    get_settings.cache_clear()
+
+
+def test_trigger_update_dropped_connection_is_treated_as_triggered(monkeypatch):
+    # A successful update recreates *this* container, severing the response → not a failure.
+    get_settings.cache_clear()
+    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.URLError(ConnectionResetError("connection reset by peer"))
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    out = updates.trigger_update()
+    assert out["triggered"] is True
+    get_settings.cache_clear()
+
+
+def test_trigger_update_unreachable_is_an_error(monkeypatch):
+    # A refused connection means Watchtower isn't listening → real, surfaced failure.
+    get_settings.cache_clear()
+    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.URLError(ConnectionRefusedError("connection refused"))
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    out = updates.trigger_update()
+    assert out["triggered"] is False and "Could not reach" in out["error"]
     get_settings.cache_clear()
