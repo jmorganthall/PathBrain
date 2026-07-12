@@ -387,7 +387,11 @@ def verify_profile_derivation(
     like-for-like, and the fix is a full re-derive. Mutates nothing."""
     from ..config import get_settings
     from ..interpret import DERIVATION_VERSION
-    from ..runner import verify_run_derivation as _verify
+    from ..runner import (
+        browser_collection_shape,
+        compare_collection_shapes,
+        verify_run_derivation as _verify,
+    )
 
     art = get_settings().artifact_dir
     total = session.scalar(
@@ -428,6 +432,13 @@ def verify_profile_derivation(
         }
 
     old_c, new_c = _cohort(oldest), _cohort(newest)
+    # Collection-shape comparison: did we collect the SAME raw ingredients old vs new? (URL set,
+    # LoAF coverage, page composition). This catches the drift the derivation audit can't — a
+    # faithful recipe applied to different ingredients still yields non-comparable metrics.
+    old_shape, new_shape = browser_collection_shape(oldest), browser_collection_shape(newest)
+    collection = compare_collection_shapes(old_shape, new_shape)
+    collection["oldest"] = old_shape
+    collection["newest"] = new_shape
     return {
         "fingerprint": fingerprint,
         "total_runs": total,
@@ -438,6 +449,9 @@ def verify_profile_derivation(
         "consistent": old_c["consistent"] and new_c["consistent"],
         # The tell the user is hunting: historical runs drift while fresh ones don't.
         "stale_history": (not old_c["consistent"]) and new_c["consistent"],
+        # Did the raw INGREDIENTS change (URLs/LoAF/composition)? Even with a faithful recipe,
+        # a change here means old and new runs aren't measuring the same thing.
+        "collection": collection,
     }
 
 

@@ -614,6 +614,19 @@ docker compose up --build   # -> http://localhost:8000
   will fail if it fabricates. After a change like this, re-derive (drop the bogus values from raw)
   then re-grade (re-quarantine), then optionally **Re-run top-N profiles** (Settings → Re-run
   profiles, winner-first `top`+`rank_by`) to collect fresh comparable data on the best performers.
+- **Data-integrity audit (recipe vs. ingredients).** `GET /api/runs/{id}/verify-derivation`
+  (`runner.verify_run_derivation`) and `GET /api/settings/profiles/{fp}/verify-derivation` are
+  **read-only** audits that answer "are we keeping the same data the same?" without changing any
+  score. The **recipe** check re-derives every metric from a run's immutable raw and diffs against
+  the stored value — a mismatch means a *stale-formula* value (derived under an older
+  `DERIVATION_VERSION`, never re-derived); the profile endpoint samples the oldest + newest runs and
+  flags `stale_history` when old drifts while new is clean. The **ingredients** check
+  (`runner.browser_collection_shape`/`compare_collection_shapes`) compares what the raw actually
+  *captured* across cohorts — URL set, LoAF coverage + sources, per-URL median resource count — so a
+  faithful recipe applied to *different ingredients* (the browser navigating a changed URL set,
+  LoAF added mid-history, page composition shifting) is caught even though each run still reproduces
+  from its own raw. Surfaced as the **"Data integrity"** card on the Profile Detail page ("Verify old
+  vs new"). This is diagnosis, not a scoring change.
 - **Current vs. legacy scoring (no dual-score machinery).** A run scored before
   the current rubric (no longest-stall / byte-arrival metrics —
   `metrics.has_latest_metrics`, keyed off `marks_latest`, now `longest_stall`) isn't
