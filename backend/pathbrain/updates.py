@@ -94,6 +94,72 @@ def version_info() -> dict:
 _DROPPED_MIDWAY = (ConnectionResetError, socket.timeout, TimeoutError)
 
 
+def self_update_config() -> dict:
+    """The Watchtower integration's configuration state — **no network call**. Powers the
+    Plugins-page integration card's initial render. Never exposes the token itself, only whether
+    one is set."""
+    settings = get_settings()
+    base = (settings.watchtower_url or "").strip().rstrip("/")
+    return {
+        "configured": bool(base),
+        "url": base or None,
+        "token_set": bool((settings.watchtower_token or "").strip()),
+    }
+
+
+def test_update_connection() -> dict:
+    """Check the Watchtower self-update integration **without triggering an update**.
+
+    Watchtower's only HTTP endpoint (``/v1/update``) *performs* the update, so a safe test can't
+    call it. Instead this probes the API **root** — any HTTP response (even 404/401) proves the
+    server is up and reachable from inside this container; only a connection-level failure
+    (refused / DNS / timeout) means the URL, port, or network is wrong (the #1 real-world misconfig).
+    The token is verified for real only by "Update now", which safely reports a bad token as HTTP 401
+    without updating. Returns ``{configured, url, token_set, reachable, status, detail}``; never raises.
+    ``status`` ∈ ``ok`` | ``unreachable`` | ``not_configured``."""
+    cfg = self_update_config()
+    result = {**cfg, "reachable": False, "status": "not_configured", "detail": ""}
+    base = cfg["url"]
+    if not base:
+        result["detail"] = "Watchtower is not configured — set PATHBRAIN_WATCHTOWER_URL (and _TOKEN)."
+        return result
+
+    # Probe the root, NOT /v1/update — hitting the update endpoint would run an update.
+    req = urllib.request.Request(
+        base + "/", method="GET", headers={"User-Agent": "PathBrain-self-update-test"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=6) as resp:  # noqa: S310 — operator-configured URL
+            code = resp.status
+    except urllib.error.HTTPError as exc:
+        code = exc.code  # server answered with an error status → still reachable
+    except urllib.error.URLError as exc:
+        result["status"] = "unreachable"
+        result["detail"] = (
+            f"Could not reach Watchtower at {base}: {exc.reason}. Check the URL/port and that it's "
+            "reachable from inside the PathBrain container."
+        )
+        return result
+    except _DROPPED_MIDWAY as exc:  # bare socket timeout
+        result["status"] = "unreachable"
+        result["detail"] = f"Timed out reaching Watchtower at {base}: {exc}."
+        return result
+
+    result["reachable"] = True
+    result["status"] = "ok"
+    tok = (
+        "a token is set"
+        if cfg["token_set"]
+        else "no token set — add PATHBRAIN_WATCHTOWER_TOKEN if Watchtower requires one"
+    )
+    result["detail"] = (
+        f"Reachable at {base} (HTTP {code} at the API root); {tok}. "
+        'The token is verified for real when you click "Update now" (a bad token returns 401 '
+        "without updating)."
+    )
+    return result
+
+
 def trigger_update() -> dict:
     """Ask Watchtower to pull the newer image and recreate this container (one-click update).
 

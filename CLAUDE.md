@@ -488,7 +488,13 @@ LLM-based. See `README.md` for the product overview.
   a **refused** connection (Watchtower not listening) or an **auth** error (bad token → HTTP 401) is
   a real failure surfaced to the user. Endpoint returns `409` when unconfigured, `502` when
   unreachable/rejected. Both env vars live in `config.py` (infra settings) + the compose files +
-  `.env.example`; empty URL (default) leaves the chip a plain link.
+  `.env.example`; empty URL (default) leaves the chip a plain link. The **Plugins page** carries a
+  **Watchtower integration card** (`WatchtowerIntegration`) showing configured/URL/token state
+  (`GET /api/update/config`, `self_update_config` — no network) with a **"Test connection"** button
+  (`POST /api/update/test`, `test_update_connection`) that probes reachability **without triggering
+  an update** — it hits the API **root**, never `/v1/update` (Watchtower's only endpoint *performs*
+  the update), so any HTTP response = reachable and only a connection-level failure = unreachable;
+  the token is verified for real only by "Update now".
 
 ## Commands
 

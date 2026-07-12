@@ -185,3 +185,60 @@ def test_trigger_update_unreachable_is_an_error(monkeypatch):
     out = updates.trigger_update()
     assert out["triggered"] is False and "Could not reach" in out["error"]
     get_settings.cache_clear()
+
+
+def test_test_connection_not_configured(monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.delenv("PATHBRAIN_WATCHTOWER_URL", raising=False)
+    out = updates.test_update_connection()
+    assert out["configured"] is False and out["status"] == "not_configured"
+    assert out["reachable"] is False
+    get_settings.cache_clear()
+
+
+def test_test_connection_probes_root_not_update_endpoint(monkeypatch):
+    # The test must NEVER hit /v1/update (that would perform an update) — only the API root.
+    get_settings.cache_clear()
+    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_TOKEN", "s3cr3t")
+    seen = {}
+
+    def fake_urlopen(req, timeout=0):
+        seen["url"] = req.full_url
+        seen["method"] = req.get_method()
+        return _FakeResp(status=404)  # Watchtower returns 404 at the root → still reachable
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    out = updates.test_update_connection()
+    assert seen["url"] == "http://192.168.2.6:8998/"
+    assert "/v1/update" not in seen["url"]
+    assert out["status"] == "ok" and out["reachable"] is True and out["token_set"] is True
+    get_settings.cache_clear()
+
+
+def test_test_connection_reports_unreachable(monkeypatch):
+    get_settings.cache_clear()
+    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.URLError(ConnectionRefusedError("connection refused"))
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    out = updates.test_update_connection()
+    assert out["status"] == "unreachable" and out["reachable"] is False
+    assert "Could not reach" in out["detail"]
+    get_settings.cache_clear()
+
+
+def test_test_connection_http_error_still_reachable(monkeypatch):
+    # An HTTP error status at the root (e.g. 401) still proves the server is up → reachable.
+    get_settings.cache_clear()
+    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    out = updates.test_update_connection()
+    assert out["status"] == "ok" and out["reachable"] is True
+    get_settings.cache_clear()

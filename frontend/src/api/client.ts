@@ -44,6 +44,8 @@ import type {
   SettingsImpact,
   VersionInfo,
   UpdateTriggerResult,
+  UpdateConfig,
+  UpdateConnectionTest,
   SettingsProfilesResponse,
   Sweep,
   SweepField,
@@ -305,6 +307,10 @@ export const api = {
 
   // One-click self-update: ask Watchtower to pull the newer image and recreate this container.
   triggerUpdate: () => request<UpdateTriggerResult>("/update/trigger", { method: "POST" }),
+  // Watchtower integration: config state (no network) + a reachability test (no update triggered).
+  selfUpdateConfig: () => request<UpdateConfig>("/update/config"),
+  testUpdateConnection: () =>
+    request<UpdateConnectionTest>("/update/test", { method: "POST" }),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),
