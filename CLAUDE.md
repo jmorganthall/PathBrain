@@ -225,11 +225,17 @@ LLM-based. See `README.md` for the product overview.
     in a `finally` (persisted to a `BaselineTest` row; `reconcile_interrupted_baseline_tests`
     re-enables SQM on startup). Runs on demand **or** on a nightly schedule (`config.baseline_test`:
     `enabled`/`hour`/`minute`/`iterations`/`settle_seconds`, gated in `scheduler.py` by local
-    container-TZ time). A disabled pipe fingerprints as its own profile (`settings_profile.fingerprint`
-    folds an "sqm_off" marker **only when a pipe is off**, so normal all-enabled profiles keep their
-    exact historical hash), so SQM-off runs form a distinct "SQM off" profile instead of polluting
-    the shaped one. Own thread under the `coordinator` lock. `/api/baseline/*` + the **Baseline
-    (SQM off)** tab.
+    container-TZ time). **All SQM-off runs collapse into one profile**: when any pipe is off the
+    shaper params don't apply (the link is unshaped regardless of the values the firewall still
+    echoes), so `settings_profile.fingerprint` returns the single canonical `SQM_OFF_FINGERPRINT`
+    for *any* disabled-pipe config — the baseline test's runs all aggregate into one "SQM off"
+    profile instead of splintering per inert field value. Normal all-enabled profiles hash
+    byte-for-byte as before (no history re-key); only SQM-off runs change key. Existing SQM-off
+    history is merged by re-keying from each run's own stored settings via
+    `POST /api/settings/refingerprint` (the **"Merge SQM-off profiles"** button on Settings Impact).
+    `_is_sqm_off` reads the stored `settings` (not the fingerprint), so the "% vs SQM off" baseline
+    is unaffected by the collapse. Own thread under the `coordinator` lock. `/api/baseline/*` + the
+    **Baseline (SQM off)** tab.
   - `challenger.py` — **Challenger Race**: the adaptive, multi-profile sibling of
     `profile_test`. A time-boxed loop that runs **one iteration at a time** on whatever the
     field can't currently trust against the winner, re-ranks via `rank_challengers`, and

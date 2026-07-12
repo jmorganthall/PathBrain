@@ -48,24 +48,27 @@ def normalize(configs: list[FqCodelConfig]) -> list[dict]:
     return out
 
 
+SQM_OFF_FINGERPRINT = hashlib.sha1(b"\x00sqm_off").hexdigest()[:12]
+
+
 def fingerprint(normalized: list[dict]) -> str:
     """Stable short hash of the profile-defining fields (order-independent).
 
-    A pipe with SQM switched **off** is a genuinely different profile from the same shaper
-    parameters with SQM on, so the baseline "SQM off" test's runs must not merge into the
-    matching shaped profile. ``enabled`` is deliberately not a ``CANON_FIELDS`` identity
-    value: the disabled-pipe marker below is appended **only when some pipe is off**, so an
-    ordinary all-enabled profile hashes byte-for-byte as it always has (no history re-key)."""
+    **SQM off collapses to one profile.** When any pipe is switched off the shaper parameters
+    don't apply — the link is unshaped regardless of what quantum/target/… the firewall still
+    echoes back — so *every* "SQM off" run hashes to the single canonical ``SQM_OFF_FINGERPRINT``,
+    no matter which pipe is off or what the (inert) field values are. That way the nightly
+    baseline test's runs all aggregate into one "SQM off" profile instead of splintering into a
+    new profile every time the underlying shaper values differ.
+
+    ``enabled`` is deliberately not a ``CANON_FIELDS`` identity value, and an ordinary all-enabled
+    profile still hashes byte-for-byte as it always has (no history re-key) — only SQM-off runs
+    change fingerprint. Re-key existing SQM-off history with ``POST /api/settings/refingerprint``."""
+    if any(p.get("enabled") is False for p in normalized):
+        return SQM_OFF_FINGERPRINT
     core = [{k: p.get(k) for k in CANON_FIELDS} for p in normalized]
     core.sort(key=lambda x: json.dumps(x, sort_keys=True, default=str))
     blob = json.dumps(core, sort_keys=True, default=str)
-    disabled = sorted(
-        json.dumps({k: p.get(k) for k in CANON_FIELDS}, sort_keys=True, default=str)
-        for p in normalized
-        if p.get("enabled") is False
-    )
-    if disabled:
-        blob += "\x00sqm_off:" + json.dumps(disabled)
     return hashlib.sha1(blob.encode()).hexdigest()[:12]
 
 
@@ -240,8 +243,11 @@ def summarize(normalized: list[dict] | None) -> str:
     parts: list[str] = []
     for p in normalized:
         seg: list[str] = []
+        # SQM off: the shaper params don't apply, so don't tack on inert quantum/target values —
+        # a collapsed "SQM off" profile reads cleanly regardless of which run's settings back it.
         if p.get("enabled") is False:
-            seg.append("SQM off")
+            parts.append(f"{p.get('label') or 'pipe'}: SQM off")
+            continue
         if p.get("download_bandwidth"):
             seg.append(str(p["download_bandwidth"]))
         if p.get("quantum") is not None:
