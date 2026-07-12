@@ -21,6 +21,7 @@ import TableRow from "@mui/material/TableRow";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 
 import { api } from "../api/client";
 import type {
@@ -38,6 +39,7 @@ import EmptyState from "../components/EmptyState";
 import { fmtDateTime, fmtScore } from "../utils/format";
 import { profileValue } from "../utils/profileFields";
 import { rankByMetric, rankColor } from "../utils/ranking";
+import { useMetricMeta } from "../utils/metrics";
 import { sopsColor } from "../theme";
 
 // Headline colours mirror the Dashboard/History charts (Overall is the bright lead line).
@@ -56,7 +58,9 @@ export default function ProfileDetail() {
   const navigate = useNavigate();
   const [profile, setProfile] = useState<SettingsProfile | null>(null);
   const [allProfiles, setAllProfiles] = useState<SettingsProfile[]>([]);
-  const [headlineAxes, setHeadlineAxes] = useState<{ key: string; label: string }[]>([]);
+  // The current methodology's crown metrics (from the profiles response's `overall_metrics`), so
+  // the standings boxes always follow the crown — never a hardcoded axis set.
+  const [overallMetrics, setOverallMetrics] = useState<string[]>([]);
   const [currentFp, setCurrentFp] = useState<string | null>(null);
   const [bestFp, setBestFp] = useState<string | null>(null);
   const [series, setSeries] = useState<AxisSeriesResponse | null>(null);
@@ -86,19 +90,14 @@ export default function ProfileDetail() {
       setLoading(true);
       setError(null);
       try {
-        const [profsResp, s, c, methodology] = await Promise.all([
+        const [profsResp, s, c] = await Promise.all([
           api.settingsProfiles(false),
           api.axisSeries(200, fingerprint),
           api.historyCount(fingerprint),
-          api.methodologyCurrent().catch(() => null),
         ]);
         setProfile(profsResp.profiles.find((p) => p.fingerprint === fingerprint) ?? null);
         setAllProfiles(profsResp.profiles);
-        setHeadlineAxes(
-          (methodology?.axes ?? [])
-            .filter((a) => a.role === "headline")
-            .map((a) => ({ key: a.key, label: a.label })),
-        );
+        setOverallMetrics(profsResp.overall_metrics ?? []);
         setCurrentFp(profsResp.current_fingerprint);
         setBestFp(profsResp.best_fingerprint);
         setSeries(s);
@@ -148,18 +147,35 @@ export default function ProfileDetail() {
     }
   };
 
-  // This profile's standing (1 = best) among all profiles, for Overall + each headline
-  // axis the current methodology scores — the same ranking shown on the Settings table.
+  // This profile's standing (1 = best) among all profiles, for the Overall + each CROWN metric
+  // the current methodology corners over (from the profiles response's `overall_metrics`) — the
+  // same crown-driven ranking as the Settings-Impact table, never a hardcoded axis set. Each crown
+  // metric ranks by its field-normalized-raw value via the `crown:<metric>` key (→ `crown_norm`).
+  const metricMeta = useMetricMeta();
   const rankedMetrics = useMemo(
-    () => [{ key: "overall", label: "Overall" }, ...headlineAxes],
-    [headlineAxes],
+    () => [
+      { key: "overall", label: "Overall" },
+      ...overallMetrics.map((k) => ({ key: `crown:${k}`, label: metricMeta(k).label })),
+    ],
+    [overallMetrics, metricMeta],
   );
   const standings = useMemo(
     () =>
       rankedMetrics.map((m) => {
         const rk = rankByMetric(allProfiles, m.key);
         const rank = profile ? rk.rankByFp[profile.fingerprint] ?? null : null;
-        return { ...m, rank, total: rk.total, raw: profile ? profileValue(profile, m.key) : null };
+        const raw = profile ? profileValue(profile, m.key) : null;
+        // How far behind the crown (rank 1) this profile is, as a percentage. All these values are
+        // higher-is-better (Overall 0–100, crown percentiles), so the best is the field max.
+        const values = allProfiles
+          .map((p) => profileValue(p, m.key))
+          .filter((v): v is number => v != null);
+        const best = values.length ? Math.max(...values) : null;
+        const pctWorse =
+          rank != null && rank > 1 && best != null && best > 0 && raw != null
+            ? ((best - raw) / best) * 100
+            : null;
+        return { ...m, rank, total: rk.total, raw, pctWorse };
       }),
     [rankedMetrics, allProfiles, profile],
   );
@@ -238,8 +254,8 @@ export default function ProfileDetail() {
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
               Where this profile ranks among all {standings[0].total || 0} measured profiles (1 = best),
-              for the Overall and each axis the current methodology scores. The raw 0–100 score is shown
-              underneath.
+              for the Overall and each <b>crown metric</b> the current methodology corners over. When
+              it isn&apos;t #1, the red arrow shows how far behind the crown (#1) it is, as a percent.
             </Typography>
             <Box
               sx={{
@@ -261,7 +277,23 @@ export default function ProfileDetail() {
                   >
                     {s.rank == null ? "—" : `#${s.rank}`}
                   </Typography>
-                  <Typography variant="caption" color="text.secondary">
+                  {s.pctWorse != null && (
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 0.25,
+                        color: "error.main",
+                      }}
+                    >
+                      <ArrowDownwardIcon sx={{ fontSize: "0.95rem" }} />
+                      <Typography component="span" variant="caption" sx={{ fontWeight: 700 }}>
+                        {s.pctWorse < 0.1 ? "<0.1" : s.pctWorse.toFixed(1)}% vs crown
+                      </Typography>
+                    </Box>
+                  )}
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
                     {s.rank == null ? "no score" : `of ${s.total} · score ${s.raw}`}
                   </Typography>
                 </Box>
