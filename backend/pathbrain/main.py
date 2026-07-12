@@ -103,6 +103,23 @@ def version() -> dict:
     return version_info()
 
 
+@app.get("/api/update/config")
+def update_config() -> dict:
+    """Watchtower integration config state (no network call) — for the Plugins integration card."""
+    from .updates import self_update_config
+
+    return self_update_config()
+
+
+@app.post("/api/update/test")
+def test_update_connection() -> dict:
+    """Test the Watchtower integration without triggering an update: probe reachability + report
+    config. Always 200 with a ``status`` field (ok | unreachable | not_configured)."""
+    from .updates import test_update_connection as _test
+
+    return _test()
+
+
 @app.post("/api/update/trigger")
 def trigger_update():
     """One-click self-update: ask Watchtower to pull the newer image and recreate this container.

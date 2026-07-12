@@ -426,6 +426,18 @@ export interface UpdateTriggerResult {
   detail?: string;
 }
 
+export interface UpdateConfig {
+  configured: boolean;
+  url: string | null;
+  token_set: boolean;
+}
+
+export interface UpdateConnectionTest extends UpdateConfig {
+  reachable: boolean;
+  status: "ok" | "unreachable" | "not_configured";
+  detail: string;
+}
+
 export interface ImpactSide {
   label: string;
   fingerprint: string;
