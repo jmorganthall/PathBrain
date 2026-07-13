@@ -15,6 +15,7 @@ import socket
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 
 from . import __version__
 from .config import get_settings
@@ -24,7 +25,13 @@ log = get_logger("updates")
 
 # Cache the upstream lookup so the frontend can poll freely without hammering GitHub.
 _CACHE_TTL_S = 3600.0
-_cache: dict = {"at": 0.0, "latest_sha": None, "error": None}
+# ``at`` is monotonic (for the TTL); ``checked_at`` is wall-clock ISO (for the "checked 2:15 PM"
+# readout), so the UI can show exactly *when* it last looked and the answer isn't a black box.
+_cache: dict = {"at": 0.0, "latest_sha": None, "error": None, "checked_at": None}
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _fetch_latest_sha(repo: str, branch: str) -> str:
@@ -38,24 +45,27 @@ def _fetch_latest_sha(repo: str, branch: str) -> str:
         return str(json.load(resp)["sha"])
 
 
-def _latest_sha_cached(repo: str, branch: str) -> tuple[str | None, str | None]:
-    """``(latest_sha, error)`` with a TTL cache; never raises."""
+def _latest_sha_cached(repo: str, branch: str, *, force: bool = False) -> tuple[str | None, str | None]:
+    """``(latest_sha, error)`` with a TTL cache; never raises. ``force`` bypasses the TTL so a
+    user-triggered "Check now" always re-fetches (the whole point of a manual refresh is to not
+    trust the possibly-stale cached answer)."""
     now = time.monotonic()
-    if _cache["latest_sha"] is not None and (now - _cache["at"]) < _CACHE_TTL_S:
+    if not force and _cache["latest_sha"] is not None and (now - _cache["at"]) < _CACHE_TTL_S:
         return _cache["latest_sha"], None
     try:
         sha = _fetch_latest_sha(repo, branch)
-        _cache.update({"at": now, "latest_sha": sha, "error": None})
+        _cache.update({"at": now, "latest_sha": sha, "error": None, "checked_at": _utcnow_iso()})
         return sha, None
     except Exception as exc:  # noqa: BLE001 — best-effort; report, don't raise
         err = f"{type(exc).__name__}: {exc}"
         log.info("Update check failed: %s", err)
-        _cache.update({"at": now, "error": err})
+        _cache.update({"at": now, "error": err, "checked_at": _utcnow_iso()})
         return _cache["latest_sha"], err  # serve a stale sha if we have one
 
 
-def version_info() -> dict:
-    """Current build identity + (best-effort) whether a newer build is available."""
+def version_info(*, force: bool = False) -> dict:
+    """Current build identity + (best-effort) whether a newer build is available. ``force``
+    re-checks upstream immediately instead of serving the 1-hour cache (the "Check now" path)."""
     settings = get_settings()
     git_sha = (settings.git_sha or "").strip()
     info: dict = {
@@ -70,12 +80,19 @@ def version_info() -> dict:
         # Whether a one-click self-update is wired up (Watchtower HTTP API configured). The UI
         # only offers the "Update now" button when this is true; otherwise the chip is a link.
         "self_update": bool((settings.watchtower_url or "").strip()),
+        # What upstream we compare against, and when we last actually looked — so "up to date" is
+        # a transparent statement ("running X · latest on <branch> is Y · checked <time>"), not a
+        # black box the user has to trust.
+        "update_repo": settings.update_repo,
+        "update_branch": settings.update_branch,
+        "checked_at": _cache.get("checked_at"),
         "error": None,
     }
     if not settings.update_check:
         return info
 
-    latest, err = _latest_sha_cached(settings.update_repo, settings.update_branch)
+    latest, err = _latest_sha_cached(settings.update_repo, settings.update_branch, force=force)
+    info["checked_at"] = _cache.get("checked_at")
     info["error"] = err
     if latest:
         info["latest_sha"] = latest

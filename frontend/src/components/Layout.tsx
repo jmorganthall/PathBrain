@@ -132,7 +132,12 @@ function UpdateChip() {
           href={info.compare_url ?? undefined}
           target="_blank"
           rel="noopener noreferrer"
-          sx={{ mr: 1 }}
+          // The informational "Update available" chip is just a link to the GitHub compare. On a
+          // narrow phone the toolbar can't fit both it and the action button, so when one-click
+          // self-update is wired up (the button below is the real CTA), hide this chip on xs so the
+          // button never gets clipped off the right edge. Shown from sm up, or always when there's
+          // no button (it's the only update indicator then).
+          sx={{ mr: 1, flexShrink: 0, display: info.self_update ? { xs: "none", sm: "inline-flex" } : "inline-flex" }}
         />
       </Tooltip>
       {info.self_update && (
@@ -151,7 +156,8 @@ function UpdateChip() {
                   <CircularProgress size={14} color="inherit" />
                 )
               }
-              sx={{ mr: 1 }}
+              // Never let the action button shrink or wrap out of the toolbar on mobile.
+              sx={{ mr: 1, flexShrink: 0, whiteSpace: "nowrap" }}
             >
               {phase === "idle" ? "Update now" : phase === "triggering" ? "Starting…" : "Updating…"}
             </Button>
@@ -183,6 +189,7 @@ function UpdateChip() {
 // update-check note explains why the top-bar chip is silent when the container can't reach GitHub.
 function VersionFooter() {
   const [info, setInfo] = useState<VersionInfo | null>(null);
+  const [checking, setChecking] = useState(false);
   useEffect(() => {
     let alive = true;
     api
@@ -193,9 +200,62 @@ function VersionFooter() {
       alive = false;
     };
   }, []);
+  // "Check now" forces a fresh upstream look, bypassing the 1-hour cache — so a stale "up to date"
+  // can be corrected on demand instead of waiting for the cache to expire.
+  const checkNow = () => {
+    setChecking(true);
+    api
+      .refreshVersion()
+      .then(setInfo)
+      .catch(() => {})
+      .finally(() => setChecking(false));
+  };
   // Stamped images (built by CI) carry a short SHA; a local/unstamped build shows "local".
   const build = info ? info.git_sha_short ?? "local" : "…";
   const mono = { fontFamily: "monospace", fontSize: "0.95em" } as const;
+  const checkedLabel = info?.checked_at
+    ? new Date(info.checked_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : null;
+  // Full comparison in one hover, so "up to date" is never a black box: what we run, what's latest
+  // upstream, and when we last looked.
+  const detail =
+    info &&
+    `Running ${info.git_sha_short ?? "local"} · latest on ${info.update_repo ?? "?"}@${
+      info.update_branch ?? "?"
+    }: ${info.latest_sha_short ?? "unknown"}${checkedLabel ? ` · checked ${checkedLabel}` : ""}`;
+
+  const status = (() => {
+    if (!info) return null;
+    if (info.update_available)
+      return (
+        <Link
+          href={info.compare_url ?? undefined}
+          target="_blank"
+          rel="noopener noreferrer"
+          color="warning.main"
+          underline="hover"
+        >
+          update available ({info.latest_sha_short})
+        </Link>
+      );
+    if (info.update_check === false) return <Box component="span">update check disabled</Box>;
+    if (info.error)
+      return (
+        <Tooltip title={`Update check couldn't reach GitHub: ${info.error}`}>
+          <Box component="span" sx={{ cursor: "help" }}>
+            update check offline
+          </Box>
+        </Tooltip>
+      );
+    if (info.latest_sha_short)
+      return (
+        <Box component="span">
+          up to date <Box component="span" sx={mono}>({info.latest_sha_short})</Box>
+        </Box>
+      );
+    return null;
+  })();
+
   return (
     <Box
       component="footer"
@@ -206,30 +266,27 @@ function VersionFooter() {
         <Box component="span" sx={mono}>
           {build}
         </Box>
-        {info?.update_available ? (
+        {status && (
           <>
             {" · "}
+            {detail ? <Tooltip title={detail}><Box component="span">{status}</Box></Tooltip> : status}
+          </>
+        )}
+        {info && info.update_check !== false && (
+          <>
+            {checkedLabel ? ` · checked ${checkedLabel}` : ""}{" · "}
             <Link
-              href={info.compare_url ?? undefined}
-              target="_blank"
-              rel="noopener noreferrer"
-              color="warning.main"
+              component="button"
+              type="button"
+              onClick={() => !checking && checkNow()}
               underline="hover"
+              color="inherit"
+              sx={{ font: "inherit", verticalAlign: "baseline" }}
             >
-              update available ({info.latest_sha_short})
+              {checking ? "checking…" : "check now"}
             </Link>
           </>
-        ) : info?.update_check === false ? (
-          " · update check disabled"
-        ) : info?.error ? (
-          <Tooltip title={`Update check couldn't reach GitHub: ${info.error}`}>
-            <Box component="span" sx={{ cursor: "help" }}>
-              {" · update check offline"}
-            </Box>
-          </Tooltip>
-        ) : info?.latest_sha_short ? (
-          " · up to date"
-        ) : null}
+        )}
       </Typography>
     </Box>
   );
@@ -316,7 +373,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             </IconButton>
           )}
           <HubIcon color="primary" sx={{ mr: 1.5, display: { md: "none" } }} />
-          <Typography variant="h6" sx={{ fontWeight: 700, flexGrow: 1 }}>
+          <Typography variant="h6" noWrap sx={{ fontWeight: 700, flexGrow: 1, minWidth: 0 }}>
             PathBrain
           </Typography>
           <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" }, mr: 1 }}>

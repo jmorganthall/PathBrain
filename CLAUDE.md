@@ -478,6 +478,13 @@ LLM-based. See `README.md` for the product overview.
   default branch (GitHub API; on by default, `PATHBRAIN_UPDATE_CHECK=false` to disable).
   The top-bar `UpdateChip` shows "Update available" (→ the GitHub compare) when the
   branch has moved past the running build — i.e. a newer `:latest` image is pullable.
+  To keep "up to date" from being a black box, `version_info` also returns `update_repo`/
+  `update_branch`/`checked_at`, and the footer renders the full comparison (running SHA · latest
+  on repo@branch · when last checked) in a tooltip plus a **"check now"** link
+  (`POST /api/version/refresh`, `version_info(force=True)`) that bypasses the 1-hour cache — so a
+  stale cached answer can be corrected on demand instead of waiting out the TTL. (Note: the check
+  is *commit*-based against GitHub, which can briefly disagree with the *image* actually published
+  to GHCR; a registry-digest check would track images exactly.)
 - **One-click self-update via Watchtower** (`updates.trigger_update`, `POST /api/update/trigger`):
   when `PATHBRAIN_WATCHTOWER_URL` (+ optional `PATHBRAIN_WATCHTOWER_TOKEN`) is set, the
   `UpdateChip` gains an **"Update now"** button (gated on `version_info()["self_update"]`) that
