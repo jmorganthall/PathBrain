@@ -151,12 +151,12 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v14_rubric():
-    # The published-now methodology is speed-smoothness-v14. Its rubric is IDENTICAL to v13 (crown =
-    # FCP × LCP × network_stall_all, same axes/weights/thresholds) — v14 is a *comparability boundary*
-    # for the derive-v14 fix (network_stall_all is omitted, not fabricated as 0, when a run lacks
-    # LoAF/longtask provenance), not a rubric change. So every threshold below is v13's, unchanged.
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v14"
+def test_current_methodology_is_v15_rubric():
+    # The published-now methodology is speed-smoothness-v15. Same metrics/thresholds as v13/v14
+    # (so every threshold below is unchanged); the crown's *combine method* changes from the
+    # field-percentile corner to a magnitude-aware WEIGHTED AVERAGE of the calibrated subscores
+    # (FCP 1 · LCP 1 · network_stall_all 0.5). A grading change, not a derivation/rubric change.
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v15"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
@@ -209,12 +209,13 @@ def test_current_methodology_is_v14_rubric():
     for k in ("latency", "transfer", "speed_index", "network_stall", "worst_void_fraction"):
         assert by_key[k]["axis"] is None
 
-    # v13's crown: the corner over FCP × LCP × network_stall_all — initial content × main content
-    # loaded × floor-free network-attributed dead-air (the SQM-movable resource-handoff gaps).
+    # v15's crown: a weighted average of the calibrated FCP / LCP / network_stall_all subscores —
+    # FCP and LCP even (fastest-to-first + fastest-to-main-content), smoothness secondary at 0.5.
     assert d["overall"] == {
-        "method": "corner",
+        "method": "weighted",
         "metrics": ["fcp", "lcp", "network_stall_all"],
         "required": ["fcp", "lcp", "network_stall_all"],
+        "weights": {"fcp": 1.0, "lcp": 1.0, "network_stall_all": 0.5},
     }
 
 
