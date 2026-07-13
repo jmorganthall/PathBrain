@@ -344,11 +344,19 @@ LLM-based. See `README.md` for the product overview.
     The Overall IQR
     (`overall_p25/p75`) does **not** decide the crown; it only *labels* a photo finish:
     `_clearly_better`/`co_leaders` flag every confident profile statistically
-    indistinguishable from the crown (median lead within an absolute floor
-    `correlation.crown_tie_min_margin` **and** a fraction `correlation.crown_tie_iqr_fraction`
-    of the pooled IQR), returned **purely as information** so the UI can show a "tied" chip
-    without changing who's crowned. No posterior, no variance penalty, no time-window
-    de-confounding enters the verdict. Returns `best_fingerprint` (+ `co_leaders`). The
+    indistinguishable from the crown. A profile clears the bar only when its median lead
+    exceeds BOTH an absolute floor `correlation.crown_tie_min_margin` **and**
+    `correlation.crown_tie_sigma` × the pooled **standard error of the medians**
+    (`√(SE_a²+SE_b²)`, `SE = IQR/√n`; `_overall_se`). Because the SE shrinks as runs accrue,
+    the bar **tightens with sample size** — so collecting data can *break* a tie two
+    heavily-sampled profiles would otherwise be stuck in (the old `crown_tie_iqr_fraction`
+    scaled the *raw* IQR, which ignored n, so more runs never separated anything). Returned
+    **purely as information** so the UI can show a "tied" chip without changing who's crowned;
+    the response also carries `crown_confidence` (the crown's Overall ± SE, the gap to the
+    runner-up, the σ·pooled-SE significance threshold, and whether the lead clears it) so the
+    Profile-Detail Standings card shows the measured signal-vs-noise, not an adjective. No
+    posterior, no variance penalty, no time-window de-confounding enters the verdict. Returns
+    `best_fingerprint` (+ `co_leaders` + `crown_confidence`). The
     challenger race reads `compute_profiles` and its bar is `best_fingerprint`'s Overall.
     **Finding challengers that could overtake the crown is a separate,
     smarter job** — the **Heirs to the crown** card + the challenger race rank under-sampled

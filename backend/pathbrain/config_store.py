@@ -139,16 +139,14 @@ DEFAULT_CONFIG: dict = {
         # the unit of signal: a 15-iteration run carries far more than a 1-iteration
         # one. Eligible for a "best" badge / significance calls once met.
         "min_iterations": 15,
-        # Crown tie-awareness. The crown is no longer a bare argmax of the median
-        # Overall: a challenger only *clearly* beats the incumbent when its median
-        # pulls ahead by more than the run-to-run noise. Two knobs define "more than
-        # noise": the median gap must exceed BOTH an absolute floor (guards against
-        # crowning on rounding when both bands are ~0) AND this fraction of the two
-        # profiles' averaged Overall IQR (a wider, jitterier band demands a wider
-        # gap). Profiles that don't clearly separate are *co-leaders* (a statistical
-        # tie); among them the crown goes to the currently-active profile (hysteresis
-        # — don't churn the firewall for noise), else the steadiest (tightest IQR).
-        "crown_tie_iqr_fraction": 0.5,
+        # Crown tie-awareness (informational co-leader labelling; the crown itself is
+        # the highest-median argmax, no hysteresis). Two profiles are a statistical tie
+        # unless the median gap exceeds BOTH an absolute floor (guards against splitting
+        # on rounding) AND ``crown_tie_sigma`` standard errors of the median difference.
+        # The SE is IQR/√n, so — unlike the old raw-IQR fraction — the bar *tightens as
+        # runs accrue*: collecting data can break a tie two heavily-sampled profiles
+        # would otherwise be stuck in. σ=2 ≈ a ~2-SE (roughly 95%) separation.
+        "crown_tie_sigma": 2.0,
         "crown_tie_min_margin": 0.5,
     },
     # Baseline "SQM off" test: occasionally disable shaping on every pipe and benchmark the
