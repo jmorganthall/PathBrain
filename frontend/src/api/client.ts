@@ -311,6 +311,8 @@ export const api = {
 
   // Build identity + best-effort "newer build available to pull" check.
   version: () => request<VersionInfo>("/version"),
+  // Force a fresh upstream check now, bypassing the 1-hour cache (the "Check now" button).
+  refreshVersion: () => request<VersionInfo>("/version/refresh", { method: "POST" }),
 
   // One-click self-update: ask Watchtower to pull the newer image and recreate this container.
   triggerUpdate: () => request<UpdateTriggerResult>("/update/trigger", { method: "POST" }),

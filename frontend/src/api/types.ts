@@ -418,6 +418,11 @@ export interface VersionInfo {
   // True when a one-click self-update is wired up (Watchtower HTTP API configured); the
   // "Update now" button is shown only then.
   self_update: boolean;
+  // Transparency: which upstream the check compares against, and when it last looked — so
+  // "up to date" isn't a black box.
+  update_repo?: string;
+  update_branch?: string;
+  checked_at?: string | null;
   error: string | null;
 }
 

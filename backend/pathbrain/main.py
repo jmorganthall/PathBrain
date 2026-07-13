@@ -103,6 +103,15 @@ def version() -> dict:
     return version_info()
 
 
+@app.post("/api/version/refresh")
+def version_refresh() -> dict:
+    """Re-check upstream *now*, bypassing the 1-hour cache — the "Check now" button. Returns the
+    same shape as /api/version so the UI can swap the result in directly."""
+    from .updates import version_info
+
+    return version_info(force=True)
+
+
 @app.get("/api/update/config")
 def update_config() -> dict:
     """Watchtower integration config state (no network call) — for the Plugins integration card."""

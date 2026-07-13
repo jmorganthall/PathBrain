@@ -66,6 +66,49 @@ def test_check_is_best_effort_on_network_error(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_force_refresh_bypasses_the_cache(monkeypatch):
+    # The "Check now" path must re-fetch even when the cache is warm, so a stale "up to date"
+    # can be corrected on demand instead of waiting out the TTL.
+    _reset_cache()
+    get_settings.cache_clear()
+    monkeypatch.setenv("PATHBRAIN_GIT_SHA", "a" * 40)
+    calls = {"n": 0}
+    seq = ["a" * 40, "b" * 40]  # upstream moves between the cached check and the forced re-check
+
+    def fetch(repo, branch):
+        i = min(calls["n"], len(seq) - 1)
+        calls["n"] += 1
+        return seq[i]
+
+    monkeypatch.setattr(updates, "_fetch_latest_sha", fetch)
+
+    first = updates.version_info()          # fetches "aaaa…" → up to date
+    assert first["update_available"] is False
+    assert first["checked_at"] is not None  # we record when we looked
+    assert first["update_repo"] and first["update_branch"]
+
+    cached = updates.version_info()         # served from cache → no new fetch
+    assert cached["update_available"] is False
+    assert calls["n"] == 1
+
+    forced = updates.version_info(force=True)  # bypasses cache → sees "bbbb…"
+    assert calls["n"] == 2
+    assert forced["update_available"] is True
+    assert forced["latest_sha_short"] == "bbbbbbb"
+    get_settings.cache_clear()
+
+
+def test_version_refresh_endpoint(client, monkeypatch):
+    monkeypatch.setattr(updates, "_fetch_latest_sha", lambda repo, branch: "c" * 40)
+    monkeypatch.setenv("PATHBRAIN_GIT_SHA", "d" * 40)
+    get_settings.cache_clear()
+    body = client.post("/api/version/refresh").json()
+    assert body["update_available"] is True
+    assert body["latest_sha_short"] == "ccccccc"
+    assert body["checked_at"] is not None
+    get_settings.cache_clear()
+
+
 def test_disabled_skips_network(monkeypatch):
     _reset_cache()
     get_settings.cache_clear()
