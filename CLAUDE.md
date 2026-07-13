@@ -818,6 +818,29 @@ docker compose up --build   # -> http://localhost:8000
   function must omit on absent input, never default. Post-change workflow: re-derive → re-grade →
   **Re-run top-N profiles** (the existing winner-first `refresh` with `top`+`rank_by`) to rebuild
   fresh comparable data on the best performers after old runs quarantine.
+- **Phase 14 (done):** **magnitude-aware crown + measured signal-vs-noise.** The crown-lead-vs-noise
+  readout exposed that the field-percentile **corner** was un-crownable on a fast link: ~149 profiles
+  packed into a few ms, so a sub-ms per-run wobble crosses dozens of profiles and the normalized
+  Overall carried a **±17-point SE** — the top ~66 were a statistical tie no amount of runs could
+  separate (SE shrinks only as √n; the noise is *manufactured* by percentile ranking, not present in
+  the raw ms). Two changes. **(1) Sample-size-aware ties** (methodology unchanged): `_clearly_better`
+  now uses the **standard error of the median** (`IQR/√n`, pooled) × `crown_tie_sigma` (2.0) instead
+  of raw IQR — so collecting runs can *break* a tie (`crown_tie_iqr_fraction` → `crown_tie_sigma`);
+  `crown_confidence` in the profiles response surfaces the crown Overall ± SE, the gap to the
+  runner-up, and the σ·pooled-SE threshold on the Profile-Detail standings. **(2) Methodology
+  `speed-smoothness-v15`** crowns by a **weighted average of the perception-calibrated subscores**
+  (`overall.method: "weighted"`, `weights` in the spec) instead of the percentile corner —
+  **FCP 1 · LCP 1 · network_stall_all 0.5** (fastest-to-first and fastest-to-main-content even,
+  smoothness secondary). Magnitude-aware (a 5 ms and a 500 ms edge scaled by human perceptibility)
+  and low-noise, so a profile's median Overall is pinned to ~±1 and the field actually separates.
+  It's **additive, not an intersection** — a strong FCP/LCP is no longer vetoed by a mediocre stall
+  leg (the corner's behavior). Same metrics/derivation as v14 → history **re-grades from cached
+  scalars** (no re-derive). Fully methodology-driven: `overall_from_definition`/`compute_profiles`
+  read `overall_method`/`overall_weights` from the spec, and the per-metric **percentile standings
+  columns stay for display** — a future methodology changes the method/weights in one place and the
+  wiring re-points automatically. Trade-off named: a calibrated crown means re-anchoring a threshold
+  *can* move it — but that lever is exactly what makes the field distinguishable, which percentile
+  could not.
 - **Next:** multi-parameter Bayesian search + interleaved A/B with effect-size/CI + hysteresis;
   routing intelligence / SD-WAN. (Latency-under-load/bufferbloat is explicitly **out of scope**.)
 

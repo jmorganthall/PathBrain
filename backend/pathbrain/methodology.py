@@ -44,7 +44,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v14"
+CURRENT_METHODOLOGY = "speed-smoothness-v15"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -59,6 +59,20 @@ def corner_score(values: list[float]) -> float | None:
         return None
     dist = sqrt(sum((100.0 - v) ** 2 for v in vals))
     return round(100.0 - dist / sqrt(len(vals)), 1)
+
+
+def weighted_score(pairs: list[tuple[float, float]]) -> float | None:
+    """0–100 **weighted average** over ``(value, weight)`` pairs (present values only).
+
+    The magnitude-aware alternative to ``corner_score``: unlike the corner (an intersection where
+    one weak dimension can't be averaged away), this lets a strong dimension compensate a weaker
+    one — "good on balance", weighted by importance. Returns None when nothing is present or all
+    weights are 0."""
+    present = [(v, w) for v, w in pairs if v is not None and w]
+    den = sum(w for _, w in present)
+    if not present or den <= 0:
+        return None
+    return round(sum(v * w for v, w in present) / den, 1)
 
 # Shared axis layout + per-metric rubric for the speed/smoothness family.
 _SS_AXES = [
@@ -605,7 +619,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         },
     },
     "speed-smoothness-v14": {
-        "derivation_version": DERIVATION_VERSION,  # derive-v14: omit network_stall_all when unmeasurable
+        "derivation_version": "derive-v14",  # frozen: omit network_stall_all when unmeasurable
         "notes": (
             "Same rubric as v13 (crown = FCP × LCP × network_stall_all, identical axes/weights/"
             "thresholds) — this version exists to mark a **comparability boundary**, not a rubric "
@@ -632,6 +646,38 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "method": "corner",
             "metrics": ["fcp", "lcp", "network_stall_all"],
             "required": ["fcp", "lcp", "network_stall_all"],
+        },
+    },
+    "speed-smoothness-v15": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v14 — grading change only, re-grade not re-derive
+        "notes": (
+            "Crown by a magnitude-aware WEIGHTED AVERAGE of the perception-calibrated subscores "
+            "instead of a field-percentile CORNER. Measurement (the crown-lead-vs-noise readout) "
+            "showed the percentile corner was un-crownable on a fast link: with ~149 profiles packed "
+            "into a few ms, a sub-ms per-run wobble crosses dozens of profiles, so the normalized "
+            "Overall carried a ±17-point SE and the top ~66 profiles were a statistical tie — no "
+            "feasible number of runs could separate them (SE shrinks only as √n). The noise was "
+            "manufactured by percentile ranking; it isn't in the raw milliseconds. v15 ranks on "
+            "``weighted``: each run's Overall is the weight-averaged calibrated subscore (FCP 1 · LCP 1 "
+            "· network_stall_all 0.5 — fastest-to-first and fastest-to-main-content even, smoothness "
+            "secondary), a scale on which a profile's median is pinned to ~±1 and the field actually "
+            "separates. It's additive, not an intersection: a strong FCP/LCP is no longer vetoed by a "
+            "mediocre stall leg (the corner's behavior) — the deliberate trade the corner was hiding. "
+            "Same metrics/derivation as v14, so history re-grades straight from cached scalars (no "
+            "re-derive). Trade-off named: because it's calibrated, re-anchoring a threshold can move "
+            "the crown — but that is exactly the lever that makes the field distinguishable, which the "
+            "percentile corner could not. The per-metric percentile standings columns stay for display."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v13_assignments(),
+        "overall": {
+            "method": "weighted",
+            "metrics": ["fcp", "lcp", "network_stall_all"],
+            "required": ["fcp", "lcp", "network_stall_all"],
+            # Per-metric weights on the calibrated 0–100 subscore scale. FCP and LCP even;
+            # network_stall_all (smoothness) secondary. Read generically by the crown wiring —
+            # a new methodology changes the mix here, nothing else.
+            "weights": {"fcp": 1.0, "lcp": 1.0, "network_stall_all": 0.5},
         },
     },
 }
@@ -706,7 +752,26 @@ def overall_from_definition(definition: dict, subscores: dict | None) -> float |
     sub = subscores or {}
     if not metrics or any(sub.get(k) is None for k in required):
         return None
+    # The combine method lives in the spec, so the crown formula is a methodology property, not
+    # code: ``weighted`` = weight-averaged calibrated subscores (magnitude-aware); anything else
+    # (default) = the √k corner (intersection). A new methodology swaps the method here, nothing else.
+    if spec.get("method") == "weighted":
+        weights = spec.get("weights") or {}
+        return weighted_score([(sub.get(k), float(weights.get(k, 1.0))) for k in metrics])
     return corner_score([sub.get(k) for k in metrics if sub.get(k) is not None])
+
+
+def overall_weights(definition: dict) -> dict:
+    """The crown's per-metric weights from the methodology's ``overall`` spec (empty for a
+    corner/percentile method, which is unweighted). The single source the crown wiring reads,
+    so weights are a methodology property — change them there, not in the ranking code."""
+    return dict(((definition or {}).get("overall") or {}).get("weights") or {})
+
+
+def overall_method(definition: dict) -> str:
+    """The crown's combine method (``corner`` default | ``weighted``) — read by the settings/crown
+    layer so it ranks with the same rule the persisted per-run Overall was graded under."""
+    return str(((definition or {}).get("overall") or {}).get("method") or "corner")
 
 
 def required_metric_keys(definition: dict) -> list[str]:

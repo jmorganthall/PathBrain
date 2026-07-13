@@ -186,7 +186,20 @@ def _seed_run(
         # Derived crown-agnostically so this fixture tracks the methodology, not a frozen set.
         crown = _crown_metrics()
         crown_src = [all_metric_sources()[m][1] for m in crown]  # source keys, e.g. nav_response_ms
-        subs = crown_subscores if crown_subscores is not None else {m: sops for m in crown}
+        if crown_subscores is not None:
+            subs = crown_subscores
+        elif crown_raw is not None:
+            # Derive crown subscores from the raw (lower raw = faster = higher subscore) — the inverse
+            # of the raw-from-subscore default below — so a crown_raw fixture tracks the calibrated
+            # subscores the v15 weighted crown ranks on. A None raw entry = "not captured" → the
+            # subscore is omitted, so a required-metric-missing fixture yields no Overall.
+            subs = {
+                m: max(0.0, min(100.0, 100.0 - float(val) / 10.0))
+                for m, val in zip(crown, crown_raw)
+                if val is not None
+            }
+        else:
+            subs = {m: sops for m in crown}
         # Raw crown metrics (browser plugin) — what the field-normalized Overall corners over.
         # ``crown_raw`` sets them explicitly, positionally by crown order; a None entry means
         # "this crown metric wasn't captured" (so the profile has no Overall — the

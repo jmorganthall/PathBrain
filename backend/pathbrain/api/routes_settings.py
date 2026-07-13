@@ -19,7 +19,15 @@ from .. import refresh as refresh_mod
 from ..config_store import get_config
 from ..database import get_session
 from ..logging_config import get_logger
-from ..methodology import corner_score, ensure_current_methodology, overall_metrics
+from ..methodology import (
+    corner_score,
+    ensure_current_methodology,
+    overall_from_definition,
+    overall_metrics,
+    overall_method,
+    overall_weights,
+    weighted_score,
+)
 from ..metrics import METRIC_ROLES, ROLE_WEATHER, all_metric_sources
 from ..models import BenchmarkResult, Run, RunStatus, Score
 from ..providers import get_provider
@@ -1624,7 +1632,9 @@ def compute_profiles(
         # Score that predates it (fixtures / not-yet-re-graded).
         run_overall = axes.get("overall")
         if run_overall is None:
-            run_overall = _crown_corner(crown_sub, crown_metrics, crown_required)
+            # Live fallback for a Score predating the persisted Overall — derived the SAME way the
+            # methodology grades it (corner or weighted), so the fallback matches the verdict.
+            run_overall = overall_from_definition(methodology.definition or {}, crown_sub)
         # Time baseline carries both smoothness and the per-run Overall, so we can read
         # each profile's "vs typical" (day×hour-adjusted) for the Overall too.
         point_values = {"smoothness": smooth}
@@ -1849,16 +1859,42 @@ def compute_profiles(
     # scale comes from the measurements' ranking, not any methodology threshold, so re-grading
     # can't move the crown. Fills each profile's overall / IQR / optimistic / normalized values.
     crown_field = _crown_field_values(profiles, crown_metrics)
+    # The crown's combine rule is a methodology property: ``weighted`` ranks on a magnitude-aware
+    # weighted average of the perception-calibrated subscores (v15+); otherwise the field-percentile
+    # corner. Both read the crown metric set + weights from the definition, so a methodology change
+    # re-wires the ranking with no edit here.
+    crown_method = overall_method(methodology.definition or {})
+    crown_weights = overall_weights(methodology.definition or {})
     for p in profiles:
         res = _normalized_crown(
             p.get("metrics") or {}, p.get("crown_raw") or {}, crown_field, crown_higher,
             crown_metrics, crown_required,
         )
-        p["overall"] = res["overall"]
-        p["overall_p25"] = res["p25"]
-        p["overall_p75"] = res["p75"]
-        p["optimistic"] = res["optimistic"]
+        # Per-metric percentile standings always come from the normalized pass (the display columns).
         p["crown_norm"] = res["norm"]
+        if crown_method == "weighted":
+            # Weighted average of the calibrated subscore median / quartiles (higher = better, so
+            # p75 is the optimistic ceiling). Magnitude-aware + low-noise → the field separates.
+            cs = p.get("crown_scores") or {}
+            sp = p.get("crown_spreads") or {}
+            if any(cs.get(m) is None for m in crown_required):
+                # Missing a required crown subscore → no Overall, same quarantine as the corner path.
+                p["overall"] = p["overall_p25"] = p["overall_p75"] = p["optimistic"] = None
+            else:
+                def _w(pick) -> float | None:
+                    return weighted_score(
+                        [(pick(m), float(crown_weights.get(m, 1.0))) for m in crown_metrics]
+                    )
+
+                p["overall"] = _w(lambda m: cs.get(m))
+                p["overall_p25"] = _w(lambda m: (sp.get(m) or {}).get("p25"))
+                p["overall_p75"] = _w(lambda m: (sp.get(m) or {}).get("p75"))
+                p["optimistic"] = _w(lambda m: (sp.get(m) or {}).get("p75"))
+        else:
+            p["overall"] = res["overall"]
+            p["overall_p25"] = res["p25"]
+            p["overall_p75"] = res["p75"]
+            p["optimistic"] = res["optimistic"]
 
     # Display-only weather-adjusted Overall: the SAME percentile-corner as `overall`, but over the
     # setup-stripped crown raw (fcp/lcp minus each run's own connection-setup weather). Its own
