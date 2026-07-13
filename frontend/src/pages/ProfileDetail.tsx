@@ -27,6 +27,7 @@ import { api } from "../api/client";
 import type {
   ApplyProfileResult,
   AxisSeriesResponse,
+  CrownConfidence,
   DerivationAudit,
   ProfilePauseRollup,
   RunSummary,
@@ -64,6 +65,11 @@ export default function ProfileDetail() {
   const [overallMetrics, setOverallMetrics] = useState<string[]>([]);
   const [currentFp, setCurrentFp] = useState<string | null>(null);
   const [bestFp, setBestFp] = useState<string | null>(null);
+  // Fingerprints statistically tied with the crown (within run-to-run noise). Lets the standings
+  // say "tied for #1" instead of implying a precise, decisive rank when the top is a photo finish.
+  const [coLeaders, setCoLeaders] = useState<string[]>([]);
+  // The measured crown-lead-vs-noise (gap to runner-up vs the significance threshold).
+  const [crownConf, setCrownConf] = useState<CrownConfidence | null>(null);
   const [series, setSeries] = useState<AxisSeriesResponse | null>(null);
   const [pauses, setPauses] = useState<ProfilePauseRollup | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -118,6 +124,8 @@ export default function ProfileDetail() {
         setOverallMetrics(profsResp.overall_metrics ?? []);
         setCurrentFp(profsResp.current_fingerprint);
         setBestFp(profsResp.best_fingerprint);
+        setCoLeaders(profsResp.co_leaders ?? []);
+        setCrownConf(profsResp.crown_confidence ?? null);
         setSeries(s);
         setTotal(c.count);
         await loadPage(0, rowsPerPage);
@@ -202,6 +210,23 @@ export default function ProfileDetail() {
 
   const isActive = currentFp != null && currentFp === fingerprint;
   const isBest = bestFp != null && bestFp === fingerprint;
+  // Crown-confidence context: is #1 a decisive lead or a statistical tie? The tie group is the
+  // crown plus every co-leader (median lead within run-to-run noise). Surfacing this reframes a
+  // profile hopping #1↔#N as "it's in an N-way tie", not "its quality swung".
+  const isCoLeader = coLeaders.includes(fingerprint);
+  const tieCount = coLeaders.length + (bestFp ? 1 : 0);
+  const tieFps = new Set<string>([...(bestFp ? [bestFp] : []), ...coLeaders]);
+  const tieOveralls = allProfiles
+    .filter((p) => tieFps.has(p.fingerprint))
+    .map((p) => p.overall)
+    .filter((x): x is number => x != null);
+  const tieBand =
+    tieOveralls.length > 1
+      ? `${Math.min(...tieOveralls).toFixed(1)}–${Math.max(...tieOveralls).toFixed(1)}`
+      : null;
+  // vs the profile's own day×hour typical — contextualizes a low recent run ("running below typical"
+  // often means the network, not the profile).
+  const relDelta = profile?.relative_overall?.delta_median ?? null;
   const headlineLines = (series?.axes ?? [])
     .filter((a) => a.role === "headline")
     .map((a) => ({ key: a.key, name: a.label, color: axisColor(a.key) }));
@@ -254,7 +279,31 @@ export default function ProfileDetail() {
       {/* Status chips */}
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
         {isActive && <Chip color="info" label="active on firewall" />}
-        {isBest && <Chip color="success" label="best (crown)" />}
+        {/* Crown chip, tie-aware: a decisive #1 vs a statistical tie for the lead. */}
+        {isBest && tieCount > 1 ? (
+          <Tooltip
+            title={`The crown's median Overall lead over ${tieCount - 1} other profile${
+              tieCount - 1 === 1 ? "" : "s"
+            } is within run-to-run noise${tieBand ? ` (tie-group Overall ${tieBand})` : ""}. Which of these holds #1 can flip between measurements without any real change in quality.`}
+          >
+            <Chip color="warning" label={`tied for #1 · ${tieCount}-way (within noise)`} />
+          </Tooltip>
+        ) : isBest ? (
+          <Chip color="success" label="best (crown) · clear lead" />
+        ) : isCoLeader ? (
+          <Tooltip title="This profile is statistically tied with the crown — its median Overall is within run-to-run noise of #1, so it's effectively a co-leader.">
+            <Chip color="info" variant="outlined" label="tied with the crown (within noise)" />
+          </Tooltip>
+        ) : null}
+        {relDelta != null && Math.abs(relDelta) >= 0.5 && (
+          <Tooltip title="This profile's recent Overall vs its own typical for this day-of-week × hour. A negative value usually means the network was worse than usual (weather), not that the profile changed.">
+            <Chip
+              variant="outlined"
+              color={relDelta >= 0 ? "success" : "warning"}
+              label={`${relDelta >= 0 ? "+" : ""}${relDelta.toFixed(1)} vs typical`}
+            />
+          </Tooltip>
+        )}
         {profile && !profile.confident && (
           <Chip color="warning" variant="outlined" label="limited data" />
         )}
@@ -275,6 +324,31 @@ export default function ProfileDetail() {
               for the Overall and each <b>crown metric</b> the current methodology corners over. When
               it isn&apos;t #1, the red arrow shows how far behind the crown (#1) it is, as a percent.
             </Typography>
+            {/* Crown lead vs noise: the measured signal-to-noise behind #1 — is the lead real, or is
+                the top a statistical tie? Numbers, not adjectives. */}
+            {crownConf && crownConf.gap_to_runner_up != null && crownConf.noise_threshold != null && (
+              <Alert severity={crownConf.clear_lead ? "success" : "info"} icon={false} sx={{ mb: 1.5, py: 0.25 }}>
+                <Typography variant="caption">
+                  {crownConf.clear_lead ? (
+                    <>
+                      <b>Crown lead is real.</b> #1 leads the runner-up by{" "}
+                      <b>+{crownConf.gap_to_runner_up.toFixed(2)}</b> Overall — past the{" "}
+                      {crownConf.noise_threshold.toFixed(2)} significance bar ({crownConf.sigma}σ of
+                      run-to-run noise).
+                    </>
+                  ) : (
+                    <>
+                      <b>Crown is a statistical tie.</b> #1&apos;s{" "}
+                      <b>+{crownConf.gap_to_runner_up.toFixed(2)}</b> lead over the runner-up is within
+                      noise (needs &gt; {crownConf.noise_threshold.toFixed(2)} at {crownConf.sigma}σ);{" "}
+                      {crownConf.co_leader_count} co-leader{crownConf.co_leader_count === 1 ? "" : "s"} within
+                      reach. More runs on the contenders would tighten the bar and could break the tie.
+                    </>
+                  )}{" "}
+                  Crown Overall {crownConf.overall.toFixed(1)} ± {crownConf.overall_se.toFixed(2)} SE.
+                </Typography>
+              </Alert>
+            )}
             <Box
               sx={{
                 display: "grid",

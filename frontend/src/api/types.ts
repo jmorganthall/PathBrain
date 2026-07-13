@@ -311,6 +311,10 @@ export interface SettingsProfilesResponse {
   // implying the crown is decisively better. Excludes the crown itself; empty when the
   // crown stands clearly apart.
   co_leaders: string[];
+  // The measured signal-to-noise behind the #1 verdict: the crown's Overall + its standard
+  // error, the gap to the runner-up, and the significance threshold (σ · pooled SE of the
+  // medians). `clear_lead` is true only when the gap clears that bar. Null when no crown.
+  crown_confidence: CrownConfidence | null;
   // The profile the firewall is on right now (best-effort live discovery), so the UI
   // can flag the active row. Null when discovery is unavailable.
   current_fingerprint: string | null;
@@ -435,6 +439,18 @@ export interface UpdateConfig {
   configured: boolean;
   url: string | null;
   token_set: boolean;
+}
+
+export interface CrownConfidence {
+  overall: number;
+  overall_se: number;
+  runner_up_overall: number | null;
+  gap_to_runner_up: number | null;
+  noise_threshold: number | null;
+  sigma: number;
+  clear_lead: boolean;
+  co_leader_count: number;
+  confident_count: number;
 }
 
 export interface DerivationCohort {

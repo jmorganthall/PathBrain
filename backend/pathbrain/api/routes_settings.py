@@ -242,22 +242,27 @@ def _min_iterations(session: Session) -> int:
 
 
 def _crown_tie_params(session: Session) -> tuple[float, float]:
-    """``(min_margin, iqr_fraction)`` for the tie-aware crown (config ``correlation``).
+    """``(min_margin, sigma)`` for the tie-aware crown (config ``correlation``).
 
-    ``min_margin`` is the absolute Overall-point floor a challenger must clear (so a
-    tie isn't broken by rounding when both bands are ~0); ``iqr_fraction`` is how much
-    of the two profiles' averaged Overall IQR the median gap must also exceed (a wider,
-    noisier band demands a wider gap). See ``_clearly_better``."""
+    ``min_margin`` is the absolute Overall-point floor a lead must clear (so a tie isn't
+    broken by rounding when both estimates are pinned); ``sigma`` is how many **standard
+    errors of the median** the gap must also exceed to count as a real lead — the
+    significance threshold. A wider ``sigma`` demands more confidence. See ``_clearly_better``.
+
+    ``sigma`` reads ``crown_tie_sigma`` (default 2.0 ≈ a ~2-SE separation). The pre-existing
+    ``crown_tie_iqr_fraction`` is retired: it scaled the *raw* run-to-run IQR, which ignores
+    sample size, so more runs never tightened a tie. The SE (IQR/√n) shrinks as runs accrue,
+    so collecting data can actually break a tie."""
     corr = get_config(session).get("correlation", {}) or {}
     try:
         margin = float(corr.get("crown_tie_min_margin", 0.5))
     except (TypeError, ValueError):
         margin = 0.5
     try:
-        frac = float(corr.get("crown_tie_iqr_fraction", 0.5))
+        sigma = float(corr.get("crown_tie_sigma", 2.0))
     except (TypeError, ValueError):
-        frac = 0.5
-    return max(0.0, margin), max(0.0, frac)
+        sigma = 2.0
+    return max(0.0, margin), max(0.0, sigma)
 
 
 def _overall_iqr(p: dict) -> float:
@@ -270,33 +275,47 @@ def _overall_iqr(p: dict) -> float:
     return max(0.0, float(hi) - float(lo))
 
 
-def _clearly_better(a: dict, b: dict, min_margin: float, iqr_fraction: float) -> bool:
+def _overall_se(p: dict) -> float:
+    """Standard error of a profile's **median** Overall ≈ IQR/√n — how precisely we know the
+    median, *not* how much individual runs bounce. Tightens as runs (``count``) accrue, so a
+    heavily-sampled profile's median is treated as the confident estimate it is. ``inf`` when
+    the spread or sample size is unknown (contributes 0 to the pooled SE via ``_finite``)."""
+    iqr = _overall_iqr(p)
+    n = int(p.get("count") or 0)
+    if iqr == float("inf") or n < 1:
+        return float("inf")
+    return iqr / (n ** 0.5)
+
+
+def _clearly_better(a: dict, b: dict, min_margin: float, sigma: float) -> bool:
     """Is profile ``a``'s Overall *clearly* above ``b``'s — a real lead, not run-to-run
     noise? True when ``a``'s median beats ``b``'s by more than BOTH ``min_margin`` (an
-    absolute floor) AND ``iqr_fraction`` × the two profiles' averaged Overall IQR (so a
-    jitterier pair needs a wider gap to separate). This is what turns "highest median
-    wins" into "highest median that actually stands apart wins": profiles that don't
-    clear the bar are co-leaders (a statistical tie), decided on steadiness instead."""
+    absolute floor) AND ``sigma`` × the pooled **standard error of the two medians**
+    (``√(SE_a² + SE_b²)``, the SE of their difference). Because SE = IQR/√n, the bar
+    *shrinks as each profile accrues runs* — so two well-sampled profiles that are reliably
+    ~1 point apart separate, while a thin or jittery pair stays a co-leader (statistical tie).
+    This is the significance test: "highest median that actually stands apart wins."""
     am, bm = a.get("overall"), b.get("overall")
     if am is None or bm is None:
         return am is not None and bm is None  # a scored, b not → a wins by default
     gap = float(am) - float(bm)
     if gap <= 0:
         return False
-    pooled_iqr = (_finite(_overall_iqr(a)) + _finite(_overall_iqr(b))) / 2.0
-    return gap > max(min_margin, iqr_fraction * pooled_iqr)
+    se_a, se_b = _finite(_overall_se(a)), _finite(_overall_se(b))
+    pooled_se = (se_a ** 2 + se_b ** 2) ** 0.5  # SE of the difference of two medians
+    return gap > max(min_margin, sigma * pooled_se)
 
 
 def _finite(x: float) -> float:
-    """An unknown/`inf` IQR contributes 0 to the pooled spread — absent evidence of
-    noise shouldn't *inflate* the gap a challenger must clear."""
+    """An unknown/`inf` SE contributes 0 to the pooled spread — absent evidence of noise
+    shouldn't *inflate* the gap a challenger must clear."""
     return 0.0 if x == float("inf") else x
 
 
 def _select_crown(
     confident: list[dict],
     min_margin: float,
-    iqr_fraction: float,
+    sigma: float,
 ) -> tuple[dict | None, list[str]]:
     """Pick the crown from the confident profiles. Returns
     ``(best_profile, co_leader_fingerprints)``.
@@ -327,7 +346,7 @@ def _select_crown(
     co_fps = [
         p["fingerprint"]
         for p in scored
-        if not _clearly_better(best, p, min_margin, iqr_fraction)
+        if not _clearly_better(best, p, min_margin, sigma)
     ]
     return best, co_fps
 
@@ -1895,13 +1914,47 @@ def compute_profiles(
     # "Heirs to the crown" card and the challenger race rank under-sampled / stale profiles
     # by their *optimistic ceiling* (``optimistic_overall``) against the crown's Overall, to
     # decide where to spend iterations to confirm or deny an heir. That hunt is untouched.
-    tie_margin, tie_fraction = _crown_tie_params(session)
+    tie_margin, tie_sigma = _crown_tie_params(session)
     confident = [p for p in profiles if p["confident"] and p["overall"] is not None]
-    best, co_leaders = _select_crown(confident, tie_margin, tie_fraction)
+    best, co_leaders = _select_crown(confident, tie_margin, tie_sigma)
     best_fingerprint = best["fingerprint"] if best else None
     # Co-leaders within noise of the crown (excluding the crown itself) — an informational
     # "this was close" flag, not a re-ranking. Empty when the crown stands clearly apart.
     crown_co_leaders = [fp for fp in co_leaders if fp != best_fingerprint]
+
+    # Crown-lead-vs-noise readout: the actual numbers behind "is #1 a real lead?" — the crown's
+    # Overall + its standard error, the gap to the runner-up, and the significance threshold
+    # (max(floor, σ · pooled SE)). Lets the UI show measured signal-vs-noise instead of an adjective.
+    crown_confidence = None
+    if best is not None:
+        b_se = _finite(_overall_se(best))
+        runner = max(
+            (p for p in confident if p["fingerprint"] != best_fingerprint and p.get("overall") is not None),
+            key=lambda p: float(p["overall"]),
+            default=None,
+        )
+        crown_confidence = {
+            "overall": round(float(best["overall"]), 2),
+            "overall_se": round(b_se, 3),
+            "runner_up_overall": None,
+            "gap_to_runner_up": None,
+            "noise_threshold": None,
+            "sigma": tie_sigma,
+            "clear_lead": True,
+            "co_leader_count": len(crown_co_leaders),
+            "confident_count": len(confident),
+        }
+        if runner is not None:
+            gap = float(best["overall"]) - float(runner["overall"])
+            pooled_se = (b_se ** 2 + _finite(_overall_se(runner)) ** 2) ** 0.5
+            thresh = max(tie_margin, tie_sigma * pooled_se)
+            crown_confidence.update({
+                "runner_up_overall": round(float(runner["overall"]), 2),
+                "gap_to_runner_up": round(gap, 3),
+                "noise_threshold": round(thresh, 3),
+                # A real lead only when the gap clears the significance bar — otherwise it's a tie.
+                "clear_lead": gap > thresh,
+            })
 
     # Custom crown: an *exploratory* second take on "best" that corners over a caller-chosen
     # set of betterments (per-metric subscores) instead of the canonical feel trinity. It's
@@ -1925,6 +1978,9 @@ def compute_profiles(
         # lead over these is within run-to-run noise, so the UI flags them as a tie instead
         # of implying the crown is decisively better. Empty when the crown stands apart.
         "co_leaders": crown_co_leaders,
+        # Crown-lead-vs-noise: the measured signal-to-noise behind the #1 verdict — Overall + SE,
+        # gap to runner-up, the significance threshold (σ·pooled-SE), and whether the lead clears it.
+        "crown_confidence": crown_confidence,
         # The methodology's canonical crown metric set (source of truth for the corner) —
         # the challenger race reads these so its optimistic estimate matches the persisted
         # Overall exactly.
