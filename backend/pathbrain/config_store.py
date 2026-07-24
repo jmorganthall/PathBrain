@@ -162,6 +162,17 @@ DEFAULT_CONFIG: dict = {
         "iterations": 10,
         "settle_seconds": 30,
     },
+    # Crown follower: keep the firewall on the crowned "best" profile as the crown moves.
+    # Every `interval_minutes` the follower recomputes the standings and *records* any
+    # crown change (the churn ledger behind the "how often does the best change?" stat —
+    # tracking is always on and read-only). Only when `enabled` does it also *write*: if
+    # the firewall isn't on the crown, it applies the crown's writable fields via
+    # provider.apply() (one-way, like "Apply this profile"; never applies the SQM-off
+    # profile or one unreachable from the live environment).
+    "crown_follow": {
+        "enabled": False,
+        "interval_minutes": 30,
+    },
     # Historical trends: baseline a metric over this many days of history, judge a
     # run against the median over the last `window_hours`, and require at least
     # `min_samples` runs in a (weekday, hour) bucket before trusting its baseline

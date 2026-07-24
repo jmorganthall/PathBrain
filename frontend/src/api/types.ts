@@ -1331,3 +1331,63 @@ export type AiStreamEvent =
       usage: Record<string, number>;
     }
   | { type: "error"; error: string };
+
+// ── Crown follower ("Follow best") ─────────────────────────────────────────────────
+
+export interface CrownFollowConfig {
+  enabled: boolean;
+  interval_minutes: number;
+}
+
+// The result of one crown-follower check (tracking + optional apply).
+export interface CrownCheckResult {
+  checked_at: string;
+  enabled: boolean;
+  crown_fingerprint: string | null;
+  crown_label: string | null;
+  crown_changed: boolean;
+  live_fingerprint: string | null;
+  on_crown: boolean | null;
+  applied: boolean;
+  apply_skipped: string | null;
+  error: string | null;
+}
+
+// Crown-churn statistics: how often the crowned best profile changes.
+export interface CrownFollowStats {
+  tracked_since: string | null;
+  total_changes: number;
+  changes_24h: number;
+  changes_7d: number;
+  changes_30d: number;
+  changes_per_day: number | null;
+  distinct_crowns_30d: number;
+  last_change_at: string | null;
+  current_crown_fingerprint: string | null;
+  current_crown_label: string | null;
+  current_reign_hours: number | null;
+  mean_reign_hours: number | null;
+  median_reign_hours: number | null;
+}
+
+// One crown-ledger row: a crown change, or a follower firewall apply.
+export interface CrownEventOut {
+  id: number;
+  created_at: string | null;
+  kind: "change" | "apply" | string;
+  fingerprint: string;
+  previous_fingerprint: string | null;
+  label: string | null;
+  previous_label: string | null;
+  overall: number | null;
+  applied: boolean;
+  error: string | null;
+  detail: string | null;
+}
+
+export interface CrownFollowStatus {
+  config: CrownFollowConfig;
+  status: { last_check_at: string | null; last_result: CrownCheckResult | null };
+  stats: CrownFollowStats;
+  events: CrownEventOut[];
+}

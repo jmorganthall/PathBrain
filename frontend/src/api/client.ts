@@ -29,6 +29,9 @@ import type {
   JobsResponse,
   RunScoresResponse,
   ChallengerRace,
+  CrownCheckResult,
+  CrownFollowConfig,
+  CrownFollowStatus,
   AiConfig,
   AiModel,
   AiStreamEvent,
@@ -291,6 +294,16 @@ export const api = {
     ),
   raceCurrent: () => request<{ race: ChallengerRace | null }>("/settings/race"),
   cancelRace: () => request<{ cancelled: boolean }>("/settings/race/cancel", { method: "POST" }),
+
+  // Crown follower ("Follow best"): status + churn stats, config toggle, and a manual sync.
+  crownFollow: () => request<CrownFollowStatus>("/settings/crown-follow"),
+  crownFollowUpdate: (body: { enabled?: boolean; interval_minutes?: number }) =>
+    request<{ config: CrownFollowConfig }>("/settings/crown-follow", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  crownFollowSync: () =>
+    request<{ result: CrownCheckResult }>("/settings/crown-follow/sync", { method: "POST" }),
 
   // Re-run stored profiles: apply each, run a chosen number of iterations, restore the
   // baseline at the end. `refreshPreview` estimates time before committing. `top` (optional)

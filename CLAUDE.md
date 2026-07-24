@@ -272,6 +272,28 @@ LLM-based. See `README.md` for the product overview.
     the `coordinator` lock (so the scheduler defers via `coordinator.busy()`); persisted to
     a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on startup.
     `/api/settings/race` (+ `/race/cancel`).
+  - `crown_follower.py` — **Follow best**: keep the firewall's SQM settings on the crowned
+    best profile (`compute_profiles` → `best_fingerprint`) as the crown changes. On its own
+    interval (`config.crown_follow.interval_minutes`, default 30; scheduler-driven) each check
+    does two things. **(1) Track** — when the crown differs from the last recorded one, write a
+    `CrownEvent` ledger row; the ledger powers the **crown-churn stats** (`stats`: changes per
+    24h/7d/30d, median/current reign, changes/day — "how often does the best profile change?").
+    Tracking is read-only and always on, so the stat accrues *before* the user arms following —
+    exactly the number needed to judge whether auto-follow would thrash. **(2) Follow** (only
+    when `crown_follow.enabled`) — if the firewall isn't semantically on the crown (`plan_apply`
+    finds writable diffs; never fingerprint-hash comparison, except for the param-inert SQM-off
+    case), apply the crown's writable fields via `provider.apply()` under
+    `coordinator.try_hold` (a busy pipeline defers to the next interval). A one-way write like
+    "Apply this profile" — being on the crown *is* the steady state, so there's no baseline to
+    restore and nothing to reconcile on startup. Never auto-applied: the collapsed **"SQM off"**
+    profile (disabling shaping is the baseline test's supervised job; likewise it won't write
+    while SQM is currently off) and profiles **unreachable** from the live environment (the
+    `environment_signature` guard the race uses). Deliberately a **mirror with no hysteresis**
+    (the crown itself has none); the churn ledger + `co_leaders`/`crown_confidence` are what
+    tell the user whether the verdict is stable enough to hand over the keys.
+    `/api/settings/crown-follow` (GET status+stats+ledger, POST config, POST `/sync` = check
+    now); driven by the top-bar **"Follow best" switch** (`FollowBest.tsx`) with a status/churn
+    popover.
   - `refresh.py` — **Re-run profiles**: the batch sibling of `profile_test`. For
     each stored profile it applies the settings, benchmarks a **caller-chosen** number of
     iterations, then moves on — **restoring the baseline at the end** (persisted to a
@@ -407,7 +429,10 @@ LLM-based. See `README.md` for the product overview.
   stage readout; `Baseline.tsx`, `/api/baseline/*`), Config, Methodology, Plugins, Data Dump, AI,
   Run Detail. A
   top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
-  (re-grade, sweep, run, profile test, challenger race, …). The **Data Dump** page has two
+  (re-grade, sweep, run, profile test, challenger race, …); next to it the top-bar
+  **"Follow best" switch** (`FollowBest.tsx`) arms the crown follower
+  (`crown_follower.py`) and opens a popover with the current crown, whether the firewall
+  is on it, the crown-churn stats, the recent crown-change ledger, and a "Check now". The **Data Dump** page has two
   exports: the raw run dump (`/api/history/dump`) and the **AI optimizer export**
   (`GET /api/settings/export/optimizer`, `build_optimizer_export`) — a profile-centric JSON of
   each profile's **full details** (complete shaper settings + first/last seen) **and scoring
@@ -844,17 +869,20 @@ docker compose up --build   # -> http://localhost:8000
 - **Next:** multi-parameter Bayesian search + interleaved A/B with effect-size/CI + hysteresis;
   routing intelligence / SD-WAN. (Latency-under-load/bufferbloat is explicitly **out of scope**.)
 
-⚠️ Firewall **writes** go only through `provider.apply()`. Seven callers use it, all
-snapshot/restore or are reversible: the experiment engine (disarmed + dry-run by
-default), the Shotgun Sweep (restores baseline at end + on startup), config
+⚠️ Firewall **writes** go only through `provider.apply()`. Eight callers use it, all
+snapshot/restore, reversible, or explicitly armed: the experiment engine (disarmed +
+dry-run by default), the Shotgun Sweep (restores baseline at end + on startup), config
 test-apply (+1 then revert), sweep apply-best (explicit, supervised), the
 profile test (`profile_test.py`: apply → benchmark → restore, baseline persisted +
 reconciled on startup), the **challenger race** (`challenger.py`: time-boxed
 apply → 1 iteration → re-rank, restoring the baseline at the end — or applying the
-winner when `auto_promote` — baseline persisted + reconciled on startup), and the
+winner when `auto_promote` — baseline persisted + reconciled on startup), the
 **profile refresh** (`refresh.py`: for each stored profile apply → benchmark N
 iterations → next, restoring the baseline at the end — baseline persisted + reconciled
-on startup). Keep new write paths to `provider.apply()` and always snapshot/restore.
+on startup), and the **crown follower** (`crown_follower.py`: disarmed by default;
+when armed, a deliberately one-way apply of the crowned profile — being on the crown is
+the desired steady state, so like the supervised apply-profile there is no baseline to
+restore). Keep new write paths to `provider.apply()` and always snapshot/restore.
 The **one** firewall write that is *not* a `provider.apply()` shaper-param change is the
 pipe on/off toggle `provider.set_pipe_enabled()` — used only by the **baseline test**
 (`baseline_test.py`: snapshot pipe states → disable SQM on every pipe → settle → benchmark →
