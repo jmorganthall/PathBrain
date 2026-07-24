@@ -273,8 +273,18 @@ LLM-based. See `README.md` for the product overview.
     a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on startup.
     `/api/settings/race` (+ `/race/cancel`).
   - `crown_follower.py` — **Follow best**: keep the firewall's SQM settings on the crowned
-    best profile (`compute_profiles` → `best_fingerprint`) as the crown changes. On its own
-    interval (`config.crown_follow.interval_minutes`, default 30; scheduler-driven) each check
+    best profile (`compute_profiles` → `best_fingerprint`) as the crown changes.
+    **Event-driven, not polled**: the runner queues `notify_run_complete` as each run finishes
+    (pure memory); the next scheduler tick runs the **quick filter** (`_needs_full_check`) —
+    under the v15 `weighted` crown profile Overalls are independent, so it recomputes *only
+    the completed run's profile* (`_profile_overall`, one indexed query) against the cached
+    crown/runner-up, and the full `compute_profiles` verdict runs **only when the crown could
+    actually have moved** (corner/percentile methodologies are field-relative → always
+    escalate; ties escalate). Quiet ticks are a pure in-memory test (zero I/O — enshrined by
+    `test_step_quiet_tick_does_no_io`). A slow **backstop** full check
+    (`config.crown_follow.interval_minutes`, default 360) plus `poke()` hooks on
+    re-grade completion (`score_history_under_current`) and refingerprint catch re-rankings
+    that happen without a run completing. Each full check
     does two things. **(1) Track** — when the crown differs from the last recorded one, write a
     `CrownEvent` ledger row; the ledger powers the **crown-churn stats** (`stats`: changes per
     24h/7d/30d, median/current reign, changes/day — "how often does the best profile change?").

@@ -146,10 +146,12 @@ def _loop(stop: threading.Event) -> None:
                 stop.wait(_TICK_SECONDS)
                 continue
 
-            # Crown follower: on its own interval, record crown changes (the churn
-            # ledger) and — when enabled — keep the firewall on the crowned best
-            # profile. Returns True only when it wrote the firewall; yield that tick
-            # so monitoring doesn't measure mid-transition.
+            # Crown follower: event-driven — completed runs queue a cheap "did the crown
+            # move?" filter (quiet ticks are a pure memory test), with a slow backstop
+            # full check. Records crown changes (the churn ledger) and — when enabled —
+            # keeps the firewall on the crowned best profile. Returns True only when it
+            # wrote the firewall; yield that tick so monitoring doesn't measure
+            # mid-transition.
             from . import crown_follower
 
             if crown_follower.step():

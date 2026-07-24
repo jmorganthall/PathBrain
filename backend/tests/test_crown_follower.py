@@ -15,19 +15,28 @@ from pathbrain.providers.mock import _OVERRIDES
 from pathbrain.settings_profile import SQM_OFF_FINGERPRINT, fingerprint, normalize
 
 
+def _reset_state():
+    crown_follower._state.update(
+        {"last_full_check": 0.0, "backstop_s": None, "retry_at": None, "last_result": None, "cache": None}
+    )
+    with crown_follower._pending_lock:
+        crown_follower._pending.clear()
+
+
 @pytest.fixture(autouse=True)
 def _clean():
     """Each test starts with an empty ledger, default config, and a pristine mock firewall."""
     _OVERRIDES.clear()
-    crown_follower._state.update({"last_check": 0.0, "last_result": None})
+    _reset_state()
     with session_scope() as session:
         session.query(CrownEvent).delete()
-        save_config(session, {"crown_follow": {"enabled": False, "interval_minutes": 30}})
+        save_config(session, {"crown_follow": {"enabled": False, "interval_minutes": 360}})
     yield
     _OVERRIDES.clear()
+    _reset_state()
     with session_scope() as session:
         session.query(CrownEvent).delete()
-        save_config(session, {"crown_follow": {"enabled": False, "interval_minutes": 30}})
+        save_config(session, {"crown_follow": {"enabled": False, "interval_minutes": 360}})
 
 
 def _live_norm() -> list[dict]:
@@ -48,6 +57,9 @@ def _field_for(*profiles: dict, best: str | None = None) -> dict:
     return {
         "profiles": list(profiles),
         "best_fingerprint": best if best is not None else (profiles[0]["fingerprint"] if profiles else None),
+        # The quick-filter cache stamps the confidence bar it was computed under; mirror
+        # the config default so a synthetic field doesn't read as "config changed".
+        "min_iterations": 15,
     }
 
 
@@ -203,18 +215,131 @@ def test_busy_coordinator_defers_the_apply(monkeypatch):
     assert len(_events("change")) == 1
 
 
-# ── step() interval gating ───────────────────────────────────────────────────────────
+# ── step(): event-driven gating ──────────────────────────────────────────────────────
 
 
-def test_step_respects_interval(monkeypatch):
+def test_step_first_tick_runs_backstop_then_goes_quiet(monkeypatch):
+    import time
+
     calls = []
     monkeypatch.setattr(crown_follower, "check", lambda: calls.append(1) or {"applied": False})
-    crown_follower._state["last_check"] = 0.0
+    # First tick: no cached backstop yet → the startup full check runs (seeds the cache).
     assert crown_follower.step() is False
     assert len(calls) == 1
-    # Immediately again: within the interval → no check.
+    assert crown_follower._state["backstop_s"] == 360 * 60.0
+    assert crown_follower._state["last_full_check"] <= time.time()
+    # Quiet tick: no completed runs, backstop hours away → no check.
     assert crown_follower.step() is False
     assert len(calls) == 1
+
+
+def test_step_quiet_tick_does_no_io(monkeypatch):
+    # After the backstop is cached, a tick with nothing pending must not even open a
+    # DB session — the "hyper-efficient" contract for the every-15s scheduler tick.
+    import time
+
+    crown_follower._state["backstop_s"] = 3600.0
+    crown_follower._state["last_full_check"] = time.time()
+
+    def _boom(*a, **k):
+        raise AssertionError("quiet tick touched the DB / ran a check")
+
+    monkeypatch.setattr(crown_follower, "session_scope", _boom)
+    monkeypatch.setattr(crown_follower, "check", _boom)
+    monkeypatch.setattr(crown_follower, "_needs_full_check", _boom)
+    assert crown_follower.step() is False
+
+
+def test_run_completion_below_crown_skips_full_check(monkeypatch):
+    # A completed run on a profile that stays below the crown must NOT trigger the full
+    # standings recompute — only the cheap single-profile filter runs.
+    live = _live_norm()
+    calls = []
+    real_field = _field_for(_profile(live, overall=90.0))
+
+    def _counting_field(session):
+        calls.append(1)
+        return real_field
+
+    monkeypatch.setattr(crown_follower, "_compute_field", _counting_field)
+    crown_follower.step()  # startup backstop check → seeds the cache
+    assert len(calls) == 1
+
+    # A run completed on an unknown profile with no comparable data → below the crown.
+    crown_follower.notify_run_complete("feedbeef0000")
+    assert crown_follower.step() is False
+    assert len(calls) == 1  # no second full recompute
+
+
+def test_run_completion_that_could_take_crown_triggers_full_check(monkeypatch):
+    from pathbrain.methodology import ensure_current_methodology, overall_metrics
+    from pathbrain.config_store import get_config
+    from pathbrain.models import Run, RunStatus, Score
+
+    live = _live_norm()
+    calls = []
+    field = _field_for(_profile(live, overall=50.0))
+    monkeypatch.setattr(
+        crown_follower, "_compute_field", lambda s: calls.append(1) or field
+    )
+    crown_follower.step()  # seed cache: crown overall 50
+    assert len(calls) == 1
+
+    # Materialize a confident challenger in the DB whose weighted crown subscores beat 50.
+    challenger_fp = "beefbeef0001"
+    with session_scope() as session:
+        methodology = ensure_current_methodology(session, get_config(session))
+        crown_metrics, _ = overall_metrics(methodology.definition or {})
+        run = Run(
+            status=RunStatus.COMPLETE,
+            settings_fingerprint=challenger_fp,
+            settings=live,
+            iterations=50,
+        )
+        session.add(run)
+        session.flush()
+        # The suite-wide SQLite reuses row ids after other tests delete runs; an orphaned
+        # Score for the recycled id would violate the (run_id, methodology) uniqueness.
+        session.query(Score).filter(Score.run_id == run.id).delete()
+        session.add(
+            Score(
+                run_id=run.id,
+                methodology_version=methodology.version,
+                comparability="exact",
+                subscores={m: 95.0 for m in crown_metrics},
+                axis_scores={"overall": 95.0},
+                metric_values={},
+            )
+        )
+        session.commit()
+        run_id = run.id
+
+    try:
+        crown_follower.notify_run_complete(challenger_fp)
+        crown_follower.step()
+        assert len(calls) == 2  # the challenger justified a full recompute
+    finally:
+        with session_scope() as session:
+            session.query(Score).filter(Score.run_id == run_id).delete()
+            session.query(Run).filter(Run.id == run_id).delete()
+            session.commit()
+
+
+def test_run_completion_off_crown_while_enabled_triggers_full_check(monkeypatch):
+    # Following armed + a run measurably happened on another profile → the firewall
+    # drifted (or an engine raced others); the full check must run so it can re-apply.
+    _enable()
+    live = _live_norm()
+    calls = []
+    field = _field_for(_profile(live, overall=90.0))
+    monkeypatch.setattr(
+        crown_follower, "_compute_field", lambda s: calls.append(1) or field
+    )
+    crown_follower.step()  # seed cache; firewall on crown
+    assert len(calls) == 1
+    crown_follower.notify_run_complete("0ffcafe00001")
+    crown_follower.step()
+    assert len(calls) == 2
 
 
 # ── Stats math ───────────────────────────────────────────────────────────────────────
@@ -255,7 +380,7 @@ def test_api_status_config_and_toggle(client):
     res = client.get("/api/settings/crown-follow")
     assert res.status_code == 200
     body = res.json()
-    assert body["config"] == {"enabled": False, "interval_minutes": 30.0}
+    assert body["config"] == {"enabled": False, "interval_minutes": 360.0}
     assert "stats" in body and "events" in body and "status" in body
 
     res = client.post("/api/settings/crown-follow", json={"enabled": True, "interval_minutes": 10})
