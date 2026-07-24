@@ -163,15 +163,18 @@ DEFAULT_CONFIG: dict = {
         "settle_seconds": 30,
     },
     # Crown follower: keep the firewall on the crowned "best" profile as the crown moves.
-    # Every `interval_minutes` the follower recomputes the standings and *records* any
-    # crown change (the churn ledger behind the "how often does the best change?" stat —
-    # tracking is always on and read-only). Only when `enabled` does it also *write*: if
-    # the firewall isn't on the crown, it applies the crown's writable fields via
-    # provider.apply() (one-way, like "Apply this profile"; never applies the SQM-off
-    # profile or one unreachable from the live environment).
+    # Event-driven — each completed run triggers a cheap single-profile filter, and the full
+    # standings recompute runs only when that run could actually have moved the crown. Every
+    # full check *records* any crown change (the churn ledger behind the "how often does the
+    # best change?" stat — tracking is always on and read-only). Only when `enabled` does it
+    # also *write*: if the firewall isn't on the crown, it applies the crown's writable
+    # fields via provider.apply() (one-way, like "Apply this profile"; never applies the
+    # SQM-off profile or one unreachable from the live environment). `interval_minutes` is
+    # the slow *backstop* full check (default 6h) that catches what run-completion events
+    # can't see — re-grades, external firewall edits between runs, config changes.
     "crown_follow": {
         "enabled": False,
-        "interval_minutes": 30,
+        "interval_minutes": 360,
     },
     # Historical trends: baseline a metric over this many days of history, judge a
     # run against the median over the last `window_hours`, and require at least

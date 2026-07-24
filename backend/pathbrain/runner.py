@@ -652,6 +652,14 @@ def score_history_under_current(session, progress=None) -> dict:
             progress(i + 1, total, f"scored {counts['scored']}/{total}")
     session.commit()  # flush the final partial batch
     log.info("Re-graded %s run(s) under %s: %s", counts["scored"], methodology.version, counts)
+    # A re-grade can re-rank the whole field without any run completing — wake the crown
+    # follower for a fresh full check (covers regrade, re-anchor, and set-current jobs).
+    try:
+        from . import crown_follower
+
+        crown_follower.poke()
+    except Exception:  # noqa: BLE001 — a nudge must never fail the re-grade
+        log.debug("Crown follower poke failed", exc_info=True)
     return {"methodology": methodology.version, "total": total, **counts}
 
 
@@ -934,6 +942,14 @@ def execute_run(run_id: int) -> None:
                 "Run %s complete: SOPS=%.2f ±%.2f (%s iteration(s))",
                 run_id, breakdown.sops, sops_stdev, iterations,
             )
+            # Nudge the crown follower: this run's data may have moved the crown. A pure
+            # in-memory queue append, evaluated cheaply on the next scheduler tick.
+            try:
+                from . import crown_follower
+
+                crown_follower.notify_run_complete(run.settings_fingerprint)
+            except Exception:  # noqa: BLE001 — a notify must never affect the run
+                log.debug("Crown follower notify failed", exc_info=True)
     except Exception as exc:  # noqa: BLE001 — never let a background task crash silently
         log.exception("Run %s failed", run_id)
         with session_scope() as session:

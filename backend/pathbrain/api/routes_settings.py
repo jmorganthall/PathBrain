@@ -562,7 +562,9 @@ def backfill_settings(session: Session = Depends(get_session)) -> dict:
 
 
 @router.post("/settings/refingerprint")
-def refingerprint_runs(session: Session = Depends(get_session)) -> dict:
+def refingerprint_runs(
+    session: Session = Depends(get_session),
+) -> dict:
     """Recompute every run's ``settings_fingerprint`` from its *own* captured settings — a one-shot
     re-key of history under the current fingerprint scheme, preserving all the underlying data.
 
@@ -585,6 +587,12 @@ def refingerprint_runs(session: Session = Depends(get_session)) -> dict:
             rekeyed += 1
     session.commit()
     log.info("Re-fingerprinted %d of %d completed runs", rekeyed, len(runs))
+    if rekeyed:
+        # Re-keying regroups profiles, which can re-rank the field with no run completing —
+        # wake the crown follower for a fresh full check.
+        from .. import crown_follower
+
+        crown_follower.poke()
     return {"scanned": len(runs), "rekeyed": rekeyed}
 
 
@@ -2634,7 +2642,7 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
     return {
         "config": {
             "enabled": bool(cfg.get("enabled", False)),
-            "interval_minutes": float(cfg.get("interval_minutes", 30) or 30),
+            "interval_minutes": float(cfg.get("interval_minutes", 360) or 360),
         },
         "status": crown_follower.status(),
         "stats": crown_follower.stats(session),
@@ -2677,7 +2685,7 @@ def crown_follow_update(
     return {
         "config": {
             "enabled": bool(cfg.get("enabled", False)),
-            "interval_minutes": float(cfg.get("interval_minutes", 30) or 30),
+            "interval_minutes": float(cfg.get("interval_minutes", 360) or 360),
         }
     }
 
