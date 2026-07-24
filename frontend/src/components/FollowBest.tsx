@@ -136,12 +136,16 @@ export default function FollowBest() {
         </Typography>
         <Tooltip title="Keep the firewall's SQM settings on the best confident profile as the crown changes">
           <span>
+            {/* On phones the toolbar is tight (menu, title, update button, jobs) — collapse
+                to the trophy icon alone and let the popover carry the switch, so the
+                "Update now" button is never crowded off the right edge. */}
             <Switch
               size="small"
               checked={enabled}
               disabled={busy || info === null}
               onChange={(e) => toggle(e.target.checked)}
               inputProps={{ "aria-label": "Follow best" }}
+              sx={{ display: { xs: "none", sm: "inline-flex" } }}
             />
           </span>
         </Tooltip>
@@ -166,6 +170,15 @@ export default function FollowBest() {
               label={enabled ? "following" : "tracking only"}
               color={enabled ? "warning" : "default"}
               variant="outlined"
+            />
+            {/* The popover always carries the switch — on phones it's the only one (the
+                toolbar switch is hidden on xs to keep the update button visible). */}
+            <Switch
+              size="small"
+              checked={enabled}
+              disabled={busy || info === null}
+              onChange={(e) => toggle(e.target.checked)}
+              inputProps={{ "aria-label": "Follow best" }}
             />
           </Stack>
           <Typography variant="caption" color="text.secondary">
