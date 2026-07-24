@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, defer, selectinload
 from .. import challenger as challenger_mod
 from .. import profile_test as profile_test_mod
 from .. import refresh as refresh_mod
-from ..config_store import get_config
+from ..config_store import get_config, save_config
 from ..database import get_session
 from ..logging_config import get_logger
 from ..methodology import (
@@ -2618,6 +2618,79 @@ def current_refresh() -> dict:
 def cancel_refresh() -> dict:
     """Ask the running refresh to stop after the current profile (baseline is restored)."""
     return {"cancelled": refresh_mod.cancel()}
+
+
+# ── Crown follower ("Follow best") ────────────────────────────────────────────────────
+
+
+@router.get("/settings/crown-follow")
+def crown_follow_status(session: Session = Depends(get_session)) -> dict:
+    """The crown follower's config, last-check status, crown-churn statistics, and the
+    newest ledger events — everything the top-bar "Follow best" switch + popover shows.
+    Read-only; the churn ledger accrues whether or not following is enabled."""
+    from .. import crown_follower
+
+    cfg = get_config(session).get("crown_follow", {}) or {}
+    return {
+        "config": {
+            "enabled": bool(cfg.get("enabled", False)),
+            "interval_minutes": float(cfg.get("interval_minutes", 30) or 30),
+        },
+        "status": crown_follower.status(),
+        "stats": crown_follower.stats(session),
+        "events": crown_follower.recent_events(session, limit=20),
+    }
+
+
+@router.post("/settings/crown-follow")
+def crown_follow_update(
+    body: dict = Body(...), session: Session = Depends(get_session)
+) -> dict:
+    """Update the crown follower config (the "Follow best" switch): ``{enabled?,
+    interval_minutes?}``. Saved to the DB-backed config; a change pokes the follower so
+    the next scheduler tick (≤15s) re-checks instead of waiting out the interval."""
+    from .. import crown_follower
+
+    updates: dict = {}
+    if "enabled" in (body or {}):
+        updates["enabled"] = bool(body["enabled"])
+    if "interval_minutes" in (body or {}):
+        try:
+            interval = float(body["interval_minutes"])
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400, detail="interval_minutes must be a number"
+            ) from None
+        if interval < crown_follower.MIN_INTERVAL_MINUTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"interval_minutes must be ≥ {crown_follower.MIN_INTERVAL_MINUTES}",
+            )
+        updates["interval_minutes"] = interval
+    if not updates:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    effective = save_config(session, {"crown_follow": updates})
+    crown_follower.poke()
+    cfg = effective.get("crown_follow", {}) or {}
+    log.info("Crown follow config updated: %s", updates)
+    return {
+        "config": {
+            "enabled": bool(cfg.get("enabled", False)),
+            "interval_minutes": float(cfg.get("interval_minutes", 30) or 30),
+        }
+    }
+
+
+@router.post("/settings/crown-follow/sync")
+def crown_follow_sync() -> dict:
+    """Run a crown check **now** (the popover's "sync now"): records any crown change and,
+    when following is enabled, applies the crown immediately. Returns the check result;
+    if another firewall session holds the lock the apply is reported as deferred, not
+    queued (the next interval retries)."""
+    from .. import crown_follower
+
+    return {"result": crown_follower.check()}
 
 
 @router.get("/settings/impact")

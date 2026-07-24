@@ -40,6 +40,7 @@ import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 
 import type { ReactNode } from "react";
 
+import FollowBest from "./FollowBest";
 import JobStatus from "./JobStatus";
 import { api, ApiError } from "../api/client";
 import type { VersionInfo } from "../api/types";
@@ -379,6 +380,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" }, mr: 1 }}>
             Network Path Intelligence
           </Typography>
+          <FollowBest />
           <UpdateChip />
           <JobStatus />
         </Toolbar>

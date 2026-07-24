@@ -595,3 +595,47 @@ class CurrentTest(Base):
     iterations_run: Mapped[int] = mapped_column(Integer, default=0)
     runs_created: Mapped[int] = mapped_column(Integer, default=0)
     run_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class CrownEvent(Base):
+    """Crown-follower ledger: the history of *who is crowned* and what the follower did.
+
+    One row is written per **observed crown change** (``kind="change"`` — the crowned
+    ``best_fingerprint`` differs from the previously recorded one; the very first
+    observation has ``previous_fingerprint=None`` and only marks when tracking began),
+    plus one per **standalone firewall apply** (``kind="apply"`` — the follower wrote the
+    crown to the firewall without a crown change, e.g. right after being enabled while
+    the firewall sat on another profile).
+
+    ``kind="change"`` rows are the source of the crown-churn statistics ("how often does
+    the best profile change?", ``crown_follower.stats``); ``applied``/``error``/``detail``
+    record what the follower did (or why it skipped) at that moment. Rows are written by
+    ``crown_follower.check`` regardless of whether following is enabled, so the churn
+    stat accrues before the user ever arms the apply switch.
+    """
+
+    __tablename__ = "crown_events"
+    __table_args__ = (Index("ix_crown_events_kind_created_at", "kind", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    # "change" = the crowned best profile changed; "apply" = a follow write outside a change.
+    kind: Mapped[str] = mapped_column(String(20), default="change")
+
+    # The (new) crown / apply target, and what it replaced (None on the first observation;
+    # for "apply" rows, the fingerprint the firewall was on before the write).
+    fingerprint: Mapped[str] = mapped_column(String(40))
+    previous_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    previous_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # The crown's Overall at observation time (field-relative; informational).
+    overall: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Did the follower write the firewall as part of this event? ``error`` records a
+    # failed write; ``detail`` records why an apply was skipped (disabled / SQM off /
+    # unreachable / deferred) or what was written.
+    applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)

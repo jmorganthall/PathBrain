@@ -146,6 +146,16 @@ def _loop(stop: threading.Event) -> None:
                 stop.wait(_TICK_SECONDS)
                 continue
 
+            # Crown follower: on its own interval, record crown changes (the churn
+            # ledger) and — when enabled — keep the firewall on the crowned best
+            # profile. Returns True only when it wrote the firewall; yield that tick
+            # so monitoring doesn't measure mid-transition.
+            from . import crown_follower
+
+            if crown_follower.step():
+                stop.wait(_TICK_SECONDS)
+                continue
+
             enabled, interval_min = _monitoring_config()
             interval_s = max(interval_min * 60.0, 30.0)
             last = _state["last_run_at"]
