@@ -149,18 +149,18 @@ def test_self_update_flag_reflects_watchtower_config(monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setenv("PATHBRAIN_UPDATE_CHECK", "false")  # skip the network SHA check
     # No Watchtower configured → self_update false.
-    monkeypatch.delenv("PATHBRAIN_WATCHTOWER_URL", raising=False)
+    monkeypatch.delenv("WATCHTOWER_URL", raising=False)
     assert updates.version_info()["self_update"] is False
     get_settings.cache_clear()
     # URL set → the UI offers the button.
-    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
     assert updates.version_info()["self_update"] is True
     get_settings.cache_clear()
 
 
 def test_trigger_update_not_configured(monkeypatch):
     get_settings.cache_clear()
-    monkeypatch.delenv("PATHBRAIN_WATCHTOWER_URL", raising=False)
+    monkeypatch.delenv("WATCHTOWER_URL", raising=False)
     out = updates.trigger_update()
     assert out["triggered"] is False and "not configured" in out["error"]
     get_settings.cache_clear()
@@ -168,8 +168,8 @@ def test_trigger_update_not_configured(monkeypatch):
 
 def test_trigger_update_success_sends_bearer_token(monkeypatch):
     get_settings.cache_clear()
-    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998/")  # trailing slash trimmed
-    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_TOKEN", "s3cr3t")
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998/")  # trailing slash trimmed
+    monkeypatch.setenv("WATCHTOWER_TOKEN", "s3cr3t")
     seen = {}
 
     def fake_urlopen(req, timeout=0):
@@ -189,8 +189,8 @@ def test_trigger_update_success_sends_bearer_token(monkeypatch):
 
 def test_trigger_update_bad_token_surfaces_auth_error(monkeypatch):
     get_settings.cache_clear()
-    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
-    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_TOKEN", "wrong")
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("WATCHTOWER_TOKEN", "wrong")
 
     def fake_urlopen(req, timeout=0):
         raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
@@ -205,7 +205,7 @@ def test_trigger_update_bad_token_surfaces_auth_error(monkeypatch):
 def test_trigger_update_dropped_connection_is_treated_as_triggered(monkeypatch):
     # A successful update recreates *this* container, severing the response → not a failure.
     get_settings.cache_clear()
-    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
 
     def fake_urlopen(req, timeout=0):
         raise urllib.error.URLError(ConnectionResetError("connection reset by peer"))
@@ -219,7 +219,7 @@ def test_trigger_update_dropped_connection_is_treated_as_triggered(monkeypatch):
 def test_trigger_update_unreachable_is_an_error(monkeypatch):
     # A refused connection means Watchtower isn't listening → real, surfaced failure.
     get_settings.cache_clear()
-    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
 
     def fake_urlopen(req, timeout=0):
         raise urllib.error.URLError(ConnectionRefusedError("connection refused"))
@@ -232,7 +232,7 @@ def test_trigger_update_unreachable_is_an_error(monkeypatch):
 
 def test_test_connection_not_configured(monkeypatch):
     get_settings.cache_clear()
-    monkeypatch.delenv("PATHBRAIN_WATCHTOWER_URL", raising=False)
+    monkeypatch.delenv("WATCHTOWER_URL", raising=False)
     out = updates.test_update_connection()
     assert out["configured"] is False and out["status"] == "not_configured"
     assert out["reachable"] is False
@@ -242,8 +242,8 @@ def test_test_connection_not_configured(monkeypatch):
 def test_test_connection_probes_root_not_update_endpoint(monkeypatch):
     # The test must NEVER hit /v1/update (that would perform an update) — only the API root.
     get_settings.cache_clear()
-    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
-    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_TOKEN", "s3cr3t")
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("WATCHTOWER_TOKEN", "s3cr3t")
     seen = {}
 
     def fake_urlopen(req, timeout=0):
@@ -261,7 +261,7 @@ def test_test_connection_probes_root_not_update_endpoint(monkeypatch):
 
 def test_test_connection_reports_unreachable(monkeypatch):
     get_settings.cache_clear()
-    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
 
     def fake_urlopen(req, timeout=0):
         raise urllib.error.URLError(ConnectionRefusedError("connection refused"))
@@ -276,7 +276,7 @@ def test_test_connection_reports_unreachable(monkeypatch):
 def test_test_connection_http_error_still_reachable(monkeypatch):
     # An HTTP error status at the root (e.g. 401) still proves the server is up → reachable.
     get_settings.cache_clear()
-    monkeypatch.setenv("PATHBRAIN_WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
 
     def fake_urlopen(req, timeout=0):
         raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)

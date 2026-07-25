@@ -96,7 +96,7 @@ function WatchtowerIntegration() {
           </Stack>
         ) : (
           <Alert severity="info" sx={{ mb: 1.5 }}>
-            Set <code>PATHBRAIN_WATCHTOWER_URL</code> (and <code>PATHBRAIN_WATCHTOWER_TOKEN</code>) in
+            Set <code>WATCHTOWER_URL</code> (and <code>WATCHTOWER_TOKEN</code>) in
             your environment / compose file to enable one-click updates.
           </Alert>
         )}

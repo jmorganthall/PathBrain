@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,8 +54,11 @@ class Settings(BaseSettings):
     # ``watchtower_url`` is the base URL of the Watchtower HTTP API (e.g. http://192.168.2.6:8998);
     # ``watchtower_token`` is its ``WATCHTOWER_HTTP_API_TOKEN``. Empty ``watchtower_url`` (default)
     # disables the button — the chip stays a link to the GitHub compare.
-    watchtower_url: str = ""
-    watchtower_token: str = ""
+    # These two are intentionally un-prefixed env vars (``WATCHTOWER_URL`` / ``WATCHTOWER_TOKEN``);
+    # the explicit ``validation_alias`` bypasses the ``PATHBRAIN_`` env_prefix applied to every
+    # other setting.
+    watchtower_url: str = Field(default="", validation_alias="WATCHTOWER_URL")
+    watchtower_token: str = Field(default="", validation_alias="WATCHTOWER_TOKEN")
 
 
 @lru_cache

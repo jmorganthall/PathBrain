@@ -529,7 +529,7 @@ LLM-based. See `README.md` for the product overview.
   is *commit*-based against GitHub, which can briefly disagree with the *image* actually published
   to GHCR; a registry-digest check would track images exactly.)
 - **One-click self-update via Watchtower** (`updates.trigger_update`, `POST /api/update/trigger`):
-  when `PATHBRAIN_WATCHTOWER_URL` (+ optional `PATHBRAIN_WATCHTOWER_TOKEN`) is set, the
+  when `WATCHTOWER_URL` (+ optional `WATCHTOWER_TOKEN`) is set, the
   `UpdateChip` gains an **"Update now"** button (gated on `version_info()["self_update"]`) that
   POSTs to `{url}/v1/update` with a `Bearer` token — Watchtower's HTTP API — telling it to pull the
   newer image and recreate this container. Because a *successful* update severs the response as the
@@ -538,7 +538,9 @@ LLM-based. See `README.md` for the product overview.
   a **refused** connection (Watchtower not listening) or an **auth** error (bad token → HTTP 401) is
   a real failure surfaced to the user. Endpoint returns `409` when unconfigured, `502` when
   unreachable/rejected. Both env vars live in `config.py` (infra settings) + the compose files +
-  `.env.example`; empty URL (default) leaves the chip a plain link. The **Plugins page** carries a
+  `.env.example`; empty URL (default) leaves the chip a plain link. Unlike every other setting these
+  two are **un-prefixed** (`WATCHTOWER_URL` / `WATCHTOWER_TOKEN`, not `PATHBRAIN_*`) — a per-field
+  `validation_alias` in `config.py` bypasses the `PATHBRAIN_` env_prefix. The **Plugins page** carries a
   **Watchtower integration card** (`WatchtowerIntegration`) showing configured/URL/token state
   (`GET /api/update/config`, `self_update_config` — no network) with a **"Test connection"** button
   (`POST /api/update/test`, `test_update_connection`) that probes reachability **without triggering
