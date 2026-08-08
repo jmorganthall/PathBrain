@@ -51,6 +51,7 @@ class Run(Base):
         Index("ix_runs_status_created_at", "status", "created_at"),
         Index("ix_runs_created_at", "created_at"),
         Index("ix_runs_settings_fingerprint", "settings_fingerprint"),
+        Index("ix_runs_job_group", "job_group"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -68,6 +69,15 @@ class Run(Base):
     iterations_completed: Mapped[int] = mapped_column(Integer, default=0)
     # Mean wall-clock duration of a single full iteration, for ETA estimates.
     per_iteration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # When this run is one chunk of a larger operation (a long manual run split into
+    # 5-iteration chunks, a test-to-minimum, a test-current, a baseline test), this tags
+    # it with the broader job's id (e.g. "run-series-12", "profile_test-5") so the jobs
+    # feed can group the chunks under one parent line with aggregate progress. NULL for a
+    # standalone run. ``job_group_total`` is the whole operation's target iteration count,
+    # so a synthesized parent (the manual series has no DB row of its own) can show N/total.
+    job_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    job_group_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Firewall/SQM settings in effect during this run, for settings-vs-score
     # attribution. ``settings`` is the normalized pipe list; ``settings_fingerprint``
@@ -374,6 +384,7 @@ class ProfileTestStatus(str, enum.Enum):
     RUNNING = "running"
     COMPLETE = "complete"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class ProfileTest(Base):

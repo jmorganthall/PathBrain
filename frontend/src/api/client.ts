@@ -245,6 +245,9 @@ export const api = {
 
   // Background jobs feed (powers the top-right "running jobs" dropdown)
   jobs: () => request<JobsResponse>("/jobs"),
+  // Cancel a job by the cancel_url the feed provides (a chunk's own run, or a parent's
+  // whole-operation cancel). The url is a server-provided /api path; response shape varies.
+  cancelJob: (cancelUrl: string) => request<Record<string, unknown>>(cancelUrl, { method: "POST" }),
 
   // Monitoring
   monitoring: () => request<MonitoringStatus>("/monitoring"),

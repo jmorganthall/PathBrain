@@ -36,12 +36,22 @@ from .settings_profile import fingerprint, normalize, plan_apply
 log = get_logger("profile_test")
 
 # Single profile test at a time. Module state coordinates with the driver thread
-# and holds the target settings (which aren't stored on the row).
-_state: dict = {"active": False, "id": None, "target": None, "thread": None}
+# and holds the target settings (which aren't stored on the row) + a cooperative cancel flag.
+_state: dict = {"active": False, "id": None, "target": None, "thread": None, "cancel": False}
 
 
 def active() -> bool:
     return bool(_state.get("active"))
+
+
+def cancel() -> bool:
+    """Ask the running profile test to stop after its current chunk. Returns True if one was
+    active. The baseline is still restored (the driver's ``finally``)."""
+    if not active():
+        return False
+    _state["cancel"] = True
+    log.info("Profile test %s: cancel requested", _state.get("id"))
+    return True
 
 
 def _apply_all(provider, changes: list[dict]) -> None:
@@ -82,7 +92,7 @@ def start(fingerprint_: str, target_settings: list[dict], label: str, iterations
         session.flush()
         pt_id = pt.id
 
-    _state.update({"active": True, "id": pt_id, "target": target_settings})
+    _state.update({"active": True, "id": pt_id, "target": target_settings, "cancel": False})
     thread = threading.Thread(target=_drive, args=(pt_id,), name="pathbrain-profile-test", daemon=True)
     _state["thread"] = thread
     thread.start()
@@ -152,6 +162,10 @@ def _drive(pt_id: int) -> None:
                 done = 0
                 idx = 0
                 while done < iterations:
+                    if _state.get("cancel"):
+                        final_status = ProfileTestStatus.CANCELLED
+                        _set_stage(pt_id, f"Cancelled after {done} iteration(s) — restoring baseline")
+                        break
                     idx += 1
                     iters = min(CHUNK_ITERATIONS, iterations - done)
                     _set_stage(
@@ -167,6 +181,8 @@ def _drive(pt_id: int) -> None:
                         ),
                         iterations=iters,
                         teardown=False,  # keep Chromium warm across chunks; closed after the loop
+                        job_group=f"profile_test-{pt_id}",  # group chunks under the parent job
+                        job_group_total=iterations,
                     )
                     run_ids.append(run_id)
                     # Record the first chunk's run as the test's representative run_id (the UI
@@ -208,13 +224,12 @@ def _drive(pt_id: int) -> None:
             if pt is not None:
                 pt.status = final_status
                 pt.error = err
-                pt.stage = (
-                    "Done — baseline restored"
-                    if final_status == ProfileTestStatus.COMPLETE
-                    else (err or "Failed")
-                )
+                pt.stage = {
+                    ProfileTestStatus.COMPLETE: "Done — baseline restored",
+                    ProfileTestStatus.CANCELLED: "Cancelled — baseline restored",
+                }.get(final_status, err or "Failed")
                 pt.finished_at = datetime.now(timezone.utc)
-        _state.update({"active": False, "id": None, "target": None})
+        _state.update({"active": False, "id": None, "target": None, "cancel": False})
         log.info("Profile test %s finished: %s", pt_id, final_status.value)
 
 

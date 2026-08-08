@@ -39,7 +39,7 @@ from .database import session_scope
 from .logging_config import get_logger
 from .models import BaselineTest, BaselineTestStatus
 from .providers import get_provider
-from .runner import CHUNK_ITERATIONS, run_chunk
+from .runner import CHUNK_ITERATIONS, run_chunk, teardown_plugins
 
 log = get_logger("baseline_test")
 
@@ -187,6 +187,9 @@ def _drive(bt_id: int) -> None:
                             label="Baseline · SQM off",
                             notes=f"Baseline test #{bt_id}: unshaped link ({iterations} iterations)",
                             iterations=n,
+                            teardown=False,  # keep Chromium warm across chunks; closed in the finally
+                            job_group=f"baseline_test-{bt_id}",  # group chunks under the parent job
+                            job_group_total=iterations,
                         )
                         scheduled += n
                         iterations_run += completed
@@ -212,6 +215,8 @@ def _drive(bt_id: int) -> None:
                 final_status = BaselineTestStatus.FAILED
                 err = f"{type(exc).__name__}: {exc}"
             finally:
+                # Chromium was kept warm across the benchmark chunks; close it once now.
+                teardown_plugins()
                 # Always turn SQM back on, whatever happened above.
                 _set_stage(bt_id, "Restoring SQM (re-enabling shaping)")
                 _restore(provider, baseline)

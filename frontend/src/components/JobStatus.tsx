@@ -14,6 +14,7 @@ import Typography from "@mui/material/Typography";
 import NotificationsIcon from "@mui/icons-material/Notifications";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ErrorIcon from "@mui/icons-material/Error";
+import CloseIcon from "@mui/icons-material/Close";
 
 import { api, JOBS_REFRESH_EVENT } from "../api/client";
 import type { Job } from "../api/types";
@@ -28,14 +29,34 @@ function StatusIcon({ status }: { status: Job["status"] }) {
   return <ErrorIcon color="error" fontSize="small" />;
 }
 
-function JobRow({ job }: { job: Job }) {
+function JobRow({
+  job,
+  indent = false,
+  onCancel,
+}: {
+  job: Job;
+  indent?: boolean;
+  onCancel?: (job: Job) => void;
+}) {
   const determinate = job.total != null && job.total > 0 && job.current != null;
   const pct = determinate ? Math.min(100, Math.round((job.current! / job.total!) * 100)) : 0;
+  const canCancel = job.status === "running" && !!job.cancel_url;
   return (
-    <Box sx={{ px: 2, py: 1.25 }}>
+    <Box
+      sx={{
+        pl: indent ? 3.5 : 2,
+        pr: 1,
+        py: indent ? 0.75 : 1.25,
+        // Nested chunks get a subtle left rail so the grouping reads at a glance.
+        ...(indent ? { borderLeft: 2, borderColor: "divider", ml: 2 } : {}),
+      }}
+    >
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.25 }}>
         <StatusIcon status={job.status} />
-        <Typography variant="body2" sx={{ fontWeight: 600, flexGrow: 1, wordBreak: "break-word" }}>
+        <Typography
+          variant={indent ? "caption" : "body2"}
+          sx={{ fontWeight: indent ? 500 : 600, flexGrow: 1, wordBreak: "break-word" }}
+        >
           {job.href ? (
             <Link component={RouterLink} to={job.href} color="inherit" underline="hover">
               {job.label}
@@ -47,6 +68,18 @@ function JobRow({ job }: { job: Job }) {
         <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
           {fmtTimeShort(job.finished_at ?? job.started_at)}
         </Typography>
+        {canCancel && onCancel && (
+          <Tooltip title={indent ? "Cancel this chunk" : "Cancel this job"}>
+            <IconButton
+              size="small"
+              onClick={() => onCancel(job)}
+              aria-label={indent ? "cancel this chunk" : "cancel this job"}
+              sx={{ p: 0.25 }}
+            >
+              <CloseIcon fontSize="inherit" />
+            </IconButton>
+          </Tooltip>
+        )}
       </Stack>
       {job.status === "running" && (
         <LinearProgress
@@ -85,6 +118,24 @@ export default function JobStatus() {
       /* transient; keep the last snapshot */
     }
   }, []);
+
+  const handleCancel = useCallback(
+    async (job: Job) => {
+      if (!job.cancel_url) return;
+      const whole = !job.parent_id; // a top-level (parent) row cancels the whole operation
+      const msg = whole
+        ? `Cancel "${job.label}" and stop the whole job?`
+        : `Cancel this chunk of "${job.label}"? (its broader job will stop too)`;
+      if (!window.confirm(msg)) return;
+      try {
+        await api.cancelJob(job.cancel_url);
+      } catch {
+        /* best-effort; the next poll reflects reality */
+      }
+      void poll();
+    },
+    [poll]
+  );
 
   // Self-scheduling poll loop: cadence depends on whether work is active / menu open.
   useEffect(() => {
@@ -137,12 +188,27 @@ export default function JobStatus() {
             benchmark runs show up here.
           </Typography>
         ) : (
-          jobs.map((j, i) => (
-            <Box key={j.id}>
-              {i > 0 && <Divider />}
-              <JobRow job={j} />
-            </Box>
-          ))
+          (() => {
+            // Group chunks under their broader job: a top-level row per parent (or a job with
+            // no/absent parent), with its chunk rows nested underneath.
+            const ids = new Set(jobs.map((j) => j.id));
+            const childrenByParent: Record<string, Job[]> = {};
+            jobs.forEach((j) => {
+              if (j.parent_id && ids.has(j.parent_id)) {
+                (childrenByParent[j.parent_id] ||= []).push(j);
+              }
+            });
+            const topLevel = jobs.filter((j) => !j.parent_id || !ids.has(j.parent_id));
+            return topLevel.map((j, i) => (
+              <Box key={j.id}>
+                {i > 0 && <Divider />}
+                <JobRow job={j} onCancel={handleCancel} />
+                {(childrenByParent[j.id] ?? []).map((c) => (
+                  <JobRow key={c.id} job={c} indent onCancel={handleCancel} />
+                ))}
+              </Box>
+            ));
+          })()
         )}
       </Popover>
     </>

@@ -42,12 +42,15 @@ def _run_completed(run_id: int) -> bool:
         return bool(run and run.status == RunStatus.COMPLETE)
 
 
-def _locked_execute_series(first_run_id: int, total: int, label: str | None, notes: str | None) -> None:
+def _locked_execute_series(
+    first_run_id: int, total: int, label: str | None, notes: str | None, group: str
+) -> None:
     """Execute a large manual run as a series of <=CHUNK_ITERATIONS runs under one held
     lock, so partial completion still persists each chunk. The first chunk row is created
-    up front (and returned to the caller); the rest are created as we go. Stops early if a
-    chunk fails (the environment isn't stable, or the user cancelled the active chunk) —
-    every completed chunk is already persisted."""
+    up front (and returned to the caller); the rest are created as we go. Every chunk is
+    tagged with ``group`` so the jobs feed groups them under one parent line. Stops early
+    if a chunk fails (the environment isn't stable, or the user cancelled the active
+    chunk) — every completed chunk is already persisted."""
     n_chunks = (total + CHUNK_ITERATIONS - 1) // CHUNK_ITERATIONS
     with coordinator.hold(f"run-series#{first_run_id}"):
         # Keep the browser (Chromium) warm across every chunk (teardown=False) and close it
@@ -65,6 +68,8 @@ def _locked_execute_series(first_run_id: int, total: int, label: str | None, not
                     notes=f"{notes or 'Manual run'} · part {idx}/{n_chunks}",
                     iterations=iters,
                     teardown=False,
+                    job_group=group,
+                    job_group_total=total,
                 )
                 done += iters
                 if not prev_ok:
@@ -129,7 +134,17 @@ def trigger_run(
             f"{(total + CHUNK_ITERATIONS - 1) // CHUNK_ITERATIONS}",
             iterations=CHUNK_ITERATIONS,
         )
-        background.add_task(_locked_execute_series, first_id, total, payload.label, payload.notes)
+        # The group id is derived from the first chunk's id; stamp it (and the series total)
+        # onto that first chunk now that we know it, so the jobs feed can group the series.
+        group = f"run-series-{first_id}"
+        with session_scope() as s:
+            r = s.get(Run, first_id)
+            if r is not None:
+                r.job_group = group
+                r.job_group_total = total
+        background.add_task(
+            _locked_execute_series, first_id, total, payload.label, payload.notes, group
+        )
         run = session.get(Run, first_id)
     else:
         run_id = create_run(label=payload.label, notes=payload.notes, iterations=total)

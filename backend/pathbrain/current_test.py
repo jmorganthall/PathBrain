@@ -113,6 +113,7 @@ def _drive(ct_id: int) -> None:
                     notes=f"Test-current #{ct_id}: {duration_s // 60} min on the live profile",
                     iterations=CHUNK_ITERATIONS,
                     teardown=False,  # keep Chromium warm across chunks; closed in the finally
+                    job_group=f"current_test-{ct_id}",  # group chunks under the parent job
                 )
                 run_ids.append(run_id)
                 iterations_run += completed
