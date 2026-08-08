@@ -62,6 +62,11 @@ export default function Dashboard() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [iterations, setIterations] = useState(3);
+  // Raw text backing the Iterations field, so it can be cleared or hold an intermediate value
+  // while typing (e.g. "" or "2" on the way to "20") instead of snapping back to 1 each keystroke.
+  // The numeric `iterations` above stays in sync when the text is a valid number; the text is
+  // normalized to it on blur.
+  const [iterationsText, setIterationsText] = useState("3");
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [rolling, setRolling] = useState<RollingScore | null>(null);
   const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
@@ -71,6 +76,8 @@ export default function Dashboard() {
   const pollRef = useRef<number | null>(null);
   // "Test current for X minutes": a time-boxed collection session on the live profile.
   const [testMinutes, setTestMinutes] = useState(15);
+  // Raw text backing the Minutes field (same free-typing/clearing behaviour as iterationsText).
+  const [testMinutesText, setTestMinutesText] = useState("15");
   const [currentTest, setCurrentTest] = useState<CurrentTest | null>(null);
   const testPollRef = useRef<number | null>(null);
 
@@ -264,10 +271,19 @@ export default function Dashboard() {
                 label="Iterations"
                 type="number"
                 size="small"
-                value={iterations}
+                value={iterationsText}
                 onChange={(e) => {
-                  const n = parseInt(e.target.value, 10);
-                  setIterations(Number.isNaN(n) ? 1 : Math.max(1, Math.min(n, maxIterations)));
+                  const raw = e.target.value;
+                  setIterationsText(raw); // show exactly what's typed, including empty
+                  const n = parseInt(raw, 10);
+                  if (!Number.isNaN(n)) setIterations(Math.max(1, Math.min(n, maxIterations)));
+                }}
+                onBlur={() => {
+                  // Normalize on blur: empty/invalid falls back to the last valid count.
+                  const n = parseInt(iterationsText, 10);
+                  const clamped = Number.isNaN(n) ? iterations : Math.max(1, Math.min(n, maxIterations));
+                  setIterations(clamped);
+                  setIterationsText(String(clamped));
                 }}
                 inputProps={{ min: 1, max: maxIterations }}
                 disabled={activeRun || testActive}
@@ -336,10 +352,18 @@ export default function Dashboard() {
                     label="Minutes"
                     type="number"
                     size="small"
-                    value={testMinutes}
+                    value={testMinutesText}
                     onChange={(e) => {
-                      const n = parseInt(e.target.value, 10);
-                      setTestMinutes(Number.isNaN(n) ? 1 : Math.max(1, Math.min(n, 1440)));
+                      const raw = e.target.value;
+                      setTestMinutesText(raw); // show exactly what's typed, including empty
+                      const n = parseInt(raw, 10);
+                      if (!Number.isNaN(n)) setTestMinutes(Math.max(1, Math.min(n, 1440)));
+                    }}
+                    onBlur={() => {
+                      const n = parseInt(testMinutesText, 10);
+                      const clamped = Number.isNaN(n) ? testMinutes : Math.max(1, Math.min(n, 1440));
+                      setTestMinutes(clamped);
+                      setTestMinutesText(String(clamped));
                     }}
                     inputProps={{ min: 1, max: 1440 }}
                     disabled={activeRun}
