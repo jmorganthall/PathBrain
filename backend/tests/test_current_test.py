@@ -10,6 +10,7 @@ from pathbrain import current_test as ct_mod
 from pathbrain import runner
 from pathbrain.database import session_scope
 from pathbrain.models import CurrentTest, CurrentTestStatus, Run, RunStatus
+from pathbrain.plugins.base import PluginResult
 
 
 def _wait_finish(ct_id: int, timeout: float = 10.0) -> CurrentTest:
@@ -34,8 +35,9 @@ def _fake_chunk(delay: float = 0.03, ok=lambda n: True):
     counts calls, and reports success per ``ok(call_number)``."""
     state = {"n": 0}
 
-    def chunk(label, notes, iterations):
+    def chunk(label, notes, iterations, teardown=True):
         state["n"] += 1
+        state["teardown"] = teardown  # record the last teardown flag the engine passed
         time.sleep(delay)
         return (2000 + state["n"], ok(state["n"]), iterations)
 
@@ -152,6 +154,41 @@ def test_manual_run_5_or_fewer_is_a_single_run(client, monkeypatch):
     runs = _series_runs(marker, expect=1)
     assert len(runs) == 1
     assert "part" not in (runs[0].notes or "")  # not chunked
+
+
+class _FakePlugin:
+    """Minimal plugin stand-in that counts run() and teardown() calls, so we can prove the
+    browser (any reused-resource plugin) is torn down once per series, not once per chunk."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.runs = 0
+        self.teardowns = 0
+
+    def run(self, section):
+        self.runs += 1
+        return PluginResult(plugin=self.name, success=False, raw={}, error="stub")
+
+    def teardown(self) -> None:
+        self.teardowns += 1
+
+
+def test_manual_run_series_tears_down_plugins_once(client, monkeypatch):
+    """A chunked manual run keeps plugins warm across chunks (teardown=False per chunk) and
+    tears them down exactly once when the whole series ends — so Chromium cold-starts once."""
+    fake = _FakePlugin()
+    monkeypatch.setattr(runner, "iter_plugins", lambda: [fake])
+    marker = "warmseries-abc"
+
+    resp = client.post("/api/run", json={"iterations": 12, "notes": marker})
+    assert resp.status_code == 202
+
+    runs = _series_runs(marker, expect=3)  # 12 → 5 + 5 + 2
+    assert all(r.status == RunStatus.COMPLETE for r in runs)
+    # Ran every iteration across the three chunks, but tore the plugin down only ONCE.
+    assert fake.runs == 12
+    assert fake.teardowns == 1
 
 
 def test_estimate_exposes_raised_iteration_cap(client):

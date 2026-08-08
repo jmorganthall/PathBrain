@@ -30,7 +30,7 @@ from .database import session_scope
 from .logging_config import get_logger
 from .models import ProfileTest, ProfileTestStatus
 from .providers import get_provider
-from .runner import CHUNK_ITERATIONS, run_chunk
+from .runner import CHUNK_ITERATIONS, run_chunk, teardown_plugins
 from .settings_profile import fingerprint, normalize, plan_apply
 
 log = get_logger("profile_test")
@@ -166,6 +166,7 @@ def _drive(pt_id: int) -> None:
                             f"minimum · part {idx}/{n_chunks}"
                         ),
                         iterations=iters,
+                        teardown=False,  # keep Chromium warm across chunks; closed after the loop
                     )
                     run_ids.append(run_id)
                     # Record the first chunk's run as the test's representative run_id (the UI
@@ -187,6 +188,8 @@ def _drive(pt_id: int) -> None:
                 final_status = ProfileTestStatus.FAILED
                 err = f"{type(exc).__name__}: {exc}"
             finally:
+                # Chromium was kept warm across the benchmark chunks; close it once now.
+                teardown_plugins()
                 # Always restore the pre-test baseline.
                 try:
                     _set_stage(pt_id, "Restoring your original settings")

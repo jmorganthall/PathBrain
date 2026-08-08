@@ -12,7 +12,14 @@ from ..config_store import get_config
 from ..database import get_session, session_scope
 from ..logging_config import get_logger
 from ..models import Run, RunStatus
-from ..runner import CHUNK_ITERATIONS, MAX_ITERATIONS, create_run, execute_run, run_chunk
+from ..runner import (
+    CHUNK_ITERATIONS,
+    MAX_ITERATIONS,
+    create_run,
+    execute_run,
+    run_chunk,
+    teardown_plugins,
+)
 from ..schemas import CurrentTestStart, RunCreate, RunDetail
 from .routes_results import _serialize_run
 
@@ -43,22 +50,28 @@ def _locked_execute_series(first_run_id: int, total: int, label: str | None, not
     every completed chunk is already persisted."""
     n_chunks = (total + CHUNK_ITERATIONS - 1) // CHUNK_ITERATIONS
     with coordinator.hold(f"run-series#{first_run_id}"):
-        execute_run(first_run_id)
-        prev_ok = _run_completed(first_run_id)
-        done = CHUNK_ITERATIONS
-        idx = 1
-        while prev_ok and done < total:
-            idx += 1
-            iters = min(CHUNK_ITERATIONS, total - done)
-            _run_id, prev_ok, _completed = run_chunk(
-                label=label,
-                notes=f"{notes or 'Manual run'} · part {idx}/{n_chunks}",
-                iterations=iters,
-            )
-            done += iters
-            if not prev_ok:
-                log.warning("Run series (from #%s): part %s failed; stopping early", first_run_id, idx)
-                break
+        # Keep the browser (Chromium) warm across every chunk (teardown=False) and close it
+        # once when the series ends — so a long run pays the cold-start once, not per chunk.
+        try:
+            execute_run(first_run_id, teardown=False)
+            prev_ok = _run_completed(first_run_id)
+            done = CHUNK_ITERATIONS
+            idx = 1
+            while prev_ok and done < total:
+                idx += 1
+                iters = min(CHUNK_ITERATIONS, total - done)
+                _run_id, prev_ok, _completed = run_chunk(
+                    label=label,
+                    notes=f"{notes or 'Manual run'} · part {idx}/{n_chunks}",
+                    iterations=iters,
+                    teardown=False,
+                )
+                done += iters
+                if not prev_ok:
+                    log.warning("Run series (from #%s): part %s failed; stopping early", first_run_id, idx)
+                    break
+        finally:
+            teardown_plugins()
 
 
 @router.get("/runs/{run_id}/verify-derivation")
