@@ -186,6 +186,70 @@ def metric_grid(points: list[RunPoint], metric_key: str, tz_offset_min: int) -> 
 _FALLBACK_LADDER = ("exact", "hour", "weekday", "global")
 
 
+class _BaselineResolver:
+    """Memoized fallback-ladder resolution over one day×hour bucketing.
+
+    ``_baseline_pool`` re-derived the hour/weekday/global pools by scanning every
+    bucket, and its callers then took a ``median`` of the returned pool — once per
+    *target run*. Over a large history that made time-adjusting a field of profiles
+    quadratic (every run × every run), which is what turned the Settings-Impact
+    page load into minutes. There are at most 7×24 distinct (weekday, hour) cells,
+    so this resolver precomputes the hour/weekday/global aggregates once and caches
+    each cell's resolved ``(source, values)`` — and its median — on first use.
+    """
+
+    def __init__(self, buckets: dict[tuple[int, int], list[float]], min_samples: int) -> None:
+        self._buckets = buckets
+        self._min_samples = min_samples
+        by_hour: dict[int, list[float]] = {}
+        by_weekday: dict[int, list[float]] = {}
+        global_vals: list[float] = []
+        for (w, h), vs in buckets.items():
+            by_hour.setdefault(h, []).extend(vs)
+            by_weekday.setdefault(w, []).extend(vs)
+            global_vals.extend(vs)
+        self._by_hour = by_hour
+        self._by_weekday = by_weekday
+        self._global = global_vals
+        self._pool_cache: dict[tuple[int, int], tuple[str, list[float]] | None] = {}
+        self._median_cache: dict[tuple[int, int], float | None] = {}
+
+    def pool(self, weekday: int, hour: int) -> tuple[str, list[float]] | None:
+        """Same ladder semantics as ``_baseline_pool``, memoized per cell."""
+        key = (weekday, hour)
+        if key in self._pool_cache:
+            return self._pool_cache[key]
+        pools: dict[str, list[float]] = {
+            "exact": self._buckets.get(key, []),
+            "hour": self._by_hour.get(hour, []),
+            "weekday": self._by_weekday.get(weekday, []),
+            "global": self._global,
+        }
+        result: tuple[str, list[float]] | None = None
+        for source in _FALLBACK_LADDER:
+            if len(pools[source]) >= self._min_samples:
+                result = (source, pools[source])
+                break
+        if result is None:
+            for source in _FALLBACK_LADDER:
+                if pools[source]:
+                    result = (source, pools[source])
+                    break
+        self._pool_cache[key] = result
+        return result
+
+    def pool_median(self, weekday: int, hour: int) -> float | None:
+        """Median of the cell's resolved pool, memoized (the sort is the other half
+        of the per-run cost)."""
+        key = (weekday, hour)
+        if key in self._median_cache:
+            return self._median_cache[key]
+        pool = self.pool(weekday, hour)
+        med = median(pool[1]) if pool else None
+        self._median_cache[key] = med
+        return med
+
+
 def _baseline_pool(
     buckets: dict[tuple[int, int], list[float]],
     weekday: int,
@@ -197,21 +261,10 @@ def _baseline_pool(
     Widen the context — exact cell → same hour any day → same day any hour →
     global — until a pool clears ``min_samples``; if none does, fall back to the
     most specific *non-empty* pool. Returns ``(source, values)`` or None if there's
-    no history at all.
+    no history at all. One-shot form of :class:`_BaselineResolver` — a caller
+    resolving many cells over the same bucketing should build a resolver instead.
     """
-    pools: dict[str, list[float]] = {
-        "exact": list(buckets.get((weekday, hour), [])),
-        "hour": [x for (w, h), vs in buckets.items() if h == hour for x in vs],
-        "weekday": [x for (w, h), vs in buckets.items() if w == weekday for x in vs],
-        "global": [x for vs in buckets.values() for x in vs],
-    }
-    for source in _FALLBACK_LADDER:
-        if len(pools[source]) >= min_samples:
-            return source, pools[source]
-    for source in _FALLBACK_LADDER:
-        if pools[source]:
-            return source, pools[source]
-    return None
+    return _BaselineResolver(buckets, min_samples).pool(weekday, hour)
 
 
 def relative_reading(
@@ -288,6 +341,7 @@ def relative_deltas(
     min_samples: int,
     *,
     buckets: dict[tuple[int, int], list[float]] | None = None,
+    resolver: "_BaselineResolver | None" = None,
 ) -> list[float]:
     """Per-run ``value − baseline_median(its weekday,hour)`` for ``target_points``.
 
@@ -300,19 +354,26 @@ def relative_deltas(
     ``buckets`` lets a caller pass the day×hour bucketing of ``baseline_points`` when it's
     invariant across many calls (e.g. time-adjusting every profile against the same field):
     the bucketing is O(all runs), so recomputing it per profile is quadratic — pass it once.
+    ``resolver`` goes one further for the same many-profiles case: pass a shared
+    ``_BaselineResolver`` so the ladder pools/medians are also resolved once for the whole
+    field instead of once per profile.
     """
-    if buckets is None:
-        buckets = bucket_values(baseline_points, metric_key, tz_offset_min)
+    if resolver is None:
+        if buckets is None:
+            buckets = bucket_values(baseline_points, metric_key, tz_offset_min)
+        # Resolve + median each (weekday, hour) cell at most once — the per-run ladder scan
+        # and median sort were quadratic over the whole field (see _BaselineResolver).
+        resolver = _BaselineResolver(buckets, min_samples)
     deltas: list[float] = []
     for p in target_points:
         v = p.values.get(metric_key)
         if v is None:
             continue
         wd, hr = local_bucket(p.created_at, tz_offset_min)
-        pool = _baseline_pool(buckets, wd, hr, min_samples)
-        if pool is None:
+        base_med = resolver.pool_median(wd, hr)
+        if base_med is None:
             continue
-        deltas.append(v - median(pool[1]))
+        deltas.append(v - base_med)
     return deltas
 
 
@@ -324,6 +385,7 @@ def profile_relative(
     min_samples: int,
     *,
     buckets: dict[tuple[int, int], list[float]] | None = None,
+    resolver: "_BaselineResolver | None" = None,
 ) -> dict | None:
     """Time-adjusted summary for a set of runs (e.g. one settings profile).
 
@@ -337,7 +399,13 @@ def profile_relative(
     re-bucketing all runs per profile — see :func:`relative_deltas`.
     """
     deltas = relative_deltas(
-        baseline_points, target_points, metric_key, tz_offset_min, min_samples, buckets=buckets
+        baseline_points,
+        target_points,
+        metric_key,
+        tz_offset_min,
+        min_samples,
+        buckets=buckets,
+        resolver=resolver,
     )
     if not deltas:
         return None

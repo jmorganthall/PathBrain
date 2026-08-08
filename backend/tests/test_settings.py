@@ -1152,7 +1152,7 @@ def test_profiles_endpoint_flags_co_leaders_on_a_tie(client, monkeypatch):
     # the global crown contenders; one is crowned (tie-break), the other flagged co-leader.
     import pathbrain.api.routes_settings as rs
 
-    monkeypatch.setattr(rs, "_current_fingerprint", lambda: None)
+    monkeypatch.setattr(rs, "_current_fingerprint", lambda live=None: None)
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     for i in range(6):
         _seed_run("tieaaa0000x", 80, t0 - timedelta(minutes=200 - i), iterations=3,
