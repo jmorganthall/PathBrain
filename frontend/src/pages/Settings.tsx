@@ -114,6 +114,10 @@ const INFRA_LABELS: Record<string, string> = {
   packet_loss: "loss",
 };
 
+// The unshaped "SQM off" baseline is always rendered in fuchsia (row accent + chip + scatter
+// dot) so it's instantly locatable as the honest floor every shaped profile is measured against.
+const BASELINE_COLOR = "#e5399e";
+
 function completionSummary(p: SettingsProfile): string {
   const parts = Object.entries(p.completion_metrics).map(
     ([k, v]) => `${INFRA_LABELS[k] ?? k} ${v.median}${k === "packet_loss" ? "%" : "ms"}`
@@ -659,14 +663,20 @@ export default function Settings() {
   const hasBaseline = useMemo(() => (profiles ?? []).some((p) => p.is_sqm_off), [profiles]);
   // Drop profiles that rank worse than the SQM-off baseline (pct_vs_sqm_off < 0) when the
   // toggle is on — a shaper profile that can't beat the unshaped link isn't worth showing.
-  // Baseline profiles and unscored ones (null %) are always kept. No baseline yet ⇒ no-op.
+  // Baseline profiles, unscored ones (null %), and the profile the firewall is *currently*
+  // on are always kept: you must always be able to see where you actually are, even if it's
+  // below baseline. No baseline yet ⇒ no-op.
   const filteredProfiles = useMemo(() => {
     if (!profiles) return profiles;
     if (!hideBelowBaseline) return profiles;
     return profiles.filter(
-      (p) => p.is_sqm_off || p.pct_vs_sqm_off == null || p.pct_vs_sqm_off >= 0
+      (p) =>
+        p.is_sqm_off ||
+        p.fingerprint === currentFingerprint ||
+        p.pct_vs_sqm_off == null ||
+        p.pct_vs_sqm_off >= 0
     );
-  }, [profiles, hideBelowBaseline]);
+  }, [profiles, hideBelowBaseline, currentFingerprint]);
   const hiddenCount = (profiles?.length ?? 0) - (filteredProfiles?.length ?? 0);
   // Profiles shown on the scatter, after the baseline + min-iterations filters.
   const plotProfiles = useMemo(
@@ -1687,11 +1697,18 @@ export default function Settings() {
                 <TableBody>
                   {(pagedProfiles ?? []).map((p) => {
                     const isActive = p.fingerprint === currentFingerprint;
+                    const isBaseline = p.is_sqm_off;
                     return (
                     <TableRow
                       key={p.fingerprint}
                       selected={isActive}
-                      sx={isActive ? { "& td": { bgcolor: "action.selected" } } : undefined}
+                      sx={{
+                        ...(isActive ? { "& td": { bgcolor: "action.selected" } } : {}),
+                        // The SQM-off baseline gets a fuchsia left accent so it's always locatable.
+                        ...(isBaseline
+                          ? { "& td:first-of-type": { borderLeft: `3px solid ${BASELINE_COLOR}` } }
+                          : {}),
+                      }}
                     >
                       <TableCell sx={{ maxWidth: 360 }}>
                         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
@@ -1706,6 +1723,19 @@ export default function Settings() {
                           {isActive && (
                             <Tooltip title="This profile is live on the firewall right now">
                               <Chip size="small" color="info" label="active" />
+                            </Tooltip>
+                          )}
+                          {isBaseline && (
+                            <Tooltip title="The unshaped 'SQM off' baseline — the honest floor every shaped profile is measured against">
+                              <Chip
+                                size="small"
+                                label="baseline"
+                                sx={{
+                                  bgcolor: BASELINE_COLOR,
+                                  color: "#fff",
+                                  fontWeight: 600,
+                                }}
+                              />
                             </Tooltip>
                           )}
                           {p.fingerprint === bestFingerprint && (

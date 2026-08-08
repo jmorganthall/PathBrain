@@ -230,14 +230,15 @@ export default function Baseline() {
               <TextField
                 size="small"
                 type="time"
-                label="Run at (local)"
+                label="Run at (server time)"
+                helperText="Server/container timezone (TZ)"
                 value={hhmm}
                 disabled={!cfg}
                 onChange={(e) => {
                   const [h, m] = e.target.value.split(":").map((x) => parseInt(x, 10));
                   patchConfig({ hour: h || 0, minute: m || 0 });
                 }}
-                sx={{ width: 150 }}
+                sx={{ width: 180 }}
                 InputLabelProps={{ shrink: true }}
               />
               <NumField

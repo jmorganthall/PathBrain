@@ -7,7 +7,10 @@ session that:
 1. Snapshots the live firewall settings (the baseline to restore).
 2. Applies the target profile for real (via ``provider.apply()``).
 3. **Reads the firewall back** and verifies it actually reached the target profile.
-4. Runs one benchmark with exactly the iterations still needed to hit the minimum.
+4. Benchmarks exactly the iterations still needed to hit the minimum, **chunked** into
+   blocks of ``runner.CHUNK_ITERATIONS`` iterations each (the same pattern as the timed
+   "test current" engine and large manual runs) so each block is persisted the moment it
+   finishes — an interruption keeps every completed chunk instead of losing the whole run.
 5. **Always** restores the pre-test baseline at the end (and on crash-restart, via
    ``reconcile_interrupted_profile_tests``).
 
@@ -27,7 +30,7 @@ from .database import session_scope
 from .logging_config import get_logger
 from .models import ProfileTest, ProfileTestStatus
 from .providers import get_provider
-from .runner import create_run, execute_run
+from .runner import CHUNK_ITERATIONS, run_chunk
 from .settings_profile import fingerprint, normalize, plan_apply
 
 log = get_logger("profile_test")
@@ -138,17 +141,47 @@ def _drive(pt_id: int) -> None:
                 reached_fp = fingerprint(after)
                 log.info("Profile test %s: firewall reached %s (target %s)", pt_id, reached_fp, target_fp)
 
-                run_id = create_run(
-                    label=f"test · {label}",
-                    notes=f"Profile test #{pt_id}: top up {target_fp} to the confidence minimum",
-                    iterations=iterations,
-                )
-                with session_scope() as session:
-                    pt = session.get(ProfileTest, pt_id)
-                    pt.run_id = run_id
-                _set_stage(pt_id, f"Benchmarking on the target profile ({iterations} iteration(s))")
-                execute_run(run_id)  # blocking; its own read-before/after integrity applies
-                _set_stage(pt_id, "Benchmark complete")
+                # Benchmark the target profile in blocks of CHUNK_ITERATIONS, not one long
+                # run, so each block persists as it finishes (an interruption keeps the data
+                # collected so far). The target stays applied for the whole session — every
+                # chunk benchmarks the same firewall state — and the coordinator lock is held
+                # across all chunks. ``run_chunk`` reports completion so a failed chunk (e.g.
+                # mid-run settings drift) stops the series with the environment flagged unstable.
+                n_chunks = (iterations + CHUNK_ITERATIONS - 1) // CHUNK_ITERATIONS
+                run_ids: list[int] = []
+                done = 0
+                idx = 0
+                while done < iterations:
+                    idx += 1
+                    iters = min(CHUNK_ITERATIONS, iterations - done)
+                    _set_stage(
+                        pt_id,
+                        f"Benchmarking on the target profile — part {idx}/{n_chunks} "
+                        f"({done}/{iterations} iteration(s) done)",
+                    )
+                    run_id, ok, completed = run_chunk(
+                        label=f"test · {label}",
+                        notes=(
+                            f"Profile test #{pt_id}: top up {target_fp} to the confidence "
+                            f"minimum · part {idx}/{n_chunks}"
+                        ),
+                        iterations=iters,
+                    )
+                    run_ids.append(run_id)
+                    # Record the first chunk's run as the test's representative run_id (the UI
+                    # links to it), and track progress for the live readout.
+                    if idx == 1:
+                        with session_scope() as session:
+                            pt = session.get(ProfileTest, pt_id)
+                            if pt is not None:
+                                pt.run_id = run_id
+                    done += completed
+                    if not ok:
+                        raise RuntimeError(
+                            f"A benchmark chunk failed (run #{run_id}); stopped after "
+                            f"{done} iteration(s) with collected data kept."
+                        )
+                _set_stage(pt_id, f"Benchmark complete ({done} iteration(s) across {len(run_ids)} chunk(s))")
             except Exception as exc:  # noqa: BLE001 — record + restore, never crash the thread
                 log.exception("Profile test %s failed", pt_id)
                 final_status = ProfileTestStatus.FAILED

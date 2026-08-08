@@ -10,7 +10,7 @@ Two concerns:
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -36,14 +36,21 @@ def _schedule_payload(cfg: dict) -> dict:
     iterations = int(bt.get("iterations", 10) or 10)
     settle = int(bt.get("settle_seconds", 30) or 0)
 
-    # Next local (container-TZ) fire time, for the UI — informational only.
+    # Next fire time, for the UI — informational only. The scheduler fires on the
+    # container's *local* wall-clock (``datetime.now()``, see ``scheduler._maybe_run_baseline``),
+    # so we compute the next local hour:minute occurrence and then convert it to a real UTC
+    # **instant** (``+00:00`` suffix). Emitting a tz-aware instant is what keeps this consistent
+    # with ``started_at``/``finished_at`` (both stored UTC): the frontend's ``parseApiDate`` sees
+    # the offset and renders it in the viewer's local zone instead of mis-tagging a naive string
+    # as UTC and shifting it a second time (the old bug: "Run at (local) 01:00" but "Next:" showing
+    # a different hour). ``datetime.now().astimezone()`` attaches the container's local tzinfo.
     next_run_at = None
     if enabled:
-        now = datetime.now()
-        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if candidate <= now:
+        now_local = datetime.now().astimezone()
+        candidate = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now_local:
             candidate = candidate + timedelta(days=1)
-        next_run_at = candidate.isoformat()
+        next_run_at = candidate.astimezone(timezone.utc).isoformat()
 
     return {
         "enabled": enabled,

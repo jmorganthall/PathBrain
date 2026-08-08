@@ -15,6 +15,11 @@ services:
     sysctls:
       - net.ipv4.ping_group_range=0 2147483647
     environment:
+      # Container timezone — the scheduler's nightly baseline-test time and the experiment
+      # window hours run on the container's *local* wall-clock, so set this to your zone
+      # (e.g. America/New_York) to make "Run at (local)" mean your local time. Defaults to UTC.
+      TZ: "${TZ:-UTC}"
+
       # Storage (SQLite on the persistent volume)
       PATHBRAIN_DATABASE_URL: "sqlite:////data/pathbrain.db"
       PATHBRAIN_LOG_LEVEL: "INFO"

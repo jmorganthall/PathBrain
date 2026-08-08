@@ -202,6 +202,14 @@ def test_baseline_config_get_and_update(client):
     assert (updated["hour"], updated["minute"]) == (3, 30)
     assert updated["iterations"] == 8 and updated["settle_seconds"] == 45
     assert updated["next_run_at"]  # armed → a next fire time is computed
+    # next_run_at must be a tz-aware UTC instant (offset suffix), not a naive local string —
+    # otherwise the frontend re-tags it as UTC and double-shifts the "Next:" display.
+    from datetime import datetime, timezone
+
+    parsed = datetime.fromisoformat(updated["next_run_at"])
+    assert parsed.tzinfo is not None, "next_run_at must carry a timezone offset"
+    assert parsed.utcoffset() == timezone.utc.utcoffset(None)  # normalized to UTC
+    assert parsed > datetime.now(timezone.utc)  # it's the *next* occurrence
 
     # Validation: out-of-range hour is rejected.
     assert client.put("/api/baseline/config", json={"hour": 24}).status_code == 422

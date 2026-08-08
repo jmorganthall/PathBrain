@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import time
 
+from sqlalchemy import select
+
 from pathbrain import profile_test as pt_mod
 from pathbrain import runner
 from pathbrain.database import session_scope
@@ -47,6 +49,40 @@ def test_profile_test_runs_and_restores(monkeypatch):
     # Firewall is back to baseline (mock default quantum) and the lock is free.
     assert get_provider().discover()[0].quantum == 1514
     assert not pt_mod.active()
+
+
+def test_profile_test_chunks_into_blocks(monkeypatch):
+    """A "run to minimum confidence" of more than CHUNK_ITERATIONS iterations must be split
+    into a series of runs of at most CHUNK_ITERATIONS each (so an interruption keeps every
+    completed block), not one long single run."""
+    mock_mod._OVERRIDES.clear()
+    monkeypatch.setattr(runner, "iter_plugins", lambda: [])
+
+    target = normalize(get_provider().discover())
+    target_fp = fingerprint(target)
+
+    total = runner.CHUNK_ITERATIONS * 2 + 1  # 11 with CHUNK_ITERATIONS=5 → chunks 5,5,1
+    test_id = pt_mod.start(target_fp, target, "chunky", iterations=total)
+    pt = _wait_for_finish(test_id)
+
+    assert pt.status == ProfileTestStatus.COMPLETE, pt.error
+    # All runs this test produced (tagged with the test id in their notes).
+    with session_scope() as s:
+        runs = [
+            r
+            for r in s.scalars(select(Run)).all()
+            if r.notes and f"Profile test #{test_id}:" in r.notes
+        ]
+        assert len(runs) == 3, f"expected 3 chunks, got {[r.iterations for r in runs]}"
+        assert all(r.iterations <= runner.CHUNK_ITERATIONS for r in runs)
+        assert all(r.status == RunStatus.COMPLETE for r in runs)
+        assert sum(r.iterations for r in runs) == total
+        # The representative run_id is the first chunk.
+        assert pt.run_id in {r.id for r in runs}
+    # Baseline restored, lock free.
+    assert get_provider().discover()[0].quantum == 1514
+    assert not pt_mod.active()
+    mock_mod._OVERRIDES.clear()
 
 
 def test_profile_test_verifies_semantically_despite_format(monkeypatch):
