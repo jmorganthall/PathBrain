@@ -33,6 +33,7 @@ interface Point {
   confident: boolean;
   isBest: boolean;
   isActive: boolean; // currently live on the firewall → drawn as a triangle
+  isBaseline: boolean; // the SQM-off baseline → drawn in fuchsia
 }
 
 function median(xs: number[]): number {
@@ -63,6 +64,7 @@ function QuadrantTooltip({
         {p.label}
         {p.isBest ? " · best" : ""}
         {p.isActive ? " · active" : ""}
+        {p.isBaseline ? " · baseline (SQM off)" : ""}
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
         {yField.label} {fmtFieldValue(p.y, yField.unit)} · {xField.label} {fmtFieldValue(p.x, xField.unit)}
@@ -136,6 +138,7 @@ export default function ProfileQuadrant({
       confident: p.confident,
       isBest: p.fingerprint === bestFingerprint,
       isActive: currentFingerprint != null && p.fingerprint === currentFingerprint,
+      isBaseline: !!p.is_sqm_off,
     }));
 
   if (points.length < 2) {
@@ -155,10 +158,14 @@ export default function ProfileQuadrant({
   const greyColor = theme.palette.text.disabled;
   const goodColor = theme.palette.success.main;
   const bestColor = theme.palette.warning.main;
+  // The unshaped "SQM off" baseline — the honest floor every shaped profile is measured
+  // against — is always drawn in fuchsia so it's instantly locatable, whatever its score.
+  const baselineColor = "#e5399e";
   const bothHigher = xField.higherIsBetter && yField.higherIsBetter;
 
+  // Baseline takes precedence so it's always fuchsia; the crown still gets its ring (stroke).
   const cellColor = (p: Point) =>
-    p.isBest ? bestColor : p.confident ? goodColor : greyColor;
+    p.isBaseline ? baselineColor : p.isBest ? bestColor : p.confident ? goodColor : greyColor;
 
   // recharts hands the clicked entry (sometimes wrapped in `.payload`) to onClick.
   const handleDotClick = (d: unknown) => {
@@ -205,7 +212,7 @@ export default function ProfileQuadrant({
     i = j;
   }
   const opacityOf = (p: Point): number => {
-    if (!shadeOn || p.isBest || p.isActive) return 1; // always show best + active clearly
+    if (!shadeOn || p.isBest || p.isActive || p.isBaseline) return 1; // always show best + active + baseline clearly
     if (p.zRaw == null) return MIN_OPACITY; // no value on the third axis → faint
     if (n <= 1) return 1; // nothing to rank against
     const frac = fracByVal.get(p.zRaw) ?? 0; // 0 = lowest rank, 1 = highest
@@ -286,14 +293,20 @@ export default function ProfileQuadrant({
                   key={p.fingerprint}
                   fill={cellColor(p)}
                   fillOpacity={opacityOf(p)}
-                  stroke={p.isBest ? theme.palette.warning.light : undefined}
-                  strokeWidth={p.isBest ? 3 : 0}
+                  stroke={p.isBest ? theme.palette.warning.light : p.isBaseline ? baselineColor : undefined}
+                  strokeWidth={p.isBest || p.isBaseline ? 3 : 0}
                 />
               ))}
             </Scatter>
             <Scatter name="Limited data" data={limited} fill={greyColor} onClick={handleDotClick} cursor={dotCursor}>
               {limited.map((p) => (
-                <Cell key={p.fingerprint} fill={greyColor} fillOpacity={opacityOf(p)} />
+                <Cell
+                  key={p.fingerprint}
+                  fill={cellColor(p)}
+                  fillOpacity={opacityOf(p)}
+                  stroke={p.isBaseline ? baselineColor : undefined}
+                  strokeWidth={p.isBaseline ? 3 : 0}
+                />
               ))}
             </Scatter>
             {/* The live-on-the-firewall profile: a triangle so it stands out among the
@@ -328,6 +341,9 @@ export default function ProfileQuadrant({
         )}
         {shadeOn ? <> Opacity = <b>{shadeField!.label}</b> (brighter = better; faded = worse).</> : null}
         {active.length > 0 ? <> The <b>▲ triangle</b> is the profile live on the firewall now.</> : null}
+        {points.some((p) => p.isBaseline) ? (
+          <> The <b style={{ color: baselineColor }}>fuchsia</b> dot is the unshaped “SQM off” baseline.</>
+        ) : null}
         {onSelect ? <> <b>Click a dot</b> to apply that profile or view its run history.</> : null}
       </Typography>
     </Box>
