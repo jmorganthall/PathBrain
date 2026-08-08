@@ -269,12 +269,15 @@ export default function Dashboard() {
             >
               <TextField
                 label="Iterations"
-                type="number"
+                // type="text" + inputMode="numeric": pops the numeric keypad on mobile but
+                // avoids the controlled <input type="number"> quirk where browsers fight the
+                // empty/intermediate value, so the field can actually be cleared and retyped.
+                type="text"
                 size="small"
                 value={iterationsText}
                 onChange={(e) => {
-                  const raw = e.target.value;
-                  setIterationsText(raw); // show exactly what's typed, including empty
+                  const raw = e.target.value.replace(/[^0-9]/g, ""); // digits only; empty allowed
+                  setIterationsText(raw);
                   const n = parseInt(raw, 10);
                   if (!Number.isNaN(n)) setIterations(Math.max(1, Math.min(n, maxIterations)));
                 }}
@@ -285,7 +288,7 @@ export default function Dashboard() {
                   setIterations(clamped);
                   setIterationsText(String(clamped));
                 }}
-                inputProps={{ min: 1, max: maxIterations }}
+                inputProps={{ inputMode: "numeric", pattern: "[0-9]*", min: 1, max: maxIterations }}
                 disabled={activeRun || testActive}
                 sx={{ width: 110 }}
               />
@@ -350,12 +353,14 @@ export default function Dashboard() {
                 <Tooltip title="How long to keep benchmarking the current settings. Data is collected in ~5-iteration chunks and saved as it goes.">
                   <TextField
                     label="Minutes"
-                    type="number"
+                    // type="text" + inputMode="numeric" — see the Iterations field: keeps the
+                    // numeric keypad on mobile while letting the field be cleared/retyped.
+                    type="text"
                     size="small"
                     value={testMinutesText}
                     onChange={(e) => {
-                      const raw = e.target.value;
-                      setTestMinutesText(raw); // show exactly what's typed, including empty
+                      const raw = e.target.value.replace(/[^0-9]/g, ""); // digits only; empty allowed
+                      setTestMinutesText(raw);
                       const n = parseInt(raw, 10);
                       if (!Number.isNaN(n)) setTestMinutes(Math.max(1, Math.min(n, 1440)));
                     }}
@@ -365,7 +370,7 @@ export default function Dashboard() {
                       setTestMinutes(clamped);
                       setTestMinutesText(String(clamped));
                     }}
-                    inputProps={{ min: 1, max: 1440 }}
+                    inputProps={{ inputMode: "numeric", pattern: "[0-9]*", min: 1, max: 1440 }}
                     disabled={activeRun}
                     sx={{ width: 110 }}
                   />
