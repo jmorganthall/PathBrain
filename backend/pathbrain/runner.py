@@ -64,7 +64,13 @@ def create_run(
         return run.id
 
 
-def run_chunk(label: str | None, notes: str | None, iterations: int) -> tuple[int, bool, int]:
+def run_chunk(
+    label: str | None,
+    notes: str | None,
+    iterations: int,
+    *,
+    teardown: bool = True,
+) -> tuple[int, bool, int]:
     """Create one run of ``iterations`` and execute it (blocking). Returns
     ``(run_id, ok, iterations_completed)`` where ``ok`` is True iff the run finished
     COMPLETE.
@@ -73,14 +79,34 @@ def run_chunk(label: str | None, notes: str | None, iterations: int) -> tuple[in
     "test current" engine): the caller loops this under a held coordinator lock,
     so each chunk is persisted the moment it finishes. ``execute_run`` never
     raises — it records failures on the row — so ``ok`` is read back from status.
+
+    Pass ``teardown=False`` to keep per-run plugin resources (the reused Chromium)
+    **warm across chunks** — the caller then calls :func:`teardown_plugins` once when
+    the whole series ends, so a long run pays the browser cold-start once instead of
+    per chunk.
     """
     run_id = create_run(label=label, notes=notes, iterations=iterations)
-    execute_run(run_id)
+    execute_run(run_id, teardown=teardown)
     with session_scope() as session:
         run = session.get(Run, run_id)
         completed = int(run.iterations_completed or 0) if run else 0
         ok = bool(run and run.status == RunStatus.COMPLETE)
     return run_id, ok, completed
+
+
+def teardown_plugins() -> None:
+    """Release resources held by every registered plugin (the reused Chromium, etc.).
+
+    Chunked series execute their chunks with ``teardown=False`` to keep the browser
+    warm across chunks; they call this once when the series finishes (in a ``finally``)
+    to close it. Plugins are process-wide singletons, so this tears down the same
+    instances the runs used. Never raises.
+    """
+    for plugin in iter_plugins():
+        try:
+            plugin.teardown()
+        except Exception:  # noqa: BLE001 — teardown must never break the caller
+            log.warning("Plugin '%s' teardown failed", plugin.name, exc_info=True)
 
 
 def _metric_stats(values: list[float]) -> dict:
@@ -711,11 +737,16 @@ def fail_stale_runs(timeout_minutes: float) -> int:
     return failed
 
 
-def execute_run(run_id: int) -> None:
+def execute_run(run_id: int, *, teardown: bool = True) -> None:
     """Execute all plugins for ``run_id`` across iterations, store + score.
 
     Designed to be safe to call from a background task: it manages its own
     session and never raises out (failures are recorded on the run).
+
+    ``teardown`` controls whether per-run plugin resources (the reused Chromium)
+    are released when this run ends. A chunked series passes ``teardown=False`` to
+    keep the browser warm across chunks, then calls :func:`teardown_plugins` once at
+    the end; a standalone run leaves it ``True`` so nothing leaks between runs.
     """
     log.info("Run %s starting", run_id)
     plugins: list[BenchmarkPlugin] = []
@@ -961,11 +992,14 @@ def execute_run(run_id: int) -> None:
                 session.commit()
     finally:
         # Release per-run plugin resources (e.g. the reused Chromium) so nothing leaks
-        # between runs. Never raises.
-        for plugin in plugins:
-            try:
-                plugin.teardown()
-            except Exception:  # noqa: BLE001 — teardown must never break a run
-                log.warning(
-                    "Run %s: plugin '%s' teardown failed", run_id, plugin.name, exc_info=True
-                )
+        # between runs — unless the caller is running a chunked series and asked to keep
+        # them warm across chunks (teardown=False), in which case it calls
+        # teardown_plugins() itself once the series ends. Never raises.
+        if teardown:
+            for plugin in plugins:
+                try:
+                    plugin.teardown()
+                except Exception:  # noqa: BLE001 — teardown must never break a run
+                    log.warning(
+                        "Run %s: plugin '%s' teardown failed", run_id, plugin.name, exc_info=True
+                    )

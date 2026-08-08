@@ -25,7 +25,7 @@ from .database import session_scope
 from .logging_config import get_logger
 from .models import CurrentTest, CurrentTestStatus
 from .providers import get_provider
-from .runner import CHUNK_ITERATIONS, run_chunk
+from .runner import CHUNK_ITERATIONS, run_chunk, teardown_plugins
 from .settings_profile import normalize, summarize
 
 log = get_logger("current_test")
@@ -112,6 +112,7 @@ def _drive(ct_id: int) -> None:
                     label=f"test-current · {label}",
                     notes=f"Test-current #{ct_id}: {duration_s // 60} min on the live profile",
                     iterations=CHUNK_ITERATIONS,
+                    teardown=False,  # keep Chromium warm across chunks; closed in the finally
                 )
                 run_ids.append(run_id)
                 iterations_run += completed
@@ -135,6 +136,8 @@ def _drive(ct_id: int) -> None:
         final_status = CurrentTestStatus.FAILED
         err = f"{type(exc).__name__}: {exc}"
     finally:
+        # Chromium was kept warm across the session's chunks; close it once now.
+        teardown_plugins()
         with session_scope() as session:
             ct = session.get(CurrentTest, ct_id)
             if ct is not None:
