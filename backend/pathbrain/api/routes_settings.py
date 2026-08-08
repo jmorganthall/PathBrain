@@ -2489,6 +2489,14 @@ def current_profile_test() -> dict:
     return {"test": profile_test_mod.current()}
 
 
+@router.post("/settings/test-profile/cancel")
+def cancel_profile_test() -> dict:
+    """Ask the running profile test ("test to minimum") to stop after its current chunk.
+    The baseline is still restored. Returns whether one was active."""
+    cancelled = profile_test_mod.cancel()
+    return {"cancelled": cancelled, "status": (profile_test_mod.current() or {}).get("status")}
+
+
 def _contending_challengers(session: Session) -> tuple[str | None, list[str]]:
     """``(best_fingerprint, [contender fingerprints])`` for the race — via the same
     augmented field + ranking the race loop uses, so the start check matches the loop

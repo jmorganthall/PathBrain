@@ -1142,7 +1142,7 @@ export interface JobStart {
 // One entry in the universal "running jobs" feed (GET /api/jobs).
 export interface Job {
   id: string;
-  kind: string; // regrade | rescore | rederive | run | sweep | profile_test | experiment
+  kind: string; // regrade | rescore | rederive | run | run_series | sweep | profile_test | experiment
   label: string;
   status: "running" | "succeeded" | "failed";
   current: number | null;
@@ -1150,6 +1150,11 @@ export interface Job {
   message: string | null;
   error: string | null;
   href: string | null;
+  // When set, this job is a chunk nested under the broader job with this id (the parent line).
+  parent_id?: string | null;
+  // When set, POST here to cancel this job (a chunk cancels itself; a parent cancels the whole
+  // operation). Absent → not cancellable.
+  cancel_url?: string | null;
   started_at: string;
   finished_at: string | null;
 }

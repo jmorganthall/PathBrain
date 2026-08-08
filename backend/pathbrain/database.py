@@ -89,6 +89,8 @@ def _migrate() -> None:
             "settings_fingerprint": "VARCHAR(40)",
             "settings": "JSON",
             "methodology_version": "VARCHAR(64)",
+            "job_group": "VARCHAR(64)",
+            "job_group_total": "INTEGER",
         },
         "benchmark_results": {
             "raw": "JSON",
@@ -121,6 +123,7 @@ def _migrate() -> None:
         ("ix_runs_status_created_at", "runs", "status, created_at"),
         ("ix_runs_created_at", "runs", "created_at"),
         ("ix_runs_settings_fingerprint", "runs", "settings_fingerprint"),
+        ("ix_runs_job_group", "runs", "job_group"),
         ("ix_benchmark_results_run_id", "benchmark_results", "run_id"),
         ("ix_scores_methodology_version", "scores", "methodology_version"),
     ]

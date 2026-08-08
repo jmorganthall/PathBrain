@@ -35,9 +35,10 @@ def _fake_chunk(delay: float = 0.03, ok=lambda n: True):
     counts calls, and reports success per ``ok(call_number)``."""
     state = {"n": 0}
 
-    def chunk(label, notes, iterations, teardown=True):
+    def chunk(label, notes, iterations, teardown=True, job_group=None, job_group_total=None):
         state["n"] += 1
         state["teardown"] = teardown  # record the last teardown flag the engine passed
+        state["job_group"] = job_group
         time.sleep(delay)
         return (2000 + state["n"], ok(state["n"]), iterations)
 

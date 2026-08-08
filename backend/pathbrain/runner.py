@@ -46,8 +46,17 @@ def create_run(
     label: str | None = None,
     notes: str | None = None,
     iterations: int | None = None,
+    *,
+    job_group: str | None = None,
+    job_group_total: int | None = None,
 ) -> int:
-    """Create a pending run row and return its id."""
+    """Create a pending run row and return its id.
+
+    ``job_group`` tags this run as one chunk of a broader operation (e.g.
+    ``"run-series-12"``, ``"profile_test-5"``) so the jobs feed can group the chunks
+    under one parent; ``job_group_total`` is that operation's total iteration count,
+    used for the parent's aggregate progress. Both NULL for a standalone run.
+    """
     with session_scope() as session:
         config = get_config(session)
         iters = iterations if iterations else int(config.get("iterations", 1) or 1)
@@ -58,6 +67,8 @@ def create_run(
             status=RunStatus.PENDING,
             config_used=config,
             iterations=iters,
+            job_group=job_group,
+            job_group_total=job_group_total,
         )
         session.add(run)
         session.flush()
@@ -70,6 +81,8 @@ def run_chunk(
     iterations: int,
     *,
     teardown: bool = True,
+    job_group: str | None = None,
+    job_group_total: int | None = None,
 ) -> tuple[int, bool, int]:
     """Create one run of ``iterations`` and execute it (blocking). Returns
     ``(run_id, ok, iterations_completed)`` where ``ok`` is True iff the run finished
@@ -85,7 +98,13 @@ def run_chunk(
     the whole series ends, so a long run pays the browser cold-start once instead of
     per chunk.
     """
-    run_id = create_run(label=label, notes=notes, iterations=iterations)
+    run_id = create_run(
+        label=label,
+        notes=notes,
+        iterations=iterations,
+        job_group=job_group,
+        job_group_total=job_group_total,
+    )
     execute_run(run_id, teardown=teardown)
     with session_scope() as session:
         run = session.get(Run, run_id)

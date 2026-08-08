@@ -19,7 +19,11 @@ def _wait_for_finish(test_id: int, timeout: float = 10.0) -> ProfileTest:
     while time.time() - start < timeout:
         with session_scope() as s:
             pt = s.get(ProfileTest, test_id)
-            if pt and pt.status in (ProfileTestStatus.COMPLETE, ProfileTestStatus.FAILED):
+            if pt and pt.status in (
+                ProfileTestStatus.COMPLETE,
+                ProfileTestStatus.FAILED,
+                ProfileTestStatus.CANCELLED,
+            ):
                 # Return a detached snapshot of the fields we assert on.
                 s.expunge(pt)
                 return pt
@@ -167,3 +171,41 @@ def test_test_profile_endpoint_already_at_minimum(client):
 
     resp = client.post("/api/settings/test-profile", json={})
     assert resp.status_code == 400
+
+
+def test_profile_test_cancel_endpoint_when_idle(client):
+    # Cancel is wired and safe to call with nothing running.
+    assert pt_mod.cancel() is False
+    body = client.post("/api/settings/test-profile/cancel").json()
+    assert body["cancelled"] is False
+
+
+def test_profile_test_cancel_stops_after_chunk(monkeypatch):
+    """A running profile test cancels after its current chunk, ends CANCELLED, and still
+    restores the baseline."""
+    mock_mod._OVERRIDES.clear()
+    monkeypatch.setattr(runner, "iter_plugins", lambda: [])
+
+    # Slow chunks so we can request cancel between them (each creates a real completed run).
+    def slow_chunk(label, notes, iterations, teardown=True, job_group=None, job_group_total=None):
+        rid = runner.create_run(label=label, notes=notes, iterations=iterations, job_group=job_group)
+        runner.execute_run(rid)
+        time.sleep(0.12)
+        return (rid, True, iterations)
+
+    monkeypatch.setattr(pt_mod, "run_chunk", slow_chunk)
+
+    target = normalize(get_provider().discover())
+    fp = fingerprint(target)
+    test_id = pt_mod.start(fp, target, "cancelme", iterations=50)  # 10 chunks of 5
+    for _ in range(200):
+        if (pt_mod.current() or {}).get("status") == "running":
+            break
+        time.sleep(0.02)
+    assert pt_mod.cancel() is True
+
+    pt = _wait_for_finish(test_id)
+    assert pt.status == ProfileTestStatus.CANCELLED
+    assert get_provider().discover()[0].quantum == 1514  # baseline restored
+    assert not pt_mod.active()
+    mock_mod._OVERRIDES.clear()

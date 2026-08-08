@@ -90,3 +90,57 @@ def test_jobs_endpoint_merges_registry_and_run_adapter(client):
     # aggregations or "active" checks.
     with session_scope() as s:
         s.delete(s.get(Run, rid))
+
+
+def test_chunked_series_nests_under_a_parent_with_aggregate_progress(client):
+    """Chunks of a manual run series carry a job_group; the feed synthesizes one parent line
+    with aggregate progress, nests the active chunk under it, and offers cancel at both levels."""
+    group = "run-series-90001"
+    rids = []
+    with session_scope() as s:
+        # Two completed chunks + one running chunk, all tagged with the same group; the series
+        # total is 12 iterations (5 + 5 + 2).
+        for done, total, status in [
+            (5, 5, RunStatus.COMPLETE),
+            (5, 5, RunStatus.COMPLETE),
+            (1, 2, RunStatus.RUNNING),
+        ]:
+            r = Run(
+                status=status,
+                label="Big run",
+                iterations=total,
+                iterations_completed=done,
+                job_group=group,
+                job_group_total=12,
+            )
+            s.add(r)
+            s.flush()
+            rids.append(r.id)
+
+    body = client.get("/api/jobs").json()
+    by_id = {j["id"]: j for j in body["jobs"]}
+
+    # The synthesized parent exists, is top-level, and shows aggregate progress (11/12 done).
+    parent = by_id.get(group)
+    assert parent is not None
+    assert parent["parent_id"] is None
+    assert parent["current"] == 11 and parent["total"] == 12
+    assert parent["cancel_url"] == f"/runs/{rids[2]}/cancel"  # cancels the active chunk → series
+
+    # The active chunk is nested under the parent and cancellable on its own.
+    child = by_id.get(f"run-{rids[2]}")
+    assert child is not None
+    assert child["parent_id"] == group
+    assert child["cancel_url"] == f"/runs/{rids[2]}/cancel"
+
+    # Completed chunks aren't listed as separate top-level runs (they're done); the parent
+    # counts once toward the running badge, not once per chunk.
+    top_level_running = [j for j in body["jobs"] if j["status"] == "running" and not j["parent_id"]]
+    assert group in {j["id"] for j in top_level_running}
+    assert f"run-{rids[0]}" not in by_id  # a finished chunk isn't surfaced individually
+
+    with session_scope() as s:
+        for rid in rids:
+            row = s.get(Run, rid)
+            if row is not None:
+                s.delete(row)

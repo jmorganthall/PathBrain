@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import baseline_test, challenger, current_test, jobs, profile_test, refresh, sweep
@@ -49,40 +49,94 @@ def _fmt_eta(ms: float) -> str:
     return f"~{secs // 60}m {secs % 60:02d}s left"
 
 
+def _run_entry(r: Run, est: float | None, holder: str | None, parent_id: str | None) -> dict:
+    """One active benchmark run as a job entry — either a standalone run (parent_id None) or a
+    chunk nested under its broader job (parent_id = the group id)."""
+    done, total = r.iterations_completed or 0, r.iterations or 1
+    if r.status == RunStatus.RUNNING:
+        message = f"iteration {min(done + 1, total)}/{total}"
+        if est is not None:
+            message += f" · {_fmt_eta(est * max(0, total - done))}"
+    else:  # PENDING — queued behind the coordination lock; say what it's waiting on.
+        message = f"queued — waiting for {holder}" if holder else "queued"
+    return {
+        "id": f"run-{r.id}",
+        "kind": "run",
+        "label": r.label or f"Benchmark run #{r.id}",
+        "status": "running",
+        "current": done,
+        "total": total,
+        "message": message,
+        "error": None,
+        "href": f"/runs/{r.id}",
+        "parent_id": parent_id,
+        # Cancelling a chunk marks it FAILED, which also stops its series (the driver breaks
+        # on a failed chunk) — so this is both "cancel this chunk" and, for a chunk, the
+        # mechanism behind a parent's "cancel the whole job".
+        "cancel_url": f"/runs/{r.id}/cancel",
+        "started_at": _iso(r.started_at or r.created_at),
+        "finished_at": None,
+    }
+
+
+def _series_parent(session: Session, group: str, children: list[Run]) -> dict:
+    """Synthesize a parent line for a manual run *series* (which has no DB row of its own):
+    aggregate progress across all its chunks, and a cancel that stops the whole series."""
+    total = next((c.job_group_total for c in children if c.job_group_total), None)
+    # Sum completed iterations across ALL chunks of the group (incl. already-finished ones,
+    # which aren't in `children` — those are only the active chunks), for true progress.
+    done = session.execute(
+        select(func.coalesce(func.sum(Run.iterations_completed), 0)).where(Run.job_group == group)
+    ).scalar_one()
+    n_chunks = session.execute(
+        select(func.count(Run.id)).where(Run.job_group == group)
+    ).scalar_one()
+    label = next((c.label for c in children if c.label), None) or "Manual run"
+    active_child = children[0].id if children else None
+    msg = f"{done}/{total} iteration(s)" if total else f"{done} iteration(s)"
+    return {
+        "id": group,
+        "kind": "run_series",
+        "label": label,
+        "status": "running",
+        "current": int(done),
+        "total": total,
+        "message": f"{msg} · {n_chunks} chunk(s)",
+        "error": None,
+        "href": None,
+        "parent_id": None,
+        # Cancelling the active chunk fails it, which stops the series (see _run_entry).
+        "cancel_url": f"/runs/{active_child}/cancel" if active_child else None,
+        "started_at": _iso(children[0].started_at or children[0].created_at) if children else None,
+        "finished_at": None,
+    }
+
+
 def _active_run_jobs(session: Session) -> list[dict]:
     from .. import coordinator
 
     runs = session.scalars(
-        select(Run).where(Run.status.in_([RunStatus.RUNNING, RunStatus.PENDING]))
+        select(Run).where(Run.status.in_([RunStatus.RUNNING, RunStatus.PENDING])).order_by(Run.id)
     ).all()
     est = _per_iteration_estimate(session)
-    out = []
+    holder = coordinator.owner()
+    out: list[dict] = []
+    # Group the active runs: standalone runs are top-level; chunked runs nest under the broader
+    # job (an engine adapter parent for profile_test/current_test/baseline_test whose id matches
+    # the group, or a synthesized parent for a manual "run-series").
+    grouped: dict[str, list[Run]] = {}
     for r in runs:
-        done, total = r.iterations_completed or 0, r.iterations or 1
-        is_running = r.status == RunStatus.RUNNING
-        if is_running:
-            message = f"iteration {min(done + 1, total)}/{total}"
-            if est is not None:
-                message += f" · {_fmt_eta(est * max(0, total - done))}"
+        if r.job_group:
+            grouped.setdefault(r.job_group, []).append(r)
         else:
-            # Queued behind the coordination lock — tell the user what it's waiting on.
-            holder = coordinator.owner()
-            message = f"queued — waiting for {holder}" if holder else "queued"
-        out.append(
-            {
-                "id": f"run-{r.id}",
-                "kind": "run",
-                "label": r.label or f"Benchmark run #{r.id}",
-                "status": "running",
-                "current": done,
-                "total": total,
-                "message": message,
-                "error": None,
-                "href": f"/runs/{r.id}",
-                "started_at": _iso(r.started_at or r.created_at),
-                "finished_at": None,
-            }
-        )
+            out.append(_run_entry(r, est, holder, parent_id=None))
+    for group, children in grouped.items():
+        for c in children:
+            out.append(_run_entry(c, est, holder, parent_id=group))
+        # Engine groups already emit their own parent (matching id); only the manual series
+        # needs one synthesized here.
+        if group.startswith("run-series-"):
+            out.append(_series_parent(session, group, children))
     return out
 
 
@@ -105,6 +159,8 @@ def _active_sweep_job(session: Session) -> list[dict]:
             "message": f"variant {min(done + 1, total)}/{total}" if total else "starting…",
             "error": None,
             "href": "/sweep",
+            "parent_id": None,
+            "cancel_url": f"/sweep/{sw.id}/cancel",
             "started_at": _iso(sw.started_at or sw.created_at),
             "finished_at": None,
         }
@@ -133,6 +189,8 @@ def _active_profile_test_job() -> list[dict]:
                 "message": t.get("stage") or f"running {t.get('iterations')} iteration(s)",
                 "error": None,
                 "href": "/settings",
+                "parent_id": None,
+                "cancel_url": "/settings/test-profile/cancel",
                 "started_at": t.get("started_at") or t.get("created_at"),
                 "finished_at": None,
             }
@@ -141,6 +199,7 @@ def _active_profile_test_job() -> list[dict]:
     if not _finished_recently(t.get("finished_at"), minutes=5):
         return []
     failed = status == "failed"
+    cancelled = status == "cancelled"
     return [
         {
             "id": f"profile_test-{t['id']}",
@@ -149,9 +208,12 @@ def _active_profile_test_job() -> list[dict]:
             "status": "failed" if failed else "succeeded",
             "current": None,
             "total": t.get("iterations"),
-            "message": t.get("stage") or ("failed" if failed else "done — baseline restored"),
+            "message": t.get("stage")
+            or ("failed" if failed else "cancelled" if cancelled else "done — baseline restored"),
             "error": t.get("error") if failed else None,
             "href": "/settings",
+            "parent_id": None,
+            "cancel_url": None,
             "started_at": t.get("started_at") or t.get("created_at"),
             "finished_at": t.get("finished_at"),
         }
@@ -191,6 +253,8 @@ def _active_current_test_job() -> list[dict]:
             "message": f"{mins} min on the live profile · {collected} iteration(s) collected",
             "error": None,
             "href": "/",
+            "parent_id": None,
+            "cancel_url": "/current/test/cancel",
             "started_at": t.get("started_at") or t.get("created_at"),
             "finished_at": None,
         }
@@ -217,6 +281,8 @@ def _active_baseline_test_job() -> list[dict]:
                 "message": t.get("stage") or "running",
                 "error": None,
                 "href": "/baseline",
+                "parent_id": None,
+                "cancel_url": "/baseline/test/cancel",
                 "started_at": t.get("started_at") or t.get("created_at"),
                 "finished_at": None,
             }
@@ -235,6 +301,8 @@ def _active_baseline_test_job() -> list[dict]:
             "message": t.get("stage") or ("failed" if failed else "done — SQM restored"),
             "error": t.get("error") if failed else None,
             "href": "/baseline",
+            "parent_id": None,
+            "cancel_url": None,
             "started_at": t.get("started_at") or t.get("created_at"),
             "finished_at": t.get("finished_at"),
         }
@@ -260,6 +328,8 @@ def _active_experiment_job(session: Session) -> list[dict]:
             "message": "interleaving candidates" + (" (dry-run)" if exp.dry_run else ""),
             "error": None,
             "href": "/experiments",
+            "parent_id": None,
+            "cancel_url": None,  # the experiment engine has no cancel endpoint
             "started_at": _iso(exp.created_at),
             "finished_at": None,
         }
@@ -287,6 +357,8 @@ def _active_challenger_job() -> list[dict]:
             "message": f"iter {r.get('iterations_run') or 0} · leader {leader} · {n_elim} eliminated{refresh_note}",
             "error": None,
             "href": "/settings",
+            "parent_id": None,
+            "cancel_url": "/settings/race/cancel",
             "started_at": r.get("started_at") or r.get("created_at"),
             "finished_at": None,
         }
@@ -315,6 +387,8 @@ def _active_refresh_job() -> list[dict]:
             "message": message,
             "error": None,
             "href": "/settings",
+            "parent_id": None,
+            "cancel_url": "/settings/refresh/cancel",
             "started_at": r.get("started_at") or r.get("created_at"),
             "finished_at": None,
         }
@@ -339,6 +413,10 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     adapters += _active_challenger_job()
     adapters += _active_refresh_job()
 
-    feed = adapters + jobs.list_jobs()
-    running = sum(1 for j in feed if j["status"] == "running")
+    # In-process score jobs (re-grade/rescore/rederive) are always top-level with no cancel.
+    inproc = [{"parent_id": None, "cancel_url": None, **j} for j in jobs.list_jobs()]
+    feed = adapters + inproc
+    # The badge counts distinct top-level running jobs — a nested chunk shouldn't double-count
+    # with its parent.
+    running = sum(1 for j in feed if j["status"] == "running" and not j.get("parent_id"))
     return {"jobs": feed, "running": running}

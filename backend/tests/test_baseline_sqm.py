@@ -63,7 +63,7 @@ def _wait_finish(bt_id: int, timeout: float = 10.0) -> BaselineTest:
 def _fake_chunk(delay: float = 0.02, ok=lambda n: True):
     state = {"n": 0}
 
-    def chunk(label, notes, iterations):
+    def chunk(label, notes, iterations, teardown=True, job_group=None, job_group_total=None):
         state["n"] += 1
         time.sleep(delay)
         return (3000 + state["n"], ok(state["n"]), iterations)
