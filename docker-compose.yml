@@ -35,9 +35,10 @@ services:
 
       # One-click self-update via Watchtower's HTTP API (both must be set to enable the
       # "Update now" button). URL is the Watchtower HTTP API base; token is its
-      # WATCHTOWER_HTTP_API_TOKEN. Keep the token in a .env file, not committed here.
-      PATHBRAIN_WATCHTOWER_URL: "${PATHBRAIN_WATCHTOWER_URL:-}"
-      PATHBRAIN_WATCHTOWER_TOKEN: "${PATHBRAIN_WATCHTOWER_TOKEN:-}"
+      # WATCHTOWER_HTTP_API_TOKEN. These are unprefixed (not PATHBRAIN_*). Keep the token
+      # in a .env file, not committed here.
+      WATCHTOWER_URL: "${WATCHTOWER_URL:-}"
+      WATCHTOWER_TOKEN: "${WATCHTOWER_TOKEN:-}"
     volumes:
       - pathbrain-data:/data
 

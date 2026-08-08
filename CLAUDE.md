@@ -529,7 +529,8 @@ LLM-based. See `README.md` for the product overview.
   is *commit*-based against GitHub, which can briefly disagree with the *image* actually published
   to GHCR; a registry-digest check would track images exactly.)
 - **One-click self-update via Watchtower** (`updates.trigger_update`, `POST /api/update/trigger`):
-  when `PATHBRAIN_WATCHTOWER_URL` (+ optional `PATHBRAIN_WATCHTOWER_TOKEN`) is set, the
+  when `WATCHTOWER_URL` (+ optional `WATCHTOWER_TOKEN`) is set — unprefixed, not `PATHBRAIN_*`
+  (a per-field `validation_alias` in `config.py` bypasses the class-wide prefix) — the
   `UpdateChip` gains an **"Update now"** button (gated on `version_info()["self_update"]`) that
   POSTs to `{url}/v1/update` with a `Bearer` token — Watchtower's HTTP API — telling it to pull the
   newer image and recreate this container. Because a *successful* update severs the response as the

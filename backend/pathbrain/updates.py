@@ -138,7 +138,7 @@ def test_update_connection() -> dict:
     result = {**cfg, "reachable": False, "status": "not_configured", "detail": ""}
     base = cfg["url"]
     if not base:
-        result["detail"] = "Watchtower is not configured — set PATHBRAIN_WATCHTOWER_URL (and _TOKEN)."
+        result["detail"] = "Watchtower is not configured — set WATCHTOWER_URL (and WATCHTOWER_TOKEN)."
         return result
 
     # Probe the root, NOT /v1/update — hitting the update endpoint would run an update.
@@ -167,7 +167,7 @@ def test_update_connection() -> dict:
     tok = (
         "a token is set"
         if cfg["token_set"]
-        else "no token set — add PATHBRAIN_WATCHTOWER_TOKEN if Watchtower requires one"
+        else "no token set — add WATCHTOWER_TOKEN if Watchtower requires one"
     )
     result["detail"] = (
         f"Reachable at {base} (HTTP {code} at the API root); {tok}. "
@@ -191,7 +191,7 @@ def trigger_update() -> dict:
     base = (settings.watchtower_url or "").strip().rstrip("/")
     token = (settings.watchtower_token or "").strip()
     if not base:
-        return {"triggered": False, "error": "Watchtower is not configured (set PATHBRAIN_WATCHTOWER_URL)."}
+        return {"triggered": False, "error": "Watchtower is not configured (set WATCHTOWER_URL)."}
 
     url = f"{base}/v1/update"
     headers = {"User-Agent": "PathBrain-self-update"}
@@ -206,7 +206,7 @@ def trigger_update() -> dict:
         return {"triggered": True, "detail": body or f"Watchtower accepted the update (HTTP {resp.status})."}
     except urllib.error.HTTPError as exc:
         # Watchtower answered with an error status — most commonly 401 (bad/missing token).
-        hint = " — check PATHBRAIN_WATCHTOWER_TOKEN" if exc.code in (401, 403) else ""
+        hint = " — check WATCHTOWER_TOKEN" if exc.code in (401, 403) else ""
         log.warning("Watchtower update rejected: HTTP %s%s", exc.code, hint)
         return {"triggered": False, "error": f"Watchtower returned HTTP {exc.code}{hint}."}
     except urllib.error.URLError as exc:
