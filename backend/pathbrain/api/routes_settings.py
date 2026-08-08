@@ -44,7 +44,7 @@ from ..settings_profile import (
     summarize,
 )
 from ..shaper_fields import SHAPER_FIELDS, SWEEPABLE_FIELDS, WRITABLE_FIELDS, coerce_value, field as shaper_field
-from ..trends import RunPoint, bucket_values, profile_relative
+from ..trends import RunPoint, _BaselineResolver, bucket_values, profile_relative
 
 # The three headline axes (the temporal phases of a load); their 0–100 scores still
 # drive the per-axis display columns, but the **crown** no longer corners over them.
@@ -377,25 +377,39 @@ def _spread(vals: list[float]) -> dict:
 
 
 def _completed_runs_with_scores(session: Session):
-    """Chronological (Run, Score) for completed runs with settings, scored under the
-    current methodology."""
+    """Chronological ``(Run, Score, results_by_plugin)`` for completed runs with settings,
+    scored under the current methodology.
+
+    ``results_by_plugin`` is each run's plugin metric cache (``{plugin: metrics}``),
+    fetched as **plain rows in one bulk query** rather than eager-loaded ORM entities:
+    materializing ~6 ``BenchmarkResult`` instances per run across all history (plus the
+    relationship machinery) dominated the Settings-Impact load as runs piled up. The
+    heavy immutable JSON blobs (``raw`` observations + per-target ``details``) are never
+    selected at all, and ``Run.config_used`` (a full benchmark-config snapshot per run
+    that no caller reads) is deferred for the same reason.
+    """
     methodology = ensure_current_methodology(session, get_config(session))
-    return session.execute(
+    filters = (
+        Run.status == RunStatus.COMPLETE,
+        Run.settings_fingerprint.is_not(None),
+        Score.methodology_version == methodology.version,
+    )
+    rows = session.execute(
         select(Run, Score)
         .join(Score, Score.run_id == Run.id)
-        # Eager-load each run's plugin results so per-profile metric medians (every
-        # numeric value we collect, incl. display-only) can be aggregated without N+1.
-        # Defer the heavy immutable JSON blobs (raw observations + per-target details):
-        # the aggregation only reads ``metrics``/``plugin``, so loading + JSON-decoding
-        # the raw payload of every browser result across all history was pure waste.
-        .options(selectinload(Run.results).options(defer(BenchmarkResult.raw), defer(BenchmarkResult.details)))
-        .where(
-            Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint.is_not(None),
-            Score.methodology_version == methodology.version,
-        )
+        .options(defer(Run.config_used))
+        .where(*filters)
         .order_by(Run.created_at)
     ).all()
+    metrics_by_run: dict[int, dict[str, dict]] = {}
+    for run_id, plugin, metrics in session.execute(
+        select(BenchmarkResult.run_id, BenchmarkResult.plugin, BenchmarkResult.metrics)
+        .join(Run, Run.id == BenchmarkResult.run_id)
+        .join(Score, Score.run_id == Run.id)
+        .where(*filters)
+    ):
+        metrics_by_run.setdefault(run_id, {})[plugin] = metrics or {}
+    return [(run, score, metrics_by_run.get(run.id, {})) for run, score in rows]
 
 
 @router.get("/settings/profiles/{fingerprint}/verify-derivation")
@@ -637,14 +651,17 @@ def settings_profiles(
     result = compute_profiles(
         session, complete_only=complete_only, tz_offset=tz_offset, custom_crown_metrics=custom
     )
+    # One live discovery per request, shared by the active-row fingerprint and the heirs'
+    # reachability filter (two separate discover() round-trips used to stall the page).
+    live = _discover_live_normalized()
     # The live profile, for flagging the active row only — it no longer influences the crown
     # (the crown follows the highest median Overall, whoever wins, by any margin).
-    result["current_fingerprint"] = _current_fingerprint()
+    result["current_fingerprint"] = _current_fingerprint(live)
     # The crown's heirs (limited-data / stale profiles that could still dethrone it), the
     # effective per-metric thresholds (so the quadrant can flag a saturated axis), and the
     # methodology saturation report (metrics whose 'best' is too lenient to rank profiles).
     definition = ensure_current_methodology(session, get_config(session)).definition or {}
-    result["heirs"] = _compute_heirs(result, session)
+    result["heirs"] = _compute_heirs(result, session, live)
     result["metric_thresholds"] = _metric_thresholds(definition)
     result["saturation"] = _saturation_report(result["profiles"], definition)
     return result
@@ -851,10 +868,9 @@ def _weather_sensitivity(
     # source compute_profiles reads: the plugin metric cache, falling back to the re-graded
     # Score.metric_values when the cache predates a metric.
     runs_by_fp: dict[str, list[dict[str, float]]] = {}
-    for run, score in _completed_runs_with_scores(session):
+    for run, score, results_by_plugin in _completed_runs_with_scores(session):
         if not _comparable(score):
             continue
-        results_by_plugin = {r.plugin: (r.metrics or {}) for r in run.results}
         mv = score.metric_values or {}
         vals: dict[str, float] = {}
         for key in needed:
@@ -1188,10 +1204,9 @@ def build_optimizer_export(
 
     # Per-run raw scoring metrics, grouped by profile (comparable, current-methodology runs).
     runs_by_fp: dict[str, list[dict]] = {}
-    for run, score in _completed_runs_with_scores(session):
+    for run, score, results_by_plugin in _completed_runs_with_scores(session):
         if not _comparable(score):
             continue
-        results_by_plugin = {r.plugin: (r.metrics or {}) for r in run.results}
         metrics: dict[str, float] = {}
         for key in scored_keys:
             plugin, source_key = metric_src[key]
@@ -1390,12 +1405,32 @@ def _field_example(key: str, profiles: list[dict]):
     return None
 
 
-def _current_fingerprint() -> str | None:
-    """Fingerprint of the live firewall settings right now (None if discovery fails)."""
+def _discover_live_normalized() -> list[dict] | None:
+    """The live firewall settings, normalized (None if discovery fails).
+
+    One best-effort discovery shared by everything a request needs it for — the
+    profiles endpoint used to discover twice per page load (once for the active-row
+    fingerprint, once for the heirs' reachability filter), each a fresh HTTPS
+    round-trip with its own TLS handshake and up to the provider timeout; on a slow
+    or unreachable firewall that alone stalled the Settings-Impact page for tens of
+    seconds. Discover once, derive both from the result.
+    """
     try:
-        return fingerprint(normalize(get_provider().discover()))
+        return normalize(get_provider().discover())
+    except Exception:  # noqa: BLE001 — best-effort; callers degrade gracefully
+        log.debug("Live settings discovery failed", exc_info=True)
+        return None
+
+
+def _current_fingerprint(live: list[dict] | None = None) -> str | None:
+    """Fingerprint of the live firewall settings right now (None if discovery fails).
+    Pass ``live`` (a pre-discovered normalized config) to avoid a fresh discovery."""
+    if live is None:
+        live = _discover_live_normalized()
+    try:
+        return fingerprint(live) if live is not None else None
     except Exception:  # noqa: BLE001 — best-effort; the UI just won't flag an active row
-        log.debug("Could not discover current settings for active-profile flag", exc_info=True)
+        log.debug("Could not fingerprint current settings for active-profile flag", exc_info=True)
         return None
 
 
@@ -1482,7 +1517,7 @@ def _saturation_report(profiles: list[dict], definition: dict) -> list[dict]:
     return report
 
 
-def _compute_heirs(result: dict, session: Session) -> dict:
+def _compute_heirs(result: dict, session: Session, live: list[dict] | None = None) -> dict:
     """The crown's **heirs**: limited-data or stale-confident profiles whose *optimistic
     ceiling* can still clear the reigning crown's Overall — "run these and one may dethrone
     the crown".
@@ -1513,12 +1548,17 @@ def _compute_heirs(result: dict, session: Session) -> dict:
     limit = _heir_count(session)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     # Live environment signature for the reachability filter (best-effort; if discovery
-    # fails we don't filter, same as the race start-check).
+    # fails we don't filter, same as the race start-check). ``live`` is the caller's
+    # already-discovered normalized config (shared with the active-row fingerprint) so
+    # this doesn't cost a second firewall round-trip per page load.
+    if live is None:
+        live = _discover_live_normalized()
     reachable_env = None
     try:
-        reachable_env = environment_signature(normalize(get_provider().discover()))
+        if live is not None:
+            reachable_env = environment_signature(live)
     except Exception:  # noqa: BLE001 — best-effort
-        log.debug("Heirs: live discovery failed; not filtering by reachability", exc_info=True)
+        log.debug("Heirs: could not derive live environment signature", exc_info=True)
 
     crown = next((p for p in profiles if p["fingerprint"] == best_fp), None)
     crown_overall = crown["overall"] if crown else None
@@ -1625,7 +1665,7 @@ def compute_profiles(
     baseline_points: list[RunPoint] = []
     groups: dict[str, dict] = {}
     metric_src = all_metric_sources()  # {logical_key: (plugin, source_key)} for every metric
-    for run, score in rows:
+    for run, score, results_by_plugin in rows:
         comparable = _comparable(score)
         if complete_only and not comparable:
             continue
@@ -1704,14 +1744,14 @@ def compute_profiles(
         for metric, val in crown_sub.items():
             if val is not None:
                 g["subscore_samples"].setdefault(metric, []).append(float(val))
-        # Every metric's raw value for this run, from the plugin metric caches, falling back
+        # Every metric's raw value for this run, from the plugin metric caches
+        # (``results_by_plugin``, bulk-fetched by _completed_runs_with_scores), falling back
         # to the current-methodology Score's derived metric_values (keyed by logical key) when
         # the plugin cache predates a metric. A re-grade re-derives from raw into the Score but
         # does not rewrite BenchmarkResult.metrics, so a run captured before a metric existed
         # (e.g. stall_time, added in v8) carries it only on the re-graded Score — sourcing it
         # here lets re-graded history feed the crown normalization + columns, not just fresh
         # runs. (Same source the completion metrics already read from above.)
-        results_by_plugin = {r.plugin: (r.metrics or {}) for r in run.results}
         run_vals: dict[str, float] = {}  # this run's values for the weather-adjust keys
         for key, (plugin, source_key) in metric_src.items():
             val = results_by_plugin.get(plugin, {}).get(source_key)
@@ -1739,13 +1779,16 @@ def compute_profiles(
         g["settings"] = run.settings
         g["last_seen"] = run.created_at
 
-    # Precompute the day×hour bucketing of the whole field ONCE per metric. The time-adjusted
-    # "vs typical" reading below is computed for every profile against this same shared baseline,
-    # and bucketing is O(all runs) — doing it inside the per-profile loop made the endpoint
-    # O(profiles × runs) (the reason Settings-Impact got slow as profiles piled up). Build it here,
-    # reuse it for every profile.
+    # Precompute the day×hour bucketing of the whole field ONCE per metric, and wrap each in a
+    # shared _BaselineResolver. The time-adjusted "vs typical" reading below is computed for
+    # every profile against this same shared baseline; bucketing is O(all runs), and the
+    # fallback-ladder pool + median used to be recomputed per *run* — together they made the
+    # endpoint quadratic in history (the reason Settings-Impact took minutes as runs piled up).
+    # Build both once here; every profile reuses them.
     smoothness_buckets = bucket_values(baseline_points, "smoothness", tz_offset)
     overall_buckets = bucket_values(baseline_points, "overall", tz_offset)
+    smoothness_resolver = _BaselineResolver(smoothness_buckets, min_samples)
+    overall_resolver = _BaselineResolver(overall_buckets, min_samples)
 
     profiles = []
     for g in groups.values():
@@ -1786,14 +1829,14 @@ def compute_profiles(
         overall = overall_p25_val = overall_p75_val = None
         rel = profile_relative(
             baseline_points, g["points"], "smoothness", tz_offset, min_samples,
-            buckets=smoothness_buckets,
+            resolver=smoothness_resolver,
         )
         # Time-adjusted Overall ("vs typical"): how this profile scored vs the day×hour norm.
         # Kept as an informational signal (display + a hook for smarter heir-hunting), not a
         # crown input — the crown is highest Overall, full stop.
         rel_overall = profile_relative(
             baseline_points, g["points"], "overall", tz_offset, min_samples,
-            buckets=overall_buckets,
+            resolver=overall_resolver,
         )
         profiles.append(
             {
