@@ -154,16 +154,34 @@ LLM-based. See `README.md` for the product overview.
     scalars under a new rubric, `rederive_run` = re-run derivation+scoring from raw).
   - `trends.py` — historical baselines by day-of-week × hour-of-day (viewer-local);
     `relative_reading`/`profile_relative` give a time-adjusted "vs typical" delta
-    ("wins above replacement"). Powers `/api/trends/*`, the Dashboard delta chip,
-    and the Settings-Impact "vs typical" column. A second, sharper baseline —
-    `rolling_baseline_deltas`/`profile_weather_relative` — is the **contemporaneous
-    "network weather"** reading: Overall minus the rolling median of all runs within
-    **±2h in absolute time** (excluding the profile's own runs, `RunPoint.fingerprint`),
-    so it neutralizes drift + one-off congestion + sweep-slot bias rather than only
-    recurring day/hour patterns (which pool Jan and Jul into one cell). `profile_weather_relative`
-    (`weather_overall`) is retained as a library reading but **no longer surfaced** — the
-    Settings-Impact "vs weather" column was replaced by the **"% vs SQM off"** column (see
-    below); the metric-based **"Weather-adj"** column (`weather_adjusted_overall`) stays.
+    ("wins above replacement"). Powers `/api/trends/*` and the Dashboard delta chip;
+    `relative_overall` stays in the profiles payload (feeds `best_diff`) but is no longer a
+    surfaced column. The per-cell fallback-ladder resolution is memoized (`_BaselineResolver`,
+    ≤7×24 cells) — the per-run ladder scan + median used to make Settings-Impact quadratic in
+    history. (The old ±2h `rolling_baseline_deltas`/`profile_weather_relative` reading was
+    **deleted**: the firewall sits on one profile for hours, so a time window rarely held a
+    real cohort — time was only a proxy for conditions.)
+  - `weather.py` — **measured-weather severity + cohort residuals ("wins above the
+    weather")**, the one canonical "vs weather" reading. Weather is defined by **each run's
+    own clean covariate readings** (probe DNS/TCP/TLS/latency + nav setup phases —
+    `routes_settings._weather_covariates`, `clean` = profile-orthogonal; shaped signals like
+    download/`nav_response` are never used), not by the clock: `run_severities` ranks each
+    covariate against its all-history distribution and takes the median percentile (0–100
+    severity, "DNS at 4 ms when median is 1 ms" = high); `cohort_residuals` bands runs into
+    severity quintiles and compares each run's Overall against **other profiles' runs in the
+    same band** (own runs excluded; `WEATHER_COHORT_MIN` others required — no cohort, no
+    claim). Surfaced per profile as `weather_relative` ({delta_median,p25,p75,count,coverage},
+    the **"vs weather"** column), `weather_severity` (median conditions sampled under — a
+    sampling-fairness readout), and the **`weather_beater`** flag (residual standing ≫ raw
+    standing = "delivered average outcomes where the field delivered below-average — race
+    it"); response-level **`weather_crown_suspect`** (residual ranking's top ≠ raw crown →
+    "crown may be weather-confounded" alert). Strictly **flag-and-steer: never a crown
+    input** — a suspect triggers a race (contemporaneous head-to-head raw data), never a
+    re-rank. Empirically gated by `GET /settings/weather-sensitivity` (per clean-covariate ×
+    crown-metric Spearman ρ, pooled + **within-profile**, rendered as the Settings-Impact
+    "Weather sensitivity" card). The metric-based **"Weather-adj"** column
+    (`weather_adjusted_overall`, setup-stripped fcp/lcp) stays as a transparency
+    decomposition.
   - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a grid over the
     registry's `SWEEPABLE_FIELDS` (quantum × target today). Applies each variant for real,
     benchmarks it, **restores the baseline at the end** (`reconcile_interrupted_sweeps`

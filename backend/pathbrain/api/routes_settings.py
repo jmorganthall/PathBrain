@@ -45,6 +45,7 @@ from ..settings_profile import (
 )
 from ..shaper_fields import SHAPER_FIELDS, SWEEPABLE_FIELDS, WRITABLE_FIELDS, coerce_value, field as shaper_field
 from ..trends import RunPoint, _BaselineResolver, bucket_values, profile_relative
+from ..weather import cohort_residuals, run_severities
 
 # The three headline axes (the temporal phases of a load); their 0–100 scores still
 # drive the per-axis display columns, but the **crown** no longer corners over them.
@@ -74,7 +75,8 @@ _PROFILE_FIELDS = [
     {"key": "completion", "label": "Completion", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "iterations", "label": "Iterations", "unit": "", "higher_is_better": True, "group": "Run stats"},
     {"key": "count", "label": "Runs", "unit": "", "higher_is_better": True, "group": "Run stats"},
-    {"key": "relative_overall", "label": "vs typical (Overall)", "unit": "", "higher_is_better": True, "group": "Run stats"},
+    {"key": "weather_relative", "label": "Vs weather (Overall)", "unit": "", "higher_is_better": True, "group": "Scores"},
+    {"key": "weather_severity", "label": "Weather severity", "unit": "pctl", "higher_is_better": False, "group": "Run stats"},
     {"key": "pct_vs_sqm_off", "label": "% vs SQM off", "unit": "%", "higher_is_better": True, "group": "Scores"},
     {"key": "weather_adjusted_overall", "label": "Weather-adj Overall", "unit": "score", "higher_is_better": True, "group": "Scores"},
 ]
@@ -1660,6 +1662,13 @@ def compute_profiles(
     # Keys needed per-run for the weather-adjusted crown: the crown metrics + the setup phases we
     # subtract from fcp/lcp. Captured alongside metric_samples in the run loop.
     _crown_adj_keys = set(crown_metrics) | set(_SETUP_WEATHER_PHASES)
+    # Clean (profile-orthogonal) weather covariates — the inputs to each run's measured
+    # weather severity for the "vs weather" cohort residual. Shaped covariates are excluded
+    # by construction (adjusting with a shaper-moved signal would subtract profile effect).
+    _clean_covs = [k for k, clean in _weather_covariates() if clean]
+    _capture_keys = _crown_adj_keys | set(_clean_covs)
+    # Per-run (fingerprint, overall, covariate readings) for the weather cohort pass.
+    weather_runs: list[tuple[str, float, dict[str, float]]] = []
     # Config-blind baseline: every qualifying run, regardless of profile, defines
     # the time-of-day environment each profile's runs are judged against.
     baseline_points: list[RunPoint] = []
@@ -1760,7 +1769,7 @@ def compute_profiles(
             if isinstance(val, bool) or not isinstance(val, (int, float)):
                 continue
             g["metric_samples"].setdefault(key, []).append(float(val))
-            if key in _crown_adj_keys:
+            if key in _capture_keys:
                 run_vals[key] = float(val)
         # Weather-adjusted crown raw for this run: strip the connection-setup weather (this run's
         # own nav dns+tcp+tls) from the paint milestones; carry shape metrics through unadjusted.
@@ -1776,6 +1785,11 @@ def compute_profiles(
                     g["crown_adj_samples"].setdefault(m, []).append(max(0.0, run_vals[m] - setup))
             else:
                 g["crown_adj_samples"].setdefault(m, []).append(run_vals[m])
+        # Feed the measured-weather cohort pass: this run's outcome + its own covariate
+        # readings (the conditions it faced), for the "vs weather" residual below.
+        if run_overall is not None:
+            covs = {k: run_vals[k] for k in _clean_covs if k in run_vals}
+            weather_runs.append((run.settings_fingerprint, float(run_overall), covs))
         g["settings"] = run.settings
         g["last_seen"] = run.created_at
 
@@ -1789,6 +1803,14 @@ def compute_profiles(
     overall_buckets = bucket_values(baseline_points, "overall", tz_offset)
     smoothness_resolver = _BaselineResolver(smoothness_buckets, min_samples)
     overall_resolver = _BaselineResolver(overall_buckets, min_samples)
+
+    # Measured-weather cohort residuals ("wins above the weather"): severity from each run's
+    # own clean covariate readings, cohort = other profiles' runs in the same severity band.
+    # Flag-and-steer only — never a crown input (see pathbrain.weather).
+    _w_sev = run_severities([covs for _, _, covs in weather_runs], _clean_covs)
+    weather_rel_by_fp, weather_sev_by_fp = cohort_residuals(
+        [fp for fp, _, _ in weather_runs], [ov for _, ov, _ in weather_runs], _w_sev
+    )
 
     profiles = []
     for g in groups.values():
@@ -1873,7 +1895,19 @@ def compute_profiles(
                 # corner over the raw measurements. This IS the crown basis: highest wins.
                 "overall": overall,
                 # Time-adjusted ("vs typical") Overall — informational, not a crown input.
+                # Kept in the payload for the best-diff comparison; no longer a surfaced column
+                # (superseded by the measured-weather `weather_relative` below).
                 "relative_overall": rel_overall,
+                # "Wins above the weather": this profile's per-run Overall vs the median of
+                # OTHER profiles' runs in the same measured-weather severity band, aggregated.
+                # {delta_median, p25, p75, count, coverage} — flag-and-steer only, never a
+                # crown input. `weather_severity` is the median conditions (0–100 percentile,
+                # higher = harsher weather) this profile has been measured under — a
+                # sampling-fairness readout on its own.
+                "weather_relative": weather_rel_by_fp.get(g["fingerprint"]),
+                "weather_severity": weather_sev_by_fp.get(g["fingerprint"]),
+                # Filled after ranking: residual standing far above raw standing → flagged.
+                "weather_beater": False,
                 # "% vs SQM off" (filled after the normalize pass, once every Overall is final).
                 "pct_vs_sqm_off": None,
                 "is_sqm_off": False,
@@ -2051,6 +2085,46 @@ def compute_profiles(
     # corner among confident profiles (no Thompson — it's a what-if view, not the verdict).
     custom_best_fingerprint = _apply_custom_crown(profiles, custom_crown_metrics)
 
+    # ── Weather-beater flags + crown-suspect (flag-and-steer; the crown stays raw) ──
+    # A profile whose "vs weather" residual standing is far above its raw Overall standing
+    # delivered average outcomes in conditions where the field delivered below-average ones —
+    # "there may be something here". And if the residual ranking's top profile isn't the raw
+    # crown, the crown may be weather-confounded: the answer is to RACE them (contemporaneous
+    # head-to-head raw data), never to re-rank on the model.
+    weather_crown_suspect = None
+    ranked_weather = [
+        p for p in profiles
+        if (p.get("weather_relative") or {}).get("delta_median") is not None
+        and (p["weather_relative"].get("coverage") or 0) >= 0.5
+    ]
+    if len(ranked_weather) >= 3:
+        by_residual = sorted(
+            ranked_weather, key=lambda p: p["weather_relative"]["delta_median"], reverse=True
+        )
+        raw_ranked = [p for p in profiles if p.get("overall") is not None]
+        raw_pos = {p["fingerprint"]: i for i, p in enumerate(raw_ranked)}
+        n_res, n_raw = len(by_residual), max(1, len(raw_ranked))
+        for i, p in enumerate(by_residual):
+            res_pct = 1 - i / max(1, n_res - 1) if n_res > 1 else 1.0  # 1 = best residual
+            rp = raw_pos.get(p["fingerprint"])
+            raw_pct = 1 - rp / max(1, n_raw - 1) if rp is not None and n_raw > 1 else 0.0
+            # Top-quartile residual standing while sitting in the bottom half raw, with a
+            # genuinely positive residual → flagged.
+            if res_pct >= 0.75 and raw_pct <= 0.5 and p["weather_relative"]["delta_median"] > 0:
+                p["weather_beater"] = True
+        top = by_residual[0]
+        if (
+            best_fingerprint
+            and top["fingerprint"] != best_fingerprint
+            and top["weather_relative"]["delta_median"] > 0
+        ):
+            weather_crown_suspect = {
+                "fingerprint": top["fingerprint"],
+                "label": top["label"],
+                "delta_median": top["weather_relative"]["delta_median"],
+                "coverage": top["weather_relative"]["coverage"],
+            }
+
     return {
         "profiles": profiles,
         "count": len(profiles),
@@ -2087,6 +2161,9 @@ def compute_profiles(
         # Echo the custom-crown selection (None when not requested) + its winner.
         "crown_metrics": list(custom_crown_metrics) if custom_crown_metrics else None,
         "custom_best_fingerprint": custom_best_fingerprint,
+        # The residual ranking's top profile when it differs from the raw crown — the
+        # "crown may be weather-confounded; race these" signal (None when they agree).
+        "weather_crown_suspect": weather_crown_suspect,
         # Selectable non-metric numeric fields for the chart axes + column selector
         # (metric fields' metadata comes from /api/metrics).
         "fields": _PROFILE_FIELDS,

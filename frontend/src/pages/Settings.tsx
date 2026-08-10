@@ -43,6 +43,7 @@ import type {
   ChallengerRace,
   CrownHeirs,
   MetricSaturation,
+  SettingsProfilesResponse,
   WeatherSensitivity,
   MetricThreshold,
   ProfileDiff,
@@ -126,13 +127,15 @@ function completionSummary(p: SettingsProfile): string {
   return parts.length ? parts.join(" · ") : "no completion metrics captured";
 }
 
-// "Above/below the historical norm for when it ran." Positive = this config beats
-// the day×hour environment it was sampled in — the confound-controlled comparator.
-function RelativeSopsCell({
+// "Wins above the weather": this profile's per-run Overall vs the median of OTHER profiles'
+// runs measured under the same weather severity (conditions read from each run's own probe
+// instruments — DNS/TCP/TLS/latency — not the clock). Positive = it delivers more than the
+// field does in the same conditions. Flag-and-steer only; the crown stays raw.
+function VsWeatherCell({
   rel,
   confident,
 }: {
-  rel: SettingsProfile["relative_overall"];
+  rel: SettingsProfile["weather_relative"];
   confident: boolean;
 }) {
   if (!rel) {
@@ -149,9 +152,9 @@ function RelativeSopsCell({
   return (
     <Tooltip
       arrow
-      title={`Median Overall minus the day×hour historical norm, over ${rel.count} run${
+      title={`Median Overall minus what OTHER profiles deliver under the same measured weather (severity-banded by each run's own DNS/TCP/TLS/latency readings), over ${rel.count} run${
         rel.count === 1 ? "" : "s"
-      } (IQR ${rel.p25} to ${rel.p75}). Positive = this profile performs above the typical Overall for the times it actually ran, with the time-of-day environment removed.`}
+      } (IQR ${rel.p25} to ${rel.p75}; ${Math.round((rel.coverage ?? 0) * 100)}% of runs had a cohort). Positive = beats the field in like conditions — informational; the crown still ranks raw measurements.`}
     >
       <Typography
         component="span"
@@ -331,6 +334,8 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.speed?.median ?? null;
     case "relative_overall":
       return p.relative_overall?.delta_median ?? null;
+    case "weather_relative":
+      return p.weather_relative?.delta_median ?? null;
     case "pct_vs_sqm_off":
       return p.pct_vs_sqm_off ?? null;
     case "weather_adjusted_overall":
@@ -406,7 +411,7 @@ const FIXED_COLUMN_KEYS = new Set([
   "smoothness",
   "iterations",
   "count",
-  "relative_overall",
+  "weather_relative",
   "pct_vs_sqm_off",
   "weather_adjusted_overall",
 ]);
@@ -421,8 +426,10 @@ const COLUMN_TIPS: Record<string, string> = {
     "Total benchmark iterations across all runs — the unit of confidence. A profile becomes 'confident' once it reaches the minimum iterations; more iterations = more trustworthy.",
   overall:
     "The headline score: closeness to the perfect corner over the crown metrics (FCP × LCP × Pregnant pause), scored on each metric's percentile rank within the field. An intersection — one weak metric can't be averaged away. Shown as a standing (1 = best); the highest Overall is crowned.",
-  relative_overall:
-    "This profile's Overall vs the day-of-week × hour-of-day historical norm — 'wins above replacement', so running in an easy time slot doesn't flatter it. Informational, never a crown input.",
+  weather_relative:
+    "Wins above the weather: this profile's Overall vs what OTHER profiles deliver under the same measured conditions (severity from each run's own DNS/TCP/TLS/latency readings — not the clock). Positive = beats the field in like weather. Informational, never a crown input.",
+  weather_severity:
+    "Median measured-weather severity this profile has been sampled under (0–100 percentile of ambient conditions; higher = harsher). A sampling-fairness readout — a profile only ever measured in bad weather deserves a re-measure, not a bad rank.",
   pct_vs_sqm_off:
     "How much better this profile's Overall is than the honest unshaped baseline (the best measured 'SQM off' profile). Green = shaping helps; red = worse than turning SQM off. Needs a Baseline (SQM off) test to populate.",
   weather_adjusted_overall:
@@ -758,6 +765,11 @@ export default function Settings() {
   const [metricThresholds, setMetricThresholds] = useState<Record<string, MetricThreshold>>({});
   // Scored metrics whose 'best' is too lenient to rank profiles (saturating >50%).
   const [saturation, setSaturation] = useState<MetricSaturation[]>([]);
+  // "Crown may be weather-confounded": the vs-weather residual ranking's top profile when it
+  // differs from the raw crown — the cue to race them, never to re-rank.
+  const [weatherSuspect, setWeatherSuspect] = useState<
+    SettingsProfilesResponse["weather_crown_suspect"]
+  >(null);
   // Dynamic quadrant axes — X/Y/Shade default to the current methodology's crown metric set
   // (the Overall scoring corner's inputs), pulled from the profiles response's `overall_metrics`
   // rather than hardcoded, so the default view always demonstrates how *this* methodology's Overall
@@ -909,6 +921,7 @@ export default function Settings() {
       setHeirs(p.heirs ?? null);
       setMetricThresholds(p.metric_thresholds ?? {});
       setSaturation(p.saturation ?? []);
+      setWeatherSuspect(p.weather_crown_suspect ?? null);
       setImpact(i);
       setDiag(d);
       setError(null);
@@ -1382,6 +1395,32 @@ export default function Settings() {
         </Alert>
       )}
 
+      {weatherSuspect && (
+        <Alert
+          severity="info"
+          sx={{ mb: 2 }}
+          action={
+            <Button
+              size="small"
+              color="inherit"
+              onClick={() => setRaceOpen(true)}
+              disabled={raceRunning || testRunning || refreshRunning || applying}
+            >
+              Race challengers
+            </Button>
+          }
+        >
+          <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
+            The crown may be weather-confounded
+          </Typography>
+          Judged against the weather each run actually faced, <b>{weatherSuspect.label}</b> outperforms
+          the field (+{weatherSuspect.delta_median} vs same-conditions cohort,{" "}
+          {Math.round(weatherSuspect.coverage * 100)}% coverage) and would top the “vs weather” ranking —
+          but the raw crown belongs to another profile. The fix is measurement, not adjustment: race them
+          head-to-head so they face the same conditions.
+        </Alert>
+      )}
+
       {bestDiff && <ProfileDiffCard diff={bestDiff} showCompletion={showCompletion} />}
 
       {heirs && heirs.items.length > 0 && (
@@ -1761,13 +1800,13 @@ export default function Settings() {
                       );
                     })}
                     <SortHeader
-                      id="relative_overall"
-                      label="vs typical"
+                      id="weather_relative"
+                      label="vs weather"
                       align="right"
                       orderBy={orderBy}
                       order={order}
                       onSort={handleSort}
-                      tip={COLUMN_TIPS.relative_overall}
+                      tip={COLUMN_TIPS.weather_relative}
                     />
                     <SortHeader
                       id="pct_vs_sqm_off"
@@ -1903,6 +1942,11 @@ export default function Settings() {
                               <Chip size="small" variant="outlined" color="info" label="tied" />
                             </Tooltip>
                           )}
+                          {p.weather_beater && (
+                            <Tooltip title="Weather-beater: judged against the weather its runs actually faced (severity from each run's own DNS/TCP/TLS/latency readings), this profile outperforms the field far more than its raw rank suggests — it may have been sampled in unusually harsh conditions. There may be something here: race it. Informational only; the crown stays raw.">
+                              <Chip size="small" variant="outlined" color="secondary" label="weather-beater" />
+                            </Tooltip>
+                          )}
                           {!p.confident && (
                             <Chip size="small" variant="outlined" color="warning" label="limited data" />
                           )}
@@ -1960,7 +2004,7 @@ export default function Settings() {
                         );
                       })}
                       <TableCell align="right">
-                        <RelativeSopsCell rel={p.relative_overall} confident={p.confident} />
+                        <VsWeatherCell rel={p.weather_relative} confident={p.confident} />
                       </TableCell>
                       <TableCell align="right">
                         <PctVsSqmOffCell

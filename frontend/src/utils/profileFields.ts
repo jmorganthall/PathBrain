@@ -31,6 +31,14 @@ export function profileValue(p: SettingsProfile, key: string): number | null {
       // "vs typical" = the time-adjusted **Overall** edge (the axis we crown on today),
       // matching the pinned column — NOT the legacy smoothness-based relative_sops.
       return p.relative_overall?.delta_median ?? null;
+    case "weather_relative":
+      // "Vs weather" = the measured-weather cohort residual's median (wins above the
+      // weather). Flag-and-steer only; not a crown input.
+      return p.weather_relative?.delta_median ?? null;
+    case "weather_severity":
+      // Median measured-weather severity this profile was sampled under (0–100 pctl,
+      // higher = harsher) — a sampling-fairness readout.
+      return p.weather_severity ?? null;
     case "weather_adjusted_overall":
       // Display-only metric-based "vs weather": the Overall re-cornered over setup-stripped
       // fcp/lcp (per-run, self-contained). Same 0–100 space as Overall; not a crown input.

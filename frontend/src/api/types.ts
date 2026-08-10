@@ -152,8 +152,25 @@ export interface SettingsProfile {
   // neighbour baseline above. Same 0–100 space as `overall`; NOT a crown input. Null until scorable.
   weather_adjusted_overall: number | null;
   // Time-adjusted ("vs typical") Overall: how much this profile beats its day×hour norm.
-  // Informational only — it does not feed the crown. Null until a usable baseline exists.
+  // Informational only — it does not feed the crown; no longer a surfaced column
+  // (superseded by weather_relative). Null until a usable baseline exists.
   relative_overall: { delta_median: number; p25: number; p75: number; count: number } | null;
+  // "Wins above the weather": per-run Overall vs the median of OTHER profiles' runs in the
+  // same measured-weather severity band (conditions from each run's own probe instruments,
+  // not the clock). coverage = fraction of runs that had a usable cohort. Flag-and-steer
+  // only — never a crown input. Null when no run had a cohort.
+  weather_relative: {
+    delta_median: number;
+    p25: number;
+    p75: number;
+    count: number;
+    coverage: number;
+  } | null;
+  // Median measured-weather severity (0–100 percentile; higher = harsher conditions) this
+  // profile has been sampled under — a sampling-fairness readout.
+  weather_severity: number | null;
+  // Residual standing far above raw standing → "there may be something here".
+  weather_beater: boolean;
   // Median of every numeric metric we collect (logical key → value), for the
   // dynamic chart axes + the table column selector.
   metrics: Record<string, number>;
@@ -348,6 +365,14 @@ export interface SettingsProfilesResponse {
   // The profile the firewall is on right now (best-effort live discovery), so the UI
   // can flag the active row. Null when discovery is unavailable.
   current_fingerprint: string | null;
+  // When the "vs weather" residual ranking's top profile differs from the raw crown:
+  // the crown may be weather-confounded — race these two. Null when they agree.
+  weather_crown_suspect: {
+    fingerprint: string;
+    label: string;
+    delta_median: number;
+    coverage: number;
+  } | null;
   // Selectable non-metric numeric fields for the chart axes + column selector.
   fields: ProfileField[];
   best_diff: ProfileDiff | null;
