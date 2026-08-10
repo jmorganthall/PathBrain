@@ -418,89 +418,13 @@ def profile_relative(
     }
 
 
-# ── Contemporaneous "network weather" baseline (±window rolling, absolute time) ──
-# The day×hour baseline above pools ALL history into recurring (weekday, hour) cells, so it
-# corrects only *cyclical* weather and is blind to slow drift and one-off congestion (a
-# January and a July run at the same weekday/hour share one baseline). This baseline is a
-# rolling median over the runs happening within ±``window_hours`` of each target run in
-# ABSOLUTE time — "what was the network doing right then". That neutralizes drift, transient
-# congestion, and sweep-slot bias. It excludes the target profile's own runs from its baseline
-# so a burst of one profile (e.g. a long current-test) can't define its own "typical". This is
-# informational only — a Settings-Impact column — and does NOT feed the crown.
-WEATHER_WINDOW_HOURS = 2.0
-WEATHER_MIN_BASELINE = 3  # need at least this many other-run readings in the window to trust it
-
-
-def rolling_baseline_deltas(
-    baseline_points: list[RunPoint],
-    target_points: list[RunPoint],
-    metric_key: str,
-    *,
-    window_hours: float = WEATHER_WINDOW_HOURS,
-    min_samples: int = WEATHER_MIN_BASELINE,
-    exclude_fingerprint: str | None = None,
-) -> list[float]:
-    """Per target run: ``value − median(runs within ±window_hours of it)`` — the contemporaneous
-    "network weather" delta. ``exclude_fingerprint`` drops runs of that profile from the baseline
-    (so a profile isn't judged against itself). A run whose window has fewer than ``min_samples``
-    baseline readings is skipped (no trustworthy weather to compare against)."""
-    from bisect import bisect_left, bisect_right
-
-    base = sorted(
-        (
-            p
-            for p in baseline_points
-            if p.values.get(metric_key) is not None
-            and (exclude_fingerprint is None or p.fingerprint != exclude_fingerprint)
-        ),
-        key=lambda p: _naive_utc(p.created_at),
-    )
-    times = [_naive_utc(p.created_at) for p in base]
-    vals = [p.values[metric_key] for p in base]
-    deltas: list[float] = []
-    for tp in target_points:
-        v = tp.values.get(metric_key)
-        if v is None:
-            continue
-        t = _naive_utc(tp.created_at)
-        lo = bisect_left(times, t - timedelta(hours=window_hours))
-        hi = bisect_right(times, t + timedelta(hours=window_hours))
-        window = vals[lo:hi]
-        if len(window) < min_samples:
-            continue
-        deltas.append(v - median(window))
-    return deltas
-
-
-def profile_weather_relative(
-    baseline_points: list[RunPoint],
-    target_points: list[RunPoint],
-    metric_key: str,
-    *,
-    exclude_fingerprint: str | None = None,
-    window_hours: float = WEATHER_WINDOW_HOURS,
-    min_samples: int = WEATHER_MIN_BASELINE,
-) -> dict | None:
-    """Time-adjusted summary of a profile vs the contemporaneous network weather (rolling ±window
-    baseline). Same shape as :func:`profile_relative` (``delta_median`` > 0 = beat the moment's
-    weather, for a higher-is-better metric). None when no run had a trustworthy window."""
-    deltas = rolling_baseline_deltas(
-        baseline_points,
-        target_points,
-        metric_key,
-        window_hours=window_hours,
-        min_samples=min_samples,
-        exclude_fingerprint=exclude_fingerprint,
-    )
-    if not deltas:
-        return None
-    s = sorted(deltas)
-    return {
-        "delta_median": round(median(s), 2),
-        "p25": round(_percentile(s, 25), 2),
-        "p75": round(_percentile(s, 75), 2),
-        "count": len(deltas),
-    }
+# The contemporaneous ±window "network weather" baseline (rolling_baseline_deltas /
+# profile_weather_relative) used to live here. It was retired: the firewall usually sits on
+# one profile for hours, so a ±2h window contains almost nothing but the target profile
+# itself — time was only ever a proxy for conditions. Its successor is the measured-weather
+# cohort residual in ``pathbrain.weather``: severity from each run's OWN clean covariate
+# readings (probe DNS/TCP/TLS/latency), cohort = other profiles' runs in the same severity
+# band, whatever the clock said. One "vs weather" wheel, defined by conditions, not time.
 
 
 def current_values(
