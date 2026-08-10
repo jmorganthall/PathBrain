@@ -289,6 +289,36 @@ export interface MetricSaturation {
   higher_is_better: boolean;
 }
 
+// One (weather covariate × crown metric) correlation from GET /settings/weather-sensitivity.
+// `within_profile_spearman` is the causal signal (profile held fixed); `pooled_spearman` mixes
+// in between-profile differences. `clean` covariates are profile-orthogonal (usable to adjust);
+// shaped ones are moved by the shaper itself and shown for transparency only.
+export interface WeatherSensitivityRow {
+  covariate: string;
+  covariate_label: string;
+  clean: boolean;
+  role: string | null;
+  metric: string;
+  metric_label: string;
+  metric_higher_is_better: boolean;
+  pooled_spearman: number | null;
+  pooled_n: number;
+  within_profile_spearman: number | null;
+  within_profile_profiles: number;
+  metric_direction: "increases" | "decreases" | "none";
+  weather_sensitive: boolean;
+}
+
+export interface WeatherSensitivity {
+  crown_metrics: string[];
+  covariates: { key: string; clean: boolean; role: string | null; label: string }[];
+  within_profile_min_points: number;
+  trend_rho: number;
+  runs_analyzed: number;
+  profiles_analyzed: number;
+  rows: WeatherSensitivityRow[];
+}
+
 export interface SettingsProfilesResponse {
   profiles: SettingsProfile[];
   count: number;

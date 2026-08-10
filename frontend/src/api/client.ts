@@ -51,6 +51,7 @@ import type {
   UpdateConfig,
   UpdateConnectionTest,
   SettingsProfilesResponse,
+  WeatherSensitivity,
   Sweep,
   SweepField,
   SweepPipe,
@@ -266,6 +267,9 @@ export const api = {
   settingsRefingerprint: () =>
     request<{ scanned: number; rekeyed: number }>("/settings/refingerprint", { method: "POST" }),
   settingsDiagnostics: () => request<SettingsDiagnostics>("/settings/diagnostics"),
+  // Weather ↔ crown correlation diagnostic (per-covariate × crown-metric Spearman ρ,
+  // pooled + within-profile). Heavy (scans all comparable runs) — fetch on demand only.
+  weatherSensitivity: () => request<WeatherSensitivity>("/settings/weather-sensitivity"),
   // Write a stored profile to the firewall. preview=true returns the planned
   // field changes without writing, so the UI can confirm an exact diff first.
   // runBenchmark (default true) kicks a single-iteration benchmark on the applied profile.
