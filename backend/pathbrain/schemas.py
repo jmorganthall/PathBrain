@@ -38,6 +38,10 @@ class BaselineScheduleUpdate(BaseModel):
     minute: int | None = None
     iterations: int | None = None
     settle_seconds: int | None = None
+    # IANA zone the hour/minute are expressed in (e.g. "America/Chicago"). The UI sends the
+    # browser's zone when saving, so "Run at 02:00" fires at the user's 02:00 regardless of
+    # the container's TZ. Empty/None = container-local (the legacy behavior).
+    timezone: str | None = None
 
 
 class TestSettings(BaseModel):

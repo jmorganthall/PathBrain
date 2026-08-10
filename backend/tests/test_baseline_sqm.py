@@ -214,3 +214,31 @@ def test_baseline_config_get_and_update(client):
     # Validation: out-of-range hour is rejected.
     assert client.put("/api/baseline/config", json={"hour": 24}).status_code == 422
     assert client.put("/api/baseline/config", json={"iterations": 0}).status_code == 422
+
+
+def test_baseline_schedule_binds_to_user_timezone(client):
+    """The schedule's hour/minute are evaluated in the zone the user saved it from — so
+    "run at 02:00" is the user's 02:00, not the container's (which is often UTC: the
+    'why did my nightly baseline fire at 8pm?' bug)."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    updated = client.put(
+        "/api/baseline/config",
+        json={"enabled": True, "hour": 2, "minute": 0, "timezone": "America/Chicago"},
+    ).json()
+    assert updated["timezone"] == "America/Chicago"
+    # next_run_at, converted INTO that zone, must land exactly on 02:00 local.
+    nxt = datetime.fromisoformat(updated["next_run_at"]).astimezone(ZoneInfo("America/Chicago"))
+    assert (nxt.hour, nxt.minute) == (2, 0)
+    assert nxt > datetime.now(timezone.utc)
+
+    # The scheduler gate reads the same zone: fabricate "now" checks via schedule_zone.
+    from pathbrain.api.routes_baseline import schedule_zone
+
+    assert str(schedule_zone({"timezone": "America/Chicago"})) == "America/Chicago"
+
+    # Unknown zone is rejected; empty string clears back to container-local.
+    assert client.put("/api/baseline/config", json={"timezone": "Not/AZone"}).status_code == 422
+    cleared = client.put("/api/baseline/config", json={"timezone": ""}).json()
+    assert cleared["timezone"] == ""

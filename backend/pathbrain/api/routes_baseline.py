@@ -25,6 +25,25 @@ router = APIRouter()
 log = get_logger("api.baseline")
 
 
+def schedule_zone(bt: dict):
+    """The tzinfo the schedule's hour/minute are expressed in.
+
+    ``baseline_test.timezone`` holds the IANA zone the user saved the schedule from (the
+    browser's zone, sent by the UI) — so "Run at 02:00" means the *user's* 02:00 no matter
+    what TZ the container happens to run. Empty/invalid → the container's local zone (the
+    legacy behavior, correct only when TZ is wired through to the container).
+    """
+    from zoneinfo import ZoneInfo
+
+    tz_name = (bt.get("timezone") or "").strip()
+    if tz_name:
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:  # noqa: BLE001 — bad stored zone → fall back, never crash the tick
+            log.warning("Invalid baseline_test.timezone %r; falling back to container-local", tz_name)
+    return datetime.now().astimezone().tzinfo
+
+
 def _schedule_payload(cfg: dict) -> dict:
     bt = cfg.get("baseline_test", {}) or {}
     enabled = bool(bt.get("enabled", False))
@@ -35,20 +54,20 @@ def _schedule_payload(cfg: dict) -> dict:
         hour, minute = 1, 0
     iterations = int(bt.get("iterations", 10) or 10)
     settle = int(bt.get("settle_seconds", 30) or 0)
+    tz_name = (bt.get("timezone") or "").strip()
 
-    # Next fire time, for the UI — informational only. The scheduler fires on the
-    # container's *local* wall-clock (``datetime.now()``, see ``scheduler._maybe_run_baseline``),
-    # so we compute the next local hour:minute occurrence and then convert it to a real UTC
-    # **instant** (``+00:00`` suffix). Emitting a tz-aware instant is what keeps this consistent
-    # with ``started_at``/``finished_at`` (both stored UTC): the frontend's ``parseApiDate`` sees
-    # the offset and renders it in the viewer's local zone instead of mis-tagging a naive string
-    # as UTC and shifting it a second time (the old bug: "Run at (local) 01:00" but "Next:" showing
-    # a different hour). ``datetime.now().astimezone()`` attaches the container's local tzinfo.
+    # Next fire time, for the UI — informational only. The scheduler fires when the
+    # schedule's OWN zone (the zone the user saved it from; container-local fallback)
+    # reaches hour:minute — so compute the next occurrence in that zone, then emit a real
+    # UTC **instant** (``+00:00`` suffix) consistent with ``started_at``/``finished_at``:
+    # the frontend's ``parseApiDate`` sees the offset and renders it in the viewer's local
+    # zone instead of mis-tagging a naive string as UTC and double-shifting it.
     next_run_at = None
     if enabled:
-        now_local = datetime.now().astimezone()
-        candidate = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if candidate <= now_local:
+        zone = schedule_zone(bt)
+        now_z = datetime.now(zone)
+        candidate = now_z.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now_z:
             candidate = candidate + timedelta(days=1)
         next_run_at = candidate.astimezone(timezone.utc).isoformat()
 
@@ -58,6 +77,8 @@ def _schedule_payload(cfg: dict) -> dict:
         "minute": minute,
         "iterations": iterations,
         "settle_seconds": settle,
+        # The IANA zone the hour/minute are interpreted in ("" = container-local fallback).
+        "timezone": tz_name,
         "next_run_at": next_run_at,
     }
 
@@ -90,6 +111,18 @@ def update_baseline_config(payload: BaselineScheduleUpdate) -> dict:
         if int(payload.settle_seconds) < 0:
             raise HTTPException(status_code=422, detail="settle_seconds cannot be negative")
         updates["settle_seconds"] = int(payload.settle_seconds)
+    if payload.timezone is not None:
+        tz_name = payload.timezone.strip()
+        if tz_name:  # "" clears the zone back to container-local
+            from zoneinfo import ZoneInfo
+
+            try:
+                ZoneInfo(tz_name)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=422, detail=f"unknown timezone {tz_name!r} (use an IANA name)"
+                ) from exc
+        updates["timezone"] = tz_name
 
     with session_scope() as session:
         cfg = save_config(session, {"baseline_test": updates}) if updates else get_config(session)

@@ -141,6 +141,9 @@ export default function Baseline() {
         minute: cfg.minute,
         iterations: cfg.iterations,
         settle_seconds: cfg.settle_seconds,
+        // Bind the schedule to the zone you're setting it from, so "Run at 02:00" means
+        // YOUR 02:00 regardless of the container's TZ (which is often UTC).
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
       setCfg(saved);
       setSavedAt(new Date().toISOString());
@@ -230,8 +233,12 @@ export default function Baseline() {
               <TextField
                 size="small"
                 type="time"
-                label="Run at (server time)"
-                helperText="Server/container timezone (TZ)"
+                label="Run at"
+                helperText={
+                  cfg?.timezone
+                    ? `${cfg.timezone} time`
+                    : `Will save as ${Intl.DateTimeFormat().resolvedOptions().timeZone} time`
+                }
                 value={hhmm}
                 disabled={!cfg}
                 onChange={(e) => {

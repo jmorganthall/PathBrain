@@ -40,21 +40,26 @@ def _baseline_config() -> dict:
 
 
 def _maybe_run_baseline() -> bool:
-    """Kick the nightly baseline (SQM off) test if it's armed and due this local minute.
+    """Kick the nightly baseline (SQM off) test if it's armed and due this scheduled minute.
 
     Returns True if a baseline test was started this tick (so the caller can yield the tick).
     The engine holds the coordination lock itself and queues behind any in-progress session;
     we only guard against double-firing within the same day and while one is already active.
-    Local (container-TZ) time is used, matching the experiment window convention.
+    The hour/minute are evaluated in the **schedule's own zone** (``baseline_test.timezone``,
+    the browser zone captured when the user saved it) — so "run at 02:00" means the user's
+    02:00, not the container's. Container-local fallback when no zone is stored (the old
+    behavior, which fired at UTC wall-clock unless TZ was wired into the container — the
+    "why did my baseline run at 8pm?" bug).
     """
     from . import baseline_test
+    from .api.routes_baseline import schedule_zone
 
     if baseline_test.active():
         return False
     cfg = _baseline_config()
     if not cfg.get("enabled"):
         return False
-    now = datetime.now()  # naive local time (container TZ)
+    now = datetime.now(schedule_zone(cfg))  # wall-clock in the schedule's own zone
     today = now.date().isoformat()
     if _state.get("baseline_last_date") == today:
         return False  # already fired today
