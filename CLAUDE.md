@@ -179,9 +179,9 @@ LLM-based. See `README.md` for the product overview.
     input** — a suspect triggers a race (contemporaneous head-to-head raw data), never a
     re-rank. Empirically gated by `GET /settings/weather-sensitivity` (per clean-covariate ×
     crown-metric Spearman ρ, pooled + **within-profile**, rendered as the Settings-Impact
-    "Weather sensitivity" card). The metric-based **"Weather-adj"** column
-    (`weather_adjusted_overall`, setup-stripped fcp/lcp) stays as a transparency
-    decomposition.
+    "Weather sensitivity" card). The metric-based **"Weather-adj"** reading
+    (`weather_adjusted_overall`, setup-stripped fcp/lcp) remains in the API payload but is
+    **no longer rendered** — `weather_relative` is the one surfaced "vs weather" reading.
   - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a grid over the
     registry's `SWEEPABLE_FIELDS` (quantum × target today). Applies each variant for real,
     benchmarks it, **restores the baseline at the end** (`reconcile_interrupted_sweeps`

@@ -39,10 +39,6 @@ export function profileValue(p: SettingsProfile, key: string): number | null {
       // Median measured-weather severity this profile was sampled under (0–100 pctl,
       // higher = harsher) — a sampling-fairness readout.
       return p.weather_severity ?? null;
-    case "weather_adjusted_overall":
-      // Display-only metric-based "vs weather": the Overall re-cornered over setup-stripped
-      // fcp/lcp (per-run, self-contained). Same 0–100 space as Overall; not a crown input.
-      return p.weather_adjusted_overall ?? null;
     case "pct_vs_sqm_off":
       // % improvement of this profile's Overall over the "SQM off" baseline (methodology-tied).
       return p.pct_vs_sqm_off ?? null;

@@ -147,9 +147,9 @@ export interface SettingsProfile {
   pct_vs_sqm_off: number | null;
   // True when this profile is itself an "SQM off" baseline (a pipe with shaping disabled).
   is_sqm_off: boolean;
-  // Display-only metric-based "vs weather": the Overall re-cornered over setup-stripped fcp/lcp
-  // (each run's own nav dns+tcp+tls subtracted) — per-run and self-contained, unlike the ±2h
-  // neighbour baseline above. Same 0–100 space as `overall`; NOT a crown input. Null until scorable.
+  // Setup-stripped decomposition: the Overall re-cornered over fcp/lcp with each run's own
+  // nav dns+tcp+tls subtracted. API-only — no longer rendered anywhere on Settings Impact
+  // (the measured-weather `weather_relative` below is the one surfaced "vs weather" reading).
   weather_adjusted_overall: number | null;
   // Time-adjusted ("vs typical") Overall: how much this profile beats its day×hour norm.
   // Informational only — it does not feed the crown; no longer a surfaced column
