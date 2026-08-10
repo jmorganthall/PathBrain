@@ -979,6 +979,9 @@ export interface BaselineConfig {
   minute: number;
   iterations: number;
   settle_seconds: number;
+  // IANA zone the hour/minute are interpreted in (the browser zone captured on save);
+  // "" = container-local fallback.
+  timezone: string;
   next_run_at: string | null;
 }
 
