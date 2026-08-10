@@ -147,6 +147,13 @@ DEFAULT_CONFIG: dict = {
         # runs accrue*: collecting data can break a tie two heavily-sampled profiles
         # would otherwise be stuck in. σ=2 ≈ a ~2-SE (roughly 95%) separation.
         "crown_tie_sigma": 2.0,
+        # Rolling evidence window for the crown VERDICT: each profile is ranked on its most
+        # recent N iterations only (oldest evidence ages out), so a heavily-sampled profile
+        # can't coast on the ghost of a past link (mass inertia: fresh head-to-head data
+        # can't move a 3000-iteration all-time median). History is kept — trends, the
+        # current-form check, and the weather cohorts still read all of it — only the
+        # ranking aggregates are windowed. 0 = all-time pooling (the legacy behavior).
+        "crown_window_iterations": 100,
         "crown_tie_min_margin": 0.5,
     },
     # Baseline "SQM off" test: occasionally disable shaping on every pipe and benchmark the
