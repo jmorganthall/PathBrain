@@ -797,7 +797,16 @@ export default function Settings() {
   const [overallMetrics, setOverallMetrics] = useState<string[]>([]);
   // Profiles table sort. Defaults to Overall (corner) descending — so the crowned,
   // closest-to-top-right profile is on top.
-  const [orderBy, setOrderBy] = useState<SortKey>("overall");
+  // "Weather lens": one switch that re-points the whole view at the "vs weather" reading —
+  // table sorted by the cohort residual, quadrant preset to Overall × vs-weather (severity as
+  // shade) so weather-punished gems (top-left) and weather-flattered scores (bottom-right)
+  // separate visually. Display only: the crown chip stays on the raw Overall winner.
+  const [weatherLens, setWeatherLens] = useState(
+    () => localStorage.getItem("settingsWeatherLens") === "1"
+  );
+  const [orderBy, setOrderBy] = useState<SortKey>(() =>
+    localStorage.getItem("settingsWeatherLens") === "1" ? "weather_relative" : "overall"
+  );
   const [order, setOrder] = useState<SortDir>("desc");
 
   const metricMeta = useMetricMeta();
@@ -931,20 +940,49 @@ export default function Settings() {
     load();
   }, [load]);
 
-  // Wire the quadrant axes to the crown metric set: X = crown[0], Y = crown[1], Shade = crown[2].
-  // Runs whenever the crown changes (methodology bump) but only until the user manually picks an
-  // axis — so the default view is always the current Overall's corner without a hardcoded metric.
+  // Wire the quadrant axes to the crown metric set: X = crown[0], Y = crown[1], Shade = crown[2] —
+  // or, under the weather lens, to the Overall × vs-weather view. Runs whenever the crown changes
+  // (methodology bump) but only until the user manually picks an axis — so the default view is
+  // always the current lens's canonical picture without a hardcoded metric.
   useEffect(() => {
     if (axesTouched.current || overallMetrics.length === 0) return;
+    if (weatherLens) {
+      setXKey("overall");
+      setYKey("weather_relative");
+      setSizeKey("weather_severity");
+      return;
+    }
     setXKey(overallMetrics[0] ?? "");
     setYKey(overallMetrics[1] ?? overallMetrics[0] ?? "");
     setSizeKey(overallMetrics[2] ?? "");
-  }, [overallMetrics]);
+  }, [overallMetrics, weatherLens]);
 
   // A manual axis pick freezes the axes so a reload can't clobber the user's choice.
   const pickX = useCallback((k: string) => { axesTouched.current = true; setXKey(k); }, []);
   const pickY = useCallback((k: string) => { axesTouched.current = true; setYKey(k); }, []);
   const pickShade = useCallback((k: string) => { axesTouched.current = true; setSizeKey(k); }, []);
+
+  // Flip the weather lens: re-point sort + quadrant at the chosen score. An explicit view
+  // choice, so it overrides any earlier manual axis picks (and is persisted).
+  const toggleWeatherLens = useCallback(
+    (on: boolean) => {
+      setWeatherLens(on);
+      localStorage.setItem("settingsWeatherLens", on ? "1" : "0");
+      axesTouched.current = false; // let the axes effect re-point for the new lens
+      setOrderBy(on ? "weather_relative" : "overall");
+      setOrder("desc");
+      if (on) {
+        setXKey("overall");
+        setYKey("weather_relative");
+        setSizeKey("weather_severity");
+      } else {
+        setXKey(overallMetrics[0] ?? "");
+        setYKey(overallMetrics[1] ?? overallMetrics[0] ?? "");
+        setSizeKey(overallMetrics[2] ?? "");
+      }
+    },
+    [overallMetrics]
+  );
 
   // The standings columns pin the metrics that actually *compute* the Overall — the current
   // methodology's crown set (fcp/lcp/worst_void_fraction under v11), from the profiles response's
@@ -1743,6 +1781,24 @@ export default function Settings() {
                 </Typography>
               }
             />
+            <Tooltip title="Re-point the table sort and the chart at the 'vs weather' reading: chart becomes Overall (X) × vs weather (Y) with weather severity as shade. Top-left = weather-punished gems worth racing; bottom-right = scores possibly flattered by easy conditions. Display only — the crown stays on the raw Overall winner.">
+              <FormControlLabel
+                sx={{ mt: 0.5, display: "block" }}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={weatherLens}
+                    onChange={(e) => toggleWeatherLens(e.target.checked)}
+                  />
+                }
+                label={
+                  <Typography variant="body2" color="text.secondary">
+                    <b>Weather lens</b> — rank &amp; chart by <b>vs weather</b> instead of raw Overall
+                    {weatherLens ? " (crown unchanged — it still follows the raw measurements)" : ""}
+                  </Typography>
+                }
+              />
+            </Tooltip>
             <TableContainer sx={{ mt: 1 }}>
               <Table size="small">
                 <TableHead>
