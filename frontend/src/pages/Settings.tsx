@@ -338,8 +338,6 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.weather_relative?.delta_median ?? null;
     case "pct_vs_sqm_off":
       return p.pct_vs_sqm_off ?? null;
-    case "weather_adjusted_overall":
-      return p.weather_adjusted_overall ?? null;
     case "p25":
       return p.p25;
     case "overall_p25":
@@ -413,7 +411,6 @@ const FIXED_COLUMN_KEYS = new Set([
   "count",
   "weather_relative",
   "pct_vs_sqm_off",
-  "weather_adjusted_overall",
 ]);
 
 // Hover explanations for the fixed (non-metric) profile-table columns, so each header says what
@@ -432,8 +429,6 @@ const COLUMN_TIPS: Record<string, string> = {
     "Median measured-weather severity this profile has been sampled under (0–100 percentile of ambient conditions; higher = harsher). A sampling-fairness readout — a profile only ever measured in bad weather deserves a re-measure, not a bad rank.",
   pct_vs_sqm_off:
     "How much better this profile's Overall is than the honest unshaped baseline (the best measured 'SQM off' profile). Green = shaping helps; red = worse than turning SQM off. Needs a Baseline (SQM off) test to populate.",
-  weather_adjusted_overall:
-    "Overall recomputed after stripping each run's own connection-setup weather (nav DNS+TCP+TLS) out of FCP/LCP, so a profile isn't credited or penalized for network conditions its shaper didn't cause. Informational, never a crown input.",
   overall_p25:
     "The p25–p75 spread of this profile's per-run Overall — how steady the felt experience is run-to-run. A tight band means reliable; a wide band means noisy.",
   min: "The best and worst single-run Smoothness scores observed for this profile (the primary ranking axis's range).",
@@ -1712,17 +1707,12 @@ export default function Settings() {
               and the challenger race rank under-sampled profiles by their <i>optimistic ceiling</i>
               to decide where to spend iterations.
               Iterations count every measurement sweep — a 15‑iteration run carries far more signal
-              than a single‑iteration one. <b>vs typical</b> is the time-adjusted edge: median Overall
-              minus the historical norm for the day &amp; hour each run landed on — positive means the
-              profile beats its environment; it's informational and no longer affects the crown.{" "}
-              <b>vs weather</b> is the sharper version of the same idea: Overall minus the median of all
-              runs within ±2h of each run (the <i>contemporaneous</i> network conditions, excluding
-              this profile's own runs) — so it neutralizes drift, one-off congestion, and sweep-slot
-              bias rather than only recurring day/hour patterns. Also informational, not a crown input.{" "}
-              <b>Weather-adj</b> is a metric-based, per-run take on the same question: the Overall
-              re-cornered after subtracting each run's own connection-setup weather (nav DNS+TCP+TLS)
-              from FCP/LCP — self-contained, so it isn't skewed by which other profiles ran nearby.
-              Same 0–100 scale as Overall; informational only, never a crown input.
+              than a single‑iteration one. <b>vs weather</b> is the "wins above the weather" reading:
+              each run's ambient conditions are scored from its own probe instruments (DNS/TCP/TLS/
+              latency percentiles → a severity), and the profile's Overall is compared to what{" "}
+              <i>other profiles</i> deliver under the same severity — positive means it beats the
+              field in like conditions, however harsh the weather it was sampled in. Informational
+              and never a crown input: a <b>weather‑beater</b> is a cue to race, not a re-rank.
               Use <b>Columns</b> to add any other metric we collect, then sort by it.
               {showCompletion && (
                 <>
@@ -1816,15 +1806,6 @@ export default function Settings() {
                       order={order}
                       onSort={handleSort}
                       tip={COLUMN_TIPS.pct_vs_sqm_off}
-                    />
-                    <SortHeader
-                      id="weather_adjusted_overall"
-                      label="Weather-adj"
-                      align="right"
-                      orderBy={orderBy}
-                      order={order}
-                      onSort={handleSort}
-                      tip={COLUMN_TIPS.weather_adjusted_overall}
                     />
                     <SortHeader
                       id="overall_p25"
@@ -2012,9 +1993,6 @@ export default function Settings() {
                           isSqmOff={p.is_sqm_off}
                           confident={p.confident}
                         />
-                      </TableCell>
-                      <TableCell align="right">
-                        {p.weather_adjusted_overall != null ? p.weather_adjusted_overall.toFixed(1) : "—"}
                       </TableCell>
                       <TableCell align="right">
                         {p.overall_p25 != null ? `${p.overall_p25}–${p.overall_p75}` : "—"}

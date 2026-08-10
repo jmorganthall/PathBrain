@@ -78,7 +78,9 @@ _PROFILE_FIELDS = [
     {"key": "weather_relative", "label": "Vs weather (Overall)", "unit": "", "higher_is_better": True, "group": "Scores"},
     {"key": "weather_severity", "label": "Weather severity", "unit": "pctl", "higher_is_better": False, "group": "Run stats"},
     {"key": "pct_vs_sqm_off", "label": "% vs SQM off", "unit": "%", "higher_is_better": True, "group": "Scores"},
-    {"key": "weather_adjusted_overall", "label": "Weather-adj Overall", "unit": "score", "higher_is_better": True, "group": "Scores"},
+    # weather_adjusted_overall (the setup-stripped decomposition) stays in the payload for API
+    # consumers but is no longer offered as a column — the measured-weather cohort residual
+    # (`weather_relative`) is the one surfaced "vs weather" reading.
 ]
 
 
