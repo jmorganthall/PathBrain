@@ -405,10 +405,16 @@ LLM-based. See `README.md` for the product overview.
     the response also carries `crown_confidence` (the crown's Overall ± SE, the gap to the
     runner-up, the σ·pooled-SE significance threshold, and whether the lead clears it) so the
     Profile-Detail Standings card shows the measured signal-vs-noise, not an adjective. No
-    posterior, no variance penalty, no time-window de-confounding enters the verdict. Returns
-    `best_fingerprint` (+ `co_leaders` + `crown_confidence`). Because the all-time pooling
-    gives a heavily-sampled profile mass inertia (fresh head-to-head data can't move a
-    3000-iteration median), each profile also carries a **current-form check**
+    posterior and no variance penalty enters the verdict; the one time bound is the
+    **rolling evidence window** (`correlation.crown_window_iterations`, default 100; 0 =
+    all-time): each profile's VERDICT aggregates (subscores, metric medians, axis samples,
+    confidence iterations) read only its most recent N iterations, so a heavily-sampled
+    profile can't coast on the ghost of a past link and fresh head-to-head race data is
+    actually decisive. History is never discarded — trends, the current-form check, and the
+    weather cohorts read the full series; `iterations`/`count` in the payload are the
+    windowed evidence, `iterations_total`/`count_total` the all-time size. Returns
+    `best_fingerprint` (+ `co_leaders` + `crown_confidence`). As a backstop for
+    what the window can't see, each profile also carries a **current-form check**
     (`routes_settings._profile_form`, both directions): its last-`FORM_RECENT_RUNS` median
     Overall vs its prior record, significance-gated by the same σ·pooled-IQR/√n machinery —
     **"fading"** (pooled Overall propped by a past it no longer delivers) / **"rising"**

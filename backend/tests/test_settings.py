@@ -1578,3 +1578,34 @@ def test_form_flags_fading_and_rising_profiles(client):
     thin = [p for p in body["profiles"] if p["count"] < 30]
     assert all(p["form"] is None for p in thin if p["fingerprint"].startswith(("tie", "twopipe")))
     assert "crown_fading" in body
+
+
+def test_rolling_window_ranks_on_current_evidence_not_the_ghost(client):
+    """A profile with a heavy stale era is ranked on its most recent
+    crown_window_iterations only: the verdict reflects what it delivers NOW, while
+    totals still expose the full history and the form check still sees both eras."""
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Old era: 30 runs x 10 iterations (300 iters) of GREAT performance (raw 100 -> subs 90).
+    for i in range(30):
+        _seed_run("ghostcrown0", 80, t0 - timedelta(hours=400 - i), iterations=10,
+                  crown_raw=(100.0, 100.0, 100.0), overall=90.0)
+    # Current era: 25 runs x 4 iterations (100 iters) of WORSE performance (raw 400 -> subs 60).
+    for i in range(25):
+        _seed_run("ghostcrown0", 80, t0 - timedelta(minutes=200 - i), iterations=4,
+                  crown_raw=(400.0, 400.0, 400.0), overall=60.0)
+
+    body = client.get("/api/settings/profiles").json()
+    p = next(x for x in body["profiles"] if x["fingerprint"] == "ghostcrown0")
+
+    # Verdict evidence = the recent 100-iteration window (the current era only).
+    assert body["crown_window_iterations"] == 100
+    assert p["iterations"] == 100
+    assert p["iterations_total"] == 400
+    assert p["count_total"] == 55
+    # The ranked Overall reflects the CURRENT form (subscores ~60), not the ghost (~90).
+    assert p["overall"] is not None and p["overall"] < 70
+    # Crown-metric medians (the standings' raw values) also come from the window.
+    fcp_key = body["overall_metrics"][0]
+    assert p["metrics"][fcp_key] == 400.0
+    # The form check still reads the FULL series and flags the fade.
+    assert p["form"] and p["form"]["direction"] == "fading"

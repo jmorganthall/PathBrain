@@ -418,9 +418,9 @@ const FIXED_COLUMN_KEYS = new Set([
 const COLUMN_TIPS: Record<string, string> = {
   label:
     "The firewall shaper profile — its distinguishing SQM settings. Runs with identical settings group into one profile.",
-  count: "Number of completed benchmark runs on this profile.",
+  count: "Completed benchmark runs inside the profile's rolling evidence window (the runs the ranking reads).",
   iterations:
-    "Total benchmark iterations across all runs — the unit of confidence. A profile becomes 'confident' once it reaches the minimum iterations; more iterations = more trustworthy.",
+    "The verdict evidence: this profile's most recent iterations up to the rolling window (default 100) — the unit of confidence. Older history ages out of the ranking (so a profile can't coast on a stale past) but still feeds trends, the form check, and weather cohorts. Shown as 'window / all-time' when history exceeds the window.",
   overall:
     "The headline score: closeness to the perfect corner over the crown metrics (FCP × LCP × Pregnant pause), scored on each metric's percentile rank within the field. An intersection — one weak metric can't be averaged away. Shown as a standing (1 = best); the highest Overall is crowned.",
   weather_relative:
@@ -2034,7 +2034,18 @@ export default function Settings() {
                         </Typography>
                       </TableCell>
                       <TableCell align="right">{p.count}</TableCell>
-                      <TableCell align="right">{p.iterations}</TableCell>
+                      <TableCell align="right">
+                        {p.iterations}
+                        {p.iterations_total > p.iterations && (
+                          <Tooltip
+                            title={`Verdict evidence: the most recent ${p.iterations} iterations (rolling window). ${p.iterations_total} collected all-time — older history still feeds trends, the form check, and weather cohorts, but ages out of the ranking.`}
+                          >
+                            <Typography component="span" variant="caption" color="text.secondary" sx={{ cursor: "help" }}>
+                              {" "}/ {p.iterations_total}
+                            </Typography>
+                          </Tooltip>
+                        )}
+                      </TableCell>
                       {/* Standings (1 = best) per Overall + crown metric, green→red. The
                           raw 0–100 subscore + metric value are in the hover title. */}
                       {rankedMetrics.map((m) => {
