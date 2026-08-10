@@ -406,7 +406,16 @@ LLM-based. See `README.md` for the product overview.
     runner-up, the σ·pooled-SE significance threshold, and whether the lead clears it) so the
     Profile-Detail Standings card shows the measured signal-vs-noise, not an adjective. No
     posterior, no variance penalty, no time-window de-confounding enters the verdict. Returns
-    `best_fingerprint` (+ `co_leaders` + `crown_confidence`). The
+    `best_fingerprint` (+ `co_leaders` + `crown_confidence`). Because the all-time pooling
+    gives a heavily-sampled profile mass inertia (fresh head-to-head data can't move a
+    3000-iteration median), each profile also carries a **current-form check**
+    (`routes_settings._profile_form`, both directions): its last-`FORM_RECENT_RUNS` median
+    Overall vs its prior record, significance-gated by the same σ·pooled-IQR/√n machinery —
+    **"fading"** (pooled Overall propped by a past it no longer delivers) / **"rising"**
+    (pooled Overall understates its present), rendered as row chips; response-level
+    **`crown_fading`** raises the "the crown's bar may be a ghost" alert when the crown
+    itself fades. Flag-and-steer only — the recourse is re-measurement (race / re-run
+    top-N), never re-weighting. The
     challenger race reads `compute_profiles` and its bar is `best_fingerprint`'s Overall.
     **Finding challengers that could overtake the crown is a separate,
     smarter job** — the **Heirs to the crown** card + the challenger race rank under-sampled

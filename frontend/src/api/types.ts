@@ -171,6 +171,19 @@ export interface SettingsProfile {
   weather_severity: number | null;
   // Residual standing far above raw standing → "there may be something here".
   weather_beater: boolean;
+  // Current form vs prior record: recent-window median Overall vs the rest of history,
+  // significance-gated both directions. "fading" = pooled Overall propped by a past it no
+  // longer delivers; "rising" = pooled Overall understates its present. Null when there
+  // isn't enough history to split. Flag-and-steer only — never a crown input.
+  form: {
+    recent: number;
+    prior: number;
+    delta: number;
+    threshold: number;
+    direction: "rising" | "fading" | "steady";
+    recent_n: number;
+    prior_n: number;
+  } | null;
   // Median of every numeric metric we collect (logical key → value), for the
   // dynamic chart axes + the table column selector.
   metrics: Record<string, number>;
@@ -373,6 +386,9 @@ export interface SettingsProfilesResponse {
     delta_median: number;
     coverage: number;
   } | null;
+  // The ghost-crown signal: the crown's current form significantly trails its own prior
+  // record, so the bar challengers must clear may be stale. Null when steady/rising.
+  crown_fading: ({ fingerprint: string; label: string } & NonNullable<SettingsProfile["form"]>) | null;
   // Selectable non-metric numeric fields for the chart axes + column selector.
   fields: ProfileField[];
   best_diff: ProfileDiff | null;

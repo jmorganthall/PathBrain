@@ -287,6 +287,60 @@ def _overall_iqr(p: dict) -> float:
     return max(0.0, float(hi) - float(lo))
 
 
+# ── Current form vs lifetime form (per profile, both directions) ────────────────────────
+# The crown pools each profile's WHOLE history, so a heavily-sampled profile's Overall has
+# mass inertia: fresh head-to-head data barely moves a 3000-iteration median. That's the
+# right defense against hot streaks in a stationary world — but when the world changes, a
+# crown can coast on the ghost of its past (current form worse than its record), and an
+# undervalued profile can be held down by old bad data (current form better). This check
+# compares each profile's recent-window median Overall against its prior history with the
+# same IQR/√n significance machinery the crown ties use. Flag-and-steer only: "fading" /
+# "rising" chips + a crown-level alert — the verdict itself stays the pooled measurements,
+# and the recourse is re-measurement (race / re-run top-N), never re-weighting.
+FORM_RECENT_RUNS = 15    # the "current form" window (runs)
+FORM_MIN_PRIOR_RUNS = 15  # minimum prior history to compare against
+
+
+def _median_se_of(values: list[float]) -> float:
+    """SE of the median ≈ IQR/√n over a raw sample (same convention as ``_overall_se``)."""
+    if len(values) < 2:
+        return float("inf")
+    q = quantiles(values, n=4)
+    iqr = q[2] - q[0]
+    return iqr / (len(values) ** 0.5)
+
+
+def _profile_form(overalls_chronological: list[float], sigma: float) -> dict | None:
+    """Compare a profile's recent form against its prior history, both directions.
+
+    ``overalls_chronological`` is the profile's per-run Overall in run order. The last
+    ``FORM_RECENT_RUNS`` runs are its *current form*; everything before is its *prior
+    record*. The median difference is judged against ``sigma`` × the pooled SE of the two
+    medians: significantly below → ``fading`` (its pooled Overall is propped by a past it
+    no longer delivers); significantly above → ``rising`` (its pooled Overall understates
+    what it does now). None when there isn't enough history for the split to mean anything.
+    """
+    n = len(overalls_chronological)
+    if n < FORM_RECENT_RUNS + FORM_MIN_PRIOR_RUNS:
+        return None
+    recent = overalls_chronological[-FORM_RECENT_RUNS:]
+    prior = overalls_chronological[:-FORM_RECENT_RUNS]
+    med_recent, med_prior = median(recent), median(prior)
+    pooled = (_finite(_median_se_of(recent)) ** 2 + _finite(_median_se_of(prior)) ** 2) ** 0.5
+    threshold = sigma * pooled
+    delta = med_recent - med_prior
+    direction = "rising" if delta > threshold else ("fading" if delta < -threshold else "steady")
+    return {
+        "recent": round(med_recent, 2),
+        "prior": round(med_prior, 2),
+        "delta": round(delta, 2),
+        "threshold": round(threshold, 2),
+        "direction": direction,
+        "recent_n": len(recent),
+        "prior_n": len(prior),
+    }
+
+
 def _overall_se(p: dict) -> float:
     """Standard error of a profile's **median** Overall ≈ IQR/√n — how precisely we know the
     median, *not* how much individual runs bounce. Tightens as runs (``count``) accrue, so a
@@ -1813,6 +1867,9 @@ def compute_profiles(
     weather_rel_by_fp, weather_sev_by_fp = cohort_residuals(
         [fp for fp, _, _ in weather_runs], [ov for _, ov, _ in weather_runs], _w_sev
     )
+    # Tie/significance parameters — shared by the crown-tie machinery below and the
+    # per-profile current-form check inside the loop.
+    tie_margin, tie_sigma = _crown_tie_params(session)
 
     profiles = []
     for g in groups.values():
@@ -1910,6 +1967,18 @@ def compute_profiles(
                 "weather_severity": weather_sev_by_fp.get(g["fingerprint"]),
                 # Filled after ranking: residual standing far above raw standing → flagged.
                 "weather_beater": False,
+                # Current form vs prior record (recent-window median Overall vs the rest of
+                # its history, significance-gated both directions): "fading" = its pooled
+                # Overall is propped by a past it no longer delivers; "rising" = its pooled
+                # Overall understates what it does now. Flag-and-steer, never a crown input.
+                "form": _profile_form(
+                    [
+                        pt.values["overall"]
+                        for pt in g["points"]
+                        if pt.values.get("overall") is not None
+                    ],
+                    tie_sigma,
+                ),
                 # "% vs SQM off" (filled after the normalize pass, once every Overall is final).
                 "pct_vs_sqm_off": None,
                 "is_sqm_off": False,
@@ -2037,7 +2106,6 @@ def compute_profiles(
     # "Heirs to the crown" card and the challenger race rank under-sampled / stale profiles
     # by their *optimistic ceiling* (``optimistic_overall``) against the crown's Overall, to
     # decide where to spend iterations to confirm or deny an heir. That hunt is untouched.
-    tie_margin, tie_sigma = _crown_tie_params(session)
     confident = [p for p in profiles if p["confident"] and p["overall"] is not None]
     best, co_leaders = _select_crown(confident, tie_margin, tie_sigma)
     best_fingerprint = best["fingerprint"] if best else None
@@ -2086,6 +2154,18 @@ def compute_profiles(
     # ``best_fingerprint`` is untouched; this is a parallel, simpler argmax of the custom
     # corner among confident profiles (no Thompson — it's a what-if view, not the verdict).
     custom_best_fingerprint = _apply_custom_crown(profiles, custom_crown_metrics)
+
+    # The ghost-crown check: when the CROWN's current form significantly trails its own
+    # prior record, its pooled Overall — the bar every challenger must clear — is propped
+    # by history it no longer delivers. Surface it so the user re-measures (race / re-run
+    # top-N); a rising crown needs no alarm (its bar is merely understated).
+    crown_fading = None
+    if best is not None and (best.get("form") or {}).get("direction") == "fading":
+        crown_fading = {
+            "fingerprint": best["fingerprint"],
+            "label": best["label"],
+            **best["form"],
+        }
 
     # ── Weather-beater flags + crown-suspect (flag-and-steer; the crown stays raw) ──
     # A profile whose "vs weather" residual standing is far above its raw Overall standing
@@ -2166,6 +2246,9 @@ def compute_profiles(
         # The residual ranking's top profile when it differs from the raw crown — the
         # "crown may be weather-confounded; race these" signal (None when they agree).
         "weather_crown_suspect": weather_crown_suspect,
+        # The ghost-crown signal: the crown's current form significantly trails its own
+        # prior record, so the bar challengers race against may be stale (None when steady).
+        "crown_fading": crown_fading,
         # Selectable non-metric numeric fields for the chart axes + column selector
         # (metric fields' metadata comes from /api/metrics).
         "fields": _PROFILE_FIELDS,
