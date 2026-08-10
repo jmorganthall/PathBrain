@@ -1538,3 +1538,43 @@ def test_optimizer_export_includes_all_pipes(client, monkeypatch):
     assert up["quantum"] == 500                             # the upload pipe's own params
     # The export tells the model to tune both directions.
     assert "upload" in body["shaper_model"]["pipes_note"].lower()
+
+
+# ── Current form vs prior record (both directions) ───────────────────────────────────
+
+
+def test_form_flags_fading_and_rising_profiles(client):
+    """A profile whose recent runs significantly under-deliver its history is 'fading'
+    (its pooled Overall is propped by the past); one whose recent runs out-deliver its
+    history is 'rising' (its pooled Overall understates its present)."""
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Fading: 20 old runs at ~90, then 15 recent runs at ~60.
+    for i in range(20):
+        _seed_run("fadingfp000", 80, t0 - timedelta(hours=200 - i), iterations=1,
+                  crown_raw=(1.0, 1.0, 1.0), overall=90.0 + (i % 3) * 0.1)
+    for i in range(15):
+        _seed_run("fadingfp000", 80, t0 - timedelta(minutes=100 - i), iterations=1,
+                  crown_raw=(1.0, 1.0, 1.0), overall=60.0 + (i % 3) * 0.1)
+    # Rising: mirror image.
+    for i in range(20):
+        _seed_run("risingfp000", 80, t0 - timedelta(hours=200 - i), iterations=1,
+                  crown_raw=(2.0, 2.0, 2.0), overall=60.0 + (i % 3) * 0.1)
+    for i in range(15):
+        _seed_run("risingfp000", 80, t0 - timedelta(minutes=100 - i), iterations=1,
+                  crown_raw=(2.0, 2.0, 2.0), overall=90.0 + (i % 3) * 0.1)
+    # Steady control with plenty of data.
+    for i in range(35):
+        _seed_run("steadyfp000", 80, t0 - timedelta(hours=100 - i), iterations=1,
+                  crown_raw=(3.0, 3.0, 3.0), overall=75.0 + (i % 3) * 0.1)
+
+    body = client.get("/api/settings/profiles").json()
+    by = {p["fingerprint"]: p for p in body["profiles"]}
+
+    fading, rising, steady = by["fadingfp000"]["form"], by["risingfp000"]["form"], by["steadyfp000"]["form"]
+    assert fading and fading["direction"] == "fading" and fading["delta"] < 0
+    assert rising and rising["direction"] == "rising" and rising["delta"] > 0
+    assert steady and steady["direction"] == "steady"
+    # Not enough history → no form claim at all (never a fabricated verdict).
+    thin = [p for p in body["profiles"] if p["count"] < 30]
+    assert all(p["form"] is None for p in thin if p["fingerprint"].startswith(("tie", "twopipe")))
+    assert "crown_fading" in body

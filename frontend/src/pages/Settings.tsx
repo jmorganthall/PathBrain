@@ -765,6 +765,9 @@ export default function Settings() {
   const [weatherSuspect, setWeatherSuspect] = useState<
     SettingsProfilesResponse["weather_crown_suspect"]
   >(null);
+  // "Ghost crown": the crown's current form significantly trails its own prior record, so
+  // the bar challengers race against may be propped by history it no longer delivers.
+  const [crownFading, setCrownFading] = useState<SettingsProfilesResponse["crown_fading"]>(null);
   // Dynamic quadrant axes — X/Y/Shade default to the current methodology's crown metric set
   // (the Overall scoring corner's inputs), pulled from the profiles response's `overall_metrics`
   // rather than hardcoded, so the default view always demonstrates how *this* methodology's Overall
@@ -926,6 +929,7 @@ export default function Settings() {
       setMetricThresholds(p.metric_thresholds ?? {});
       setSaturation(p.saturation ?? []);
       setWeatherSuspect(p.weather_crown_suspect ?? null);
+      setCrownFading(p.crown_fading ?? null);
       setImpact(i);
       setDiag(d);
       setError(null);
@@ -1425,6 +1429,33 @@ export default function Settings() {
                 </li>
               ))}
           </Box>
+        </Alert>
+      )}
+
+      {crownFading && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 2 }}
+          action={
+            <Button
+              size="small"
+              color="inherit"
+              onClick={() => setRaceOpen(true)}
+              disabled={raceRunning || testRunning || refreshRunning || applying}
+            >
+              Race challengers
+            </Button>
+          }
+        >
+          <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
+            The crown&apos;s bar may be a ghost
+          </Typography>
+          <b>{crownFading.label}</b> is crowned on its pooled history, but its current form trails its
+          own record: last {crownFading.recent_n} runs median <b>{crownFading.recent}</b> vs{" "}
+          <b>{crownFading.prior}</b> over its prior {crownFading.prior_n} ({crownFading.delta} — beyond
+          the ±{crownFading.threshold} noise threshold). Challengers are racing a bar the crown no
+          longer delivers. Re-measure: race the field head-to-head, or Re-run the top profiles to
+          refresh the record with current data.
         </Alert>
       )}
 
@@ -1982,6 +2013,16 @@ export default function Settings() {
                           {p.weather_beater && (
                             <Tooltip title="Weather-beater: judged against the weather its runs actually faced (severity from each run's own DNS/TCP/TLS/latency readings), this profile outperforms the field far more than its raw rank suggests — it may have been sampled in unusually harsh conditions. There may be something here: race it. Informational only; the crown stays raw.">
                               <Chip size="small" variant="outlined" color="secondary" label="weather-beater" />
+                            </Tooltip>
+                          )}
+                          {p.form?.direction === "rising" && (
+                            <Tooltip title={`Rising form: its last ${p.form.recent_n} runs (median ${p.form.recent}) significantly out-deliver its prior record (${p.form.prior} over ${p.form.prior_n} runs) — the pooled Overall understates what it does now. Worth racing. Informational only.`}>
+                              <Chip size="small" variant="outlined" color="success" label="rising form" />
+                            </Tooltip>
+                          )}
+                          {p.form?.direction === "fading" && (
+                            <Tooltip title={`Fading form: its last ${p.form.recent_n} runs (median ${p.form.recent}) significantly under-deliver its prior record (${p.form.prior} over ${p.form.prior_n} runs) — the pooled Overall is propped by a past it no longer delivers. Re-measure before trusting its rank. Informational only.`}>
+                              <Chip size="small" variant="outlined" color="warning" label="fading form" />
                             </Tooltip>
                           )}
                           {!p.confident && (
