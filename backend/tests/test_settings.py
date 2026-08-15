@@ -1580,10 +1580,10 @@ def test_form_flags_fading_and_rising_profiles(client):
     assert "crown_fading" in body
 
 
-def test_rolling_window_ranks_on_current_evidence_not_the_ghost(client):
-    """A profile with a heavy stale era is ranked on its most recent
-    crown_window_iterations only: the verdict reflects what it delivers NOW, while
-    totals still expose the full history and the form check still sees both eras."""
+def test_overall_recent_is_a_drift_lens_while_the_verdict_pools_all_time(client):
+    """The ranked Overall pools ALL history (weather averages out; the verdict basis),
+    while `overall_recent` recomputes the same grade over only the most recent
+    crown_window_iterations — the drift lens. The form check still flags the fade."""
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     # Old era: 30 runs x 10 iterations (300 iters) of GREAT performance (raw 100 -> subs 90).
     for i in range(30):
@@ -1597,15 +1597,17 @@ def test_rolling_window_ranks_on_current_evidence_not_the_ghost(client):
     body = client.get("/api/settings/profiles").json()
     p = next(x for x in body["profiles"] if x["fingerprint"] == "ghostcrown0")
 
-    # Verdict evidence = the recent 100-iteration window (the current era only).
+    # The VERDICT pools all time: 400 iterations of evidence, Overall dominated by the
+    # majority (old, subs ~90) era.
     assert body["crown_window_iterations"] == 100
-    assert p["iterations"] == 100
-    assert p["iterations_total"] == 400
-    assert p["count_total"] == 55
-    # The ranked Overall reflects the CURRENT form (subscores ~60), not the ghost (~90).
-    assert p["overall"] is not None and p["overall"] < 70
-    # Crown-metric medians (the standings' raw values) also come from the window.
+    assert p["iterations"] == 400
+    assert p["overall"] is not None and p["overall"] > 80
+    # The drift lens: overall_recent covers only the recent 100-iteration window (the
+    # current era, subs ~60) — showing what its Overall would be on current evidence.
+    assert p["recent_iterations"] == 100
+    assert p["overall_recent"] is not None and p["overall_recent"] < 70
+    # All-time crown-metric medians (old era is the majority of runs).
     fcp_key = body["overall_metrics"][0]
-    assert p["metrics"][fcp_key] == 400.0
+    assert p["metrics"][fcp_key] == 100.0
     # The form check still reads the FULL series and flags the fade.
     assert p["form"] and p["form"]["direction"] == "fading"

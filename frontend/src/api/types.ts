@@ -171,10 +171,13 @@ export interface SettingsProfile {
   weather_severity: number | null;
   // Residual standing far above raw standing → "there may be something here".
   weather_beater: boolean;
-  // All-time totals: `count`/`iterations` are the VERDICT evidence (the rolling
-  // crown_window_iterations most-recent iterations); these expose the full history size.
-  count_total: number;
-  iterations_total: number;
+  // "Overall (recent)": the crown grade recomputed over only the most recent
+  // crown_window_iterations — the drift lens (what the Overall would be on current
+  // evidence). The ranked `overall` pools all time. Null when the window is disabled,
+  // the methodology isn't weighted, or the window lacks a required crown subscore.
+  overall_recent: number | null;
+  recent_iterations: number;
+  recent_scores: Record<string, number>;
   // Current form vs prior record: recent-window median Overall vs the rest of history,
   // significance-gated both directions. "fading" = pooled Overall propped by a past it no
   // longer delivers; "rising" = pooled Overall understates its present. Null when there
@@ -393,8 +396,8 @@ export interface SettingsProfilesResponse {
   // The ghost-crown signal: the crown's current form significantly trails its own prior
   // record, so the bar challengers must clear may be stale. Null when steady/rising.
   crown_fading: ({ fingerprint: string; label: string } & NonNullable<SettingsProfile["form"]>) | null;
-  // The rolling evidence window the verdict was computed under (iterations per profile;
-  // 0 = all-time pooling).
+  // The recent-evidence window the informational `overall_recent` column is computed
+  // over (iterations per profile; 0 = column disabled). The verdict pools all time.
   crown_window_iterations: number;
   // Selectable non-metric numeric fields for the chart axes + column selector.
   fields: ProfileField[];
