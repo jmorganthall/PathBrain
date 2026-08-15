@@ -336,6 +336,8 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.relative_overall?.delta_median ?? null;
     case "weather_relative":
       return p.weather_relative?.delta_median ?? null;
+    case "overall_recent":
+      return p.overall_recent ?? null;
     case "pct_vs_sqm_off":
       return p.pct_vs_sqm_off ?? null;
     case "p25":
@@ -409,6 +411,7 @@ const FIXED_COLUMN_KEYS = new Set([
   "smoothness",
   "iterations",
   "count",
+  "overall_recent",
   "weather_relative",
   "pct_vs_sqm_off",
 ]);
@@ -418,9 +421,11 @@ const FIXED_COLUMN_KEYS = new Set([
 const COLUMN_TIPS: Record<string, string> = {
   label:
     "The firewall shaper profile — its distinguishing SQM settings. Runs with identical settings group into one profile.",
-  count: "Completed benchmark runs inside the profile's rolling evidence window (the runs the ranking reads).",
+  count: "Number of completed benchmark runs on this profile.",
   iterations:
-    "The verdict evidence: this profile's most recent iterations up to the rolling window (default 100) — the unit of confidence. Older history ages out of the ranking (so a profile can't coast on a stale past) but still feeds trends, the form check, and weather cohorts. Shown as 'window / all-time' when history exceeds the window.",
+    "Total benchmark iterations across all runs — the unit of confidence. A profile becomes 'confident' once it reaches the minimum iterations; more iterations = more trustworthy.",
+  overall_recent:
+    "The same crown grade as Overall, recomputed over ONLY this profile's most recent iterations (the recent window, default 100). The drift lens: a big gap vs Overall means the profile's present differs from its record — but recent windows land in different weather per profile, so compare via 'vs weather', and rank by the all-time Overall. Informational, never a crown input.",
   overall:
     "The headline score: closeness to the perfect corner over the crown metrics (FCP × LCP × Pregnant pause), scored on each metric's percentile rank within the field. An intersection — one weak metric can't be averaged away. Shown as a standing (1 = best); the highest Overall is crowned.",
   weather_relative:
@@ -768,6 +773,8 @@ export default function Settings() {
   // "Ghost crown": the crown's current form significantly trails its own prior record, so
   // the bar challengers race against may be propped by history it no longer delivers.
   const [crownFading, setCrownFading] = useState<SettingsProfilesResponse["crown_fading"]>(null);
+  // The recent-evidence window sizing the "Overall (recent)" drift-lens column.
+  const [crownWindow, setCrownWindow] = useState(100);
   // Dynamic quadrant axes — X/Y/Shade default to the current methodology's crown metric set
   // (the Overall scoring corner's inputs), pulled from the profiles response's `overall_metrics`
   // rather than hardcoded, so the default view always demonstrates how *this* methodology's Overall
@@ -930,6 +937,7 @@ export default function Settings() {
       setSaturation(p.saturation ?? []);
       setWeatherSuspect(p.weather_crown_suspect ?? null);
       setCrownFading(p.crown_fading ?? null);
+      setCrownWindow(p.crown_window_iterations ?? 0);
       setImpact(i);
       setDiag(d);
       setError(null);
@@ -1876,6 +1884,17 @@ export default function Settings() {
                         />
                       );
                     })}
+                    {crownWindow > 0 && (
+                      <SortHeader
+                        id="overall_recent"
+                        label={`Overall (${crownWindow})`}
+                        align="right"
+                        orderBy={orderBy}
+                        order={order}
+                        onSort={handleSort}
+                        tip={COLUMN_TIPS.overall_recent}
+                      />
+                    )}
                     <SortHeader
                       id="weather_relative"
                       label="vs weather"
@@ -2034,18 +2053,7 @@ export default function Settings() {
                         </Typography>
                       </TableCell>
                       <TableCell align="right">{p.count}</TableCell>
-                      <TableCell align="right">
-                        {p.iterations}
-                        {p.iterations_total > p.iterations && (
-                          <Tooltip
-                            title={`Verdict evidence: the most recent ${p.iterations} iterations (rolling window). ${p.iterations_total} collected all-time — older history still feeds trends, the form check, and weather cohorts, but ages out of the ranking.`}
-                          >
-                            <Typography component="span" variant="caption" color="text.secondary" sx={{ cursor: "help" }}>
-                              {" "}/ {p.iterations_total}
-                            </Typography>
-                          </Tooltip>
-                        )}
-                      </TableCell>
+                      <TableCell align="right">{p.iterations}</TableCell>
                       {/* Standings (1 = best) per Overall + crown metric, green→red. The
                           raw 0–100 subscore + metric value are in the hover title. */}
                       {rankedMetrics.map((m) => {
@@ -2092,6 +2100,21 @@ export default function Settings() {
                           </TableCell>
                         );
                       })}
+                      {crownWindow > 0 && (
+                        <TableCell align="right">
+                          {p.overall_recent != null ? (
+                            <Tooltip
+                              title={`This profile's crown grade over its most recent ${p.recent_iterations} iteration(s) — vs ${p.overall != null ? p.overall.toFixed(1) : "—"} all-time. A large gap = its present differs from its record (see the form chips); recent windows land in different weather per profile, so rank by the all-time Overall and compare conditions via 'vs weather'.`}
+                            >
+                              <Typography component="span" variant="body2" sx={{ cursor: "help" }}>
+                                {p.overall_recent.toFixed(1)}
+                              </Typography>
+                            </Tooltip>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                      )}
                       <TableCell align="right">
                         <VsWeatherCell rel={p.weather_relative} confident={p.confident} />
                       </TableCell>

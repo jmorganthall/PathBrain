@@ -39,6 +39,9 @@ export function profileValue(p: SettingsProfile, key: string): number | null {
       // Median measured-weather severity this profile was sampled under (0–100 pctl,
       // higher = harsher) — a sampling-fairness readout.
       return p.weather_severity ?? null;
+    case "overall_recent":
+      // The crown grade over only the recent window — the drift lens; not a crown input.
+      return p.overall_recent ?? null;
     case "pct_vs_sqm_off":
       // % improvement of this profile's Overall over the "SQM off" baseline (methodology-tied).
       return p.pct_vs_sqm_off ?? null;

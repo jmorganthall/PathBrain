@@ -75,6 +75,7 @@ _PROFILE_FIELDS = [
     {"key": "completion", "label": "Completion", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "iterations", "label": "Iterations", "unit": "", "higher_is_better": True, "group": "Run stats"},
     {"key": "count", "label": "Runs", "unit": "", "higher_is_better": True, "group": "Run stats"},
+    {"key": "overall_recent", "label": "Overall (recent)", "unit": "score", "higher_is_better": True, "group": "Scores"},
     {"key": "weather_relative", "label": "Vs weather (Overall)", "unit": "", "higher_is_better": True, "group": "Scores"},
     {"key": "weather_severity", "label": "Weather severity", "unit": "pctl", "higher_is_better": False, "group": "Run stats"},
     {"key": "pct_vs_sqm_off", "label": "% vs SQM off", "unit": "%", "higher_is_better": True, "group": "Scores"},
@@ -1725,14 +1726,16 @@ def compute_profiles(
     _capture_keys = _crown_adj_keys | set(_clean_covs)
     # Per-run (fingerprint, overall, covariate readings) for the weather cohort pass.
     weather_runs: list[tuple[str, float, dict[str, float]]] = []
-    # ── Rolling evidence window ─────────────────────────────────────────────────────
-    # The crown VERDICT ranks each profile on its most recent ``crown_window_iterations``
-    # iterations (walking its runs newest-first until the window fills). All-time pooling
-    # gives a heavily-sampled profile mass inertia — fresh head-to-head data can't move a
-    # 3000-iteration median, so a challenger ends up racing the ghost of the crown's past.
-    # Windowing bounds every profile's evidence to its current form. History is NOT
-    # discarded: trends, the current-form check, and the weather cohorts still read the
-    # full series — only the ranking aggregates below are gated. 0 disables (all-time).
+    # ── Recent-evidence window (the "Overall (recent)" COLUMN, not the verdict) ──────
+    # A per-profile window over its most recent ``crown_window_iterations`` iterations
+    # (walking runs newest-first until the window fills). This briefly WAS the verdict
+    # basis, and live data showed why it can't be: ~100 iterations span only a few days —
+    # essentially one weather regime per profile — so windowed rankings compared different
+    # profiles' different weather head-on and thrashed. The verdict is back on the all-time
+    # pool (weather averages out; stable); the window now feeds only the informational
+    # ``overall_recent`` column — the drift lens that shows what each profile's Overall
+    # would be on current evidence, alongside the vs-weather conditions lens and the
+    # fading/rising form chips. 0 disables the column.
     try:
         crown_window = int(
             (get_config(session).get("correlation", {}) or {}).get("crown_window_iterations", 100)
@@ -1797,9 +1800,9 @@ def compute_profiles(
                 "speed": [],
                 "points": [],
                 "iterations": 0,
-                # All-time totals (the windowed ``iterations``/count are the verdict evidence).
-                "iterations_total": 0,
-                "runs_total": 0,
+                # Windowed (most-recent) crown subscores + iteration count → `overall_recent`.
+                "recent_subscores": {},
+                "recent_iterations": 0,
                 "completion": [],
                 "completion_iterations": 0,
                 "completion_metrics": {m: [] for m in COMPLETION_METRIC_SOURCES},
@@ -1817,38 +1820,40 @@ def compute_profiles(
                 "last_seen": run.created_at,
             },
         )
-        # Is this run inside the profile's rolling evidence window? Outside-window runs
-        # still feed the full-history readings (points → current-form check + vs-typical,
-        # the weather cohort, first/last seen) but are excluded from every VERDICT
-        # aggregate below — the samples the ranking, standings, and confidence read.
-        windowed = in_window is None or run.id in in_window
+        # All-time aggregation (the verdict basis — weather averages out over the pool);
+        # runs inside the recent window ALSO feed the windowed crown subscores that
+        # become the informational `overall_recent` column.
+        windowed = in_window is not None and run.id in in_window
         g["points"].append(point)
-        g["iterations_total"] += int(run.iterations or 1)
-        g["runs_total"] += 1
         mv = score.metric_values or {}
+        if smooth is not None:
+            g["smoothness"].append(smooth)
+        if speed is not None:
+            g["speed"].append(speed)
+        # A run with more iterations is more data; track the total alongside runs.
+        g["iterations"] += int(run.iterations or 1)
+        if comp_axis is not None:
+            g["completion"].append(comp_axis)
+            g["completion_iterations"] += int(run.iterations or 1)
+        for m in COMPLETION_METRIC_SOURCES:
+            if mv.get(m) is not None:
+                g["completion_metrics"][m].append(float(mv[m]))
+        # All axis scores (0–100) for this run → per-axis samples (display columns).
+        # ``overall`` is a derived headline, not an axis, so it never becomes a column.
+        for axis_key, val in (axes or {}).items():
+            if val is not None and axis_key != "overall":
+                g["axis_samples"].setdefault(axis_key, []).append(float(val))
+        # Every per-metric subscore (0–100) for this run → the crown's corner inputs and
+        # the menu of "betterments" a custom crown can corner over.
+        for metric, val in crown_sub.items():
+            if val is not None:
+                g["subscore_samples"].setdefault(metric, []).append(float(val))
         if windowed:
-            if smooth is not None:
-                g["smoothness"].append(smooth)
-            if speed is not None:
-                g["speed"].append(speed)
-            # A run with more iterations is more data; track the total alongside runs.
-            g["iterations"] += int(run.iterations or 1)
-            if comp_axis is not None:
-                g["completion"].append(comp_axis)
-                g["completion_iterations"] += int(run.iterations or 1)
-            for m in COMPLETION_METRIC_SOURCES:
-                if mv.get(m) is not None:
-                    g["completion_metrics"][m].append(float(mv[m]))
-            # All axis scores (0–100) for this run → per-axis samples (display columns).
-            # ``overall`` is a derived headline, not an axis, so it never becomes a column.
-            for axis_key, val in (axes or {}).items():
-                if val is not None and axis_key != "overall":
-                    g["axis_samples"].setdefault(axis_key, []).append(float(val))
-            # Every per-metric subscore (0–100) for this run → the crown's corner inputs and
-            # the menu of "betterments" a custom crown can corner over.
-            for metric, val in crown_sub.items():
+            g["recent_iterations"] += int(run.iterations or 1)
+            for metric in crown_metrics:
+                val = crown_sub.get(metric)
                 if val is not None:
-                    g["subscore_samples"].setdefault(metric, []).append(float(val))
+                    g["recent_subscores"].setdefault(metric, []).append(float(val))
         # Every metric's raw value for this run, from the plugin metric caches
         # (``results_by_plugin``, bulk-fetched by _completed_runs_with_scores), falling back
         # to the current-methodology Score's derived metric_values (keyed by logical key) when
@@ -1857,8 +1862,6 @@ def compute_profiles(
         # (e.g. stall_time, added in v8) carries it only on the re-graded Score — sourcing it
         # here lets re-graded history feed the crown normalization + columns, not just fresh
         # runs. (Same source the completion metrics already read from above.)
-        # run_vals is extracted for EVERY run (the weather cohort reads all history); the
-        # metric_samples / crown_adj verdict aggregates only take windowed runs.
         run_vals: dict[str, float] = {}  # this run's values for the weather-adjust keys
         for key, (plugin, source_key) in metric_src.items():
             val = results_by_plugin.get(plugin, {}).get(source_key)
@@ -1866,25 +1869,23 @@ def compute_profiles(
                 val = mv.get(key)
             if isinstance(val, bool) or not isinstance(val, (int, float)):
                 continue
-            if windowed:
-                g["metric_samples"].setdefault(key, []).append(float(val))
+            g["metric_samples"].setdefault(key, []).append(float(val))
             if key in _capture_keys:
                 run_vals[key] = float(val)
         # Weather-adjusted crown raw for this run: strip the connection-setup weather (this run's
         # own nav dns+tcp+tls) from the paint milestones; carry shape metrics through unadjusted.
         # A run without the nav waterfall can't be setup-adjusted, so it's left out of that
         # metric's adjusted samples (never fabricated).
-        if windowed:
-            setup = sum(run_vals[p] for p in _SETUP_WEATHER_PHASES if p in run_vals)
-            has_setup = any(p in run_vals for p in _SETUP_WEATHER_PHASES)
-            for m in crown_metrics:
-                if m not in run_vals:
-                    continue
-                if m in _SETUP_ADJUSTED_METRICS:
-                    if has_setup:
-                        g["crown_adj_samples"].setdefault(m, []).append(max(0.0, run_vals[m] - setup))
-                else:
-                    g["crown_adj_samples"].setdefault(m, []).append(run_vals[m])
+        setup = sum(run_vals[p] for p in _SETUP_WEATHER_PHASES if p in run_vals)
+        has_setup = any(p in run_vals for p in _SETUP_WEATHER_PHASES)
+        for m in crown_metrics:
+            if m not in run_vals:
+                continue
+            if m in _SETUP_ADJUSTED_METRICS:
+                if has_setup:
+                    g["crown_adj_samples"].setdefault(m, []).append(max(0.0, run_vals[m] - setup))
+            else:
+                g["crown_adj_samples"].setdefault(m, []).append(run_vals[m])
         # Feed the measured-weather cohort pass: this run's outcome + its own covariate
         # readings (the conditions it faced), for the "vs weather" residual below.
         if run_overall is not None:
@@ -2011,10 +2012,19 @@ def compute_profiles(
                 "weather_severity": weather_sev_by_fp.get(g["fingerprint"]),
                 # Filled after ranking: residual standing far above raw standing → flagged.
                 "weather_beater": False,
-                # All-time totals — the windowed `count`/`iterations` above are the verdict
-                # evidence; these show how much history exists beyond the window.
-                "count_total": g["runs_total"],
-                "iterations_total": g["iterations_total"],
+                # "Overall (recent)": the crown grade recomputed over ONLY the most recent
+                # crown_window_iterations — the drift lens (what this profile's Overall
+                # would be on current evidence). Filled in the normalize pass; None under a
+                # non-weighted methodology, with the window disabled, or when the recent
+                # window can't supply every required crown subscore.
+                "overall_recent": None,
+                "recent_iterations": g["recent_iterations"],
+                # Median crown subscores over the recent window (the inputs to overall_recent).
+                "recent_scores": {
+                    m: round(median(vals), 2)
+                    for m, vals in g["recent_subscores"].items()
+                    if vals
+                },
                 # Current form vs prior record (recent-window median Overall vs the rest of
                 # its history, significance-gated both directions): "fading" = its pooled
                 # Overall is propped by a past it no longer delivers; "rising" = its pooled
@@ -2094,6 +2104,14 @@ def compute_profiles(
                 p["overall_p25"] = _w(lambda m: (sp.get(m) or {}).get("p25"))
                 p["overall_p75"] = _w(lambda m: (sp.get(m) or {}).get("p75"))
                 p["optimistic"] = _w(lambda m: (sp.get(m) or {}).get("p75"))
+            # "Overall (recent)" — the same weighted grade over ONLY the recent window's
+            # subscore medians. Informational drift lens; never the crown. Requires every
+            # required crown subscore inside the window (no fabricated numbers).
+            rs = p.get("recent_scores") or {}
+            if rs and not any(rs.get(m) is None for m in crown_required):
+                p["overall_recent"] = weighted_score(
+                    [(rs.get(m), float(crown_weights.get(m, 1.0))) for m in crown_metrics]
+                )
         else:
             p["overall"] = res["overall"]
             p["overall_p25"] = res["p25"]
@@ -2297,8 +2315,8 @@ def compute_profiles(
         # The ghost-crown signal: the crown's current form significantly trails its own
         # prior record, so the bar challengers race against may be stale (None when steady).
         "crown_fading": crown_fading,
-        # The rolling evidence window the verdict aggregates were computed under
-        # (iterations per profile; 0 = all-time pooling).
+        # The recent-evidence window the informational `overall_recent` column is computed
+        # over (iterations per profile; 0 = column disabled). The VERDICT pools all time.
         "crown_window_iterations": crown_window,
         # Selectable non-metric numeric fields for the chart axes + column selector
         # (metric fields' metadata comes from /api/metrics).
