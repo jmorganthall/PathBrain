@@ -58,8 +58,10 @@ async def lifespan(app: FastAPI):
 
     reconcile_interrupted_current_tests()  # close out any interrupted test-current session
     from .baseline_test import reconcile_interrupted_baseline_tests
+    from .duel import reconcile_interrupted_duels
 
     reconcile_interrupted_baseline_tests()  # re-enable SQM if a baseline test was interrupted
+    reconcile_interrupted_duels()  # restore the pre-duel baseline if a duel was interrupted
     from .scheduler import start_scheduler, stop_scheduler
 
     start_scheduler()

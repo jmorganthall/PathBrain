@@ -182,6 +182,39 @@ DEFAULT_CONFIG: dict = {
     "crown_follow": {
         "enabled": False,
         "interval_minutes": 360,
+        # The CROWNING POLICY — the first-class choice of which verdict governs what the
+        # follower applies (and what the UI calls "the crown to follow"):
+        #   "pooled" — the all-time pooled Overall argmax (compute_profiles best_fingerprint).
+        #   "duel"   — the head-to-head duel ladder's latest champion (falls back to pooled
+        #              when no decisive duel verdict is fresh within duel.rematch_days).
+        # The pooled crown STATISTIC is always computed and displayed either way; the policy
+        # only selects which verdict automation acts on. One policy, one follower, one write
+        # path — engines (race/duel) only measure and adjudicate.
+        "policy": "pooled",
+    },
+    # Interleaved head-to-head duel ladder (the adjudication engine): strict A/B/A/B
+    # alternation, paired verdicts via a sequential test that stops the moment a matchup is
+    # decided — then the winner stays on and the next challenger steps up.
+    "duel": {
+        # Nightly schedule (like baseline_test): armed/off + the time to run, expressed in
+        # `timezone` (IANA; "" = container-local), running for `duration_minutes`.
+        "enabled": False,
+        "hour": 3,
+        "minute": 0,
+        "timezone": "",
+        "duration_minutes": 120,
+        # Sequential stopping rule (Wald SPRT on the pair-win rate): H0 p=0.5 vs H1 p=`p1`
+        # at ~95% confidence (`alpha` two error rates), with a minimum of `min_pairs` before
+        # any verdict, a futility cap of `max_pairs`, and a practical-significance floor —
+        # a statistical winner whose median pair delta is under `min_margin` Overall points
+        # is recorded as a draw (real but meaningless differences don't reshuffle anything).
+        "p1": 0.70,
+        "alpha": 0.05,
+        "min_pairs": 10,
+        "max_pairs": 40,
+        "min_margin": 1.0,
+        # A decided matchup isn't re-dueled for this many days (the ladder moves on).
+        "rematch_days": 7,
     },
     # Historical trends: baseline a metric over this many days of history, judge a
     # run against the median over the last `window_hours`, and require at least

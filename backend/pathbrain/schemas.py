@@ -44,6 +44,24 @@ class BaselineScheduleUpdate(BaseModel):
     timezone: str | None = None
 
 
+class DuelScheduleUpdate(BaseModel):
+    """Update the nightly duel-ladder schedule + stopping rule (all fields optional)."""
+
+    enabled: bool | None = None
+    hour: int | None = None
+    minute: int | None = None
+    # IANA zone the hour/minute are expressed in (browser zone sent by the UI on save).
+    timezone: str | None = None
+    duration_minutes: int | None = None
+    rematch_days: int | None = None
+
+
+class DuelStart(BaseModel):
+    """Start an on-demand duel-ladder session (duration defaults to the configured window)."""
+
+    duration_minutes: int | None = None
+
+
 class TestSettings(BaseModel):
     """Apply an arbitrary set of shaper settings (e.g. an AI suggestion) and test to minimum.
 

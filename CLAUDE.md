@@ -322,6 +322,33 @@ LLM-based. See `README.md` for the product overview.
     `/api/settings/crown-follow` (GET status+stats+ledger, POST config, POST `/sync` = check
     now); driven by the top-bar **"Follow best" switch** (`FollowBest.tsx`) with a status/churn
     popover.
+  - `duel.py` — **Duel ladder**: interleaved head-to-head adjudication, the controlled-trial
+    complement to the observational pooled crown. Strict A/B/A/B alternation (one iteration a
+    side) between an incumbent (the pooled crown at window start) and a ladder of challengers
+    (heirs priority order, reachability-filtered), so each adjacent pair shares its weather
+    **by construction** — a thin new variant can be adjudicated against a 3000-iteration crown
+    in one night because it races the crown-five-minutes-ago, never its history. Each matchup
+    runs a **sequential stopping rule** (Wald SPRT on the pair-win rate, `duel.p1`/`alpha`,
+    min/max pairs) plus a practical-significance floor (`duel.min_margin` Overall points —
+    statistically real but negligible edges are recorded as draws), so the window never burns
+    all night on a settled question: winner stays on as the new incumbent, next challenger
+    steps up, decided pairs get a `duel.rematch_days` cooldown. Two-ledger discipline: duel
+    *runs* flow into the pooled record like any runs; duel *verdicts* live beside it as the
+    head-to-head ledger (`Duel.matchups`, the Settings-Impact **Duel ladder** card) and never
+    enter the pooled score. The duel **never writes a winner to the firewall** — it restores
+    the pre-duel baseline (`reconcile_interrupted_duels` on startup); acting on verdicts is
+    the crowning policy's job. Runs nightly (`config.duel`: enabled/hour/minute/timezone/
+    duration, gated in `scheduler.py` like the baseline test) or on demand (`/api/duel/*`).
+  - `crowning.py` — **the first-class CROWNING POLICY**: the single resolver for "which
+    verdict governs what automation applies". `crown_follow.policy` = **"pooled"** (the
+    all-time Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
+    `duel.latest_champion`, with pooled fallback). One policy, one write path: engines
+    (race/duel) only measure and adjudicate; `crowning.resolve` selects; the **crown
+    follower** is the only component that writes the firewall. The pooled crown *statistic*
+    is always computed, tracked (churn ledger) and displayed regardless of policy. The GUI
+    control is the top-bar **Follow best popover** ("Crowning policy" chips + both verdicts
+    side by side); the API surface rides `GET/POST /settings/crown-follow` (`policy`,
+    `policies`, `duel_champion`).
   - `refresh.py` — **Re-run profiles**: the batch sibling of `profile_test`. For
     each stored profile it applies the settings, benchmarks a **caller-chosen** number of
     iterations, then moves on — **restoring the baseline at the end** (persisted to a

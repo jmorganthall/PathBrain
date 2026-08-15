@@ -56,6 +56,29 @@ export default function FollowBest() {
   }, [load]);
 
   const enabled = info?.config.enabled ?? false;
+  const policy = info?.config.policy ?? "pooled";
+
+  const setPolicy = (next: "pooled" | "duel") => {
+    if (next === policy) return;
+    setBusy(true);
+    setInfo((v) => (v ? { ...v, config: { ...v.config, policy: next } } : v));
+    api
+      .crownFollowUpdate({ policy: next })
+      .then(() => {
+        setSnack({
+          msg:
+            next === "duel"
+              ? "Crowning policy: duel champion — the follower acts on head-to-head verdicts (pooled fallback)."
+              : "Crowning policy: pooled Overall — the follower acts on the all-time crown.",
+          sev: "info",
+        });
+        load();
+      })
+      .catch((e) =>
+        setSnack({ msg: e instanceof Error ? e.message : "Could not change policy.", sev: "error" }),
+      )
+      .finally(() => setBusy(false));
+  };
 
   const toggle = (next: boolean) => {
     setBusy(true);
@@ -189,6 +212,51 @@ export default function FollowBest() {
             {Math.round(((info?.config.interval_minutes ?? 360) / 60) * 10) / 10} h as a
             backstop. Crown changes are recorded either way.
           </Typography>
+
+          {/* The first-class CROWNING POLICY: which verdict the follower acts on. The pooled
+              crown statistic is always computed and shown; this only selects what automation
+              applies. One policy, one follower, one write path. */}
+          <Box>
+            <Typography variant="caption" color="text.secondary">
+              Crowning policy
+            </Typography>
+            <Stack direction="row" spacing={0.75} sx={{ mt: 0.5 }}>
+              <Tooltip title="Act on the all-time pooled Overall argmax — the stable, weather-averaged map of the whole field.">
+                <Chip
+                  size="small"
+                  label="Pooled Overall"
+                  color={policy === "pooled" ? "warning" : "default"}
+                  variant={policy === "pooled" ? "filled" : "outlined"}
+                  onClick={() => setPolicy("pooled")}
+                  disabled={busy}
+                />
+              </Tooltip>
+              <Tooltip title="Act on the duel ladder's latest head-to-head champion (interleaved same-weather verdicts). Falls back to the pooled crown when no decisive fresh duel exists.">
+                <Chip
+                  size="small"
+                  label="Duel champion"
+                  color={policy === "duel" ? "warning" : "default"}
+                  variant={policy === "duel" ? "filled" : "outlined"}
+                  onClick={() => setPolicy("duel")}
+                  disabled={busy}
+                />
+              </Tooltip>
+            </Stack>
+            {info?.duel_champion ? (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                Duel champion: <b>{info.duel_champion.label || info.duel_champion.fingerprint}</b>
+                {info.duel_champion.decisive ? "" : " (by draws only)"} · duel #
+                {info.duel_champion.duel_id}
+                {policy === "duel" && !info.duel_champion.decisive
+                  ? " — not decisive, follower falls back to the pooled crown"
+                  : ""}
+              </Typography>
+            ) : (
+              <Typography variant="caption" color="text.disabled" sx={{ display: "block", mt: 0.5 }}>
+                No fresh duel verdict yet{policy === "duel" ? " — the follower falls back to the pooled crown" : ""}.
+              </Typography>
+            )}
+          </Box>
 
           <Divider />
 

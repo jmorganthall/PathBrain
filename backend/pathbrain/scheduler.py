@@ -39,6 +39,40 @@ def _baseline_config() -> dict:
         return get_config(session).get("baseline_test", {}) or {}
 
 
+def _maybe_run_duel() -> bool:
+    """Kick the nightly duel ladder if armed and due this scheduled minute (evaluated in
+    the schedule's own zone, like the baseline test). Same double-fire/day guard."""
+    from . import duel
+    from .api.routes_baseline import schedule_zone
+
+    if duel.active():
+        return False
+    with session_scope() as session:
+        cfg = get_config(session).get("duel", {}) or {}
+    if not cfg.get("enabled"):
+        return False
+    now = datetime.now(schedule_zone(cfg))
+    today = now.date().isoformat()
+    if _state.get("duel_last_date") == today:
+        return False
+    try:
+        hour = int(cfg.get("hour", 3))
+        minute = int(cfg.get("minute", 0))
+    except (TypeError, ValueError):
+        return False
+    if now.hour != hour or now.minute != minute:
+        return False
+    try:
+        duel.start(int(cfg.get("duration_minutes", 120) or 120), trigger="scheduled")
+        _state["duel_last_date"] = today
+        log.info("Scheduler kicked nightly duel ladder")
+        return True
+    except Exception:  # noqa: BLE001 — never let a scheduling hiccup kill the loop
+        log.exception("Scheduler: could not start nightly duel")
+        _state["duel_last_date"] = today
+        return False
+
+
 def _maybe_run_baseline() -> bool:
     """Kick the nightly baseline (SQM off) test if it's armed and due this scheduled minute.
 
@@ -148,6 +182,10 @@ def _loop(stop: threading.Event) -> None:
             # Nightly baseline (SQM off) test, if armed + due. Its engine holds the
             # coordination lock and queues, so yield the tick once it's kicked.
             if _maybe_run_baseline():
+                stop.wait(_TICK_SECONDS)
+                continue
+
+            if _maybe_run_duel():
                 stop.wait(_TICK_SECONDS)
                 continue
 

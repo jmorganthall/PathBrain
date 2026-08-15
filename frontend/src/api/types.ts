@@ -1426,6 +1426,19 @@ export type AiStreamEvent =
 export interface CrownFollowConfig {
   enabled: boolean;
   interval_minutes: number;
+  // The first-class CROWNING POLICY: which verdict the follower acts on.
+  // "pooled" = the all-time Overall argmax; "duel" = the duel ladder's fresh champion
+  // (pooled fallback when no decisive fresh verdict exists).
+  policy: "pooled" | "duel";
+}
+
+// The duel ladder's latest fresh champion (crowning candidate under policy "duel").
+export interface DuelChampion {
+  fingerprint: string;
+  label: string | null;
+  duel_id: number;
+  finished_at: string;
+  decisive: boolean;
 }
 
 // The result of one crown-follower check (tracking + optional apply).
@@ -1435,6 +1448,13 @@ export interface CrownCheckResult {
   crown_fingerprint: string | null;
   crown_label: string | null;
   crown_changed: boolean;
+  // The crowning-policy resolution this check acted on.
+  policy?: "pooled" | "duel";
+  governing_fingerprint?: string | null;
+  governing_label?: string | null;
+  governing_source?: "pooled" | "duel";
+  governing_detail?: string;
+  duel_champion?: DuelChampion | null;
   live_fingerprint: string | null;
   on_crown: boolean | null;
   applied: boolean;
@@ -1476,7 +1496,58 @@ export interface CrownEventOut {
 
 export interface CrownFollowStatus {
   config: CrownFollowConfig;
+  // The selectable crowning policies + the duel ladder's latest fresh champion (or null),
+  // so the popover can show both verdicts side by side whatever the active policy.
+  policies: ("pooled" | "duel")[];
+  duel_champion: DuelChampion | null;
   status: { last_check_at: string | null; last_result: CrownCheckResult | null };
   stats: CrownFollowStats;
   events: CrownEventOut[];
+}
+
+// ── Duel ladder (head-to-head adjudication) ─────────────────────────────────────────
+
+export interface DuelConfig {
+  enabled: boolean;
+  hour: number;
+  minute: number;
+  timezone: string;
+  duration_minutes: number;
+  min_pairs: number;
+  max_pairs: number;
+  min_margin: number;
+  rematch_days: number;
+}
+
+export interface DuelMatchup {
+  incumbent: string;
+  challenger: string;
+  incumbent_label: string;
+  challenger_label: string;
+  pairs: number;
+  wins_incumbent: number;
+  wins_challenger: number;
+  median_delta: number | null;
+  llr_incumbent: number;
+  llr_challenger: number;
+  verdict: "incumbent" | "challenger" | "draw";
+  reason: string;
+}
+
+export interface DuelSession {
+  id: number;
+  status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
+  stage: string | null;
+  trigger: string;
+  duration_s: number;
+  matchups: DuelMatchup[];
+  iterations_run: number;
+  run_ids: number[];
+  champion_fingerprint: string | null;
+  champion_label: string | null;
+  error: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  lock_owner: string | null;
 }

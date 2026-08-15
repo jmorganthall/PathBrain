@@ -343,6 +343,28 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
     result["crown_label"] = best.get("label")
     changed = best_fp != prev_fp
 
+    # ── Crowning policy: which verdict does the FOLLOWER act on? ────────────────────
+    # The pooled crown above stays the tracked statistic (ledger + churn stats). The
+    # governing target — what an armed follower actually applies — is resolved by the
+    # first-class crowning policy: "pooled" (default) or "duel" (the head-to-head
+    # ladder's fresh champion, pooled fallback). One policy, one write path.
+    from . import crowning
+
+    with session_scope() as session:
+        governing = crowning.resolve(session, best_fp)
+    target_fp = governing.get("fingerprint") or best_fp
+    target_profile = next(
+        (p for p in field.get("profiles", []) if p.get("fingerprint") == target_fp), None
+    )
+    if target_profile is None:
+        target_fp, target_profile = best_fp, best
+    result["policy"] = governing["policy"]
+    result["governing_fingerprint"] = target_fp
+    result["governing_label"] = target_profile.get("label")
+    result["governing_source"] = governing["source"]
+    result["governing_detail"] = governing["detail"]
+    result["duel_champion"] = governing.get("duel_champion")
+
     # Where is the firewall right now? Best-effort; a discovery failure only skips the
     # follow half (tracking still records the change).
     provider = None
@@ -357,7 +379,7 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
         log.warning("Crown follower: discovery failed: %s", exc)
         result["error"] = f"discovery failed: {type(exc).__name__}: {exc}"
 
-    target = best.get("settings") or []
+    target = target_profile.get("settings") or []
     pending: list[dict] = []
     applied = False
     apply_error: str | None = None
@@ -372,12 +394,12 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
         # are inert and invisible to plan_apply, so only the fingerprint can tell them apart.
         pending, _ = plan_apply(target, live)
         same_env = environment_signature(target) == environment_signature(live_norm)
-        target_sqm_off = best_fp == SQM_OFF_FINGERPRINT or any(
+        target_sqm_off = target_fp == SQM_OFF_FINGERPRINT or any(
             (p or {}).get("enabled") is False for p in target
         )
         live_sqm_off = result["live_fingerprint"] == SQM_OFF_FINGERPRINT
         if target_sqm_off or live_sqm_off:
-            on_crown = result["live_fingerprint"] == best_fp
+            on_crown = result["live_fingerprint"] == target_fp
         else:
             on_crown = not pending and same_env
         result["on_crown"] = on_crown
@@ -411,8 +433,9 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
                         result["on_crown"] = True
                         applied = True
                         log.info(
-                            "Crown follower applied crown %s (%s change(s))",
-                            best_fp,
+                            "Crown follower applied %s crown %s (%s change(s))",
+                            governing["source"],
+                            target_fp,
                             len(pending),
                         )
                 except coordinator.CoordinatorBusy as exc:
@@ -455,13 +478,15 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
                 session.add(
                     CrownEvent(
                         kind="apply",
-                        fingerprint=best_fp,
+                        # The apply event records what the follower actually wrote — the
+                        # policy-governing target (== the pooled crown under "pooled").
+                        fingerprint=target_fp,
                         previous_fingerprint=result["live_fingerprint"] if not applied else None,
-                        label=(best.get("label") or "")[:255] or None,
+                        label=(target_profile.get("label") or "")[:255] or None,
                         overall=float(overall) if overall is not None else None,
                         applied=applied,
                         error=apply_error,
-                        detail=detail,
+                        detail=f"[{governing['source']}] {detail}" if detail else detail,
                     )
                 )
     except Exception:  # noqa: BLE001 — a ledger write must never fail the check
