@@ -650,3 +650,53 @@ class CrownEvent(Base):
     applied: Mapped[bool] = mapped_column(Boolean, default=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class DuelStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class Duel(Base):
+    """An interleaved head-to-head **duel ladder** session (the adjudication engine).
+
+    Strict A/B/A/B alternation between an incumbent (the pooled crown at window start) and
+    a ladder of challengers (heirs priority order). Each adjacent pair of one-iteration runs
+    shares its weather by construction, so the paired verdict is confound-free and decides in
+    tens of pairs. A sequential test (Wald SPRT on the pair-win rate, plus a practical-margin
+    floor) stops each matchup the moment the evidence is decisive — winner stays on as the
+    new incumbent, next challenger steps up — so the window never burns all night on a
+    settled question. Verdicts are the head-to-head ledger (``matchups``); the runs
+    themselves flow into the pooled record like any others. The duel NEVER writes a winner
+    to the firewall itself — it restores the pre-duel baseline; acting on the verdict is the
+    crown follower's job under the ``crowning`` policy.
+    """
+
+    __tablename__ = "duels"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[DuelStatus] = mapped_column(Enum(DuelStatus), default=DuelStatus.PENDING)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Live step readout (ladder position, current matchup, pair count).
+    stage: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")
+
+    duration_s: Mapped[int] = mapped_column(Integer, default=7200)
+    # Pre-duel firewall settings to restore (persisted for crash reconcile).
+    baseline: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    # Completed matchup verdicts: [{incumbent, challenger, incumbent_label, challenger_label,
+    #   pairs, wins_incumbent, wins_challenger, median_delta, llr_incumbent, llr_challenger,
+    #   verdict: "incumbent"|"challenger"|"draw", reason}].
+    matchups: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    iterations_run: Mapped[int] = mapped_column(Integer, default=0)
+    run_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # The ladder's final incumbent (the duel champion) when the session completed.
+    champion_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    champion_label: Mapped[str | None] = mapped_column(String(255), nullable=True)

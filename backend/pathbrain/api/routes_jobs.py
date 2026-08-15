@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import baseline_test, challenger, current_test, jobs, profile_test, refresh, sweep
+from .. import baseline_test, challenger, current_test, duel, jobs, profile_test, refresh, sweep
 from ..database import get_session
 from ..models import Experiment, ExperimentStatus, Run, RunStatus, Sweep
 
@@ -395,6 +395,33 @@ def _active_refresh_job() -> list[dict]:
     ]
 
 
+def _active_duel_job() -> list[dict]:
+    if not duel.active():
+        return []
+    d = duel.current()
+    if not d or d.get("status") not in ("running", "pending"):
+        return []
+    n_verdicts = len(d.get("matchups") or [])
+    return [
+        {
+            # id matches the chunks' job_group so they nest under this parent line.
+            "id": f"duel-{d['id']}",
+            "kind": "duel",
+            "label": "Duel ladder",
+            "status": "running",
+            "current": d.get("iterations_run") or 0,
+            "total": None,
+            "message": d.get("stage") or f"{n_verdicts} verdict(s) so far",
+            "error": None,
+            "href": "/settings",
+            "parent_id": None,
+            "cancel_url": "/duel/cancel",
+            "started_at": d.get("started_at") or d.get("created_at"),
+            "finished_at": None,
+        }
+    ]
+
+
 @router.get("/jobs")
 def list_jobs(session: Session = Depends(get_session)) -> dict:
     """Every active + recently-finished background operation, for the jobs dropdown.
@@ -412,6 +439,7 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     adapters += _active_experiment_job(session)
     adapters += _active_challenger_job()
     adapters += _active_refresh_job()
+    adapters += _active_duel_job()
 
     # In-process score jobs (re-grade/rescore/rederive) are always top-level with no cancel.
     inproc = [{"parent_id": None, "cancel_url": None, **j} for j in jobs.list_jobs()]

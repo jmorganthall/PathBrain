@@ -32,6 +32,8 @@ import type {
   CrownCheckResult,
   CrownFollowConfig,
   CrownFollowStatus,
+  DuelConfig,
+  DuelSession,
   AiConfig,
   AiModel,
   AiStreamEvent,
@@ -174,6 +176,22 @@ export const api = {
   baselineTestCancel: () =>
     request<{ cancelled: boolean; status: string | null }>("/baseline/test/cancel", { method: "POST" }),
 
+  // Duel ladder (head-to-head adjudication)
+  duelConfig: () => request<DuelConfig>("/duel/config"),
+  duelConfigSave: (body: Partial<DuelConfig>) =>
+    request<DuelConfig>("/duel/config", { method: "PUT", body: JSON.stringify(body) }),
+  duelStart: (durationMinutes?: number) =>
+    startingJob(
+      request<DuelSession>("/duel/start", {
+        method: "POST",
+        body: JSON.stringify({ duration_minutes: durationMinutes ?? null }),
+      })
+    ),
+  duelStatus: () => request<DuelSession>("/duel/status"),
+  duelCancel: () =>
+    request<{ cancelled: boolean; status: string | null }>("/duel/cancel", { method: "POST" }),
+  duelHistory: (limit = 10) => request<{ duels: DuelSession[] }>(`/duel/history?limit=${limit}`),
+
   // Results
   latestResult: () => request<RunDetail>("/results/latest"),
   result: (id: number) => request<RunDetail>(`/results/${id}`),
@@ -304,7 +322,7 @@ export const api = {
 
   // Crown follower ("Follow best"): status + churn stats, config toggle, and a manual sync.
   crownFollow: () => request<CrownFollowStatus>("/settings/crown-follow"),
-  crownFollowUpdate: (body: { enabled?: boolean; interval_minutes?: number }) =>
+  crownFollowUpdate: (body: { enabled?: boolean; interval_minutes?: number; policy?: "pooled" | "duel" }) =>
     request<{ config: CrownFollowConfig }>("/settings/crown-follow", {
       method: "POST",
       body: JSON.stringify(body),

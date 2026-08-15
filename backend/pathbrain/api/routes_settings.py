@@ -2920,12 +2920,22 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
     Read-only; the churn ledger accrues whether or not following is enabled."""
     from .. import crown_follower
 
+    from .. import crowning
+    from .. import duel as duel_mod
+
     cfg = get_config(session).get("crown_follow", {}) or {}
+    rematch_days = int((get_config(session).get("duel", {}) or {}).get("rematch_days", 7) or 7)
     return {
         "config": {
             "enabled": bool(cfg.get("enabled", False)),
             "interval_minutes": float(cfg.get("interval_minutes", 360) or 360),
+            # The first-class crowning policy: which verdict the follower acts on.
+            "policy": crowning.active_policy(session),
         },
+        "policies": list(crowning.POLICIES),
+        # The duel ladder's latest fresh champion (or null) — shown beside the pooled
+        # crown so the popover can display both verdicts whatever the policy.
+        "duel_champion": duel_mod.latest_champion(session, max_age_days=rematch_days),
         "status": crown_follower.status(),
         "stats": crown_follower.stats(session),
         "events": crown_follower.recent_events(session, limit=20),
@@ -2957,6 +2967,15 @@ def crown_follow_update(
                 detail=f"interval_minutes must be ≥ {crown_follower.MIN_INTERVAL_MINUTES}",
             )
         updates["interval_minutes"] = interval
+    if "policy" in (body or {}):
+        from .. import crowning
+
+        policy = str(body["policy"] or "").lower()
+        if policy not in crowning.POLICIES:
+            raise HTTPException(
+                status_code=400, detail=f"policy must be one of {list(crowning.POLICIES)}"
+            )
+        updates["policy"] = policy
     if not updates:
         raise HTTPException(status_code=400, detail="Nothing to update")
 
@@ -2968,6 +2987,7 @@ def crown_follow_update(
         "config": {
             "enabled": bool(cfg.get("enabled", False)),
             "interval_minutes": float(cfg.get("interval_minutes", 360) or 360),
+            "policy": str(cfg.get("policy", "pooled") or "pooled"),
         }
     }
 
