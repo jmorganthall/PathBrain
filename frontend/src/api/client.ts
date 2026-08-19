@@ -326,6 +326,11 @@ export const api = {
 
   // Crown follower ("Follow best"): status + churn stats, config toggle, and a manual sync.
   crowns: () => request<CrownsOut>("/settings/crowns"),
+  profileRename: (fingerprint: string, name: string) =>
+    request<{ fingerprint: string; name: string }>(
+      `/settings/profiles/${encodeURIComponent(fingerprint)}/name`,
+      { method: "PUT", body: JSON.stringify({ name }) }
+    ),
   crownFollow: () => request<CrownFollowStatus>("/settings/crown-follow"),
   crownFollowUpdate: (body: { enabled?: boolean; interval_minutes?: number; policy?: "pooled" | "duel" }) =>
     request<{ config: CrownFollowConfig }>("/settings/crown-follow", {

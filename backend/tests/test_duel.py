@@ -333,8 +333,13 @@ def test_standings_rank_by_head_to_head_record():
     assert by_fp["aaa"]["pair_wins"] == 8 + 5 + 3
     assert by_fp["aaa"]["pair_losses"] == 2 + 5 + 9
 
-    # Opponent lists + head-to-head cells.
-    assert by_fp["aaa"]["beaten"] == ["bbb"] and by_fp["aaa"]["lost_to"] == ["ccc"]
+    # Opponent lists carry CALL SIGNS, resolved by fingerprint — so a row recorded before
+    # naming (or before a rename) still reads under the name shown everywhere else.
+    assert by_fp["aaa"]["beaten"] == [by_fp["bbb"]["name"]]
+    assert by_fp["aaa"]["lost_to"] == [by_fp["ccc"]["name"]]
+    assert all(" " in r["name"] for r in out["standings"])  # "Adjective Noun"
+    assert len({r["name"] for r in out["standings"]}) == len(out["standings"])  # unique
+    assert out["champion"]["name"] == by_fp["ccc"]["name"]
     assert out["head_to_head"]["aaa"]["ccc"] == {
         "wins": 0,
         "losses": 1,
@@ -515,3 +520,45 @@ def test_crowns_endpoint_is_quiet_before_anything_is_crowned(client):
         s.query(CrownEvent).delete()
     out = client.get("/api/settings/crowns").json()
     assert out["pooled"] is None and out["duel"] is None and out["agree"] is False
+
+
+# ── Why a bout ends in a draw (the stopping rule's reach vs the pair cap) ─────────────
+
+
+def test_sprt_requirements_expose_an_unwinnable_cap():
+    """A cap below the rule's reach turns real winners into draws — the failure that made
+    a whole night of duels come back "0 decisive"."""
+    from pathbrain.duel import sprt_requirements
+
+    # The reported case: p1=0.70, alpha=0.05, cap 15 → a winner needs 13 of 15 (87%), so
+    # a profile taking 12 of 15 pairs (80%) is recorded as a draw.
+    tight = sprt_requirements(0.70, 0.05, 5, 15)
+    assert tight["sweep_pairs"] == 9  # fastest possible verdict is a 9-pair sweep
+    assert tight["wins_needed"] == 13
+    assert tight["restrictive"] is True
+
+    s = SprtState(p1=0.70, alpha=0.05)
+    for i in range(15):
+        s.add_pair(challenger_won=i < 12)  # 12–3
+    assert s.decision(min_pairs=5, max_pairs=15) == "draw"
+
+    # The default cap is comfortably above the rule's reach.
+    roomy = sprt_requirements(0.70, 0.05, 10, 40)
+    assert roomy["wins_needed"] == 28 and roomy["restrictive"] is False
+
+    # A cap below the sweep length can never decide anything at all.
+    impossible = sprt_requirements(0.70, 0.05, 2, 5)
+    assert impossible["wins_needed"] is None and impossible["restrictive"] is True
+
+
+def test_duel_config_exposes_the_evidence_bar(client):
+    out = client.get("/api/duel/config").json()
+    assert "p1" in out and "alpha" in out
+    assert set(out["decision"]) == {"sweep_pairs", "wins_needed", "win_rate_needed", "restrictive"}
+
+    out = client.put("/api/duel/config", json={"p1": 0.8, "alpha": 0.1, "max_pairs": 20}).json()
+    assert out["p1"] == 0.8 and out["alpha"] == 0.1
+    assert out["decision"]["wins_needed"] <= 20
+    assert client.put("/api/duel/config", json={"p1": 0.4}).status_code == 422
+    assert client.put("/api/duel/config", json={"alpha": 0.9}).status_code == 422
+    client.put("/api/duel/config", json={"p1": 0.7, "alpha": 0.05, "max_pairs": 40})

@@ -64,6 +64,9 @@ class DuelScheduleUpdate(BaseModel):
     min_pairs: int | None = None
     max_pairs: int | None = None
     min_margin: float | None = None
+    # The evidence bar: the edge worth detecting (p1) and the false-positive rate (alpha).
+    p1: float | None = None
+    alpha: float | None = None
 
 
 class DuelStart(BaseModel):

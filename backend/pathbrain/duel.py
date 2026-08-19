@@ -38,6 +38,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from . import coordinator
+from . import profile_names
 from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
@@ -117,6 +118,42 @@ class SprtState:
         if self.pairs >= max_pairs:
             return "draw"
         return None
+
+
+def sprt_requirements(p1: float, alpha: float, min_pairs: int, max_pairs: int) -> dict:
+    """What it actually takes to win a bout under the current stopping rule.
+
+    The SPRT's evidence bar and the pair cap interact in a way that is invisible from the
+    numbers alone: each pair won moves the walk by ``ln(p1/0.5)`` and each pair lost by
+    ``ln((1-p1)/0.5)`` — a *bigger* step — so a cap set too low can make a verdict
+    arithmetically unreachable for any realistic edge. At p1=0.70/alpha=0.05 with a
+    15-pair cap, a winner needs 13 of 15 (87%); a genuinely better profile winning 80% of
+    pairs is recorded as a draw, forever, no matter how many nights it runs.
+
+    Returns ``{sweep_pairs, wins_needed, win_rate_needed, restrictive}``:
+
+    * ``sweep_pairs`` — fastest possible verdict (an unbroken run of wins).
+    * ``wins_needed`` — pairs a winner must take *at the cap*, or None if the cap makes a
+      verdict impossible.
+    * ``restrictive`` — True when the cap demands a near-sweep (>80% of pairs), i.e. the
+      rule will mostly return draws.
+    """
+    p1 = min(max(float(p1 or 0.70), 0.501), 0.999)
+    alpha = min(max(float(alpha or 0.05), 0.001), 0.2)
+    win_step = math.log(p1 / 0.5)
+    loss_step = math.log((1 - p1) / 0.5)
+    upper = math.log((1 - alpha) / alpha)
+    sweep = max(int(math.ceil(upper / win_step)), int(min_pairs or 0))
+    cap = max(int(max_pairs or 0), 0)
+    wins_needed = next(
+        (w for w in range(cap + 1) if w * win_step + (cap - w) * loss_step >= upper), None
+    )
+    return {
+        "sweep_pairs": sweep,
+        "wins_needed": wins_needed,
+        "win_rate_needed": round(wins_needed / cap, 3) if wins_needed and cap else None,
+        "restrictive": wins_needed is None or (cap > 0 and wins_needed / cap > 0.8),
+    }
 
 
 def _median(values: list[float]) -> float:
@@ -279,14 +316,15 @@ def _drive(duel_id: int) -> None:
                 while verdict is None and time.monotonic() < deadline and not _state.get("cancel"):
                     _set_stage(
                         duel_id,
-                        f"Duel: {inc['label']} vs {cha['label']} — pair {sprt.pairs + 1} "
+                        f"Duel: {inc.get('name') or inc['label']} vs "
+                        f"{cha.get('name') or cha['label']} — pair {sprt.pairs + 1} "
                         f"({sprt.wins_incumbent}-{sprt.wins_challenger})",
                     )
                     pair_overalls: list[float | None] = []
                     for side_fp, side in ((incumbent_fp, inc), (challenger_fp, cha)):
                         _apply_profile(provider, side["settings"], side_fp)
                         run_id, ok, completed = run_chunk(
-                            label=f"duel · {side['label']}",
+                            label=f"duel · {side.get('name') or side['label']}",
                             notes=f"Duel #{duel_id}: {inc['label']} vs {cha['label']}",
                             iterations=1,
                             teardown=False,  # keep Chromium warm across the whole ladder
@@ -335,6 +373,11 @@ def _drive(duel_id: int) -> None:
                     "challenger": challenger_fp,
                     "incumbent_label": inc["label"],
                     "challenger_label": cha["label"],
+                    # Call signs are what the tape is read in ("Speedy Sloth vs Quantum
+                    # Quasar"); the technical labels stay beside them so a bout still says
+                    # which settings actually fought.
+                    "incumbent_name": inc.get("name"),
+                    "challenger_name": cha.get("name"),
                     "pairs": sprt.pairs,
                     "wins_incumbent": sprt.wins_incumbent,
                     "wins_challenger": sprt.wins_challenger,
@@ -364,7 +407,7 @@ def _drive(duel_id: int) -> None:
                 d = session.get(Duel, duel_id)
                 if d is not None:
                     d.champion_fingerprint = incumbent_fp
-                    d.champion_label = champion.get("label")
+                    d.champion_label = champion.get("name") or champion.get("label")
             if _state.get("cancel"):
                 final_status = DuelStatus.CANCELLED
 
@@ -544,10 +587,10 @@ def standings(limit_sessions: int = 50) -> dict:
                 rec["opponents"].add(opp_fp)
                 if margin is not None:
                     rec["margins"].append(margin)
-                if result == "win" and opp_label not in rec["beaten"]:
-                    rec["beaten"].append(opp_label)
-                if result == "loss" and opp_label not in rec["lost_to"]:
-                    rec["lost_to"].append(opp_label)
+                if result == "win" and opp_fp not in {fp for fp, _ in rec["beaten"]}:
+                    rec["beaten"].append((opp_fp, opp_label))
+                if result == "loss" and opp_fp not in {fp for fp, _ in rec["lost_to"]}:
+                    rec["lost_to"].append((opp_fp, opp_label))
                 rec["last_dueled_at"] = sess["finished_at"] or rec["last_dueled_at"]
                 rec["last_duel_id"] = sess["id"]
 
@@ -609,14 +652,27 @@ def standings(limit_sessions: int = 50) -> dict:
                 "pair_win_rate": round(rec["pair_wins"] / pairs, 3) if pairs else None,
                 "median_margin": round(_median(rec["margins"]), 2) if rec["margins"] else None,
                 "opponents": len(rec["opponents"]),
-                "beaten": rec["beaten"],
-                "lost_to": rec["lost_to"],
+                "beaten_pairs": rec["beaten"],
+                "lost_to_pairs": rec["lost_to"],
                 "championships": rec["championships"],
                 "is_champion": bool(champion and champion["fingerprint"] == rec["fingerprint"]),
                 "last_dueled_at": rec["last_dueled_at"],
                 "last_duel_id": rec["last_duel_id"],
             }
         )
+    # Resolve call signs by FINGERPRINT rather than trusting the label frozen into each
+    # matchup: rows recorded before naming (or before a rename) then read under the same
+    # name as everywhere else, so the league table and the standings can't disagree.
+    with session_scope() as session:
+        call_signs = profile_names.names_for(session, [r["fingerprint"] for r in table])
+    for row in table:
+        row["name"] = call_signs.get(row["fingerprint"]) or row["label"]
+        row["beaten"] = [call_signs.get(fp, lbl) for fp, lbl in row["beaten_pairs"]]
+        row["lost_to"] = [call_signs.get(fp, lbl) for fp, lbl in row["lost_to_pairs"]]
+        del row["beaten_pairs"], row["lost_to_pairs"]
+    if champion is not None:
+        champion["name"] = call_signs.get(champion["fingerprint"]) or champion.get("label")
+
     table.sort(
         key=lambda r: (
             r["points"],
@@ -654,14 +710,33 @@ def standings(limit_sessions: int = 50) -> dict:
     }
 
 
-def _serialize(d: Duel) -> dict:
+def _name_matchups(session, matchups: list[dict]) -> list[dict]:
+    """Fill in call signs on a tape, resolving by fingerprint.
+
+    Bouts fought before naming existed (or before a rename) carry only the technical
+    label, so the tape would read in two different vocabularies at once. Resolving here
+    means the ledger always speaks the same names as the standings.
+    """
+    rows = [dict(m or {}) for m in matchups]
+    fps = [m.get(side) for m in rows for side in ("incumbent", "challenger")]
+    call_signs = profile_names.names_for(session, [fp for fp in fps if fp])
+    for m in rows:
+        for side in ("incumbent", "challenger"):
+            m[f"{side}_name"] = m.get(f"{side}_name") or call_signs.get(m.get(side) or "")
+    return rows
+
+
+def _serialize(d: Duel, session=None) -> dict:
+    matchups = d.matchups or []
+    if session is not None:
+        matchups = _name_matchups(session, matchups)
     return {
         "id": d.id,
         "status": d.status.value if hasattr(d.status, "value") else str(d.status),
         "stage": d.stage,
         "trigger": d.trigger,
         "duration_s": d.duration_s,
-        "matchups": d.matchups or [],
+        "matchups": matchups,
         "iterations_run": d.iterations_run,
         "run_ids": d.run_ids or [],
         "champion_fingerprint": d.champion_fingerprint,
@@ -678,14 +753,14 @@ def current() -> dict | None:
     """The most recent duel session (for status polling), or None."""
     with session_scope() as session:
         d = session.scalars(select(Duel).order_by(Duel.id.desc())).first()
-        return _serialize(d) if d else None
+        return _serialize(d, session) if d else None
 
 
 def history(limit: int = 10) -> list[dict]:
     """Recent duel sessions, newest first (the head-to-head ledger)."""
     with session_scope() as session:
         rows = session.scalars(select(Duel).order_by(Duel.id.desc()).limit(limit)).all()
-        return [_serialize(d) for d in rows]
+        return [_serialize(d, session) for d in rows]
 
 
 def reconcile_interrupted_duels() -> int:
@@ -718,6 +793,7 @@ def reconcile_interrupted_duels() -> int:
 
 __all__ = [
     "SprtState",
+    "sprt_requirements",
     "active",
     "cancel",
     "current",

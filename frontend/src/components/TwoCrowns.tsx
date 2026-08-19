@@ -108,7 +108,7 @@ function CrownTile({
           <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
             {subtitle}
           </Typography>
-          {detail && (
+          {!!detail && (
             <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
               {detail}
             </Typography>
@@ -176,11 +176,13 @@ export default function TwoCrowns() {
               icon={<EmojiEventsIcon sx={{ color: "warning.main", fontSize: 34 }} />}
               kind="Overall crown"
               what="Best profile across ALL measured history — every run in every condition, pooled into one standing. Broad, but it compares profiles measured at different times."
-              title={pooled.label || pooled.fingerprint}
+              title={pooled.name || pooled.label || pooled.fingerprint}
               subtitle={`Overall ${fmtNum(pooled.overall, 1)} · holding for ${fmtReign(
                 pooled.reign_hours
               )}`}
-              detail={pooled.since ? `Took the crown ${fmtDateTime(pooled.since)}` : undefined}
+              detail={[pooled.name ? pooled.label : null, pooled.since ? `crowned ${fmtDateTime(pooled.since)}` : null]
+                .filter(Boolean)
+                .join(" · ")}
               governing={governing.source === "pooled"}
               href={`/profiles/${encodeURIComponent(pooled.fingerprint)}`}
             />
@@ -203,7 +205,7 @@ export default function TwoCrowns() {
               icon={<MilitaryTechIcon sx={{ color: "info.main", fontSize: 34 }} />}
               kind="Duel champion"
               what="Winner of the head-to-head ladder: interleaved A/B/A/B bouts where both sides met the same weather, decided by a sequential test. Narrower than the overall crown, but free of the timing confound."
-              title={duel.label || duel.fingerprint}
+              title={duel.name || duel.label || duel.fingerprint}
               subtitle={`${duel.wins}–${duel.losses}–${duel.draws} in the ring · ${
                 duel.consecutive_sessions
               } session${duel.consecutive_sessions === 1 ? "" : "s"} as champion`}

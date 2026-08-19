@@ -34,6 +34,7 @@ from ..providers import get_provider
 from ..runner import MAX_ITERATIONS
 from ..schemas import ApplySettings, TestSettings
 from ..scoring import COMPLETION_METRIC_SOURCES
+from .. import profile_names
 from ..settings_profile import (
     _to_number,
     diff_profiles,
@@ -1652,6 +1653,7 @@ def _compute_heirs(result: dict, session: Session, live: list[dict] | None = Non
             {
                 "fingerprint": p["fingerprint"],
                 "label": p["label"],
+                "name": p.get("name"),
                 "reason": "stale" if stale else ("limited-data" if opt is not None else "untested"),
                 "optimistic": opt,
                 "margin": margin,
@@ -1967,6 +1969,9 @@ def compute_profiles(
         profiles.append(
             {
                 "fingerprint": g["fingerprint"],
+                # `label` stays the technical settings summary (what the profile IS);
+                # `name` is its call sign (what to CALL it). Both travel together so a
+                # view can lead with the memorable one and keep the precise one at hand.
                 "label": summarize(g["settings"]),
                 "settings": g["settings"],
                 "count": count,
@@ -2156,6 +2161,11 @@ def compute_profiles(
 
     # Rank the table by the raw-normalized corner "overall"; profiles missing it (no crown
     # metrics captured yet) fall back to smoothness median, sort last.
+    # Call signs, in one query for the whole field (see profile_names.names_for).
+    _names = profile_names.names_for(session, [p["fingerprint"] for p in profiles])
+    for p in profiles:
+        p["name"] = _names.get(p["fingerprint"]) or p["fingerprint"][:8]
+
     profiles.sort(key=lambda p: (p["overall"] is not None, p["overall"] if p["overall"] is not None else p["median"]), reverse=True)
 
     # "Best" = the crown: the confident profile (total iterations ≥ the minimum) with the
@@ -2230,6 +2240,7 @@ def compute_profiles(
         crown_fading = {
             "fingerprint": best["fingerprint"],
             "label": best["label"],
+            "name": best.get("name"),
             **best["form"],
         }
 
@@ -2269,6 +2280,7 @@ def compute_profiles(
             weather_crown_suspect = {
                 "fingerprint": top["fingerprint"],
                 "label": top["label"],
+                "name": top.get("name"),
                 "delta_median": top["weather_relative"]["delta_median"],
                 "coverage": top["weather_relative"]["coverage"],
             }
@@ -2398,6 +2410,7 @@ def _best_diff(profiles: list[dict], best_fingerprint: str | None) -> dict | Non
         "best": {
             "fingerprint": best["fingerprint"],
             "label": best["label"],
+            "name": best.get("name"),
             "overall": best_ov,
             "completion": best_comp,
             "relative_overall": best_rel,
@@ -2406,6 +2419,7 @@ def _best_diff(profiles: list[dict], best_fingerprint: str | None) -> dict | Non
         "comparison": {
             "fingerprint": comparison["fingerprint"],
             "label": comparison["label"],
+            "name": comparison.get("name"),
             "overall": comp_ov,
             "completion": comp_comp,
             "relative_overall": comp_rel,
@@ -2913,6 +2927,20 @@ def cancel_refresh() -> dict:
 # ── Crown follower ("Follow best") ────────────────────────────────────────────────────
 
 
+@router.put("/settings/profiles/{fingerprint}/name")
+def rename_profile(fingerprint: str, body: dict = Body(...)) -> dict:
+    """Give a profile a call sign of your own ("Living Room Fix", "Old Reliable").
+
+    Names are auto-assigned on first sight; this overrides one. Uniqueness is enforced —
+    a call sign that names two profiles is worse than no call sign at all.
+    """
+    try:
+        name = profile_names.rename(fingerprint, str((body or {}).get("name") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"fingerprint": fingerprint, "name": name}
+
+
 @router.get("/settings/crowns")
 def crowns(session: Session = Depends(get_session)) -> dict:
     """**Both verdicts side by side** — the pooled crown and the duel champion.
@@ -2957,6 +2985,17 @@ def crowns(session: Session = Depends(get_session)) -> dict:
             "matchups": (record or {}).get("matchups", 0),
             "beaten": (record or {}).get("beaten", []),
         }
+
+    # Both verdicts are read by name — the whole point of the card is telling two
+    # profiles apart at a glance, which "q1514 t5ms" vs "q1514 t10ms" defeats.
+    call_signs = profile_names.names_for(
+        session,
+        [fp for fp in ((pooled or {}).get("fingerprint"), (duel_out or {}).get("fingerprint")) if fp],
+    )
+    if pooled:
+        pooled["name"] = call_signs.get(pooled["fingerprint"])
+    if duel_out:
+        duel_out["name"] = call_signs.get(duel_out["fingerprint"])
 
     last = crown_follower.status().get("last_result") or {}
     return {

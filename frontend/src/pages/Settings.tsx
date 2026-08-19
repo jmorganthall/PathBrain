@@ -277,8 +277,8 @@ export function ProfileDiffCard({
           )}
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-          Best profile <b>{diff.best.label}</b> ({diff.best.fingerprint}) vs next‑best{" "}
-          <b>{diff.comparison.label}</b> ({diff.comparison.fingerprint}). Shaper fields that differ —
+          Best profile <b>{diff.best.name || diff.best.label}</b> ({diff.best.label}) vs next‑best{" "}
+          <b>{diff.comparison.name || diff.comparison.label}</b> ({diff.comparison.label}). Shaper fields that differ —
           candidates to push further in experiments.
         </Typography>
         {diff.changes.length === 0 ? (
@@ -329,7 +329,7 @@ type SortDir = "asc" | "desc";
 function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
   switch (key) {
     case "label":
-      return p.label.toLowerCase();
+      return (p.name || p.label).toLowerCase();
     case "median":
       return p.median;
     case "speed":
@@ -544,8 +544,13 @@ function HeirsCard({
             >
               <Box sx={{ minWidth: 0 }}>
                 <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
-                  {h.label}
+                  {h.name || h.label}
                 </Typography>
+                {h.name && (
+                  <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-word" }}>
+                    {h.label}
+                  </Typography>
+                )}
                 <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.25 }} flexWrap="wrap">
                   <Chip size="small" variant="outlined" label={HEIR_REASON_LABEL[h.reason] ?? h.reason} />
                   <Typography variant="caption" color="text.secondary">
@@ -771,7 +776,7 @@ function DuelCard() {
             <Typography variant="body2" sx={{ mt: 0.75 }}>
               {champion ? (
                 <>
-                  Champion: <b>{champion.label || champion.fingerprint}</b> ·{" "}
+                  Champion: <b>{champion.name || champion.label || champion.fingerprint}</b> ·{" "}
                   {table?.decisive_matchups ?? 0} decisive bout
                   {(table?.decisive_matchups ?? 0) === 1 ? "" : "s"} on the ledger
                 </>
@@ -1669,7 +1674,7 @@ export default function Settings() {
                   >
                     <Box sx={{ minWidth: 0, flex: 1 }}>
                       <Typography variant="subtitle2" noWrap title={sp.label}>
-                        {sp.label}
+                        {sp.name || sp.label}
                         {sp.fingerprint === bestFingerprint ? " · best" : ""}
                         {sp.fingerprint !== bestFingerprint && coLeaders.has(sp.fingerprint)
                           ? " · tied"
@@ -2062,14 +2067,24 @@ export default function Settings() {
                     >
                       <TableCell sx={{ maxWidth: 360 }}>
                         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                          <Typography
-                            variant="body2"
-                            sx={{ wordBreak: "break-word", cursor: "pointer", color: "primary.light", "&:hover": { textDecoration: "underline" } }}
-                            onClick={() => navigate(`/profiles/${encodeURIComponent(p.fingerprint)}`)}
-                            title="View this profile's run history"
-                          >
-                            {p.label}
-                          </Typography>
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography
+                              variant="body2"
+                              sx={{ wordBreak: "break-word", cursor: "pointer", color: "primary.light", "&:hover": { textDecoration: "underline" } }}
+                              onClick={() => navigate(`/profiles/${encodeURIComponent(p.fingerprint)}`)}
+                              title="View this profile's run history"
+                            >
+                              {p.name || p.label}
+                            </Typography>
+                            {/* The call sign is what you say; the settings are what it
+                                means — both stay visible so the table is scannable
+                                without becoming opaque. */}
+                            {p.name && (
+                              <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-word" }}>
+                                {p.label}
+                              </Typography>
+                            )}
+                          </Box>
                           {isActive && (
                             <Tooltip title="This profile is live on the firewall right now">
                               <Chip size="small" color="info" label="active" />
