@@ -53,6 +53,11 @@ class DuelScheduleUpdate(BaseModel):
     # IANA zone the hour/minute are expressed in (browser zone sent by the UI on save).
     timezone: str | None = None
     duration_minutes: int | None = None
+    # The window's end wall-clock time (same zone as hour/minute). When given, it REPLACES
+    # duration_minutes — the schedule is edited as "from 03:00 until 05:00", and the
+    # duration the engine runs on is derived from the pair (wrapping past midnight).
+    end_hour: int | None = None
+    end_minute: int | None = None
     rematch_days: int | None = None
     # Sequential stopping rule: verdicts never fire before `min_pairs`, futility cap at
     # `max_pairs`, and a statistical winner under `min_margin` Overall points is a draw.

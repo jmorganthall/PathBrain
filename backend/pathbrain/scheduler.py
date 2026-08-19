@@ -43,7 +43,7 @@ def _maybe_run_duel() -> bool:
     """Kick the nightly duel ladder if armed and due this scheduled minute (evaluated in
     the schedule's own zone, like the baseline test). Same double-fire/day guard."""
     from . import duel
-    from .api.routes_baseline import schedule_zone
+    from .timezones import schedule_zone
 
     if duel.active():
         return False
@@ -86,7 +86,7 @@ def _maybe_run_baseline() -> bool:
     "why did my baseline run at 8pm?" bug).
     """
     from . import baseline_test
-    from .api.routes_baseline import schedule_zone
+    from .timezones import schedule_zone
 
     if baseline_test.active():
         return False

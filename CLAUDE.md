@@ -339,6 +339,12 @@ LLM-based. See `README.md` for the product overview.
     the pre-duel baseline (`reconcile_interrupted_duels` on startup); acting on verdicts is
     the crowning policy's job. Runs nightly (`config.duel`: enabled/hour/minute/timezone/
     duration, gated in `scheduler.py` like the baseline test) or on demand (`/api/duel/*`).
+    The window is **set as a start/finish clock pair**, not a minute count: `GET/PUT
+    /duel/config` carries derived `end_hour`/`end_minute`, and a PUT with an end time derives
+    `duration_minutes` (`_window_minutes`, wrapping past midnight — 22:15→01:45 = 210 min;
+    a zero-length window is refused). `duration_minutes` stays the canonical value the engine
+    counts down, so a window over 24h is still expressible. The on-demand button is the same
+    idea client-side: the page's "duel now until" clock becomes minutes-from-now at press.
     `duel.standings` (`GET /api/duel/standings`) aggregates the ledger into the **head-to-head
     league table** that page ranks on — per profile W–L–D, match points (win 3 / draw 1),
     decisive-win + pair-win rate, median Overall-point margin *signed from that profile's own
@@ -465,6 +471,19 @@ LLM-based. See `README.md` for the product overview.
     to spend iterations to confirm or deny an heir. The **vs-typical** (`relative_overall`)
     delta is kept as an informational column (and a hook for smarter heir-hunting), not a
     crown input.
+  - `timezones.py` — **the one place a stored IANA zone name becomes a `tzinfo`.** A
+    schedule's hour/minute mean the *user's* wall clock, so each schedule stores the browser
+    zone it was saved from — which only resolves if the system has an IANA tz database. A slim
+    container may not, and then `zoneinfo` raises for **every** name: that surfaced as
+    "unknown timezone 'America/Chicago' (use an IANA name)" — a 422 that blocked every save on
+    the Dueling Champions page, blaming the input for a missing OS package. So
+    `validate_timezone` rejects a name only when the system *can* resolve names and this one
+    isn't among them (no database → accept a well-formed name and warn; a saveable schedule
+    that falls back to container-local beats an unsaveable one), and `schedule_zone` never
+    raises — an unresolvable zone degrades to container-local instead of killing a scheduler
+    tick. The backend now depends on the `tzdata` package, so a normal install *has* the
+    database and the fallback is a safety net rather than the usual path. `routes_baseline`,
+    `routes_duel`, and `scheduler` all go through it.
   - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
     columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.

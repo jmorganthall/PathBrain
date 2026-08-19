@@ -62,6 +62,36 @@ const marginColor = (v: number | null | undefined) =>
 const fmtMargin = (v: number | null | undefined) =>
   v == null ? "—" : `${v > 0 ? "+" : ""}${fmtNum(v, 2)}`;
 
+const hhmm = (h: number, m: number) =>
+  `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+
+// A window is entered as two clock times, so its length is always shown back in plain
+// hours/minutes — "22:15 → 01:45" is easy to set but hard to add up in your head.
+const fmtWindow = (minutes: number) => {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h ? `${h}h${m ? ` ${m}m` : ""}` : `${m}m`;
+};
+
+// Minutes from now until the next occurrence of a wall-clock time (tomorrow if it has
+// already passed today), which is what an on-demand "duel until 06:00" means.
+const minutesUntil = (clock: string): number => {
+  const [h, m] = clock.split(":").map((x) => parseInt(x, 10));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
+  const now = new Date();
+  const end = new Date(now);
+  end.setHours(h, m, 0, 0);
+  if (end <= now) end.setDate(end.getDate() + 1);
+  return Math.max(1, Math.round((end.getTime() - now.getTime()) / 60000));
+};
+
+// The clock time `minutes` from now — seeds the "duel until" picker from the configured
+// window so the default on-demand run matches the nightly one.
+const clockIn = (minutes: number): string => {
+  const t = new Date(Date.now() + minutes * 60000);
+  return hhmm(t.getHours(), t.getMinutes());
+};
+
 function NumField({
   label,
   value,
@@ -194,7 +224,9 @@ export default function Duels() {
   const [table, setTable] = useState<DuelStandings | null>(null);
   const [ledger, setLedger] = useState<DuelSession[]>([]);
   const [policy, setPolicy] = useState<"pooled" | "duel" | null>(null);
-  const [duration, setDuration] = useState<number | null>(null);
+  // On-demand runs are also set by end time ("duel until 06:00"); the minutes the API
+  // wants are derived from the clock at the moment you press the button.
+  const [untilClock, setUntilClock] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -220,7 +252,7 @@ export default function Duels() {
         api.duelHistory(20),
       ]);
       setCfg(c);
-      setDuration((d) => d ?? c.duration_minutes);
+      setUntilClock((u) => u ?? clockIn(c.duration_minutes));
       setStatus(s.status ? s : null);
       setTable(st);
       setLedger(h.duels.filter((d) => (d.matchups?.length ?? 0) > 0 || d.status === "failed"));
@@ -277,7 +309,7 @@ export default function Duels() {
     setBusy(true);
     setError(null);
     try {
-      setStatus(await api.duelStart(duration ?? undefined));
+      setStatus(await api.duelStart(untilClock ? minutesUntil(untilClock) : undefined));
       setToast("Duel started");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -709,31 +741,53 @@ export default function Duels() {
                 </Typography>
               }
             />
-            <TextField
-              size="small"
-              type="time"
-              label="Run at"
-              value={
-                cfg
-                  ? `${String(cfg.hour).padStart(2, "0")}:${String(cfg.minute).padStart(2, "0")}`
-                  : "03:00"
-              }
-              disabled={!cfg || busy}
-              onChange={(e) => {
-                const [h, m] = e.target.value.split(":").map((x) => parseInt(x, 10));
-                void patch({ hour: h || 0, minute: m || 0 });
-              }}
-              sx={{ width: 130 }}
-              InputLabelProps={{ shrink: true }}
-            />
-            <NumField
-              label="Window (min)"
-              value={cfg?.duration_minutes ?? 120}
-              disabled={!cfg || busy}
-              min={1}
-              onCommit={(v) => void patch({ duration_minutes: Math.round(v) })}
-              help="How long a duel session runs before the ladder stops."
-            />
+            <Tooltip title="When the nightly duel starts, in the timezone you set it from.">
+              <TextField
+                size="small"
+                type="time"
+                label="Start"
+                value={cfg ? hhmm(cfg.hour, cfg.minute) : "03:00"}
+                disabled={!cfg || busy}
+                onChange={(e) => {
+                  const [h, m] = e.target.value.split(":").map((x) => parseInt(x, 10));
+                  if (!cfg || !Number.isFinite(h) || !Number.isFinite(m)) return;
+                  // Send both ends together: the backend derives the duration from the
+                  // pair, so moving the start keeps the finish time you chose.
+                  void patch({
+                    hour: h,
+                    minute: m,
+                    end_hour: cfg.end_hour,
+                    end_minute: cfg.end_minute,
+                  });
+                }}
+                sx={{ width: 130 }}
+                InputLabelProps={{ shrink: true }}
+              />
+            </Tooltip>
+            <Tooltip title="When it stops dueling. Past midnight is fine — an end before the start just means the next morning.">
+              <TextField
+                size="small"
+                type="time"
+                label="Finish"
+                value={cfg ? hhmm(cfg.end_hour, cfg.end_minute) : "05:00"}
+                disabled={!cfg || busy}
+                onChange={(e) => {
+                  const [h, m] = e.target.value.split(":").map((x) => parseInt(x, 10));
+                  if (!cfg || !Number.isFinite(h) || !Number.isFinite(m)) return;
+                  void patch({
+                    hour: cfg.hour,
+                    minute: cfg.minute,
+                    end_hour: h,
+                    end_minute: m,
+                  });
+                }}
+                sx={{ width: 130 }}
+                InputLabelProps={{ shrink: true }}
+              />
+            </Tooltip>
+            <Typography variant="caption" color="text.secondary">
+              {cfg ? `= ${fmtWindow(cfg.duration_minutes)} of dueling` : ""}
+            </Typography>
             <NumField
               label="Min pairs"
               value={cfg?.min_pairs ?? 10}
@@ -765,14 +819,21 @@ export default function Duels() {
               onCommit={(v) => void patch({ rematch_days: Math.round(v) })}
               help="Cooldown before a decided pairing can be fought again."
             />
-            <NumField
-              label="Duel now (min)"
-              value={duration ?? cfg?.duration_minutes ?? 120}
-              disabled={busy || active}
-              min={1}
-              onCommit={(v) => setDuration(Math.round(v))}
-              help="Window length for an on-demand duel started with the button above."
-            />
+            <Tooltip title="When an on-demand duel (the button above) should stop. Defaults to the same window length as the nightly one.">
+              <TextField
+                size="small"
+                type="time"
+                label="Duel now until"
+                value={untilClock ?? clockIn(cfg?.duration_minutes ?? 120)}
+                disabled={busy || active}
+                onChange={(e) => setUntilClock(e.target.value)}
+                sx={{ width: 150 }}
+                InputLabelProps={{ shrink: true }}
+              />
+            </Tooltip>
+            <Typography variant="caption" color="text.secondary">
+              {untilClock ? `= ${fmtWindow(minutesUntil(untilClock))} from now` : ""}
+            </Typography>
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
             Duel runs join the pooled record like any other runs; duel <b>verdicts</b> live

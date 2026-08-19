@@ -1511,6 +1511,11 @@ export interface DuelConfig {
   enabled: boolean;
   hour: number;
   minute: number;
+  // The window's finish time, derived server-side from start + duration. The page edits
+  // the schedule as a start/finish pair and PUTs both; `duration_minutes` stays the
+  // canonical value the engine counts down.
+  end_hour: number;
+  end_minute: number;
   timezone: string;
   duration_minutes: number;
   min_pairs: number;
