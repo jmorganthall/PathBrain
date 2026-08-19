@@ -1559,12 +1559,16 @@ export interface CrownsOut {
 // What the stopping rule actually demands of a bout, computed server-side. A pair cap
 // below the rule's reach makes every matchup a draw — invisible from the raw numbers.
 export interface DuelDecisionCost {
-  // Fastest possible verdict: an unbroken run of pair wins.
-  sweep_pairs: number;
-  // Pairs a winner must take at the cap (null = the cap can never decide anything).
+  // Fastest possible verdict: the fewest consistently one-sided pairs that can decide.
+  sweep_pairs: number | null;
+  // Pair-wins rule only: the win COUNT needed at the cap (null under the margins rule,
+  // which judges by how much each pair was won, not how many).
   wins_needed: number | null;
   win_rate_needed: number | null;
-  // True when the cap demands a near-sweep, i.e. the rule will mostly return draws.
+  // Margins rule only: the peek-corrected threshold actually applied, and the correction.
+  nominal_alpha?: number;
+  peek_penalty?: number;
+  // True when the rule can mostly (or never) reach a verdict at these settings.
   restrictive: boolean;
 }
 
@@ -1586,6 +1590,10 @@ export interface DuelConfig {
   // The evidence bar: the edge worth detecting, and the false-positive rate.
   p1: number;
   alpha: number;
+  // How a bout is judged: "margins" (paired signed-rank — uses HOW MUCH each pair was
+  // won by) or "pair_wins" (the legacy sign test — counts winners, ignores margins).
+  method: "margins" | "pair_wins";
+  methods: ("margins" | "pair_wins")[];
   decision: DuelDecisionCost;
 }
 

@@ -554,11 +554,138 @@ def test_sprt_requirements_expose_an_unwinnable_cap():
 def test_duel_config_exposes_the_evidence_bar(client):
     out = client.get("/api/duel/config").json()
     assert "p1" in out and "alpha" in out
-    assert set(out["decision"]) == {"sweep_pairs", "wins_needed", "win_rate_needed", "restrictive"}
+    assert {"sweep_pairs", "wins_needed", "win_rate_needed", "restrictive"} <= set(out["decision"])
 
     out = client.put("/api/duel/config", json={"p1": 0.8, "alpha": 0.1, "max_pairs": 20}).json()
     assert out["p1"] == 0.8 and out["alpha"] == 0.1
-    assert out["decision"]["wins_needed"] <= 20
+    # Under the default (margins) rule there is no win COUNT to hit — the margins decide.
+    assert out["decision"]["wins_needed"] is None
+    legacy = client.put("/api/duel/config", json={"method": "pair_wins"}).json()
+    assert legacy["decision"]["wins_needed"] <= 20
+    client.put("/api/duel/config", json={"method": "margins"})
     assert client.put("/api/duel/config", json={"p1": 0.4}).status_code == 422
     assert client.put("/api/duel/config", json={"alpha": 0.9}).status_code == 422
     client.put("/api/duel/config", json={"p1": 0.7, "alpha": 0.05, "max_pairs": 40})
+
+
+# ── Magnitude-aware adjudication (the sensitivity fix) ───────────────────────────────
+
+
+def test_wilcoxon_matches_the_exact_null_distribution():
+    from pathbrain.duel import wilcoxon_p
+
+    # n consistently one-sided pairs with distinct magnitudes: p = 1/2^n exactly.
+    for n in (5, 6, 8, 10):
+        deltas = [float(i + 1) for i in range(n)]
+        assert abs(wilcoxon_p(deltas) - 1 / 2**n) < 1e-12
+        assert wilcoxon_p(deltas, direction=-1) == 1.0  # the wrong direction proves nothing
+    # Symmetric evidence is worthless in either direction.
+    assert wilcoxon_p([1.0, -1.0, 2.0, -2.0, 3.0, -3.0]) > 0.4
+
+
+def test_margins_decide_the_bout_the_sign_test_could_not():
+    """The reported case: 12 pair wins to 3, with real margins. The sign test recorded a
+    draw; the paired test calls it — because the margins were consistently one-sided."""
+    from pathbrain.duel import PairedEvidence
+
+    deltas = [2.0, 1.5, 3.0, 0.8, 2.2, 1.1, 4.0, 0.6, 1.9, 2.5, 1.2, 3.1, -0.4, -1.0, -0.2]
+
+    sign = SprtState(p1=0.70, alpha=0.05)
+    for d in deltas:
+        sign.add_pair(d > 0)
+    assert sign.decision(min_pairs=5, max_pairs=15) == "draw"  # what the user saw
+
+    paired = PairedEvidence(alpha=0.05, min_margin=0.01, min_pairs=5, max_pairs=15)
+    verdict = None
+    for d in deltas:
+        paired.add(d)
+        verdict = verdict or paired.decision()
+    assert verdict == "challenger"
+    assert paired.p_value(1) < paired.nominal_alpha
+
+
+def test_the_practical_floor_still_governs():
+    """Sensitivity must not mean calling meaningless differences. A dead-consistent but
+    tiny edge stays a draw — the floor is a separate question from significance."""
+    from pathbrain.duel import PairedEvidence
+
+    paired = PairedEvidence(alpha=0.05, min_margin=1.0, min_pairs=5, max_pairs=20)
+    for _ in range(20):
+        paired.add(0.05)  # unmistakably one-sided, and unmistakably irrelevant
+    assert paired.decision() is None
+
+    worth_it = PairedEvidence(alpha=0.05, min_margin=1.0, min_pairs=5, max_pairs=20)
+    for i in range(10):
+        worth_it.add(1.5 + i * 0.1)
+    assert worth_it.decision() == "challenger"
+
+
+def test_peek_correction_holds_the_false_positive_rate():
+    """Peeking after every pair inflates false positives; the fitted penalty holds them
+    near alpha. Simulated against true ties (fixed seed, so this is deterministic)."""
+    import random
+
+    from pathbrain.duel import PairedEvidence, peek_penalty
+
+    assert peek_penalty(36) > peek_penalty(11) > peek_penalty(6) >= 2.0
+
+    rng = random.Random(4242)
+    false_calls = 0
+    trials = 400
+    for _ in range(trials):
+        ev = PairedEvidence(alpha=0.05, min_margin=0.0, min_pairs=5, max_pairs=15)
+        for _ in range(15):
+            ev.add(rng.gauss(0.0, 1.5))  # no true difference at all
+            if ev.decision() is not None:
+                false_calls += 1
+                break
+    assert false_calls / trials <= 0.09  # ~5% target, sampling slack on 400 trials
+
+
+def test_margins_are_far_more_sensitive_than_pair_wins():
+    """The point of the change, measured: against a true 1-point edge with realistic run
+    noise, the paired test calls the winner far more often than the sign test."""
+    import random
+
+    from pathbrain.duel import PairedEvidence
+
+    rng = random.Random(99)
+    sign_calls = paired_calls = 0
+    trials = 300
+    for _ in range(trials):
+        deltas = [rng.gauss(1.0, 1.5) for _ in range(15)]
+
+        sign = SprtState(p1=0.70, alpha=0.05)
+        called = False
+        for d in deltas:
+            sign.add_pair(d > 0)
+            if sign.decision(min_pairs=5, max_pairs=15) in ("challenger", "incumbent"):
+                called = True
+                break
+        sign_calls += called
+
+        ev = PairedEvidence(alpha=0.05, min_margin=0.01, min_pairs=5, max_pairs=15)
+        called = False
+        for d in deltas:
+            ev.add(d)
+            if ev.decision() is not None:
+                called = True
+                break
+        paired_calls += called
+
+    assert paired_calls > sign_calls * 1.5, (paired_calls, sign_calls)
+
+
+def test_duel_config_carries_the_method(client):
+    out = client.get("/api/duel/config").json()
+    assert out["method"] == "margins"  # magnitude-aware by default
+    assert set(out["methods"]) == {"margins", "pair_wins"}
+    # The margins rule has no cap at which a verdict becomes unreachable.
+    assert out["decision"]["restrictive"] is False
+    assert out["decision"]["sweep_pairs"] >= 4
+
+    legacy = client.put("/api/duel/config", json={"method": "pair_wins"}).json()
+    assert legacy["method"] == "pair_wins"
+    assert legacy["decision"]["wins_needed"] is not None  # back to a win-count rule
+    assert client.put("/api/duel/config", json={"method": "vibes"}).status_code == 422
+    client.put("/api/duel/config", json={"method": "margins"})

@@ -345,6 +345,24 @@ LLM-based. See `README.md` for the product overview.
     a zero-length window is refused). `duration_minutes` stays the canonical value the engine
     counts down, so a window over 24h is still expressible. The on-demand button is the same
     idea client-side: the page's "duel now until" clock becomes minutes-from-now at press.
+    **Bouts are adjudicated on the paired MARGINS, not the pair-win count** (`duel.method`,
+    default `"margins"`). The original rule was a Wald SPRT on which side won each pair — a
+    **sign test**, which discards *by how much* and so throws away most of the evidence a duel
+    produces: measured against a true 1.0-point edge with ~1.5-point run noise, a 15-pair bout
+    called a winner just **28%** of the time ("profiles are winning but aren't presented as
+    winners"). `PairedEvidence` runs a one-sided **Wilcoxon signed-rank** test on the
+    challenger-minus-incumbent Overall margins (`wilcoxon_p`: exact below 25 pairs — the regime
+    duels actually run in, where the normal approximation is needlessly conservative —
+    tie-corrected normal beyond), which lifts the same bout to **~60-70%** and calls a 2-point
+    edge essentially always. Peeking after every pair inflates false positives (an uncorrected
+    5% test fires on ~26% of true ties over a 40-pair bout), so the threshold is divided by a
+    Pocock-style `peek_penalty` **fitted by simulation** (≈`3.32·ln(peeks) − 2.97`: alpha/3 at 6
+    peeks, /5 at 11, /9 at 36) which holds the realized false-verdict rate at ~alpha. The
+    practical floor (`min_margin`) still gates every verdict — significance and *worth acting on*
+    are separate questions — and the SPRT walk is retained purely as the **futility** detector
+    (its "pair wins ~50/50" exit still ends settled ties early). The legacy sign test stays
+    available as `method="pair_wins"` for comparison. Crucially the margins rule has **no cap at
+    which a verdict becomes unreachable** — more pairs only ever help.
     `duel.sprt_requirements` answers the question the raw settings hide — **what it actually
     takes to win a bout**. Each pair won moves the walk by `ln(p1/0.5)` and each pair lost by
     `ln((1-p1)/0.5)`, a *bigger* step, so the pair cap and the evidence bar interact: at

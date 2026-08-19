@@ -120,6 +120,32 @@ class SprtState:
         return None
 
 
+def paired_requirements(alpha: float, min_pairs: int, max_pairs: int) -> dict:
+    """What the magnitude-aware rule demands — the sensitivity readout for the UI.
+
+    ``sweep_pairs`` is the fewest consistently one-sided pairs that clear the peek-
+    corrected threshold (the fastest possible verdict). Unlike the sign test, there is no
+    cap at which a verdict becomes unreachable: more evidence always helps, so the
+    "restrictive" trap the pair-win rule falls into cannot happen here.
+    """
+    ev = PairedEvidence(alpha, 0.0, min_pairs, max_pairs)
+    nominal = ev.nominal_alpha
+    sweep = None
+    for n in range(max(int(min_pairs or 1), 4), max(int(max_pairs or 1), 4) + 1):
+        # Distinct magnitudes, all one-sided: the best case a bout can present.
+        if wilcoxon_p([float(i + 1) for i in range(n)]) <= nominal:
+            sweep = n
+            break
+    return {
+        "sweep_pairs": sweep,
+        "wins_needed": None,  # not a win-count rule — the margins decide
+        "win_rate_needed": None,
+        "nominal_alpha": round(nominal, 5),
+        "peek_penalty": round(peek_penalty(max(int(max_pairs or 1) - int(min_pairs or 1) + 1, 2)), 2),
+        "restrictive": sweep is None,
+    }
+
+
 def sprt_requirements(p1: float, alpha: float, min_pairs: int, max_pairs: int) -> dict:
     """What it actually takes to win a bout under the current stopping rule.
 
@@ -154,6 +180,129 @@ def sprt_requirements(p1: float, alpha: float, min_pairs: int, max_pairs: int) -
         "win_rate_needed": round(wins_needed / cap, 3) if wins_needed and cap else None,
         "restrictive": wins_needed is None or (cap > 0 and wins_needed / cap > 0.8),
     }
+
+
+# ── Magnitude-aware adjudication (Wilcoxon signed-rank on the paired margins) ─────────
+#
+# The SPRT above is a SIGN test: it records which side won each pair and discards by how
+# much. That costs enormous power on exactly the data duels produce. Measured against a
+# true 1.0-point edge with ~1.5-point run noise, a 15-pair bout called a winner just 28%
+# of the time — profiles genuinely winning, never presented as winners.
+#
+# The paired differences carry the magnitudes, so testing THEM instead recovers the
+# signal: the same bout is decided 60-70% of the time, and a 2-point edge is called
+# essentially always (measured; see test_duel). Wilcoxon signed-rank is the right test
+# here — it uses magnitude via ranks without assuming normal margins, which matters
+# because a duel's deltas are a handful of medians with occasional wild ones.
+#
+# Peeking after every pair inflates false positives (a 40-pair bout peeks 36 times, and
+# an uncorrected 5% test fires on ~26% of true ties). The nominal threshold is therefore
+# divided by a Pocock-style penalty fitted by simulation over the practical range of peek
+# counts, which holds the realized false-positive rate at ~5%.
+
+
+def _rank_sum_counts(n: int) -> list[int]:
+    """Counts of rank subsets by sum — the exact Wilcoxon null distribution for n pairs."""
+    total = n * (n + 1) // 2
+    counts = [0] * (total + 1)
+    counts[0] = 1
+    for rank in range(1, n + 1):
+        for w in range(total, rank - 1, -1):
+            counts[w] += counts[w - rank]
+    return counts
+
+
+def wilcoxon_p(deltas: list[float], direction: int = 1) -> float:
+    """One-sided p-value that the paired differences favour ``direction`` (+1 = positive).
+
+    Exact for small samples (the regime a duel actually runs in — a normal approximation
+    is noticeably conservative under ~25 pairs, which would throw away the sensitivity
+    this whole change is about) and the tie-corrected normal approximation beyond.
+    """
+    d = [x * direction for x in deltas if x != 0]
+    n = len(d)
+    if n < 4:  # too little to distinguish from chance at any sane alpha
+        return 1.0
+    order = sorted(range(n), key=lambda i: abs(d[i]))
+    ranks = [0.0] * n
+    i = 0
+    while i < n:  # average ranks within ties
+        j = i
+        while j + 1 < n and abs(d[order[j + 1]]) == abs(d[order[i]]):
+            j += 1
+        avg = (i + j) / 2 + 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg
+        i = j + 1
+    w_pos = sum(r for r, x in zip(ranks, d) if x > 0)
+
+    if n <= 25 and all(float(r).is_integer() for r in ranks):  # exact, no ties
+        counts = _rank_sum_counts(n)
+        total = sum(counts)
+        at_least = sum(c for w, c in enumerate(counts) if w >= w_pos)
+        return at_least / total
+
+    mean = n * (n + 1) / 4
+    var = n * (n + 1) * (2 * n + 1) / 24
+    if var <= 0:
+        return 1.0
+    z = (w_pos - mean - 0.5) / math.sqrt(var)
+    return 0.5 * math.erfc(z / math.sqrt(2))
+
+
+def peek_penalty(peeks: int) -> float:
+    """How much to tighten the nominal threshold for testing after every pair.
+
+    Fitted by simulation (null margins, sequential peeking) so the realized false-positive
+    rate lands at the configured alpha across 6-36 peeks: alpha/3 at 6 peeks, alpha/5 at
+    11, alpha/9 at 36. Without it a 40-pair bout would call a coin-flip a winner a quarter
+    of the time.
+    """
+    return max(2.0, 3.32 * math.log(max(peeks, 2)) - 2.97)
+
+
+class PairedEvidence:
+    """Accumulates each pair's Overall margin and decides when one side has really won.
+
+    ``add(delta)`` takes the challenger-minus-incumbent margin of one interleaved pair.
+    ``decision()`` returns ``"challenger"``/``"incumbent"`` once the signed-rank test
+    clears the peek-corrected threshold **and** the median margin clears the practical
+    floor (``duel.min_margin``) — statistical reality and practical significance are
+    separate questions, and a verdict needs both.
+    """
+
+    def __init__(self, alpha: float, min_margin: float, min_pairs: int, max_pairs: int) -> None:
+        self.alpha = min(max(float(alpha or 0.05), 0.001), 0.2)
+        self.min_margin = max(float(min_margin or 0.0), 0.0)
+        self.min_pairs = max(int(min_pairs or 1), 1)
+        self.max_pairs = max(int(max_pairs or 1), self.min_pairs)
+        self.deltas: list[float] = []
+
+    @property
+    def nominal_alpha(self) -> float:
+        peeks = self.max_pairs - self.min_pairs + 1
+        return self.alpha / peek_penalty(peeks)
+
+    def add(self, delta: float) -> None:
+        self.deltas.append(float(delta))
+
+    @property
+    def pairs(self) -> int:
+        return len(self.deltas)
+
+    def p_value(self, direction: int = 1) -> float:
+        return wilcoxon_p(self.deltas, direction)
+
+    def decision(self) -> str | None:
+        if self.pairs < self.min_pairs:
+            return None
+        median = _median(self.deltas)
+        if abs(median) < self.min_margin:  # real but not worth acting on
+            return None
+        direction = 1 if median > 0 else -1
+        if self.p_value(direction) <= self.nominal_alpha:
+            return "challenger" if direction > 0 else "incumbent"
+        return None
 
 
 def _median(values: list[float]) -> float:
@@ -268,6 +417,7 @@ def _drive(duel_id: int) -> None:
                 duration_s = d.duration_s
                 cfg = _duel_config(session)
                 meth_version = ensure_current_methodology(session, get_config(session)).version
+            method = str(cfg.get("method", "margins") or "margins").lower()
             p1 = float(cfg.get("p1", 0.70) or 0.70)
             alpha = float(cfg.get("alpha", 0.05) or 0.05)
             min_pairs = int(cfg.get("min_pairs", 10) or 10)
@@ -308,6 +458,11 @@ def _drive(duel_id: int) -> None:
                 inc = settings_by_fp[incumbent_fp]
                 cha = settings_by_fp[challenger_fp]
                 sprt = SprtState(p1, alpha)
+                # Magnitude-aware adjudicator. The SPRT walk still runs alongside it: the
+                # sign test is a poor winner-detector but a fine FUTILITY detector, and
+                # its "pair wins are ~50/50" exit is what stops a settled tie from eating
+                # the rest of the window.
+                paired = PairedEvidence(alpha, min_margin, min_pairs, max_pairs)
                 deltas: list[float] = []
                 bad_streak = 0
                 verdict: str | None = None
@@ -350,21 +505,58 @@ def _drive(duel_id: int) -> None:
                     delta = cha_val - inc_val
                     deltas.append(delta)
                     sprt.add_pair(delta > 0)
-                    verdict = sprt.decision(min_pairs, max_pairs)
-                    if verdict in ("challenger", "incumbent"):
-                        # Practical-significance floor: a real-but-negligible edge is a draw.
-                        if abs(_median(deltas)) < min_margin:
-                            verdict, reason = "draw", (
-                                f"boundary crossed but |median Δ| < {min_margin} — practically equal"
+                    paired.add(delta)
+
+                    if method == "pair_wins":
+                        # Legacy: adjudicate on which side won each pair, magnitudes ignored.
+                        verdict = sprt.decision(min_pairs, max_pairs)
+                        if verdict in ("challenger", "incumbent"):
+                            if abs(_median(deltas)) < min_margin:
+                                verdict, reason = "draw", (
+                                    f"boundary crossed but |median Δ| < {min_margin} — practically equal"
+                                )
+                            else:
+                                reason = "SPRT boundary crossed"
+                        elif verdict == "draw":
+                            reason = (
+                                "mutual futility (pair wins ~50/50)"
+                                if sprt.pairs < max_pairs
+                                else f"no decision in {max_pairs} pairs"
+                            )
+                    else:
+                        # Default: decide on the paired MARGINS (signed-rank), which is
+                        # where the evidence actually lives; fall back to the sign test's
+                        # futility exit and the pair cap for draws.
+                        verdict = paired.decision()
+                        if verdict is not None:
+                            reason = (
+                                f"margins consistently one-sided "
+                                f"(p={paired.p_value(1 if verdict == 'challenger' else -1):.4f} "
+                                f"≤ {paired.nominal_alpha:.4f}, median Δ "
+                                f"{_median(deltas):+.2f})"
                             )
                         else:
-                            reason = "SPRT boundary crossed"
-                    elif verdict == "draw":
-                        reason = (
-                            "mutual futility (pair wins ~50/50)"
-                            if sprt.pairs < max_pairs
-                            else f"no decision in {max_pairs} pairs"
-                        )
+                            # No winner yet. Three ways a bout still ends — and the pair cap
+                            # is checked HERE rather than being inherited from the sign
+                            # test, which can sit on a "winner" verdict the margin floor
+                            # keeps rejecting and so never terminates the loop.
+                            sign_verdict = sprt.decision(min_pairs, max_pairs)
+                            below_floor = (
+                                sign_verdict in ("challenger", "incumbent")
+                                and abs(_median(deltas)) < min_margin
+                            )
+                            if below_floor:
+                                verdict = "draw"
+                                reason = (
+                                    f"one side wins the pairs, but by < {min_margin} "
+                                    f"Overall pts — practically equal"
+                                )
+                            elif sign_verdict == "draw":
+                                verdict = "draw"
+                                reason = "mutual futility (no consistent margin either way)"
+                            elif paired.pairs >= max_pairs:
+                                verdict = "draw"
+                                reason = f"no decision in {max_pairs} pairs"
 
                 if verdict is None:
                     verdict, reason = "draw", "window closed mid-matchup (undecided)"
@@ -384,6 +576,12 @@ def _drive(duel_id: int) -> None:
                     "median_delta": round(_median(deltas), 2) if deltas else None,
                     "llr_incumbent": round(sprt.llr_incumbent, 2),
                     "llr_challenger": round(sprt.llr_challenger, 2),
+                    # How the bout was judged, and the evidence that judged it.
+                    "method": method,
+                    "p_value": (
+                        round(min(paired.p_value(1), paired.p_value(-1)), 5) if deltas else None
+                    ),
+                    "alpha_used": round(paired.nominal_alpha, 5),
                     "verdict": verdict,
                     "reason": reason,
                 }
@@ -792,8 +990,12 @@ def reconcile_interrupted_duels() -> int:
 
 
 __all__ = [
+    "PairedEvidence",
     "SprtState",
+    "paired_requirements",
+    "peek_penalty",
     "sprt_requirements",
+    "wilcoxon_p",
     "active",
     "cancel",
     "current",

@@ -42,6 +42,9 @@ def _end_clock(start_h: int, start_m: int, duration_minutes: int) -> tuple[int, 
 
 def _schedule_payload(cfg: dict) -> dict:
     d = cfg.get("duel", {}) or {}
+    method = str(d.get("method", "margins") or "margins").lower()
+    if method not in ("margins", "pair_wins"):
+        method = "margins"
     hour = int(d.get("hour", 3) or 0)
     minute = int(d.get("minute", 0) or 0)
     duration = int(d.get("duration_minutes", 120) or 120)
@@ -65,13 +68,26 @@ def _schedule_payload(cfg: dict) -> dict:
         # willing to call a coin-flip a winner (alpha).
         "p1": float(d.get("p1", 0.70) or 0.70),
         "alpha": float(d.get("alpha", 0.05) or 0.05),
-        # What the above actually demands of a bout — surfaced because a cap set below the
-        # rule's reach turns every matchup into a draw, which is otherwise invisible.
-        "decision": duel.sprt_requirements(
-            d.get("p1", 0.70),
-            d.get("alpha", 0.05),
-            int(d.get("min_pairs", 10) or 10),
-            int(d.get("max_pairs", 40) or 40),
+        # How a bout is judged: "margins" (default — Wilcoxon signed-rank on the paired
+        # Overall differences, which uses HOW MUCH each pair was won by) or "pair_wins"
+        # (the legacy sign test, which only counts who won each pair).
+        "method": method,
+        "methods": ["margins", "pair_wins"],
+        # What the active rule actually demands of a bout — surfaced because the pair-win
+        # rule's cap can make a verdict unreachable, which is otherwise invisible.
+        "decision": (
+            duel.paired_requirements(
+                d.get("alpha", 0.05),
+                int(d.get("min_pairs", 10) or 10),
+                int(d.get("max_pairs", 40) or 40),
+            )
+            if method == "margins"
+            else duel.sprt_requirements(
+                d.get("p1", 0.70),
+                d.get("alpha", 0.05),
+                int(d.get("min_pairs", 10) or 10),
+                int(d.get("max_pairs", 40) or 40),
+            )
         ),
     }
 
@@ -131,6 +147,12 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
             raise HTTPException(status_code=422, detail="rematch_days cannot be negative")
         updates["rematch_days"] = int(payload.rematch_days)
 
+    if payload.method is not None:
+        if payload.method not in ("margins", "pair_wins"):
+            raise HTTPException(
+                status_code=422, detail="method must be 'margins' or 'pair_wins'"
+            )
+        updates["method"] = payload.method
     if payload.p1 is not None:
         if not 0.5 < float(payload.p1) < 1.0:
             raise HTTPException(status_code=422, detail="p1 must be between 0.5 and 1.0")

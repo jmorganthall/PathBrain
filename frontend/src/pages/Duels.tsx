@@ -243,6 +243,22 @@ function VerdictChip({ m }: { m: DuelMatchup }) {
 function DecisionCost({ cfg }: { cfg: DuelConfig }) {
   const d = cfg.decision;
   if (!d) return null;
+  if (cfg.method === "margins") {
+    return (
+      <Alert severity="info" icon={false} sx={{ mt: 2, py: 0.5 }}>
+        <Typography variant="caption" component="div">
+          <b>What it takes to win a bout.</b> Bouts are judged on the <b>size</b> of each
+          pair's margin, not just who won it — so a profile that wins by a consistent
+          amount is called even when it drops the odd pair. The fastest possible verdict is{" "}
+          {d.sweep_pairs ?? "—"} consistently one-sided pairs. Testing after every pair
+          would inflate false alarms, so the threshold is tightened to{" "}
+          {d.nominal_alpha?.toFixed(4)} (your {cfg.alpha} error rate ÷ {d.peek_penalty}),
+          which holds real false verdicts near {Math.round(cfg.alpha * 100)}%. There is no
+          cap at which a winner becomes unreachable — more pairs only ever help.
+        </Typography>
+      </Alert>
+    );
+  }
   const impossible = d.wins_needed == null;
   return (
     <Alert
@@ -917,9 +933,29 @@ export default function Duels() {
 
           {/* ── How a bout is called ───────────────────────────────────────────────── */}
           <Divider sx={{ my: 2 }} />
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }} flexWrap="wrap" useFlexGap>
             <GavelIcon fontSize="small" color="action" />
             <Typography variant="subtitle2">How a bout is called</Typography>
+            <Tooltip title="Judge by HOW MUCH each pair was won (Wilcoxon signed-rank on the margins). Far more sensitive: against a true 1-point edge it calls the winner about 2.4x as often as counting pair wins.">
+              <Chip
+                size="small"
+                label="By margin"
+                color={cfg?.method === "margins" ? "primary" : "default"}
+                variant={cfg?.method === "margins" ? "filled" : "outlined"}
+                onClick={() => void patch({ method: "margins" })}
+                disabled={!cfg || busy}
+              />
+            </Tooltip>
+            <Tooltip title="Judge by WHO won each pair, ignoring the size of the margin (a sign test). Distribution-free, but it discards most of the evidence — this is what recorded near-sweeps as draws.">
+              <Chip
+                size="small"
+                label="By pair wins"
+                color={cfg?.method === "pair_wins" ? "primary" : "default"}
+                variant={cfg?.method === "pair_wins" ? "filled" : "outlined"}
+                onClick={() => void patch({ method: "pair_wins" })}
+                disabled={!cfg || busy}
+              />
+            </Tooltip>
           </Stack>
           <Box sx={FIELD_GRID}>
             <NumField
@@ -946,7 +982,8 @@ export default function Duels() {
               onCommit={(v) => void patch({ min_margin: v })}
               helper="How much better a winner must actually be (Overall points). Below this it's a draw — real, but too small to care about."
             />
-            <NumField
+            {cfg?.method === "pair_wins" && (
+              <NumField
               label="Edge to detect"
               value={cfg?.p1 ?? 0.7}
               disabled={!cfg || busy}
@@ -954,7 +991,8 @@ export default function Duels() {
               step={0.05}
               onCommit={(v) => void patch({ p1: Math.min(0.99, v) })}
               helper="How lopsided a win to look for (0.7 = wins 70% of pairs). Lower it to catch smaller edges — at the cost of more pairs per verdict."
-            />
+              />
+            )}
             <NumField
               label="Error rate"
               value={cfg?.alpha ?? 0.05}
