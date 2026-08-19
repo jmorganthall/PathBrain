@@ -22,6 +22,10 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
+import EditIcon from "@mui/icons-material/Edit";
+import SaveIcon from "@mui/icons-material/Save";
+import IconButton from "@mui/material/IconButton";
+import TextField from "@mui/material/TextField";
 
 import { api } from "../api/client";
 import type {
@@ -59,6 +63,8 @@ export default function ProfileDetail() {
   const { fingerprint = "" } = useParams<{ fingerprint: string }>();
   const navigate = useNavigate();
   const [profile, setProfile] = useState<SettingsProfile | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
   const [allProfiles, setAllProfiles] = useState<SettingsProfile[]>([]);
   // The current methodology's crown metrics (from the profiles response's `overall_metrics`), so
   // the standings boxes always follow the crown — never a hardcoded axis set.
@@ -206,6 +212,20 @@ export default function ProfileDetail() {
     [rankedMetrics, allProfiles, profile],
   );
 
+  // Rename: profiles get an auto-assigned call sign, but a name you chose yourself
+  // ("Living Room Fix") beats a generated one for the profile you actually care about.
+  const saveName = async () => {
+    const next = nameDraft.trim();
+    setRenaming(false);
+    if (!profile || !next || next === profile.name) return;
+    try {
+      const out = await api.profileRename(profile.fingerprint, next);
+      setProfile({ ...profile, name: out.name });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   if (loading) return <Loading label="Loading profile…" />;
 
   const isActive = currentFp != null && currentFp === fingerprint;
@@ -256,9 +276,50 @@ export default function ProfileDetail() {
         sx={{ mb: 2 }}
       >
         <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h4" sx={{ wordBreak: "break-word" }}>
-            {profile?.label ?? "Profile"}
-          </Typography>
+          {/* The call sign is the headline; the settings summary and fingerprint stay
+              underneath, because the name is for talking about the profile and those two
+              are for knowing exactly which one it is. */}
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            {renaming ? (
+              <TextField
+                size="small"
+                autoFocus
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void saveName();
+                  if (e.key === "Escape") setRenaming(false);
+                }}
+                helperText="A name of your own — must be unique. Enter to save, Esc to cancel."
+                sx={{ minWidth: 260 }}
+              />
+            ) : (
+              <Typography variant="h4" sx={{ wordBreak: "break-word" }}>
+                {profile?.name || profile?.label || "Profile"}
+              </Typography>
+            )}
+            {profile && (
+              <Tooltip title={renaming ? "Save this name" : "Rename this profile"}>
+                <IconButton
+                  size="small"
+                  onClick={() => {
+                    if (renaming) void saveName();
+                    else {
+                      setNameDraft(profile.name || "");
+                      setRenaming(true);
+                    }
+                  }}
+                >
+                  {renaming ? <SaveIcon fontSize="small" /> : <EditIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
+            )}
+          </Stack>
+          {profile?.name && (
+            <Typography variant="body2" color="text.secondary" sx={{ wordBreak: "break-word" }}>
+              {profile.label}
+            </Typography>
+          )}
           <Typography variant="caption" color="text.secondary">
             {fingerprint}
           </Typography>

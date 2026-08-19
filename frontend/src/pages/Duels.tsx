@@ -218,7 +218,10 @@ function marginPhrase(m: DuelMatchup): string {
 function VerdictChip({ m }: { m: DuelMatchup }) {
   if (m.verdict === "draw")
     return <Chip size="small" label="draw" variant="outlined" color="default" />;
-  const winner = m.verdict === "challenger" ? m.challenger_label : m.incumbent_label;
+  const winner =
+    m.verdict === "challenger"
+      ? m.challenger_name || m.challenger_label
+      : m.incumbent_name || m.incumbent_label;
   return (
     <Chip
       size="small"
@@ -226,6 +229,50 @@ function VerdictChip({ m }: { m: DuelMatchup }) {
       label={`${winner} wins`}
       icon={<SportsMmaIcon />}
     />
+  );
+}
+
+// "Why is everything a draw?" — answered on the page instead of left to arithmetic.
+//
+// Each pair won moves the sequential test up by ln(p1/0.5); each pair lost moves it down
+// by ln((1-p1)/0.5), a BIGGER step. So the pair cap and the evidence bar interact: at
+// p1=0.70 / alpha=0.05 with a 15-pair cap, a winner needs 13 of 15 (87%) — a profile
+// genuinely winning 80% of its pairs can never be declared the winner, however many
+// nights it runs. That's invisible from the numbers, so the card states it outright and
+// warns when the cap is set below the rule's reach.
+function DecisionCost({ cfg }: { cfg: DuelConfig }) {
+  const d = cfg.decision;
+  if (!d) return null;
+  const impossible = d.wins_needed == null;
+  return (
+    <Alert
+      severity={d.restrictive ? "warning" : "info"}
+      icon={false}
+      sx={{ mt: 2, py: 0.5 }}
+    >
+      <Typography variant="caption" component="div">
+        <b>What it takes to win a bout.</b> The fastest possible verdict is a{" "}
+        {d.sweep_pairs}-pair clean sweep.{" "}
+        {impossible ? (
+          <>
+            At your {cfg.max_pairs}-pair cap <b>no result can ever be decisive</b> — every
+            bout will be recorded as a draw. Raise the cap above {d.sweep_pairs}, or lower
+            the evidence bar.
+          </>
+        ) : (
+          <>
+            At your {cfg.max_pairs}-pair cap a winner must take{" "}
+            <b>
+              {d.wins_needed} of {cfg.max_pairs}
+            </b>{" "}
+            ({Math.round((d.win_rate_needed ?? 0) * 100)}%). Anything closer is a draw
+            {d.restrictive
+              ? " — that's a near-sweep, so most bouts will draw. Raise the pair cap (40 gives a winner room at 70%), or lower the evidence bar below."
+              : "."}
+          </>
+        )}
+      </Typography>
+    </Alert>
   );
 }
 
@@ -243,13 +290,20 @@ function BoutRow({ m }: { m: DuelMatchup }) {
         alignItems={{ xs: "flex-start", md: "center" }}
         justifyContent="space-between"
       >
-        <Typography variant="body2" sx={{ fontWeight: 500 }}>
-          {m.incumbent_label}{" "}
-          <Typography component="span" variant="caption" color="text.secondary">
-            (holder)
-          </Typography>{" "}
-          vs {m.challenger_label}
-        </Typography>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="body2" sx={{ fontWeight: 500 }}>
+            {m.incumbent_name || m.incumbent_label}{" "}
+            <Typography component="span" variant="caption" color="text.secondary">
+              (holder)
+            </Typography>{" "}
+            vs {m.challenger_name || m.challenger_label}
+          </Typography>
+          {(m.incumbent_name || m.challenger_name) && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+              {m.incumbent_label} vs {m.challenger_label}
+            </Typography>
+          )}
+        </Box>
         <Stack direction="row" spacing={1} alignItems="center">
           <Typography variant="caption" color="text.secondary">
             {m.wins_incumbent}–{m.wins_challenger} in {m.pairs} pairs · {marginPhrase(m)}
@@ -472,7 +526,7 @@ export default function Duels() {
                         }
                         sx={{ font: "inherit" }}
                       >
-                        {champion.label || champion.fingerprint}
+                        {champion.name || champion.label || champion.fingerprint}
                       </Link>
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
@@ -594,10 +648,20 @@ export default function Duels() {
                               navigate(`/profiles/${encodeURIComponent(r.fingerprint)}`)
                             }
                             sx={{ font: "inherit", textAlign: "left" }}
+                            title={r.label}
                           >
-                            {r.label}
+                            {r.name || r.label}
                           </Link>
                         </Stack>
+                        {r.name && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{ display: "block" }}
+                          >
+                            {r.label}
+                          </Typography>
+                        )}
                         {(r.beaten.length > 0 || r.lost_to.length > 0) && (
                           <Typography variant="caption" color="text.secondary">
                             {r.beaten.length > 0 && `beat ${r.beaten.join(", ")}`}
@@ -658,8 +722,8 @@ export default function Duels() {
                     {gridRows.map((c) => (
                       <TableCell key={c.fingerprint} align="center">
                         <Tooltip title={c.label}>
-                          <Typography variant="caption" noWrap sx={{ maxWidth: 90, display: "block" }}>
-                            {c.label}
+                          <Typography variant="caption" noWrap sx={{ maxWidth: 110, display: "block" }}>
+                            {c.name || c.label}
                           </Typography>
                         </Tooltip>
                       </TableCell>
@@ -670,7 +734,9 @@ export default function Duels() {
                   {gridRows.map((r) => (
                     <TableRow key={r.fingerprint} hover>
                       <TableCell sx={{ whiteSpace: "nowrap" }}>
-                        <Typography variant="caption">{r.label}</Typography>
+                        <Tooltip title={r.label}>
+                          <Typography variant="caption">{r.name || r.label}</Typography>
+                        </Tooltip>
                       </TableCell>
                       {gridRows.map((c) => {
                         if (c.fingerprint === r.fingerprint)
@@ -695,7 +761,7 @@ export default function Duels() {
                         return (
                           <TableCell key={c.fingerprint} align="center">
                             <Tooltip
-                              title={`${cell.pairs} pairs · median Δ ${fmtMargin(cell.median_margin)} in ${r.label}'s favour`}
+                              title={`${cell.pairs} pairs · median Δ ${fmtMargin(cell.median_margin)} in ${r.name || r.label}'s favour`}
                             >
                               <Typography variant="caption" sx={{ color }}>
                                 {cell.wins}–{cell.losses}–{cell.draws}
@@ -881,6 +947,23 @@ export default function Duels() {
               helper="How much better a winner must actually be (Overall points). Below this it's a draw — real, but too small to care about."
             />
             <NumField
+              label="Edge to detect"
+              value={cfg?.p1 ?? 0.7}
+              disabled={!cfg || busy}
+              min={0.51}
+              step={0.05}
+              onCommit={(v) => void patch({ p1: Math.min(0.99, v) })}
+              helper="How lopsided a win to look for (0.7 = wins 70% of pairs). Lower it to catch smaller edges — at the cost of more pairs per verdict."
+            />
+            <NumField
+              label="Error rate"
+              value={cfg?.alpha ?? 0.05}
+              disabled={!cfg || busy}
+              step={0.01}
+              onCommit={(v) => void patch({ alpha: Math.min(0.49, Math.max(0.001, v)) })}
+              helper="How often you'll accept a wrong verdict (0.05 = 1 in 20). Raising it decides bouts sooner, with less certainty."
+            />
+            <NumField
               label="Rematch after"
               value={cfg?.rematch_days ?? 7}
               disabled={!cfg || busy}
@@ -888,6 +971,8 @@ export default function Duels() {
               helper="Days before the same two profiles can fight again. Keeps duels on fresh questions."
             />
           </Box>
+
+          {cfg && <DecisionCost cfg={cfg} />}
 
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
             Duel runs join the pooled record like any other runs; duel <b>verdicts</b> live

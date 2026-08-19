@@ -700,3 +700,23 @@ class Duel(Base):
     # The ladder's final incumbent (the duel champion) when the session completed.
     champion_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     champion_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class ProfileName(Base):
+    """A settings profile's memorable **call sign** ("Speedy Sloth").
+
+    A fingerprint identifies a profile exactly and a settings summary describes it
+    precisely, but neither is scannable: a field of 150 profiles differing in one number
+    reads as a wall of near-identical strings, and a duel between two of them is
+    unnarratable. The name is assigned once — deterministically derived from the
+    fingerprint by ``profile_names``, or set by hand — and then **persisted here forever**,
+    so a profile is never renamed behind the user's back and old duel tapes keep their
+    cast. ``name`` is unique, which is what makes the call sign a real identifier rather
+    than a decoration.
+    """
+
+    __tablename__ = "profile_names"
+
+    fingerprint: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

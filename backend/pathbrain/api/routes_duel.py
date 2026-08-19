@@ -61,6 +61,18 @@ def _schedule_payload(cfg: dict) -> dict:
         "max_pairs": int(d.get("max_pairs", 40) or 40),
         "min_margin": float(d.get("min_margin", 1.0) or 0.0),
         "rematch_days": int(d.get("rematch_days", 7) or 7),
+        # The evidence bar itself: how big an edge to look for (p1) and how often we're
+        # willing to call a coin-flip a winner (alpha).
+        "p1": float(d.get("p1", 0.70) or 0.70),
+        "alpha": float(d.get("alpha", 0.05) or 0.05),
+        # What the above actually demands of a bout — surfaced because a cap set below the
+        # rule's reach turns every matchup into a draw, which is otherwise invisible.
+        "decision": duel.sprt_requirements(
+            d.get("p1", 0.70),
+            d.get("alpha", 0.05),
+            int(d.get("min_pairs", 10) or 10),
+            int(d.get("max_pairs", 40) or 40),
+        ),
     }
 
 
@@ -119,6 +131,14 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
             raise HTTPException(status_code=422, detail="rematch_days cannot be negative")
         updates["rematch_days"] = int(payload.rematch_days)
 
+    if payload.p1 is not None:
+        if not 0.5 < float(payload.p1) < 1.0:
+            raise HTTPException(status_code=422, detail="p1 must be between 0.5 and 1.0")
+        updates["p1"] = float(payload.p1)
+    if payload.alpha is not None:
+        if not 0.0 < float(payload.alpha) < 0.5:
+            raise HTTPException(status_code=422, detail="alpha must be between 0 and 0.5")
+        updates["alpha"] = float(payload.alpha)
     if payload.min_margin is not None:
         if float(payload.min_margin) < 0:
             raise HTTPException(status_code=422, detail="min_margin cannot be negative")

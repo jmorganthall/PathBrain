@@ -98,7 +98,11 @@ export interface ProfileSpread {
 
 export interface SettingsProfile {
   fingerprint: string;
+  // `label` is the technical settings summary ("wan: 900Mbit q1514 t5ms") — what the
+  // profile IS. `name` is its call sign ("Speedy Sloth") — what to CALL it. Views lead
+  // with the name and keep the summary as secondary detail.
   label: string;
+  name?: string;
   settings: Array<Record<string, unknown>> | null;
   count: number;
   iterations: number;
@@ -246,6 +250,7 @@ export interface ProfileFieldChange {
 export interface ProfileDiffSide {
   fingerprint: string;
   label: string;
+  name?: string | null;
   // Field-normalized Overall (the crown corner we rank on), null if no crown data.
   overall: number | null;
   completion: number | null;
@@ -274,6 +279,7 @@ export interface ProfileDiff {
 export interface CrownHeir {
   fingerprint: string;
   label: string;
+  name?: string;
   // Why it isn't the crown yet: "limited-data" (under the iteration minimum),
   // "stale" (confident but not re-run recently), or "untested" (no ceiling estimate yet).
   reason: "limited-data" | "stale" | "untested";
@@ -1513,6 +1519,7 @@ export interface CrownFollowStatus {
 export interface PooledCrown {
   fingerprint: string;
   label: string | null;
+  name?: string | null;
   overall: number | null;
   since: string | null;
   reign_hours: number | null;
@@ -1521,6 +1528,7 @@ export interface PooledCrown {
 export interface DuelCrown {
   fingerprint: string;
   label: string | null;
+  name?: string | null;
   duel_id: number;
   finished_at: string | null;
   consecutive_sessions: number;
@@ -1548,6 +1556,18 @@ export interface CrownsOut {
 
 // ── Duel ladder (head-to-head adjudication) ─────────────────────────────────────────
 
+// What the stopping rule actually demands of a bout, computed server-side. A pair cap
+// below the rule's reach makes every matchup a draw — invisible from the raw numbers.
+export interface DuelDecisionCost {
+  // Fastest possible verdict: an unbroken run of pair wins.
+  sweep_pairs: number;
+  // Pairs a winner must take at the cap (null = the cap can never decide anything).
+  wins_needed: number | null;
+  win_rate_needed: number | null;
+  // True when the cap demands a near-sweep, i.e. the rule will mostly return draws.
+  restrictive: boolean;
+}
+
 export interface DuelConfig {
   enabled: boolean;
   hour: number;
@@ -1563,6 +1583,10 @@ export interface DuelConfig {
   max_pairs: number;
   min_margin: number;
   rematch_days: number;
+  // The evidence bar: the edge worth detecting, and the false-positive rate.
+  p1: number;
+  alpha: number;
+  decision: DuelDecisionCost;
 }
 
 export interface DuelMatchup {
@@ -1570,6 +1594,9 @@ export interface DuelMatchup {
   challenger: string;
   incumbent_label: string;
   challenger_label: string;
+  // Call signs recorded at duel time (absent on bouts fought before naming existed).
+  incumbent_name?: string | null;
+  challenger_name?: string | null;
   pairs: number;
   wins_incumbent: number;
   wins_challenger: number;
@@ -1588,6 +1615,8 @@ export interface DuelStanding {
   rank: number;
   fingerprint: string;
   label: string;
+  // Call sign, resolved by fingerprint — so rows recorded before naming read correctly.
+  name?: string;
   matchups: number;
   wins: number;
   losses: number;
@@ -1622,6 +1651,7 @@ export interface DuelHeadToHeadCell {
 export interface DuelChampionStanding {
   fingerprint: string;
   label: string | null;
+  name?: string | null;
   duel_id: number;
   finished_at: string | null;
   // How many consecutive completed sessions this profile has ended as champion.

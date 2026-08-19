@@ -345,6 +345,15 @@ LLM-based. See `README.md` for the product overview.
     a zero-length window is refused). `duration_minutes` stays the canonical value the engine
     counts down, so a window over 24h is still expressible. The on-demand button is the same
     idea client-side: the page's "duel now until" clock becomes minutes-from-now at press.
+    `duel.sprt_requirements` answers the question the raw settings hide — **what it actually
+    takes to win a bout**. Each pair won moves the walk by `ln(p1/0.5)` and each pair lost by
+    `ln((1-p1)/0.5)`, a *bigger* step, so the pair cap and the evidence bar interact: at
+    p1=0.70/alpha=0.05 with `max_pairs=15` a winner needs **13 of 15 (87%)**, and a profile
+    genuinely taking 80% of its pairs is recorded as a draw forever (the real "why is everything
+    a draw?" report — a 12–3 bout reaches LLR 2.505 against a 2.944 boundary). `GET /duel/config`
+    returns `decision` (`sweep_pairs` / `wins_needed` / `win_rate_needed` / `restrictive`) and the
+    page states it outright, warning when the cap demands a near-sweep. `p1`/`alpha` are editable
+    from the same card ("Edge to detect" / "Error rate").
     `duel.standings` (`GET /api/duel/standings`) aggregates the ledger into the **head-to-head
     league table** that page ranks on — per profile W–L–D, match points (win 3 / draw 1),
     decisive-win + pair-win rate, median Overall-point margin *signed from that profile's own
@@ -480,6 +489,24 @@ LLM-based. See `README.md` for the product overview.
     to spend iterations to confirm or deny an heir. The **vs-typical** (`relative_overall`)
     delta is kept as an informational column (and a hook for smarter heir-hunting), not a
     crown input.
+  - `profile_names.py` — **call signs for profiles** ("Speedy Sloth", not `q1514 t5ms`). A
+    fingerprint identifies a profile and `summarize()` describes it, but neither is scannable:
+    150 profiles differing in one number are a wall of near-identical strings, and a duel
+    between two of them is unnarratable. Names are **deterministically derived** from the
+    fingerprint (blake2b seed → ~500 adjectives × ~500 nouns, alliterative *by preference*),
+    **persisted** in `ProfileName`, and **unique by construction** (a taken name is probed past;
+    the candidate stream ends in a fingerprint-suffixed name that cannot collide). Deliberately
+    not AI-generated: a name must be stable (never re-rolled behind the user), offline (no key,
+    no per-profile call), and unique — which a sampling model can't guarantee. Assignment always
+    opens its **own** `session_scope`, because request sessions come from the read-only
+    `get_session` dependency that closes without committing (a name written there would evaporate
+    and the next request would re-derive it against a different taken-set). `names_for` is the
+    bulk accessor every list view uses (one query, not N). SQM-off gets the fixed name **"No
+    Shaper"** — the control group is the one profile a whimsical name would obscure. Users can
+    override any name via `PUT /api/settings/profiles/{fp}/name` (the pencil on Profile Detail);
+    uniqueness is enforced. Every view leads with `name` and keeps the technical `label` beside
+    it; duel matchups record both, and the standings/tape re-resolve names **by fingerprint** so
+    bouts fought before naming (or before a rename) read under today's names.
   - `timezones.py` — **the one place a stored IANA zone name becomes a `tzinfo`.** A
     schedule's hour/minute mean the *user's* wall clock, so each schedule stores the browser
     zone it was saved from — which only resolves if the system has an IANA tz database. A slim
