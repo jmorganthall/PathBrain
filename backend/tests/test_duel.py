@@ -134,11 +134,16 @@ def test_duel_ladder_crowns_a_challenger_and_restores(monkeypatch):
 
 
 def test_duel_margin_floor_records_a_draw(monkeypatch):
-    """A statistically real but sub-margin edge (Δ ~0.4 < min_margin 1.0) is a draw."""
+    """A statistically real but sub-margin edge (Δ ~0.4) is a draw *when the user asks for
+    a floor*. The floor is opt-in now — by default a consistent win counts however small,
+    matching the pooled crown — so this test sets it explicitly."""
     import pathbrain.api.routes_settings as rs
+
+    from pathbrain.config_store import save_config
 
     with session_scope() as s:
         s.query(Duel).delete()  # no rematch-cooldown carryover between tests
+        save_config(s, {"duel": {"min_margin": 1.0}})
     fake_field = {
         "best_fingerprint": "inc0000000x",
         "profiles": [
@@ -170,6 +175,8 @@ def test_duel_margin_floor_records_a_draw(monkeypatch):
     assert "practically equal" in m["reason"]
     # The incumbent keeps the crown on a draw.
     assert d.champion_fingerprint == "inc0000000x"
+    with session_scope() as s:
+        save_config(s, {"duel": {"min_margin": 0.0}})  # back to the default (no floor)
 
 
 # ── Crowning policy resolution ───────────────────────────────────────────────────────
@@ -760,3 +767,41 @@ def test_preset_endpoint_sets_the_numbers(client):
     assert out["preset"] == "custom"
     assert client.put("/api/duel/config", json={"preset": "nope"}).status_code == 422
     client.put("/api/duel/config", json={"preset": "balanced", "min_margin": 1.0, "hour": 3})
+
+
+def test_a_clean_streak_ends_a_bout_and_is_the_length_the_card_advertises():
+    """"If it wins back to back, it wins" — true, at the length that isn't just luck.
+
+    Between identical profiles a 30-pair bout throws up a 3-in-a-row streak 99.7% of the
+    time, so the streak has to be long enough to mean something; that length falls out of
+    the test (1/2^n vs the threshold) rather than being a separate rule.
+    """
+    from pathbrain.duel import PRESETS, PairedEvidence, preset_config, streak_to_decide
+
+    for name, preset in PRESETS.items():
+        cfg = preset_config(name)
+        n = streak_to_decide(cfg["alpha"], cfg["min_pairs"], cfg["max_pairs"])
+        assert n is not None
+        # The card's promise must be the code's behavior.
+        assert f"{n} wins in a row" in preset["summary"], (name, preset["summary"], n)
+
+        ev = PairedEvidence(cfg["alpha"], 0.0, cfg["min_pairs"], cfg["max_pairs"])
+        for i in range(n - 1):
+            ev.add(1.0 + i * 0.1)
+            assert ev.decision() is None, f"{name}: decided early at {i + 1} straight"
+        ev.add(9.9)
+        assert ev.decision() == "challenger", f"{name}: {n} straight should end it"
+
+
+def test_a_consistent_win_counts_however_small_by_default():
+    """The pooled crown has no margin floor — the duel shouldn't invent one. A profile
+    that wins every pair by a hair is the winner unless the user says otherwise."""
+    from pathbrain.config_store import DEFAULT_CONFIG
+    from pathbrain.duel import PairedEvidence
+
+    assert float(DEFAULT_CONFIG["duel"]["min_margin"]) == 0.0
+
+    ev = PairedEvidence(alpha=0.05, min_margin=0.0, min_pairs=8, max_pairs=30)
+    for i in range(8):
+        ev.add(0.02 + i * 0.001)  # tiny, but relentlessly one-sided
+    assert ev.decision() == "challenger"

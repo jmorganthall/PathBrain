@@ -255,7 +255,8 @@ function DecisionCost({ cfg }: { cfg: DuelConfig }) {
     return (
       <Alert severity="info" icon={false} sx={{ mt: 2, py: 0.5 }}>
         <Typography variant="caption" component="div">
-          <b>What it takes to win a bout.</b> Bouts are judged on the <b>size</b> of each
+          <b>What it takes to win a bout.</b> {d.streak_pairs ?? "—"} wins in a row ends it
+          immediately. Short of that, bouts are judged on the <b>size</b> of each
           pair's margin, not just who won it — so a profile that wins by a consistent
           amount is called even when it drops the odd pair. The fastest possible verdict is{" "}
           {d.sweep_pairs ?? "—"} consistently one-sided pairs. Testing after every pair
@@ -947,7 +948,9 @@ export default function Duels() {
             <Typography variant="subtitle2">How sure before calling a winner</Typography>
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-            One choice. Each option states what it actually does — measured, not adjectives.
+            One choice. Win enough pairs back to back and the bout ends there; win most of
+            them convincingly and it ends too. Longer streaks mean fewer wrong calls — between
+            two identical profiles, a 3-in-a-row happens in 99.7% of bouts by luck alone.
           </Typography>
           <Box sx={PRESET_GRID}>
             {(cfg?.presets ?? []).map((preset) => {
@@ -984,17 +987,6 @@ export default function Duels() {
             </Typography>
           )}
 
-          <Box sx={{ mt: 2, maxWidth: 340 }}>
-            <NumField
-              label="Ignore differences smaller than"
-              value={cfg?.min_margin ?? 1}
-              disabled={!cfg || busy}
-              step={0.5}
-              onCommit={(v) => void patch({ min_margin: v })}
-              helper="Overall points. A profile that wins by less than this is recorded as a draw — real, but too small to bother switching for."
-            />
-          </Box>
-
           {/* Everything below is the same question expressed in its parts. Kept for
               anyone who wants it, out of the way of everyone who doesn't. */}
           <Button
@@ -1029,6 +1021,14 @@ export default function Duels() {
                 step={0.01}
                 onCommit={(v) => void patch({ alpha: Math.min(0.49, Math.max(0.001, v)) })}
                 helper="How often you'll accept a wrong verdict (0.05 = 1 in 20)."
+              />
+              <NumField
+                label="Ignore wins smaller than"
+                value={cfg?.min_margin ?? 0}
+                disabled={!cfg || busy}
+                step={0.5}
+                onCommit={(v) => void patch({ min_margin: v })}
+                helper="Overall points; 0 = a consistent win counts however small (matching the crown). Raise it to record hair-thin wins as draws instead."
               />
               <NumField
                 label="Rematch after"

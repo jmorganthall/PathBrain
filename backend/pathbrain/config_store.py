@@ -220,7 +220,10 @@ DEFAULT_CONFIG: dict = {
         # as a named choice rather than as "custom".
         "min_pairs": 8,
         "max_pairs": 30,
-        "min_margin": 1.0,
+        # 0 = a consistent win counts, however small — matching the pooled crown, which
+        # likewise has no margin floor ("the profile that wins wins"). Raise it only to
+        # ignore differences too small to care about.
+        "min_margin": 0.0,
         # A decided matchup isn't re-dueled for this many days (the ladder moves on).
         "rematch_days": 7,
     },

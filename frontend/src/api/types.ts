@@ -1561,6 +1561,8 @@ export interface CrownsOut {
 export interface DuelDecisionCost {
   // Fastest possible verdict: the fewest consistently one-sided pairs that can decide.
   sweep_pairs: number | null;
+  // The same thing in plain language: N wins in a row ends a bout on the spot.
+  streak_pairs?: number | null;
   // Pair-wins rule only: the win COUNT needed at the cap (null under the margins rule,
   // which judges by how much each pair was won, not how many).
   wins_needed: number | null;

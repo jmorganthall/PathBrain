@@ -137,24 +137,24 @@ PRESETS: dict[str, dict] = {
         "alpha": 0.10,
         "min_pairs": 5,
         "max_pairs": 20,
-        "summary": "Calls a winner fast; about 1 verdict in 9 will be wrong.",
-        "detail": "Spots a 1-point edge ~80% of the time, usually within 10 pairs.",
+        "summary": "6 wins in a row ends it. About 1 verdict in 9 will be wrong.",
+        "detail": "Also calls a profile that wins most (not all) pairs — ~80% of true 1-point edges, usually within 10.",
     },
     "balanced": {
         "label": "Balanced",
         "alpha": 0.05,
         "min_pairs": 8,
         "max_pairs": 30,
-        "summary": "The default: about 1 verdict in 16 will be wrong.",
-        "detail": "Spots a 1-point edge ~85% of the time, usually within 14 pairs.",
+        "summary": "8 wins in a row ends it. About 1 verdict in 16 will be wrong.",
+        "detail": "Also calls a profile that wins most (not all) pairs — ~85% of true 1-point edges, usually within 14.",
     },
     "strict": {
         "label": "Only when certain",
         "alpha": 0.01,
         "min_pairs": 12,
         "max_pairs": 60,
-        "summary": "Rarely wrong (~1 verdict in 60), but needs a longer window.",
-        "detail": "Spots a 1-point edge ~97% of the time, usually within 24 pairs.",
+        "summary": "12 wins in a row ends it. Rarely wrong (~1 verdict in 60).",
+        "detail": "Also calls a profile that wins most (not all) pairs — ~97% of true 1-point edges, usually within 24.",
     },
 }
 
@@ -181,6 +181,28 @@ def preset_config(name: str) -> dict:
     return {k: preset[k] for k in PRESET_KEYS}
 
 
+def streak_to_decide(alpha: float, min_pairs: int, max_pairs: int) -> int | None:
+    """How many pairs in a row end a bout on the spot.
+
+    This is the "if it wins back to back, it wins" rule, and it falls straight out of the
+    test rather than being bolted on: an unbroken run of n pairs has p = 1/2ⁿ, so a bout
+    is decided the moment the run is long enough to clear the threshold.
+
+    The length matters more than intuition suggests. Between two IDENTICAL profiles, a
+    30-pair bout throws up a 3-in-a-row streak 99.7% of the time, 5-in-a-row 62%, and
+    8-in-a-row 9% — a short streak is what a coin flip looks like, not evidence. Going the
+    other way, a pure streak rule is glacial: a profile winning 70% of its pairs needs ~54
+    pairs on average to string 8 together. Hence the paired test, which honours a clean
+    run *and* can still call a profile that goes 12-3 without ever stringing 8 together.
+    """
+    ev = PairedEvidence(alpha, 0.0, min_pairs, max_pairs)
+    nominal = ev.nominal_alpha
+    for n in range(max(int(min_pairs or 1), 4), max(int(max_pairs or 1), 4) + 1):
+        if 0.5**n <= nominal:
+            return n
+    return None
+
+
 def paired_requirements(alpha: float, min_pairs: int, max_pairs: int) -> dict:
     """What the magnitude-aware rule demands — the sensitivity readout for the UI.
 
@@ -199,6 +221,8 @@ def paired_requirements(alpha: float, min_pairs: int, max_pairs: int) -> dict:
             break
     return {
         "sweep_pairs": sweep,
+        # The plain-language version of the same rule: N wins in a row ends it now.
+        "streak_pairs": streak_to_decide(alpha, min_pairs, max_pairs),
         "wins_needed": None,  # not a win-count rule — the margins decide
         "win_rate_needed": None,
         "nominal_alpha": round(nominal, 5),
@@ -1056,6 +1080,7 @@ __all__ = [
     "SprtState",
     "preset_config",
     "preset_for",
+    "streak_to_decide",
     "paired_requirements",
     "peek_penalty",
     "sprt_requirements",
