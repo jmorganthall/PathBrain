@@ -20,28 +20,17 @@ from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
 from ..logging_config import get_logger
 from ..schemas import BaselineScheduleUpdate, BaselineTestStart
+from ..timezones import schedule_zone as _schedule_zone
+from ..timezones import validate_timezone
 
 router = APIRouter()
 log = get_logger("api.baseline")
 
 
-def schedule_zone(bt: dict):
-    """The tzinfo the schedule's hour/minute are expressed in.
-
-    ``baseline_test.timezone`` holds the IANA zone the user saved the schedule from (the
-    browser's zone, sent by the UI) — so "Run at 02:00" means the *user's* 02:00 no matter
-    what TZ the container happens to run. Empty/invalid → the container's local zone (the
-    legacy behavior, correct only when TZ is wired through to the container).
-    """
-    from zoneinfo import ZoneInfo
-
-    tz_name = (bt.get("timezone") or "").strip()
-    if tz_name:
-        try:
-            return ZoneInfo(tz_name)
-        except Exception:  # noqa: BLE001 — bad stored zone → fall back, never crash the tick
-            log.warning("Invalid baseline_test.timezone %r; falling back to container-local", tz_name)
-    return datetime.now().astimezone().tzinfo
+# The schedule's own zone (``baseline_test.timezone``, the browser zone captured on save)
+# — resolved by the shared timezone module, which degrades to container-local rather than
+# raising, so a missing tz database can never kill a scheduler tick.
+schedule_zone = _schedule_zone
 
 
 def _schedule_payload(cfg: dict) -> dict:
@@ -112,17 +101,10 @@ def update_baseline_config(payload: BaselineScheduleUpdate) -> dict:
             raise HTTPException(status_code=422, detail="settle_seconds cannot be negative")
         updates["settle_seconds"] = int(payload.settle_seconds)
     if payload.timezone is not None:
-        tz_name = payload.timezone.strip()
-        if tz_name:  # "" clears the zone back to container-local
-            from zoneinfo import ZoneInfo
-
-            try:
-                ZoneInfo(tz_name)
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(
-                    status_code=422, detail=f"unknown timezone {tz_name!r} (use an IANA name)"
-                ) from exc
-        updates["timezone"] = tz_name
+        try:  # "" clears the zone back to container-local
+            updates["timezone"] = validate_timezone(payload.timezone)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     with session_scope() as session:
         cfg = save_config(session, {"baseline_test": updates}) if updates else get_config(session)

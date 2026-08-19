@@ -376,3 +376,81 @@ def test_standings_endpoint_and_stopping_rule_config(client):
     assert client.put("/api/duel/config", json={"min_margin": -1}).status_code == 422
     assert client.put("/api/duel/config", json={"min_margin": 2.5}).json()["min_margin"] == 2.5
     client.put("/api/duel/config", json={"min_pairs": 10, "max_pairs": 40, "min_margin": 1.0})
+
+
+# ── Scheduling the window as a start/end pair ────────────────────────────────────────
+
+
+def test_window_minutes_wraps_past_midnight():
+    from pathbrain.api.routes_duel import _end_clock, _window_minutes
+
+    assert _window_minutes(3, 0, 5, 30) == 150
+    assert _window_minutes(23, 30, 1, 0) == 90  # crosses midnight
+    assert _window_minutes(3, 0, 3, 0) == 0  # zero-length — the route rejects this
+    assert _end_clock(3, 0, 150) == (5, 30)
+    assert _end_clock(23, 30, 90) == (1, 0)
+
+
+def test_schedule_accepts_an_end_time_and_derives_the_duration(client):
+    # A start/end pair (what the page sends) sets the duration the engine counts down.
+    out = client.put(
+        "/api/duel/config", json={"hour": 22, "minute": 15, "end_hour": 1, "end_minute": 45}
+    ).json()
+    assert (out["hour"], out["minute"]) == (22, 15)
+    assert (out["end_hour"], out["end_minute"]) == (1, 45)
+    assert out["duration_minutes"] == 210  # wraps past midnight
+
+    # The end time round-trips as a derived field even when only the duration is set.
+    out = client.put("/api/duel/config", json={"duration_minutes": 60}).json()
+    assert (out["end_hour"], out["end_minute"]) == (23, 15)
+
+    # A zero-length window is refused rather than silently stored.
+    assert (
+        client.put("/api/duel/config", json={"end_hour": 22, "end_minute": 15}).status_code == 422
+    )
+    assert client.put("/api/duel/config", json={"end_hour": 24}).status_code == 422
+    client.put("/api/duel/config", json={"hour": 3, "minute": 0, "duration_minutes": 120})
+
+
+# ── Timezone handling (a missing tz database must not block saving a schedule) ───────
+
+
+def test_timezone_validation_blames_the_name_only_when_it_can(monkeypatch):
+    from pathbrain import timezones
+
+    assert timezones.validate_timezone("America/Chicago") == "America/Chicago"
+    assert timezones.validate_timezone("  ") == ""
+
+    # With a tz database present, a bogus name is a real error.
+    monkeypatch.setattr(timezones, "tzdata_available", lambda: True)
+    try:
+        timezones.validate_timezone("Not/AZone")
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "unknown timezone" in str(exc)
+
+    # Without one, NO name resolves — so a well-formed name is accepted (the schedule
+    # stays saveable and falls back to container-local) and only garbage is refused.
+    monkeypatch.setattr(timezones, "tzdata_available", lambda: False)
+    monkeypatch.setattr(timezones, "zone_or_none", lambda name: None)
+    assert timezones.validate_timezone("America/Chicago") == "America/Chicago"
+    try:
+        timezones.validate_timezone("not a zone!")
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "not a valid IANA" in str(exc)
+
+
+def test_schedule_zone_never_raises():
+    from pathbrain.timezones import schedule_zone
+
+    assert schedule_zone({"timezone": "America/Chicago"}) is not None
+    assert schedule_zone({"timezone": "Not/AZone"}) is not None  # falls back, no raise
+    assert schedule_zone({}) is not None
+
+
+def test_browser_timezone_saves_on_the_duel_page(client):
+    """The page sends its browser zone with every patch — that must never 422."""
+    out = client.put("/api/duel/config", json={"timezone": "America/Chicago"}).json()
+    assert out["timezone"] == "America/Chicago"
+    client.put("/api/duel/config", json={"timezone": ""})
