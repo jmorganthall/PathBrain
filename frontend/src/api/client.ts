@@ -35,6 +35,7 @@ import type {
   DuelConfig,
   DuelSession,
   DuelStandings,
+  CrownsOut,
   AiConfig,
   AiModel,
   AiStreamEvent,
@@ -324,6 +325,7 @@ export const api = {
   cancelRace: () => request<{ cancelled: boolean }>("/settings/race/cancel", { method: "POST" }),
 
   // Crown follower ("Follow best"): status + churn stats, config toggle, and a manual sync.
+  crowns: () => request<CrownsOut>("/settings/crowns"),
   crownFollow: () => request<CrownFollowStatus>("/settings/crown-follow"),
   crownFollowUpdate: (body: { enabled?: boolean; interval_minutes?: number; policy?: "pooled" | "duel" }) =>
     request<{ config: CrownFollowConfig }>("/settings/crown-follow", {

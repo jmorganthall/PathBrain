@@ -31,6 +31,7 @@ import type {
 } from "../api/types";
 import { ImpactBanner } from "./Settings";
 import ScoreGauge from "../components/ScoreGauge";
+import TwoCrowns from "../components/TwoCrowns";
 import SubscoreBreakdown from "../components/SubscoreBreakdown";
 import SeriesChart from "../components/SeriesChart";
 import Waterfall from "../components/Waterfall";
@@ -316,6 +317,10 @@ export default function Dashboard() {
           {error}
         </Alert>
       )}
+
+      {/* The two crowns: the all-history standings winner and the head-to-head champion,
+          side by side, with the one automation follows marked. */}
+      <TwoCrowns />
 
       {/* Test current settings for X minutes: a time-boxed collection loop on the live
           profile, chunked into short runs so an interruption keeps its data. */}

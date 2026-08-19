@@ -430,6 +430,14 @@ export default function Layout({ children }: { children: ReactNode }) {
         sx={{
           flexGrow: 1,
           width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
+          // A flex child defaults to min-width:auto, so one wide descendant (a standings
+          // table, a long row of chips) makes the whole column wider than the phone and
+          // pushes every card's text off-screen. Pinning min-width to 0 lets the column
+          // shrink to the viewport and leaves the wide thing to scroll inside its own
+          // container, which is where the horizontal scroll belongs.
+          minWidth: 0,
+          maxWidth: "100%",
+          overflowX: "hidden",
           p: { xs: 2, md: 3 },
         }}
       >
