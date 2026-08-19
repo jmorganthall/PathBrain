@@ -120,6 +120,67 @@ class SprtState:
         return None
 
 
+# ── One dial instead of six ───────────────────────────────────────────────────────────
+#
+# "When is someone the winner?" is one question, and it was spread across six numeric
+# fields (min/max pairs, error rate, practical margin, edge-to-detect, method) that only
+# make sense together. These presets collapse the statistical ones into a single choice
+# with a stated consequence; the raw fields remain for anyone who wants them, and any
+# hand-edit simply reads back as "custom".
+#
+# The numbers on each preset are MEASURED, not asserted: simulated against a true edge
+# with ~1.5-point run-to-run noise (test_duel re-checks them). A dial you can't predict
+# the behavior of is no simpler than six you can't.
+PRESETS: dict[str, dict] = {
+    "quick": {
+        "label": "Quick call",
+        "alpha": 0.10,
+        "min_pairs": 5,
+        "max_pairs": 20,
+        "summary": "Calls a winner fast; about 1 verdict in 9 will be wrong.",
+        "detail": "Spots a 1-point edge ~80% of the time, usually within 10 pairs.",
+    },
+    "balanced": {
+        "label": "Balanced",
+        "alpha": 0.05,
+        "min_pairs": 8,
+        "max_pairs": 30,
+        "summary": "The default: about 1 verdict in 16 will be wrong.",
+        "detail": "Spots a 1-point edge ~85% of the time, usually within 14 pairs.",
+    },
+    "strict": {
+        "label": "Only when certain",
+        "alpha": 0.01,
+        "min_pairs": 12,
+        "max_pairs": 60,
+        "summary": "Rarely wrong (~1 verdict in 60), but needs a longer window.",
+        "detail": "Spots a 1-point edge ~97% of the time, usually within 24 pairs.",
+    },
+}
+
+# The keys a preset owns. Anything else (the practical margin, the schedule) is a
+# separate question and is never touched by choosing one.
+PRESET_KEYS = ("alpha", "min_pairs", "max_pairs")
+
+
+def preset_for(cfg: dict) -> str:
+    """Which preset the current numbers correspond to, or ``"custom"``."""
+    for name, preset in PRESETS.items():
+        if all(
+            abs(float(cfg.get(k, preset[k]) or 0) - float(preset[k])) < 1e-9 for k in PRESET_KEYS
+        ):
+            return name
+    return "custom"
+
+
+def preset_config(name: str) -> dict:
+    """The config updates a preset writes. Raises ``ValueError`` for an unknown name."""
+    preset = PRESETS.get(str(name or "").lower())
+    if preset is None:
+        raise ValueError(f"unknown preset {name!r} (choose one of {', '.join(PRESETS)})")
+    return {k: preset[k] for k in PRESET_KEYS}
+
+
 def paired_requirements(alpha: float, min_pairs: int, max_pairs: int) -> dict:
     """What the magnitude-aware rule demands — the sensitivity readout for the UI.
 
@@ -990,8 +1051,11 @@ def reconcile_interrupted_duels() -> int:
 
 
 __all__ = [
+    "PRESETS",
     "PairedEvidence",
     "SprtState",
+    "preset_config",
+    "preset_for",
     "paired_requirements",
     "peek_penalty",
     "sprt_requirements",

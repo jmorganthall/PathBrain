@@ -73,6 +73,12 @@ def _schedule_payload(cfg: dict) -> dict:
         # (the legacy sign test, which only counts who won each pair).
         "method": method,
         "methods": ["margins", "pair_wins"],
+        # The one dial that answers "how sure before calling a winner" — the statistical
+        # fields are derived from it. Hand-editing them reads back as "custom".
+        "preset": duel.preset_for(d),
+        "presets": [
+            {"key": key, **{k: v for k, v in preset.items()}} for key, preset in duel.PRESETS.items()
+        ],
         # What the active rule actually demands of a bout — surfaced because the pair-win
         # rule's cap can make a verdict unreachable, which is otherwise invisible.
         "decision": (
@@ -147,6 +153,13 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
             raise HTTPException(status_code=422, detail="rematch_days cannot be negative")
         updates["rematch_days"] = int(payload.rematch_days)
 
+    # A preset writes the statistical fields; explicit fields below still win, so a PUT
+    # carrying both applies the preset and then the override.
+    if payload.preset is not None:
+        try:
+            updates.update(duel.preset_config(payload.preset))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     if payload.method is not None:
         if payload.method not in ("margins", "pair_wins"):
             raise HTTPException(

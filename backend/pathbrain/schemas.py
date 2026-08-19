@@ -70,6 +70,8 @@ class DuelScheduleUpdate(BaseModel):
     # How a bout is judged: "margins" (paired signed-rank, magnitude-aware) or the legacy
     # "pair_wins" sign test.
     method: str | None = None
+    # "quick" / "balanced" / "strict" — sets alpha + min/max pairs in one move.
+    preset: str | None = None
 
 
 class DuelStart(BaseModel):

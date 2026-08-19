@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathbrain import challenger as challenger_mod
 from pathbrain import crowning
 from pathbrain import duel as duel_mod
+from pathbrain.config_store import get_config
 from pathbrain.database import session_scope
 from pathbrain.duel import SprtState
 from pathbrain.models import Duel, DuelStatus
@@ -119,7 +120,12 @@ def test_duel_ladder_crowns_a_challenger_and_restores(monkeypatch):
     assert len(d.matchups) == 1
     m = d.matchups[0]
     assert m["verdict"] == "challenger"
-    assert m["pairs"] == 10  # SPRT sweep decides exactly at min_pairs
+    # A clean sweep is decided as soon as the evidence clears the bar — not at some fixed
+    # pair count, which would only be re-asserting whatever the defaults happen to be.
+    with session_scope() as s:
+        cfg = get_config(s).get("duel", {})
+    assert cfg["min_pairs"] <= m["pairs"] <= cfg["max_pairs"]
+    assert m["wins_challenger"] == m["pairs"] and m["wins_incumbent"] == 0
     assert m["median_delta"] == 6.0
     assert d.champion_fingerprint == "cha0000000x"
     # Both sides were applied per pair, alternating.
@@ -689,3 +695,68 @@ def test_duel_config_carries_the_method(client):
     assert legacy["decision"]["wins_needed"] is not None  # back to a win-count rule
     assert client.put("/api/duel/config", json={"method": "vibes"}).status_code == 422
     client.put("/api/duel/config", json={"method": "margins"})
+
+
+# ── One dial instead of six ──────────────────────────────────────────────────────────
+
+
+def test_presets_round_trip_and_report_custom():
+    from pathbrain.duel import PRESETS, preset_config, preset_for
+
+    for name, preset in PRESETS.items():
+        assert preset_for(preset_config(name)) == name
+        # Each preset states a consequence, because a dial you can't predict is no
+        # simpler than the six fields it replaced.
+        assert preset["summary"] and preset["detail"] and preset["label"]
+    # Hand-tuned numbers read back honestly rather than being snapped to a preset.
+    assert preset_for({"alpha": 0.05, "min_pairs": 5, "max_pairs": 15}) == "custom"
+    try:
+        preset_config("nope")
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "unknown preset" in str(exc)
+
+
+def test_preset_behaviour_matches_its_promise():
+    """The presets advertise measured numbers; check they still hold (fixed seed)."""
+    import random
+
+    from pathbrain.duel import PRESETS, PairedEvidence
+
+    def rate(cfg, effect, trials=400, seed=3):
+        rng = random.Random(seed)
+        hits = 0
+        for _ in range(trials):
+            ev = PairedEvidence(cfg["alpha"], 0.0, cfg["min_pairs"], cfg["max_pairs"])
+            for _ in range(cfg["max_pairs"]):
+                ev.add(rng.gauss(effect, 1.5))
+                if ev.decision() is not None:
+                    hits += 1
+                    break
+        return hits / trials
+
+    quick, strict = PRESETS["quick"], PRESETS["strict"]
+    # Stricter settings must be harder to fool and no less able to find a real edge given
+    # their longer window — that ordering is the whole point of the dial.
+    assert rate(quick, 0.0) > rate(strict, 0.0)
+    assert rate(strict, 1.0) >= rate(quick, 1.0) - 0.05
+    assert rate(strict, 0.0) < 0.05
+    assert rate(quick, 1.0) > 0.6
+
+
+def test_preset_endpoint_sets_the_numbers(client):
+    out = client.put("/api/duel/config", json={"preset": "strict"}).json()
+    assert out["preset"] == "strict"
+    assert (out["alpha"], out["min_pairs"], out["max_pairs"]) == (0.01, 12, 60)
+    assert any(p["key"] == "strict" and p["summary"] for p in out["presets"])
+
+    # A preset never touches the practical margin or the schedule — different questions.
+    client.put("/api/duel/config", json={"min_margin": 0.5, "hour": 2})
+    out = client.put("/api/duel/config", json={"preset": "quick"}).json()
+    assert out["min_margin"] == 0.5 and out["hour"] == 2
+
+    # Hand-editing a derived field reads back as custom rather than lying about a preset.
+    out = client.put("/api/duel/config", json={"max_pairs": 17}).json()
+    assert out["preset"] == "custom"
+    assert client.put("/api/duel/config", json={"preset": "nope"}).status_code == 422
+    client.put("/api/duel/config", json={"preset": "balanced", "min_margin": 1.0, "hour": 3})

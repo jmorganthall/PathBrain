@@ -216,8 +216,10 @@ DEFAULT_CONFIG: dict = {
         "method": "margins",
         "p1": 0.70,
         "alpha": 0.05,
-        "min_pairs": 10,
-        "max_pairs": 40,
+        # Defaults are the "balanced" preset (duel.PRESETS) so a fresh install reads back
+        # as a named choice rather than as "custom".
+        "min_pairs": 8,
+        "max_pairs": 30,
         "min_margin": 1.0,
         # A decided matchup isn't re-dueled for this many days (the ladder moves on).
         "rematch_days": 7,

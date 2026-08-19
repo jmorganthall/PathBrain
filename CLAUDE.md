@@ -363,6 +363,17 @@ LLM-based. See `README.md` for the product overview.
     (its "pair wins ~50/50" exit still ends settled ties early). The legacy sign test stays
     available as `method="pair_wins"` for comparison. Crucially the margins rule has **no cap at
     which a verdict becomes unreachable** — more pairs only ever help.
+    **One dial, not six fields** (`duel.PRESETS` / `preset_for` / `preset_config`): "when is
+    someone the winner?" is a single question, and it had been spread across six interacting
+    numeric fields nobody could reason about together. `GET/PUT /duel/config` carries a
+    `preset` — **quick** / **balanced** (default) / **strict** — that writes `alpha` +
+    `min_pairs` + `max_pairs` in one move, and each preset is labelled with its **measured**
+    behavior (wrong-verdict rate, how often it spots a 1-point edge, typical pairs to decide;
+    `test_preset_behaviour_matches_its_promise` re-checks the ordering). A preset deliberately
+    never touches the practical margin or the schedule — different questions — and hand-editing
+    any derived field reads back as `"custom"` rather than pretending a preset is active. The
+    page shows the three presets plus the single "ignore differences smaller than X points"
+    field; the raw knobs live behind **Show advanced settings**.
     `duel.sprt_requirements` answers the question the raw settings hide — **what it actually
     takes to win a bout**. Each pair won moves the walk by `ln(p1/0.5)` and each pair lost by
     `ln((1-p1)/0.5)`, a *bigger* step, so the pair cap and the evidence bar interact: at

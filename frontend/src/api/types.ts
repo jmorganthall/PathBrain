@@ -1572,6 +1572,17 @@ export interface DuelDecisionCost {
   restrictive: boolean;
 }
 
+export interface DuelPreset {
+  key: "quick" | "balanced" | "strict";
+  label: string;
+  alpha: number;
+  min_pairs: number;
+  max_pairs: number;
+  // Measured consequences, not adjectives — what this choice actually does.
+  summary: string;
+  detail: string;
+}
+
 export interface DuelConfig {
   enabled: boolean;
   hour: number;
@@ -1594,6 +1605,10 @@ export interface DuelConfig {
   // won by) or "pair_wins" (the legacy sign test — counts winners, ignores margins).
   method: "margins" | "pair_wins";
   methods: ("margins" | "pair_wins")[];
+  // The single dial that answers "how sure before calling a winner". Hand-editing any
+  // derived field reads back as "custom" rather than pretending a preset is active.
+  preset: "quick" | "balanced" | "strict" | "custom";
+  presets: DuelPreset[];
   decision: DuelDecisionCost;
 }
 
