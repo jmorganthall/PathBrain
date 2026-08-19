@@ -257,6 +257,15 @@ def cancel_duel() -> dict:
     return {"cancelled": cancelled, "status": (duel.current() or {}).get("status")}
 
 
+@router.get("/duel/card")
+def duel_card(limit: int = 12, session: Session = Depends(get_session)) -> dict:
+    """Who would fight whom if a duel started right now, in order.
+
+    On demand rather than on page load: it costs a full profile-ranking pass.
+    """
+    return duel.fight_card(session, limit=max(1, min(limit, 50)))
+
+
 @router.get("/duel/standings")
 def duel_standings(sessions: int = 50) -> dict:
     """The head-to-head **league table** — every profile's record earned in the ring.

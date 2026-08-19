@@ -1554,6 +1554,39 @@ export interface CrownsOut {
   checked_at: string | null;
 }
 
+// ── The fight card: who fights whom if a duel started now ───────────────────────────
+
+export interface DuelCardEntry {
+  position: number;
+  fingerprint: string;
+  name: string | null;
+  label: string | null;
+  overall: number | null;
+  iterations: number | null;
+  confident: boolean | null;
+  // Why it's in the queue: a contender near the crown, a limited-data/stale heir, or untested.
+  reason: string;
+  // Already decided against the champion within the rematch window.
+  on_cooldown: boolean;
+}
+
+export interface DuelCard {
+  incumbent: {
+    fingerprint: string;
+    name: string | null;
+    label: string | null;
+    overall: number | null;
+    iterations: number | null;
+  } | null;
+  queue: DuelCardEntry[];
+  total?: number;
+  contenders: "leaders" | "heirs";
+  top_n: number;
+  rematch_days?: number;
+  // Set when there's nothing to race (e.g. no confident crown yet).
+  reason: string | null;
+}
+
 // ── Duel ladder (head-to-head adjudication) ─────────────────────────────────────────
 
 // What the stopping rule actually demands of a bout, computed server-side. A pair cap

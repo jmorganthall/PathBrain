@@ -844,6 +844,88 @@ def _drive(duel_id: int) -> None:
         log.info("Duel %s finished: %s", duel_id, final_status.value)
 
 
+# ── The fight card (who fights whom, before a duel starts) ───────────────────────────
+
+
+def fight_card(session, limit: int = 12) -> dict:
+    """The matchups a duel started right now would actually run, in order.
+
+    "Are we just racing randoms?" is a fair question to ask of any ladder, and the honest
+    answer is a list, not a paragraph — so this builds the queue with exactly the code the
+    engine uses (``build_queue`` over ``compute_profiles`` + ``_compute_heirs``) and hands
+    it back with each contender's standing and why it's there. Anything on rematch cooldown
+    is marked rather than silently skipped.
+
+    Costs a ``compute_profiles`` pass, so it's fetched on demand rather than on page load.
+    """
+    from .api.routes_settings import _compute_heirs, compute_profiles
+    from .providers import get_provider
+
+    cfg = _duel_config(session)
+    live = None
+    try:
+        live = normalize(get_provider().discover())
+    except Exception:  # noqa: BLE001 — reachability is a filter, not a hard requirement
+        log.debug("Fight card: could not read live settings", exc_info=True)
+
+    field = compute_profiles(session)
+    heirs = _compute_heirs(field, session, live)
+    profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
+    incumbent_fp = field.get("best_fingerprint")
+    if incumbent_fp is None or incumbent_fp not in profiles:
+        return {
+            "incumbent": None,
+            "queue": [],
+            "contenders": str(cfg.get("contenders", "leaders") or "leaders"),
+            "top_n": int(cfg.get("contender_top_n", 8) or 8),
+            "reason": "No confident pooled crown to defend yet — collect more iterations.",
+        }
+
+    heir_reason = {
+        h["fingerprint"]: h.get("reason") for h in (heirs.get("items") or []) if h.get("fingerprint")
+    }
+    order = build_queue(
+        field,
+        heirs,
+        incumbent_fp,
+        contenders=str(cfg.get("contenders", "leaders") or "leaders"),
+        top_n=int(cfg.get("contender_top_n", 8) or 8),
+    )
+    rematch_days = int(cfg.get("rematch_days", 7) or 7)
+
+    def _entry(fp: str, position: int) -> dict:
+        p = profiles.get(fp, {})
+        return {
+            "position": position,
+            "fingerprint": fp,
+            "name": p.get("name"),
+            "label": p.get("label"),
+            "overall": p.get("overall"),
+            "iterations": p.get("iterations"),
+            "confident": p.get("confident"),
+            # Why this profile is in the queue at all.
+            "reason": heir_reason.get(fp) or ("contender" if p.get("overall") is not None else "untested"),
+            "on_cooldown": _recently_decided(session, incumbent_fp, fp, rematch_days),
+        }
+
+    inc = profiles[incumbent_fp]
+    return {
+        "incumbent": {
+            "fingerprint": incumbent_fp,
+            "name": inc.get("name"),
+            "label": inc.get("label"),
+            "overall": inc.get("overall"),
+            "iterations": inc.get("iterations"),
+        },
+        "queue": [_entry(fp, i + 1) for i, fp in enumerate(order[: max(int(limit), 1)])],
+        "total": len(order),
+        "contenders": str(cfg.get("contenders", "leaders") or "leaders"),
+        "top_n": int(cfg.get("contender_top_n", 8) or 8),
+        "rematch_days": rematch_days,
+        "reason": None,
+    }
+
+
 # ── Ledger accessors ─────────────────────────────────────────────────────────────────
 
 
@@ -1192,6 +1274,7 @@ __all__ = [
     "PRESETS",
     "PairedEvidence",
     "build_queue",
+    "fight_card",
     "SprtState",
     "preset_config",
     "preset_for",
