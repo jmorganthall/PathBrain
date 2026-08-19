@@ -734,7 +734,13 @@ def test_preset_behaviour_matches_its_promise():
         rng = random.Random(seed)
         hits = 0
         for _ in range(trials):
-            ev = PairedEvidence(cfg["alpha"], 0.0, cfg["min_pairs"], cfg["max_pairs"])
+            ev = PairedEvidence(
+            cfg["alpha"],
+            0.0,
+            cfg["min_pairs"],
+            cfg["max_pairs"],
+            streak_wins=cfg.get("streak_wins", 0),
+        )
             for _ in range(cfg["max_pairs"]):
                 ev.add(rng.gauss(effect, 1.5))
                 if ev.decision() is not None:
@@ -772,20 +778,28 @@ def test_preset_endpoint_sets_the_numbers(client):
 def test_a_clean_streak_ends_a_bout_and_is_the_length_the_card_advertises():
     """"If it wins back to back, it wins" — true, at the length that isn't just luck.
 
-    Between identical profiles a 30-pair bout throws up a 3-in-a-row streak 99.7% of the
-    time, so the streak has to be long enough to mean something; that length falls out of
-    the test (1/2^n vs the threshold) rather than being a separate rule.
+    Two ways a bout can end on a streak: the length derived from the statistical threshold
+    (1/2^n), or an explicit "N in a row wins" the user set. Either way the number printed on
+    the preset card must be the number the engine actually acts on.
     """
     from pathbrain.duel import PRESETS, PairedEvidence, preset_config, streak_to_decide
 
     for name, preset in PRESETS.items():
         cfg = preset_config(name)
-        n = streak_to_decide(cfg["alpha"], cfg["min_pairs"], cfg["max_pairs"])
+        n = streak_to_decide(
+            cfg["alpha"], cfg["min_pairs"], cfg["max_pairs"], cfg.get("streak_wins", 0)
+        )
         assert n is not None
         # The card's promise must be the code's behavior.
         assert f"{n} wins in a row" in preset["summary"], (name, preset["summary"], n)
 
-        ev = PairedEvidence(cfg["alpha"], 0.0, cfg["min_pairs"], cfg["max_pairs"])
+        ev = PairedEvidence(
+            cfg["alpha"],
+            0.0,
+            cfg["min_pairs"],
+            cfg["max_pairs"],
+            streak_wins=cfg.get("streak_wins", 0),
+        )
         for i in range(n - 1):
             ev.add(1.0 + i * 0.1)
             assert ev.decision() is None, f"{name}: decided early at {i + 1} straight"
@@ -805,3 +819,137 @@ def test_a_consistent_win_counts_however_small_by_default():
     for i in range(8):
         ev.add(0.02 + i * 0.001)  # tiny, but relentlessly one-sided
     assert ev.decision() == "challenger"
+
+
+def test_an_explicit_streak_rule_means_exactly_what_it_says():
+    """"3 wins in a row wins it" has to mean 3 — not "3 unless some other field disagrees".
+
+    On a nightly ladder this trade is deliberate: a verdict is cheap and self-correcting, so
+    speed beats certainty per-bout. Measured against a true 1-point edge, 3-in-a-row names
+    the better profile ~91% of the time and the worse one ~7%; between genuinely equal
+    profiles it's a coin toss, which costs nothing because either answer is right.
+    """
+    from pathbrain.duel import PairedEvidence, streak_to_decide
+
+    # The explicit rule overrides min_pairs — otherwise the field would be lying.
+    ev = PairedEvidence(alpha=0.05, min_margin=0.0, min_pairs=10, max_pairs=30, streak_wins=3)
+    ev.add(1.0)
+    ev.add(1.2)
+    assert ev.decision() is None
+    ev.add(0.8)
+    assert ev.decision() == "challenger"
+
+    # A broken run resets it: 2 up, 1 down, 2 up is not 3 in a row.
+    ev2 = PairedEvidence(alpha=0.05, min_margin=0.0, min_pairs=10, max_pairs=30, streak_wins=3)
+    for d in (1.0, 1.0, -1.0, 1.0, 1.0):
+        ev2.add(d)
+        assert ev2.decision() is None
+    ev2.add(1.0)  # now 3 straight
+    assert ev2.decision() == "challenger"
+
+    # It works for the holder too, and it's what the config readout reports.
+    ev3 = PairedEvidence(alpha=0.05, min_margin=0.0, min_pairs=10, max_pairs=30, streak_wins=3)
+    for d in (-1.0, -2.0, -0.5):
+        ev3.add(d)
+    assert ev3.decision() == "incumbent"
+    assert streak_to_decide(0.05, 10, 30, streak_wins=3) == 3
+
+
+def test_snap_preset_endpoint(client):
+    out = client.put("/api/duel/config", json={"preset": "snap"}).json()
+    assert out["preset"] == "snap"
+    assert out["streak_wins"] == 3
+    assert out["decision"]["streak_pairs"] == 3
+    # A 1-win "streak" isn't a rule, it's a coin flip; refuse it rather than pretend.
+    assert client.put("/api/duel/config", json={"streak_wins": 1}).status_code == 422
+    assert client.put("/api/duel/config", json={"streak_wins": -1}).status_code == 422
+    # Turning it off returns to the derived streak.
+    out = client.put("/api/duel/config", json={"preset": "balanced"}).json()
+    assert out["streak_wins"] == 0 and out["decision"]["streak_pairs"] == 8
+
+
+# ── Racing the leaders, continuously ─────────────────────────────────────────────────
+
+
+def test_queue_races_the_leaders_not_arbitrary_profiles():
+    """A perpetual ladder is only worth running if it fights the matchups that can change
+    the answer — the profiles nearest the crown, not whatever happens to be unmeasured."""
+    from pathbrain.duel import build_queue
+
+    field = {
+        "profiles": [
+            {"fingerprint": "crown", "overall": 90.0},
+            {"fingerprint": "close", "overall": 89.0},
+            {"fingerprint": "near", "overall": 88.0},
+            {"fingerprint": "midfield", "overall": 70.0},
+            {"fingerprint": "nodata", "overall": None},
+        ]
+    }
+    # Everything reachable shows up in the heirs pass (that's where the filter lives).
+    heirs = {"items": [{"fingerprint": fp} for fp in ("nodata", "midfield", "near", "close")]}
+
+    leaders = build_queue(field, heirs, "crown", contenders="leaders", top_n=3)
+    # Strongest contender first: the matchup most likely to change the answer.
+    assert leaders[:3] == ["close", "near", "midfield"]
+    assert leaders[-1] == "nodata"  # unmeasured profiles wait their turn, but aren't lost
+    assert "crown" not in leaders  # the champion doesn't fight itself
+    assert set(leaders) == {"close", "near", "midfield", "nodata"}  # nothing is lost
+
+    # The exploring order is still available unchanged.
+    assert build_queue(field, heirs, "crown", contenders="heirs") == [
+        "nodata",
+        "midfield",
+        "near",
+        "close",
+    ]
+
+    # An unreachable profile (absent from the heirs pass) never enters the queue.
+    thin = {"items": [{"fingerprint": "close"}]}
+    assert build_queue(field, thin, "crown", contenders="leaders", top_n=5) == ["close"]
+
+
+def test_continuous_mode_waits_its_turn_and_leaves_a_gap(monkeypatch):
+    """Continuous duelling must not hog the pipeline: it defers while anything else holds
+    the coordinator, and leaves a configured gap between sessions."""
+    import time as _time
+
+    from pathbrain import coordinator, scheduler
+    from pathbrain.config_store import save_config
+
+    started: list[int] = []
+    monkeypatch.setattr(scheduler, "_state", {})
+    monkeypatch.setattr(duel_mod, "active", lambda: False)
+    monkeypatch.setattr(duel_mod, "start", lambda minutes, trigger="manual": started.append(1))
+
+    with session_scope() as s:
+        save_config(s, {"duel": {"enabled": True, "continuous": True, "continuous_gap_minutes": 10}})
+    try:
+        # Something else is benchmarking → defer rather than queue up behind it.
+        with coordinator.hold("test"):
+            assert scheduler._maybe_run_duel() is False
+        assert started == []
+
+        # Free pipeline → run.
+        assert scheduler._maybe_run_duel() is True
+        assert len(started) == 1
+
+        # A session that just finished holds the gap open.
+        scheduler._state["duel_last_finished"] = _time.monotonic()
+        assert scheduler._maybe_run_duel() is False
+        scheduler._state["duel_last_finished"] = _time.monotonic() - 11 * 60
+        assert scheduler._maybe_run_duel() is True
+    finally:
+        with session_scope() as s:
+            save_config(s, {"duel": {"enabled": False, "continuous": False}})
+
+
+def test_continuous_config_endpoint(client):
+    out = client.put(
+        "/api/duel/config", json={"continuous": True, "contenders": "leaders", "contender_top_n": 5}
+    ).json()
+    assert out["continuous"] is True and out["contenders"] == "leaders"
+    assert out["contender_top_n"] == 5
+    assert client.put("/api/duel/config", json={"contenders": "everyone"}).status_code == 422
+    assert client.put("/api/duel/config", json={"contender_top_n": 0}).status_code == 422
+    assert client.put("/api/duel/config", json={"continuous_gap_minutes": -1}).status_code == 422
+    client.put("/api/duel/config", json={"continuous": False, "contender_top_n": 8})

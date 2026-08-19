@@ -1575,11 +1575,12 @@ export interface DuelDecisionCost {
 }
 
 export interface DuelPreset {
-  key: "quick" | "balanced" | "strict";
+  key: "snap" | "quick" | "balanced" | "strict";
   label: string;
   alpha: number;
   min_pairs: number;
   max_pairs: number;
+  streak_wins: number;
   // Measured consequences, not adjectives — what this choice actually does.
   summary: string;
   detail: string;
@@ -1609,7 +1610,15 @@ export interface DuelConfig {
   methods: ("margins" | "pair_wins")[];
   // The single dial that answers "how sure before calling a winner". Hand-editing any
   // derived field reads back as "custom" rather than pretending a preset is active.
-  preset: "quick" | "balanced" | "strict" | "custom";
+  preset: "snap" | "quick" | "balanced" | "strict" | "custom";
+  // An explicit "N wins in a row ends it" (0 = derived from the statistical threshold).
+  streak_wins: number;
+  // Run the ladder perpetually rather than once a night, and the pause between sessions.
+  continuous: boolean;
+  continuous_gap_minutes: number;
+  // Who the champion fights: the profiles nearest the crown, or the exploring heirs order.
+  contenders: "leaders" | "heirs";
+  contender_top_n: number;
   presets: DuelPreset[];
   decision: DuelDecisionCost;
 }

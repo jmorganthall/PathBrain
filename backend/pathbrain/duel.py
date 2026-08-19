@@ -132,9 +132,19 @@ class SprtState:
 # with ~1.5-point run-to-run noise (test_duel re-checks them). A dial you can't predict
 # the behavior of is no simpler than six you can't.
 PRESETS: dict[str, dict] = {
+    "snap": {
+        "label": "Snap call",
+        "alpha": 0.10,
+        "min_pairs": 3,
+        "max_pairs": 12,
+        "streak_wins": 3,
+        "summary": "3 wins in a row ends it. Fast, and self-correcting on a nightly ladder.",
+        "detail": "Names the better profile ~91% of the time at a 1-point edge. Between equal profiles it's a coin toss — read the standings, not one bout.",
+    },
     "quick": {
         "label": "Quick call",
         "alpha": 0.10,
+        "streak_wins": 0,
         "min_pairs": 5,
         "max_pairs": 20,
         "summary": "6 wins in a row ends it. About 1 verdict in 9 will be wrong.",
@@ -143,6 +153,7 @@ PRESETS: dict[str, dict] = {
     "balanced": {
         "label": "Balanced",
         "alpha": 0.05,
+        "streak_wins": 0,
         "min_pairs": 8,
         "max_pairs": 30,
         "summary": "8 wins in a row ends it. About 1 verdict in 16 will be wrong.",
@@ -151,6 +162,7 @@ PRESETS: dict[str, dict] = {
     "strict": {
         "label": "Only when certain",
         "alpha": 0.01,
+        "streak_wins": 0,
         "min_pairs": 12,
         "max_pairs": 60,
         "summary": "12 wins in a row ends it. Rarely wrong (~1 verdict in 60).",
@@ -160,7 +172,7 @@ PRESETS: dict[str, dict] = {
 
 # The keys a preset owns. Anything else (the practical margin, the schedule) is a
 # separate question and is never touched by choosing one.
-PRESET_KEYS = ("alpha", "min_pairs", "max_pairs")
+PRESET_KEYS = ("alpha", "min_pairs", "max_pairs", "streak_wins")
 
 
 def preset_for(cfg: dict) -> str:
@@ -181,7 +193,9 @@ def preset_config(name: str) -> dict:
     return {k: preset[k] for k in PRESET_KEYS}
 
 
-def streak_to_decide(alpha: float, min_pairs: int, max_pairs: int) -> int | None:
+def streak_to_decide(
+    alpha: float, min_pairs: int, max_pairs: int, streak_wins: int = 0
+) -> int | None:
     """How many pairs in a row end a bout on the spot.
 
     This is the "if it wins back to back, it wins" rule, and it falls straight out of the
@@ -195,6 +209,8 @@ def streak_to_decide(alpha: float, min_pairs: int, max_pairs: int) -> int | None
     pairs on average to string 8 together. Hence the paired test, which honours a clean
     run *and* can still call a profile that goes 12-3 without ever stringing 8 together.
     """
+    if streak_wins:
+        return int(streak_wins)  # the user set the rule outright
     ev = PairedEvidence(alpha, 0.0, min_pairs, max_pairs)
     nominal = ev.nominal_alpha
     for n in range(max(int(min_pairs or 1), 4), max(int(max_pairs or 1), 4) + 1):
@@ -203,7 +219,9 @@ def streak_to_decide(alpha: float, min_pairs: int, max_pairs: int) -> int | None
     return None
 
 
-def paired_requirements(alpha: float, min_pairs: int, max_pairs: int) -> dict:
+def paired_requirements(
+    alpha: float, min_pairs: int, max_pairs: int, streak_wins: int = 0
+) -> dict:
     """What the magnitude-aware rule demands — the sensitivity readout for the UI.
 
     ``sweep_pairs`` is the fewest consistently one-sided pairs that clear the peek-
@@ -222,7 +240,7 @@ def paired_requirements(alpha: float, min_pairs: int, max_pairs: int) -> dict:
     return {
         "sweep_pairs": sweep,
         # The plain-language version of the same rule: N wins in a row ends it now.
-        "streak_pairs": streak_to_decide(alpha, min_pairs, max_pairs),
+        "streak_pairs": streak_to_decide(alpha, min_pairs, max_pairs, streak_wins),
         "wins_needed": None,  # not a win-count rule — the margins decide
         "win_rate_needed": None,
         "nominal_alpha": round(nominal, 5),
@@ -356,11 +374,22 @@ class PairedEvidence:
     separate questions, and a verdict needs both.
     """
 
-    def __init__(self, alpha: float, min_margin: float, min_pairs: int, max_pairs: int) -> None:
+    def __init__(
+        self,
+        alpha: float,
+        min_margin: float,
+        min_pairs: int,
+        max_pairs: int,
+        streak_wins: int = 0,
+    ) -> None:
         self.alpha = min(max(float(alpha or 0.05), 0.001), 0.2)
         self.min_margin = max(float(min_margin or 0.0), 0.0)
         self.min_pairs = max(int(min_pairs or 1), 1)
         self.max_pairs = max(int(max_pairs or 1), self.min_pairs)
+        # An explicit "N wins in a row ends it" rule, if the user set one. It deliberately
+        # overrides `min_pairs`: "3 in a row wins" has to mean exactly that, or the field
+        # is lying. 0 = derive the streak from the statistical threshold instead.
+        self.streak_wins = max(int(streak_wins or 0), 0)
         self.deltas: list[float] = []
 
     @property
@@ -378,7 +407,32 @@ class PairedEvidence:
     def p_value(self, direction: int = 1) -> float:
         return wilcoxon_p(self.deltas, direction)
 
+    @property
+    def current_streak(self) -> tuple[int, int]:
+        """(length, direction) of the current unbroken run of pair wins."""
+        if not self.deltas:
+            return 0, 0
+        direction = 1 if self.deltas[-1] > 0 else -1
+        length = 0
+        for delta in reversed(self.deltas):
+            if (1 if delta > 0 else -1) != direction:
+                break
+            length += 1
+        return length, direction
+
     def decision(self) -> str | None:
+        # An explicit streak rule fires first and on its own terms. On a nightly ladder a
+        # verdict is cheap and self-correcting, so a short streak is a defensible trade:
+        # measured against a true 1-point edge, 3-in-a-row names the better profile ~91%
+        # of the time and the worse one ~7%. Between genuinely equal profiles it is a coin
+        # toss — which costs nothing, because either answer is right.
+        if self.streak_wins:
+            length, direction = self.current_streak
+            if length >= self.streak_wins and (
+                not self.min_margin or abs(_median(self.deltas)) >= self.min_margin
+            ):
+                return "challenger" if direction > 0 else "incumbent"
+
         if self.pairs < self.min_pairs:
             return None
         median = _median(self.deltas)
@@ -480,6 +534,55 @@ def _recently_decided(session, a_fp: str, b_fp: str, rematch_days: int) -> bool:
     return False
 
 
+def build_queue(
+    field: dict,
+    heirs: dict,
+    incumbent_fp: str,
+    *,
+    contenders: str = "leaders",
+    top_n: int = 8,
+) -> list[str]:
+    """Who the champion actually fights, in order.
+
+    ``"leaders"`` (default) races **contenders**: the reachable profiles closest to the
+    crown by Overall, best first. That is what makes a perpetual ladder worth running — a
+    night spent adjudicating the top of the table keeps finding better profiles, while the
+    same night spent sampling arbitrary unmeasured profiles mostly re-confirms that they
+    are worse. Heirs with a real optimistic ceiling are folded in ahead of the rest, since
+    a limited-data profile that *could* beat the crown is exactly a contender.
+
+    ``"heirs"`` keeps the original behavior (the heirs priority order, which deliberately
+    samples untested profiles too — better for exploring a fresh field).
+
+    Reachability is inherited from ``_compute_heirs``: anything the live environment can't
+    actually be set to never enters the queue.
+    """
+    profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
+    heir_items = [h for h in (heirs.get("items") or []) if h.get("fingerprint") in profiles]
+    heir_order = [h["fingerprint"] for h in heir_items]
+    if contenders != "leaders":
+        return heir_order
+
+    # Reachable = it showed up in the heirs pass, or it is the crown itself. The heirs pass
+    # is the one place that filters on environment signature, so we lean on it rather than
+    # re-deriving reachability here.
+    reachable = set(heir_order) | {incumbent_fp}
+    ranked = [
+        fp
+        for fp, p in sorted(
+            profiles.items(),
+            key=lambda kv: (kv[1].get("overall") is not None, kv[1].get("overall") or -1),
+            reverse=True,
+        )
+        if fp != incumbent_fp and fp in reachable and p.get("overall") is not None
+    ]
+    leaders = ranked[: max(int(top_n or 0), 1)]
+    # Contenders first, strongest first — the matchup most likely to change the answer is
+    # the one just below the crown. Everything else the heirs pass surfaced (untested
+    # profiles, anything outside the top N) follows, so nothing is lost, it just waits.
+    return leaders + [fp for fp in heir_order if fp not in leaders]
+
+
 def _drive(duel_id: int) -> None:
     from .api.routes_settings import _compute_heirs, compute_profiles
     from .challenger import _apply_all, _apply_profile
@@ -503,6 +606,7 @@ def _drive(duel_id: int) -> None:
                 cfg = _duel_config(session)
                 meth_version = ensure_current_methodology(session, get_config(session)).version
             method = str(cfg.get("method", "margins") or "margins").lower()
+            streak_wins = int(cfg.get("streak_wins", 0) or 0)
             p1 = float(cfg.get("p1", 0.70) or 0.70)
             alpha = float(cfg.get("alpha", 0.05) or 0.05)
             min_pairs = int(cfg.get("min_pairs", 10) or 10)
@@ -520,13 +624,15 @@ def _drive(duel_id: int) -> None:
             incumbent_fp = field.get("best_fingerprint")
             if incumbent_fp is None or incumbent_fp not in settings_by_fp:
                 raise RuntimeError("No confident pooled crown to defend — nothing to duel.")
-            queue = [
-                h["fingerprint"]
-                for h in (heirs.get("items") or [])
-                if h.get("fingerprint") in settings_by_fp
-            ]
+            queue = build_queue(
+                field,
+                heirs,
+                incumbent_fp,
+                contenders=str(cfg.get("contenders", "leaders") or "leaders"),
+                top_n=int(cfg.get("contender_top_n", 8) or 8),
+            )
             if not queue:
-                raise RuntimeError("No eligible challengers (no reachable heirs to duel).")
+                raise RuntimeError("No eligible challengers (no reachable contenders to duel).")
 
             deadline = time.monotonic() + duration_s
             matchups: list[dict] = []
@@ -547,7 +653,9 @@ def _drive(duel_id: int) -> None:
                 # sign test is a poor winner-detector but a fine FUTILITY detector, and
                 # its "pair wins are ~50/50" exit is what stops a settled tie from eating
                 # the rest of the window.
-                paired = PairedEvidence(alpha, min_margin, min_pairs, max_pairs)
+                paired = PairedEvidence(
+                    alpha, min_margin, min_pairs, max_pairs, streak_wins=streak_wins
+                )
                 deltas: list[float] = []
                 bad_streak = 0
                 verdict: str | None = None
@@ -720,6 +828,12 @@ def _drive(duel_id: int) -> None:
                 }.get(final_status, err or "Failed")
                 d.finished_at = datetime.now(timezone.utc)
         _state.update({"active": False, "id": None, "cancel": False})
+        try:  # let continuous mode leave a gap before the next session
+            from . import scheduler
+
+            scheduler._state["duel_last_finished"] = time.monotonic()
+        except Exception:  # noqa: BLE001 — bookkeeping must never break the duel
+            log.debug("Duel: could not stamp finish time for continuous mode", exc_info=True)
         # A fresh verdict may change what the crowning policy resolves to.
         try:
             from . import crown_follower
@@ -1077,6 +1191,7 @@ def reconcile_interrupted_duels() -> int:
 __all__ = [
     "PRESETS",
     "PairedEvidence",
+    "build_queue",
     "SprtState",
     "preset_config",
     "preset_for",
