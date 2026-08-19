@@ -334,11 +334,18 @@ LLM-based. See `README.md` for the product overview.
     all night on a settled question: winner stays on as the new incumbent, next challenger
     steps up, decided pairs get a `duel.rematch_days` cooldown. Two-ledger discipline: duel
     *runs* flow into the pooled record like any runs; duel *verdicts* live beside it as the
-    head-to-head ledger (`Duel.matchups`, the Settings-Impact **Duel ladder** card) and never
+    head-to-head ledger (`Duel.matchups`, surfaced on the **Dueling Champions** tab) and never
     enter the pooled score. The duel **never writes a winner to the firewall** — it restores
     the pre-duel baseline (`reconcile_interrupted_duels` on startup); acting on verdicts is
     the crowning policy's job. Runs nightly (`config.duel`: enabled/hour/minute/timezone/
     duration, gated in `scheduler.py` like the baseline test) or on demand (`/api/duel/*`).
+    `duel.standings` (`GET /api/duel/standings`) aggregates the ledger into the **head-to-head
+    league table** that page ranks on — per profile W–L–D, match points (win 3 / draw 1),
+    decisive-win + pair-win rate, median Overall-point margin *signed from that profile's own
+    side*, opponents beaten/lost to, title count — plus the reigning champion (with reign
+    length) and the `head_to_head[a][b]` matrix. It is **pure ledger**: only decided matchups,
+    nothing pooled, nothing averaged over history, so it never touches the crown. Rank order:
+    points → decisive-win rate → pair-win rate → matchups played.
   - `crowning.py` — **the first-class CROWNING POLICY**: the single resolver for "which
     verdict governs what automation applies". `crown_follow.policy` = **"pooled"** (the
     all-time Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
@@ -495,7 +502,15 @@ LLM-based. See `README.md` for the product overview.
   `environment_signature` check as the race), so the card never lists a profile the race
   would refuse to apply;
   plus "Test to minimum" and **"Race challengers"**),
-  Experiments, Shotgun Sweep, **Baseline (SQM off)** (the "Test baseline behavior" tab: arm the
+  Experiments, Shotgun Sweep, **Dueling Champions** (the duel ladder's own view — the
+  *controlled-trial* counterpart to Settings Impact's observational standings, so it speaks in
+  fight-card terms rather than means: the reigning champion + reign length + which crowning
+  policy is live, the **ladder standings** league table (`GET /duel/standings`), the
+  **head-to-head grid** over the top of the table, the **bout tape** of every matchup with its
+  pair scoreline / margin / what ended it, and **rules of the ring** — the nightly window plus
+  the sequential stopping rule (min/max pairs, practical margin, rematch cooldown) editable
+  from the page. Settings Impact keeps only a one-line **Duel ladder** pointer strip so the two
+  rankings don't duplicate controls; `Duels.tsx`, `/api/duel/*`), **Baseline (SQM off)** (the "Test baseline behavior" tab: arm the
   nightly schedule — time/iterations/settle all configurable — or run one on demand, with a live
   stage readout; `Baseline.tsx`, `/api/baseline/*`), Config, Methodology, Plugins, Data Dump, AI,
   Run Detail. A

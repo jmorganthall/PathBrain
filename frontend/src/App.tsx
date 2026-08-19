@@ -15,6 +15,7 @@ import Experiments from "./pages/Experiments";
 import DataDump from "./pages/DataDump";
 import AI from "./pages/AI";
 import Baseline from "./pages/Baseline";
+import Duels from "./pages/Duels";
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
         <Route path="/profiles/:fingerprint" element={<ProfileDetail />} />
         <Route path="/experiments" element={<Experiments />} />
         <Route path="/sweep" element={<ShotgunSweep />} />
+        <Route path="/duels" element={<Duels />} />
         <Route path="/baseline" element={<Baseline />} />
         <Route path="/config" element={<Config />} />
         <Route path="/methodology" element={<Methodology />} />

@@ -76,6 +76,27 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
             raise HTTPException(status_code=422, detail="rematch_days cannot be negative")
         updates["rematch_days"] = int(payload.rematch_days)
 
+    if payload.min_margin is not None:
+        if float(payload.min_margin) < 0:
+            raise HTTPException(status_code=422, detail="min_margin cannot be negative")
+        updates["min_margin"] = float(payload.min_margin)
+
+    # The pair bounds are validated against each other on the *merged* config, so changing
+    # one at a time can never leave min_pairs > max_pairs (a matchup that can never decide).
+    if payload.min_pairs is not None or payload.max_pairs is not None:
+        with session_scope() as session:
+            current = _schedule_payload(get_config(session))
+        lo = int(payload.min_pairs) if payload.min_pairs is not None else current["min_pairs"]
+        hi = int(payload.max_pairs) if payload.max_pairs is not None else current["max_pairs"]
+        if lo < 2:
+            raise HTTPException(status_code=422, detail="min_pairs must be at least 2")
+        if hi < lo:
+            raise HTTPException(status_code=422, detail="max_pairs cannot be below min_pairs")
+        if payload.min_pairs is not None:
+            updates["min_pairs"] = lo
+        if payload.max_pairs is not None:
+            updates["max_pairs"] = hi
+
     with session_scope() as session:
         cfg = save_config(session, {"duel": updates}) if updates else get_config(session)
     log.info("Duel schedule updated: %s", updates)
@@ -106,6 +127,17 @@ def cancel_duel() -> dict:
     """Ask the running duel to stop after its current pair (baseline still restored)."""
     cancelled = duel.cancel()
     return {"cancelled": cancelled, "status": (duel.current() or {}).get("status")}
+
+
+@router.get("/duel/standings")
+def duel_standings(sessions: int = 50) -> dict:
+    """The head-to-head **league table** — every profile's record earned in the ring.
+
+    Pure ledger: decided matchups only, ranked by match points (win 3 / draw 1) with
+    decisive-win rate / pair-win rate tie-breaks. Nothing pooled, nothing averaged over
+    history — the view unique to the dueling-champions approach.
+    """
+    return duel.standings(limit_sessions=max(1, min(sessions, 200)))
 
 
 @router.get("/duel/history")

@@ -54,6 +54,11 @@ class DuelScheduleUpdate(BaseModel):
     timezone: str | None = None
     duration_minutes: int | None = None
     rematch_days: int | None = None
+    # Sequential stopping rule: verdicts never fire before `min_pairs`, futility cap at
+    # `max_pairs`, and a statistical winner under `min_margin` Overall points is a draw.
+    min_pairs: int | None = None
+    max_pairs: int | None = None
+    min_margin: float | None = None
 
 
 class DuelStart(BaseModel):
