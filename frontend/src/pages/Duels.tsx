@@ -44,6 +44,7 @@ import SportsMmaIcon from "@mui/icons-material/SportsMma";
 
 import { api } from "../api/client";
 import type {
+  DuelCard,
   DuelConfig,
   DuelMatchup,
   DuelSession,
@@ -90,6 +91,15 @@ const minutesUntil = (clock: string): number => {
 
 // The clock time `minutes` from now — seeds the "duel until" picker from the configured
 // window so the default on-demand run matches the nightly one.
+// "20:34" is what the <input type=time> holds; people read "8:34 PM".
+const formatClock = (clock: string): string => {
+  const [h, m] = clock.split(":").map((x) => parseInt(x, 10));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return clock;
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+};
+
 const clockIn = (minutes: number): string => {
   const t = new Date(Date.now() + minutes * 60000);
   return hhmm(t.getHours(), t.getMinutes());
@@ -121,6 +131,14 @@ const crossesMidnight = (cfg: DuelConfig): boolean =>
 // out as the screen allows. Replaces a flex-wrap row whose captions drifted away from
 // the fields they described.
 // Preset cards: one per line on a phone, side by side once there's room.
+// Why a profile is in the queue, in words.
+const CARD_REASON: Record<string, string> = {
+  contender: "near the crown — the matchup that can change the answer",
+  "limited-data": "could beat the crown at its best, not measured enough yet",
+  stale: "confident, but its data has gone stale",
+  untested: "never measured under the current methodology",
+};
+
 const PRESET_GRID = {
   display: "grid",
   gap: 1.5,
@@ -377,6 +395,8 @@ export default function Duels() {
   // On-demand runs are also set by end time ("duel until 06:00"); the minutes the API
   // wants are derived from the clock at the moment you press the button.
   const [untilClock, setUntilClock] = useState<string | null>(null);
+  const [card, setCard] = useState<DuelCard | null>(null);
+  const [cardBusy, setCardBusy] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -456,6 +476,18 @@ export default function Duels() {
     }
   };
 
+  // The line-up costs a full ranking pass, so it's fetched when asked for, not on load.
+  const loadCard = async () => {
+    setCardBusy(true);
+    try {
+      setCard(await api.duelCard());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCardBusy(false);
+    }
+  };
+
   const startNow = async () => {
     setBusy(true);
     setError(null);
@@ -512,14 +544,28 @@ export default function Duels() {
               Cancel duel
             </Button>
           ) : (
-            <Button
-              variant="contained"
-              startIcon={<PlayArrowIcon />}
-              onClick={() => void startNow()}
-              disabled={busy}
+            <Tooltip
+              title={
+                cfg
+                  ? `Runs until ${untilClock ?? clockIn(cfg.duration_minutes)} (about ${fmtWindow(
+                      minutesUntil(untilClock ?? clockIn(cfg.duration_minutes))
+                    )}), one iteration a side, as many bouts as fit. Change the finish time under "Duel now until".`
+                  : "Start a duel now"
+              }
             >
-              Duel now
-            </Button>
+              <Button
+                variant="contained"
+                startIcon={<PlayArrowIcon />}
+                onClick={() => void startNow()}
+                disabled={busy}
+                sx={{ whiteSpace: "nowrap", flexShrink: 0 }}
+              >
+                Duel now
+                {cfg
+                  ? ` · ${fmtWindow(minutesUntil(untilClock ?? clockIn(cfg.duration_minutes)))}`
+                  : ""}
+              </Button>
+            </Tooltip>
           )}
         </Stack>
       </Stack>
@@ -528,6 +574,18 @@ export default function Duels() {
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
           {error}
         </Alert>
+      )}
+
+      {cfg && !active && (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          <b>Press "Duel now"</b> and it runs until{" "}
+          {formatClock(untilClock ?? clockIn(cfg.duration_minutes))} (about{" "}
+          {fmtWindow(minutesUntil(untilClock ?? clockIn(cfg.duration_minutes)))}), trading one
+          iteration a side. The champion defends against the top {cfg.contender_top_n}{" "}
+          {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"}, one at a time;
+          a bout ends after {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of
+          margins, then the next challenger steps up. As many bouts as fit in the window.
+        </Typography>
       )}
 
       {/* ── The belt ─────────────────────────────────────────────────────────────── */}
@@ -808,6 +866,95 @@ export default function Duels() {
           </CardContent>
         </Card>
       )}
+
+      {/* ── The card: who fights whom, in order ──────────────────────────────────── */}
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            justifyContent="space-between"
+            alignItems={{ xs: "flex-start", sm: "center" }}
+            spacing={1}
+          >
+            <Box>
+              <Typography variant="h6">Who's fighting</Typography>
+              <Typography variant="caption" color="text.secondary">
+                The line-up a duel started now would work through, in order — not a random
+                draw. The champion is the current pooled crown; challengers are the profiles
+                nearest it, strongest first.
+              </Typography>
+            </Box>
+            <Button size="small" variant="outlined" onClick={() => void loadCard()} disabled={cardBusy}>
+              {cardBusy ? "Working it out…" : card ? "Refresh" : "Show the line-up"}
+            </Button>
+          </Stack>
+
+          {card?.reason && (
+            <Alert severity="info" sx={{ mt: 1.5 }}>
+              {card.reason}
+            </Alert>
+          )}
+
+          {card?.incumbent && (
+            <Box sx={{ mt: 1.5 }}>
+              <Typography variant="body2">
+                <MilitaryTechIcon sx={{ fontSize: 16, verticalAlign: "text-bottom", color: "warning.main" }} />{" "}
+                <b>{card.incumbent.name || card.incumbent.label}</b> defends
+                {card.incumbent.overall != null
+                  ? ` (Overall ${fmtNum(card.incumbent.overall, 1)})`
+                  : ""}
+                . Whoever wins a bout stays on for the next one.
+              </Typography>
+              <TableContainer sx={{ mt: 1 }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>#</TableCell>
+                      <TableCell>Challenger</TableCell>
+                      <TableCell align="right">Overall</TableCell>
+                      <TableCell align="right">Iterations</TableCell>
+                      <TableCell>Why it's in the queue</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {card.queue.map((c) => (
+                      <TableRow key={c.fingerprint} hover sx={c.on_cooldown ? { opacity: 0.55 } : undefined}>
+                        <TableCell>{c.position}</TableCell>
+                        <TableCell>
+                          <Link
+                            component="button"
+                            underline="hover"
+                            onClick={() => navigate(`/profiles/${encodeURIComponent(c.fingerprint)}`)}
+                            sx={{ font: "inherit", textAlign: "left" }}
+                            title={c.label ?? undefined}
+                          >
+                            {c.name || c.label}
+                          </Link>
+                        </TableCell>
+                        <TableCell align="right">{fmtNum(c.overall, 1)}</TableCell>
+                        <TableCell align="right">{c.iterations ?? "—"}</TableCell>
+                        <TableCell>
+                          <Typography variant="caption" color="text.secondary">
+                            {CARD_REASON[c.reason] ?? c.reason}
+                            {c.on_cooldown
+                              ? ` · skipped, already settled in the last ${card.rematch_days ?? 7} days`
+                              : ""}
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+              {(card.total ?? 0) > card.queue.length && (
+                <Typography variant="caption" color="text.secondary">
+                  …and {(card.total ?? 0) - card.queue.length} more behind them, if the window lasts.
+                </Typography>
+              )}
+            </Box>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ── The tape ─────────────────────────────────────────────────────────────── */}
       <Card sx={{ mb: 2 }}>

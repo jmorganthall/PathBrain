@@ -407,6 +407,16 @@ LLM-based. See `README.md` for the product overview.
     returns `decision` (`sweep_pairs` / `wins_needed` / `win_rate_needed` / `restrictive`) and the
     page states it outright, warning when the cap demands a near-sweep. `p1`/`alpha` are editable
     from the same card ("Edge to detect" / "Error rate").
+    `duel.fight_card` (`GET /api/duel/card`) answers "are we just racing randoms?" with a
+    list rather than a paragraph: the champion plus the ordered queue a duel started *now*
+    would work through, each entry carrying its Overall, iterations, why it's in the queue
+    (contender / limited-data / stale / untested) and whether it's on rematch cooldown. It is
+    built by **the same `build_queue` the engine runs**, so the page can't promise one order
+    and the duel fight another; it costs a `compute_profiles` pass, so the **Who's fighting**
+    card fetches it on demand rather than on page load. The page header also states what
+    pressing "Duel now" will do — until when, how long, who defends against how many, and what
+    ends a bout — since a button whose behavior lives in three other fields isn't a control,
+    it's a guess.
     `duel.standings` (`GET /api/duel/standings`) aggregates the ledger into the **head-to-head
     league table** that page ranks on — per profile W–L–D, match points (win 3 / draw 1),
     decisive-win + pair-win rate, median Overall-point margin *signed from that profile's own

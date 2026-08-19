@@ -34,6 +34,7 @@ import type {
   CrownFollowStatus,
   DuelConfig,
   DuelSession,
+  DuelCard,
   DuelStandings,
   CrownsOut,
   AiConfig,
@@ -193,6 +194,7 @@ export const api = {
   duelCancel: () =>
     request<{ cancelled: boolean; status: string | null }>("/duel/cancel", { method: "POST" }),
   duelHistory: (limit = 10) => request<{ duels: DuelSession[] }>(`/duel/history?limit=${limit}`),
+  duelCard: (limit = 12) => request<DuelCard>(`/duel/card?limit=${limit}`),
   duelStandings: (sessions = 50) =>
     request<DuelStandings>(`/duel/standings?sessions=${sessions}`),
 

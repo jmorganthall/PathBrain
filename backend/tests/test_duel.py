@@ -953,3 +953,67 @@ def test_continuous_config_endpoint(client):
     assert client.put("/api/duel/config", json={"contender_top_n": 0}).status_code == 422
     assert client.put("/api/duel/config", json={"continuous_gap_minutes": -1}).status_code == 422
     client.put("/api/duel/config", json={"continuous": False, "contender_top_n": 8})
+
+
+# ── The fight card ("are we just racing randoms?") ───────────────────────────────────
+
+
+def test_fight_card_lists_the_actual_queue(monkeypatch):
+    """The line-up must be built by the same code the engine runs, so the page can't
+    promise one order and the duel fight another."""
+    import pathbrain.api.routes_settings as rs
+
+    field = {
+        "best_fingerprint": "crown0000001",
+        "profiles": [
+            {"fingerprint": "crown0000001", "label": "crown", "name": "Crown", "overall": 90.0, "iterations": 200},
+            {"fingerprint": "close0000001", "label": "close", "name": "Close", "overall": 89.0, "iterations": 40},
+            {"fingerprint": "mid000000001", "label": "mid", "name": "Mid", "overall": 60.0, "iterations": 30},
+            {"fingerprint": "new000000001", "label": "new", "name": "New", "overall": None, "iterations": 2},
+        ],
+    }
+    monkeypatch.setattr(rs, "compute_profiles", lambda session: field)
+    monkeypatch.setattr(
+        rs,
+        "_compute_heirs",
+        lambda result, session, live=None: {
+            "items": [
+                {"fingerprint": "new000000001", "reason": "untested"},
+                {"fingerprint": "close0000001", "reason": "limited-data"},
+                {"fingerprint": "mid000000001", "reason": "stale"},
+            ]
+        },
+    )
+    with session_scope() as s:
+        s.query(Duel).delete()
+        card = duel_mod.fight_card(s)
+
+    assert card["incumbent"]["fingerprint"] == "crown0000001"
+    assert card["incumbent"]["name"] == "Crown"
+    # Leaders first: the profile nearest the crown leads, the unmeasured one waits.
+    assert [c["fingerprint"] for c in card["queue"]][0] == "close0000001"
+    assert [c["fingerprint"] for c in card["queue"]][-1] == "new000000001"
+    # Every entry says why it's there and whether it's on cooldown.
+    assert {c["reason"] for c in card["queue"]} == {"limited-data", "stale", "untested"}
+    assert all(c["on_cooldown"] is False for c in card["queue"])
+    assert card["contenders"] == "leaders"
+
+    # A matchup already settled inside the rematch window is marked, not silently dropped.
+    with session_scope() as s:
+        _finished_duel(
+            s,
+            matchups=[_mu("crown0000001", "close0000001", "incumbent")],
+            champion="crown0000001",
+            when=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+    with session_scope() as s:
+        card = duel_mod.fight_card(s)
+        s.query(Duel).delete()
+    assert next(c for c in card["queue"] if c["fingerprint"] == "close0000001")["on_cooldown"] is True
+
+
+def test_fight_card_endpoint_is_honest_when_there_is_nothing_to_race(client):
+    out = client.get("/api/duel/card").json()
+    assert set(out) >= {"incumbent", "queue", "contenders", "top_n"}
+    if out["incumbent"] is None:
+        assert out["reason"]  # says why, rather than showing an empty table
