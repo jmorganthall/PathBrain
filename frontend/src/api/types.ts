@@ -1534,6 +1534,66 @@ export interface DuelMatchup {
   reason: string;
 }
 
+// ── The head-to-head league table (GET /duel/standings) ──────────────────────────────
+// A ranking earned in the ring: decided matchups only, nothing pooled or averaged over
+// history. Each row is one profile's record across every duel session in the ledger.
+
+export interface DuelStanding {
+  rank: number;
+  fingerprint: string;
+  label: string;
+  matchups: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  // Match points: win 3 / draw 1 (the primary sort).
+  points: number;
+  // Share of *decided* matchups won (draws excluded); null with no decisive matchup.
+  win_rate: number | null;
+  pair_wins: number;
+  pair_losses: number;
+  pair_win_rate: number | null;
+  // Median Overall-point margin signed from THIS profile's point of view (+ = better).
+  median_margin: number | null;
+  opponents: number;
+  beaten: string[];
+  lost_to: string[];
+  // Sessions this profile ended as the ladder's final incumbent.
+  championships: number;
+  is_champion: boolean;
+  last_dueled_at: string | null;
+  last_duel_id: number | null;
+}
+
+export interface DuelHeadToHeadCell {
+  wins: number;
+  losses: number;
+  draws: number;
+  pairs: number;
+  median_margin: number | null;
+}
+
+export interface DuelChampionStanding {
+  fingerprint: string;
+  label: string | null;
+  duel_id: number;
+  finished_at: string | null;
+  // How many consecutive completed sessions this profile has ended as champion.
+  consecutive_sessions: number;
+  decisive: boolean;
+}
+
+export interface DuelStandings {
+  champion: DuelChampionStanding | null;
+  standings: DuelStanding[];
+  // head_to_head[a][b] = a's record against b.
+  head_to_head: Record<string, Record<string, DuelHeadToHeadCell>>;
+  sessions_analyzed: number;
+  matchups_analyzed: number;
+  decisive_matchups: number;
+  generated_from: number;
+}
+
 export interface DuelSession {
   id: number;
   status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;

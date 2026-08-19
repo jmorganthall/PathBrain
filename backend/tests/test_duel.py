@@ -253,3 +253,126 @@ def test_duel_endpoints(client):
     assert out["config"]["policy"] == "duel"
     assert client.post("/api/settings/crown-follow", json={"policy": "nope"}).status_code == 400
     client.post("/api/settings/crown-follow", json={"policy": "pooled"})
+
+
+# ── The head-to-head league table (the dueling-champions view) ───────────────────────
+
+
+def _finished_duel(session, *, matchups, champion, when):
+    d = Duel(
+        status=DuelStatus.COMPLETE,
+        duration_s=600,
+        trigger="manual",
+        matchups=matchups,
+        champion_fingerprint=champion,
+        champion_label=champion,
+        finished_at=when,
+    )
+    session.add(d)
+    return d
+
+
+def _mu(inc, cha, verdict, *, wins_inc=6, wins_cha=4, delta=-2.0):
+    return {
+        "incumbent": inc,
+        "challenger": cha,
+        "incumbent_label": inc,
+        "challenger_label": cha,
+        "pairs": wins_inc + wins_cha,
+        "wins_incumbent": wins_inc,
+        "wins_challenger": wins_cha,
+        "median_delta": delta,
+        "llr_incumbent": 3.0,
+        "llr_challenger": -3.0,
+        "verdict": verdict,
+        "reason": "SPRT boundary crossed",
+    }
+
+
+def test_standings_rank_by_head_to_head_record():
+    """Ranking is earned in the ring: match points, then decisive-win rate, then pair rate."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        # A beats B (A is incumbent, keeps the crown), then A draws C.
+        _finished_duel(
+            s,
+            matchups=[
+                _mu("aaa", "bbb", "incumbent", wins_inc=8, wins_cha=2, delta=-5.0),
+                _mu("aaa", "ccc", "draw", wins_inc=5, wins_cha=5, delta=0.2),
+            ],
+            champion="aaa",
+            when=now - timedelta(days=2),
+        )
+        # Newer session: C beats A — C ends as this session's champion.
+        _finished_duel(
+            s,
+            matchups=[_mu("aaa", "ccc", "challenger", wins_inc=3, wins_cha=9, delta=4.0)],
+            champion="ccc",
+            when=now,
+        )
+
+    out = duel_mod.standings()
+    by_fp = {r["fingerprint"]: r for r in out["standings"]}
+    assert out["matchups_analyzed"] == 3
+    assert out["decisive_matchups"] == 2
+
+    # C: 1 win + 1 draw = 4 points; A: 1 win + 1 draw + 1 loss = 4 points, but a worse
+    # decisive-win rate (1/2 vs 1/1) — so C ranks first.
+    assert [r["fingerprint"] for r in out["standings"]][:2] == ["ccc", "aaa"]
+    assert by_fp["ccc"]["points"] == 4 and by_fp["ccc"]["win_rate"] == 1.0
+    assert by_fp["aaa"]["wins"] == 1 and by_fp["aaa"]["losses"] == 1 and by_fp["aaa"]["draws"] == 1
+    assert by_fp["bbb"]["points"] == 0 and by_fp["bbb"]["losses"] == 1
+    assert by_fp["aaa"]["rank"] == 2
+
+    # Margins are signed from each side's own point of view (stored delta is cha − inc).
+    assert by_fp["bbb"]["median_margin"] == -5.0  # lost by 5 Overall points
+    assert by_fp["ccc"]["median_margin"] == 2.1   # median of +0.2 (draw) and +4.0
+
+    # Pair tallies mirror across the two sides of every matchup.
+    assert by_fp["aaa"]["pair_wins"] == 8 + 5 + 3
+    assert by_fp["aaa"]["pair_losses"] == 2 + 5 + 9
+
+    # Opponent lists + head-to-head cells.
+    assert by_fp["aaa"]["beaten"] == ["bbb"] and by_fp["aaa"]["lost_to"] == ["ccc"]
+    assert out["head_to_head"]["aaa"]["ccc"] == {
+        "wins": 0,
+        "losses": 1,
+        "draws": 1,
+        "pairs": 22,
+        "median_margin": -2.1,
+    }
+
+    # The reigning champion is the newest completed session's final incumbent.
+    assert out["champion"]["fingerprint"] == "ccc"
+    assert out["champion"]["consecutive_sessions"] == 1
+    assert by_fp["ccc"]["is_champion"] and by_fp["ccc"]["championships"] == 1
+    assert not by_fp["aaa"]["is_champion"]
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+
+
+def test_standings_empty_ledger_is_a_quiet_payload():
+    with session_scope() as s:
+        s.query(Duel).delete()
+    out = duel_mod.standings()
+    assert out["standings"] == [] and out["champion"] is None
+    assert out["matchups_analyzed"] == 0
+
+
+def test_standings_endpoint_and_stopping_rule_config(client):
+    assert set(client.get("/api/duel/standings").json()) >= {
+        "champion",
+        "standings",
+        "head_to_head",
+        "matchups_analyzed",
+    }
+    # The page edits the stopping rule too — and the pair bounds can't cross.
+    upd = client.put("/api/duel/config", json={"min_pairs": 8, "max_pairs": 30}).json()
+    assert upd["min_pairs"] == 8 and upd["max_pairs"] == 30
+    assert client.put("/api/duel/config", json={"max_pairs": 4}).status_code == 422
+    assert client.put("/api/duel/config", json={"min_pairs": 1}).status_code == 422
+    assert client.put("/api/duel/config", json={"min_margin": -1}).status_code == 422
+    assert client.put("/api/duel/config", json={"min_margin": 2.5}).json()["min_margin"] == 2.5
+    client.put("/api/duel/config", json={"min_pairs": 10, "max_pairs": 40, "min_margin": 1.0})

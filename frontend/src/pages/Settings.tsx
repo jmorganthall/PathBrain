@@ -42,9 +42,8 @@ import { api } from "../api/client";
 import type {
   ChallengerRace,
   CrownHeirs,
-  DuelConfig,
-  DuelMatchup,
   DuelSession,
+  DuelStandings,
   MetricSaturation,
   SettingsProfilesResponse,
   WeatherSensitivity,
@@ -720,25 +719,22 @@ function WeatherSensitivityCard() {
   );
 }
 
-// The duel ladder: interleaved head-to-head adjudication (crown vs heirs, A/B/A/B pairs,
-// sequential stopping rule). This card arms the nightly window, runs one on demand, shows
-// the live matchup, and renders the head-to-head ledger. The duel never applies a winner —
-// that's the crowning policy + Follow best (see the top-bar popover).
+// Duel ladder — a pointer, not a second control panel. The full head-to-head view (the
+// ladder standings, the head-to-head grid, the bout tape, and the ring rules) lives on the
+// Dueling Champions tab; this strip only says whether a champion has been crowned and
+// whether a duel is running right now, next to the pooled standings it complements.
 function DuelCard() {
-  const [cfg, setCfg] = useState<DuelConfig | null>(null);
+  const navigate = useNavigate();
+  const [table, setTable] = useState<DuelStandings | null>(null);
   const [status, setStatus] = useState<DuelSession | null>(null);
-  const [ledger, setLedger] = useState<DuelSession[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const activeDuel = status?.status === "running" || status?.status === "pending";
 
   const load = useCallback(async () => {
     try {
-      const [c, s, h] = await Promise.all([api.duelConfig(), api.duelStatus(), api.duelHistory(5)]);
-      setCfg(c);
-      setStatus(s);
-      setLedger(h.duels.filter((d) => (d.matchups?.length ?? 0) > 0 || d.status === "failed"));
+      const [st, s] = await Promise.all([api.duelStandings(), api.duelStatus()]);
+      setTable(st);
+      setStatus(s.status ? s : null);
     } catch {
       /* transient */
     }
@@ -750,44 +746,11 @@ function DuelCard() {
 
   useEffect(() => {
     if (!activeDuel) return;
-    const t = setInterval(load, 3000);
+    const t = setInterval(load, 5000);
     return () => clearInterval(t);
   }, [activeDuel, load]);
 
-  const patch = async (body: Partial<DuelConfig>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      setCfg(
-        await api.duelConfigSave({
-          ...body,
-          // Bind the schedule to the zone you're setting it from (like the baseline test).
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        })
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const startNow = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      setStatus(await api.duelStart());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const verdictLabel = (m: DuelMatchup) =>
-    m.verdict === "draw"
-      ? `draw — ${m.reason}`
-      : `${m.verdict === "challenger" ? m.challenger_label : m.incumbent_label} wins (${m.wins_incumbent}–${m.wins_challenger}, Δ ${m.median_delta ?? "—"})`;
+  const champion = table?.champion ?? null;
 
   return (
     <Card sx={{ mb: 2 }}>
@@ -801,96 +764,31 @@ function DuelCard() {
           <Box>
             <Typography variant="h6">Duel ladder</Typography>
             <Typography variant="caption" color="text.secondary">
-              Interleaved head-to-head: crown vs heirs, A/B/A/B pairs sharing the same weather,
-              a sequential test that stops each matchup the moment it's decided — winner stays
-              on. Verdicts feed the ledger below; acting on them is the crowning policy
-              (top-bar Follow best popover).
+              The controlled-trial complement to these pooled standings: the crown and its
+              heirs trade one-iteration runs A/B/A/B, so both sides meet the same weather and
+              a verdict lands in tens of pairs.
             </Typography>
-          </Box>
-          {activeDuel ? (
-            <Button size="small" color="warning" variant="outlined" onClick={() => api.duelCancel().then(load)}>
-              Cancel duel
-            </Button>
-          ) : (
-            <Button size="small" variant="contained" onClick={() => void startNow()} disabled={busy}>
-              Duel now
-            </Button>
-          )}
-        </Stack>
-        {error && <Alert severity="error" sx={{ mt: 1 }}>{error}</Alert>}
-        {activeDuel && (
-          <Alert severity="info" sx={{ mt: 1 }}>
-            {status?.stage || "starting…"} · {status?.iterations_run ?? 0} iteration(s) ·{" "}
-            {status?.matchups?.length ?? 0} verdict(s) so far
-          </Alert>
-        )}
-        <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
-          <FormControlLabel
-            control={
-              <Checkbox
-                size="small"
-                checked={cfg?.enabled ?? false}
-                disabled={!cfg || busy}
-                onChange={(e) => void patch({ enabled: e.target.checked })}
-              />
-            }
-            label={
-              <Typography variant="body2" color="text.secondary">
-                Nightly at{" "}
-                {cfg
-                  ? `${String(cfg.hour).padStart(2, "0")}:${String(cfg.minute).padStart(2, "0")}`
-                  : "…"}
-                {cfg?.timezone ? ` (${cfg.timezone})` : ""} for {cfg?.duration_minutes ?? 120} min
+            <Typography variant="body2" sx={{ mt: 0.75 }}>
+              {champion ? (
+                <>
+                  Champion: <b>{champion.label || champion.fingerprint}</b> ·{" "}
+                  {table?.decisive_matchups ?? 0} decisive bout
+                  {(table?.decisive_matchups ?? 0) === 1 ? "" : "s"} on the ledger
+                </>
+              ) : (
+                "No duel champion crowned yet."
+              )}
+            </Typography>
+            {activeDuel && (
+              <Typography variant="caption" color="info.main">
+                Duel running — {status?.stage || "starting…"}
               </Typography>
-            }
-          />
-          <TextField
-            size="small"
-            type="time"
-            label="Run at"
-            value={
-              cfg
-                ? `${String(cfg.hour).padStart(2, "0")}:${String(cfg.minute).padStart(2, "0")}`
-                : "03:00"
-            }
-            disabled={!cfg || busy}
-            onChange={(e) => {
-              const [h, m] = e.target.value.split(":").map((x) => parseInt(x, 10));
-              void patch({ hour: h || 0, minute: m || 0 });
-            }}
-            sx={{ width: 140 }}
-            InputLabelProps={{ shrink: true }}
-          />
-        </Stack>
-        {ledger.length > 0 && (
-          <Box sx={{ mt: 1.5 }}>
-            <Typography variant="caption" color="text.secondary">
-              Head-to-head ledger
-            </Typography>
-            <Stack divider={<Box sx={{ borderBottom: 1, borderColor: "divider" }} />} spacing={0.75} sx={{ mt: 0.5 }}>
-              {ledger.slice(0, 5).map((d) => (
-                <Box key={d.id}>
-                  <Typography variant="caption" color="text.secondary">
-                    Duel #{d.id} · {d.finished_at ? fmtDateTime(d.finished_at) : d.status}
-                    {d.champion_label ? (
-                      <>
-                        {" "}· champion: <b>{d.champion_label}</b>
-                      </>
-                    ) : null}
-                  </Typography>
-                  {(d.matchups ?? []).map((m, i) => (
-                    <Typography key={i} variant="body2" sx={{ fontSize: "0.82rem" }}>
-                      {m.incumbent_label} vs {m.challenger_label}: <b>{verdictLabel(m)}</b>{" "}
-                      <Typography component="span" variant="caption" color="text.secondary">
-                        ({m.pairs} pairs)
-                      </Typography>
-                    </Typography>
-                  ))}
-                </Box>
-              ))}
-            </Stack>
+            )}
           </Box>
-        )}
+          <Button size="small" variant="outlined" onClick={() => navigate("/duels")}>
+            Dueling Champions
+          </Button>
+        </Stack>
       </CardContent>
     </Card>
   );

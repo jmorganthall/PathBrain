@@ -437,6 +437,223 @@ def latest_champion(session, max_age_days: int) -> dict | None:
     }
 
 
+def _matchup_sides(m: dict) -> list[tuple[str, str, str, float | None, int, int]]:
+    """Split one matchup record into (fingerprint, label, result, margin, pair_wins, pair_losses)
+    for **both** sides.
+
+    ``median_delta`` is stored challenger-minus-incumbent, so each side's margin is signed from
+    its own point of view (positive = it was the better profile in that ring).
+    """
+    verdict = m.get("verdict")
+    delta = m.get("median_delta")
+    delta = float(delta) if isinstance(delta, (int, float)) else None
+    inc_wins = int(m.get("wins_incumbent") or 0)
+    cha_wins = int(m.get("wins_challenger") or 0)
+    inc_result = "draw" if verdict == "draw" else ("win" if verdict == "incumbent" else "loss")
+    cha_result = "draw" if verdict == "draw" else ("win" if verdict == "challenger" else "loss")
+    return [
+        (
+            str(m.get("incumbent")),
+            str(m.get("incumbent_label") or m.get("incumbent")),
+            inc_result,
+            (-delta if delta is not None else None),
+            inc_wins,
+            cha_wins,
+        ),
+        (
+            str(m.get("challenger")),
+            str(m.get("challenger_label") or m.get("challenger")),
+            cha_result,
+            delta,
+            cha_wins,
+            inc_wins,
+        ),
+    ]
+
+
+def standings(limit_sessions: int = 50) -> dict:
+    """The **head-to-head league table** — every profile's record earned in the ring.
+
+    This is the duel ladder's own verdict surface and deliberately shares nothing with the
+    pooled crown: no averages over history, no weather adjustment, no percentile field —
+    only decided matchups, each of which was interleaved A/B/A/B so both sides met the same
+    weather. A profile ranks by what it *beat*, not by what it averaged.
+
+    Returns ``{champion, standings, head_to_head, sessions_analyzed, matchups_analyzed,
+    decisive_matchups, generated_from}``. Ranking: match points (win 3 / draw 1), then
+    decisive-win rate, then pair-win rate, then matchups played.
+    """
+    limit_sessions = max(1, min(int(limit_sessions or 50), 200))
+    with session_scope() as session:
+        rows = session.scalars(
+            select(Duel).order_by(Duel.id.desc()).limit(limit_sessions)
+        ).all()
+        sessions_data = [
+            {
+                "id": d.id,
+                "status": d.status.value if hasattr(d.status, "value") else str(d.status),
+                "matchups": list(d.matchups or []),
+                "champion_fingerprint": d.champion_fingerprint,
+                "champion_label": d.champion_label,
+                "finished_at": d.finished_at.isoformat() if d.finished_at else None,
+            }
+            for d in rows
+        ]
+
+    records: dict[str, dict] = {}
+    h2h: dict[str, dict[str, dict]] = {}
+    matchups_analyzed = 0
+    decisive = 0
+
+    # Oldest → newest so "last seen" / label freshness resolve to the most recent sighting.
+    for sess in reversed(sessions_data):
+        for m in sess["matchups"]:
+            if not m or not m.get("incumbent") or not m.get("challenger"):
+                continue
+            matchups_analyzed += 1
+            if m.get("verdict") != "draw":
+                decisive += 1
+            sides = _matchup_sides(m)
+            for idx, (fp, label, result, margin, pair_wins, pair_losses) in enumerate(sides):
+                opp_fp, opp_label = sides[1 - idx][0], sides[1 - idx][1]
+                rec = records.setdefault(
+                    fp,
+                    {
+                        "fingerprint": fp,
+                        "label": label,
+                        "matchups": 0,
+                        "wins": 0,
+                        "losses": 0,
+                        "draws": 0,
+                        "pair_wins": 0,
+                        "pair_losses": 0,
+                        "margins": [],
+                        "beaten": [],
+                        "lost_to": [],
+                        "opponents": set(),
+                        "championships": 0,
+                        "last_dueled_at": None,
+                        "last_duel_id": None,
+                    },
+                )
+                rec["label"] = label
+                rec["matchups"] += 1
+                rec[{"win": "wins", "loss": "losses", "draw": "draws"}[result]] += 1
+                rec["pair_wins"] += pair_wins
+                rec["pair_losses"] += pair_losses
+                rec["opponents"].add(opp_fp)
+                if margin is not None:
+                    rec["margins"].append(margin)
+                if result == "win" and opp_label not in rec["beaten"]:
+                    rec["beaten"].append(opp_label)
+                if result == "loss" and opp_label not in rec["lost_to"]:
+                    rec["lost_to"].append(opp_label)
+                rec["last_dueled_at"] = sess["finished_at"] or rec["last_dueled_at"]
+                rec["last_duel_id"] = sess["id"]
+
+                cell = h2h.setdefault(fp, {}).setdefault(
+                    opp_fp,
+                    {"wins": 0, "losses": 0, "draws": 0, "pairs": 0, "margins": []},
+                )
+                cell[{"win": "wins", "loss": "losses", "draw": "draws"}[result]] += 1
+                cell["pairs"] += pair_wins + pair_losses
+                if margin is not None:
+                    cell["margins"].append(margin)
+
+        fp = sess.get("champion_fingerprint")
+        if fp and sess["status"] == "complete":
+            rec = records.get(fp)
+            if rec is not None:
+                rec["championships"] += 1
+
+    # The reigning duel champion: the newest completed session that crowned one.
+    champion = None
+    for sess in sessions_data:  # newest first
+        if sess["status"] == "complete" and sess.get("champion_fingerprint"):
+            fp = sess["champion_fingerprint"]
+            reign = 0
+            for s2 in sessions_data:
+                if s2["status"] != "complete" or not s2.get("champion_fingerprint"):
+                    continue
+                if s2["champion_fingerprint"] != fp:
+                    break
+                reign += 1
+            champion = {
+                "fingerprint": fp,
+                "label": sess.get("champion_label"),
+                "duel_id": sess["id"],
+                "finished_at": sess["finished_at"],
+                "consecutive_sessions": reign,
+                "decisive": any(
+                    (m or {}).get("verdict") != "draw" for m in sess["matchups"]
+                ),
+            }
+            break
+
+    table: list[dict] = []
+    for rec in records.values():
+        decided = rec["wins"] + rec["losses"]
+        pairs = rec["pair_wins"] + rec["pair_losses"]
+        table.append(
+            {
+                "fingerprint": rec["fingerprint"],
+                "label": rec["label"],
+                "matchups": rec["matchups"],
+                "wins": rec["wins"],
+                "losses": rec["losses"],
+                "draws": rec["draws"],
+                "points": rec["wins"] * 3 + rec["draws"],
+                "win_rate": round(rec["wins"] / decided, 3) if decided else None,
+                "pair_wins": rec["pair_wins"],
+                "pair_losses": rec["pair_losses"],
+                "pair_win_rate": round(rec["pair_wins"] / pairs, 3) if pairs else None,
+                "median_margin": round(_median(rec["margins"]), 2) if rec["margins"] else None,
+                "opponents": len(rec["opponents"]),
+                "beaten": rec["beaten"],
+                "lost_to": rec["lost_to"],
+                "championships": rec["championships"],
+                "is_champion": bool(champion and champion["fingerprint"] == rec["fingerprint"]),
+                "last_dueled_at": rec["last_dueled_at"],
+                "last_duel_id": rec["last_duel_id"],
+            }
+        )
+    table.sort(
+        key=lambda r: (
+            r["points"],
+            r["win_rate"] if r["win_rate"] is not None else -1.0,
+            r["pair_win_rate"] if r["pair_win_rate"] is not None else -1.0,
+            r["matchups"],
+        ),
+        reverse=True,
+    )
+    for i, row in enumerate(table, start=1):
+        row["rank"] = i
+
+    matrix = {
+        fp: {
+            opp: {
+                "wins": cell["wins"],
+                "losses": cell["losses"],
+                "draws": cell["draws"],
+                "pairs": cell["pairs"],
+                "median_margin": round(_median(cell["margins"]), 2) if cell["margins"] else None,
+            }
+            for opp, cell in opponents.items()
+        }
+        for fp, opponents in h2h.items()
+    }
+
+    return {
+        "champion": champion,
+        "standings": table,
+        "head_to_head": matrix,
+        "sessions_analyzed": len(sessions_data),
+        "matchups_analyzed": matchups_analyzed,
+        "decisive_matchups": decisive,
+        "generated_from": limit_sessions,
+    }
+
+
 def _serialize(d: Duel) -> dict:
     return {
         "id": d.id,
@@ -507,5 +724,6 @@ __all__ = [
     "history",
     "latest_champion",
     "reconcile_interrupted_duels",
+    "standings",
     "start",
 ]
