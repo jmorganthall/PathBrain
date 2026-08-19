@@ -214,6 +214,23 @@ DEFAULT_CONFIG: dict = {
         # ~2.4x as often as the sign test it replaced. "pair_wins" is that legacy sign
         # test (counts winners, ignores margins) and is kept for comparison.
         "method": "margins",
+        # An explicit "N wins in a row ends the bout" rule. 0 = derive it from the
+        # statistical threshold (8 in a row under the default settings). Set it to 3 for a
+        # snap verdict: on a nightly ladder a wrong call is cheap and self-correcting, and
+        # at a true 1-point edge 3-in-a-row still names the better profile ~91% of the time.
+        "streak_wins": 0,
+        # Who the champion fights. "leaders" (default) races the reachable profiles closest
+        # to the crown — the matchups that can actually change the answer — with limited-data
+        # heirs that could still beat it taken first. "heirs" keeps the older behavior, which
+        # also samples untested profiles (better for exploring a fresh field).
+        # Keep the ladder running instead of once a night: a perpetual race that keeps
+        # accruing head-to-head evidence, so a better profile can surface at any hour.
+        # Sessions still hold the coordinator lock and still restore the baseline; the gap
+        # leaves the pipeline free for monitoring and manual runs in between.
+        "continuous": False,
+        "continuous_gap_minutes": 5,
+        "contenders": "leaders",
+        "contender_top_n": 8,
         "p1": 0.70,
         "alpha": 0.05,
         # Defaults are the "balanced" preset (duel.PRESETS) so a fresh install reads back

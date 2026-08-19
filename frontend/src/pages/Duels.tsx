@@ -124,7 +124,11 @@ const crossesMidnight = (cfg: DuelConfig): boolean =>
 const PRESET_GRID = {
   display: "grid",
   gap: 1.5,
-  gridTemplateColumns: { xs: "1fr", md: "repeat(3, minmax(0, 1fr))" },
+  gridTemplateColumns: {
+    xs: "1fr",
+    sm: "repeat(2, minmax(0, 1fr))",
+    lg: "repeat(4, minmax(0, 1fr))",
+  },
 } as const;
 
 const FIELD_GRID = {
@@ -900,7 +904,31 @@ export default function Duels() {
                 </Typography>
               }
             />
+            <Tooltip title="Keep duelling around the clock instead of once a night — the standings keep accruing evidence, so a better profile can surface at any hour. Sessions still take turns with your other benchmarks and always restore your settings.">
+              <FormControlLabel
+                control={
+                  <Switch
+                    size="small"
+                    checked={cfg?.continuous ?? false}
+                    disabled={!cfg || busy}
+                    onChange={(e) => void patch({ continuous: e.target.checked })}
+                  />
+                }
+                label={
+                  <Typography variant="body2" color="text.secondary">
+                    Run continuously
+                  </Typography>
+                }
+              />
+            </Tooltip>
           </Stack>
+          {cfg?.continuous && (
+            <Typography variant="caption" color="info.main" sx={{ display: "block", mb: 1 }}>
+              Running continuously — the times below are ignored until you switch it off.
+              Each session lasts {fmtWindow(cfg.duration_minutes)}, with a{" "}
+              {cfg.continuous_gap_minutes}-minute pause between them for your other runs.
+            </Typography>
+          )}
           <Box sx={FIELD_GRID}>
             <TimeField
               label="Start"
@@ -949,8 +977,9 @@ export default function Duels() {
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
             One choice. Win enough pairs back to back and the bout ends there; win most of
-            them convincingly and it ends too. Longer streaks mean fewer wrong calls — between
-            two identical profiles, a 3-in-a-row happens in 99.7% of bouts by luck alone.
+            them convincingly and it ends too. Shorter streaks decide sooner and get it wrong
+            more often — worth it on a ladder that runs every night, since the next bout
+            corrects it and the standings are what you read.
           </Typography>
           <Box sx={PRESET_GRID}>
             {(cfg?.presets ?? []).map((preset) => {
@@ -1021,6 +1050,28 @@ export default function Duels() {
                 step={0.01}
                 onCommit={(v) => void patch({ alpha: Math.min(0.49, Math.max(0.001, v)) })}
                 helper="How often you'll accept a wrong verdict (0.05 = 1 in 20)."
+              />
+              <NumField
+                label="Contenders to race"
+                value={cfg?.contender_top_n ?? 8}
+                disabled={!cfg || busy}
+                min={1}
+                onCommit={(v) => void patch({ contender_top_n: Math.round(v) })}
+                helper="How many of the top profiles the champion defends against, closest first. The rest still get a turn afterwards."
+              />
+              <NumField
+                label="Pause between sessions"
+                value={cfg?.continuous_gap_minutes ?? 5}
+                disabled={!cfg || busy}
+                onCommit={(v) => void patch({ continuous_gap_minutes: v })}
+                helper="Minutes to leave the pipeline free between continuous sessions, for monitoring and manual runs."
+              />
+              <NumField
+                label="Wins in a row that end it"
+                value={cfg?.streak_wins ?? 0}
+                disabled={!cfg || busy}
+                onCommit={(v) => void patch({ streak_wins: Math.round(v) })}
+                helper="0 = work it out from the error rate. Set it (min 2) to call a bout the moment one side takes that many pairs back to back."
               />
               <NumField
                 label="Ignore wins smaller than"

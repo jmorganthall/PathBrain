@@ -67,6 +67,11 @@ def _schedule_payload(cfg: dict) -> dict:
         # The evidence bar itself: how big an edge to look for (p1) and how often we're
         # willing to call a coin-flip a winner (alpha).
         "p1": float(d.get("p1", 0.70) or 0.70),
+        "streak_wins": int(d.get("streak_wins", 0) or 0),
+        "continuous": bool(d.get("continuous", False)),
+        "continuous_gap_minutes": float(d.get("continuous_gap_minutes", 5) or 0),
+        "contenders": str(d.get("contenders", "leaders") or "leaders"),
+        "contender_top_n": int(d.get("contender_top_n", 8) or 8),
         "alpha": float(d.get("alpha", 0.05) or 0.05),
         # How a bout is judged: "margins" (default — Wilcoxon signed-rank on the paired
         # Overall differences, which uses HOW MUCH each pair was won by) or "pair_wins"
@@ -86,6 +91,7 @@ def _schedule_payload(cfg: dict) -> dict:
                 d.get("alpha", 0.05),
                 int(d.get("min_pairs", 10) or 10),
                 int(d.get("max_pairs", 40) or 40),
+                int(d.get("streak_wins", 0) or 0),
             )
             if method == "margins"
             else duel.sprt_requirements(
@@ -160,6 +166,30 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
             updates.update(duel.preset_config(payload.preset))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.streak_wins is not None:
+        if int(payload.streak_wins) < 0:
+            raise HTTPException(status_code=422, detail="streak_wins cannot be negative")
+        if 0 < int(payload.streak_wins) < 2:
+            raise HTTPException(
+                status_code=422, detail="a streak rule needs at least 2 wins in a row"
+            )
+        updates["streak_wins"] = int(payload.streak_wins)
+    if payload.continuous is not None:
+        updates["continuous"] = bool(payload.continuous)
+    if payload.continuous_gap_minutes is not None:
+        if float(payload.continuous_gap_minutes) < 0:
+            raise HTTPException(status_code=422, detail="the gap cannot be negative")
+        updates["continuous_gap_minutes"] = float(payload.continuous_gap_minutes)
+    if payload.contenders is not None:
+        if payload.contenders not in ("leaders", "heirs"):
+            raise HTTPException(
+                status_code=422, detail="contenders must be 'leaders' or 'heirs'"
+            )
+        updates["contenders"] = payload.contenders
+    if payload.contender_top_n is not None:
+        if int(payload.contender_top_n) < 1:
+            raise HTTPException(status_code=422, detail="contender_top_n must be at least 1")
+        updates["contender_top_n"] = int(payload.contender_top_n)
     if payload.method is not None:
         if payload.method not in ("margins", "pair_wins"):
             raise HTTPException(

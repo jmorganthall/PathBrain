@@ -374,6 +374,19 @@ LLM-based. See `README.md` for the product overview.
     together still gets called. The margin floor (`min_margin`) now defaults to **0** — a
     consistent win counts however small, matching the pooled crown, which likewise has no floor
     ("the profile that wins wins"); raising it is opt-in, in the advanced panel.
+    An explicit **"N wins in a row ends it"** rule (`duel.streak_wins`, the **snap** preset's
+    3) overrides the derived streak *and* `min_pairs` — a field that says "3 in a row wins"
+    has to mean 3. It is a deliberate trade on a ladder that keeps running: measured against a
+    true 1-point edge, 3-in-a-row names the better profile **~91%** of the time and the worse
+    one ~7%; between genuinely equal profiles it is a coin toss, which costs nothing because
+    either answer is right, and the next bout re-runs it. Read the **standings**, not one bout.
+    The ladder can also **run continuously** (`duel.continuous`, gap `continuous_gap_minutes`)
+    rather than once a night — the scheduler starts a session whenever `coordinator.busy()` is
+    clear and the gap has elapsed, so monitoring and manual runs still get the pipeline, and
+    every session still restores the baseline. And it races **leaders, not randoms**:
+    `build_queue(contenders="leaders", top_n=…)` orders the queue by closeness to the crown
+    (the matchups that can actually change the answer) with everything else the heirs pass
+    surfaced following on; `contenders="heirs"` keeps the exploring order.
     **One dial, not six fields** (`duel.PRESETS` / `preset_for` / `preset_config`): "when is
     someone the winner?" is a single question, and it had been spread across six interacting
     numeric fields nobody could reason about together. `GET/PUT /duel/config` carries a

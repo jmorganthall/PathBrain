@@ -40,9 +40,17 @@ def _baseline_config() -> dict:
 
 
 def _maybe_run_duel() -> bool:
-    """Kick the nightly duel ladder if armed and due this scheduled minute (evaluated in
-    the schedule's own zone, like the baseline test). Same double-fire/day guard."""
-    from . import duel
+    """Kick the duel ladder — nightly at its scheduled minute, or perpetually in
+    ``continuous`` mode.
+
+    Continuous mode is the "ongoing race" reading of a duel: rather than one window a
+    night, the ladder keeps running so the standings keep accruing evidence and a better
+    profile can surface at any hour. Each session still restores the pre-duel baseline and
+    still runs under the coordinator lock, so other work is deferred rather than trampled,
+    and ``continuous_gap_minutes`` leaves the pipeline free between sessions for monitoring
+    and manual runs.
+    """
+    from . import coordinator, duel
     from .timezones import schedule_zone
 
     if duel.active():
@@ -51,6 +59,23 @@ def _maybe_run_duel() -> bool:
         cfg = get_config(session).get("duel", {}) or {}
     if not cfg.get("enabled"):
         return False
+
+    if cfg.get("continuous"):
+        if coordinator.busy():  # someone else is using the pipeline; try again next tick
+            return False
+        gap = max(float(cfg.get("continuous_gap_minutes", 5) or 0), 0.0) * 60.0
+        last = _state.get("duel_last_finished") or 0.0
+        if last and (time.monotonic() - last) < gap:
+            return False
+        try:
+            duel.start(int(cfg.get("duration_minutes", 120) or 120), trigger="continuous")
+            log.info("Scheduler kicked a continuous duel session")
+            return True
+        except Exception:  # noqa: BLE001 — never let a scheduling hiccup kill the loop
+            log.exception("Scheduler: could not start continuous duel")
+            _state["duel_last_finished"] = time.monotonic()  # back off before retrying
+            return False
+
     now = datetime.now(schedule_zone(cfg))
     today = now.date().isoformat()
     if _state.get("duel_last_date") == today:

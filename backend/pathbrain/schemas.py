@@ -70,8 +70,16 @@ class DuelScheduleUpdate(BaseModel):
     # How a bout is judged: "margins" (paired signed-rank, magnitude-aware) or the legacy
     # "pair_wins" sign test.
     method: str | None = None
-    # "quick" / "balanced" / "strict" — sets alpha + min/max pairs in one move.
+    # "snap" / "quick" / "balanced" / "strict" — sets the statistical fields in one move.
     preset: str | None = None
+    # Explicit "N wins in a row ends it" (0 = derive it from the threshold).
+    streak_wins: int | None = None
+    # Run the ladder perpetually rather than once a night, and the gap between sessions.
+    continuous: bool | None = None
+    continuous_gap_minutes: float | None = None
+    # Who the champion fights: "leaders" (closest to the crown) or "heirs" (explore).
+    contenders: str | None = None
+    contender_top_n: int | None = None
 
 
 class DuelStart(BaseModel):
