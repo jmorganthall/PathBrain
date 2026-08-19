@@ -2913,6 +2913,78 @@ def cancel_refresh() -> dict:
 # ── Crown follower ("Follow best") ────────────────────────────────────────────────────
 
 
+@router.get("/settings/crowns")
+def crowns(session: Session = Depends(get_session)) -> dict:
+    """**Both verdicts side by side** — the pooled crown and the duel champion.
+
+    PathBrain names a best profile two ways, and they answer different questions: the
+    pooled crown is the observational argmax over all history ("who has the best record
+    across every condition we've measured"), the duel champion is the controlled-trial
+    winner ("who beat whom, same weather, head to head"). They can disagree, and that
+    disagreement is information — so the Dashboard shows both rather than picking one.
+    Only the ``governing`` one is what automation acts on (the crowning policy).
+
+    Deliberately **cheap**: the pooled crown is read from the crown-churn ledger (one
+    indexed row) instead of recomputing ``compute_profiles`` on every dashboard load, and
+    the duel side reads the matchup ledger. Neither triggers a scoring pass.
+    """
+    from .. import crown_follower, crowning
+    from .. import duel as duel_mod
+
+    rematch_days = int((get_config(session).get("duel", {}) or {}).get("rematch_days", 7) or 7)
+    pooled = crown_follower.current_crown(session)
+    resolution = crowning.resolve(session, pooled_best_fp=(pooled or {}).get("fingerprint"))
+
+    # The duel side: the ladder's champion plus its record in the ring. `latest_champion`
+    # returns None once a verdict ages past the rematch window, so a stale champion is
+    # still shown — labelled expired — rather than silently vanishing from the dashboard.
+    table = duel_mod.standings()
+    champion = table.get("champion")
+    fresh = duel_mod.latest_champion(session, max_age_days=rematch_days)
+    duel_out = None
+    if champion:
+        record = next(
+            (r for r in table.get("standings", []) if r["fingerprint"] == champion["fingerprint"]),
+            None,
+        )
+        duel_out = {
+            **champion,
+            "fresh": fresh is not None,
+            "freshness_days": rematch_days,
+            "wins": (record or {}).get("wins", 0),
+            "losses": (record or {}).get("losses", 0),
+            "draws": (record or {}).get("draws", 0),
+            "matchups": (record or {}).get("matchups", 0),
+            "beaten": (record or {}).get("beaten", []),
+        }
+
+    last = crown_follower.status().get("last_result") or {}
+    return {
+        "policy": resolution["policy"],
+        "pooled": pooled,
+        "duel": duel_out,
+        # Which verdict automation currently follows, and whether it fell back.
+        "governing": {
+            "source": resolution["source"],
+            "fingerprint": resolution["fingerprint"],
+            "detail": resolution["detail"],
+        },
+        # True when both verdicts name the same profile — the strongest signal available:
+        # the observational field and the head-to-head trial agree.
+        "agree": bool(
+            pooled
+            and duel_out
+            and pooled.get("fingerprint") == duel_out.get("fingerprint")
+        ),
+        "follow_enabled": bool(
+            (get_config(session).get("crown_follow", {}) or {}).get("enabled", False)
+        ),
+        # Whether the firewall was on the governing crown at the follower's last check.
+        "on_crown": last.get("on_crown"),
+        "checked_at": crown_follower.status().get("last_check_at"),
+    }
+
+
 @router.get("/settings/crown-follow")
 def crown_follow_status(session: Session = Depends(get_session)) -> dict:
     """The crown follower's config, last-check status, crown-churn statistics, and the

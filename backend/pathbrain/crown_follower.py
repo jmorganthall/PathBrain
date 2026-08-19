@@ -624,6 +624,40 @@ def stats(session, now: datetime | None = None) -> dict:
     }
 
 
+def current_crown(session) -> dict | None:
+    """The pooled crown as last *observed*, straight from the churn ledger.
+
+    The follower writes a ``kind="change"`` row every time the crowned profile changes —
+    tracking is always on, independent of whether following is armed — so the newest such
+    row names the sitting crown, its Overall at that moment, and when its reign began.
+    Reading it costs one indexed query, which is why the Dashboard can show the crown
+    without paying for a full ``compute_profiles`` pass on every page load.
+
+    Returns ``{fingerprint, label, overall, since, reign_hours}`` or None before the very
+    first observation (a fresh install that hasn't completed a crown check yet).
+    """
+    row = session.scalars(
+        select(CrownEvent)
+        .where(CrownEvent.kind == "change")
+        .order_by(CrownEvent.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    since = _as_utc(row.created_at) if row.created_at else None
+    return {
+        "fingerprint": row.fingerprint,
+        "label": row.label,
+        "overall": row.overall,
+        "since": since.isoformat() if since else None,
+        "reign_hours": (
+            round((_as_utc(datetime.now(timezone.utc)) - since).total_seconds() / 3600.0, 1)
+            if since
+            else None
+        ),
+    }
+
+
 def recent_events(session, limit: int = 20) -> list[dict]:
     """The newest ledger rows (changes + applies interleaved), newest first."""
     rows = session.scalars(
@@ -647,4 +681,13 @@ def recent_events(session, limit: int = 20) -> list[dict]:
     ]
 
 
-__all__ = ["step", "check", "poke", "notify_run_complete", "status", "stats", "recent_events"]
+__all__ = [
+    "step",
+    "check",
+    "poke",
+    "notify_run_complete",
+    "status",
+    "stats",
+    "current_crown",
+    "recent_events",
+]

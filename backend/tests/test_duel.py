@@ -454,3 +454,64 @@ def test_browser_timezone_saves_on_the_duel_page(client):
     out = client.put("/api/duel/config", json={"timezone": "America/Chicago"}).json()
     assert out["timezone"] == "America/Chicago"
     client.put("/api/duel/config", json={"timezone": ""})
+
+
+# ── Both crowns, side by side (the Dashboard readout) ────────────────────────────────
+
+
+def test_crowns_endpoint_shows_both_verdicts(client):
+    """The dashboard needs the pooled crown AND the duel champion, and to say which one
+    automation actually follows."""
+    from pathbrain.models import CrownEvent
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        s.query(CrownEvent).delete()
+        s.add(
+            CrownEvent(
+                kind="change",
+                fingerprint="pooledwinner",
+                previous_fingerprint="oldone",
+                label="pooled winner",
+                overall=87.5,
+                created_at=now - timedelta(hours=5),
+            )
+        )
+        _finished_duel(
+            s,
+            matchups=[_mu("duelwinner", "someoneelse", "incumbent", wins_inc=9, wins_cha=1, delta=-4.0)],
+            champion="duelwinner",
+            when=now - timedelta(hours=2),
+        )
+
+    out = client.get("/api/settings/crowns").json()
+    assert out["pooled"]["fingerprint"] == "pooledwinner"
+    assert out["pooled"]["overall"] == 87.5
+    assert out["pooled"]["reign_hours"] >= 4.9  # reign measured from the ledger row
+    assert out["duel"]["fingerprint"] == "duelwinner"
+    assert (out["duel"]["wins"], out["duel"]["losses"]) == (1, 0)
+    assert out["duel"]["fresh"] is True
+    assert out["agree"] is False  # the two verdicts disagree — that's the point of showing both
+
+    # Under the default policy the pooled crown governs; switching makes the duel govern.
+    assert out["policy"] == "pooled" and out["governing"]["source"] == "pooled"
+    client.post("/api/settings/crown-follow", json={"policy": "duel"})
+    out = client.get("/api/settings/crowns").json()
+    assert out["governing"]["source"] == "duel"
+    assert out["governing"]["fingerprint"] == "duelwinner"
+    client.post("/api/settings/crown-follow", json={"policy": "pooled"})
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+        s.query(CrownEvent).delete()
+
+
+def test_crowns_endpoint_is_quiet_before_anything_is_crowned(client):
+    from pathbrain.models import CrownEvent
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+        s.query(CrownEvent).delete()
+    out = client.get("/api/settings/crowns").json()
+    assert out["pooled"] is None and out["duel"] is None and out["agree"] is False

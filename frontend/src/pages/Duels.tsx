@@ -37,6 +37,8 @@ import Typography from "@mui/material/Typography";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 import MilitaryTechIcon from "@mui/icons-material/MilitaryTech";
+import ScheduleIcon from "@mui/icons-material/Schedule";
+import GavelIcon from "@mui/icons-material/Gavel";
 import SportsMmaIcon from "@mui/icons-material/SportsMma";
 
 import { api } from "../api/client";
@@ -92,6 +94,71 @@ const clockIn = (minutes: number): string => {
   return hhmm(t.getHours(), t.getMinutes());
 };
 
+// "6h from now" alone is ambiguous at 7am — 1:08 PM today and 5:00 AM tomorrow are both
+// "from now". Naming the day is what makes the number checkable at a glance.
+const describeUntil = (clock: string): string => {
+  const [h, m] = clock.split(":").map((x) => parseInt(x, 10));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return "";
+  // Derive the end instant from the CHOSEN clock, then format that — deriving it from
+  // now+minutes instead re-rounds the seconds away and prints a time one minute off the
+  // field you just set, which reads like the arithmetic is broken.
+  const now = new Date();
+  const end = new Date(now);
+  end.setHours(h, m, 0, 0);
+  if (end <= now) end.setDate(end.getDate() + 1);
+  const minutes = Math.max(1, Math.round((end.getTime() - now.getTime()) / 60000));
+  const day = end.getDate() === now.getDate() ? "today" : "tomorrow";
+  const at = end.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `Runs about ${fmtWindow(minutes)} — until ${at} ${day}.`;
+};
+
+// Does the nightly window run past midnight into the next morning?
+const crossesMidnight = (cfg: DuelConfig): boolean =>
+  cfg.end_hour * 60 + cfg.end_minute <= cfg.hour * 60 + cfg.minute;
+
+// One responsive column set for every settings row: single column on a phone, filling
+// out as the screen allows. Replaces a flex-wrap row whose captions drifted away from
+// the fields they described.
+const FIELD_GRID = {
+  display: "grid",
+  gap: 1.5,
+  gridTemplateColumns: {
+    xs: "1fr",
+    sm: "repeat(2, minmax(0, 1fr))",
+    lg: "repeat(4, minmax(0, 1fr))",
+  },
+} as const;
+
+// A labelled clock input with its explanation attached underneath — on a phone there is
+// no hover, so the help has to be on the page, not in a tooltip.
+function TimeField({
+  label,
+  value,
+  onChange,
+  disabled,
+  helper,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+  helper?: string;
+}) {
+  return (
+    <TextField
+      size="small"
+      type="time"
+      label={label}
+      value={value}
+      disabled={disabled}
+      helperText={helper}
+      onChange={(e) => onChange(e.target.value)}
+      InputLabelProps={{ shrink: true }}
+      fullWidth
+    />
+  );
+}
+
 function NumField({
   label,
   value,
@@ -99,8 +166,7 @@ function NumField({
   disabled,
   min = 0,
   step = 1,
-  width = 120,
-  help,
+  helper,
 }: {
   label: string;
   value: number;
@@ -108,8 +174,9 @@ function NumField({
   disabled?: boolean;
   min?: number;
   step?: number;
-  width?: number;
-  help?: string;
+  // Plain-English explanation rendered under the field. Not a tooltip: a phone can't
+  // hover, and these settings are exactly the ones that need explaining.
+  helper?: string;
 }) {
   // Local draft so typing doesn't fire a PUT per keystroke — committed on blur/Enter.
   const [draft, setDraft] = useState(String(value));
@@ -119,23 +186,23 @@ function NumField({
     if (Number.isFinite(n) && n !== value) onCommit(Math.max(min, n));
     else setDraft(String(value));
   };
-  const field = (
+  return (
     <TextField
       size="small"
       type="number"
       label={label}
       value={draft}
       disabled={disabled}
+      helperText={helper}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
-      sx={{ width }}
-      inputProps={{ min, step }}
+      inputProps={{ min, step, inputMode: "numeric" }}
+      fullWidth
     />
   );
-  return help ? <Tooltip title={help}>{field}</Tooltip> : field;
 }
 
 // `median_delta` is stored challenger-minus-holder, which reads backwards next to a
@@ -714,19 +781,18 @@ export default function Duels() {
         <CardContent>
           <Typography variant="h6">Rules of the ring</Typography>
           <Typography variant="caption" color="text.secondary">
-            The nightly window and the sequential stopping rule. A bout can't be called
-            before the minimum pairs, gives up at the cap, and a statistically real winner
-            under the practical margin is recorded as a draw.
+            When duels happen and how a bout is called. Every setting here is a judgement
+            about evidence: how long to keep fighting, how much proof to demand, and how
+            big a difference has to be before it counts as a win.
           </Typography>
-          <Stack
-            direction="row"
-            spacing={1.5}
-            alignItems="center"
-            flexWrap="wrap"
-            useFlexGap
-            sx={{ mt: 1.5 }}
-          >
+
+          {/* ── When ───────────────────────────────────────────────────────────────── */}
+          <Divider sx={{ my: 2 }} />
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+            <ScheduleIcon fontSize="small" color="action" />
+            <Typography variant="subtitle2">Nightly window</Typography>
             <FormControlLabel
+              sx={{ ml: 0.5 }}
               control={
                 <Switch
                   size="small"
@@ -736,65 +802,67 @@ export default function Duels() {
                 />
               }
               label={
-                <Typography variant="body2">
-                  Nightly duel{cfg?.timezone ? ` (${cfg.timezone})` : ""}
+                <Typography variant="body2" color="text.secondary">
+                  {cfg?.enabled ? "Armed" : "Off"}
+                  {cfg?.timezone ? ` · ${cfg.timezone}` : ""}
                 </Typography>
               }
             />
-            <Tooltip title="When the nightly duel starts, in the timezone you set it from.">
-              <TextField
-                size="small"
-                type="time"
-                label="Start"
-                value={cfg ? hhmm(cfg.hour, cfg.minute) : "03:00"}
-                disabled={!cfg || busy}
-                onChange={(e) => {
-                  const [h, m] = e.target.value.split(":").map((x) => parseInt(x, 10));
-                  if (!cfg || !Number.isFinite(h) || !Number.isFinite(m)) return;
-                  // Send both ends together: the backend derives the duration from the
-                  // pair, so moving the start keeps the finish time you chose.
-                  void patch({
-                    hour: h,
-                    minute: m,
-                    end_hour: cfg.end_hour,
-                    end_minute: cfg.end_minute,
-                  });
-                }}
-                sx={{ width: 130 }}
-                InputLabelProps={{ shrink: true }}
-              />
-            </Tooltip>
-            <Tooltip title="When it stops dueling. Past midnight is fine — an end before the start just means the next morning.">
-              <TextField
-                size="small"
-                type="time"
-                label="Finish"
-                value={cfg ? hhmm(cfg.end_hour, cfg.end_minute) : "05:00"}
-                disabled={!cfg || busy}
-                onChange={(e) => {
-                  const [h, m] = e.target.value.split(":").map((x) => parseInt(x, 10));
-                  if (!cfg || !Number.isFinite(h) || !Number.isFinite(m)) return;
-                  void patch({
-                    hour: cfg.hour,
-                    minute: cfg.minute,
-                    end_hour: h,
-                    end_minute: m,
-                  });
-                }}
-                sx={{ width: 130 }}
-                InputLabelProps={{ shrink: true }}
-              />
-            </Tooltip>
-            <Typography variant="caption" color="text.secondary">
-              {cfg ? `= ${fmtWindow(cfg.duration_minutes)} of dueling` : ""}
-            </Typography>
+          </Stack>
+          <Box sx={FIELD_GRID}>
+            <TimeField
+              label="Start"
+              value={cfg ? hhmm(cfg.hour, cfg.minute) : "03:00"}
+              disabled={!cfg || busy}
+              helper="Duelling begins at this time, in your timezone."
+              onChange={(v) => {
+                const [h, m] = v.split(":").map((x) => parseInt(x, 10));
+                if (!cfg || !Number.isFinite(h) || !Number.isFinite(m)) return;
+                // Send both ends together: the backend derives the length from the pair,
+                // so moving the start keeps the finish time you chose.
+                void patch({ hour: h, minute: m, end_hour: cfg.end_hour, end_minute: cfg.end_minute });
+              }}
+            />
+            <TimeField
+              label="Finish"
+              value={cfg ? hhmm(cfg.end_hour, cfg.end_minute) : "05:00"}
+              disabled={!cfg || busy}
+              helper={
+                cfg
+                  ? `Stops here — ${fmtWindow(cfg.duration_minutes)} of duelling${
+                      crossesMidnight(cfg) ? ", ending the next morning" : ""
+                    }.`
+                  : "Duelling stops at this time."
+              }
+              onChange={(v) => {
+                const [h, m] = v.split(":").map((x) => parseInt(x, 10));
+                if (!cfg || !Number.isFinite(h) || !Number.isFinite(m)) return;
+                void patch({ hour: cfg.hour, minute: cfg.minute, end_hour: h, end_minute: m });
+              }}
+            />
+            <TimeField
+              label="Duel now until"
+              value={untilClock ?? clockIn(cfg?.duration_minutes ?? 120)}
+              disabled={busy || active}
+              helper={describeUntil(untilClock ?? clockIn(cfg?.duration_minutes ?? 120))}
+              onChange={setUntilClock}
+            />
+          </Box>
+
+          {/* ── How a bout is called ───────────────────────────────────────────────── */}
+          <Divider sx={{ my: 2 }} />
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+            <GavelIcon fontSize="small" color="action" />
+            <Typography variant="subtitle2">How a bout is called</Typography>
+          </Stack>
+          <Box sx={FIELD_GRID}>
             <NumField
               label="Min pairs"
               value={cfg?.min_pairs ?? 10}
               disabled={!cfg || busy}
               min={2}
               onCommit={(v) => void patch({ min_pairs: Math.round(v) })}
-              help="No verdict before this many interleaved pairs, however lopsided."
+              helper="Fewest head-to-heads before anyone can be declared the winner. Higher = harder to fluke a win."
             />
             <NumField
               label="Max pairs"
@@ -802,7 +870,7 @@ export default function Duels() {
               disabled={!cfg || busy}
               min={2}
               onCommit={(v) => void patch({ max_pairs: Math.round(v) })}
-              help="Futility cap — an undecided bout at this many pairs is a draw."
+              helper="Give up after this many and call it a draw. Stops one stubborn matchup eating the whole night."
             />
             <NumField
               label="Min margin"
@@ -810,32 +878,18 @@ export default function Duels() {
               disabled={!cfg || busy}
               step={0.5}
               onCommit={(v) => void patch({ min_margin: v })}
-              help="Overall points. A statistical winner under this margin is recorded as a draw — real but not worth chasing."
+              helper="How much better a winner must actually be (Overall points). Below this it's a draw — real, but too small to care about."
             />
             <NumField
-              label="Rematch (days)"
+              label="Rematch after"
               value={cfg?.rematch_days ?? 7}
               disabled={!cfg || busy}
               onCommit={(v) => void patch({ rematch_days: Math.round(v) })}
-              help="Cooldown before a decided pairing can be fought again."
+              helper="Days before the same two profiles can fight again. Keeps duels on fresh questions."
             />
-            <Tooltip title="When an on-demand duel (the button above) should stop. Defaults to the same window length as the nightly one.">
-              <TextField
-                size="small"
-                type="time"
-                label="Duel now until"
-                value={untilClock ?? clockIn(cfg?.duration_minutes ?? 120)}
-                disabled={busy || active}
-                onChange={(e) => setUntilClock(e.target.value)}
-                sx={{ width: 150 }}
-                InputLabelProps={{ shrink: true }}
-              />
-            </Tooltip>
-            <Typography variant="caption" color="text.secondary">
-              {untilClock ? `= ${fmtWindow(minutesUntil(untilClock))} from now` : ""}
-            </Typography>
-          </Stack>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+          </Box>
+
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
             Duel runs join the pooled record like any other runs; duel <b>verdicts</b> live
             only here. The engine never writes a winner to the firewall — it always restores
             your pre-duel settings.

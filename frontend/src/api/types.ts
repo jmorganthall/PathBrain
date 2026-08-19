@@ -1505,6 +1505,47 @@ export interface CrownFollowStatus {
   events: CrownEventOut[];
 }
 
+// ── Both crowns side by side (GET /settings/crowns) ─────────────────────────────────
+// The pooled crown answers "best record across all history we've measured"; the duel
+// champion answers "who beat whom, same weather, head to head". They can disagree — the
+// Dashboard shows both and marks which one automation follows.
+
+export interface PooledCrown {
+  fingerprint: string;
+  label: string | null;
+  overall: number | null;
+  since: string | null;
+  reign_hours: number | null;
+}
+
+export interface DuelCrown {
+  fingerprint: string;
+  label: string | null;
+  duel_id: number;
+  finished_at: string | null;
+  consecutive_sessions: number;
+  decisive: boolean;
+  // False once the verdict ages past `freshness_days` — shown, but marked expired.
+  fresh: boolean;
+  freshness_days: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  matchups: number;
+  beaten: string[];
+}
+
+export interface CrownsOut {
+  policy: "pooled" | "duel";
+  pooled: PooledCrown | null;
+  duel: DuelCrown | null;
+  governing: { source: "pooled" | "duel"; fingerprint: string | null; detail: string };
+  agree: boolean;
+  follow_enabled: boolean;
+  on_crown: boolean | null;
+  checked_at: string | null;
+}
+
 // ── Duel ladder (head-to-head adjudication) ─────────────────────────────────────────
 
 export interface DuelConfig {

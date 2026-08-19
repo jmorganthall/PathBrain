@@ -352,6 +352,15 @@ LLM-based. See `README.md` for the product overview.
     length) and the `head_to_head[a][b]` matrix. It is **pure ledger**: only decided matchups,
     nothing pooled, nothing averaged over history, so it never touches the crown. Rank order:
     points → decisive-win rate → pair-win rate → matchups played.
+    `GET /api/settings/crowns` (`routes_settings.crowns`) serves **both verdicts side by
+    side** for the Dashboard's **"The two crowns"** card (`TwoCrowns.tsx`): the pooled crown
+    (trophy) and the duel champion (belt/medal), each marked *following* or *for reference*
+    per the crowning policy, plus an `agree` flag when they name the same profile. It is
+    deliberately **cheap** — the pooled crown is read from the crown-churn ledger
+    (`crown_follower.current_crown`, one indexed row, since tracking is always on) rather
+    than recomputing `compute_profiles` on every dashboard load, and the duel side reads the
+    matchup ledger; neither triggers a scoring pass. A duel verdict aged past
+    `duel.rematch_days` is still shown, labelled expired, instead of vanishing.
   - `crowning.py` — **the first-class CROWNING POLICY**: the single resolver for "which
     verdict governs what automation applies". `crown_follow.policy` = **"pooled"** (the
     all-time Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
