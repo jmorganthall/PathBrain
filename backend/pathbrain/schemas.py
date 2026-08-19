@@ -67,6 +67,11 @@ class DuelScheduleUpdate(BaseModel):
     # The evidence bar: the edge worth detecting (p1) and the false-positive rate (alpha).
     p1: float | None = None
     alpha: float | None = None
+    # How a bout is judged: "margins" (paired signed-rank, magnitude-aware) or the legacy
+    # "pair_wins" sign test.
+    method: str | None = None
+    # "quick" / "balanced" / "strict" — sets alpha + min/max pairs in one move.
+    preset: str | None = None
 
 
 class DuelStart(BaseModel):

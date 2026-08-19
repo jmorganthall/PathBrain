@@ -345,6 +345,46 @@ LLM-based. See `README.md` for the product overview.
     a zero-length window is refused). `duration_minutes` stays the canonical value the engine
     counts down, so a window over 24h is still expressible. The on-demand button is the same
     idea client-side: the page's "duel now until" clock becomes minutes-from-now at press.
+    **Bouts are adjudicated on the paired MARGINS, not the pair-win count** (`duel.method`,
+    default `"margins"`). The original rule was a Wald SPRT on which side won each pair — a
+    **sign test**, which discards *by how much* and so throws away most of the evidence a duel
+    produces: measured against a true 1.0-point edge with ~1.5-point run noise, a 15-pair bout
+    called a winner just **28%** of the time ("profiles are winning but aren't presented as
+    winners"). `PairedEvidence` runs a one-sided **Wilcoxon signed-rank** test on the
+    challenger-minus-incumbent Overall margins (`wilcoxon_p`: exact below 25 pairs — the regime
+    duels actually run in, where the normal approximation is needlessly conservative —
+    tie-corrected normal beyond), which lifts the same bout to **~60-70%** and calls a 2-point
+    edge essentially always. Peeking after every pair inflates false positives (an uncorrected
+    5% test fires on ~26% of true ties over a 40-pair bout), so the threshold is divided by a
+    Pocock-style `peek_penalty` **fitted by simulation** (≈`3.32·ln(peeks) − 2.97`: alpha/3 at 6
+    peeks, /5 at 11, /9 at 36) which holds the realized false-verdict rate at ~alpha. The
+    practical floor (`min_margin`) still gates every verdict — significance and *worth acting on*
+    are separate questions — and the SPRT walk is retained purely as the **futility** detector
+    (its "pair wins ~50/50" exit still ends settled ties early). The legacy sign test stays
+    available as `method="pair_wins"` for comparison. Crucially the margins rule has **no cap at
+    which a verdict becomes unreachable** — more pairs only ever help.
+    **"If it wins back to back, it wins"** is the rule, at the length that isn't luck
+    (`duel.streak_to_decide`): an unbroken run of n pairs has p = 1/2ⁿ, so a bout ends the
+    moment the run clears the threshold — 6 straight under *quick*, 8 under *balanced*, 12
+    under *strict*. The length is not arbitrary and short streaks are worthless: between two
+    **identical** profiles a 30-pair bout throws up a 3-in-a-row 99.7% of the time, 5-in-a-row
+    62%, 8-in-a-row 9%. A *pure* streak rule would also be glacial (a profile winning 70% of
+    pairs needs ~54 pairs on average to string 8 together), which is why the paired test backs
+    it: a clean run wins instantly, and a profile that goes 12–3 without ever stringing 8
+    together still gets called. The margin floor (`min_margin`) now defaults to **0** — a
+    consistent win counts however small, matching the pooled crown, which likewise has no floor
+    ("the profile that wins wins"); raising it is opt-in, in the advanced panel.
+    **One dial, not six fields** (`duel.PRESETS` / `preset_for` / `preset_config`): "when is
+    someone the winner?" is a single question, and it had been spread across six interacting
+    numeric fields nobody could reason about together. `GET/PUT /duel/config` carries a
+    `preset` — **quick** / **balanced** (default) / **strict** — that writes `alpha` +
+    `min_pairs` + `max_pairs` in one move, and each preset is labelled with its **measured**
+    behavior (wrong-verdict rate, how often it spots a 1-point edge, typical pairs to decide;
+    `test_preset_behaviour_matches_its_promise` re-checks the ordering). A preset deliberately
+    never touches the practical margin or the schedule — different questions — and hand-editing
+    any derived field reads back as `"custom"` rather than pretending a preset is active. The
+    page shows the three presets plus the single "ignore differences smaller than X points"
+    field; the raw knobs live behind **Show advanced settings**.
     `duel.sprt_requirements` answers the question the raw settings hide — **what it actually
     takes to win a bout**. Each pair won moves the walk by `ln(p1/0.5)` and each pair lost by
     `ln((1-p1)/0.5)`, a *bigger* step, so the pair cap and the evidence bar interact: at

@@ -208,11 +208,22 @@ DEFAULT_CONFIG: dict = {
         # any verdict, a futility cap of `max_pairs`, and a practical-significance floor —
         # a statistical winner whose median pair delta is under `min_margin` Overall points
         # is recorded as a draw (real but meaningless differences don't reshuffle anything).
+        # How a bout is judged. "margins" (default) tests the paired Overall differences
+        # with a Wilcoxon signed-rank test — it uses HOW MUCH each pair was won by, which
+        # is where the evidence lives; measured against a true 1-point edge it decides
+        # ~2.4x as often as the sign test it replaced. "pair_wins" is that legacy sign
+        # test (counts winners, ignores margins) and is kept for comparison.
+        "method": "margins",
         "p1": 0.70,
         "alpha": 0.05,
-        "min_pairs": 10,
-        "max_pairs": 40,
-        "min_margin": 1.0,
+        # Defaults are the "balanced" preset (duel.PRESETS) so a fresh install reads back
+        # as a named choice rather than as "custom".
+        "min_pairs": 8,
+        "max_pairs": 30,
+        # 0 = a consistent win counts, however small — matching the pooled crown, which
+        # likewise has no margin floor ("the profile that wins wins"). Raise it only to
+        # ignore differences too small to care about.
+        "min_margin": 0.0,
         # A decided matchup isn't re-dueled for this many days (the ladder moves on).
         "rematch_days": 7,
     },

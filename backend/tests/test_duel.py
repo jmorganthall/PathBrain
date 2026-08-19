@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathbrain import challenger as challenger_mod
 from pathbrain import crowning
 from pathbrain import duel as duel_mod
+from pathbrain.config_store import get_config
 from pathbrain.database import session_scope
 from pathbrain.duel import SprtState
 from pathbrain.models import Duel, DuelStatus
@@ -119,7 +120,12 @@ def test_duel_ladder_crowns_a_challenger_and_restores(monkeypatch):
     assert len(d.matchups) == 1
     m = d.matchups[0]
     assert m["verdict"] == "challenger"
-    assert m["pairs"] == 10  # SPRT sweep decides exactly at min_pairs
+    # A clean sweep is decided as soon as the evidence clears the bar — not at some fixed
+    # pair count, which would only be re-asserting whatever the defaults happen to be.
+    with session_scope() as s:
+        cfg = get_config(s).get("duel", {})
+    assert cfg["min_pairs"] <= m["pairs"] <= cfg["max_pairs"]
+    assert m["wins_challenger"] == m["pairs"] and m["wins_incumbent"] == 0
     assert m["median_delta"] == 6.0
     assert d.champion_fingerprint == "cha0000000x"
     # Both sides were applied per pair, alternating.
@@ -128,11 +134,16 @@ def test_duel_ladder_crowns_a_challenger_and_restores(monkeypatch):
 
 
 def test_duel_margin_floor_records_a_draw(monkeypatch):
-    """A statistically real but sub-margin edge (Δ ~0.4 < min_margin 1.0) is a draw."""
+    """A statistically real but sub-margin edge (Δ ~0.4) is a draw *when the user asks for
+    a floor*. The floor is opt-in now — by default a consistent win counts however small,
+    matching the pooled crown — so this test sets it explicitly."""
     import pathbrain.api.routes_settings as rs
+
+    from pathbrain.config_store import save_config
 
     with session_scope() as s:
         s.query(Duel).delete()  # no rematch-cooldown carryover between tests
+        save_config(s, {"duel": {"min_margin": 1.0}})
     fake_field = {
         "best_fingerprint": "inc0000000x",
         "profiles": [
@@ -164,6 +175,8 @@ def test_duel_margin_floor_records_a_draw(monkeypatch):
     assert "practically equal" in m["reason"]
     # The incumbent keeps the crown on a draw.
     assert d.champion_fingerprint == "inc0000000x"
+    with session_scope() as s:
+        save_config(s, {"duel": {"min_margin": 0.0}})  # back to the default (no floor)
 
 
 # ── Crowning policy resolution ───────────────────────────────────────────────────────
@@ -554,11 +567,241 @@ def test_sprt_requirements_expose_an_unwinnable_cap():
 def test_duel_config_exposes_the_evidence_bar(client):
     out = client.get("/api/duel/config").json()
     assert "p1" in out and "alpha" in out
-    assert set(out["decision"]) == {"sweep_pairs", "wins_needed", "win_rate_needed", "restrictive"}
+    assert {"sweep_pairs", "wins_needed", "win_rate_needed", "restrictive"} <= set(out["decision"])
 
     out = client.put("/api/duel/config", json={"p1": 0.8, "alpha": 0.1, "max_pairs": 20}).json()
     assert out["p1"] == 0.8 and out["alpha"] == 0.1
-    assert out["decision"]["wins_needed"] <= 20
+    # Under the default (margins) rule there is no win COUNT to hit — the margins decide.
+    assert out["decision"]["wins_needed"] is None
+    legacy = client.put("/api/duel/config", json={"method": "pair_wins"}).json()
+    assert legacy["decision"]["wins_needed"] <= 20
+    client.put("/api/duel/config", json={"method": "margins"})
     assert client.put("/api/duel/config", json={"p1": 0.4}).status_code == 422
     assert client.put("/api/duel/config", json={"alpha": 0.9}).status_code == 422
     client.put("/api/duel/config", json={"p1": 0.7, "alpha": 0.05, "max_pairs": 40})
+
+
+# ── Magnitude-aware adjudication (the sensitivity fix) ───────────────────────────────
+
+
+def test_wilcoxon_matches_the_exact_null_distribution():
+    from pathbrain.duel import wilcoxon_p
+
+    # n consistently one-sided pairs with distinct magnitudes: p = 1/2^n exactly.
+    for n in (5, 6, 8, 10):
+        deltas = [float(i + 1) for i in range(n)]
+        assert abs(wilcoxon_p(deltas) - 1 / 2**n) < 1e-12
+        assert wilcoxon_p(deltas, direction=-1) == 1.0  # the wrong direction proves nothing
+    # Symmetric evidence is worthless in either direction.
+    assert wilcoxon_p([1.0, -1.0, 2.0, -2.0, 3.0, -3.0]) > 0.4
+
+
+def test_margins_decide_the_bout_the_sign_test_could_not():
+    """The reported case: 12 pair wins to 3, with real margins. The sign test recorded a
+    draw; the paired test calls it — because the margins were consistently one-sided."""
+    from pathbrain.duel import PairedEvidence
+
+    deltas = [2.0, 1.5, 3.0, 0.8, 2.2, 1.1, 4.0, 0.6, 1.9, 2.5, 1.2, 3.1, -0.4, -1.0, -0.2]
+
+    sign = SprtState(p1=0.70, alpha=0.05)
+    for d in deltas:
+        sign.add_pair(d > 0)
+    assert sign.decision(min_pairs=5, max_pairs=15) == "draw"  # what the user saw
+
+    paired = PairedEvidence(alpha=0.05, min_margin=0.01, min_pairs=5, max_pairs=15)
+    verdict = None
+    for d in deltas:
+        paired.add(d)
+        verdict = verdict or paired.decision()
+    assert verdict == "challenger"
+    assert paired.p_value(1) < paired.nominal_alpha
+
+
+def test_the_practical_floor_still_governs():
+    """Sensitivity must not mean calling meaningless differences. A dead-consistent but
+    tiny edge stays a draw — the floor is a separate question from significance."""
+    from pathbrain.duel import PairedEvidence
+
+    paired = PairedEvidence(alpha=0.05, min_margin=1.0, min_pairs=5, max_pairs=20)
+    for _ in range(20):
+        paired.add(0.05)  # unmistakably one-sided, and unmistakably irrelevant
+    assert paired.decision() is None
+
+    worth_it = PairedEvidence(alpha=0.05, min_margin=1.0, min_pairs=5, max_pairs=20)
+    for i in range(10):
+        worth_it.add(1.5 + i * 0.1)
+    assert worth_it.decision() == "challenger"
+
+
+def test_peek_correction_holds_the_false_positive_rate():
+    """Peeking after every pair inflates false positives; the fitted penalty holds them
+    near alpha. Simulated against true ties (fixed seed, so this is deterministic)."""
+    import random
+
+    from pathbrain.duel import PairedEvidence, peek_penalty
+
+    assert peek_penalty(36) > peek_penalty(11) > peek_penalty(6) >= 2.0
+
+    rng = random.Random(4242)
+    false_calls = 0
+    trials = 400
+    for _ in range(trials):
+        ev = PairedEvidence(alpha=0.05, min_margin=0.0, min_pairs=5, max_pairs=15)
+        for _ in range(15):
+            ev.add(rng.gauss(0.0, 1.5))  # no true difference at all
+            if ev.decision() is not None:
+                false_calls += 1
+                break
+    assert false_calls / trials <= 0.09  # ~5% target, sampling slack on 400 trials
+
+
+def test_margins_are_far_more_sensitive_than_pair_wins():
+    """The point of the change, measured: against a true 1-point edge with realistic run
+    noise, the paired test calls the winner far more often than the sign test."""
+    import random
+
+    from pathbrain.duel import PairedEvidence
+
+    rng = random.Random(99)
+    sign_calls = paired_calls = 0
+    trials = 300
+    for _ in range(trials):
+        deltas = [rng.gauss(1.0, 1.5) for _ in range(15)]
+
+        sign = SprtState(p1=0.70, alpha=0.05)
+        called = False
+        for d in deltas:
+            sign.add_pair(d > 0)
+            if sign.decision(min_pairs=5, max_pairs=15) in ("challenger", "incumbent"):
+                called = True
+                break
+        sign_calls += called
+
+        ev = PairedEvidence(alpha=0.05, min_margin=0.01, min_pairs=5, max_pairs=15)
+        called = False
+        for d in deltas:
+            ev.add(d)
+            if ev.decision() is not None:
+                called = True
+                break
+        paired_calls += called
+
+    assert paired_calls > sign_calls * 1.5, (paired_calls, sign_calls)
+
+
+def test_duel_config_carries_the_method(client):
+    out = client.get("/api/duel/config").json()
+    assert out["method"] == "margins"  # magnitude-aware by default
+    assert set(out["methods"]) == {"margins", "pair_wins"}
+    # The margins rule has no cap at which a verdict becomes unreachable.
+    assert out["decision"]["restrictive"] is False
+    assert out["decision"]["sweep_pairs"] >= 4
+
+    legacy = client.put("/api/duel/config", json={"method": "pair_wins"}).json()
+    assert legacy["method"] == "pair_wins"
+    assert legacy["decision"]["wins_needed"] is not None  # back to a win-count rule
+    assert client.put("/api/duel/config", json={"method": "vibes"}).status_code == 422
+    client.put("/api/duel/config", json={"method": "margins"})
+
+
+# ── One dial instead of six ──────────────────────────────────────────────────────────
+
+
+def test_presets_round_trip_and_report_custom():
+    from pathbrain.duel import PRESETS, preset_config, preset_for
+
+    for name, preset in PRESETS.items():
+        assert preset_for(preset_config(name)) == name
+        # Each preset states a consequence, because a dial you can't predict is no
+        # simpler than the six fields it replaced.
+        assert preset["summary"] and preset["detail"] and preset["label"]
+    # Hand-tuned numbers read back honestly rather than being snapped to a preset.
+    assert preset_for({"alpha": 0.05, "min_pairs": 5, "max_pairs": 15}) == "custom"
+    try:
+        preset_config("nope")
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "unknown preset" in str(exc)
+
+
+def test_preset_behaviour_matches_its_promise():
+    """The presets advertise measured numbers; check they still hold (fixed seed)."""
+    import random
+
+    from pathbrain.duel import PRESETS, PairedEvidence
+
+    def rate(cfg, effect, trials=400, seed=3):
+        rng = random.Random(seed)
+        hits = 0
+        for _ in range(trials):
+            ev = PairedEvidence(cfg["alpha"], 0.0, cfg["min_pairs"], cfg["max_pairs"])
+            for _ in range(cfg["max_pairs"]):
+                ev.add(rng.gauss(effect, 1.5))
+                if ev.decision() is not None:
+                    hits += 1
+                    break
+        return hits / trials
+
+    quick, strict = PRESETS["quick"], PRESETS["strict"]
+    # Stricter settings must be harder to fool and no less able to find a real edge given
+    # their longer window — that ordering is the whole point of the dial.
+    assert rate(quick, 0.0) > rate(strict, 0.0)
+    assert rate(strict, 1.0) >= rate(quick, 1.0) - 0.05
+    assert rate(strict, 0.0) < 0.05
+    assert rate(quick, 1.0) > 0.6
+
+
+def test_preset_endpoint_sets_the_numbers(client):
+    out = client.put("/api/duel/config", json={"preset": "strict"}).json()
+    assert out["preset"] == "strict"
+    assert (out["alpha"], out["min_pairs"], out["max_pairs"]) == (0.01, 12, 60)
+    assert any(p["key"] == "strict" and p["summary"] for p in out["presets"])
+
+    # A preset never touches the practical margin or the schedule — different questions.
+    client.put("/api/duel/config", json={"min_margin": 0.5, "hour": 2})
+    out = client.put("/api/duel/config", json={"preset": "quick"}).json()
+    assert out["min_margin"] == 0.5 and out["hour"] == 2
+
+    # Hand-editing a derived field reads back as custom rather than lying about a preset.
+    out = client.put("/api/duel/config", json={"max_pairs": 17}).json()
+    assert out["preset"] == "custom"
+    assert client.put("/api/duel/config", json={"preset": "nope"}).status_code == 422
+    client.put("/api/duel/config", json={"preset": "balanced", "min_margin": 1.0, "hour": 3})
+
+
+def test_a_clean_streak_ends_a_bout_and_is_the_length_the_card_advertises():
+    """"If it wins back to back, it wins" — true, at the length that isn't just luck.
+
+    Between identical profiles a 30-pair bout throws up a 3-in-a-row streak 99.7% of the
+    time, so the streak has to be long enough to mean something; that length falls out of
+    the test (1/2^n vs the threshold) rather than being a separate rule.
+    """
+    from pathbrain.duel import PRESETS, PairedEvidence, preset_config, streak_to_decide
+
+    for name, preset in PRESETS.items():
+        cfg = preset_config(name)
+        n = streak_to_decide(cfg["alpha"], cfg["min_pairs"], cfg["max_pairs"])
+        assert n is not None
+        # The card's promise must be the code's behavior.
+        assert f"{n} wins in a row" in preset["summary"], (name, preset["summary"], n)
+
+        ev = PairedEvidence(cfg["alpha"], 0.0, cfg["min_pairs"], cfg["max_pairs"])
+        for i in range(n - 1):
+            ev.add(1.0 + i * 0.1)
+            assert ev.decision() is None, f"{name}: decided early at {i + 1} straight"
+        ev.add(9.9)
+        assert ev.decision() == "challenger", f"{name}: {n} straight should end it"
+
+
+def test_a_consistent_win_counts_however_small_by_default():
+    """The pooled crown has no margin floor — the duel shouldn't invent one. A profile
+    that wins every pair by a hair is the winner unless the user says otherwise."""
+    from pathbrain.config_store import DEFAULT_CONFIG
+    from pathbrain.duel import PairedEvidence
+
+    assert float(DEFAULT_CONFIG["duel"]["min_margin"]) == 0.0
+
+    ev = PairedEvidence(alpha=0.05, min_margin=0.0, min_pairs=8, max_pairs=30)
+    for i in range(8):
+        ev.add(0.02 + i * 0.001)  # tiny, but relentlessly one-sided
+    assert ev.decision() == "challenger"
