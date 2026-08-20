@@ -439,7 +439,13 @@ LLM-based. See `README.md` for the product overview.
     side*, opponents beaten/lost to, title count — plus the reigning champion (with reign
     length) and the `head_to_head[a][b]` matrix. It is **pure ledger**: only decided matchups,
     nothing pooled, nothing averaged over history, so it never touches the crown. Rank order:
-    points → decisive-win rate → pair-win rate → matchups played.
+    points → decisive-win rate → pair-win rate → matchups played. Each row also carries the
+    profile's **pooled Overall** (`_pooled_overalls` → `crown_follower._profile_overall`, one
+    indexed query per profile rather than a full `compute_profiles` pass) so the ring record
+    and the raw measured record sit on one line — a profile winning its bouts while mid-table
+    on Overall is exactly what running two verdicts is for. The table is **sortable on every
+    column** client-side (`compareStandings`, nulls last in both directions); the server's
+    ladder order is just the default.
     `GET /api/settings/crowns` (`routes_settings.crowns`) serves **both verdicts side by
     side** for the Dashboard's **"The two crowns"** card (`TwoCrowns.tsx`): the pooled crown
     (trophy) and the duel champion (belt/medal), each marked *following* or *for reference*
