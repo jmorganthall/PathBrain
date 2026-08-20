@@ -534,6 +534,47 @@ def _recently_decided(session, a_fp: str, b_fp: str, rematch_days: int) -> bool:
     return False
 
 
+def select_incumbent(session, field: dict, baseline: list[dict] | None, cfg: dict) -> tuple[str | None, str]:
+    """Who starts the session holding the belt, and why.
+
+    **The reigning champion defends.** A ladder whose champion never has to defend isn't a
+    ladder: before this, every session restarted from the pooled crown, so the belt meant
+    "won some session once" and the badge could name a profile that wasn't even in the
+    ring. Now a fresh, decisive, reachable champion carries its belt into the next session
+    and the pooled crown has to come and take it — which is exactly the matchup worth
+    running, and the one the crowning policy is deciding on.
+
+    Falls back to the pooled crown when there's no such champion (first ever session, an
+    expired verdict, a champion that only won by draws, or one the live environment can no
+    longer be set to). Returns ``(fingerprint, reason)``.
+    """
+    profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
+    pooled_fp = field.get("best_fingerprint")
+    rematch_days = int(cfg.get("rematch_days", 7) or 7)
+
+    champion = latest_champion(session, max_age_days=rematch_days)
+    if champion and champion.get("decisive"):
+        fp = champion["fingerprint"]
+        if fp in profiles and _reachable(profiles[fp].get("settings"), baseline):
+            return fp, f"reigning champion from duel #{champion['duel_id']} defends the belt"
+        if fp in profiles:
+            return pooled_fp, "the champion can't be applied in this environment — the pooled crown defends"
+        return pooled_fp, "the champion has no comparable data any more — the pooled crown defends"
+    return pooled_fp, "no fresh decisive champion — the pooled crown defends"
+
+
+def _reachable(settings: list[dict] | None, baseline: list[dict] | None) -> bool:
+    """Can the live environment actually be set to this profile? (Same check as the heirs.)"""
+    from .settings_profile import environment_signature
+
+    if not settings or not baseline:
+        return True
+    try:
+        return environment_signature(settings) == environment_signature(baseline)
+    except Exception:  # noqa: BLE001 — a reachability probe must never break matchmaking
+        return True
+
+
 def build_queue(
     field: dict,
     heirs: dict,
@@ -560,6 +601,13 @@ def build_queue(
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
     heir_items = [h for h in (heirs.get("items") or []) if h.get("fingerprint") in profiles]
     heir_order = [h["fingerprint"] for h in heir_items]
+    # When the champion is defending, the pooled crown is a challenger — and the single
+    # most interesting one in the system, since the two verdicts disagree by definition.
+    # It is never in `heirs` (heirs are contenders *to* it), so it has to be added by hand
+    # or the belt holder would never face the profile the all-history record favours.
+    pooled_fp = field.get("best_fingerprint")
+    if pooled_fp and pooled_fp != incumbent_fp and pooled_fp in profiles:
+        heir_order = [pooled_fp] + [fp for fp in heir_order if fp != pooled_fp]
     if contenders != "leaders":
         return heir_order
 
@@ -577,6 +625,8 @@ def build_queue(
         if fp != incumbent_fp and fp in reachable and p.get("overall") is not None
     ]
     leaders = ranked[: max(int(top_n or 0), 1)]
+    if pooled_fp and pooled_fp != incumbent_fp and pooled_fp in profiles:
+        leaders = [pooled_fp] + [fp for fp in leaders if fp != pooled_fp]
     # Contenders first, strongest first — the matchup most likely to change the answer is
     # the one just below the crown. Everything else the heirs pass surfaced (untested
     # profiles, anything outside the top N) follows, so nothing is lost, it just waits.
@@ -614,16 +664,25 @@ def _drive(duel_id: int) -> None:
             min_margin = float(cfg.get("min_margin", 1.0) or 0.0)
             rematch_days = int(cfg.get("rematch_days", 7) or 7)
 
-            # Matchmaking: incumbent = pooled crown; challengers = the heirs priority order
-            # (reachability-filtered by _compute_heirs), skipping pairs on rematch cooldown.
+            # Matchmaking: the reigning champion defends (pooled crown if there isn't one);
+            # challengers are the contenders nearest the crown, skipping rematch cooldowns.
             _set_stage(duel_id, "Ranking the field for matchmaking")
             with session_scope() as session:
                 field = compute_profiles(session)
                 heirs = _compute_heirs(field, session, baseline)
+                incumbent_fp, incumbent_why = select_incumbent(session, field, baseline, cfg)
             settings_by_fp = {p["fingerprint"]: p for p in field.get("profiles", [])}
-            incumbent_fp = field.get("best_fingerprint")
             if incumbent_fp is None or incumbent_fp not in settings_by_fp:
-                raise RuntimeError("No confident pooled crown to defend — nothing to duel.")
+                raise RuntimeError("No confident profile to defend — nothing to duel.")
+            log.info("Duel %s: %s (%s)", duel_id, incumbent_why, incumbent_fp)
+            # Record the holder up front so the belt names whoever is actually in the ring,
+            # rather than last session's winner, from the first pair onward.
+            holder = settings_by_fp.get(incumbent_fp) or {}
+            with session_scope() as session:
+                d = session.get(Duel, duel_id)
+                if d is not None:
+                    d.champion_fingerprint = incumbent_fp
+                    d.champion_label = holder.get("name") or holder.get("label")
             queue = build_queue(
                 field,
                 heirs,
@@ -664,7 +723,7 @@ def _drive(duel_id: int) -> None:
                 while verdict is None and time.monotonic() < deadline and not _state.get("cancel"):
                     _set_stage(
                         duel_id,
-                        f"Duel: {inc.get('name') or inc['label']} vs "
+                        f"Duel: {inc.get('name') or inc['label']} (holder) defends vs "
                         f"{cha.get('name') or cha['label']} — pair {sprt.pairs + 1} "
                         f"({sprt.wins_incumbent}-{sprt.wins_challenger})",
                     )
@@ -880,14 +939,16 @@ def fight_card(session, limit: int = 12) -> dict:
     field = compute_profiles(session)
     heirs = _compute_heirs(field, session, live)
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
-    incumbent_fp = field.get("best_fingerprint")
+    # Exactly the engine's choice of who defends, so the preview can't promise a different
+    # champion than the one that actually walks out.
+    incumbent_fp, incumbent_why = select_incumbent(session, field, live, cfg)
     if incumbent_fp is None or incumbent_fp not in profiles:
         return {
             "incumbent": None,
             "queue": [],
             "contenders": str(cfg.get("contenders", "leaders") or "leaders"),
             "top_n": int(cfg.get("contender_top_n", 8) or 8),
-            "reason": "No confident pooled crown to defend yet — collect more iterations.",
+            "reason": "No confident profile to defend yet — collect more iterations.",
         }
 
     heir_reason = {
@@ -913,11 +974,17 @@ def fight_card(session, limit: int = 12) -> dict:
             "iterations": p.get("iterations"),
             "confident": p.get("confident"),
             # Why this profile is in the queue at all.
-            "reason": heir_reason.get(fp) or ("contender" if p.get("overall") is not None else "untested"),
+            "reason": (
+                "pooled-crown"
+                if fp == pooled_fp
+                else heir_reason.get(fp)
+                or ("contender" if p.get("overall") is not None else "untested")
+            ),
             "on_cooldown": _recently_decided(session, incumbent_fp, fp, rematch_days),
         }
 
     inc = profiles[incumbent_fp]
+    pooled_fp = field.get("best_fingerprint")
     return {
         "incumbent": {
             "fingerprint": incumbent_fp,
@@ -925,6 +992,10 @@ def fight_card(session, limit: int = 12) -> dict:
             "label": inc.get("label"),
             "overall": inc.get("overall"),
             "iterations": inc.get("iterations"),
+            # Why this profile is the one defending — champion carrying its belt in, or
+            # the pooled crown standing in because there's no fresh champion.
+            "why": incumbent_why,
+            "is_duel_champion": incumbent_fp != pooled_fp,
         },
         "queue": [_entry(fp, i + 1) for i, fp in enumerate(order[: max(int(limit), 1)])],
         "total": len(order),
@@ -1283,6 +1354,7 @@ __all__ = [
     "PRESETS",
     "PairedEvidence",
     "build_queue",
+    "select_incumbent",
     "fight_card",
     "SprtState",
     "preset_config",

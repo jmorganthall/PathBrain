@@ -1577,6 +1577,10 @@ export interface DuelCard {
     label: string | null;
     overall: number | null;
     iterations: number | null;
+    // Why this profile defends: the reigning champion carrying its belt in, or the pooled
+    // crown standing in because there's no fresh decisive champion.
+    why?: string;
+    is_duel_champion?: boolean;
   } | null;
   queue: DuelCardEntry[];
   total?: number;

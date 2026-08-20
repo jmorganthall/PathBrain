@@ -1118,3 +1118,102 @@ def test_duel_runs_feed_the_pooled_profile_history():
         s.query(Score).delete()
         s.query(Run).delete()
         s.query(Duel).delete()
+
+
+# ── The champion defends its belt ────────────────────────────────────────────────────
+
+
+def _field(*fps_overalls, best):
+    return {
+        "best_fingerprint": best,
+        "profiles": [
+            {"fingerprint": fp, "label": fp, "name": fp.title(), "overall": ov, "settings": []}
+            for fp, ov in fps_overalls
+        ],
+    }
+
+
+def test_the_reigning_champion_defends_the_next_session():
+    """The belt has to mean something: last session's winner starts the next one holding
+    it, instead of every session restarting from the pooled crown while the badge names a
+    profile that isn't even in the ring."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    field = _field(("champ", 80.0), ("pooled", 90.0), ("other", 70.0), best="pooled")
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+        # No champion yet → the pooled crown defends.
+        fp, why = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
+        assert fp == "pooled" and "no fresh decisive champion" in why
+
+    with session_scope() as s:
+        _finished_duel(
+            s,
+            matchups=[_mu("champ", "someone", "incumbent", delta=-3.0)],  # decisive
+            champion="champ",
+            when=now - timedelta(hours=2),
+        )
+    with session_scope() as s:
+        fp, why = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
+    assert fp == "champ", "the champion should carry its belt into the next session"
+    assert "defends the belt" in why
+
+    # And the pooled crown becomes a CHALLENGER — the matchup the disagreement demands.
+    heirs = {"items": [{"fingerprint": "other", "reason": "stale"}]}
+    queue = duel_mod.build_queue(field, heirs, "champ", contenders="leaders", top_n=5)
+    assert queue[0] == "pooled", "the pooled crown must get to challenge the belt holder"
+    assert "champ" not in queue
+
+    # A champion that only inherited by draws doesn't get to hold the belt.
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[_mu("champ", "someone", "draw")],
+            champion="champ",
+            when=now - timedelta(hours=1),
+        )
+    with session_scope() as s:
+        fp, _ = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
+    assert fp == "pooled"
+
+    # An expired verdict hands the belt back to the pooled crown too.
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[_mu("champ", "someone", "incumbent", delta=-3.0)],
+            champion="champ",
+            when=now - timedelta(days=30),
+        )
+    with session_scope() as s:
+        fp, _ = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
+        s.query(Duel).delete()
+    assert fp == "pooled"
+
+
+def test_a_champion_the_environment_cant_reach_does_not_defend():
+    """A belt holder the firewall can no longer be set to would abort the session on the
+    first apply — the pooled crown stands in instead."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    field = {
+        "best_fingerprint": "pooled",
+        "profiles": [
+            {"fingerprint": "champ", "label": "champ", "overall": 80.0,
+             "settings": [{"label": "wan", "scheduler": "fq_codel", "queues": 8}]},
+            {"fingerprint": "pooled", "label": "pooled", "overall": 90.0, "settings": []},
+        ],
+    }
+    live = [{"label": "wan", "scheduler": "fq_pie", "queues": 2}]  # different environment
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[_mu("champ", "someone", "incumbent", delta=-3.0)],
+            champion="champ",
+            when=now - timedelta(hours=2),
+        )
+    with session_scope() as s:
+        fp, why = duel_mod.select_incumbent(s, field, live, {"rematch_days": 7})
+        s.query(Duel).delete()
+    assert fp == "pooled" and "can't be applied" in why

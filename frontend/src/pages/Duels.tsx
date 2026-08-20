@@ -146,6 +146,7 @@ const PRESET_NAME: Record<string, string> = {
 
 // Why a profile is in the queue, in words.
 const CARD_REASON: Record<string, string> = {
+  "pooled-crown": "the all-history crown, coming to take the belt",
   contender: "near the crown — the matchup that can change the answer",
   "limited-data": "could beat the crown at its best, not measured enough yet",
   stale: "confident, but its data has gone stale",
@@ -977,7 +978,7 @@ export default function Duels() {
                   holds it right now rather than waiting for the session to end. */}
               {status?.champion_label && (
                 <Typography variant="body2" sx={{ mt: 0.5 }}>
-                  Holding the belt right now: <b>{status.champion_label}</b>
+                  In the ring with the belt: <b>{status.champion_label}</b>
                   <Typography component="span" variant="caption" color="text.secondary">
                     {" "}
                     — provisional until the session ends; automation still acts only on
@@ -1222,6 +1223,11 @@ export default function Duels() {
                   : ""}
                 . Whoever wins a bout stays on for the next one.
               </Typography>
+              {card.incumbent.why && (
+                <Typography variant="caption" color="text.secondary">
+                  {card.incumbent.why}.
+                </Typography>
+              )}
               <TableContainer sx={{ mt: 1 }}>
                 <Table size="small">
                   <TableHead>

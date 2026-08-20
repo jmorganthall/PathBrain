@@ -407,6 +407,16 @@ LLM-based. See `README.md` for the product overview.
     returns `decision` (`sweep_pairs` / `wins_needed` / `win_rate_needed` / `restrictive`) and the
     page states it outright, warning when the cap demands a near-sweep. `p1`/`alpha` are editable
     from the same card ("Edge to detect" / "Error rate").
+    **The reigning champion defends** (`select_incumbent`). Sessions used to restart from the
+    pooled crown every time, so the belt meant "won some session once" and the badge could
+    name a profile that wasn't even in the ring — a ladder whose champion never defends isn't
+    a ladder. A fresh (`rematch_days`), decisive, reachable champion now carries its belt into
+    the next session, and the **pooled crown becomes its first challenger** (`build_queue`
+    prepends it — it is never in `heirs`, which are contenders *to* it, so it has to be added
+    by hand or the two verdicts would never meet). Falls back to the pooled crown when there's
+    no such champion — first session, expired verdict, champion by draws only, or one the live
+    environment can't be set to — and says which in `incumbent.why`. `fight_card` calls the
+    same helper, so the preview can't name a different defender than the one who walks out.
     The reigning holder is written to `Duel.champion_fingerprint` **after every bout**, not
     only at session end: the winner stays on, so on a long (or continuous) ladder the belt
     changes hands mid-session and a badge that waits for the end reads hours stale. This is
