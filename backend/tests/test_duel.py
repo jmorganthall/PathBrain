@@ -1060,3 +1060,61 @@ def test_the_holder_is_recorded_after_every_bout(monkeypatch):
     with session_scope() as s:
         assert duel_mod.latest_champion(s, max_age_days=30) is None
         s.query(DuelModel).delete()
+
+
+# ── Two-ledger discipline: duel RUNS pool, duel VERDICTS don't ───────────────────────
+
+
+def test_duel_runs_feed_the_pooled_profile_history():
+    """A duel's runs are ordinary runs: they count toward the profile's iterations and its
+    pooled Overall, exactly like a monitoring or manual run.
+
+    This is the half of the two-ledger rule that's easy to break by accident — one origin
+    filter in the profile query and a night of duelling would stop counting toward the
+    crown it was meant to inform.
+    """
+    from pathbrain.api.routes_settings import compute_profiles
+    from pathbrain.models import Run, Score, ScoreResult
+
+    from .test_settings import _seed_run
+
+    with session_scope() as s:
+        s.query(ScoreResult).delete()
+        s.query(Score).delete()
+        s.query(Run).delete()
+        s.query(Duel).delete()
+
+    when = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2)
+    _seed_run("pooledprofile", 80.0, when, label="monitoring")
+    _seed_run("pooledprofile", 84.0, when + timedelta(minutes=5), label="duel · Speedy Sloth")
+    _seed_run("pooledprofile", 82.0, when + timedelta(minutes=10), label="duel · Speedy Sloth")
+
+    with session_scope() as s:
+        field = compute_profiles(s)
+    profile = next(p for p in field["profiles"] if p["fingerprint"] == "pooledprofile")
+    # All three runs counted — the duel's two are not filtered out anywhere.
+    assert profile["count"] == 3
+    assert profile["iterations"] == 3
+    assert profile["overall"] is not None
+
+    # And a duel VERDICT changes nothing about the pooled ranking: the head-to-head ledger
+    # sits beside the pooled record, never inside it.
+    before = profile["overall"]
+    with session_scope() as s:
+        _finished_duel(
+            s,
+            matchups=[_mu("pooledprofile", "someoneelse", "challenger", delta=9.9)],
+            champion="someoneelse",
+            when=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+    with session_scope() as s:
+        after_field = compute_profiles(s)
+    after = next(p for p in after_field["profiles"] if p["fingerprint"] == "pooledprofile")
+    assert after["overall"] == before
+    assert after["count"] == 3
+
+    with session_scope() as s:
+        s.query(ScoreResult).delete()
+        s.query(Score).delete()
+        s.query(Run).delete()
+        s.query(Duel).delete()
