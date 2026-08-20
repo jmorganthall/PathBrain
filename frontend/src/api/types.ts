@@ -1709,6 +1709,10 @@ export interface DuelStanding {
   is_champion: boolean;
   last_dueled_at: string | null;
   last_duel_id: number | null;
+  // The POOLED (all-history measured) Overall for this profile, so the ring record and
+  // the raw record can be read against each other. Null when it has no comparable runs.
+  overall?: number | null;
+  pooled_iterations?: number;
 }
 
 export interface DuelHeadToHeadCell {

@@ -1217,3 +1217,39 @@ def test_a_champion_the_environment_cant_reach_does_not_defend():
         fp, why = duel_mod.select_incumbent(s, field, live, {"rematch_days": 7})
         s.query(Duel).delete()
     assert fp == "pooled" and "can't be applied" in why
+
+
+def test_standings_carry_the_pooled_overall(monkeypatch):
+    """Each ladder row shows the profile's all-history score beside its ring record — the
+    two verdicts on one line, which is the whole point of running both."""
+    from pathbrain import duel as dm
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[_mu("winner", "loser", "incumbent", delta=-2.0)],
+            champion="winner",
+            when=now,
+        )
+
+    # A profile can win in the ring while sitting lower on the pooled score (and vice
+    # versa) — the table has to be able to show exactly that.
+    monkeypatch.setattr(
+        dm, "_pooled_overalls", lambda session, fps: {"winner": (72.5, 40), "loser": (88.0, 300)}
+    )
+    out = dm.standings()
+    by_fp = {r["fingerprint"]: r for r in out["standings"]}
+    assert by_fp["winner"]["overall"] == 72.5 and by_fp["winner"]["pooled_iterations"] == 40
+    assert by_fp["loser"]["overall"] == 88.0
+    # Ring order is unchanged by the pooled score: the ladder still ranks on its own record.
+    assert out["standings"][0]["fingerprint"] == "winner"
+
+    # A profile with no comparable runs shows no score rather than a fabricated one.
+    monkeypatch.setattr(dm, "_pooled_overalls", lambda session, fps: {})
+    out = dm.standings()
+    assert all(r["overall"] is None for r in out["standings"])
+
+    with session_scope() as s:
+        s.query(Duel).delete()

@@ -1073,6 +1073,36 @@ def _matchup_sides(m: dict) -> list[tuple[str, str, str, float | None, int, int]
     ]
 
 
+def _pooled_overalls(session, fingerprints) -> dict[str, tuple[float | None, int]]:
+    """``{fingerprint: (pooled Overall, iterations)}`` for the profiles in the standings.
+
+    The pooled Overall is the *observational* score — everything that profile has ever
+    measured — while the standings around it are its *head-to-head* record. Showing both
+    on one row is the point: they answer different questions and their disagreement is
+    information, not an error.
+    """
+    from .crown_follower import _profile_overall
+    from .methodology import ensure_current_methodology, overall_metrics, overall_weights
+    from .config_store import get_config
+
+    methodology = ensure_current_methodology(session, get_config(session))
+    definition = methodology.definition or {}
+    crown_metrics, crown_required = overall_metrics(definition)
+    weights = overall_weights(definition)
+    out: dict[str, tuple[float | None, int]] = {}
+    for fp in dict.fromkeys(fingerprints):
+        if not fp:
+            continue
+        try:
+            out[fp] = _profile_overall(
+                session, fp, methodology.version, crown_metrics, crown_required, weights
+            )
+        except Exception:  # noqa: BLE001 — a missing score must not break the table
+            log.debug("Standings: could not compute pooled Overall for %s", fp, exc_info=True)
+            out[fp] = (None, 0)
+    return out
+
+
 def standings(limit_sessions: int = 50) -> dict:
     """The **head-to-head league table** — every profile's record earned in the ring.
 
@@ -1222,10 +1252,20 @@ def standings(limit_sessions: int = 50) -> dict:
     # Resolve call signs by FINGERPRINT rather than trusting the label frozen into each
     # matchup: rows recorded before naming (or before a rename) then read under the same
     # name as everywhere else, so the league table and the standings can't disagree.
+    #
+    # Each row also carries its POOLED Overall — the all-history measured score — so the
+    # ring record and the raw record can be read against each other in one table. That's
+    # the interesting comparison: a profile winning its bouts while sitting mid-table on
+    # Overall (or the reverse) is exactly what the two-verdict design exists to surface.
+    # Computed per profile via the crown follower's single-profile accessor (one indexed
+    # query each) rather than a full `compute_profiles` pass, keeping the standings cheap.
     with session_scope() as session:
         call_signs = profile_names.names_for(session, [r["fingerprint"] for r in table])
+        overalls = _pooled_overalls(session, [r["fingerprint"] for r in table])
     for row in table:
         row["name"] = call_signs.get(row["fingerprint"]) or row["label"]
+        pooled = overalls.get(row["fingerprint"]) or (None, 0)
+        row["overall"], row["pooled_iterations"] = pooled
         row["beaten"] = [call_signs.get(fp, lbl) for fp, lbl in row["beaten_pairs"]]
         row["lost_to"] = [call_signs.get(fp, lbl) for fp, lbl in row["lost_to_pairs"]]
         del row["beaten_pairs"], row["lost_to_pairs"]

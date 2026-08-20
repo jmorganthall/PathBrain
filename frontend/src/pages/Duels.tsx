@@ -35,6 +35,7 @@ import TableCell from "@mui/material/TableCell";
 import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
+import TableSortLabel from "@mui/material/TableSortLabel";
 import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
@@ -143,6 +144,98 @@ const PRESET_NAME: Record<string, string> = {
   strict: "Only when certain",
   custom: "Custom",
 };
+
+// Sortable standings. The server returns ladder order (points, then decisive-win rate,
+// then pair-win rate); clicking a header re-sorts client-side without refetching.
+type StandingSortKey =
+  | "rank"
+  | "name"
+  | "wins"
+  | "points"
+  | "win_rate"
+  | "pair_win_rate"
+  | "median_margin"
+  | "overall"
+  | "opponents"
+  | "championships"
+  | "last_dueled_at";
+
+const standingValue = (r: DuelStanding, key: StandingSortKey): number | string | null => {
+  switch (key) {
+    case "rank":
+      return r.rank;
+    case "name":
+      return (r.name || r.label || "").toLowerCase();
+    case "wins":
+      return r.wins;
+    case "points":
+      return r.points;
+    case "win_rate":
+      return r.win_rate;
+    case "pair_win_rate":
+      return r.pair_win_rate;
+    case "median_margin":
+      return r.median_margin;
+    case "overall":
+      return r.overall ?? null;
+    case "opponents":
+      return r.opponents;
+    case "championships":
+      return r.championships;
+    case "last_dueled_at":
+      return r.last_dueled_at ? Date.parse(r.last_dueled_at) : null;
+  }
+};
+
+const compareStandings = (a: DuelStanding, b: DuelStanding, key: StandingSortKey, dir: "asc" | "desc") => {
+  const va = standingValue(a, key);
+  const vb = standingValue(b, key);
+  // Nulls always sort last, whichever direction — an unmeasured profile is never "top".
+  if (va == null && vb == null) return 0;
+  if (va == null) return 1;
+  if (vb == null) return -1;
+  const cmp =
+    typeof va === "string" && typeof vb === "string" ? va.localeCompare(vb) : (va as number) - (vb as number);
+  return dir === "asc" ? cmp : -cmp;
+};
+
+function StandingHeader({
+  id,
+  label,
+  align,
+  orderBy,
+  order,
+  onSort,
+  tip,
+}: {
+  id: StandingSortKey;
+  label: string;
+  align?: "right";
+  orderBy: StandingSortKey;
+  order: "asc" | "desc";
+  onSort: (key: StandingSortKey) => void;
+  tip?: string;
+}) {
+  const active = orderBy === id;
+  const control = (
+    <TableSortLabel active={active} direction={active ? order : "asc"} onClick={() => onSort(id)}>
+      {label}
+    </TableSortLabel>
+  );
+  return (
+    // Headers stay on one line: 11 columns at a narrow width otherwise wrap mid-word
+    // ("W– L–D"), and the table scrolls horizontally inside its own container anyway.
+    <TableCell align={align} sortDirection={active ? order : false} sx={{ whiteSpace: "nowrap" }}>
+      {tip ? (
+        <Tooltip title={tip} arrow enterDelay={300}>
+          <span>{control}</span>
+        </Tooltip>
+      ) : (
+        control
+      )}
+    </TableCell>
+  );
+}
 
 // Why a profile is in the queue, in words.
 const CARD_REASON: Record<string, string> = {
@@ -413,6 +506,8 @@ export default function Duels() {
   const [cardBusy, setCardBusy] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showRules, setShowRules] = useState(false);
+  const [orderBy, setOrderBy] = useState<StandingSortKey>("rank");
+  const [order, setOrder] = useState<"asc" | "desc">("asc");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -526,7 +621,21 @@ export default function Duels() {
     }
   };
 
-  const standings = table?.standings ?? [];
+  const rawStandings = table?.standings ?? [];
+  const standings = useMemo(
+    () => [...rawStandings].sort((a, b) => compareStandings(a, b, orderBy, order)),
+    [rawStandings, orderBy, order]
+  );
+  // First click on a new column sorts "best first" (descending), except the two columns
+  // where ascending IS best: the ladder rank and the alphabetical name.
+  const handleSort = (key: StandingSortKey) => {
+    if (orderBy === key) {
+      setOrder((o) => (o === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setOrderBy(key);
+    setOrder(key === "rank" || key === "name" ? "asc" : "desc");
+  };
   const champion = table?.champion ?? null;
 
   // The head-to-head grid only makes sense for profiles that have actually met, so it's
@@ -1002,7 +1111,9 @@ export default function Duels() {
           <Typography variant="h6">Ladder standings</Typography>
           <Typography variant="caption" color="text.secondary">
             Ranked by match points (win 3 · draw 1), then decisive-win rate, then pair-win
-            rate. Margin is the median Overall-point gap in that profile's own favour.
+            rate — click any column to re-sort. Margin is the median Overall-point gap in
+            that profile's own favour; <b>Overall</b> is its pooled all-history score, so you
+            can read the ring record against the raw measured one.
           </Typography>
           {standings.length === 0 ? (
             <Alert severity="info" sx={{ mt: 1.5 }}>
@@ -1014,24 +1125,17 @@ export default function Duels() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell>#</TableCell>
-                    <TableCell>Profile</TableCell>
-                    <TableCell align="right">
-                      <Tooltip title="Match record across every duel session: wins–losses–draws">
-                        <span>W–L–D</span>
-                      </Tooltip>
-                    </TableCell>
-                    <TableCell align="right">Pts</TableCell>
-                    <TableCell align="right">Win rate</TableCell>
-                    <TableCell align="right">
-                      <Tooltip title="Individual interleaved A/B pairs won — the raw evidence under the verdicts">
-                        <span>Pairs</span>
-                      </Tooltip>
-                    </TableCell>
-                    <TableCell align="right">Margin</TableCell>
-                    <TableCell align="right">Opponents</TableCell>
-                    <TableCell align="right">Titles</TableCell>
-                    <TableCell align="right">Last bout</TableCell>
+                    <StandingHeader id="rank" label="#" orderBy={orderBy} order={order} onSort={handleSort} tip="Ladder position: match points, then decisive-win rate, then pair-win rate." />
+                    <StandingHeader id="name" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} />
+                    <StandingHeader id="wins" label="W–L–D" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match record across every duel session: wins–losses–draws. Sorts by wins." />
+                    <StandingHeader id="points" label="Pts" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match points: 3 for a win, 1 for a draw." />
+                    <StandingHeader id="win_rate" label="Win rate" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Share of DECIDED matchups won (draws excluded)." />
+                    <StandingHeader id="pair_win_rate" label="Pairs" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Individual interleaved A/B pairs won — the raw evidence under the verdicts. Sorts by pair-win rate." />
+                    <StandingHeader id="median_margin" label="Margin" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Median Overall-point gap in this profile's own favour, across its bouts." />
+                    <StandingHeader id="overall" label="Overall" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="The POOLED all-history score — what this profile measured across every run, not just its bouts. Sort by it to see where the ring and the raw record disagree." />
+                    <StandingHeader id="opponents" label="Opponents" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Distinct profiles faced." />
+                    <StandingHeader id="championships" label="Titles" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Sessions ended holding the belt." />
+                    <StandingHeader id="last_dueled_at" label="Last bout" align="right" orderBy={orderBy} order={order} onSort={handleSort} />
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -1093,6 +1197,17 @@ export default function Duels() {
                       </TableCell>
                       <TableCell align="right" sx={{ color: marginColor(r.median_margin) }}>
                         {fmtMargin(r.median_margin)}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Tooltip
+                          title={
+                            r.overall == null
+                              ? "No comparable runs under the current methodology."
+                              : `Pooled across ${r.pooled_iterations ?? 0} iteration(s) of all-history data.`
+                          }
+                        >
+                          <span>{fmtNum(r.overall, 1)}</span>
+                        </Tooltip>
                       </TableCell>
                       <TableCell align="right">{r.opponents}</TableCell>
                       <TableCell align="right">{r.championships || "—"}</TableCell>
