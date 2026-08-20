@@ -139,11 +139,13 @@ def _seed_run(
     crown_raw: tuple | None = None,
     overall: float | None = None,
     settings: list[dict] | None = None,
+    label: str | None = None,
 ) -> None:
     with session_scope() as session:
         run = Run(
             status=RunStatus.COMPLETE,
             created_at=when,
+            label=label,
             settings_fingerprint=fp,
             settings=settings if settings is not None else [{"label": "wan", "quantum": 1514}],
             iterations=iterations,
