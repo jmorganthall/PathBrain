@@ -139,6 +139,36 @@ def notify_run_complete(fingerprint: str | None) -> None:
         _pending.append(fingerprint)
 
 
+def _grade_samples(
+    samples: dict[str, list[float]], iters: int,
+    crown_metrics: list[str], crown_required: list[str], weights: dict,
+) -> tuple[float | None, int]:
+    """The weighted-crown grade for one profile's collected subscore samples.
+
+    Shared by the single- and many-profile accessors so the two can never drift into
+    grading the same runs differently.
+    """
+    med = {m: round(median(vs), 2) for m, vs in samples.items() if vs}
+    if any(med.get(m) is None for m in crown_required):
+        return None, iters
+    return weighted_score([(med.get(m), float(weights.get(m, 1.0))) for m in crown_metrics]), iters
+
+
+def _collect(rows, crown_metrics: list[str]) -> tuple[dict[str, list[float]], int]:
+    """Accumulate ``(iterations, subscores, comparability)`` rows into samples + iterations."""
+    iters = 0
+    samples: dict[str, list[float]] = {}
+    for iterations, subscores, comparability in rows:
+        if comparability == "incomparable":
+            continue
+        iters += int(iterations or 1)
+        for m in crown_metrics:
+            v = (subscores or {}).get(m)
+            if v is not None:
+                samples.setdefault(m, []).append(float(v))
+    return samples, iters
+
+
 def _profile_overall(
     session, fp: str | None, version: str,
     crown_metrics: list[str], crown_required: list[str], weights: dict,
@@ -155,20 +185,42 @@ def _profile_overall(
             Score.methodology_version == version,
         )
     ).all()
-    iters = 0
-    samples: dict[str, list[float]] = {}
-    for iterations, subscores, comparability in rows:
-        if comparability == "incomparable":
-            continue
-        iters += int(iterations or 1)
-        for m in crown_metrics:
-            v = (subscores or {}).get(m)
-            if v is not None:
-                samples.setdefault(m, []).append(float(v))
-    med = {m: round(median(vs), 2) for m, vs in samples.items() if vs}
-    if any(med.get(m) is None for m in crown_required):
-        return None, iters
-    return weighted_score([(med.get(m), float(weights.get(m, 1.0))) for m in crown_metrics]), iters
+    samples, iters = _collect(rows, crown_metrics)
+    return _grade_samples(samples, iters, crown_metrics, crown_required, weights)
+
+
+def profile_overalls(
+    session, fingerprints, version: str,
+    crown_metrics: list[str], crown_required: list[str], weights: dict,
+) -> dict[str, tuple[float | None, int]]:
+    """The same grade for **many** profiles in ONE query.
+
+    Calling ``_profile_overall`` in a loop is an N+1: on a 150-profile ledger it was 143
+    round trips and ~200ms — 80% of the duel standings' entire response time. One
+    ``IN (...)`` query over the same indexed columns collects every profile's samples in a
+    single pass, and the grading is the shared helper, so the batched answer is identical
+    to the per-profile one by construction.
+    """
+    wanted = [fp for fp in dict.fromkeys(fingerprints) if fp]
+    if not wanted:
+        return {}
+    rows = session.execute(
+        select(Run.settings_fingerprint, Run.iterations, Score.subscores, Score.comparability)
+        .join(Score, Score.run_id == Run.id)
+        .where(
+            Run.status == RunStatus.COMPLETE,
+            Run.settings_fingerprint.in_(wanted),
+            Score.methodology_version == version,
+        )
+    ).all()
+    by_fp: dict[str, list] = {fp: [] for fp in wanted}
+    for fp, iterations, subscores, comparability in rows:
+        by_fp.setdefault(fp, []).append((iterations, subscores, comparability))
+    out: dict[str, tuple[float | None, int]] = {}
+    for fp in wanted:
+        samples, iters = _collect(by_fp.get(fp) or [], crown_metrics)
+        out[fp] = _grade_samples(samples, iters, crown_metrics, crown_required, weights)
+    return out
 
 
 def _needs_full_check(fp: str | None) -> tuple[bool, str]:
@@ -689,5 +741,6 @@ __all__ = [
     "status",
     "stats",
     "current_crown",
+    "profile_overalls",
     "recent_events",
 ]

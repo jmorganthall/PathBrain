@@ -608,7 +608,12 @@ LLM-based. See `README.md` for the product overview.
   - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
     columns; `create_all` for new tables).
   - `api/` — REST routers mounted at `/api`.
-- `frontend/` — React + TS + Vite + MUI dashboard (dark mode). Pages: Dashboard,
+- `frontend/` — React + TS + Vite + MUI dashboard (dark mode). **Every route is code-split**
+  (`App.tsx`: `lazy` + `Suspense`): the app was one 1.2 MB chunk, so opening any page first
+  parsed every other page plus recharts — over a second of blank screen on a phone before a
+  single request was sent. Now the shell paints immediately, each page is its own small chunk
+  (Duels ~40 kB), and the 384 kB chart bundle loads only for the three views that draw charts.
+  Keep new pages lazy. Pages: Dashboard,
   History, Trends, Compare, Settings Impact (**paginated** sortable table — 25/page —
   with standard **Overall + the crown metrics** columns (the metrics the Overall corners over,
   from the response's `overall_metrics` — fcp/lcp/network_stall_all under v13 — ranked by each metric's
