@@ -35,6 +35,7 @@ import TableCell from "@mui/material/TableCell";
 import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
+import TablePagination from "@mui/material/TablePagination";
 import TableSortLabel from "@mui/material/TableSortLabel";
 import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
@@ -506,8 +507,16 @@ export default function Duels() {
   const [cardBusy, setCardBusy] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showRules, setShowRules] = useState(false);
+  const [loadingStandings, setLoadingStandings] = useState(true);
+  const [loadingLedger, setLoadingLedger] = useState(true);
   const [orderBy, setOrderBy] = useState<StandingSortKey>("rank");
   const [order, setOrder] = useState<"asc" | "desc">("asc");
+  // A long ladder is both unreadable and slow to paint (every row carries several
+  // tooltips), so the table pages like Settings Impact rather than rendering everything.
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
+  // How many sessions of the bout tape to render — the rest are a click away.
+  const [tapeShown, setTapeShown] = useState(5);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -524,22 +533,42 @@ export default function Duels() {
     }
   }, []);
 
-  const loadAll = useCallback(async () => {
-    try {
-      const [c, s, st, h] = await Promise.all([
-        api.duelConfig(),
-        api.duelStatus(),
-        api.duelStandings(),
-        api.duelHistory(20),
-      ]);
-      setCfg(c);
-      setUntilClock((u) => u ?? clockIn(c.duration_minutes));
-      setStatus(s.status ? s : null);
-      setTable(st);
-      setLedger(h.duels.filter((d) => (d.matchups?.length ?? 0) > 0 || d.status === "failed"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+  const loadAll = useCallback(() => {
+    // Fired independently rather than awaited together: the controls and the live status
+    // come back in milliseconds while the standings and the tape take longer, and
+    // Promise.all made the whole page wait for the slowest of them — showing an empty
+    // scaffold that read as "no data" until everything landed. It also meant one failing
+    // endpoint blanked the entire page; now each section fails on its own.
+    const report = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
+
+    void api
+      .duelConfig()
+      .then((c) => {
+        setCfg(c);
+        setUntilClock((u) => u ?? clockIn(c.duration_minutes));
+      })
+      .catch(report);
+
+    void api
+      .duelStatus()
+      .then((s) => setStatus(s.status ? s : null))
+      .catch(() => undefined); // status is a nice-to-have; never block the page on it
+
+    setLoadingStandings(true);
+    void api
+      .duelStandings()
+      .then(setTable)
+      .catch(report)
+      .finally(() => setLoadingStandings(false));
+
+    setLoadingLedger(true);
+    void api
+      .duelHistory(20)
+      .then((h) =>
+        setLedger(h.duels.filter((d) => (d.matchups?.length ?? 0) > 0 || d.status === "failed"))
+      )
+      .catch(report)
+      .finally(() => setLoadingLedger(false));
   }, []);
 
   useEffect(() => {
@@ -626,9 +655,14 @@ export default function Duels() {
     () => [...rawStandings].sort((a, b) => compareStandings(a, b, orderBy, order)),
     [rawStandings, orderBy, order]
   );
+  const pagedStandings = useMemo(
+    () => standings.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage),
+    [standings, page, rowsPerPage]
+  );
   // First click on a new column sorts "best first" (descending), except the two columns
   // where ascending IS best: the ladder rank and the alphabetical name.
   const handleSort = (key: StandingSortKey) => {
+    setPage(0); // re-sorting should land you on the first page
     if (orderBy === key) {
       setOrder((o) => (o === "asc" ? "desc" : "asc"));
       return;
@@ -1039,6 +1073,10 @@ export default function Duels() {
                       {champion.decisive ? "" : " · inherited by draws only"}
                     </Typography>
                   </>
+                ) : loadingStandings ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Loading the ladder…
+                  </Typography>
                 ) : (
                   <Typography variant="body2" color="text.secondary">
                     No duel has crowned one yet — run a duel to start the ladder.
@@ -1115,7 +1153,14 @@ export default function Duels() {
             that profile's own favour; <b>Overall</b> is its pooled all-history score, so you
             can read the ring record against the raw measured one.
           </Typography>
-          {standings.length === 0 ? (
+          {loadingStandings && standings.length === 0 ? (
+            <Box sx={{ mt: 1.5 }}>
+              <LinearProgress />
+              <Typography variant="caption" color="text.secondary">
+                Reading the ledger…
+              </Typography>
+            </Box>
+          ) : standings.length === 0 ? (
             <Alert severity="info" sx={{ mt: 1.5 }}>
               No bouts on the ledger yet. A duel needs a confident pooled crown to defend and
               at least one reachable heir to challenge it.
@@ -1139,7 +1184,7 @@ export default function Duels() {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {standings.map((r: DuelStanding) => (
+                  {pagedStandings.map((r: DuelStanding) => (
                     <TableRow
                       key={r.fingerprint}
                       hover
@@ -1220,6 +1265,20 @@ export default function Duels() {
                   ))}
                 </TableBody>
               </Table>
+              {standings.length > rowsPerPage && (
+                <TablePagination
+                  component="div"
+                  count={standings.length}
+                  page={page}
+                  onPageChange={(_, p) => setPage(p)}
+                  rowsPerPage={rowsPerPage}
+                  onRowsPerPageChange={(e) => {
+                    setRowsPerPage(parseInt(e.target.value, 10));
+                    setPage(0);
+                  }}
+                  rowsPerPageOptions={[25, 50, 100]}
+                />
+              )}
             </TableContainer>
           )}
         </CardContent>
@@ -1411,13 +1470,17 @@ export default function Duels() {
             </Box>
             .
           </Typography>
-          {ledger.length === 0 ? (
+          {loadingLedger && ledger.length === 0 ? (
+            <Box sx={{ mt: 1.5 }}>
+              <LinearProgress />
+            </Box>
+          ) : ledger.length === 0 ? (
             <Alert severity="info" sx={{ mt: 1.5 }}>
               No duel sessions recorded yet.
             </Alert>
           ) : (
             <Stack spacing={1.5} sx={{ mt: 1.5 }}>
-              {ledger.map((d) => (
+              {ledger.slice(0, tapeShown).map((d) => (
                 <Box key={d.id}>
                   <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                     <Typography variant="subtitle2">Duel #{d.id}</Typography>
@@ -1453,6 +1516,11 @@ export default function Duels() {
                 </Box>
               ))}
             </Stack>
+          )}
+          {ledger.length > tapeShown && (
+            <Button size="small" sx={{ mt: 1 }} onClick={() => setTapeShown((n) => n + 10)}>
+              Show earlier sessions ({ledger.length - tapeShown} more)
+            </Button>
           )}
         </CardContent>
       </Card>

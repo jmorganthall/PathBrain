@@ -1081,26 +1081,21 @@ def _pooled_overalls(session, fingerprints) -> dict[str, tuple[float | None, int
     on one row is the point: they answer different questions and their disagreement is
     information, not an error.
     """
-    from .crown_follower import _profile_overall
-    from .methodology import ensure_current_methodology, overall_metrics, overall_weights
     from .config_store import get_config
+    from .crown_follower import profile_overalls
+    from .methodology import ensure_current_methodology, overall_metrics, overall_weights
 
     methodology = ensure_current_methodology(session, get_config(session))
     definition = methodology.definition or {}
     crown_metrics, crown_required = overall_metrics(definition)
     weights = overall_weights(definition)
-    out: dict[str, tuple[float | None, int]] = {}
-    for fp in dict.fromkeys(fingerprints):
-        if not fp:
-            continue
-        try:
-            out[fp] = _profile_overall(
-                session, fp, methodology.version, crown_metrics, crown_required, weights
-            )
-        except Exception:  # noqa: BLE001 — a missing score must not break the table
-            log.debug("Standings: could not compute pooled Overall for %s", fp, exc_info=True)
-            out[fp] = (None, 0)
-    return out
+    try:
+        return profile_overalls(
+            session, fingerprints, methodology.version, crown_metrics, crown_required, weights
+        )
+    except Exception:  # noqa: BLE001 — a scoring hiccup must not break the table
+        log.debug("Standings: could not compute pooled Overalls", exc_info=True)
+        return {}
 
 
 def standings(limit_sessions: int = 50) -> dict:
