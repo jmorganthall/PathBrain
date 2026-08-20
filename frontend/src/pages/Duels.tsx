@@ -12,6 +12,9 @@
 // (top-bar "Follow best" → Crowning policy = Duel champion), surfaced here as a banner.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import Accordion from "@mui/material/Accordion";
+import AccordionDetails from "@mui/material/AccordionDetails";
+import AccordionSummary from "@mui/material/AccordionSummary";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -40,6 +43,7 @@ import StopIcon from "@mui/icons-material/Stop";
 import MilitaryTechIcon from "@mui/icons-material/MilitaryTech";
 import ScheduleIcon from "@mui/icons-material/Schedule";
 import GavelIcon from "@mui/icons-material/Gavel";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import SportsMmaIcon from "@mui/icons-material/SportsMma";
 
 import { api } from "../api/client";
@@ -131,6 +135,15 @@ const crossesMidnight = (cfg: DuelConfig): boolean =>
 // out as the screen allows. Replaces a flex-wrap row whose captions drifted away from
 // the fields they described.
 // Preset cards: one per line on a phone, side by side once there's room.
+// Preset key → the name shown on its card, for the collapsed settings summary.
+const PRESET_NAME: Record<string, string> = {
+  snap: "Snap call",
+  quick: "Quick call",
+  balanced: "Balanced",
+  strict: "Only when certain",
+  custom: "Custom",
+};
+
 // Why a profile is in the queue, in words.
 const CARD_REASON: Record<string, string> = {
   contender: "near the crown — the matchup that can change the answer",
@@ -398,6 +411,7 @@ export default function Duels() {
   const [card, setCard] = useState<DuelCard | null>(null);
   const [cardBusy, setCardBusy] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showRules, setShowRules] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -588,6 +602,297 @@ export default function Duels() {
         </Typography>
       )}
 
+      {/* ── Settings, right under the button that uses them ──────────────────────── */}
+      <Accordion
+        expanded={showRules}
+        onChange={(_, open) => setShowRules(open)}
+        disableGutters
+        sx={{ mb: 2, "&:before": { display: "none" }, borderRadius: 1, overflow: "hidden" }}
+      >
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <GavelIcon fontSize="small" color="action" />
+            <Typography variant="subtitle2">Rules of the ring</Typography>
+            {/* The summary states the settings themselves, so the common case — checking
+                what's set — needs no click at all. */}
+            <Typography variant="caption" color="text.secondary">
+              {cfg
+                ? `${PRESET_NAME[cfg.preset] ?? cfg.preset} · ${
+                    cfg.decision?.streak_pairs ?? "—"
+                  } in a row ends it · ${
+                    cfg.continuous
+                      ? `running continuously (${fmtWindow(cfg.duration_minutes)} sessions)`
+                      : cfg.enabled
+                        ? `nightly ${hhmm(cfg.hour, cfg.minute)}–${hhmm(cfg.end_hour, cfg.end_minute)}`
+                        : "nightly schedule off"
+                  }`
+                : "loading…"}
+            </Typography>
+          </Stack>
+        </AccordionSummary>
+        <AccordionDetails sx={{ pt: 0 }}>
+          <Box>
+          <Typography variant="caption" color="text.secondary">
+            When duels happen and how a bout is called. Every setting here is a judgement
+            about evidence: how long to keep fighting, how much proof to demand, and how
+            big a difference has to be before it counts as a win.
+          </Typography>
+
+          {/* ── When ───────────────────────────────────────────────────────────────── */}
+          <Divider sx={{ my: 2 }} />
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+            <ScheduleIcon fontSize="small" color="action" />
+            <Typography variant="subtitle2">Nightly window</Typography>
+            <FormControlLabel
+              sx={{ ml: 0.5 }}
+              control={
+                <Switch
+                  size="small"
+                  checked={cfg?.enabled ?? false}
+                  disabled={!cfg || busy}
+                  onChange={(e) => void patch({ enabled: e.target.checked })}
+                />
+              }
+              label={
+                <Typography variant="body2" color="text.secondary">
+                  {cfg?.enabled ? "Armed" : "Off"}
+                  {cfg?.timezone ? ` · ${cfg.timezone}` : ""}
+                </Typography>
+              }
+            />
+            <Tooltip title="Keep duelling around the clock instead of once a night — the standings keep accruing evidence, so a better profile can surface at any hour. Sessions still take turns with your other benchmarks and always restore your settings.">
+              <FormControlLabel
+                control={
+                  <Switch
+                    size="small"
+                    checked={cfg?.continuous ?? false}
+                    disabled={!cfg || busy}
+                    onChange={(e) => void patch({ continuous: e.target.checked })}
+                  />
+                }
+                label={
+                  <Typography variant="body2" color="text.secondary">
+                    Run continuously
+                  </Typography>
+                }
+              />
+            </Tooltip>
+          </Stack>
+          {cfg?.continuous && (
+            <Typography variant="caption" color="info.main" sx={{ display: "block", mb: 1 }}>
+              Running continuously — the times below are ignored until you switch it off.
+              Each session lasts {fmtWindow(cfg.duration_minutes)}, with a{" "}
+              {cfg.continuous_gap_minutes}-minute pause between them for your other runs.
+            </Typography>
+          )}
+          <Box sx={FIELD_GRID}>
+            <TimeField
+              label="Start"
+              value={cfg ? hhmm(cfg.hour, cfg.minute) : "03:00"}
+              disabled={!cfg || busy}
+              helper="Duelling begins at this time, in your timezone."
+              onChange={(v) => {
+                const [h, m] = v.split(":").map((x) => parseInt(x, 10));
+                if (!cfg || !Number.isFinite(h) || !Number.isFinite(m)) return;
+                // Send both ends together: the backend derives the length from the pair,
+                // so moving the start keeps the finish time you chose.
+                void patch({ hour: h, minute: m, end_hour: cfg.end_hour, end_minute: cfg.end_minute });
+              }}
+            />
+            <TimeField
+              label="Finish"
+              value={cfg ? hhmm(cfg.end_hour, cfg.end_minute) : "05:00"}
+              disabled={!cfg || busy}
+              helper={
+                cfg
+                  ? `Stops here — ${fmtWindow(cfg.duration_minutes)} of duelling${
+                      crossesMidnight(cfg) ? ", ending the next morning" : ""
+                    }.`
+                  : "Duelling stops at this time."
+              }
+              onChange={(v) => {
+                const [h, m] = v.split(":").map((x) => parseInt(x, 10));
+                if (!cfg || !Number.isFinite(h) || !Number.isFinite(m)) return;
+                void patch({ hour: cfg.hour, minute: cfg.minute, end_hour: h, end_minute: m });
+              }}
+            />
+            <TimeField
+              label="Duel now until"
+              value={untilClock ?? clockIn(cfg?.duration_minutes ?? 120)}
+              disabled={busy || active}
+              helper={describeUntil(untilClock ?? clockIn(cfg?.duration_minutes ?? 120))}
+              onChange={setUntilClock}
+            />
+          </Box>
+
+          {/* ── Who wins ───────────────────────────────────────────────────────────── */}
+          <Divider sx={{ my: 2 }} />
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+            <GavelIcon fontSize="small" color="action" />
+            <Typography variant="subtitle2">How sure before calling a winner</Typography>
+          </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+            One choice. Win enough pairs back to back and the bout ends there; win most of
+            them convincingly and it ends too. Shorter streaks decide sooner and get it wrong
+            more often — worth it on a ladder that runs every night, since the next bout
+            corrects it and the standings are what you read.
+          </Typography>
+          <Box sx={PRESET_GRID}>
+            {(cfg?.presets ?? []).map((preset) => {
+              const selected = cfg?.preset === preset.key;
+              return (
+                <Box
+                  key={preset.key}
+                  onClick={() => !busy && void patch({ preset: preset.key })}
+                  sx={{
+                    p: 1.5,
+                    borderRadius: 2,
+                    border: 2,
+                    borderColor: selected ? "primary.main" : "divider",
+                    bgcolor: selected ? "action.selected" : "transparent",
+                    cursor: busy ? "default" : "pointer",
+                    "&:hover": { borderColor: busy ? undefined : "primary.light" },
+                  }}
+                >
+                  <Typography variant="subtitle2">{preset.label}</Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                    {preset.summary}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                    {preset.detail}
+                  </Typography>
+                </Box>
+              );
+            })}
+          </Box>
+          {cfg?.preset === "custom" && (
+            <Typography variant="caption" color="warning.main" sx={{ display: "block", mt: 1 }}>
+              Custom settings (min {cfg.min_pairs} · max {cfg.max_pairs} pairs · error rate{" "}
+              {cfg.alpha}) — pick an option above to go back to a standard one.
+            </Typography>
+          )}
+
+          {/* Everything below is the same question expressed in its parts. Kept for
+              anyone who wants it, out of the way of everyone who doesn't. */}
+          <Button
+            size="small"
+            onClick={() => setShowAdvanced((v) => !v)}
+            sx={{ mt: 1.5, textTransform: "none" }}
+          >
+            {showAdvanced ? "Hide" : "Show"} advanced settings
+          </Button>
+          <Collapse in={showAdvanced}>
+            <Box sx={{ ...FIELD_GRID, mt: 1.5 }}>
+              <NumField
+                label="Min pairs"
+                value={cfg?.min_pairs ?? 8}
+                disabled={!cfg || busy}
+                min={2}
+                onCommit={(v) => void patch({ min_pairs: Math.round(v) })}
+                helper="Fewest head-to-heads before anyone can be declared the winner."
+              />
+              <NumField
+                label="Max pairs"
+                value={cfg?.max_pairs ?? 30}
+                disabled={!cfg || busy}
+                min={2}
+                onCommit={(v) => void patch({ max_pairs: Math.round(v) })}
+                helper="Give up after this many and call it a draw, so one matchup can't eat the night."
+              />
+              <NumField
+                label="Error rate"
+                value={cfg?.alpha ?? 0.05}
+                disabled={!cfg || busy}
+                step={0.01}
+                onCommit={(v) => void patch({ alpha: Math.min(0.49, Math.max(0.001, v)) })}
+                helper="How often you'll accept a wrong verdict (0.05 = 1 in 20)."
+              />
+              <NumField
+                label="Contenders to race"
+                value={cfg?.contender_top_n ?? 8}
+                disabled={!cfg || busy}
+                min={1}
+                onCommit={(v) => void patch({ contender_top_n: Math.round(v) })}
+                helper="How many of the top profiles the champion defends against, closest first. The rest still get a turn afterwards."
+              />
+              <NumField
+                label="Pause between sessions"
+                value={cfg?.continuous_gap_minutes ?? 5}
+                disabled={!cfg || busy}
+                onCommit={(v) => void patch({ continuous_gap_minutes: v })}
+                helper="Minutes to leave the pipeline free between continuous sessions, for monitoring and manual runs."
+              />
+              <NumField
+                label="Wins in a row that end it"
+                value={cfg?.streak_wins ?? 0}
+                disabled={!cfg || busy}
+                onCommit={(v) => void patch({ streak_wins: Math.round(v) })}
+                helper="0 = work it out from the error rate. Set it (min 2) to call a bout the moment one side takes that many pairs back to back."
+              />
+              <NumField
+                label="Ignore wins smaller than"
+                value={cfg?.min_margin ?? 0}
+                disabled={!cfg || busy}
+                step={0.5}
+                onCommit={(v) => void patch({ min_margin: v })}
+                helper="Overall points; 0 = a consistent win counts however small (matching the crown). Raise it to record hair-thin wins as draws instead."
+              />
+              <NumField
+                label="Rematch after"
+                value={cfg?.rematch_days ?? 7}
+                disabled={!cfg || busy}
+                onCommit={(v) => void patch({ rematch_days: Math.round(v) })}
+                helper="Days before the same two profiles can fight again."
+              />
+              {cfg?.method === "pair_wins" && (
+                <NumField
+                  label="Edge to detect"
+                  value={cfg?.p1 ?? 0.7}
+                  disabled={!cfg || busy}
+                  min={0.51}
+                  step={0.05}
+                  onCommit={(v) => void patch({ p1: Math.min(0.99, v) })}
+                  helper="Pair-wins rule only: how lopsided a win to look for (0.7 = wins 70% of pairs)."
+                />
+              )}
+            </Box>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
+              <Typography variant="caption" color="text.secondary">
+                Judge bouts by:
+              </Typography>
+              <Tooltip title="Judge by HOW MUCH each pair was won (signed-rank on the margins). Against a true 1-point edge this calls the winner about 2.4x as often as counting pair wins.">
+                <Chip
+                  size="small"
+                  label="By margin"
+                  color={cfg?.method === "margins" ? "primary" : "default"}
+                  variant={cfg?.method === "margins" ? "filled" : "outlined"}
+                  onClick={() => void patch({ method: "margins" })}
+                  disabled={!cfg || busy}
+                />
+              </Tooltip>
+              <Tooltip title="Judge by WHO won each pair, ignoring the size of the margin (a sign test). Distribution-free, but it discards most of the evidence.">
+                <Chip
+                  size="small"
+                  label="By pair wins"
+                  color={cfg?.method === "pair_wins" ? "primary" : "default"}
+                  variant={cfg?.method === "pair_wins" ? "filled" : "outlined"}
+                  onClick={() => void patch({ method: "pair_wins" })}
+                  disabled={!cfg || busy}
+                />
+              </Tooltip>
+            </Stack>
+            {cfg && <DecisionCost cfg={cfg} />}
+          </Collapse>
+
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
+            Duel runs join the pooled record like any other runs; duel <b>verdicts</b> live
+            only here. The engine never writes a winner to the firewall — it always restores
+            your pre-duel settings.
+          </Typography>
+          </Box>
+        </AccordionDetails>
+      </Accordion>
+
       {/* ── The belt ─────────────────────────────────────────────────────────────── */}
       <Card sx={{ mb: 2 }}>
         <CardContent>
@@ -668,6 +973,18 @@ export default function Duels() {
                 {status?.matchups?.length ?? 0} verdict(s) so far · your pre-duel settings are
                 restored when the window closes
               </Typography>
+              {/* The belt changes hands mid-session — the winner stays on — so show who
+                  holds it right now rather than waiting for the session to end. */}
+              {status?.champion_label && (
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  Holding the belt right now: <b>{status.champion_label}</b>
+                  <Typography component="span" variant="caption" color="text.secondary">
+                    {" "}
+                    — provisional until the session ends; automation still acts only on
+                    finished sessions.
+                  </Typography>
+                </Typography>
+              )}
             </Box>
           )}
           {!active && status?.status === "failed" && status.error && (
@@ -1016,270 +1333,6 @@ export default function Duels() {
               ))}
             </Stack>
           )}
-        </CardContent>
-      </Card>
-
-      {/* ── Rules of the ring ────────────────────────────────────────────────────── */}
-      <Card>
-        <CardContent>
-          <Typography variant="h6">Rules of the ring</Typography>
-          <Typography variant="caption" color="text.secondary">
-            When duels happen and how a bout is called. Every setting here is a judgement
-            about evidence: how long to keep fighting, how much proof to demand, and how
-            big a difference has to be before it counts as a win.
-          </Typography>
-
-          {/* ── When ───────────────────────────────────────────────────────────────── */}
-          <Divider sx={{ my: 2 }} />
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
-            <ScheduleIcon fontSize="small" color="action" />
-            <Typography variant="subtitle2">Nightly window</Typography>
-            <FormControlLabel
-              sx={{ ml: 0.5 }}
-              control={
-                <Switch
-                  size="small"
-                  checked={cfg?.enabled ?? false}
-                  disabled={!cfg || busy}
-                  onChange={(e) => void patch({ enabled: e.target.checked })}
-                />
-              }
-              label={
-                <Typography variant="body2" color="text.secondary">
-                  {cfg?.enabled ? "Armed" : "Off"}
-                  {cfg?.timezone ? ` · ${cfg.timezone}` : ""}
-                </Typography>
-              }
-            />
-            <Tooltip title="Keep duelling around the clock instead of once a night — the standings keep accruing evidence, so a better profile can surface at any hour. Sessions still take turns with your other benchmarks and always restore your settings.">
-              <FormControlLabel
-                control={
-                  <Switch
-                    size="small"
-                    checked={cfg?.continuous ?? false}
-                    disabled={!cfg || busy}
-                    onChange={(e) => void patch({ continuous: e.target.checked })}
-                  />
-                }
-                label={
-                  <Typography variant="body2" color="text.secondary">
-                    Run continuously
-                  </Typography>
-                }
-              />
-            </Tooltip>
-          </Stack>
-          {cfg?.continuous && (
-            <Typography variant="caption" color="info.main" sx={{ display: "block", mb: 1 }}>
-              Running continuously — the times below are ignored until you switch it off.
-              Each session lasts {fmtWindow(cfg.duration_minutes)}, with a{" "}
-              {cfg.continuous_gap_minutes}-minute pause between them for your other runs.
-            </Typography>
-          )}
-          <Box sx={FIELD_GRID}>
-            <TimeField
-              label="Start"
-              value={cfg ? hhmm(cfg.hour, cfg.minute) : "03:00"}
-              disabled={!cfg || busy}
-              helper="Duelling begins at this time, in your timezone."
-              onChange={(v) => {
-                const [h, m] = v.split(":").map((x) => parseInt(x, 10));
-                if (!cfg || !Number.isFinite(h) || !Number.isFinite(m)) return;
-                // Send both ends together: the backend derives the length from the pair,
-                // so moving the start keeps the finish time you chose.
-                void patch({ hour: h, minute: m, end_hour: cfg.end_hour, end_minute: cfg.end_minute });
-              }}
-            />
-            <TimeField
-              label="Finish"
-              value={cfg ? hhmm(cfg.end_hour, cfg.end_minute) : "05:00"}
-              disabled={!cfg || busy}
-              helper={
-                cfg
-                  ? `Stops here — ${fmtWindow(cfg.duration_minutes)} of duelling${
-                      crossesMidnight(cfg) ? ", ending the next morning" : ""
-                    }.`
-                  : "Duelling stops at this time."
-              }
-              onChange={(v) => {
-                const [h, m] = v.split(":").map((x) => parseInt(x, 10));
-                if (!cfg || !Number.isFinite(h) || !Number.isFinite(m)) return;
-                void patch({ hour: cfg.hour, minute: cfg.minute, end_hour: h, end_minute: m });
-              }}
-            />
-            <TimeField
-              label="Duel now until"
-              value={untilClock ?? clockIn(cfg?.duration_minutes ?? 120)}
-              disabled={busy || active}
-              helper={describeUntil(untilClock ?? clockIn(cfg?.duration_minutes ?? 120))}
-              onChange={setUntilClock}
-            />
-          </Box>
-
-          {/* ── Who wins ───────────────────────────────────────────────────────────── */}
-          <Divider sx={{ my: 2 }} />
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-            <GavelIcon fontSize="small" color="action" />
-            <Typography variant="subtitle2">How sure before calling a winner</Typography>
-          </Stack>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-            One choice. Win enough pairs back to back and the bout ends there; win most of
-            them convincingly and it ends too. Shorter streaks decide sooner and get it wrong
-            more often — worth it on a ladder that runs every night, since the next bout
-            corrects it and the standings are what you read.
-          </Typography>
-          <Box sx={PRESET_GRID}>
-            {(cfg?.presets ?? []).map((preset) => {
-              const selected = cfg?.preset === preset.key;
-              return (
-                <Box
-                  key={preset.key}
-                  onClick={() => !busy && void patch({ preset: preset.key })}
-                  sx={{
-                    p: 1.5,
-                    borderRadius: 2,
-                    border: 2,
-                    borderColor: selected ? "primary.main" : "divider",
-                    bgcolor: selected ? "action.selected" : "transparent",
-                    cursor: busy ? "default" : "pointer",
-                    "&:hover": { borderColor: busy ? undefined : "primary.light" },
-                  }}
-                >
-                  <Typography variant="subtitle2">{preset.label}</Typography>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                    {preset.summary}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                    {preset.detail}
-                  </Typography>
-                </Box>
-              );
-            })}
-          </Box>
-          {cfg?.preset === "custom" && (
-            <Typography variant="caption" color="warning.main" sx={{ display: "block", mt: 1 }}>
-              Custom settings (min {cfg.min_pairs} · max {cfg.max_pairs} pairs · error rate{" "}
-              {cfg.alpha}) — pick an option above to go back to a standard one.
-            </Typography>
-          )}
-
-          {/* Everything below is the same question expressed in its parts. Kept for
-              anyone who wants it, out of the way of everyone who doesn't. */}
-          <Button
-            size="small"
-            onClick={() => setShowAdvanced((v) => !v)}
-            sx={{ mt: 1.5, textTransform: "none" }}
-          >
-            {showAdvanced ? "Hide" : "Show"} advanced settings
-          </Button>
-          <Collapse in={showAdvanced}>
-            <Box sx={{ ...FIELD_GRID, mt: 1.5 }}>
-              <NumField
-                label="Min pairs"
-                value={cfg?.min_pairs ?? 8}
-                disabled={!cfg || busy}
-                min={2}
-                onCommit={(v) => void patch({ min_pairs: Math.round(v) })}
-                helper="Fewest head-to-heads before anyone can be declared the winner."
-              />
-              <NumField
-                label="Max pairs"
-                value={cfg?.max_pairs ?? 30}
-                disabled={!cfg || busy}
-                min={2}
-                onCommit={(v) => void patch({ max_pairs: Math.round(v) })}
-                helper="Give up after this many and call it a draw, so one matchup can't eat the night."
-              />
-              <NumField
-                label="Error rate"
-                value={cfg?.alpha ?? 0.05}
-                disabled={!cfg || busy}
-                step={0.01}
-                onCommit={(v) => void patch({ alpha: Math.min(0.49, Math.max(0.001, v)) })}
-                helper="How often you'll accept a wrong verdict (0.05 = 1 in 20)."
-              />
-              <NumField
-                label="Contenders to race"
-                value={cfg?.contender_top_n ?? 8}
-                disabled={!cfg || busy}
-                min={1}
-                onCommit={(v) => void patch({ contender_top_n: Math.round(v) })}
-                helper="How many of the top profiles the champion defends against, closest first. The rest still get a turn afterwards."
-              />
-              <NumField
-                label="Pause between sessions"
-                value={cfg?.continuous_gap_minutes ?? 5}
-                disabled={!cfg || busy}
-                onCommit={(v) => void patch({ continuous_gap_minutes: v })}
-                helper="Minutes to leave the pipeline free between continuous sessions, for monitoring and manual runs."
-              />
-              <NumField
-                label="Wins in a row that end it"
-                value={cfg?.streak_wins ?? 0}
-                disabled={!cfg || busy}
-                onCommit={(v) => void patch({ streak_wins: Math.round(v) })}
-                helper="0 = work it out from the error rate. Set it (min 2) to call a bout the moment one side takes that many pairs back to back."
-              />
-              <NumField
-                label="Ignore wins smaller than"
-                value={cfg?.min_margin ?? 0}
-                disabled={!cfg || busy}
-                step={0.5}
-                onCommit={(v) => void patch({ min_margin: v })}
-                helper="Overall points; 0 = a consistent win counts however small (matching the crown). Raise it to record hair-thin wins as draws instead."
-              />
-              <NumField
-                label="Rematch after"
-                value={cfg?.rematch_days ?? 7}
-                disabled={!cfg || busy}
-                onCommit={(v) => void patch({ rematch_days: Math.round(v) })}
-                helper="Days before the same two profiles can fight again."
-              />
-              {cfg?.method === "pair_wins" && (
-                <NumField
-                  label="Edge to detect"
-                  value={cfg?.p1 ?? 0.7}
-                  disabled={!cfg || busy}
-                  min={0.51}
-                  step={0.05}
-                  onCommit={(v) => void patch({ p1: Math.min(0.99, v) })}
-                  helper="Pair-wins rule only: how lopsided a win to look for (0.7 = wins 70% of pairs)."
-                />
-              )}
-            </Box>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
-              <Typography variant="caption" color="text.secondary">
-                Judge bouts by:
-              </Typography>
-              <Tooltip title="Judge by HOW MUCH each pair was won (signed-rank on the margins). Against a true 1-point edge this calls the winner about 2.4x as often as counting pair wins.">
-                <Chip
-                  size="small"
-                  label="By margin"
-                  color={cfg?.method === "margins" ? "primary" : "default"}
-                  variant={cfg?.method === "margins" ? "filled" : "outlined"}
-                  onClick={() => void patch({ method: "margins" })}
-                  disabled={!cfg || busy}
-                />
-              </Tooltip>
-              <Tooltip title="Judge by WHO won each pair, ignoring the size of the margin (a sign test). Distribution-free, but it discards most of the evidence.">
-                <Chip
-                  size="small"
-                  label="By pair wins"
-                  color={cfg?.method === "pair_wins" ? "primary" : "default"}
-                  variant={cfg?.method === "pair_wins" ? "filled" : "outlined"}
-                  onClick={() => void patch({ method: "pair_wins" })}
-                  disabled={!cfg || busy}
-                />
-              </Tooltip>
-            </Stack>
-            {cfg && <DecisionCost cfg={cfg} />}
-          </Collapse>
-
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
-            Duel runs join the pooled record like any other runs; duel <b>verdicts</b> live
-            only here. The engine never writes a winner to the firewall — it always restores
-            your pre-duel settings.
-          </Typography>
         </CardContent>
       </Card>
 

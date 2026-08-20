@@ -779,10 +779,19 @@ def _drive(duel_id: int) -> None:
                     "reason": reason,
                 }
                 matchups.append(record)
+                # The winner stays on, so the holder changes DURING the session — record it
+                # per bout rather than only at the end. On a continuous ladder the end may
+                # be hours away, and a belt that reads hours stale is worse than no belt.
+                # The crowning policy still reads completed sessions only (latest_champion),
+                # so this changes what's shown, never what automation acts on.
+                next_incumbent = challenger_fp if verdict == "challenger" else incumbent_fp
+                holder = settings_by_fp.get(next_incumbent) or {}
                 with session_scope() as session:
                     d = session.get(Duel, duel_id)
                     if d is not None:
                         d.matchups = list(matchups)
+                        d.champion_fingerprint = next_incumbent
+                        d.champion_label = holder.get("name") or holder.get("label")
                 log.info(
                     "Duel %s verdict: %s vs %s → %s (%s; pairs=%s Δmed=%s)",
                     duel_id, inc["label"], cha["label"], verdict, reason,

@@ -407,6 +407,12 @@ LLM-based. See `README.md` for the product overview.
     returns `decision` (`sweep_pairs` / `wins_needed` / `win_rate_needed` / `restrictive`) and the
     page states it outright, warning when the cap demands a near-sweep. `p1`/`alpha` are editable
     from the same card ("Edge to detect" / "Error rate").
+    The reigning holder is written to `Duel.champion_fingerprint` **after every bout**, not
+    only at session end: the winner stays on, so on a long (or continuous) ladder the belt
+    changes hands mid-session and a badge that waits for the end reads hours stale. This is
+    display only — `latest_champion` still filters to COMPLETE sessions, so the crowning
+    policy never acts on a provisional holder (and can't, mid-duel: the duel owns the
+    firewall while its window is open).
     `duel.fight_card` (`GET /api/duel/card`) answers "are we just racing randoms?" with a
     list rather than a paragraph: the champion plus the ordered queue a duel started *now*
     would work through, each entry carrying its Overall, iterations, why it's in the queue

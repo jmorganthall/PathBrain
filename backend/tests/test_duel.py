@@ -1017,3 +1017,46 @@ def test_fight_card_endpoint_is_honest_when_there_is_nothing_to_race(client):
     assert set(out) >= {"incumbent", "queue", "contenders", "top_n"}
     if out["incumbent"] is None:
         assert out["reason"]  # says why, rather than showing an empty table
+
+
+def test_the_holder_is_recorded_after_every_bout(monkeypatch):
+    """On a ladder that runs for hours (or continuously), the belt has to reflect who holds
+    it NOW — not who held it when the session finally ends."""
+    from pathbrain.models import Duel as DuelModel
+
+    with session_scope() as s:
+        s.query(DuelModel).delete()
+
+    # Two bouts: the challenger takes the belt in the first, the new holder keeps it in the
+    # second. After each one, the row must name the current holder.
+    holders: list[str | None] = []
+
+    with session_scope() as s:
+        d = DuelModel(status=DuelStatus.RUNNING, duration_s=600, matchups=[], baseline=[])
+        s.add(d)
+        s.flush()
+        did = d.id
+
+    for winner, expected in (("challenger", "chal"), ("incumbent", "chal")):
+        with session_scope() as s:
+            row = s.get(DuelModel, did)
+            row.matchups = list(row.matchups or []) + [
+                _mu("inc" if not row.champion_fingerprint else row.champion_fingerprint, "chal", winner)
+            ]
+            row.champion_fingerprint = (
+                "chal" if winner == "challenger" else (row.champion_fingerprint or "inc")
+            )
+        with session_scope() as s:
+            holders.append(s.get(DuelModel, did).champion_fingerprint)
+        assert holders[-1] == expected
+
+    # And the live status surfaces it while the session is still running.
+    live = duel_mod.current()
+    assert live["status"] == "running" and live["champion_fingerprint"] == "chal"
+    assert len(live["matchups"]) == 2
+
+    # The crowning policy is unaffected: it reads completed sessions only, so an
+    # in-progress belt never drives a firewall write.
+    with session_scope() as s:
+        assert duel_mod.latest_champion(s, max_age_days=30) is None
+        s.query(DuelModel).delete()
