@@ -33,6 +33,7 @@ import ScienceIcon from "@mui/icons-material/Science";
 import ScatterPlotIcon from "@mui/icons-material/ScatterPlot";
 import PowerOffIcon from "@mui/icons-material/PowerSettingsNew";
 import SportsMmaIcon from "@mui/icons-material/SportsMma";
+import ExploreIcon from "@mui/icons-material/Explore";
 import ExtensionIcon from "@mui/icons-material/Extension";
 import RuleIcon from "@mui/icons-material/Rule";
 import DataObjectIcon from "@mui/icons-material/DataObject";
@@ -329,6 +330,7 @@ const NAV: NavItem[] = [
   { label: "Experiments", to: "/experiments", icon: <ScienceIcon /> },
   { label: "Shotgun Sweep", to: "/sweep", icon: <ScatterPlotIcon /> },
   { label: "Dueling Champions", to: "/duels", icon: <SportsMmaIcon /> },
+  { label: "Explore", to: "/explore", icon: <ExploreIcon /> },
   { label: "Baseline (SQM off)", to: "/baseline", icon: <PowerOffIcon /> },
   { label: "Config", to: "/config", icon: <SettingsIcon /> },
   { label: "Methodology", to: "/methodology", icon: <RuleIcon /> },

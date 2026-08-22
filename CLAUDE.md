@@ -323,8 +323,9 @@ LLM-based. See `README.md` for the product overview.
     now); driven by the top-bar **"Follow best" switch** (`FollowBest.tsx`) with a status/churn
     popover.
   - `duel.py` — **Duel ladder**: interleaved head-to-head adjudication, the controlled-trial
-    complement to the observational pooled crown. Strict A/B/A/B alternation (one iteration a
-    side) between an incumbent (the pooled crown at window start) and a ladder of challengers
+    complement to the observational pooled crown. **Counterbalanced** alternation — one iteration
+    a side, with the lead alternating every pair (ABBA) — between an incumbent (the pooled crown
+    at window start) and a ladder of challengers
     (heirs priority order, reachability-filtered), so each adjacent pair shares its weather
     **by construction** — a thin new variant can be adjudicated against a 3000-iteration crown
     in one night because it races the crown-five-minutes-ago, never its history. Each matchup
@@ -396,6 +397,21 @@ LLM-based. See `README.md` for the product overview.
     `_recently_decided` likewise scans duels **by `finished_at` within the cooldown**, not
     "the last 20 sessions" (a continuous ladder finishes several a day, so a row cap covered
     ~3 days of a 7-day cooldown).
+    **Counterbalancing + settle, so a pair measures the profiles and not the schedule.** The
+    incumbent used to run first in *every* pair, which makes "went first" and "is the incumbent"
+    the same variable: any position-in-pair effect (state the previous run left behind, a
+    still-warm cache, the shaper freshly reconfigured) lands on the same side every time and is
+    indistinguishable from a real difference. The lead now alternates each pair — ABBA, recorded
+    as `lead_alternated` on the matchup so the counterbalance is auditable from the ledger — and
+    the margin stays challenger − incumbent, so the verdict doesn't care who ran first
+    (`test_pairs_alternate_which_profile_runs_first`). Each leg also waits `duel.settle_seconds`
+    (default 3, GUI-editable in the advanced panel) after `_apply_profile` before measuring: every
+    leg is preceded by a `setPipe` + reconfigure that rebuilds the queues, and the baseline test
+    has always settled before believing a measurement. It is symmetric across both sides, so it
+    never biased a verdict — it just put reconfiguration noise into every pair, and noise costs
+    pairs. Mocked-engine tests set it to 0 and score each leg **by the profile applied**, not by
+    its position (`_score_by_profile`) — a fake keyed on run order would bake in exactly the
+    confound the alternation removes.
     **The rematch cooldown ORDERS, it never excludes** (`contender_tiers` / `next_matchup`).
     Queued profiles carry a priority **tier** — `CROWN_TIER` (the pooled crown) <
     `CONTENDER_TIER` (confident, scored) < `FILLER_TIER` (thin/untested) — and the ring is
@@ -520,6 +536,55 @@ LLM-based. See `README.md` for the product overview.
     than recomputing `compute_profiles` on every dashboard load, and the duel side reads the
     matchup ledger; neither triggers a scoring pass. A duel verdict aged past
     `duel.rematch_days` is still shown, labelled expired, instead of vanishing.
+  - `explore.py` — **the exploration landscape**: the one engine that asks what we *haven't*
+    tried. Every other engine judges profiles that already exist (Settings Impact ranks them,
+    the duel adjudicates them, the race promotes the under-sampled) — none answers "what's
+    untested that might beat all of this?", which with ~150 profiles varying several levers at
+    once is not answerable by eye. Read-only; it proposes, and the existing
+    `POST /settings/test-settings` path measures. Four outputs from one `compute_profiles` pass
+    (`GET /api/explore/landscape`, on demand — it costs that pass, same bargain as the fight card):
+    **(1) Axes** — every writable lever kept **per pipe** (`"<pipe>::<field>"`; the Download and
+    Upload legs are separate knobs and don't behave the same), dropping any lever that never
+    varies — a constant isn't a lever. **(2) Response curves** — median Overall at each measured
+    value, plus Spearman ρ and a one-word `shape`. The curve is the point: a lever with ρ≈0 can
+    still have an obvious peak in the middle, which no single coefficient can express. An
+    **interior peak beats the correlation** when labelling the shape — a lever whose far end is
+    disastrous carries a strong monotonic ρ even when its best value is mid-range, and reading
+    that as "lower is better" would send you to the low end the curve says is worse
+    (`test_an_interior_peak_beats_a_strong_correlation`). **(3) Gaps** — a **`gap`** is a blank
+    between two tested values (bracketed, one run settles it); an **`edge`** is the best value
+    being the end of the range (not bracketed at all — the optimum may lie beyond). **(4)
+    Interactions** — per axis pair, split each at its median and read the 2×2 contrast
+    `(HH−LH)−(HL−LL)`: does the better half of one lever depend on which half of the other you're
+    in? That's the "does the best download quantum depend on the upload quantum?" question, which
+    no per-lever view can answer. A pair is only reported when the contrast clears **both**
+    `INTERACTION_MIN_CONTRAST` (1.0 pt) **and** `INTERACTION_MIN_SHARE` (15%) of the spread
+    between its four corners — otherwise every pair "interacts" on rounding noise, which is worse
+    than saying nothing.
+    **Candidates** are the headline: existing profiles with one (or two) levers moved to a value
+    nobody has tried, each stating *why* that value is interesting — fills the widest untested
+    gap, refines between the best measured value and its neighbour, or steps past an edge. They
+    are ranked by an **upper confidence bound** (`predicted + EXPLORATION_WEIGHT · uncertainty`),
+    because the question is "where might we beat everything measured?", not "where would we score
+    respectably?" — different questions with different answers, and only the first one explores.
+    `predicted` is **anchored on the parent** (its measured Overall, adjusted by what the response
+    curve says about moving that lever) rather than a global regression: a smoothed global average
+    can never exceed the best value it was fitted on, so it drags every candidate branched from
+    the winner back toward the field mean and reports the leader's own neighbourhood — the one
+    place worth looking hardest — as unpromising. Past the tested range the curve is **clamped,
+    not extrapolated**: continuing a trend past the last measurement is exactly the confident
+    guess that wastes a night, and "we don't know out there" belongs in the uncertainty term
+    (which is what makes the candidate attractive at all). `uncertainty` is the field's own spread
+    over `√(1 + effective neighbours)` under a Gaussian kernel in normalized lever space, so open
+    space carries the full spread. Deliberately **deterministic and dependency-free** (no numpy,
+    no fitted black box) — every number re-derives from the profile table and explains in a
+    sentence, the same standard the crown and the duel ratings are held to. Thin profiles are
+    excluded by default (`confident_only`): a lucky Overall on two iterations is noise, and noise
+    in the model comes back out as a confident-sounding prediction; it falls back to every scored
+    profile rather than showing an empty page. **The seam it leaves is the overnight module**: the
+    engine is a pure function returning runnable per-pipe overrides, so a scheduler can alternate
+    *explore* (measure these candidates) with *adjudicate* (duel the survivors) and the field
+    grows toward the optimum instead of only being re-ranked.
   - `crowning.py` — **the first-class CROWNING POLICY**: the single resolver for "which
     verdict governs what automation applies". `crown_follow.policy` = **"pooled"** (the
     all-time Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
@@ -712,7 +777,11 @@ LLM-based. See `README.md` for the product overview.
   `environment_signature` check as the race), so the card never lists a profile the race
   would refuse to apply;
   plus "Test to minimum" and **"Race challengers"**),
-  Experiments, Shotgun Sweep, **Dueling Champions** (the duel ladder's own view — the
+  Experiments, Shotgun Sweep, **Explore** (`Explore.tsx`, `/api/explore/landscape` — the
+  what-haven't-we-tried view: the ranked **next profiles to test** with a one-click "Test to
+  minimum", a response curve per lever per pipe, the holes in coverage, and the lever pairs
+  that genuinely interact; fetched on demand, read-only apart from the test button),
+  **Dueling Champions** (the duel ladder's own view — the
   *controlled-trial* counterpart to Settings Impact's observational standings, so it speaks in
   fight-card terms rather than means: the reigning champion + reign length + which crowning
   policy is live, the **ladder standings** league table (`GET /duel/standings`), the

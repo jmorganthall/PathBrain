@@ -64,6 +64,11 @@ def _schedule_payload(cfg: dict) -> dict:
         "max_pairs": int(d.get("max_pairs", 40) or 40),
         "min_margin": float(d.get("min_margin", 1.0) or 0.0),
         "rematch_days": int(d.get("rematch_days", 7) or 7),
+        # Post-apply settle: each leg writes the profile to the firewall and reconfigures
+        # the queues before it measures anything, so this is how long to let the link
+        # settle first. Symmetric across both sides — it never biased a verdict, it just
+        # put reconfiguration noise into every pair.
+        "settle_seconds": int(d.get("settle_seconds", 3) or 0),
         # The evidence bar itself: how big an edge to look for (p1) and how often we're
         # willing to call a coin-flip a winner (alpha).
         "p1": float(d.get("p1", 0.70) or 0.70),
@@ -158,6 +163,12 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
         if int(payload.rematch_days) < 0:
             raise HTTPException(status_code=422, detail="rematch_days cannot be negative")
         updates["rematch_days"] = int(payload.rematch_days)
+    if payload.settle_seconds is not None:
+        if not 0 <= int(payload.settle_seconds) <= 120:
+            raise HTTPException(
+                status_code=422, detail="settle_seconds must be between 0 and 120"
+            )
+        updates["settle_seconds"] = int(payload.settle_seconds)
 
     # A preset writes the statistical fields; explicit fields below still win, so a PUT
     # carrying both applies the preset and then the override.

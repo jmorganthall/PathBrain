@@ -774,6 +774,7 @@ def _drive(duel_id: int) -> None:
             max_pairs = int(cfg.get("max_pairs", 40) or 40)
             min_margin = float(cfg.get("min_margin", 1.0) or 0.0)
             rematch_days = int(cfg.get("rematch_days", 7) or 7)
+            settle_s = max(0, int(cfg.get("settle_seconds", 3) or 0))
 
             # Matchmaking: the reigning champion defends (pooled crown if there isn't one);
             # challengers are the contenders nearest the crown, skipping rematch cooldowns.
@@ -851,9 +852,27 @@ def _drive(duel_id: int) -> None:
                         f"{cha.get('name') or cha['label']} ({why_challenger}) — pair "
                         f"{sprt.pairs + 1} ({sprt.wins_incumbent}-{sprt.wins_challenger})",
                     )
-                    pair_overalls: list[float | None] = []
-                    for side_fp, side in ((incumbent_fp, inc), (challenger_fp, cha)):
+                    # ABBA, not ABAB. The incumbent used to run first in every single
+                    # pair, which makes "goes first" and "is the incumbent" the same
+                    # variable: any position-in-pair effect — the state the previous run
+                    # left behind, a cache still warm, the shaper freshly reconfigured —
+                    # lands on the same side every time and is indistinguishable from a
+                    # real difference between the profiles. Alternating which side leads
+                    # cancels it instead of hoping it's zero. The margin is always
+                    # challenger − incumbent, so the verdict doesn't care who ran first.
+                    lead_incumbent = sprt.pairs % 2 == 0
+                    order = (
+                        ((incumbent_fp, inc), (challenger_fp, cha))
+                        if lead_incumbent
+                        else ((challenger_fp, cha), (incumbent_fp, inc))
+                    )
+                    scored: dict[str, float | None] = {}
+                    for side_fp, side in order:
                         _apply_profile(provider, side["settings"], side_fp)
+                        # Let the link settle after the reconfigure before believing what
+                        # we measure (duel.settle_seconds; 0 = measure immediately).
+                        if settle_s > 0:
+                            time.sleep(settle_s)
                         run_id, ok, completed = run_chunk(
                             label=f"duel · {side.get('name') or side['label']}",
                             notes=f"Duel #{duel_id}: {inc['label']} vs {cha['label']}",
@@ -863,9 +882,8 @@ def _drive(duel_id: int) -> None:
                         )
                         run_ids.append(run_id)
                         iterations_run += completed
-                        pair_overalls.append(
-                            _run_overall(run_id, meth_version) if ok else None
-                        )
+                        scored[side_fp] = _run_overall(run_id, meth_version) if ok else None
+                    pair_overalls = [scored[incumbent_fp], scored[challenger_fp]]
                     with session_scope() as session:
                         d = session.get(Duel, duel_id)
                         if d is not None:
@@ -949,6 +967,10 @@ def _drive(duel_id: int) -> None:
                     # Why this challenger got the ring — the tape should answer "why these
                     # two?" without the reader having to reconstruct the matchmaking.
                     "challenger_why": why_challenger,
+                    # Pairs alternate which profile runs first (ABBA), so "went first" is
+                    # not confounded with "is the incumbent". Recorded so the counterbalance
+                    # is auditable from the ledger rather than taken on trust.
+                    "lead_alternated": True,
                     "pairs": sprt.pairs,
                     "wins_incumbent": sprt.wins_incumbent,
                     "wins_challenger": sprt.wins_challenger,

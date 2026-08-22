@@ -1670,6 +1670,9 @@ export interface DuelConfig {
   max_pairs: number;
   min_margin: number;
   rematch_days: number;
+  // Seconds to let the link settle after writing a profile before measuring it. Applied
+  // to both sides of every pair, so it never favours a side.
+  settle_seconds: number;
   // The evidence bar: the edge worth detecting, and the false-positive rate.
   p1: number;
   alpha: number;
@@ -1812,4 +1815,127 @@ export interface DuelSession {
   started_at: string | null;
   finished_at: string | null;
   lock_owner: string | null;
+}
+
+
+// ── The exploration landscape: the shaper's parameter space, its holes, and what to
+//    measure next. Read-only — nothing here applies or runs anything.
+
+export interface ExploreAxis {
+  // "<pipe>::<field>" — the Download and Upload legs are separate levers throughout.
+  key: string;
+  pipe: string;
+  field: string;
+  field_label: string;
+  unit: string | null;
+  sweepable: boolean;
+  values: number[];
+  min: number;
+  max: number;
+  distinct: number;
+  measured: number;
+}
+
+export interface ExploreCurvePoint {
+  value: number;
+  overall: number;
+  best: number;
+  profiles: number;
+}
+
+export interface ExploreCurve {
+  key: string;
+  pipe: string;
+  field: string;
+  field_label: string;
+  unit: string | null;
+  sweepable: boolean;
+  curve: ExploreCurvePoint[];
+  spearman: number | null;
+  best_value: number;
+  best_overall: number;
+  // The best value tested is the highest or lowest tried — the optimum isn't bracketed.
+  best_at_edge: boolean;
+  shape: string;
+}
+
+export interface ExploreInteraction {
+  a: string;
+  b: string;
+  a_label: string;
+  b_label: string;
+  a_split: number;
+  b_split: number;
+  cells: { a_high: boolean; b_high: boolean; overall: number; profiles: number }[];
+  contrast: number;
+  // Spread between the four corners — the contrast is judged against it, so a pair isn't
+  // called "interacting" on rounding noise.
+  corner_spread: number;
+  interacts: boolean;
+  summary: string;
+}
+
+export interface ExploreGap {
+  key: string;
+  pipe: string;
+  field: string;
+  field_label: string;
+  unit: string | null;
+  // "gap" = a hole between two tested values (bracketed, one run settles it).
+  // "edge" = the best value is the end of the range (not bracketed — look further out).
+  kind: "gap" | "edge" | string;
+  from: number;
+  to: number;
+  suggest: number;
+  width_fraction: number | null;
+  detail: string;
+}
+
+export interface ExploreCandidate {
+  changes: {
+    key: string;
+    pipe: string;
+    field: string;
+    field_label: string;
+    unit: string | null;
+    from: number;
+    to: number;
+    why: string;
+  }[];
+  parent: { fingerprint: string; name: string | null; label: string; overall: number };
+  coords: Record<string, number>;
+  predicted: number;
+  uncertainty: number;
+  // predicted + exploration_weight * uncertainty — "how good could this be?", which is the
+  // question worth spending a night on, not "how good do we expect it to be?".
+  upside: number;
+  beats_best_by: number;
+  nearest_measured: number;
+  summary: string;
+  // Per-pipe writable overrides, ready to POST to /settings/test-settings.
+  settings: Record<string, unknown>[];
+}
+
+export interface ExplorePoint {
+  fingerprint: string;
+  name: string | null;
+  label: string;
+  overall: number;
+  iterations: number;
+  confident: boolean;
+  coords: Record<string, number>;
+}
+
+export interface ExploreLandscape {
+  axes: ExploreAxis[];
+  points: ExplorePoint[];
+  curves: ExploreCurve[];
+  interactions: ExploreInteraction[];
+  gaps: ExploreGap[];
+  candidates: ExploreCandidate[];
+  best_overall: number | null;
+  profiles_modelled: number;
+  confident_only: boolean;
+  exploration_weight?: number;
+  reason: string | null;
 }
