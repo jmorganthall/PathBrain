@@ -157,6 +157,7 @@ type StandingSortKey =
   | "pair_win_rate"
   | "median_margin"
   | "overall"
+  | "pooled_rank"
   | "opponents"
   | "championships"
   | "last_dueled_at";
@@ -179,6 +180,10 @@ const standingValue = (r: DuelStanding, key: StandingSortKey): number | string |
       return r.median_margin;
     case "overall":
       return r.overall ?? null;
+    case "pooled_rank":
+      // Sorted by the score itself so "best first" means the same thing as every other
+      // column; the printed number is just that ordering made explicit.
+      return r.overall ?? null;
     case "opponents":
       return r.opponents;
     case "championships":
@@ -199,6 +204,40 @@ const compareStandings = (a: DuelStanding, b: DuelStanding, key: StandingSortKey
     typeof va === "string" && typeof vb === "string" ? va.localeCompare(vb) : (va as number) - (vb as number);
   return dir === "asc" ? cmp : -cmp;
 };
+
+// How a profile ranks on the pooled Overall, among the profiles that have duelled — the
+// second opinion on the same rows, so "ring rank vs measured rank" is one glance.
+const pooledRanking = (rows: DuelStanding[]): Map<string, number> => {
+  const scored = rows
+    .filter((r) => r.overall != null)
+    .sort((a, b) => (b.overall as number) - (a.overall as number));
+  return new Map(scored.map((r, i) => [r.fingerprint, i + 1]));
+};
+
+// The gap between the two rankings, shown where the eye already is (next to the rank).
+// Up = the ring rates it higher than its all-history score does.
+function RankGap({ ringRank, pooledRank }: { ringRank: number; pooledRank?: number }) {
+  if (!pooledRank || pooledRank === ringRank) return null;
+  const up = ringRank < pooledRank;
+  const gap = Math.abs(pooledRank - ringRank);
+  return (
+    <Tooltip
+      title={
+        up
+          ? `Ranks ${gap} place${gap === 1 ? "" : "s"} higher in the ring than its measured Overall does — it beats profiles the raw record rates above it.`
+          : `Ranks ${gap} place${gap === 1 ? "" : "s"} lower in the ring than its measured Overall does — the raw record likes it more than its opponents did.`
+      }
+    >
+      <Typography
+        variant="caption"
+        sx={{ color: up ? "success.main" : "warning.main", whiteSpace: "nowrap" }}
+      >
+        {up ? "▲" : "▼"}
+        {gap}
+      </Typography>
+    </Tooltip>
+  );
+}
 
 function StandingHeader({
   id,
@@ -655,6 +694,7 @@ export default function Duels() {
     () => [...rawStandings].sort((a, b) => compareStandings(a, b, orderBy, order)),
     [rawStandings, orderBy, order]
   );
+  const pooledRank = useMemo(() => pooledRanking(rawStandings), [rawStandings]);
   const pagedStandings = useMemo(
     () => standings.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage),
     [standings, page, rowsPerPage]
@@ -1148,10 +1188,11 @@ export default function Duels() {
         <CardContent>
           <Typography variant="h6">Ladder standings</Typography>
           <Typography variant="caption" color="text.secondary">
-            Ranked by match points (win 3 · draw 1), then decisive-win rate, then pair-win
-            rate — click any column to re-sort. Margin is the median Overall-point gap in
-            that profile's own favour; <b>Overall</b> is its pooled all-history score, so you
-            can read the ring record against the raw measured one.
+            <b>Duel rank</b> is the ring standing and the default order here: match points
+            (win 3 · draw 1), then decisive-win rate, then pair-win rate. <b>Overall</b> and{" "}
+            <b>Overall rank</b> are the pooled all-history score for the same profile, so the
+            two verdicts sit side by side — the ▲▼ next to a rank is how far they disagree.
+            Click any column to re-sort.
           </Typography>
           {loadingStandings && standings.length === 0 ? (
             <Box sx={{ mt: 1.5 }}>
@@ -1170,7 +1211,7 @@ export default function Duels() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <StandingHeader id="rank" label="#" orderBy={orderBy} order={order} onSort={handleSort} tip="Ladder position: match points, then decisive-win rate, then pair-win rate." />
+                    <StandingHeader id="rank" label="Duel rank" orderBy={orderBy} order={order} onSort={handleSort} tip="Standing in the ring — the page's default order. Match points (win 3 · draw 1), then decisive-win rate, then pair-win rate, then matchups played. Nothing pooled goes into it." />
                     <StandingHeader id="name" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} />
                     <StandingHeader id="wins" label="W–L–D" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match record across every duel session: wins–losses–draws. Sorts by wins." />
                     <StandingHeader id="points" label="Pts" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match points: 3 for a win, 1 for a draw." />
@@ -1178,6 +1219,7 @@ export default function Duels() {
                     <StandingHeader id="pair_win_rate" label="Pairs" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Individual interleaved A/B pairs won — the raw evidence under the verdicts. Sorts by pair-win rate." />
                     <StandingHeader id="median_margin" label="Margin" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Median Overall-point gap in this profile's own favour, across its bouts." />
                     <StandingHeader id="overall" label="Overall" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="The POOLED all-history score — what this profile measured across every run, not just its bouts. Sort by it to see where the ring and the raw record disagree." />
+                    <StandingHeader id="pooled_rank" label="Overall rank" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Where this profile sits on the pooled all-history score, among the profiles that have duelled. Compare with Duel rank: a big gap means the ring and the raw record disagree about it." />
                     <StandingHeader id="opponents" label="Opponents" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Distinct profiles faced." />
                     <StandingHeader id="championships" label="Titles" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Sessions ended holding the belt." />
                     <StandingHeader id="last_dueled_at" label="Last bout" align="right" orderBy={orderBy} order={order} onSort={handleSort} />
@@ -1190,7 +1232,12 @@ export default function Duels() {
                       hover
                       sx={r.is_champion ? { bgcolor: "action.selected" } : undefined}
                     >
-                      <TableCell>{r.rank}</TableCell>
+                      <TableCell>
+                        <Stack direction="row" spacing={0.75} alignItems="baseline">
+                          <Typography variant="body2">{r.rank}</Typography>
+                          <RankGap ringRank={r.rank} pooledRank={pooledRank.get(r.fingerprint)} />
+                        </Stack>
+                      </TableCell>
                       <TableCell>
                         <Stack direction="row" spacing={0.5} alignItems="center">
                           {r.is_champion && (
@@ -1253,6 +1300,11 @@ export default function Duels() {
                         >
                           <span>{fmtNum(r.overall, 1)}</span>
                         </Tooltip>
+                      </TableCell>
+                      <TableCell align="right">
+                        <Typography variant="body2" color="text.secondary">
+                          {pooledRank.get(r.fingerprint) ?? "—"}
+                        </Typography>
                       </TableCell>
                       <TableCell align="right">{r.opponents}</TableCell>
                       <TableCell align="right">{r.championships || "—"}</TableCell>

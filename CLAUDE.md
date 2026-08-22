@@ -457,8 +457,12 @@ LLM-based. See `README.md` for the product overview.
     indexed query per profile rather than a full `compute_profiles` pass) so the ring record
     and the raw measured record sit on one line — a profile winning its bouts while mid-table
     on Overall is exactly what running two verdicts is for. The table is **sortable on every
-    column** client-side (`compareStandings`, nulls last in both directions); the server's
-    ladder order is just the default.
+    column** client-side (`compareStandings`, nulls last in both directions), and the ring
+    standing is the **default order**, named outright as the **"Duel rank"** column (it was
+    an unlabelled `#`). Beside the pooled Overall sits an **"Overall rank"** column plus a
+    ▲▼ gap chip on the rank itself, so the two verdicts are one glance apart: "duel rank 1,
+    ▲5" is a profile that beats everyone in the ring while sitting 6th on the raw measured
+    record — the disagreement running two verdicts exists to surface.
     `GET /api/settings/crowns` (`routes_settings.crowns`) serves **both verdicts side by
     side** for the Dashboard's **"The two crowns"** card (`TwoCrowns.tsx`): the pooled crown
     (trophy) and the duel champion (belt/medal), each marked *following* or *for reference*
