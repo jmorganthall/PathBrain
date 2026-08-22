@@ -243,6 +243,13 @@ DEFAULT_CONFIG: dict = {
         "min_margin": 0.0,
         # A decided matchup isn't re-dueled for this many days (the ladder moves on).
         "rematch_days": 7,
+        # Seconds to wait after writing a profile to the firewall before measuring it.
+        # Each run is preceded by a setPipe + reconfigure, which rebuilds the queues; the
+        # baseline test has always waited for the link to settle before believing a
+        # measurement and the duel should too. Symmetric across both sides, so it never
+        # biased a verdict — it just put reconfiguration noise into every pair, and noise
+        # costs pairs. 0 restores the old measure-immediately behaviour.
+        "settle_seconds": 3,
     },
     # Historical trends: baseline a metric over this many days of history, judge a
     # run against the median over the last `window_hours`, and require at least

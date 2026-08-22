@@ -1073,7 +1073,15 @@ export default function Duels() {
                 value={cfg?.rematch_days ?? 7}
                 disabled={!cfg || busy}
                 onCommit={(v) => void patch({ rematch_days: Math.round(v) })}
-                helper="Days before the same two profiles can fight again."
+                helper="Days before the same two profiles can fight again. It orders the queue — a cooled contender is raced last among its equals, never skipped in favour of an untested profile."
+              />
+              <NumField
+                label="Settle before measuring"
+                value={cfg?.settle_seconds ?? 3}
+                disabled={!cfg || busy}
+                min={0}
+                onCommit={(v) => void patch({ settle_seconds: Math.round(v) })}
+                helper="Seconds to let the link settle after each profile is written to the firewall, before its run is measured. Both sides wait equally, so this never favours anyone — it keeps queue-rebuild noise out of the pairs. 0 = measure immediately."
               />
               {cfg?.method === "pair_wins" && (
                 <NumField

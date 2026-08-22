@@ -323,8 +323,9 @@ LLM-based. See `README.md` for the product overview.
     now); driven by the top-bar **"Follow best" switch** (`FollowBest.tsx`) with a status/churn
     popover.
   - `duel.py` — **Duel ladder**: interleaved head-to-head adjudication, the controlled-trial
-    complement to the observational pooled crown. Strict A/B/A/B alternation (one iteration a
-    side) between an incumbent (the pooled crown at window start) and a ladder of challengers
+    complement to the observational pooled crown. **Counterbalanced** alternation — one iteration
+    a side, with the lead alternating every pair (ABBA) — between an incumbent (the pooled crown
+    at window start) and a ladder of challengers
     (heirs priority order, reachability-filtered), so each adjacent pair shares its weather
     **by construction** — a thin new variant can be adjudicated against a 3000-iteration crown
     in one night because it races the crown-five-minutes-ago, never its history. Each matchup
@@ -396,6 +397,21 @@ LLM-based. See `README.md` for the product overview.
     `_recently_decided` likewise scans duels **by `finished_at` within the cooldown**, not
     "the last 20 sessions" (a continuous ladder finishes several a day, so a row cap covered
     ~3 days of a 7-day cooldown).
+    **Counterbalancing + settle, so a pair measures the profiles and not the schedule.** The
+    incumbent used to run first in *every* pair, which makes "went first" and "is the incumbent"
+    the same variable: any position-in-pair effect (state the previous run left behind, a
+    still-warm cache, the shaper freshly reconfigured) lands on the same side every time and is
+    indistinguishable from a real difference. The lead now alternates each pair — ABBA, recorded
+    as `lead_alternated` on the matchup so the counterbalance is auditable from the ledger — and
+    the margin stays challenger − incumbent, so the verdict doesn't care who ran first
+    (`test_pairs_alternate_which_profile_runs_first`). Each leg also waits `duel.settle_seconds`
+    (default 3, GUI-editable in the advanced panel) after `_apply_profile` before measuring: every
+    leg is preceded by a `setPipe` + reconfigure that rebuilds the queues, and the baseline test
+    has always settled before believing a measurement. It is symmetric across both sides, so it
+    never biased a verdict — it just put reconfiguration noise into every pair, and noise costs
+    pairs. Mocked-engine tests set it to 0 and score each leg **by the profile applied**, not by
+    its position (`_score_by_profile`) — a fake keyed on run order would bake in exactly the
+    confound the alternation removes.
     **The rematch cooldown ORDERS, it never excludes** (`contender_tiers` / `next_matchup`).
     Queued profiles carry a priority **tier** — `CROWN_TIER` (the pooled crown) <
     `CONTENDER_TIER` (confident, scored) < `FILLER_TIER` (thin/untested) — and the ring is

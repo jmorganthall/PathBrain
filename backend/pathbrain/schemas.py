@@ -59,6 +59,10 @@ class DuelScheduleUpdate(BaseModel):
     end_hour: int | None = None
     end_minute: int | None = None
     rematch_days: int | None = None
+    # Seconds to let the link settle after writing a profile before measuring it — each
+    # leg is preceded by a setPipe + reconfigure that rebuilds the queues. 0 = measure
+    # immediately (the old behaviour).
+    settle_seconds: int | None = None
     # Sequential stopping rule: verdicts never fire before `min_pairs`, futility cap at
     # `max_pairs`, and a statistical winner under `min_margin` Overall points is a draw.
     min_pairs: int | None = None

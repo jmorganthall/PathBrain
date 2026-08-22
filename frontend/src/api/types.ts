@@ -1670,6 +1670,9 @@ export interface DuelConfig {
   max_pairs: number;
   min_margin: number;
   rematch_days: number;
+  // Seconds to let the link settle after writing a profile before measuring it. Applied
+  // to both sides of every pair, so it never favours a side.
+  settle_seconds: number;
   // The evidence bar: the edge worth detecting, and the false-positive rate.
   p1: number;
   alpha: number;

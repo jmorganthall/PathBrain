@@ -66,6 +66,38 @@ def test_sprt_cap_forces_a_draw():
 # ── The engine (mocked runs) ─────────────────────────────────────────────────────────
 
 
+def _no_settle():
+    """Turn off the post-apply settle for the mocked-engine tests — they fake the runs, so
+    the only thing a real sleep would measure is the test suite's patience."""
+    from pathbrain.config_store import save_config
+
+    with session_scope() as s:
+        save_config(s, {"duel": {"settle_seconds": 0}})
+
+
+def _score_by_profile(monkeypatch, applied: list[str], scores: dict[str, float]):
+    """Fake a pair's two runs, scoring each leg by the profile that was applied for it.
+
+    Pairs alternate which side runs first, so run order is deliberately NOT a proxy for
+    which profile ran — a fake keyed on position would bake in the exact confound the
+    alternation exists to remove.
+    """
+    by_run: dict[int, str] = {}
+    seq = {"n": 0}
+
+    def fake_chunk(label, notes, iterations, teardown=True, job_group=None, job_group_total=None):
+        seq["n"] += 1
+        run_id = 9000 + seq["n"]
+        by_run[run_id] = applied[-1] if applied else ""
+        return (run_id, True, iterations)
+
+    monkeypatch.setattr(duel_mod, "run_chunk", fake_chunk)
+    monkeypatch.setattr(
+        duel_mod, "_run_overall", lambda run_id, ver: scores.get(by_run.get(run_id, ""), 0.0)
+    )
+    return by_run
+
+
 def _wait_finish(duel_id: int, timeout: float = 15.0) -> Duel:
     start = time.time()
     terminal = (DuelStatus.COMPLETE, DuelStatus.FAILED, DuelStatus.CANCELLED)
@@ -101,17 +133,8 @@ def test_duel_ladder_crowns_a_challenger_and_restores(monkeypatch):
     )
     monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
 
-    seq = {"n": 0}
-
-    def fake_chunk(label, notes, iterations, teardown=True, job_group=None, job_group_total=None):
-        seq["n"] += 1
-        return (9000 + seq["n"], True, iterations)
-
-    monkeypatch.setattr(duel_mod, "run_chunk", fake_chunk)
-    # Odd run ids = incumbent leg (applied first each pair) at 60; even = challenger at 66.
-    monkeypatch.setattr(
-        duel_mod, "_run_overall", lambda run_id, ver: 60.0 if (run_id - 9000) % 2 == 1 else 66.0
-    )
+    _no_settle()
+    _score_by_profile(monkeypatch, applied, {"inc0000000x": 60.0, "cha0000000x": 66.0})
 
     duel_id = duel_mod.start(duration_minutes=10)
     d = _wait_finish(duel_id)
@@ -131,6 +154,52 @@ def test_duel_ladder_crowns_a_challenger_and_restores(monkeypatch):
     # Both sides were applied per pair, alternating.
     assert applied[:2] == ["inc0000000x", "cha0000000x"]
     assert not duel_mod.active()
+
+
+def test_pairs_alternate_which_profile_runs_first(monkeypatch):
+    """Counterbalancing, not hoping.
+
+    The incumbent used to run first in every single pair, which makes "went first" and "is
+    the incumbent" the same variable: any position-in-pair effect — state the previous run
+    left behind, a still-warm cache, the shaper freshly reconfigured — lands on the same
+    side every time and is indistinguishable from a real difference between the profiles.
+    Alternating the lead (ABBA) cancels it instead of assuming it's zero, and the margin is
+    still challenger minus incumbent, so the verdict doesn't care who ran first.
+    """
+    import pathbrain.api.routes_settings as rs
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+    applied: list[str] = []
+    fake_field = {
+        "best_fingerprint": "inc0000000x",
+        "profiles": [
+            {"fingerprint": "inc0000000x", "label": "incumbent", "settings": [{"label": "wan", "quantum": 1514}]},
+            {"fingerprint": "cha0000000x", "label": "challenger", "settings": [{"label": "wan", "quantum": 300}]},
+        ],
+    }
+    monkeypatch.setattr(rs, "compute_profiles", lambda session: fake_field)
+    monkeypatch.setattr(
+        rs, "_compute_heirs", lambda result, session, live=None: {"items": [{"fingerprint": "cha0000000x"}]}
+    )
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    _no_settle()
+    _score_by_profile(monkeypatch, applied, {"inc0000000x": 60.0, "cha0000000x": 66.0})
+
+    d = _wait_finish(duel_mod.start(duration_minutes=10))
+    assert d.status == DuelStatus.COMPLETE, d.error
+
+    leads = applied[0::2]  # whoever was applied first in each pair
+    assert len(leads) >= 4
+    assert leads[0] == "inc0000000x" and leads[1] == "cha0000000x", "the lead must alternate"
+    assert all(a != b for a, b in zip(leads, leads[1:])), "no side may lead twice running"
+    # Each pair still ran both profiles, exactly once each.
+    for i in range(0, len(applied) - 1, 2):
+        assert set(applied[i : i + 2]) == {"inc0000000x", "cha0000000x"}
+    # And the verdict is unaffected: the challenger scores better on every pair whichever
+    # side happened to go first.
+    assert d.matchups[0]["verdict"] == "challenger"
+    assert d.matchups[0]["lead_alternated"] is True
 
 
 def test_duel_margin_floor_records_a_draw(monkeypatch):
@@ -155,17 +224,10 @@ def test_duel_margin_floor_records_a_draw(monkeypatch):
     monkeypatch.setattr(
         rs, "_compute_heirs", lambda result, session, live=None: {"items": [{"fingerprint": "cha0000000x"}]}
     )
-    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: None)
-    seq = {"n": 0}
-
-    def fake_chunk(label, notes, iterations, teardown=True, job_group=None, job_group_total=None):
-        seq["n"] += 1
-        return (9500 + seq["n"], True, iterations)
-
-    monkeypatch.setattr(duel_mod, "run_chunk", fake_chunk)
-    monkeypatch.setattr(
-        duel_mod, "_run_overall", lambda run_id, ver: 60.0 if (run_id - 9500) % 2 == 1 else 60.4
-    )
+    applied: list[str] = []
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    _no_settle()
+    _score_by_profile(monkeypatch, applied, {"inc0000000x": 60.0, "cha0000000x": 60.4})
 
     duel_id = duel_mod.start(duration_minutes=10)
     d = _wait_finish(duel_id)
