@@ -56,6 +56,7 @@ import type {
   UpdateConfig,
   UpdateConnectionTest,
   UpdateLog,
+  ExploreLandscape,
   SettingsProfilesResponse,
   WeatherSensitivity,
   Sweep,
@@ -371,6 +372,14 @@ export const api = {
   selfUpdateConfig: () => request<UpdateConfig>("/update/config"),
   testUpdateConnection: () =>
     request<UpdateConnectionTest>("/update/test", { method: "POST" }),
+  // The exploration landscape: lever response curves, interactions, coverage gaps and the
+  // candidate profiles worth measuring next. Costs a compute_profiles pass, so it's
+  // fetched on demand rather than on page load.
+  exploreLandscape: (suggestions = 3, confidentOnly = true) =>
+    request<ExploreLandscape>(
+      `/explore/landscape?suggestions=${suggestions}&confident_only=${confidentOnly}`,
+    ),
+
   // The self-update ledger: every attempt and whether the build actually changed.
   updateLog: (limit = 10) => request<UpdateLog>(`/update/log?limit=${limit}`),
 

@@ -29,6 +29,7 @@ const DataDump = lazy(() => import("./pages/DataDump"));
 const AI = lazy(() => import("./pages/AI"));
 const Baseline = lazy(() => import("./pages/Baseline"));
 const Duels = lazy(() => import("./pages/Duels"));
+const Explore = lazy(() => import("./pages/Explore"));
 
 export default function App() {
   return (
@@ -45,6 +46,7 @@ export default function App() {
           <Route path="/experiments" element={<Experiments />} />
           <Route path="/sweep" element={<ShotgunSweep />} />
           <Route path="/duels" element={<Duels />} />
+          <Route path="/explore" element={<Explore />} />
           <Route path="/baseline" element={<Baseline />} />
           <Route path="/config" element={<Config />} />
           <Route path="/methodology" element={<Methodology />} />
