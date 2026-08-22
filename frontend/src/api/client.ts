@@ -55,6 +55,7 @@ import type {
   UpdateTriggerResult,
   UpdateConfig,
   UpdateConnectionTest,
+  UpdateLog,
   SettingsProfilesResponse,
   WeatherSensitivity,
   Sweep,
@@ -370,6 +371,8 @@ export const api = {
   selfUpdateConfig: () => request<UpdateConfig>("/update/config"),
   testUpdateConnection: () =>
     request<UpdateConnectionTest>("/update/test", { method: "POST" }),
+  // The self-update ledger: every attempt and whether the build actually changed.
+  updateLog: (limit = 10) => request<UpdateLog>(`/update/log?limit=${limit}`),
 
   // Config
   config: () => request<BenchmarkConfig>("/config"),
