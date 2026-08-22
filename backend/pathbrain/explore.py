@@ -66,8 +66,32 @@ EXPLORATION_WEIGHT = 1.0
 # the spread between the four corners before it's called an interaction. Without both, every
 # pair of levers reads as interacting on rounding noise — worse than saying nothing, because
 # it invites choosing two levers together for no reason.
+# A candidate that moves two levers at once has its uncertainty widened by this much. The
+# prediction adds the two effects, and the basin structure is precisely the demonstration
+# that they don't add — so the honest response is a wider band, not a confident number.
+#
+# Crucially that widening is a COST, not an opportunity. An upper confidence bound rewards
+# uncertainty — the whole point is to go where we don't know — so simply inflating the band
+# would push exactly the candidates we trust least to the top of the list. Model risk (we
+# might be adding effects that don't add) and measurement opportunity (nobody has been
+# there) are different things and pull in opposite directions, so the extra width is
+# subtracted from the score even as it widens the band on screen.
+MULTI_LEVER_UNCERTAINTY = 1.6
+# The Overall is a 0–100 weighted average of perception-calibrated subscores; a prediction
+# or an upside outside that isn't a bold claim, it's a broken one.
+OVERALL_MIN, OVERALL_MAX = 0.0, 100.0
 INTERACTION_MIN_CONTRAST = 1.0
 INTERACTION_MIN_SHARE = 0.15
+# How many of an axis's best-scoring measured values to offer as transplants onto other
+# profiles. Two keeps the candidate list bounded while still covering "the crown, with the
+# other basin's value for this lever" — which with coupled levers is the interesting move,
+# and the only one the matched-pair record can price directly.
+TRANSPLANT_VALUES = 2
+# How much of a confounded marginal curve's delta to believe when nothing better is
+# available. We know part of its shape belongs to another lever; we just don't know how
+# much. Taking it whole is exactly how a confounded average turns into a confident
+# prediction, which is the failure this whole section exists to prevent.
+CONFOUNDED_SHRINK = 0.5
 # Parents to branch candidates from, and how many candidates to return by default.
 CANDIDATE_PARENTS = 5
 DEFAULT_SUGGESTIONS = 3
@@ -359,7 +383,11 @@ def _gaps(points: list[dict], axes: dict[str, dict], curves: list[dict]) -> list
         if curve and curve["best_at_edge"]:
             at_max = curve["best_value"] == axis["max"]
             step = _step_for(axis)
-            beyond = axis["max"] + step if at_max else max(0.0, axis["min"] - step)
+            # Stepping *below* the range is proportional, not a fixed step: a declared sweep
+            # step can exceed the minimum itself, and "try 0" is not a shaper setting.
+            beyond = axis["max"] + step if at_max else axis["min"] - min(step, axis["min"] * 0.25)
+            if beyond <= 0:
+                continue
             out.append({
                 "key": key,
                 "pipe": axis["pipe"],
@@ -438,44 +466,113 @@ def _curve_at(curve: dict | None, value: float) -> float | None:
     return None
 
 
-def _predict(parent: dict, changes: dict[str, float], by_key: dict[str, dict]) -> float:
-    """What a candidate would score, anchored on the profile it was branched from.
+def _matched_delta(pairs_by_key: dict[str, dict], key: str, before: float, after: float) -> float | None:
+    """What the *controlled* record says this exact move did, if it has ever been made.
 
-    Not a global regression: the candidate *is* "this measured profile with one lever
-    moved", so the prediction should be that profile's measured Overall plus what the
-    response curve says about moving that lever. A smoothed global average can never
-    exceed the best value it was fitted on, so it drags every candidate branched from the
-    winner back toward the middle of the field and reports the leader's own neighbourhood
-    as unpromising — the one place worth looking hardest.
+    A matched pair is the same profile with one lever changed, so its delta is that move's
+    effect with nothing else mixed in. When the record contains one it beats any curve: the
+    curve is an average over profiles that differ in other ways too, which is the whole
+    problem. Only the exact transition counts — an adjacent one is a different move.
+    """
+    for t in (pairs_by_key.get(key) or {}).get("transitions", []):
+        if (t["from"], t["to"]) == (before, after):
+            return t["median_delta"]
+        if (t["from"], t["to"]) == (after, before):
+            return -t["median_delta"]
+    return None
+
+
+def _predict(
+    parent: dict,
+    changes: dict[str, float],
+    by_key: dict[str, dict],
+    pairs_by_key: dict[str, dict] | None = None,
+    local_by_key: dict[str, dict] | None = None,
+) -> tuple[float, list[str]]:
+    """``(predicted Overall, evidence notes)`` for a candidate, anchored on its parent.
+
+    Not a global regression: the candidate *is* "this measured profile with a lever moved",
+    so the prediction is that profile's measured Overall plus what moving the lever does. A
+    smoothed global average can never exceed the best value it was fitted on, so it drags
+    every candidate branched from the winner back toward the field mean and reports the
+    leader's own neighbourhood — the one place worth looking hardest — as unpromising.
+
+    "What moving the lever does" comes from the best evidence available, in this order,
+    because they are not equally believable:
+
+    1. **A matched pair** that made this exact move — controlled, nothing else varied.
+    2. **The parent's own neighbourhood** — the conditioned curve built from profiles that
+       differ from the parent in at most one other lever, so it describes this part of the
+       surface rather than an average across all of it.
+    3. **The marginal curve** — an average over profiles that differ in other levers too.
+       Where that curve is flagged confounded we already know some of its shape belongs to
+       another lever, so its delta is **shrunk** rather than taken at face value: believing
+       it whole is how a confounded average becomes a confident prediction.
     """
     predicted = parent["overall"]
+    notes: list[str] = []
     for key, value in changes.items():
+        matched = _matched_delta(pairs_by_key or {}, key, parent["coords"][key], value)
+        if matched is not None:
+            predicted += matched
+            notes.append("measured directly on a matched pair")
+            continue
+        local = (local_by_key or {}).get(key)
+        before = _curve_at(local, parent["coords"][key]) if local else None
+        after = _curve_at(local, value) if local else None
+        if before is not None and after is not None:
+            predicted += after - before
+            notes.append("estimated from this profile's own neighbourhood")
+            continue
         curve = by_key.get(key)
         before = _curve_at(curve, parent["coords"][key])
         after = _curve_at(curve, value)
         if before is not None and after is not None:
-            predicted += after - before
-    return predicted
+            confounded = bool((curve or {}).get("confounded"))
+            predicted += (after - before) * (CONFOUNDED_SHRINK if confounded else 1.0)
+            notes.append(
+                "estimated from a confounded marginal curve — discounted, and worth little"
+                if confounded
+                else "estimated from the marginal curve, which averages over other levers"
+            )
+    return predicted, notes
 
 
 def _candidate_values(axis: dict, curve: dict | None) -> list[tuple[float, str]]:
     """The values worth trying on one axis, each with the reason it's interesting.
 
-    Three moves, which is what a person does by hand with a table of results:
+    Four moves, which is what a person does by hand with a table of results:
 
+    * **Transplant a proven value** — a value that scores well *elsewhere* in the field but
+      that this profile has never used. The value is old; the combination is new, and with
+      coupled levers the combination is the whole question. This is also the only move the
+      matched-pair record can speak to directly, since the other three propose values
+      nobody has measured at all.
     * **Fill a hole** — the midpoint of any untested interval wide enough to hide a
-      different answer. The result is bracketed on both sides, so one run settles it.
+      different answer. Bracketed on both sides, so one run settles it.
     * **Refine around the best** — halfway between the best value measured and each of its
       neighbours. Coverage is coarse, so the true optimum is usually *near* the winner
-      rather than at it, and nobody ever picks these values by hand.
-    * **Step past an edge** — when the best value is the highest (or lowest) anyone tried,
-      the optimum isn't bracketed at all and the only way to find out is to go further.
+      rather than at it, and nobody picks these values by hand.
+    * **Step past an edge** — when the best value is the highest (or lowest) tried, the
+      optimum isn't bracketed at all and the only way to find out is to go further.
     """
     vals = axis["values"]
     span = axis["max"] - axis["min"]
     if span <= 0:
         return []
     out: list[tuple[float, str]] = []
+
+    # Transplants: the best-scoring values measured anywhere on this axis.
+    proven: set[float] = set()
+    if curve:
+        ranked = sorted(curve["curve"], key=lambda c: -c["overall"])[:TRANSPLANT_VALUES]
+        for pt in ranked:
+            proven.add(pt["value"])
+            out.append((
+                pt["value"],
+                f"a value proven elsewhere ({pt['value']:g} averages {pt['overall']:g}) that "
+                "this profile has never run",
+            ))
 
     for lo, hi in zip(vals, vals[1:]):
         if (hi - lo) / span >= 0.15:
@@ -485,7 +582,9 @@ def _candidate_values(axis: dict, curve: dict | None) -> list[tuple[float, str]]
         best = curve["best_value"]
         if curve["best_at_edge"]:
             step = _step_for(axis)
-            beyond = best + step if best == axis["max"] else best - step
+            # Proportional downward step — a declared sweep step can exceed the minimum, and
+            # halving a lever is an extrapolation rather than a neighbour.
+            beyond = best + step if best == axis["max"] else best - min(step, best * 0.25)
             if beyond > 0:
                 out.append((beyond, f"steps past {best:g}, the best value tested and the end of the range"))
         else:
@@ -498,14 +597,14 @@ def _candidate_values(axis: dict, curve: dict | None) -> list[tuple[float, str]]
                     ))
 
     # Coerce to the field's own granularity — an int lever has no use for 4213.5 — and drop
-    # anything that lands back on a value already tested here.
+    # untested-interval values that land back on something already tried. A *transplant* is
+    # allowed to be an already-tested value: that's the point of it.
     fld = shaper_field(axis["field"])
-    tested = set(vals)
     cleaned: list[tuple[float, str]] = []
     seen: set[float] = set()
     for v, why in out:
         val = float(round(v)) if not fld or fld.kind != "str" else float(v)
-        if val <= 0 or val in seen or val in tested:
+        if val <= 0 or val in seen or (val in set(vals) and val not in proven):
             continue
         seen.add(val)
         cleaned.append((val, why))
@@ -530,6 +629,7 @@ def _candidates(
     curves: list[dict],
     gaps: list[dict],
     limit: int,
+    pairs: list[dict] | None = None,
 ) -> list[dict]:
     """Untested profiles worth measuring, best first.
 
@@ -545,6 +645,7 @@ def _candidates(
     do better than anything so far?", and those are different questions.
     """
     by_key = {c["key"]: c for c in curves}
+    pairs_by_key = {m["key"]: m for m in (pairs or [])}
     best_measured = max(p["overall"] for p in points)
     measured_coords = {tuple(sorted(p["coords"].items())) for p in points}
     parents = sorted(points, key=lambda p: (-p["overall"], -p["iterations"]))[:CANDIDATE_PARENTS]
@@ -566,8 +667,25 @@ def _candidates(
         if sig in seen or sig in measured_coords:
             return
         seen.add(sig)
-        predicted = _predict(parent, {k: v for k, (v, _) in changes.items()}, by_key)
+        moves = {k: v for k, (v, _) in changes.items()}
+        predicted, evidence = _predict(
+            parent, moves, by_key, pairs_by_key, local_curves.get(parent["fingerprint"])
+        )
         uncertainty, nearest = _uncertainty(coords, points, axes)
+        # Moving two levers at once is NOT the sum of moving each — that additivity is
+        # exactly what the basin structure disproves, and a candidate assuming it is
+        # guessing harder than a single-lever one. Widen the band rather than pretend.
+        multi = len(moves) > 1
+        base_uncertainty = uncertainty
+        if multi:
+            uncertainty *= MULTI_LEVER_UNCERTAINTY
+        predicted = min(OVERALL_MAX, max(OVERALL_MIN, predicted))
+        # Opportunity is what we haven't measured; model risk is what we might be getting
+        # wrong. Only the first belongs on the upside.
+        upside = predicted + EXPLORATION_WEIGHT * base_uncertainty
+        if multi:
+            upside -= (MULTI_LEVER_UNCERTAINTY - 1.0) * base_uncertainty
+        upside = min(OVERALL_MAX, max(OVERALL_MIN, upside))
         out.append({
             "changes": [
                 {
@@ -591,10 +709,21 @@ def _candidates(
             "coords": coords,
             "predicted": round(predicted, 2),
             "uncertainty": round(uncertainty, 2),
-            "upside": round(predicted + EXPLORATION_WEIGHT * uncertainty, 2),
+            # How the prediction was arrived at, so a number backed by a controlled pair is
+            # never mistaken for one extrapolated off a confounded average.
+            "evidence": evidence,
+            "multi_lever": multi,
+            "upside": round(upside, 2),
             "nearest_measured": round(nearest, 3),
             "settings": _settings_for(parent, {k: v for k, (v, _) in changes.items()}, axes),
         })
+
+    # Each parent's own neighbourhood, so a prediction about moving THIS profile is made
+    # from profiles that resemble it rather than from an average over the whole field.
+    local_curves = {
+        parent["fingerprint"]: {c["key"]: c for c in conditioned_curves(points, axes, parent)}
+        for parent in parents
+    }
 
     for parent in parents:
         one_lever = [
@@ -636,12 +765,286 @@ def _candidate_summary(candidate: dict, best_measured: float) -> str:
     )
 
 
-def landscape(session, *, suggestions: int = DEFAULT_SUGGESTIONS, confident_only: bool = True) -> dict:
+
+# ── Confounding: what the marginal curve cannot tell you ─────────────────────────────
+#
+# A response curve is `median(Overall | lever = v)` — it marginalizes over whatever the
+# OTHER levers happened to be set to at that value. In a hand-built field that composition
+# is not balanced, so the curve answers "if I picked a random profile with this value, how
+# good would it be?" when the question that matters is "if I take THIS profile and change
+# only this lever, what happens?". With strong interactions those have different answers,
+# and the curve confidently reports the wrong one. Three tools below, in descending order
+# of how much they can be trusted.
+
+# For basins and conditioning, "near" is counted in LEVERS CHANGED, not in normalized
+# distance. Euclidean distance is the wrong metric on a coarse grid: with three tested
+# values a lever's neighbours are half its range apart, so whether two profiles come out
+# "near" depends on how many values that lever happens to have been given rather than on
+# how alike the profiles are. Counting changed levers is also the question being asked —
+# a coordinate-wise search moves one lever at a time, so "no one-lever change beats this"
+# is exactly what makes something a local optimum.
+CONDITION_MAX_OTHER_CHANGES = 1
+# A lever's mean shifts by this much (in normalized units) between one value of another
+# lever and the field as a whole before we call the pair confounded. 0.2 is a fifth of the
+# tested range — big enough that it isn't sampling noise, small enough to catch real skew.
+IMBALANCE_THRESHOLD = 0.2
+
+
+def _writable_signature(profile: dict, exclude: tuple[str, str] | None = None) -> tuple:
+    """Every writable field on every pipe, as a hashable key, optionally omitting one.
+
+    Used to find profiles that differ in *exactly* one lever. It deliberately covers all
+    writable fields rather than just the varying ones, so two profiles can't be called
+    siblings because they happen to differ only in a field the axis list dropped.
+    """
+    out: list[tuple[str, str, str]] = []
+    for pipe in profile.get("settings") or []:
+        label = pipe.get("label") or "pipe"
+        for fkey in WRITABLE_FIELDS:
+            if exclude == (label, fkey):
+                continue
+            out.append((label, fkey, str(pipe.get(fkey))))
+    return tuple(sorted(out))
+
+
+def matched_pairs(profiles: list[dict], axes: dict[str, dict]) -> list[dict]:
+    """Controlled experiments already sitting in the observational record.
+
+    Two profiles that differ in exactly ONE lever are a controlled comparison: everything
+    else is identical by construction, so the difference in their Overall is that lever's
+    effect with **no confounding at all**. This is the strongest evidence the measured
+    field can give about a lever, and it is precisely what a marginal curve destroys — a
+    curve can report a value as best while every matched pair that moves *to* that value
+    gets worse, because the profiles sitting at it differ in other ways too.
+
+    Reported per transition (``from`` → ``to``) rather than pooled per lever, because that
+    is the actionable unit: "7313 → 7000 costs 1.4 points over 3 matched pairs" is a
+    finding; "quantum correlates 0.2 with Overall" is not.
+    """
+    by_axis: dict[str, dict[tuple[float, float], list[float]]] = {}
+    for key, axis in axes.items():
+        pipe, fkey = axis["pipe"], axis["field"]
+        groups: dict[tuple, list[tuple[float, float]]] = {}
+        for p in profiles:
+            value = None
+            for candidate in p.get("settings") or []:
+                if (candidate.get("label") or "pipe") == pipe:
+                    value = _to_number(fkey, candidate.get(fkey))
+            if value is None:
+                continue
+            groups.setdefault(_writable_signature(p, exclude=(pipe, fkey)), []).append(
+                (float(value), float(p["overall"]))
+            )
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            members.sort()
+            for i, (v1, o1) in enumerate(members):
+                for v2, o2 in members[i + 1:]:
+                    if v1 == v2:
+                        continue
+                    by_axis.setdefault(key, {}).setdefault((v1, v2), []).append(o2 - o1)
+
+    out: list[dict] = []
+    for key, transitions in by_axis.items():
+        axis = axes[key]
+        rows = []
+        for (v1, v2), deltas in sorted(transitions.items()):
+            rows.append({
+                "from": v1,
+                "to": v2,
+                "pairs": len(deltas),
+                "median_delta": round(_median(deltas), 2),
+                "worst": round(min(deltas), 2),
+                "best": round(max(deltas), 2),
+                # Every pair agreeing is far stronger than a median over disagreeing ones.
+                "consistent": all(d > 0 for d in deltas) or all(d < 0 for d in deltas),
+            })
+        if not rows:
+            continue
+        out.append({
+            **{k: axis[k] for k in ("key", "pipe", "field", "field_label", "unit")},
+            # Evidence first, not effect size. A transition backed by four pairs that all
+            # agree is a finding; one backed by a single pair with a dramatic number is an
+            # anecdote, and sorting on the number alone buries the former under the latter.
+            "transitions": sorted(
+                rows,
+                key=lambda r: (r["consistent"] and r["pairs"] > 1, r["pairs"], abs(r["median_delta"])),
+                reverse=True,
+            ),
+            "total_pairs": sum(r["pairs"] for r in rows),
+        })
+    out.sort(key=lambda r: (-r["total_pairs"], -max(abs(t["median_delta"]) for t in r["transitions"])))
+    return out
+
+
+def _imbalance(points: list[dict], axes: dict[str, dict]) -> dict[str, list[dict]]:
+    """Which *other* lever is skewed at each value of a lever — the confounding itself.
+
+    For every value of A, compare the average setting of every other lever there against
+    its average across the whole field, in normalized units. A large shift means "profiles
+    that use this value of A also systematically use a different B", which is exactly the
+    mechanism by which a marginal curve can name a value best that is bad on its own
+    merits. This doesn't fix the curve; it says which points of it not to believe, and why.
+    """
+    field_mean = {
+        key: sum(_normalize(p["coords"][key], axes[key]) for p in points if key in p["coords"])
+        / max(1, sum(1 for p in points if key in p["coords"]))
+        for key in axes
+    }
+    out: dict[str, list[dict]] = {}
+    for key in axes:
+        rows: list[dict] = []
+        values = sorted({p["coords"][key] for p in points if key in p["coords"]})
+        for value in values:
+            at = [p for p in points if p["coords"].get(key) == value]
+            worst: dict | None = None
+            for other in axes:
+                if other == key:
+                    continue
+                vals = [_normalize(p["coords"][other], axes[other]) for p in at if other in p["coords"]]
+                if not vals:
+                    continue
+                shift = sum(vals) / len(vals) - field_mean[other]
+                if worst is None or abs(shift) > abs(worst["shift"]):
+                    worst = {
+                        "other": other,
+                        "other_label": f"{axes[other]['pipe']} {axes[other]['field_label']}",
+                        "shift": round(shift, 3),
+                    }
+            if worst and abs(worst["shift"]) >= IMBALANCE_THRESHOLD:
+                rows.append({
+                    "value": value,
+                    "profiles": len(at),
+                    **worst,
+                    "detail": (
+                        f"Profiles at {value:g} run {worst['other_label']} "
+                        f"{'higher' if worst['shift'] > 0 else 'lower'} than the field average "
+                        f"({abs(worst['shift']) * 100:.0f}% of its range) — this point of the "
+                        "curve is measuring both levers at once."
+                    ),
+                })
+        if rows:
+            out[key] = rows
+    return out
+
+
+def _differing(a: dict[str, float], b: dict[str, float], skip: str | None = None) -> list[str]:
+    """The levers on which two profiles disagree (ignoring ``skip``)."""
+    keys = set(a) | set(b)
+    return [k for k in keys if k != skip and a.get(k) != b.get(k)]
+
+
+def conditioned_curves(
+    points: list[dict],
+    axes: dict[str, dict],
+    reference: dict,
+    max_other_changes: int = CONDITION_MAX_OTHER_CHANGES,
+) -> list[dict]:
+    """Each lever's curve **restricted to profiles that are otherwise like the reference**.
+
+    The de-confounded view of the question that actually matters: not "how do profiles with
+    this value do in general?" but "how do profiles that are otherwise the crown do at this
+    value?". A profile is included when it differs from the reference in the plotted lever
+    plus at most ``max_other_changes`` others — so the curve describes one neighbourhood of
+    the surface instead of averaging across all of them.
+
+    Sparse by nature, and that's the honest part: a point built from one profile is one
+    measurement, and each point reports how many it rests on.
+    """
+    out: list[dict] = []
+    for key, axis in axes.items():
+        by_value: dict[float, list[dict]] = {}
+        for p in points:
+            if key not in p["coords"]:
+                continue
+            changed = _differing(reference["coords"], p["coords"], skip=key)
+            if len(changed) > max_other_changes:
+                continue
+            by_value.setdefault(p["coords"][key], []).append(p)
+        if len(by_value) < 2:
+            continue
+        out.append({
+            **{k: axis[k] for k in ("key", "pipe", "field", "field_label", "unit")},
+            "curve": [
+                {
+                    "value": v,
+                    "overall": round(_median([q["overall"] for q in ps]), 2),
+                    "profiles": len(ps),
+                    # An exact point — same reference, only this lever moved — is the
+                    # strongest evidence on the chart and is worth marking as such.
+                    "exact": any(not _differing(reference["coords"], q["coords"], skip=key) for q in ps),
+                }
+                for v, ps in sorted(by_value.items())
+            ],
+            "reference_value": reference["coords"].get(key),
+        })
+    out.sort(key=lambda c: -len(c["curve"]))
+    return out
+
+
+def basins(points: list[dict], axes: dict[str, dict]) -> list[dict]:
+    """Local maxima under one-lever moves — profiles no measured sibling beats.
+
+    A basin is a profile where every single-lever change anyone has measured makes things
+    worse. If the surface had one optimum, marginal curves would describe it and moving one
+    lever at a time from anywhere would eventually reach it. Several separated basins mean
+    the levers are **coupled**: each optimum is a combination, a coordinate-wise search gets
+    stuck in whichever one it started in, and averaging across basins — which is what a
+    marginal curve does — describes none of them.
+
+    Counting them is the cheapest possible test of "is this surface simple?", and the answer
+    decides whether tuning one lever at a time can work at all.
+    """
+    found: list[dict] = []
+    for p in points:
+        siblings = [
+            q for q in points
+            if q is not p and len(_differing(p["coords"], q["coords"])) == 1
+        ]
+        if not siblings:
+            continue  # nothing to compare against — a data point, not a demonstrated peak
+        if any(q["overall"] > p["overall"] for q in siblings):
+            continue
+        found.append({
+            "fingerprint": p["fingerprint"],
+            "name": p["name"],
+            "label": p["label"],
+            "overall": round(p["overall"], 2),
+            "iterations": p["iterations"],
+            # How many one-lever variants have been measured around it — the confidence in
+            # calling it a peak at all.
+            "siblings": len(siblings),
+            "coords": p["coords"],
+        })
+    found.sort(key=lambda b: -b["overall"])
+    # How many levers separate each basin from a better one. Two means no single change
+    # gets you from here to there, which is what makes them different basins rather than
+    # two points on one slope.
+    for i, b in enumerate(found):
+        gaps = [len(_differing(b["coords"], other["coords"])) for other in found[:i]]
+        b["levers_from_better"] = min(gaps) if gaps else None
+    return found
+
+
+def landscape(
+    session,
+    *,
+    suggestions: int = DEFAULT_SUGGESTIONS,
+    confident_only: bool = True,
+    reference: str | None = None,
+) -> dict:
     """The whole exploration picture: axes, response curves, interactions, gaps, candidates.
 
     ``confident_only`` keeps thin profiles out of the model by default — a lucky Overall on
     two iterations is noise, and noise in the training set becomes a confident-sounding
     prediction. It falls back to every scored profile when that leaves too little to model.
+
+    ``reference`` is the profile the *conditioned* curves are built around (default: the
+    best measured). The marginal curves marginalize over every other lever; the conditioned
+    ones hold the rest of the profile near the reference, which is the difference between
+    "profiles with this value tend to score X" and "changing this profile's value to that
+    does X".
     """
     from .api.routes_settings import compute_profiles
 
@@ -679,6 +1082,10 @@ def landscape(session, *, suggestions: int = DEFAULT_SUGGESTIONS, confident_only
             "interactions": [],
             "gaps": [],
             "candidates": [],
+            "matched_pairs": [],
+            "conditioned_curves": [],
+            "basins": [],
+            "reference": None,
             "best_overall": None,
             "profiles_modelled": len(points),
             "confident_only": confident_only and not fell_back,
@@ -690,13 +1097,37 @@ def landscape(session, *, suggestions: int = DEFAULT_SUGGESTIONS, confident_only
 
     curves = _response_curves(points, axes)
     gaps = _gaps(points, axes, curves)
+    pairs = matched_pairs(pool, axes)
+
+    # De-confounding. The marginal curves above answer "how do profiles with this value
+    # score?"; these answer "what happens if I change this value", which is the question
+    # anyone tuning a shaper is actually asking.
+    by_fp = {p["fingerprint"]: p for p in points}
+    ref = by_fp.get(reference or "") or max(points, key=lambda p: p["overall"])
+    imbalance = _imbalance(points, axes)
+    for c in curves:
+        # Flag the curve points that are measuring two levers at once, so the chart can
+        # say so where the reader is looking rather than in a footnote.
+        c["imbalance"] = imbalance.get(c["key"], [])
+        c["confounded"] = bool(c["imbalance"])
+
     return {
         "axes": sorted(axes.values(), key=lambda a: (a["pipe"], a["field"])),
         "points": points,
         "curves": curves,
+        "matched_pairs": pairs,
+        "conditioned_curves": conditioned_curves(points, axes, ref),
+        "basins": basins(points, axes),
+        "reference": {
+            "fingerprint": ref["fingerprint"],
+            "name": ref["name"],
+            "label": ref["label"],
+            "overall": round(ref["overall"], 2),
+        },
+        "condition_max_other_changes": CONDITION_MAX_OTHER_CHANGES,
         "interactions": _interactions(points, axes),
         "gaps": gaps,
-        "candidates": _candidates(points, axes, curves, gaps, max(1, int(suggestions))),
+        "candidates": _candidates(points, axes, curves, gaps, max(1, int(suggestions)), pairs),
         "best_overall": round(max(p["overall"] for p in points), 2),
         "profiles_modelled": len(points),
         "confident_only": confident_only and not fell_back,

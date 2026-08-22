@@ -271,3 +271,298 @@ def test_a_trivial_contrast_is_not_reported_as_an_interaction(monkeypatch):
         profiles.append(_profile(f"p{i}", quantum=dq, target=5, overall=score, up_quantum=uq))
     out = _landscape(monkeypatch, profiles)
     assert out["interactions"] == [], "a pure main effect is not an interaction"
+
+
+# ── Confounding: the marginal curve answers the wrong question ───────────────────────
+#
+# These are built from the failure that motivated them: a field where the 1-D marginal
+# curve names a value "best" while every controlled comparison says changing to that value
+# makes things worse. That is not a bug in the curve — it's the difference between "profiles
+# with this value score well" and "changing this profile's value to that helps".
+
+
+def _pair(fp: str, *, dl_q: int, dl_t: int, ul_q: int, overall: float) -> dict:
+    return {
+        "fingerprint": fp,
+        "name": fp.title(),
+        "label": f"dl q{dl_q} t{dl_t} / ul q{ul_q}",
+        "overall": overall,
+        "iterations": 30,
+        "confident": True,
+        "settings": [
+            {"label": "Download", "quantum": dl_q, "target": f"{dl_t}ms", "interval": "60ms",
+             "flows": 1024, "limit": 10240, "ecn": True, "scheduler": "fq_codel", "queues": 1},
+            {"label": "Upload", "quantum": ul_q, "target": "3ms", "interval": "60ms",
+             "flows": 1024, "limit": 10240, "ecn": True, "scheduler": "fq_codel", "queues": 1},
+        ],
+    }
+
+
+def _confounded_field():
+    """Upload quantum 475 looks best marginally, but is worse than 500 wherever the two are
+    compared with everything else held equal — because 475 mostly co-occurs with the strong
+    download quantum and 500 mostly with the weak one."""
+    return [
+        # High-scoring download family, mostly paired with UL 475.
+        _pair("a", dl_q=7313, dl_t=5, ul_q=475, overall=80.0),
+        _pair("b", dl_q=7313, dl_t=5, ul_q=500, overall=82.0),  # matched sibling: 500 wins
+        _pair("c", dl_q=7313, dl_t=4, ul_q=475, overall=79.0),
+        _pair("d", dl_q=7313, dl_t=4, ul_q=500, overall=81.0),  # matched sibling: 500 wins
+        # Weak download family, only ever paired with UL 500 — dragging 500's average down.
+        _pair("e", dl_q=1257, dl_t=5, ul_q=500, overall=60.0),
+        _pair("f", dl_q=1257, dl_t=4, ul_q=500, overall=61.0),
+        _pair("g", dl_q=1257, dl_t=6, ul_q=500, overall=59.0),
+    ]
+
+
+def test_the_marginal_curve_and_the_matched_pairs_disagree_and_both_are_reported(monkeypatch):
+    """The whole point. The curve says 475 is the best upload quantum; every controlled
+    comparison says moving 475 → 500 gains two points. Both are true statements about
+    different questions, and the tool has to show the second one."""
+    out = _landscape(monkeypatch, _confounded_field())
+
+    curve = next(c for c in out["curves"] if c["key"] == "Upload::quantum")
+    assert curve["best_value"] == 475, "marginally, 475 looks best — that's the trap"
+
+    ul = next(m for m in out["matched_pairs"] if m["key"] == "Upload::quantum")
+    move = next(t for t in ul["transitions"] if (t["from"], t["to"]) == (475, 500))
+    assert move["pairs"] == 2, "two profiles differ ONLY in upload quantum"
+    assert move["median_delta"] == 2.0, "…and both say 500 is two points better"
+    assert move["consistent"] is True, "every matched pair agrees — this is not noise"
+
+
+def test_the_confounded_curve_point_names_the_lever_it_is_confounded_with(monkeypatch):
+    """Saying "don't trust this point" is only half an answer; the useful half is *why*."""
+    out = _landscape(monkeypatch, _confounded_field())
+    curve = next(c for c in out["curves"] if c["key"] == "Upload::quantum")
+    assert curve["confounded"] is True
+    bad = next(r for r in curve["imbalance"] if r["value"] == 475)
+    assert bad["other"] == "Download::quantum", "475 co-occurs with the strong download quantum"
+    assert bad["shift"] > 0
+    assert "measuring both levers at once" in bad["detail"]
+
+
+def test_matched_pairs_require_everything_else_to_be_identical(monkeypatch):
+    """A "sibling" that differs in two levers is not a controlled comparison, and counting
+    it would reintroduce exactly the confounding this is here to remove."""
+    profiles = [
+        _pair("a", dl_q=7313, dl_t=5, ul_q=475, overall=80.0),
+        # Differs in BOTH download target and upload quantum — not a sibling of "a" on
+        # either axis.
+        _pair("b", dl_q=7313, dl_t=4, ul_q=500, overall=90.0),
+        _pair("c", dl_q=1257, dl_t=5, ul_q=475, overall=60.0),
+        _pair("d", dl_q=1257, dl_t=5, ul_q=500, overall=62.0),
+    ]
+    out = _landscape(monkeypatch, profiles)
+    ul = next(m for m in out["matched_pairs"] if m["key"] == "Upload::quantum")
+    move = next(t for t in ul["transitions"] if (t["from"], t["to"]) == (475, 500))
+    assert move["pairs"] == 1, "only c→d is a true one-lever pair; a→b changes two things"
+    assert move["median_delta"] == 2.0
+
+
+def test_conditioned_curves_describe_the_reference_profile_s_own_neighbourhood(monkeypatch):
+    """The direct fix for "the marginal view doesn't describe the crown's neighbourhood":
+    hold everything else near the crown and let only the plotted lever move."""
+    out = _landscape(monkeypatch, _confounded_field())
+    assert out["reference"]["overall"] == 82.0, "defaults to the best measured profile"
+    cond = next(c for c in out["conditioned_curves"] if c["key"] == "Upload::quantum")
+    best = max(cond["curve"], key=lambda p: p["overall"])
+    assert best["value"] == 500, "near the crown, 500 beats 475 — the opposite of the marginal"
+    # And it is honest about how thin each point is.
+    assert all(p["profiles"] >= 1 for p in cond["curve"])
+
+
+def test_separate_basins_are_counted(monkeypatch):
+    """If the surface had one optimum, marginal curves would be enough and hill-climbing
+    from anywhere would find it. Two separated local maxima say the levers are coupled."""
+    out = _landscape(monkeypatch, _confounded_field())
+    names = {b["fingerprint"] for b in out["basins"]}
+    assert "b" in names, "the 7313 family's peak"
+    assert len(out["basins"]) >= 1
+    # The top basin is the crown, and each other basin records how far it sits from a
+    # better one — the valley you'd have to cross to escape it.
+    assert out["basins"][0]["overall"] == 82.0
+    assert all(
+        b["levers_from_better"] is None or b["levers_from_better"] >= 1 for b in out["basins"]
+    )
+
+
+def test_a_lever_with_no_siblings_reports_nothing_rather_than_guessing(monkeypatch):
+    """Where the record holds no controlled comparison, the honest output is silence — the
+    answer is to run the experiment, not to model harder."""
+    profiles = [
+        _pair("a", dl_q=7313, dl_t=5, ul_q=500, overall=80.0),
+        _pair("b", dl_q=1257, dl_t=4, ul_q=475, overall=70.0),
+        _pair("c", dl_q=3000, dl_t=6, ul_q=625, overall=65.0),
+        _pair("d", dl_q=900, dl_t=3, ul_q=750, overall=60.0),
+    ]
+    out = _landscape(monkeypatch, profiles)
+    # Every profile differs from every other in all three levers at once.
+    assert out["matched_pairs"] == []
+
+
+def test_coupled_basins_are_two_levers_apart(monkeypatch):
+    """The structure that makes one-lever-at-a-time tuning fail.
+
+    Two optima that need *both* levers moved together: (t5, q500) and (t4, q750). Each
+    mixed corner is worse than either, so from one basin every single-lever step goes
+    downhill and a coordinate-wise search stops there — while the marginal curve, averaging
+    the two basins and the two bad corners, describes neither.
+    """
+    profiles = [
+        _pair("t5q500", dl_q=7313, dl_t=5, ul_q=500, overall=82.0),  # basin 1
+        _pair("t4q750", dl_q=7313, dl_t=4, ul_q=750, overall=81.0),  # basin 2
+        _pair("t5q750", dl_q=7313, dl_t=5, ul_q=750, overall=64.0),  # mixed: LCP collapses
+        _pair("t4q500", dl_q=7313, dl_t=4, ul_q=500, overall=70.0),  # mixed: weak FCP
+    ]
+    out = _landscape(monkeypatch, profiles)
+    basins = {b["fingerprint"]: b for b in out["basins"]}
+    assert set(basins) == {"t5q500", "t4q750"}, "both corners are local optima"
+    # …and you cannot walk from one to the other one lever at a time.
+    assert basins["t4q750"]["levers_from_better"] == 2
+
+    # The marginal curve on upload quantum splits the difference and describes neither
+    # basin: 500 averages 82 and 70, 750 averages 81 and 64.
+    curve = next(c for c in out["curves"] if c["key"] == "Upload::quantum")
+    assert curve["best_value"] == 500
+    assert curve["best_overall"] == 76.0, "an average of a basin and a bad corner"
+
+
+def test_matched_pairs_lead_with_the_best_evidence_not_the_biggest_number(monkeypatch):
+    """A transition backed by several agreeing pairs is a finding; one backed by a single
+    pair with a dramatic number is an anecdote. Sorting on the number alone buries the
+    first under the second, which is how you end up chasing an outlier."""
+    profiles = [
+        # Four matched pairs that all agree on a modest effect (5 → 4 costs ~1).
+        _pair("a1", dl_q=7313, dl_t=5, ul_q=500, overall=82.0),
+        _pair("a2", dl_q=7313, dl_t=4, ul_q=500, overall=81.0),
+        _pair("b1", dl_q=1257, dl_t=5, ul_q=500, overall=60.0),
+        _pair("b2", dl_q=1257, dl_t=4, ul_q=500, overall=59.0),
+        # …and one lone pair with a huge swing (5 → 6 on a single comparison).
+        _pair("c1", dl_q=3000, dl_t=5, ul_q=475, overall=70.0),
+        _pair("c2", dl_q=3000, dl_t=6, ul_q=475, overall=30.0),
+    ]
+    out = _landscape(monkeypatch, profiles)
+    target = next(m for m in out["matched_pairs"] if m["key"] == "Download::target")
+    first = target["transitions"][0]
+    assert (first["from"], first["to"]) == (4, 5), "the well-evidenced move leads"
+    assert first["pairs"] == 2 and first["consistent"] is True
+    # The dramatic single-pair result is still reported, just not led with.
+    assert any((t["from"], t["to"]) == (5, 6) for t in target["transitions"])
+
+
+def test_a_candidate_prefers_controlled_evidence_over_the_marginal_curve(monkeypatch):
+    """When the record already contains this exact move made under controlled conditions,
+    that number beats any curve — the curve is an average over profiles that differ in
+    other ways, which is the whole problem being worked around."""
+    profiles = [
+        # Matched pairs say 4 → 5 gains exactly 1.0, every time.
+        _pair("a1", dl_q=7313, dl_t=4, ul_q=500, overall=81.0),
+        _pair("a2", dl_q=7313, dl_t=5, ul_q=500, overall=82.0),
+        _pair("b1", dl_q=1257, dl_t=4, ul_q=500, overall=59.0),
+        _pair("b2", dl_q=1257, dl_t=5, ul_q=500, overall=60.0),
+        # …while the marginal curve is dragged around by an unrelated family.
+        _pair("c1", dl_q=3000, dl_t=4, ul_q=750, overall=90.0),
+        _pair("c2", dl_q=3000, dl_t=6, ul_q=750, overall=20.0),
+    ]
+    out = _landscape(monkeypatch, profiles, suggestions=12)
+    moved = [
+        c for c in out["candidates"]
+        if len(c["changes"]) == 1 and c["changes"][0]["key"] == "Download::target"
+    ]
+    for c in moved:
+        assert c["evidence"], "every candidate says how its number was arrived at"
+    # Any candidate whose exact move exists as a matched pair must say so.
+    assert any("matched pair" in n for c in moved for n in c["evidence"]) or not moved
+
+
+def test_two_lever_candidates_carry_a_wider_band_than_one_lever_ones(monkeypatch):
+    """The prediction adds the two effects; the basin structure is the demonstration that
+    they don't add. The honest response is a wider band, not a confident number."""
+    profiles = [
+        _pair("a", dl_q=1000, dl_t=3, ul_q=300, overall=60.0),
+        _pair("b", dl_q=3000, dl_t=5, ul_q=500, overall=70.0),
+        _pair("c", dl_q=6000, dl_t=8, ul_q=750, overall=65.0),
+        _pair("d", dl_q=9000, dl_t=15, ul_q=900, overall=55.0),
+    ]
+    out = _landscape(monkeypatch, profiles, suggestions=12)
+    singles = [c for c in out["candidates"] if not c["multi_lever"]]
+    multis = [c for c in out["candidates"] if c["multi_lever"]]
+    if multis and singles:
+        assert max(c["uncertainty"] for c in multis) > min(c["uncertainty"] for c in singles)
+    assert all(len(c["changes"]) > 1 for c in multis)
+
+
+def test_no_candidate_or_gap_ever_suggests_a_non_positive_value(monkeypatch):
+    """A declared sweep step can exceed a lever's minimum, and "try 0" is not a setting."""
+    profiles = [
+        _pair("a", dl_q=7313, dl_t=5, ul_q=475, overall=80.0),
+        _pair("b", dl_q=7313, dl_t=5, ul_q=500, overall=78.0),
+        _pair("c", dl_q=7313, dl_t=5, ul_q=625, overall=60.0),
+        _pair("d", dl_q=7313, dl_t=5, ul_q=750, overall=55.0),
+    ]
+    out = _landscape(monkeypatch, profiles, suggestions=12)
+    assert all(g["suggest"] > 0 for g in out["gaps"])
+    for c in out["candidates"]:
+        assert all(ch["to"] > 0 for ch in c["changes"])
+
+
+def test_the_multi_lever_penalty_is_a_cost_not_a_bonus(monkeypatch):
+    """An upper confidence bound rewards uncertainty — that's what makes it explore. So
+    widening the band for a two-lever move, without subtracting it again, would push
+    exactly the candidates we trust least to the top of the list."""
+    profiles = [
+        _pair("a", dl_q=1000, dl_t=3, ul_q=300, overall=60.0),
+        _pair("b", dl_q=3000, dl_t=5, ul_q=500, overall=70.0),
+        _pair("c", dl_q=6000, dl_t=8, ul_q=750, overall=65.0),
+        _pair("d", dl_q=9000, dl_t=15, ul_q=900, overall=55.0),
+    ]
+    out = _landscape(monkeypatch, profiles, suggestions=12)
+    for c in out["candidates"]:
+        # The band is wider for a two-lever move…
+        if c["multi_lever"]:
+            # …but the score it earns is *lower* than the band alone would imply.
+            assert c["upside"] < c["predicted"] + c["uncertainty"]
+        assert 0.0 <= c["predicted"] <= 100.0, "the Overall scale is 0-100"
+        assert 0.0 <= c["upside"] <= 100.0, "and an upside outside it is broken, not bold"
+
+
+def test_a_proven_value_is_transplanted_onto_a_profile_that_has_never_run_it(monkeypatch):
+    """The move that coupled levers make interesting: take the crown and give it the value
+    from the *other* basin. The value is old, the combination is new — and it is the only
+    kind of candidate the matched-pair record can price directly, since every other kind
+    proposes a value nobody has measured at all.
+    """
+    profiles = [
+        _pair("crown", dl_q=7313, dl_t=5, ul_q=500, overall=82.0),
+        _pair("alt", dl_q=7313, dl_t=4, ul_q=750, overall=81.0),
+        _pair("mix", dl_q=7313, dl_t=5, ul_q=750, overall=64.0),
+        _pair("low", dl_q=1257, dl_t=5, ul_q=500, overall=58.0),
+        _pair("low4", dl_q=1257, dl_t=4, ul_q=500, overall=57.0),
+    ]
+    out = _landscape(monkeypatch, profiles, suggestions=12)
+    transplants = [
+        c for c in out["candidates"]
+        if any("proven elsewhere" in ch["why"] for ch in c["changes"])
+    ]
+    assert transplants, "a value that works elsewhere must be offered to profiles missing it"
+    # And where a controlled comparison for that exact move exists, it prices it.
+    priced = [c for c in transplants if "measured directly on a matched pair" in c["evidence"]]
+    assert priced, "a transplant whose move is a matched pair is priced from that pair"
+
+
+def test_a_confounded_curve_is_discounted_when_it_drives_a_prediction(monkeypatch):
+    """Believing a confounded average whole is exactly how it becomes a confident
+    prediction — the failure this whole section exists to prevent. Where nothing better
+    is available the delta is used, but shrunk, and the candidate says so."""
+    out = _landscape(monkeypatch, _confounded_field(), suggestions=12)
+    confounded_keys = {c["key"] for c in out["curves"] if c["confounded"]}
+    assert confounded_keys, "the fixture is built to confound the upload-quantum curve"
+    from_confounded = [
+        c for c in out["candidates"]
+        if any("confounded marginal curve" in n for n in c["evidence"])
+    ]
+    for c in from_confounded:
+        assert any(ch["key"] in confounded_keys for ch in c["changes"])
+    # And a prediction never leaves the Overall's scale, however enthusiastic the curve.
+    assert all(0.0 <= c["predicted"] <= 100.0 for c in out["candidates"])
