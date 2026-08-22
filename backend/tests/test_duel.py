@@ -303,7 +303,8 @@ def _mu(inc, cha, verdict, *, wins_inc=6, wins_cha=4, delta=-2.0):
 
 
 def test_standings_rank_by_head_to_head_record():
-    """Ranking is earned in the ring: match points, then decisive-win rate, then pair rate."""
+    """Ranking is earned in the ring — by the Bradley-Terry rating fitted to every pair,
+    with the W-L-D / points columns kept beside it as the readable record."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     with session_scope() as s:
         s.query(Duel).delete()
@@ -330,9 +331,11 @@ def test_standings_rank_by_head_to_head_record():
     assert out["matchups_analyzed"] == 3
     assert out["decisive_matchups"] == 2
 
-    # C: 1 win + 1 draw = 4 points; A: 1 win + 1 draw + 1 loss = 4 points, but a worse
-    # decisive-win rate (1/2 vs 1/1) — so C ranks first.
-    assert [r["fingerprint"] for r in out["standings"]][:2] == ["ccc", "aaa"]
+    # C beat A, and A beat B — so C rates above A above B, and the ledger columns still
+    # read as before (C: 1 win + 1 draw = 4 points).
+    assert [r["fingerprint"] for r in out["standings"]] == ["ccc", "aaa", "bbb"]
+    assert out["ranked_by"] == "rating"
+    assert by_fp["ccc"]["rating"] > by_fp["aaa"]["rating"] > by_fp["bbb"]["rating"]
     assert by_fp["ccc"]["points"] == 4 and by_fp["ccc"]["win_rate"] == 1.0
     assert by_fp["aaa"]["wins"] == 1 and by_fp["aaa"]["losses"] == 1 and by_fp["aaa"]["draws"] == 1
     assert by_fp["bbb"]["points"] == 0 and by_fp["bbb"]["losses"] == 1
@@ -1436,6 +1439,91 @@ def test_a_fresh_matchup_still_beats_a_re_race_within_the_same_tier():
         # Same tier, so the cooldown decides: the question we haven't asked yet goes first.
         assert first == "unfought" and "re-rac" not in why
         assert queue == ["fought"], "the cooled contender is still raced, just after"
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+
+
+def test_beating_the_leader_moves_you_up_the_standings_more_than_beating_the_tail():
+    """The reason the league table was replaced.
+
+    Under match points a win is three points whether you beat the profile at the top of
+    the ladder or the one at the bottom, and the leader loses nothing for losing — so a
+    profile could beat the #1 and stay at #4. Ranking on the fitted Bradley-Terry
+    strength makes "who you beat" the thing that moves you, which is what a ladder is
+    supposed to measure.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    def _standings_after(extra):
+        with session_scope() as s:
+            s.query(Duel).delete()
+            _finished_duel(
+                s,
+                matchups=[
+                    # "leader" has beaten everyone; "tail" has beaten nobody.
+                    _mu("leader", "middle", "incumbent", wins_inc=12, wins_cha=3),
+                    _mu("leader", "other", "incumbent", wins_inc=12, wins_cha=3),
+                    _mu("middle", "tail", "incumbent", wins_inc=12, wins_cha=3),
+                    _mu("other", "tail", "incumbent", wins_inc=12, wins_cha=3),
+                    # Two identical challengers, each level with the same middle profile.
+                    _mu("middle", "climber", "draw", wins_inc=6, wins_cha=6),
+                    _mu("other", "padder", "draw", wins_inc=6, wins_cha=6),
+                ]
+                + extra,
+                champion="leader",
+                when=now - timedelta(days=1),
+            )
+        return {r["fingerprint"]: r for r in duel_mod.standings()["standings"]}
+
+    try:
+        before = _standings_after([])
+        assert abs(before["climber"]["rating"] - before["padder"]["rating"]) < 1.0
+
+        # Same scoreline, same number of pairs, opposite ends of the ladder. A points
+        # table awards both exactly three points and calls it even.
+        after = _standings_after(
+            [
+                _mu("leader", "climber", "challenger", wins_inc=2, wins_cha=8),
+                _mu("tail", "padder", "challenger", wins_inc=2, wins_cha=8),
+            ]
+        )
+        assert after["climber"]["points"] == after["padder"]["points"], "the old table saw a tie"
+        climb = after["climber"]["rating"] - before["climber"]["rating"]
+        pad = after["padder"]["rating"] - before["padder"]["rating"]
+        assert climb > pad, "beating the leader must move you more than beating the tail"
+        assert after["climber"]["rank"] < after["padder"]["rank"]
+        # And beating the leader is enough to pass the profiles it beat.
+        assert after["climber"]["rank"] < after["middle"]["rank"]
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+
+
+def test_a_thin_record_is_flagged_provisional_rather_than_crowned():
+    """One snap bout shouldn't put a profile on top of a ladder full of veterans."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[
+                _mu("veteran", "solid", "incumbent", wins_inc=30, wins_cha=10),
+                _mu("veteran", "weak", "incumbent", wins_inc=18, wins_cha=4),
+                _mu("solid", "weak", "incumbent", wins_inc=20, wins_cha=5),
+                # A newcomer's entire record: one 3-0 snap bout against the weakest.
+                _mu("newcomer", "weak", "incumbent", wins_inc=3, wins_cha=0),
+            ],
+            champion="veteran",
+            when=now,
+        )
+    try:
+        rows = {r["fingerprint"]: r for r in duel_mod.standings()["standings"]}
+        assert rows["newcomer"]["rating_provisional"] is True
+        assert rows["veteran"]["rating_provisional"] is False
+        assert rows["veteran"]["rating"] > rows["newcomer"]["rating"]
+        # The thin rating carries a visibly wider error bar, so the page can say so.
+        assert rows["newcomer"]["rating_se"] > rows["veteran"]["rating_se"]
     finally:
         with session_scope() as s:
             s.query(Duel).delete()

@@ -1727,8 +1727,20 @@ export interface DuelStanding {
   wins: number;
   losses: number;
   draws: number;
-  // Match points: win 3 / draw 1 (the primary sort).
+  // Match points: win 3 / draw 1. Kept as a readable ledger column — it is NOT the sort
+  // any more, because it records how many you beat but not who.
   points: number;
+  // Bradley-Terry strength fitted to every pair on the ledger, on the Elo scale (1500 =
+  // middle of the field). This is what the standings rank on: beating a strong profile
+  // moves it a lot, beating a weak one barely at all, and profiles that never met are
+  // still comparable through shared opponents.
+  rating: number | null;
+  rating_se: number | null;
+  rating_pairs: number | null;
+  // Too few pairs for the fit to say much — mostly the prior talking.
+  rating_provisional: boolean;
+  // Pairs the fit expected this profile to win against the opponents it actually faced.
+  expected_pair_wins: number | null;
   // Share of *decided* matchups won (draws excluded); null with no decisive matchup.
   win_rate: number | null;
   pair_wins: number;
@@ -1778,6 +1790,10 @@ export interface DuelStandings {
   matchups_analyzed: number;
   decisive_matchups: number;
   generated_from: number;
+  // What the default order means, and the pair count below which a rating is provisional.
+  ranked_by?: string;
+  provisional_pairs?: number;
+  rating_pairs_total?: number;
 }
 
 export interface DuelSession {
