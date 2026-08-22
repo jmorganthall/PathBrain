@@ -395,8 +395,31 @@ LLM-based. See `README.md` for the product overview.
     produced no queue at all (`test_leaders_are_drawn_from_the_field_not_from_the_heirs_list`).
     `_recently_decided` likewise scans duels **by `finished_at` within the cooldown**, not
     "the last 20 sessions" (a continuous ladder finishes several a day, so a row cap covered
-    ~3 days of a 7-day cooldown); and when every contender is on cooldown the ladder
-    **re-races them** rather than falling through to the unmeasured tail. An empty queue
+    ~3 days of a 7-day cooldown).
+    **The rematch cooldown ORDERS, it never excludes** (`contender_tiers` / `next_matchup`).
+    Queued profiles carry a priority **tier** — `CROWN_TIER` (the pooled crown) <
+    `CONTENDER_TIER` (confident, scored) < `FILLER_TIER` (thin/untested) — and the ring is
+    **never given to a lower tier while a higher one still has someone waiting**. Within a
+    tier a matchup not fought inside the window goes first; otherwise the best of that tier
+    is **re-raced**. This is the fix for the repeatedly-reported *"random duels not involving
+    the crown"*: the cooldown used to set a recently-fought contender aside and fall through
+    to the next queue entry, which is self-defeating on a ladder that runs continuously —
+    the top of the queue is what gets fought first, so it is also what goes on cooldown
+    first. Within a day or two the crown and every leader were cooled and the only entries
+    still un-fought were the ones nobody had ever raced, so a mode built to race the leaders
+    raced nothing but filler, and the pooled crown — first in the queue *by design* — was
+    the first profile pushed out of the ring (reproduced end-to-end: the old loop's order was
+    `untested → untested → crown → leader → leader`, the new one
+    `crown → leader → leader → untested → untested`;
+    `test_the_cooldown_reorders_contenders_it_does_not_hand_the_ring_to_filler`). `build_queue`
+    returns the queue already **tier-sorted** (stable, so intra-tier order is untouched), and
+    `fight_card` reports each entry's `tier`/`tier_name` so the preview shows the real running
+    order. Because the winner stays on, the two names in the ring by bout six can be neither
+    the profile that walked in with the belt nor the crown — which reads as "randoms" unless
+    the chain is visible, so each bout records **`challenger_why`** (its tier, and whether it
+    was re-raced), the live stage line reads *"Bout 3 of 12 · X (belt) defends vs Y (pooled
+    crown) — pair 4"*, and the page lists **"this session so far"**: every bout and who took
+    the belt. An empty queue
     reports *why* (`_no_contenders_reason`): nothing scored under the current methodology, or
     the live environment matches no stored profile. `contenders="heirs"` keeps the exploring
     order.
