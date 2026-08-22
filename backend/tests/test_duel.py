@@ -903,9 +903,46 @@ def test_queue_races_the_leaders_not_arbitrary_profiles():
         "close",
     ]
 
-    # An unreachable profile (absent from the heirs pass) never enters the queue.
-    thin = {"items": [{"fingerprint": "close"}]}
-    assert build_queue(field, thin, "crown", contenders="leaders", top_n=5) == ["close"]
+    # Strong profiles that are NOT heirs must still be raced — heirs are by definition the
+    # under-sampled and stale ones, so drawing contenders only from them was exactly the
+    # "why is it duelling randoms?" bug.
+    no_heirs = {"items": []}
+    assert duel_mod.build_queue(field, no_heirs, "crown", contenders="leaders", top_n=3) == [
+        "close",
+        "near",
+        "midfield",
+    ]
+
+    # A profile the live environment can't be set to never enters the queue.
+    env_field = {
+        "best_fingerprint": "crown",
+        "profiles": [
+            {"fingerprint": "crown", "overall": 90.0, "settings": [], "confident": True},
+            {"fingerprint": "reachable", "overall": 88.0, "confident": True,
+             "settings": [{"label": "wan", "scheduler": "fq_codel", "queues": 2}]},
+            {"fingerprint": "elsewhere", "overall": 89.0, "confident": True,
+             "settings": [{"label": "wan", "scheduler": "fq_pie", "queues": 8}]},
+        ],
+    }
+    live = [{"label": "wan", "scheduler": "fq_codel", "queues": 2}]
+    assert duel_mod.build_queue(
+        env_field, {"items": []}, "crown", contenders="leaders", top_n=5, baseline=live
+    ) == ["reachable"]
+
+
+def test_a_well_measured_contender_outranks_a_thin_one():
+    """Confidence first, then Overall: a profile with two runs and a lucky score is noise,
+    not a contender — it queues behind the established ones (but still gets its turn)."""
+    field = {
+        "best_fingerprint": "crown",
+        "profiles": [
+            {"fingerprint": "crown", "overall": 90.0, "confident": True, "settings": []},
+            {"fingerprint": "solid", "overall": 85.0, "confident": True, "settings": []},
+            {"fingerprint": "fluke", "overall": 99.0, "confident": False, "settings": []},
+        ],
+    }
+    queue = duel_mod.build_queue(field, {"items": []}, "crown", contenders="leaders", top_n=5)
+    assert queue == ["solid", "fluke"]
 
 
 def test_continuous_mode_waits_its_turn_and_leaves_a_gap(monkeypatch):
@@ -1252,4 +1289,62 @@ def test_standings_carry_the_pooled_overall(monkeypatch):
     assert all(r["overall"] is None for r in out["standings"])
 
     with session_scope() as s:
+        s.query(Duel).delete()
+
+
+# ── Matchmaking regressions: the ladder must fight contenders, not filler ─────────────
+
+
+def test_leaders_are_drawn_from_the_field_not_from_the_heirs_list():
+    """The bug that wasted days of duelling.
+
+    Reachability used to be inherited from the heirs pass, which quietly restricted the
+    "leaders" pool to the heirs themselves — and heirs are BY DEFINITION the under-sampled,
+    stale and untested profiles. So "race the leaders" raced exactly the thin profiles it
+    existed to avoid, and the well-measured contenders just below the crown could never
+    enter the ring at all.
+    """
+    field = {
+        "best_fingerprint": "crown",
+        "profiles": [
+            {"fingerprint": "crown", "overall": 90.0, "confident": True, "settings": []},
+            # Strong, well-measured, and NOT an heir (it has plenty of fresh data, so it
+            # never appears in a list of profiles that need more).
+            {"fingerprint": "contender", "overall": 89.5, "confident": True, "settings": []},
+            {"fingerprint": "solid", "overall": 88.0, "confident": True, "settings": []},
+            # A thin profile that IS an heir.
+            {"fingerprint": "thin", "overall": 61.0, "confident": False, "settings": []},
+        ],
+    }
+    heirs = {"items": [{"fingerprint": "thin", "reason": "limited-data"}]}
+
+    queue = duel_mod.build_queue(field, heirs, "crown", contenders="leaders", top_n=8)
+    assert queue[0] == "contender", "the strongest measured contender must fight first"
+    assert queue[1] == "solid"
+    assert queue.index("thin") > queue.index("solid"), "thin profiles queue behind contenders"
+    # And every contender is reachable in the queue at all — the old code returned ["thin"].
+    assert set(queue) == {"contender", "solid", "thin"}
+
+
+def test_rematch_cooldown_uses_time_not_a_row_cap():
+    """A continuous ladder finishes several sessions a day, so scanning "the last 20
+    sessions" covered ~3 days of a 7-day cooldown and settled matchups came back early."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        # The matchup we care about, decided 4 days ago…
+        _finished_duel(
+            s, matchups=[_mu("alpha", "beta", "incumbent")], champion="alpha",
+            when=now - timedelta(days=4),
+        )
+        # …then buried under 30 more recent sessions.
+        for i in range(30):
+            _finished_duel(
+                s, matchups=[_mu("gamma", f"other{i}", "draw")], champion="gamma",
+                when=now - timedelta(hours=i),
+            )
+
+    with session_scope() as s:
+        assert duel_mod._recently_decided(s, "alpha", "beta", 7) is True, "4d < 7d cooldown"
+        assert duel_mod._recently_decided(s, "alpha", "beta", 2) is False, "4d > 2d cooldown"
         s.query(Duel).delete()

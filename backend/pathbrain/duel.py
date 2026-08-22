@@ -518,8 +518,11 @@ def _run_overall(run_id: int, methodology_version: str) -> float | None:
 def _recently_decided(session, a_fp: str, b_fp: str, rematch_days: int) -> bool:
     """Was this matchup already adjudicated within the rematch cooldown?"""
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=rematch_days)
+    # Query by TIME, not "the last 20 sessions": a continuous ladder finishes several
+    # sessions a day, so a fixed row cap covered barely three days of a seven-day
+    # cooldown and matchups quietly became re-fightable early.
     rows = session.scalars(
-        select(Duel).where(Duel.finished_at.is_not(None)).order_by(Duel.id.desc()).limit(20)
+        select(Duel).where(Duel.finished_at.is_not(None), Duel.finished_at >= cutoff)
     ).all()
     pair = {a_fp, b_fp}
     for row in rows:
@@ -575,6 +578,39 @@ def _reachable(settings: list[dict] | None, baseline: list[dict] | None) -> bool
         return True
 
 
+def _no_contenders_reason(
+    field: dict, heirs: dict, incumbent_fp: str | None, baseline: list[dict] | None
+) -> str:
+    """Why the queue came out empty, in terms the user can act on.
+
+    "No eligible challengers" is useless on its own: the interesting cases are *the live
+    environment no longer matches any profile you've measured* (change the scheduler, the
+    queue count or the upload bandwidth and every stored profile becomes unreachable) and
+    *nothing else has a comparable score yet*. Both are recoverable, and neither is
+    obvious from a bare failure.
+    """
+    others = [
+        p for p in field.get("profiles", []) if p.get("fingerprint") != incumbent_fp
+    ]
+    if not others:
+        return "No other profiles to duel — only one profile has been measured so far."
+    scored = [p for p in others if p.get("overall") is not None]
+    if not scored:
+        return (
+            f"None of the {len(others)} other profiles has a comparable score under the "
+            "current methodology — re-grade history, or collect fresh runs, before duelling."
+        )
+    unreachable = [p for p in scored if not _reachable(p.get("settings"), baseline)]
+    if len(unreachable) == len(scored):
+        return (
+            f"All {len(scored)} scored profiles are unreachable from the live environment: "
+            "the firewall's scheduler / queue count / upload bandwidth differs from every "
+            "profile on record, so none of them can be applied. Measure a profile under the "
+            "current environment (a manual run is enough) and the ladder has something to race."
+        )
+    return "No eligible challengers (nothing left after the rematch cooldown)."
+
+
 def build_queue(
     field: dict,
     heirs: dict,
@@ -582,54 +618,62 @@ def build_queue(
     *,
     contenders: str = "leaders",
     top_n: int = 8,
+    baseline: list[dict] | None = None,
 ) -> list[str]:
     """Who the champion actually fights, in order.
 
     ``"leaders"`` (default) races **contenders**: the reachable profiles closest to the
-    crown by Overall, best first. That is what makes a perpetual ladder worth running — a
-    night spent adjudicating the top of the table keeps finding better profiles, while the
-    same night spent sampling arbitrary unmeasured profiles mostly re-confirms that they
-    are worse. Heirs with a real optimistic ceiling are folded in ahead of the rest, since
-    a limited-data profile that *could* beat the crown is exactly a contender.
+    crown by Overall, best-established first. That is what makes a perpetual ladder worth
+    running — a night spent adjudicating the top of the table keeps finding better
+    profiles, while a night spent sampling arbitrary unmeasured ones mostly re-confirms
+    that they are worse.
 
-    ``"heirs"`` keeps the original behavior (the heirs priority order, which deliberately
-    samples untested profiles too — better for exploring a fresh field).
+    The pooled crown goes first whenever it isn't the one defending: the two verdicts
+    disagreeing is the single most informative matchup in the system, and the crown is
+    never in ``heirs`` (heirs are contenders *to* it), so it has to be added by hand.
 
-    Reachability is inherited from ``_compute_heirs``: anything the live environment can't
-    actually be set to never enters the queue.
+    Then the field itself, ranked by Overall — **confident profiles first**, since a
+    profile with two runs and a lucky Overall is not a contender, it's noise. The heirs
+    (limited-data / stale / untested) follow, so unknowns still get measured, just after
+    the matchups that can actually change the answer.
+
+    ``"heirs"`` keeps the original exploring behaviour (the heirs priority order).
+
+    Reachability is tested against ``baseline`` — the live environment — profile by
+    profile. It used to be inherited from the heirs pass, which quietly restricted the
+    "leaders" to the heirs pool: since heirs are *by definition* under-sampled or stale,
+    the ladder ended up racing exactly the thin profiles this mode exists to avoid.
     """
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
     heir_items = [h for h in (heirs.get("items") or []) if h.get("fingerprint") in profiles]
     heir_order = [h["fingerprint"] for h in heir_items]
-    # When the champion is defending, the pooled crown is a challenger — and the single
-    # most interesting one in the system, since the two verdicts disagree by definition.
-    # It is never in `heirs` (heirs are contenders *to* it), so it has to be added by hand
-    # or the belt holder would never face the profile the all-history record favours.
     pooled_fp = field.get("best_fingerprint")
     if pooled_fp and pooled_fp != incumbent_fp and pooled_fp in profiles:
         heir_order = [pooled_fp] + [fp for fp in heir_order if fp != pooled_fp]
     if contenders != "leaders":
         return heir_order
 
-    # Reachable = it showed up in the heirs pass, or it is the crown itself. The heirs pass
-    # is the one place that filters on environment signature, so we lean on it rather than
-    # re-deriving reachability here.
-    reachable = set(heir_order) | {incumbent_fp}
+    def _eligible(fp: str, p: dict) -> bool:
+        if fp == incumbent_fp or p.get("overall") is None:
+            return False
+        # The heirs pass already applied the environment check, so anything it surfaced is
+        # known-reachable; everything else is tested directly against the live settings.
+        return fp in heir_order or fp == pooled_fp or _reachable(p.get("settings"), baseline)
+
     ranked = [
         fp
         for fp, p in sorted(
             profiles.items(),
-            key=lambda kv: (kv[1].get("overall") is not None, kv[1].get("overall") or -1),
+            key=lambda kv: (bool(kv[1].get("confident")), kv[1].get("overall") or -1),
             reverse=True,
         )
-        if fp != incumbent_fp and fp in reachable and p.get("overall") is not None
+        if _eligible(fp, p)
     ]
     leaders = ranked[: max(int(top_n or 0), 1)]
     if pooled_fp and pooled_fp != incumbent_fp and pooled_fp in profiles:
         leaders = [pooled_fp] + [fp for fp in leaders if fp != pooled_fp]
-    # Contenders first, strongest first — the matchup most likely to change the answer is
-    # the one just below the crown. Everything else the heirs pass surfaced (untested
-    # profiles, anything outside the top N) follows, so nothing is lost, it just waits.
+    # Contenders first, strongest first; everything else the heirs pass surfaced follows,
+    # so nothing is lost — it just waits its turn.
     return leaders + [fp for fp in heir_order if fp not in leaders]
 
 
@@ -689,21 +733,39 @@ def _drive(duel_id: int) -> None:
                 incumbent_fp,
                 contenders=str(cfg.get("contenders", "leaders") or "leaders"),
                 top_n=int(cfg.get("contender_top_n", 8) or 8),
+                baseline=baseline,
             )
             if not queue:
-                raise RuntimeError("No eligible challengers (no reachable contenders to duel).")
+                raise RuntimeError(_no_contenders_reason(field, heirs, incumbent_fp, baseline))
 
             deadline = time.monotonic() + duration_s
             matchups: list[dict] = []
 
-            while queue and time.monotonic() < deadline and not _state.get("cancel"):
+            # Contenders skipped for rematch cooldown are kept aside rather than dropped.
+            # When the queue runs dry the ladder RE-RACES them (best first) instead of
+            # falling through to the unmeasured tail: re-confirming the closest matchup is
+            # worth more than a first look at a profile the field already ranks far below
+            # the crown — and on a continuous ladder the queue runs dry every day.
+            cooled: list[str] = []
+            recycled = False
+
+            while (queue or cooled) and time.monotonic() < deadline and not _state.get("cancel"):
+                if not queue:
+                    queue, cooled, recycled = cooled, [], True
+                    _set_stage(
+                        duel_id,
+                        "Every contender is on rematch cooldown — re-racing the closest ones",
+                    )
                 challenger_fp = queue.pop(0)
                 with session_scope() as session:
-                    if _recently_decided(session, incumbent_fp, challenger_fp, rematch_days):
+                    if not recycled and _recently_decided(
+                        session, incumbent_fp, challenger_fp, rematch_days
+                    ):
                         log.info(
-                            "Duel %s: %s vs %s decided within %sd — skipping",
+                            "Duel %s: %s vs %s decided within %sd — holding it back",
                             duel_id, incumbent_fp, challenger_fp, rematch_days,
                         )
+                        cooled.append(challenger_fp)
                         continue
                 inc = settings_by_fp[incumbent_fp]
                 cha = settings_by_fp[challenger_fp]
@@ -960,7 +1022,16 @@ def fight_card(session, limit: int = 12) -> dict:
         incumbent_fp,
         contenders=str(cfg.get("contenders", "leaders") or "leaders"),
         top_n=int(cfg.get("contender_top_n", 8) or 8),
+        baseline=live,
     )
+    if not order:
+        return {
+            "incumbent": None,
+            "queue": [],
+            "contenders": str(cfg.get("contenders", "leaders") or "leaders"),
+            "top_n": int(cfg.get("contender_top_n", 8) or 8),
+            "reason": _no_contenders_reason(field, heirs, incumbent_fp, live),
+        }
     rematch_days = int(cfg.get("rematch_days", 7) or 7)
 
     def _entry(fp: str, position: int) -> dict:
