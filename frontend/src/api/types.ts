@@ -1593,7 +1593,12 @@ export interface DuelCardEntry {
   confident: boolean | null;
   // Why it's in the queue: a contender near the crown, a limited-data/stale heir, or untested.
   reason: string;
-  // Already decided against the champion within the rematch window.
+  // Priority tier: 0 pooled crown, 1 contender, 2 untested. The ladder never gives the ring
+  // to a lower tier while a higher one still has someone waiting.
+  tier?: number;
+  tier_name?: string;
+  // Already decided against the champion within the rematch window. NOT a skip — the
+  // cooldown only orders within a tier, so this bout still runs, just after its equals.
   on_cooldown: boolean;
 }
 
@@ -1695,6 +1700,9 @@ export interface DuelMatchup {
   // Call signs recorded at duel time (absent on bouts fought before naming existed).
   incumbent_name?: string | null;
   challenger_name?: string | null;
+  // Why this challenger got the ring: "pooled crown", "contender", "untested", possibly
+  // with ", re-raced (…)". Absent on bouts fought before matchmaking recorded it.
+  challenger_why?: string | null;
   pairs: number;
   wins_incumbent: number;
   wins_challenger: number;

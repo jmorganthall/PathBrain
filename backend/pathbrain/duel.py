@@ -673,8 +673,74 @@ def build_queue(
     if pooled_fp and pooled_fp != incumbent_fp and pooled_fp in profiles:
         leaders = [pooled_fp] + [fp for fp in leaders if fp != pooled_fp]
     # Contenders first, strongest first; everything else the heirs pass surfaced follows,
-    # so nothing is lost — it just waits its turn.
-    return leaders + [fp for fp in heir_order if fp not in leaders]
+    # so nothing is lost — it just waits its turn. The final sort is by priority TIER, so a
+    # well-measured contender that only showed up in the heirs tail (a stale one, say) still
+    # outranks an unmeasured profile that happened to make the top-N.
+    order = leaders + [fp for fp in heir_order if fp not in leaders]
+    tiers = contender_tiers(field, order)
+    return sorted(order, key=lambda fp: tiers[fp])  # stable: intra-tier order is preserved
+
+
+# Priority tiers. The ladder must never spend the ring on a lower tier while a higher one
+# still has someone waiting — that single rule is what keeps a perpetual ladder pointed at
+# the matchups that can change the answer.
+CROWN_TIER = 0  # the pooled crown: the two verdicts disagreeing is the most informative bout
+CONTENDER_TIER = 1  # well-measured profiles near the top — the ones that could take the belt
+FILLER_TIER = 2  # thin / unmeasured profiles: worth a look, but last
+
+
+def contender_tiers(field: dict, queue: list[str]) -> dict[str, int]:
+    """Each queued profile's priority tier, derived from the same field the queue was built
+    from (so there is no second ranking to drift out of step with the first)."""
+    profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
+    pooled_fp = field.get("best_fingerprint")
+    out: dict[str, int] = {}
+    for fp in queue:
+        p = profiles.get(fp) or {}
+        if fp == pooled_fp:
+            out[fp] = CROWN_TIER
+        elif p.get("confident") and p.get("overall") is not None:
+            out[fp] = CONTENDER_TIER
+        else:
+            out[fp] = FILLER_TIER
+    return out
+
+
+def next_matchup(
+    session, queue: list[str], tiers: dict[str, int], incumbent_fp: str, rematch_days: int
+) -> tuple[str | None, str]:
+    """Pop the next challenger — **the rematch cooldown orders, it does not exclude.**
+
+    This is the fix for "yet again, random duels not involving the crown". The cooldown
+    used to set a recently-fought contender aside and move on down the queue, which is
+    self-defeating on a ladder that runs continuously: the top of the queue is what gets
+    fought first, so it is also what goes on cooldown first. Within a day or two the crown
+    and every leader were cooled, and the only entries still un-fought were the profiles
+    nobody had ever raced — so a mode built to race the leaders raced nothing but filler,
+    and the pooled crown, first in the queue *by design*, was the first thing pushed out
+    of the ring.
+
+    So the cooldown now only decides the order **within a tier**. We take the best tier
+    that still has anyone in it, prefer a matchup that hasn't been run inside the window,
+    and otherwise **re-race** the best of that tier rather than dropping a tier: on a
+    continuous ladder re-confirming the crown against the current belt-holder is worth more
+    than a first look at a profile the field already ranks far below it. Returns
+    ``(fingerprint, why)``; ``(None, "")`` when the queue is empty.
+    """
+    if not queue:
+        return None, ""
+    best = min(tiers.get(fp, FILLER_TIER) for fp in queue)
+    tier_fps = [fp for fp in queue if tiers.get(fp, FILLER_TIER) == best]
+    for fp in tier_fps:
+        if not _recently_decided(session, incumbent_fp, fp, rematch_days):
+            queue.remove(fp)
+            return fp, TIER_NAMES.get(best, "contender")
+    fp = tier_fps[0]
+    queue.remove(fp)
+    return fp, f"{TIER_NAMES.get(best, 'contender')}, re-raced (last decided within {rematch_days}d)"
+
+
+TIER_NAMES = {CROWN_TIER: "pooled crown", CONTENDER_TIER: "contender", FILLER_TIER: "untested"}
 
 
 def _drive(duel_id: int) -> None:
@@ -740,33 +806,24 @@ def _drive(duel_id: int) -> None:
 
             deadline = time.monotonic() + duration_s
             matchups: list[dict] = []
+            tiers = contender_tiers(field, queue)
+            bouts_total = len(queue)
 
-            # Contenders skipped for rematch cooldown are kept aside rather than dropped.
-            # When the queue runs dry the ladder RE-RACES them (best first) instead of
-            # falling through to the unmeasured tail: re-confirming the closest matchup is
-            # worth more than a first look at a profile the field already ranks far below
-            # the crown — and on a continuous ladder the queue runs dry every day.
-            cooled: list[str] = []
-            recycled = False
-
-            while (queue or cooled) and time.monotonic() < deadline and not _state.get("cancel"):
-                if not queue:
-                    queue, cooled, recycled = cooled, [], True
-                    _set_stage(
-                        duel_id,
-                        "Every contender is on rematch cooldown — re-racing the closest ones",
-                    )
-                challenger_fp = queue.pop(0)
+            while queue and time.monotonic() < deadline and not _state.get("cancel"):
+                # The rematch cooldown orders the queue, it never hands the ring to a
+                # lower tier (see next_matchup): the crown and the leaders are exactly the
+                # matchups that go on cooldown first, so excluding them was what left the
+                # ladder racing nothing but unmeasured filler.
                 with session_scope() as session:
-                    if not recycled and _recently_decided(
-                        session, incumbent_fp, challenger_fp, rematch_days
-                    ):
-                        log.info(
-                            "Duel %s: %s vs %s decided within %sd — holding it back",
-                            duel_id, incumbent_fp, challenger_fp, rematch_days,
-                        )
-                        cooled.append(challenger_fp)
-                        continue
+                    challenger_fp, why_challenger = next_matchup(
+                        session, queue, tiers, incumbent_fp, rematch_days
+                    )
+                if challenger_fp is None:
+                    break
+                log.info(
+                    "Duel %s bout %s/%s: challenger %s (%s)",
+                    duel_id, len(matchups) + 1, bouts_total, challenger_fp, why_challenger,
+                )
                 inc = settings_by_fp[incumbent_fp]
                 cha = settings_by_fp[challenger_fp]
                 sprt = SprtState(p1, alpha)
@@ -783,11 +840,15 @@ def _drive(duel_id: int) -> None:
                 reason = ""
 
                 while verdict is None and time.monotonic() < deadline and not _state.get("cancel"):
+                    # Name the bout AND why this challenger is in the ring — "who are these
+                    # two and how did they get here?" is the question a live readout has to
+                    # answer, and a bare pair of names doesn't.
                     _set_stage(
                         duel_id,
-                        f"Duel: {inc.get('name') or inc['label']} (holder) defends vs "
-                        f"{cha.get('name') or cha['label']} — pair {sprt.pairs + 1} "
-                        f"({sprt.wins_incumbent}-{sprt.wins_challenger})",
+                        f"Bout {len(matchups) + 1} of {bouts_total} · "
+                        f"{inc.get('name') or inc['label']} (belt) defends vs "
+                        f"{cha.get('name') or cha['label']} ({why_challenger}) — pair "
+                        f"{sprt.pairs + 1} ({sprt.wins_incumbent}-{sprt.wins_challenger})",
                     )
                     pair_overalls: list[float | None] = []
                     for side_fp, side in ((incumbent_fp, inc), (challenger_fp, cha)):
@@ -884,6 +945,9 @@ def _drive(duel_id: int) -> None:
                     # which settings actually fought.
                     "incumbent_name": inc.get("name"),
                     "challenger_name": cha.get("name"),
+                    # Why this challenger got the ring — the tape should answer "why these
+                    # two?" without the reader having to reconstruct the matchmaking.
+                    "challenger_why": why_challenger,
                     "pairs": sprt.pairs,
                     "wins_incumbent": sprt.wins_incumbent,
                     "wins_challenger": sprt.wins_challenger,
@@ -1034,6 +1098,8 @@ def fight_card(session, limit: int = 12) -> dict:
         }
     rematch_days = int(cfg.get("rematch_days", 7) or 7)
 
+    tiers = contender_tiers(field, order)
+
     def _entry(fp: str, position: int) -> dict:
         p = profiles.get(fp, {})
         return {
@@ -1051,6 +1117,13 @@ def fight_card(session, limit: int = 12) -> dict:
                 else heir_reason.get(fp)
                 or ("contender" if p.get("overall") is not None else "untested")
             ),
+            # Its priority tier — the ring is never given to a lower tier while a higher
+            # one still has someone waiting, so this is the real running order.
+            "tier": tiers.get(fp, FILLER_TIER),
+            "tier_name": TIER_NAMES.get(tiers.get(fp, FILLER_TIER), "untested"),
+            # Fought inside the rematch window. It is NOT skipped for that any more — the
+            # cooldown only decides the order among equals, so this bout still runs (last
+            # within its tier) rather than handing the ring to an unmeasured profile.
             "on_cooldown": _recently_decided(session, incumbent_fp, fp, rematch_days),
         }
 

@@ -1348,3 +1348,94 @@ def test_rematch_cooldown_uses_time_not_a_row_cap():
         assert duel_mod._recently_decided(s, "alpha", "beta", 7) is True, "4d < 7d cooldown"
         assert duel_mod._recently_decided(s, "alpha", "beta", 2) is False, "4d > 2d cooldown"
         s.query(Duel).delete()
+
+
+def test_the_cooldown_reorders_contenders_it_does_not_hand_the_ring_to_filler():
+    """The bug behind "yet again — random duels not involving the crown".
+
+    The rematch cooldown was an *exclusion*: a contender already fought inside the window
+    was set aside, and the loop moved on to the next entry in the queue. On a ladder that
+    runs continuously that is catastrophic, because the top of the queue is exactly what
+    gets fought first and therefore exactly what goes on cooldown first. Within a day or
+    two every crown-and-leaders matchup is cooled, and the only entries left un-fought are
+    the ones nobody has ever raced — the unmeasured tail. So a mode built to race the
+    leaders spent every night racing filler, and the pooled crown, first in the queue by
+    design, was the very first profile pushed out of the ring.
+
+    The cooldown now orders *within* a priority tier instead of falling through to a lower
+    one: re-confirming the most informative matchup beats a first look at a profile the
+    field already ranks far below the crown.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    field = {
+        "best_fingerprint": "crown",
+        "profiles": [
+            {"fingerprint": "belt", "overall": 91.0, "confident": True, "settings": []},
+            {"fingerprint": "crown", "overall": 90.0, "confident": True, "settings": []},
+            {"fingerprint": "contender", "overall": 89.0, "confident": True, "settings": []},
+            {"fingerprint": "filler", "overall": 40.0, "confident": False, "settings": []},
+        ],
+    }
+    queue = duel_mod.build_queue(field, {"items": []}, "belt", contenders="leaders", top_n=8)
+    assert queue[0] == "crown", "the pooled crown challenges the belt first"
+    tiers = duel_mod.contender_tiers(field, queue)
+    assert tiers["crown"] < tiers["contender"] < tiers["filler"]
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+        # Yesterday's session already fought both of the matchups that matter.
+        _finished_duel(
+            s,
+            matchups=[_mu("belt", "crown", "incumbent"), _mu("belt", "contender", "incumbent")],
+            champion="belt",
+            when=now - timedelta(days=1),
+        )
+
+    try:
+        with session_scope() as s:
+            picks = []
+            while queue:
+                fp, why = duel_mod.next_matchup(s, queue, tiers, "belt", 7)
+                picks.append((fp, why))
+        order = [fp for fp, _ in picks]
+        # The old behaviour: ["filler"] first, with the crown and the contender set aside.
+        assert order == ["crown", "contender", "filler"], (
+            "a cooled crown must be re-raced before an unmeasured profile gets the ring"
+        )
+        assert "re-rac" in picks[0][1], "and the reason says it's a re-race, not a fresh matchup"
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+
+
+def test_a_fresh_matchup_still_beats_a_re_race_within_the_same_tier():
+    """The cooldown hasn't been thrown away — it still decides the order among equals."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    field = {
+        "best_fingerprint": "belt",  # the crown is the one defending, so no tier-0 entry
+        "profiles": [
+            {"fingerprint": "belt", "overall": 91.0, "confident": True, "settings": []},
+            {"fingerprint": "fought", "overall": 90.0, "confident": True, "settings": []},
+            {"fingerprint": "unfought", "overall": 89.0, "confident": True, "settings": []},
+        ],
+    }
+    queue = duel_mod.build_queue(field, {"items": []}, "belt", contenders="leaders", top_n=8)
+    assert queue == ["fought", "unfought"]  # by Overall, strongest first
+    tiers = duel_mod.contender_tiers(field, queue)
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s, matchups=[_mu("belt", "fought", "incumbent")], champion="belt",
+            when=now - timedelta(days=1),
+        )
+
+    try:
+        with session_scope() as s:
+            first, why = duel_mod.next_matchup(s, queue, tiers, "belt", 7)
+        # Same tier, so the cooldown decides: the question we haven't asked yet goes first.
+        assert first == "unfought" and "re-rac" not in why
+        assert queue == ["fought"], "the cooled contender is still raced, just after"
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()

@@ -1173,6 +1173,34 @@ export default function Duels() {
                   </Typography>
                 </Typography>
               )}
+              {/* How the belt got where it is. The winner stays on, so by bout six the two
+                  names in the ring can be neither the profile that walked in with the belt
+                  nor the pooled crown — which reads as "random profiles" unless you can see
+                  the chain that got them there. */}
+              {!!status?.matchups?.length && (
+                <Box sx={{ mt: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    This session so far:
+                  </Typography>
+                  {status.matchups.map((m, i) => (
+                    <Typography
+                      key={i}
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ display: "block", fontFamily: "monospace" }}
+                    >
+                      {i + 1}. {m.incumbent_name || m.incumbent_label} vs{" "}
+                      {m.challenger_name || m.challenger_label}
+                      {m.challenger_why ? ` (${m.challenger_why})` : ""} →{" "}
+                      {m.verdict === "challenger"
+                        ? `${m.challenger_name || m.challenger_label} takes the belt`
+                        : m.verdict === "incumbent"
+                          ? "belt held"
+                          : "draw"}
+                    </Typography>
+                  ))}
+                </Box>
+              )}
             </Box>
           )}
           {!active && status?.status === "failed" && status.error && (
@@ -1467,7 +1495,7 @@ export default function Duels() {
                   </TableHead>
                   <TableBody>
                     {card.queue.map((c) => (
-                      <TableRow key={c.fingerprint} hover sx={c.on_cooldown ? { opacity: 0.55 } : undefined}>
+                      <TableRow key={c.fingerprint} hover>
                         <TableCell>{c.position}</TableCell>
                         <TableCell>
                           <Link
@@ -1486,7 +1514,7 @@ export default function Duels() {
                           <Typography variant="caption" color="text.secondary">
                             {CARD_REASON[c.reason] ?? c.reason}
                             {c.on_cooldown
-                              ? ` · skipped, already settled in the last ${card.rematch_days ?? 7} days`
+                              ? ` · re-raced (settled within ${card.rematch_days ?? 7} days, so it goes last among its equals)`
                               : ""}
                           </Typography>
                         </TableCell>
