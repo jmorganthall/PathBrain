@@ -150,6 +150,7 @@ const PRESET_NAME: Record<string, string> = {
 // then pair-win rate); clicking a header re-sorts client-side without refetching.
 type StandingSortKey =
   | "rank"
+  | "rating"
   | "name"
   | "wins"
   | "points"
@@ -166,6 +167,8 @@ const standingValue = (r: DuelStanding, key: StandingSortKey): number | string |
   switch (key) {
     case "rank":
       return r.rank;
+    case "rating":
+      return r.rating ?? null;
     case "name":
       return (r.name || r.label || "").toLowerCase();
     case "wins":
@@ -213,6 +216,50 @@ const pooledRanking = (rows: DuelStanding[]): Map<string, number> => {
     .sort((a, b) => (b.overall as number) - (a.overall as number));
   return new Map(scored.map((r, i) => [r.fingerprint, i + 1]));
 };
+
+// The duel rating: a Bradley-Terry strength fitted to every pair on the ledger, printed
+// on the Elo scale. The error bar is not decoration — a rating built on eight pairs and
+// one built on eight hundred are different claims, and a table that prints them
+// identically invites the reader to act on the wrong one.
+function RatingCell({ row }: { row: DuelStanding }) {
+  if (row.rating == null) return <>—</>;
+  const se = row.rating_se;
+  return (
+    <Tooltip
+      title={
+        `Fitted from ${row.rating_pairs ?? 0} interleaved pair${row.rating_pairs === 1 ? "" : "s"}` +
+        (row.expected_pair_wins != null
+          ? ` · won ${row.pair_wins} where the fit expected ${row.expected_pair_wins}`
+          : "") +
+        (row.rating_provisional
+          ? " · provisional: too few pairs to separate it from the middle of the field yet"
+          : "")
+      }
+    >
+      <span>
+        <Typography
+          component="span"
+          variant="body2"
+          sx={{ fontVariantNumeric: "tabular-nums", opacity: row.rating_provisional ? 0.6 : 1 }}
+        >
+          {Math.round(row.rating)}
+        </Typography>
+        {se != null && (
+          <Typography component="span" variant="caption" color="text.secondary">
+            {" "}
+            ±{Math.round(se)}
+          </Typography>
+        )}
+        {row.rating_provisional && (
+          <Typography component="span" variant="caption" color="text.secondary">
+            {" "}
+            ?
+          </Typography>
+        )}
+      </span>
+    </Tooltip>
+  );
+}
 
 // The gap between the two rankings, shown where the eye already is (next to the rank).
 // Up = the ring rates it higher than its all-history score does.
@@ -1216,8 +1263,12 @@ export default function Duels() {
         <CardContent>
           <Typography variant="h6">Ladder standings</Typography>
           <Typography variant="caption" color="text.secondary">
-            <b>Duel rank</b> is the ring standing and the default order here: match points
-            (win 3 · draw 1), then decisive-win rate, then pair-win rate. <b>Overall</b> and{" "}
+            <b>Duel rank</b> is the ring standing and the default order here, by{" "}
+            <b>Rating</b>: a strength fitted to every pair ever fought, so <i>who</i> you beat
+            is what moves you — beating the profile at the top is worth far more than beating
+            the one at the bottom, and losing to the best costs little. 1500 is the middle of
+            the field; ± is the error bar and <b>?</b> marks a record too thin to trust yet.
+            Points and win rate are the plain ledger, kept beside it. <b>Overall</b> and{" "}
             <b>Overall rank</b> are the pooled all-history score for the same profile, so the
             two verdicts sit side by side — the ▲▼ next to a rank is how far they disagree.
             Click any column to re-sort.
@@ -1239,8 +1290,9 @@ export default function Duels() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <StandingHeader id="rank" label="Duel rank" orderBy={orderBy} order={order} onSort={handleSort} tip="Standing in the ring — the page's default order. Match points (win 3 · draw 1), then decisive-win rate, then pair-win rate, then matchups played. Nothing pooled goes into it." />
+                    <StandingHeader id="rank" label="Duel rank" orderBy={orderBy} order={order} onSort={handleSort} tip="Standing in the ring — the page's default order, by duel rating. Nothing pooled goes into it." />
                     <StandingHeader id="name" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} />
+                    <StandingHeader id="rating" label="Rating" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Strength fitted to every pair this profile has ever fought (Bradley–Terry, on the Elo scale — 1500 is the middle of the field, +400 means winning 10 pairs for every 1 lost against an average opponent). Beating a strong profile moves it a lot and beating a weak one barely at all, so who you beat is what changes your standing. ± is the error bar; a thin record is marked provisional." />
                     <StandingHeader id="wins" label="W–L–D" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match record across every duel session: wins–losses–draws. Sorts by wins." />
                     <StandingHeader id="points" label="Pts" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match points: 3 for a win, 1 for a draw." />
                     <StandingHeader id="win_rate" label="Win rate" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Share of DECIDED matchups won (draws excluded)." />
@@ -1266,7 +1318,7 @@ export default function Duels() {
                           <RankGap ringRank={r.rank} pooledRank={pooledRank.get(r.fingerprint)} />
                         </Stack>
                       </TableCell>
-                      <TableCell>
+                      <TableCell sx={{ minWidth: 210 }}>
                         <Stack direction="row" spacing={0.5} alignItems="center">
                           {r.is_champion && (
                             <MilitaryTechIcon color="warning" sx={{ fontSize: 18 }} />
@@ -1277,7 +1329,7 @@ export default function Duels() {
                             onClick={() =>
                               navigate(`/profiles/${encodeURIComponent(r.fingerprint)}`)
                             }
-                            sx={{ font: "inherit", textAlign: "left" }}
+                            sx={{ font: "inherit", textAlign: "left", whiteSpace: "nowrap" }}
                             title={r.label}
                           >
                             {r.name || r.label}
@@ -1299,6 +1351,9 @@ export default function Duels() {
                             {r.lost_to.length > 0 && `lost to ${r.lost_to.join(", ")}`}
                           </Typography>
                         )}
+                      </TableCell>
+                      <TableCell align="right">
+                        <RatingCell row={r} />
                       </TableCell>
                       <TableCell align="right">
                         {r.wins}–{r.losses}–{r.draws}

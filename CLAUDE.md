@@ -469,13 +469,38 @@ LLM-based. See `README.md` for the product overview.
     pressing "Duel now" will do — until when, how long, who defends against how many, and what
     ends a bout — since a button whose behavior lives in three other fields isn't a control,
     it's a guess.
+    **The standings rank on a fitted STRENGTH, not on match points** (`rating.py`,
+    `fit_bradley_terry`). Points (3/1/0) record *how many* you beat but not *who*: beating the
+    champion and beating a profile nobody has measured were both worth three, the belt-holder
+    farmed points simply by defending (the winner stays on, so it fights more than anyone), and
+    two profiles that never met could not be compared at all — so a profile could beat the #1
+    and still sit at #4, the reported symptom. A **Bradley–Terry** fit over the ledger
+    (`P(i beats j) = γᵢ/(γᵢ+γⱼ)`, Zermelo/Ford MM iterations, reported on the Elo scale with a
+    Fisher-information error bar) fixes all three from the same data: beating a strong profile
+    moves you a lot and beating a weak one barely at all, losing to the best costs little, and
+    profiles that never met are comparable **through shared opponents**. It is a *fit over the
+    whole ledger*, not a running Elo — deterministic and order-independent, so the table
+    re-derives from the record exactly like every other score in PathBrain. The unit of evidence
+    is the **pair**, not the bout (`wins_incumbent`/`wins_challenger`), so a hard-fought 12–8
+    outweighs a 3–0 snap and a *drawn* bout still informs the rating instead of being discarded.
+    A **prior** of `DEFAULT_PRIOR_PAIRS` virtual pairs against a phantom average opponent keeps
+    unbeaten records finite and shrinks thin ones toward the field; 4 is calibrated against both
+    failure modes at once and `test_the_prior_is_calibrated_between_the_two_failure_modes` pins
+    them — at 2 a 3–0 sweep over the *weakest* profile outrates a veteran that beat the whole
+    field, and too heavy a prior stops a win over the *strongest* moving anyone, which is the
+    entire point. A rating is flagged **provisional** (still shown and ranked, marked `?`) until
+    it rests on ≥`PROVISIONAL_PAIRS` pairs **and** ≥2 opponents — one opponent is a single edge
+    restated, not a position in the network.
     `duel.standings` (`GET /api/duel/standings`) aggregates the ledger into the **head-to-head
-    league table** that page ranks on — per profile W–L–D, match points (win 3 / draw 1),
+    league table** that page ranks on — per profile the **rating** (+ `rating_se` /
+    `rating_pairs` / `rating_provisional` / `expected_pair_wins`), W–L–D, match points (win 3 /
+    draw 1),
     decisive-win + pair-win rate, median Overall-point margin *signed from that profile's own
     side*, opponents beaten/lost to, title count — plus the reigning champion (with reign
     length) and the `head_to_head[a][b]` matrix. It is **pure ledger**: only decided matchups,
     nothing pooled, nothing averaged over history, so it never touches the crown. Rank order:
-    points → decisive-win rate → pair-win rate → matchups played. Each row also carries the
+    **rating** → pairs behind it → points (`ranked_by: "rating"` in the payload); the points /
+    win-rate / pair-rate columns stay as the readable ledger and remain sortable. Each row also carries the
     profile's **pooled Overall** (`_pooled_overalls` → `crown_follower._profile_overall`, one
     indexed query per profile rather than a full `compute_profiles` pass) so the ring record
     and the raw measured record sit on one line — a profile winning its bouts while mid-table

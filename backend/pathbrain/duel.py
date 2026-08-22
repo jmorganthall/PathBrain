@@ -43,6 +43,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .models import Duel, DuelStatus, Score
+from .rating import PROVISIONAL_PAIRS, fit_bradley_terry
 from .providers import get_provider
 from .runner import run_chunk, teardown_plugins
 from .settings_profile import fingerprint, normalize, plan_apply
@@ -1273,6 +1274,11 @@ def standings(limit_sessions: int = 50) -> dict:
 
     records: dict[str, dict] = {}
     h2h: dict[str, dict[str, dict]] = {}
+    # The pairwise record the Bradley-Terry rating is fitted to: every interleaved pair
+    # ever run, keyed (winner, loser). The unit of evidence is the PAIR rather than the
+    # bout, so a hard-fought 12-8 counts for more than a 3-0 snap and a drawn bout still
+    # informs the rating instead of being thrown away.
+    pair_wins: dict[tuple[str, str], int] = {}
     matchups_analyzed = 0
     decisive = 0
 
@@ -1285,7 +1291,14 @@ def standings(limit_sessions: int = 50) -> dict:
             if m.get("verdict") != "draw":
                 decisive += 1
             sides = _matchup_sides(m)
-            for idx, (fp, label, result, margin, pair_wins, pair_losses) in enumerate(sides):
+            inc_fp, cha_fp = str(m.get("incumbent")), str(m.get("challenger"))
+            if int(m.get("wins_incumbent") or 0) > 0:
+                key = (inc_fp, cha_fp)
+                pair_wins[key] = pair_wins.get(key, 0) + int(m.get("wins_incumbent") or 0)
+            if int(m.get("wins_challenger") or 0) > 0:
+                key = (cha_fp, inc_fp)
+                pair_wins[key] = pair_wins.get(key, 0) + int(m.get("wins_challenger") or 0)
+            for idx, (fp, label, result, margin, side_pair_wins, pair_losses) in enumerate(sides):
                 opp_fp, opp_label = sides[1 - idx][0], sides[1 - idx][1]
                 rec = records.setdefault(
                     fp,
@@ -1310,7 +1323,7 @@ def standings(limit_sessions: int = 50) -> dict:
                 rec["label"] = label
                 rec["matchups"] += 1
                 rec[{"win": "wins", "loss": "losses", "draw": "draws"}[result]] += 1
-                rec["pair_wins"] += pair_wins
+                rec["pair_wins"] += side_pair_wins
                 rec["pair_losses"] += pair_losses
                 rec["opponents"].add(opp_fp)
                 if margin is not None:
@@ -1327,7 +1340,7 @@ def standings(limit_sessions: int = 50) -> dict:
                     {"wins": 0, "losses": 0, "draws": 0, "pairs": 0, "margins": []},
                 )
                 cell[{"win": "wins", "loss": "losses", "draw": "draws"}[result]] += 1
-                cell["pairs"] += pair_wins + pair_losses
+                cell["pairs"] += side_pair_wins + pair_losses
                 if margin is not None:
                     cell["margins"].append(margin)
 
@@ -1411,12 +1424,28 @@ def standings(limit_sessions: int = 50) -> dict:
     if champion is not None:
         champion["name"] = call_signs.get(champion["fingerprint"]) or champion.get("label")
 
+    # ── The rating ───────────────────────────────────────────────────────────────
+    # Ranking used to be match points (3/1/0), which records how many you beat but not
+    # WHO: beating the champion and beating a profile nobody has measured were both worth
+    # three, the belt-holder farmed points simply by defending (the winner stays on, so it
+    # fights more than anyone), and two profiles that never met could not be compared at
+    # all. The Bradley-Terry fit answers all three from the same ledger — see rating.py.
+    ratings = fit_bradley_terry(pair_wins)
+    for row in table:
+        r = ratings.get(row["fingerprint"]) or {}
+        row["rating"] = r.get("rating")
+        row["rating_se"] = r.get("rating_se")
+        row["rating_pairs"] = r.get("pairs")
+        row["rating_provisional"] = bool(r.get("provisional", True))
+        # How many pairs the fit expected this profile to win against the exact opponents
+        # it actually faced — "beating your schedule" in one number.
+        row["expected_pair_wins"] = r.get("expected_wins")
+
     table.sort(
         key=lambda r: (
+            r["rating"] if r["rating"] is not None else -1e9,
+            r["rating_pairs"] or 0,  # more evidence first among equal ratings
             r["points"],
-            r["win_rate"] if r["win_rate"] is not None else -1.0,
-            r["pair_win_rate"] if r["pair_win_rate"] is not None else -1.0,
-            r["matchups"],
         ),
         reverse=True,
     )
@@ -1445,6 +1474,10 @@ def standings(limit_sessions: int = 50) -> dict:
         "matchups_analyzed": matchups_analyzed,
         "decisive_matchups": decisive,
         "generated_from": limit_sessions,
+        # What the ranking means, so the page can explain it rather than assert it.
+        "ranked_by": "rating",
+        "provisional_pairs": PROVISIONAL_PAIRS,
+        "rating_pairs_total": sum(pair_wins.values()),
     }
 
 
