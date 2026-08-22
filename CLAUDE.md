@@ -384,9 +384,22 @@ LLM-based. See `README.md` for the product overview.
     rather than once a night — the scheduler starts a session whenever `coordinator.busy()` is
     clear and the gap has elapsed, so monitoring and manual runs still get the pipeline, and
     every session still restores the baseline. And it races **leaders, not randoms**:
-    `build_queue(contenders="leaders", top_n=…)` orders the queue by closeness to the crown
-    (the matchups that can actually change the answer) with everything else the heirs pass
-    surfaced following on; `contenders="heirs"` keeps the exploring order.
+    `build_queue(contenders="leaders", top_n=…)` ranks the **whole field** by Overall
+    (confident profiles first — two runs and a lucky score is noise, not a contender), puts
+    the pooled crown first whenever it isn't the one defending, and lets the heirs tail follow
+    so unknowns still get measured. Reachability is tested **per profile against the live
+    environment** (`_reachable`). It briefly wasn't: reachability was inherited from the heirs
+    pass, which silently restricted the "leaders" pool to the heirs themselves — and heirs are
+    *by definition* the under-sampled/stale profiles, capped at `challenger.heir_count` (5) —
+    so the mode built to avoid filler raced nothing but filler, and with an empty heirs list
+    produced no queue at all (`test_leaders_are_drawn_from_the_field_not_from_the_heirs_list`).
+    `_recently_decided` likewise scans duels **by `finished_at` within the cooldown**, not
+    "the last 20 sessions" (a continuous ladder finishes several a day, so a row cap covered
+    ~3 days of a 7-day cooldown); and when every contender is on cooldown the ladder
+    **re-races them** rather than falling through to the unmeasured tail. An empty queue
+    reports *why* (`_no_contenders_reason`): nothing scored under the current methodology, or
+    the live environment matches no stored profile. `contenders="heirs"` keeps the exploring
+    order.
     **One dial, not six fields** (`duel.PRESETS` / `preset_for` / `preset_config`): "when is
     someone the winner?" is a single question, and it had been spread across six interacting
     numeric fields nobody could reason about together. `GET/PUT /duel/config` carries a
