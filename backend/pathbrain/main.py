@@ -62,6 +62,11 @@ async def lifespan(app: FastAPI):
 
     reconcile_interrupted_baseline_tests()  # re-enable SQM if a baseline test was interrupted
     reconcile_interrupted_duels()  # restore the pre-duel baseline if a duel was interrupted
+    from .updates import verify_pending_updates
+
+    # A self-update recreates this container, so startup is the moment of truth: compare the
+    # build that was running when "Update now" was pressed against the one running now.
+    verify_pending_updates()
     from .scheduler import start_scheduler, stop_scheduler
 
     start_scheduler()
@@ -129,6 +134,19 @@ def test_update_connection() -> dict:
     from .updates import test_update_connection as _test
 
     return _test()
+
+
+@app.get("/api/update/log")
+def update_log(limit: int = 10) -> dict:
+    """Recent self-update attempts and what became of each.
+
+    The container log can't answer "did the update work?" — a *successful* update replaces the
+    container along with its log. This reads the persisted attempt ledger instead, resolving any
+    still-pending verdict by comparing the build that was running when the button was pressed
+    against the one running now."""
+    from .updates import update_log as _log
+
+    return _log(limit)
 
 
 @app.post("/api/update/trigger")

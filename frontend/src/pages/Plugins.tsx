@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -15,8 +15,84 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ErrorIcon from "@mui/icons-material/Error";
 
 import { api } from "../api/client";
-import type { PluginInfo, UpdateConfig, UpdateConnectionTest } from "../api/types";
+import type {
+  PluginInfo,
+  UpdateAttempt,
+  UpdateConfig,
+  UpdateConnectionTest,
+  UpdateLog,
+} from "../api/types";
 import Loading from "../components/Loading";
+import { fmtDateTime } from "../utils/format";
+
+// How each attempt's *verdict* reads. The verdict is deliberately separate from the call's
+// outcome: "Watchtower accepted the request" was always the thing we could observe, and it is
+// NOT the thing the user is asking about. Only a changed build proves an update happened.
+const VERDICTS: Record<string, { label: string; color: "success" | "warning" | "error" | "info"; what: string }> = {
+  confirmed: {
+    label: "Updated",
+    color: "success",
+    what: "The running build changed after this attempt — the update took effect.",
+  },
+  no_change: {
+    label: "No change",
+    color: "warning",
+    what:
+      "Watchtower accepted the request but the build never changed. Usually: this container is " +
+      "outside Watchtower's scope, the image was already current, or Watchtower can't reach the registry.",
+  },
+  failed: {
+    label: "Failed",
+    color: "error",
+    what: "The request never got through — nothing was updated.",
+  },
+  pending: {
+    label: "Pending",
+    color: "info",
+    what:
+      "Waiting to see whether the build changes. A successful update recreates this container, so " +
+      "the verdict is written at the next startup.",
+  },
+};
+
+function AttemptRow({ attempt }: { attempt: UpdateAttempt }) {
+  const v = VERDICTS[attempt.verdict] ?? VERDICTS.pending;
+  const call = [
+    attempt.outcome,
+    attempt.http_status ? `HTTP ${attempt.http_status}` : null,
+    attempt.elapsed_ms != null ? `${attempt.elapsed_ms} ms` : null,
+    attempt.token_sent ? "token sent" : "no token",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const builds = [
+    attempt.git_sha_before ? `from ${attempt.git_sha_before.slice(0, 7)}` : null,
+    attempt.git_sha_after ? `to ${attempt.git_sha_after.slice(0, 7)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <Box sx={{ py: 0.75, borderTop: 1, borderColor: "divider" }}>
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Tooltip title={v.what}>
+          <Chip size="small" label={v.label} color={v.color} sx={{ height: 20 }} />
+        </Tooltip>
+        <Typography variant="caption" color="text.secondary">
+          {fmtDateTime(attempt.created_at)}
+        </Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace" }}>
+          {call}
+          {builds ? ` · ${builds}` : ""}
+        </Typography>
+      </Stack>
+      {(attempt.detail || attempt.error || attempt.response_body) && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.25 }}>
+          {attempt.detail || attempt.error || attempt.response_body}
+        </Typography>
+      )}
+    </Box>
+  );
+}
 
 // The Watchtower self-update integration: a card on the Plugins page that shows whether the
 // integration is configured (URL + token) and offers a side-effect-free "Test connection" that
@@ -26,6 +102,19 @@ function WatchtowerIntegration() {
   const [cfg, setCfg] = useState<UpdateConfig | null>(null);
   const [test, setTest] = useState<UpdateConnectionTest | null>(null);
   const [testing, setTesting] = useState(false);
+  const [log, setLog] = useState<UpdateLog | null>(null);
+  const [logLoading, setLogLoading] = useState(false);
+
+  const loadLog = useCallback(async () => {
+    setLogLoading(true);
+    try {
+      setLog(await api.updateLog(10));
+    } catch {
+      /* the card still works without the ledger */
+    } finally {
+      setLogLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -37,6 +126,10 @@ function WatchtowerIntegration() {
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    void loadLog();
+  }, [loadLog]);
 
   const runTest = () => {
     setTesting(true);
@@ -133,6 +226,30 @@ function WatchtowerIntegration() {
             {test.detail}
           </Typography>
         )}
+
+        <Box sx={{ mt: 2 }}>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+            <Typography variant="subtitle2" sx={{ flexGrow: 1 }}>
+              Update history
+            </Typography>
+            <Button size="small" onClick={() => void loadLog()} disabled={logLoading}>
+              {logLoading ? "Loading…" : "Refresh"}
+            </Button>
+          </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+            Every "Update now" press and whether the build actually changed. A successful update
+            replaces this container along with its log, so each attempt is recorded to the database
+            before the request goes out and judged after the restart.
+            {log?.running_sha ? ` Running build: ${log.running_sha.slice(0, 7)}.` : ""}
+          </Typography>
+          {log && log.attempts.length > 0 ? (
+            log.attempts.map((a) => <AttemptRow key={a.id} attempt={a} />)
+          ) : (
+            <Typography variant="caption" color="text.secondary">
+              No update has been attempted yet.
+            </Typography>
+          )}
+        </Box>
       </CardContent>
     </Card>
   );
@@ -204,7 +321,11 @@ export default function Plugins() {
           gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr", lg: "repeat(3, 1fr)" },
         }}
       >
-        <WatchtowerIntegration />
+        {/* Two columns wide: the card carries the update ledger, whose per-attempt detail
+            (why nothing changed, which build it went from and to) is unreadable in a third. */}
+        <Box sx={{ gridColumn: { sm: "span 2" } }}>
+          <WatchtowerIntegration />
+        </Box>
       </Box>
     </Box>
   );

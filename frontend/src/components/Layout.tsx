@@ -47,6 +47,10 @@ import { api, ApiError } from "../api/client";
 import type { VersionInfo } from "../api/types";
 
 const DRAWER_WIDTH = 240;
+// How long to wait for the new build to answer before calling the update a no-show. A pull +
+// recreate is normally seconds; four minutes is generous for a slow registry and still short
+// enough that a silent no-op gets reported instead of spinning.
+const UPDATE_POLL_MS = 4 * 60 * 1000;
 
 // Top-bar chip that appears only when a newer build is available to pull. Polls the
 // backend's cached /api/version (hourly) so it never hammers GitHub. When one-click
@@ -56,7 +60,7 @@ function UpdateChip() {
   const [info, setInfo] = useState<VersionInfo | null>(null);
   // idle → triggering (POST in flight) → updating (container recreating; poll for it to return).
   const [phase, setPhase] = useState<"idle" | "triggering" | "updating">("idle");
-  const [snack, setSnack] = useState<{ msg: string; sev: "info" | "error" } | null>(null);
+  const [snack, setSnack] = useState<{ msg: string; sev: "info" | "warning" | "error" } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -79,7 +83,23 @@ function UpdateChip() {
   useEffect(() => {
     if (phase !== "updating") return;
     const fromSha = info?.git_sha_short ?? null;
+    // Give up eventually. Watchtower answering "accepted" never meant the build changed — if this
+    // container is outside its scope, it happily accepts and updates nothing — so a poll with no
+    // deadline leaves the button spinning forever on the one outcome the user most needs told
+    // about. Say it plainly and point at the ledger that recorded the attempt.
+    const deadline = Date.now() + UPDATE_POLL_MS;
     const t = setInterval(() => {
+      if (Date.now() > deadline) {
+        clearInterval(t);
+        setPhase("idle");
+        setSnack({
+          msg:
+            "Watchtower accepted the request but the build hasn't changed. See Plugins → " +
+            "Watchtower → Update history for what happened.",
+          sev: "warning",
+        });
+        return;
+      }
       api
         .version()
         .then((v) => {

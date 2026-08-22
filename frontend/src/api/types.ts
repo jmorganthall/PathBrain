@@ -520,6 +520,33 @@ export interface VersionInfo {
 export interface UpdateTriggerResult {
   triggered: boolean;
   detail?: string;
+  attempt_id?: number | null;
+}
+
+// One recorded "Update now" attempt. `outcome` is how the CALL went; `verdict` is whether the
+// build actually changed — the only thing that answers "did the update work?", and the reason
+// this is persisted rather than logged (a successful update replaces the container's log).
+export interface UpdateAttempt {
+  id: number;
+  created_at: string | null;
+  url: string | null;
+  token_sent: boolean;
+  outcome: "requested" | "accepted" | "dropped" | "rejected" | "unreachable" | "not_configured" | string;
+  http_status: number | null;
+  response_body: string | null;
+  error: string | null;
+  elapsed_ms: number | null;
+  git_sha_before: string | null;
+  git_sha_after: string | null;
+  verdict: "pending" | "confirmed" | "no_change" | "failed" | string;
+  verdict_at: string | null;
+  detail: string | null;
+}
+
+export interface UpdateLog {
+  attempts: UpdateAttempt[];
+  running_sha: string | null;
+  verify_after_seconds: number;
 }
 
 export interface UpdateConfig {

@@ -720,3 +720,49 @@ class ProfileName(Base):
     fingerprint: Mapped[str] = mapped_column(String(40), primary_key=True)
     name: Mapped[str] = mapped_column(String(60), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class UpdateAttempt(Base):
+    """One "Update now" attempt and what actually became of it.
+
+    Self-update is the one operation that destroys its own evidence: a *successful* update
+    recreates the container mid-response, so the request looks identical to a dropped
+    connection, in-memory state is wiped, and the container log the user would grep is
+    replaced along with it. "It never seems to work" is then unfalsifiable.
+
+    So every attempt is persisted *before* the call and resolved afterwards, including
+    across the restart. ``git_sha_before`` is the build that was running when the button
+    was pressed; once enough time has passed the running build is compared against it,
+    which is the only conclusive answer to "did the update take effect?" — ``confirmed``
+    when the build changed, ``no_change`` when Watchtower accepted the request and the
+    build stayed put (most often: this container isn't in Watchtower's scope, or the
+    image was already current).
+    """
+
+    __tablename__ = "update_attempts"
+    __table_args__ = (Index("ix_update_attempts_created_at", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    # What we asked, and of whom (never the token itself — only whether one was sent).
+    url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    token_sent: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # How the call itself went: "accepted" (HTTP 2xx), "rejected" (HTTP error — usually a
+    # bad token), "unreachable" (connection refused / DNS / timeout before the request
+    # landed), "dropped" (connection severed after the request — consistent with the
+    # update recreating us), or "not_configured".
+    outcome: Mapped[str] = mapped_column(String(20), default="unknown")
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    elapsed_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # The verdict, resolved after the fact by comparing builds.
+    git_sha_before: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    git_sha_after: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # "pending" until enough time has passed, then "confirmed" | "no_change" | "failed".
+    verdict: Mapped[str] = mapped_column(String(20), default="pending")
+    verdict_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)

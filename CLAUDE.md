@@ -784,6 +784,24 @@ LLM-based. See `README.md` for the product overview.
   an update** — it hits the API **root**, never `/v1/update` (Watchtower's only endpoint *performs*
   the update), so any HTTP response = reachable and only a connection-level failure = unreachable;
   the token is verified for real only by "Update now".
+  **The self-update ledger** (`models.UpdateAttempt`, `updates._record_attempt`/`_finish_attempt`/
+  `verify_pending_updates`/`update_log`, `GET /api/update/log`): self-update is the one operation
+  that **destroys its own evidence** — a successful update recreates the container mid-response, so
+  the request is indistinguishable from a dropped connection, in-memory state is wiped, and the
+  container log the user would grep is replaced along with it. "It never seems to work" was
+  therefore unfalsifiable: `triggered: true` only ever meant *Watchtower took the call*, never
+  *the build changed*, and a Watchtower whose scope excludes this container answers **HTTP 200 and
+  updates nothing**. So every attempt is persisted to `update_attempts` **before** the request goes
+  out (url, token-sent, and crucially `git_sha_before`), completed with how the call went
+  (`outcome` = accepted / dropped / rejected / unreachable / not_configured + status, body, elapsed),
+  and **resolved afterwards across the restart** by `verify_pending_updates()` — called at startup
+  (the moment an update would have landed) and on every log read — which compares the running build
+  against `git_sha_before`: **confirmed** (build changed), **no_change** (accepted, but still the
+  same build after `VERIFY_AFTER_SECONDS` — detail names the usual causes: container outside
+  Watchtower's `--scope`/label filter, image already current, registry unreachable), or **failed**
+  (never got out). Rendered as the **"Update history"** section of the Plugins card. The chip's
+  post-trigger poll also stops guessing: after `UPDATE_POLL_MS` (4 min) with no new build it reports
+  the no-show and points at the ledger instead of spinning forever.
 
 ## Commands
 

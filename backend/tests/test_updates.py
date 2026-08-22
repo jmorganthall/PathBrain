@@ -285,3 +285,197 @@ def test_test_connection_http_error_still_reachable(monkeypatch):
     out = updates.test_update_connection()
     assert out["status"] == "ok" and out["reachable"] is True
     get_settings.cache_clear()
+
+
+# ── the self-update ledger ───────────────────────────────────────────────────
+#
+# Self-update is the one operation that destroys its own evidence: a successful update
+# recreates the container mid-response, so the request looks exactly like a dropped
+# connection and the container log the user would grep is replaced along with it. These
+# tests pin the invariant that makes "it never seems to work" answerable — every attempt
+# is recorded before the call, and the verdict is decided by comparing builds afterwards.
+
+
+def _attempts():
+    from sqlalchemy import select
+
+    from pathbrain.database import session_scope
+    from pathbrain.models import UpdateAttempt
+
+    with session_scope() as session:
+        rows = session.scalars(select(UpdateAttempt).order_by(UpdateAttempt.id)).all()
+        return [
+            {
+                "id": r.id,
+                "outcome": r.outcome,
+                "verdict": r.verdict,
+                "http_status": r.http_status,
+                "token_sent": r.token_sent,
+                "url": r.url,
+                "git_sha_before": r.git_sha_before,
+                "git_sha_after": r.git_sha_after,
+                "response_body": r.response_body,
+                "detail": r.detail,
+                "error": r.error,
+            }
+            for r in rows
+        ]
+
+
+def _clear_attempts():
+    from pathbrain.database import session_scope
+    from pathbrain.models import UpdateAttempt
+
+    with session_scope() as session:
+        for row in session.query(UpdateAttempt).all():
+            session.delete(row)
+
+
+def test_every_attempt_is_recorded_with_the_build_it_ran_on(monkeypatch):
+    _clear_attempts()
+    get_settings.cache_clear()
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("WATCHTOWER_TOKEN", "s3cr3t")
+    monkeypatch.setenv("PATHBRAIN_GIT_SHA", "a" * 40)
+    monkeypatch.setattr(updates.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp())
+
+    out = updates.trigger_update()
+    assert out["triggered"] is True
+
+    (row,) = _attempts()
+    assert row["outcome"] == "accepted"
+    assert row["http_status"] == 200
+    assert row["token_sent"] is True
+    assert row["url"] == "http://192.168.2.6:8998/v1/update"
+    # The build at press time is the whole basis of the later verdict.
+    assert row["git_sha_before"] == "a" * 40
+    assert row["verdict"] == "pending"  # "accepted" is not "it worked"
+    assert row["response_body"] == "Updated PathBrain"
+    assert out["attempt_id"] == row["id"]
+    get_settings.cache_clear()
+
+
+def test_accepted_but_unchanged_build_is_reported_as_no_change(monkeypatch):
+    # The failure the user actually hit: Watchtower says 200, nothing updates. Left to the
+    # old code this was indistinguishable from success, because "triggered" was the only
+    # thing ever recorded.
+    _clear_attempts()
+    get_settings.cache_clear()
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("PATHBRAIN_GIT_SHA", "a" * 40)
+    monkeypatch.setattr(updates.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp())
+    updates.trigger_update()
+
+    # Not yet — a pull + recreate takes a moment, so an immediate check stays pending.
+    updates.verify_pending_updates()
+    assert _attempts()[0]["verdict"] == "pending"
+
+    # …but once the grace period has passed on the SAME build, it never happened.
+    monkeypatch.setattr(updates, "VERIFY_AFTER_SECONDS", -1)
+    assert updates.verify_pending_updates() == 1
+    row = _attempts()[0]
+    assert row["verdict"] == "no_change"
+    assert "scope" in (row["detail"] or "")  # names the usual cause
+    get_settings.cache_clear()
+
+
+def test_a_changed_build_confirms_the_update(monkeypatch):
+    _clear_attempts()
+    get_settings.cache_clear()
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("PATHBRAIN_GIT_SHA", "a" * 40)
+    monkeypatch.setattr(updates.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp())
+    updates.trigger_update()
+
+    # Restart onto the new image — which is exactly when verify runs (app startup).
+    get_settings.cache_clear()
+    monkeypatch.setenv("PATHBRAIN_GIT_SHA", "b" * 40)
+    assert updates.verify_pending_updates() == 1
+    row = _attempts()[0]
+    assert row["verdict"] == "confirmed"
+    assert row["git_sha_after"] == "b" * 40
+    get_settings.cache_clear()
+
+
+def test_a_dropped_connection_stays_pending_until_the_build_is_compared(monkeypatch):
+    # A severed response is what a successful update looks like from inside — and also what a
+    # hung Watchtower looks like. It must not be recorded as a success on its own.
+    _clear_attempts()
+    get_settings.cache_clear()
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("PATHBRAIN_GIT_SHA", "a" * 40)
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.URLError(ConnectionResetError("connection reset by peer"))
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    assert updates.trigger_update()["triggered"] is True
+    row = _attempts()[0]
+    assert row["outcome"] == "dropped"
+    assert row["verdict"] == "pending"
+    get_settings.cache_clear()
+
+
+def test_a_request_that_never_landed_is_recorded_as_failed(monkeypatch):
+    _clear_attempts()
+    get_settings.cache_clear()
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.URLError(ConnectionRefusedError("connection refused"))
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    updates.trigger_update()
+    row = _attempts()[0]
+    assert row["outcome"] == "unreachable"
+    assert row["verdict"] == "failed"  # nothing to wait for — it never got out
+    get_settings.cache_clear()
+
+
+def test_a_rejected_token_is_recorded_as_failed(monkeypatch):
+    _clear_attempts()
+    get_settings.cache_clear()
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("WATCHTOWER_TOKEN", "wrong")
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+    updates.trigger_update()
+    row = _attempts()[0]
+    assert row["outcome"] == "rejected" and row["http_status"] == 401
+    assert row["verdict"] == "failed"
+    assert "TOKEN" in (row["detail"] or "")
+    get_settings.cache_clear()
+
+
+def test_update_log_endpoint_lists_attempts_newest_first(client, monkeypatch):
+    _clear_attempts()
+    get_settings.cache_clear()
+    monkeypatch.setenv("WATCHTOWER_URL", "http://192.168.2.6:8998")
+    monkeypatch.setenv("PATHBRAIN_GIT_SHA", "a" * 40)
+    monkeypatch.setattr(updates.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp())
+    updates.trigger_update()
+    updates.trigger_update()
+
+    body = client.get("/api/update/log").json()
+    assert [a["id"] for a in body["attempts"]] == sorted(
+        (a["id"] for a in body["attempts"]), reverse=True
+    )
+    assert len(body["attempts"]) == 2
+    assert body["running_sha"] == "a" * 40
+    assert body["attempts"][0]["outcome"] == "accepted"
+    get_settings.cache_clear()
+
+
+def test_an_unconfigured_press_is_still_recorded(monkeypatch):
+    # "I clicked it and nothing happened" has to leave a trace even when there was nothing
+    # to call — otherwise the absence of a record is itself ambiguous.
+    _clear_attempts()
+    get_settings.cache_clear()
+    monkeypatch.delenv("WATCHTOWER_URL", raising=False)
+    updates.trigger_update()
+    row = _attempts()[0]
+    assert row["outcome"] == "not_configured" and row["verdict"] == "failed"
+    get_settings.cache_clear()
