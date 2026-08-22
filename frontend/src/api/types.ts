@@ -1857,6 +1857,64 @@ export interface ExploreCurve {
   // The best value tested is the highest or lowest tried — the optimum isn't bracketed.
   best_at_edge: boolean;
   shape: string;
+  // Curve points whose OTHER levers are systematically skewed — the point is measuring two
+  // levers at once, which is how a marginal curve names a value best that isn't.
+  imbalance?: {
+    value: number;
+    profiles: number;
+    other: string;
+    other_label: string;
+    shift: number;
+    detail: string;
+  }[];
+  confounded?: boolean;
+}
+
+// A controlled comparison found inside the observational record: profiles that differ in
+// exactly ONE lever, so the difference in their Overall is that lever's effect with no
+// confounding at all. This is the strongest evidence the measured field can give.
+export interface ExploreMatchedPairs {
+  key: string;
+  pipe: string;
+  field: string;
+  field_label: string;
+  unit: string | null;
+  total_pairs: number;
+  transitions: {
+    from: number;
+    to: number;
+    pairs: number;
+    median_delta: number;
+    worst: number;
+    best: number;
+    // Every matched pair agreed on the sign — far stronger than a median over a mix.
+    consistent: boolean;
+  }[];
+}
+
+// A lever's curve restricted to profiles that are otherwise like the reference — "what
+// happens if I change THIS profile", rather than "how do profiles with this value score".
+export interface ExploreConditionedCurve {
+  key: string;
+  pipe: string;
+  field: string;
+  field_label: string;
+  unit: string | null;
+  reference_value: number | null;
+  curve: { value: number; overall: number; profiles: number; exact: boolean }[];
+}
+
+// A local maximum under one-lever moves: no measured sibling beats it. Several separated
+// basins mean the levers are coupled and a one-lever-at-a-time search gets stuck.
+export interface ExploreBasin {
+  fingerprint: string;
+  name: string | null;
+  label: string;
+  overall: number;
+  iterations: number;
+  siblings: number;
+  levers_from_better: number | null;
+  coords: Record<string, number>;
 }
 
 export interface ExploreInteraction {
@@ -1911,6 +1969,12 @@ export interface ExploreCandidate {
   upside: number;
   beats_best_by: number;
   nearest_measured: number;
+  // How the prediction was arrived at, per changed lever: a controlled matched pair beats
+  // the marginal curve, and a number from the latter must never read like a measurement.
+  evidence: string[];
+  // Moves two levers at once — the prediction adds their effects, which the basin
+  // structure shows they may not do. Its uncertainty is widened to say so.
+  multi_lever: boolean;
   summary: string;
   // Per-pipe writable overrides, ready to POST to /settings/test-settings.
   settings: Record<string, unknown>[];
@@ -1933,6 +1997,11 @@ export interface ExploreLandscape {
   interactions: ExploreInteraction[];
   gaps: ExploreGap[];
   candidates: ExploreCandidate[];
+  matched_pairs: ExploreMatchedPairs[];
+  conditioned_curves: ExploreConditionedCurve[];
+  basins: ExploreBasin[];
+  reference: { fingerprint: string; name: string | null; label: string; overall: number } | null;
+  condition_max_other_changes?: number;
   best_overall: number | null;
   profiles_modelled: number;
   confident_only: boolean;

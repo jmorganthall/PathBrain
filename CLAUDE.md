@@ -561,6 +561,50 @@ LLM-based. See `README.md` for the product overview.
     `INTERACTION_MIN_CONTRAST` (1.0 pt) **and** `INTERACTION_MIN_SHARE` (15%) of the spread
     between its four corners — otherwise every pair "interacts" on rounding noise, which is worse
     than saying nothing.
+    **Confounding is modelled, not ignored.** A response curve is `median(Overall | lever=v)`
+    — it *marginalizes over whatever the other levers happened to be* at that value, so it
+    answers "how do profiles with this value score?" when the question being asked is "what
+    happens if I change **this** profile's value?". In a hand-built field those have different
+    answers, and the curve confidently reports the wrong one (the reported case: the marginal
+    curve named an upload quantum best that was worse than its neighbour in every controlled
+    comparison, because it co-occurred with the strong download family). Four responses, in
+    descending order of trust:
+    **(1) Matched pairs** (`matched_pairs`) — profiles differing in **exactly one** lever, found
+    by `_writable_signature` over *all* writable fields (not just the varying ones, so two
+    profiles can't be called siblings over a field the axis list dropped). Everything else is
+    identical by construction, so the Overall gap is that lever's effect with zero confounding:
+    a controlled experiment already sitting in the observational record. Reported per
+    *transition* (`7313 → 7000: −1.4 over 3 pairs`), since that's the actionable unit, sorted by
+    **evidence strength** (agreeing pairs first) rather than effect size — a dramatic
+    single-pair number is an anecdote and sorting on it buries the findings.
+    **(2) Conditioned curves** (`conditioned_curves`) — each lever restricted to profiles that
+    differ from a `reference` (default: the best measured) in the plotted lever plus at most
+    `CONDITION_MAX_OTHER_CHANGES` others. Rendered as a dashed overlay on the same axes as the
+    marginal curve, because the disagreement *is* the finding.
+    **(3) An imbalance diagnostic** (`_imbalance`) — per curve point, which *other* lever is
+    systematically skewed there and by how much (`IMBALANCE_THRESHOLD`, in normalized units).
+    It doesn't fix the curve; it names which points not to believe and why, on the chart.
+    **(4) Basins** (`basins`) — local maxima under **one-lever moves**: profiles no measured
+    sibling beats. Nearness is counted in *levers changed*, never Euclidean distance —
+    on a coarse grid two values of a 3-value lever are half its range apart, so a distance
+    radius measures how many values a lever happened to be given rather than how alike two
+    profiles are, and "no one-lever change beats this" is exactly what makes something a
+    local optimum for a coordinate-wise search. Several basins ≥2 levers apart is the
+    demonstration that the levers are **coupled**, that no single change crosses between
+    them, and that a marginal curve averaging across them describes none of them.
+    **Candidates are priced from the best evidence available**, in that same order:
+    a matched pair for the exact move → the *parent's own* conditioned neighbourhood → the
+    marginal curve, **shrunk by `CONFOUNDED_SHRINK`** when that curve is flagged confounded
+    (believing a confounded average whole is precisely how it becomes a confident prediction).
+    Each candidate carries its `evidence` provenance so a controlled number never reads like an
+    extrapolated one. A **transplant** move was added for the coupled case — give a profile a
+    value that scores well *elsewhere* but that it has never run; the value is old, the
+    combination is new, and it is the only candidate kind a matched pair can price, since the
+    others propose values nobody has measured. Multi-lever candidates set `multi_lever` and get
+    a widened band (`MULTI_LEVER_UNCERTAINTY`) that is **subtracted from the score, not added**:
+    a UCB rewards uncertainty, so inflating the band without discounting it would push exactly
+    the candidates we trust least to the top. Predictions and upsides are clamped to the
+    Overall's 0–100 scale.
     **Candidates** are the headline: existing profiles with one (or two) levers moved to a value
     nobody has tried, each stating *why* that value is interesting — fills the widest untested
     gap, refines between the best measured value and its neighbour, or steps past an edge. They
