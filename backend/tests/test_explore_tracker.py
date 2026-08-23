@@ -226,8 +226,10 @@ def test_the_beat_the_best_claim_is_scored_only_where_it_was_made(client):
 def test_a_candidate_is_materialized_on_its_parent_not_on_the_live_profile():
     """A candidate is "*that* profile with a lever moved". Sending only the moved lever
     measures the firewall as it stands with that lever moved — the proposed profile only
-    when the firewall happens to already be on the parent. Test three in a row and every
-    one after the first measures something nobody proposed."""
+    when the firewall happens to already be on the parent — and since a profile test restores
+    the baseline, that is only ever the baseline profile. The read-before/read-after integrity
+    check can't catch it: a real, stable profile is applied and measured, it just isn't the one
+    that was proposed."""
     parent = [
         {"label": "wan-download", "quantum": 3000, "target": "5ms", "scheduler": "fq_codel", "queues": 1},
         {"label": "wan-upload", "quantum": 300, "target": "5ms", "scheduler": "fq_codel", "queues": 1},

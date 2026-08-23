@@ -631,8 +631,19 @@ def full_overrides(parent_settings: list[dict] | None, changes: list[dict] | Non
     show a diff. But the apply path overlays whatever it is given onto the **live** profile,
     so sending only the diff measures "the firewall as it stands, with this lever moved" —
     which is the proposed profile only when the firewall happens to already be on the parent.
-    Test three candidates in a row and every one after the first measures something nobody
-    proposed, and the recommendation ledger grades a claim against a profile that isn't it.
+    And a profile test always restores the baseline when it finishes, so "live" is the
+    baseline profile at the start of every test — not the last candidate. The proposal is
+    therefore reproduced faithfully only when the parent *is* the baseline; every candidate
+    branched from any of the other parents measured something nobody proposed, and the
+    recommendation ledger would grade a claim against a profile that isn't it.
+
+    Note what does NOT catch this. ``profile_test`` verifies the firewall reached ``target``,
+    and ``runner.execute_run`` re-reads the fingerprint before and after the run — but
+    ``target`` is *defined* as live-plus-diff, so the verify is true by construction, and the
+    read-before/read-after check compares the live firewall against itself. All three answer
+    "is the measurement internally consistent?" (it is: a real, stable profile was applied,
+    measured, and attributed to its own fingerprint). None answers "is the applied profile
+    the one that was proposed?", which is the only question a recommendation ledger needs.
 
     So the whole parent is materialized here. Non-writable fields are left out on purpose:
     they can't be applied anyway, and the apply path keeps the live environment's — which is

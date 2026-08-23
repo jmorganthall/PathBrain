@@ -721,10 +721,17 @@ LLM-based. See `README.md` for the product overview.
     on whatever the firewall is currently on: `_apply_writable_overrides` overlays what it's given
     onto *live*, so sending only the moved lever measures "the firewall as it stands, with this
     lever moved" — the proposed profile only when the firewall happens to already be on the parent.
-    Test three candidates in a row and every one after the first measured something nobody
-    proposed, and the ledger below would grade a claim against a profile that isn't it. When the
-    parent's settings can't be found the levers fall back to live and the recommendation is
-    stamped with a `note` saying so.
+    And a profile test always restores the baseline, so *live* is the baseline profile at the
+    start of every test — the proposal is reproduced only when the parent happens to *be* the
+    baseline, and every candidate branched from another parent measured something nobody
+    proposed. **The existing integrity checks cannot catch this** and were never meant to:
+    `profile_test` verifies the firewall reached `target`, but `target` is *defined* as
+    live-plus-diff so the verify is true by construction; `runner.execute_run`'s
+    read-before/read-after compares the live firewall **against itself**. Both answer "is the
+    measurement internally consistent?" — it is, a real stable profile was applied, measured
+    and attributed to its own fingerprint — not "is the applied profile the one that was
+    proposed?". When the parent's settings can't be found the levers fall back to live and the
+    recommendation is stamped with a `note` saying so.
   - `explore_tracker.py` — **the recommendation ledger: was the data right?** Explore's output is
     a *prediction*, and a prediction nobody scores is a horoscope — it costs the same night of
     benchmarking either way. So the **claim is stored before the measurement exists**
