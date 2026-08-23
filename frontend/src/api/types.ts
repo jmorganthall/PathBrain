@@ -1785,15 +1785,23 @@ export interface DuelHeadToHeadCell {
   median_margin: number | null;
 }
 
+// The reigning champion IS row 1 of the standings — derived from the same Bradley-Terry
+// fit over the whole ledger, not from a stored per-session value. That is what stops the
+// badge and the table naming different profiles.
 export interface DuelChampionStanding {
   fingerprint: string;
   label: string | null;
   name?: string | null;
-  duel_id: number;
+  // The most recent completed session it fought in (null if it has only fought in the
+  // session currently running).
+  duel_id: number | null;
   finished_at: string | null;
-  // How many consecutive completed sessions this profile has ended as champion.
+  // How many consecutive completed sessions have ended with this profile on top.
   consecutive_sessions: number;
+  // Has it actually beaten (or lost to) anyone, or is its whole record draws?
   decisive: boolean;
+  // Its rating still rests on too few pairs / too few opponents to be established.
+  provisional?: boolean;
 }
 
 export interface DuelStandings {

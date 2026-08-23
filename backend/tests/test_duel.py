@@ -253,14 +253,24 @@ def test_duel_margin_floor_records_a_draw(monkeypatch):
 
 def _seed_completed_duel(champion_fp: str, champion_label: str, decisive: bool, days_ago: float = 0.0) -> None:
     with session_scope() as s:
+        # The champion is fitted over the WHOLE ledger, so a seeded scenario has to start
+        # from an empty one — a leftover row from another test is extra evidence, and the
+        # fit will (correctly) take it into account.
+        s.query(Duel).delete()
         s.add(
             Duel(
                 status=DuelStatus.COMPLETE,
                 finished_at=datetime.now(timezone.utc) - timedelta(days=days_ago),
                 duration_s=600,
+                # Pair counts matter: the champion is fitted from the pair record, so a
+                # bout with a verdict but no pairs is no evidence at all (and the engine
+                # never records one).
                 matchups=[{
                     "incumbent": "someinc0000", "challenger": champion_fp,
                     "verdict": "challenger" if decisive else "draw",
+                    "pairs": 12 if decisive else 10,
+                    "wins_incumbent": 2 if decisive else 5,
+                    "wins_challenger": 10 if decisive else 5,
                 }],
                 champion_fingerprint=champion_fp,
                 champion_label=champion_label,
@@ -1418,6 +1428,77 @@ def test_a_ring_leader_the_environment_cant_reach_does_not_defend():
     assert top == "unreachable"
     assert fp == "reachable", "the best profile the firewall can actually be set to defends"
     assert "the ring's #1 defends" in why
+
+
+def test_the_reigning_champion_is_always_row_one_of_the_table():
+    """The reported bug: the reigning duel champion did not match the table.
+
+    It couldn't have: the badge read a stored `Duel.champion_fingerprint` written at
+    session end (whoever survived that session), while the standings are fitted live over
+    the whole ledger. So every row written before the belt became the ring's #1 named a
+    survivor, and any bout in a RUNNING session moved the table without touching the badge.
+
+    Both now come from the same fit, so disagreement is structurally impossible — pinned
+    here in all three situations that used to break it.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    def _check(where: str):
+        out = duel_mod.standings()
+        assert out["champion"] is not None, where
+        assert out["champion"]["fingerprint"] == out["standings"][0]["fingerprint"], where
+        assert out["standings"][0]["is_champion"] is True, where
+        # The value AUTOMATION reads can never name a *different* profile than the page:
+        # it either agrees with row 1 or reports nothing (a verdict too stale, too thin, or
+        # not yet finished is a reason to fall back to the pooled crown — never a reason to
+        # act on some other profile).
+        with session_scope() as s:
+            fresh = duel_mod.latest_champion(s, max_age_days=3650)
+        assert fresh is None or fresh["fingerprint"] == out["champion"]["fingerprint"], where
+        return out
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+        # A stored champion that is NOT the strongest profile — exactly what the old
+        # winner-stays-on rule wrote into every historic row.
+        _finished_duel(
+            s,
+            matchups=[
+                _mu("strong", "weak", "incumbent", wins_inc=15, wins_cha=2, delta=-4.0),
+                _mu("strong", "mid", "incumbent", wins_inc=12, wins_cha=4, delta=-3.0),
+                _mu("mid", "weak", "incumbent", wins_inc=10, wins_cha=5, delta=-2.0),
+            ],
+            champion="weak",  # the stored belt-holder is the worst profile on the ledger
+            when=now - timedelta(days=1),
+        )
+    try:
+        out = _check("a stale stored champion must not override the table")
+        assert out["champion"]["fingerprint"] == "strong"
+
+        # A RUNNING session's bouts count immediately — the case no stored row could cover.
+        with session_scope() as s:
+            s.add(
+                Duel(
+                    status=DuelStatus.RUNNING,
+                    duration_s=600,
+                    trigger="manual",
+                    matchups=[_mu("strong", "climber", "challenger", wins_inc=2, wins_cha=22,
+                                  delta=5.0)],
+                    champion_fingerprint="strong",
+                )
+            )
+        out = _check("a bout in a running session moves the belt as well as the table")
+        assert out["champion"]["fingerprint"] == "climber", (
+            "beating the leader takes the top of the table, so it takes the belt too"
+        )
+        # Displayed immediately, but deliberately not actionable: automation still waits
+        # for a completed session, so it reports nothing rather than acting on a holder
+        # that is one bout old.
+        with session_scope() as s:
+            assert duel_mod.latest_champion(s, max_age_days=3650) is None
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
 
 
 def test_standings_carry_the_pooled_overall(monkeypatch):

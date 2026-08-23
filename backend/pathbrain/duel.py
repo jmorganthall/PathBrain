@@ -538,6 +538,36 @@ def _recently_decided(session, a_fp: str, b_fp: str, rematch_days: int) -> bool:
     return False
 
 
+def ledger_leader(
+    ratings: dict[str, dict], eligible: set[str] | None = None
+) -> str | None:
+    """The highest ``rating_floor`` on a fitted ledger — the ring's #1, full stop.
+
+    The ONE place that answers "who is the champion?", so the belt on the page, the
+    defender in the ring, and the profile the crowning policy would apply are the same
+    profile by construction. They used to be three different answers: the badge read a
+    stored ``Duel.champion_fingerprint`` written at session end, while the standings were
+    fitted live over the whole ledger — so any bout in a running session moved the table
+    without moving the badge, and every row written before the belt became the ring's #1
+    recorded whoever happened to survive that session instead.
+
+    ``eligible`` narrows the pool (the *defender* must be reachable from the live
+    environment; the *champion* is a statement about the ledger and is never filtered).
+    """
+    best_fp: str | None = None
+    best: tuple[float, int] | None = None
+    for fp, r in ratings.items():
+        if eligible is not None and fp not in eligible:
+            continue
+        if r.get("rating_floor") is None:
+            continue
+        # Ties break toward the deeper record, exactly as the standings do.
+        key = (float(r["rating_floor"]), int(r.get("pairs") or 0))
+        if best is None or key > best:
+            best_fp, best = fp, key
+    return best_fp
+
+
 def ring_leader(
     field: dict, ratings: dict[str, dict], baseline: list[dict] | None = None
 ) -> tuple[str | None, str]:
@@ -552,23 +582,17 @@ def ring_leader(
     exists — a fresh ledger, or a live environment no stored profile matches.
     """
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
-    best_fp: str | None = None
-    best: tuple[float, int] | None = None
-    for fp, r in ratings.items():
-        if fp not in profiles or r.get("rating_floor") is None:
-            continue
-        if not _reachable(profiles[fp].get("settings"), baseline):
-            continue
-        # Ties break toward the deeper record, exactly as the standings do.
-        key = (float(r["rating_floor"]), int(r.get("pairs") or 0))
-        if best is None or key > best:
-            best_fp, best = fp, key
+    eligible = {
+        fp for fp, p in profiles.items() if _reachable(p.get("settings"), baseline)
+    }
+    best_fp = ledger_leader(ratings, eligible)
     if best_fp is None:
         return None, ""
     r = ratings[best_fp]
+    opps = int(r.get("opponents") or 0)
     return best_fp, (
-        f"the ring's #1 defends (proven {best[0]:.0f} over {r.get('pairs') or 0} pairs "
-        f"against {r.get('opponents') or 0} opponent{'' if (r.get('opponents') or 0) == 1 else 's'})"
+        f"the ring's #1 defends (proven {r.get('rating_floor'):.0f} over "
+        f"{r.get('pairs') or 0} pairs against {opps} opponent{'' if opps == 1 else 's'})"
     )
 
 
@@ -1505,33 +1529,94 @@ def fight_card(session, limit: int = 12) -> dict:
 
 
 def latest_champion(session, max_age_days: int) -> dict | None:
-    """The most recent completed duel's champion, if fresh enough.
+    """The ring's #1 over the whole ledger — the reigning duel champion — if fresh enough.
 
-    Returns ``{fingerprint, label, duel_id, finished_at, decisive}`` or None. ``decisive``
-    is True when the session contained at least one non-draw verdict — a champion who only
-    inherited the crown by draws adds no head-to-head information over the pooled verdict.
+    This used to read the newest completed session's stored ``champion_fingerprint``, which
+    is the profile that *survived that session*. Two things then guaranteed it would
+    disagree with the standings, which are fitted live over the entire ledger: rows written
+    before the belt became the ring's #1 recorded a survivor, and a bout in a running
+    session moves the table without touching any stored row. The champion is now derived
+    from the same fit the table ranks on (``ledger_leader`` over ``ledger_ratings``), so
+    "reigning champion" and "row 1" cannot name different profiles.
+
+    Deliberately NOT reachability-filtered — the champion is a claim about the ledger, like
+    the standings. The choice of who *defends* is filtered (``ring_leader``), and the crown
+    follower independently refuses to apply an unreachable profile.
+
+    Returns ``{fingerprint, label, duel_id, finished_at, decisive, consecutive_sessions,
+    provisional}`` or None. The gates that automation depends on are kept, translated onto
+    the ledger: ``decisive`` is True when this profile has at least one non-draw verdict (a
+    record made entirely of draws demonstrates nothing over the pooled verdict), and a
+    champion whose most recent bout is older than ``max_age_days`` is reported as None —
+    stale evidence must not drive a firewall write.
     """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max_age_days)
-    row = session.scalars(
-        select(Duel)
-        .where(Duel.status == DuelStatus.COMPLETE, Duel.champion_fingerprint.is_not(None))
-        .order_by(Duel.id.desc())
-        .limit(1)
-    ).first()
-    if row is None or row.finished_at is None:
+    sessions_data = _ledger_sessions(session)
+    ratings = fit_bradley_terry(_pair_record(sessions_data))
+    fp = ledger_leader(ratings)
+    if fp is None:
         return None
-    finished = row.finished_at
-    if finished.tzinfo is not None:
-        finished = finished.astimezone(timezone.utc).replace(tzinfo=None)
-    if finished < cutoff:
+
+    label: str | None = None
+    duel_id: int | None = None
+    finished_at: str | None = None
+    last_bout: datetime | None = None
+    decisive = False
+    for sess in sessions_data:  # newest first
+        involved = False
+        for m in sess.get("matchups") or []:
+            if fp not in (m.get("incumbent"), m.get("challenger")):
+                continue
+            involved = True
+            if (m or {}).get("verdict") != "draw":
+                decisive = True
+            if label is None:
+                label = (
+                    m.get("incumbent_name") or m.get("incumbent_label")
+                    if m.get("incumbent") == fp
+                    else m.get("challenger_name") or m.get("challenger_label")
+                )
+        if not involved or sess["status"] != "complete":
+            continue
+        when = _parse_finished(sess.get("finished_at"))
+        if last_bout is None and when is not None:
+            last_bout, duel_id, finished_at = when, sess["id"], sess["finished_at"]
+
+    # Freshness is a property of the EVIDENCE, not of who filed it: a champion nobody has
+    # raced in a week is a stale verdict however recently some other session finished.
+    if last_bout is None or last_bout < cutoff:
         return None
+
+    # How long it has held the top of the table, in completed sessions.
+    reign = 0
+    for sess in sessions_data:
+        if sess["status"] != "complete" or not (sess.get("matchups") or []):
+            continue
+        if sess.get("champion_fingerprint") != fp:
+            break
+        reign += 1
     return {
-        "fingerprint": row.champion_fingerprint,
-        "label": row.champion_label,
-        "duel_id": row.id,
-        "finished_at": row.finished_at.isoformat(),
-        "decisive": any((m or {}).get("verdict") != "draw" for m in row.matchups or []),
+        "fingerprint": fp,
+        "label": label,
+        "duel_id": duel_id,
+        "finished_at": finished_at,
+        "decisive": decisive,
+        "consecutive_sessions": reign,
+        "provisional": bool(ratings[fp].get("provisional", True)),
     }
+
+
+def _parse_finished(value: str | None) -> datetime | None:
+    """A ledger session's ``finished_at`` as a naive-UTC datetime."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 
 def _matchup_sides(m: dict) -> list[tuple[str, str, str, float | None, int, int]]:
@@ -1700,30 +1785,6 @@ def standings(limit_sessions: int = 50) -> dict:
             if rec is not None:
                 rec["championships"] += 1
 
-    # The reigning duel champion: the newest completed session that crowned one.
-    champion = None
-    for sess in sessions_data:  # newest first
-        if sess["status"] == "complete" and sess.get("champion_fingerprint"):
-            fp = sess["champion_fingerprint"]
-            reign = 0
-            for s2 in sessions_data:
-                if s2["status"] != "complete" or not s2.get("champion_fingerprint"):
-                    continue
-                if s2["champion_fingerprint"] != fp:
-                    break
-                reign += 1
-            champion = {
-                "fingerprint": fp,
-                "label": sess.get("champion_label"),
-                "duel_id": sess["id"],
-                "finished_at": sess["finished_at"],
-                "consecutive_sessions": reign,
-                "decisive": any(
-                    (m or {}).get("verdict") != "draw" for m in sess["matchups"]
-                ),
-            }
-            break
-
     table: list[dict] = []
     for rec in records.values():
         decided = rec["wins"] + rec["losses"]
@@ -1746,7 +1807,8 @@ def standings(limit_sessions: int = 50) -> dict:
                 "beaten_pairs": rec["beaten"],
                 "lost_to_pairs": rec["lost_to"],
                 "championships": rec["championships"],
-                "is_champion": bool(champion and champion["fingerprint"] == rec["fingerprint"]),
+                # Settled after the sort — the champion is row 1, so it can't be known yet.
+                "is_champion": False,
                 "last_dueled_at": rec["last_dueled_at"],
                 "last_duel_id": rec["last_duel_id"],
             }
@@ -1771,9 +1833,6 @@ def standings(limit_sessions: int = 50) -> dict:
         row["beaten"] = [call_signs.get(fp, lbl) for fp, lbl in row["beaten_pairs"]]
         row["lost_to"] = [call_signs.get(fp, lbl) for fp, lbl in row["lost_to_pairs"]]
         del row["beaten_pairs"], row["lost_to_pairs"]
-    if champion is not None:
-        champion["name"] = call_signs.get(champion["fingerprint"]) or champion.get("label")
-
     # ── The rating ───────────────────────────────────────────────────────────────
     # Ranking used to be match points (3/1/0), which records how many you beat but not
     # WHO: beating the champion and beating a profile nobody has measured were both worth
@@ -1810,6 +1869,34 @@ def standings(limit_sessions: int = 50) -> dict:
     )
     for i, row in enumerate(table, start=1):
         row["rank"] = i
+
+    # The reigning champion IS row 1 — not a stored `champion_fingerprint` from whichever
+    # session finished last. A badge that names a different profile than the table beneath
+    # it is a bug, and it was one: the stored value recorded the session's survivor, and
+    # was written at session end, so a running ladder moved the table and not the badge.
+    # Taking it from the sorted table makes disagreement structurally impossible.
+    champion = None
+    if table:
+        top = table[0]
+        reign = 0
+        for sess in sessions_data:  # newest first
+            if sess["status"] != "complete" or not (sess.get("matchups") or []):
+                continue
+            if sess.get("champion_fingerprint") != top["fingerprint"]:
+                break
+            reign += 1
+        champion = {
+            "fingerprint": top["fingerprint"],
+            "name": top.get("name"),
+            "label": top.get("label"),
+            "duel_id": top.get("last_duel_id"),
+            "finished_at": top.get("last_dueled_at"),
+            "consecutive_sessions": reign,
+            # Has it actually beaten anyone, or is its record all draws?
+            "decisive": bool(top.get("wins") or top.get("losses")),
+            "provisional": bool(top.get("rating_provisional", True)),
+        }
+        top["is_champion"] = True
 
     matrix = {
         fp: {
