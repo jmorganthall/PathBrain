@@ -47,9 +47,12 @@ def landscape(
     contrasts (profiles differing in exactly one lever, so the comparison is controlled),
     curves conditioned on the neighbourhood of ``reference``, an imbalance diagnostic naming
     which curve points are measuring two levers at once, and the local maxima (basins) in
-    the measured surface. ``confident_only`` (default) models only profiles that have
-    reached the iteration minimum; a lucky Overall on two runs is noise, and noise in the
-    model comes back out as a confident-sounding prediction.
+    the measured surface. Every measured profile is in the model — a five-iteration reading
+    is thin but it is the only reading anyone has of that point, and excluding it means a
+    quick test teaches the model nothing until it crosses the confidence bar.
+    ``confident_only`` (default) instead **weights** a profile by how much measurement stands
+    behind it, so a lucky Overall on two runs informs a curve without carrying it; passing
+    false counts every profile equally.
     """
     return explore_mod.landscape(
         session,

@@ -453,6 +453,23 @@ LLM-based. See `README.md` for the product overview.
     can consult it every session cheaply; `_pair_record` is the one accumulator both share.
     `contenders="leaders"` keeps the former pooled ordering for comparison and `"heirs"` the
     oldest exploring order.
+    **A thin profile earns the ring by what it could still do** (`contender_order`'s
+    `UNTESTED_TIER` / `UNPROMISING_TIER`). The pooled Overall is the winner *on paper*; the ring
+    is the real-world back-to-back result. Paper decides who gets to make a **claim** — for a
+    profile with no ring record, that claim is its **pooled optimistic ceiling** (`optimistic`,
+    the same p75 number the heirs card and the challenger race use, so all three agree on what
+    counts as a threat) measured against the pooled crown's Overall — and the ring decides
+    whether the claim survives contact. A five-iteration profile whose ceiling still reaches the
+    crown is a **live threat**, ranked among the unrated by that ceiling (biggest potential
+    threat first); one whose own runs fall short even optimistically is **given up on, never
+    excluded** — five iterations is a weak "no" and the ring hasn't actually asked, so it is
+    raced after everything with a live claim but before nothing. The moment the ring *has* a
+    rating, paper stops being consulted entirely (`CONTENDER_TIER`/`OUTCLASSED_TIER` read the
+    fitted rating): that is the whole point of running two verdicts. This is what makes the
+    explore→duel relationship real — a proposal is measured briefly for an *initial placement*,
+    and the ring then spends its time maturing whatever could displace the best profile found so
+    far, which is also why it isn't racing #432 against #567. It changes **matchmaking only**:
+    duel verdicts still never enter the pooled score, and the crown is untouched.
     **The rematch cooldown ORDERS, it never excludes** (`contender_tiers` / `next_matchup`).
     Queued profiles carry a priority **tier** — `CROWN_TIER` (the pooled crown) <
     `CONTENDER_TIER` (confident, scored) < `FILLER_TIER` (thin/untested) — and the ring is
@@ -750,9 +767,20 @@ LLM-based. See `README.md` for the product overview.
     space carries the full spread. Deliberately **deterministic and dependency-free** (no numpy,
     no fitted black box) — every number re-derives from the profile table and explains in a
     sentence, the same standard the crown and the duel ratings are held to. Thin profiles are
-    excluded by default (`confident_only`): a lucky Overall on two iterations is noise, and noise
-    in the model comes back out as a confident-sounding prediction; it falls back to every scored
-    profile rather than showing an empty page. **The seam it leaves is the overnight module**: the
+    **never excluded — weighted** (`evidence_weight`, `THIN_WEIGHT_FLOOR`): a five-iteration
+    reading is thin but it is the only reading anyone has of that point, and excluding it meant a
+    quick test taught the model nothing until it crossed the confidence bar (50 iterations on a
+    real link — most of the way to never). `confident_only` now scales a profile's contribution
+    by how much measurement stands behind it (linear to the bar, then flat, floored at 0.15)
+    instead of gating the pool: `_weighted_median` aggregates the curves (degenerating *exactly*
+    to the plain median at equal weights, so nothing moves until the evidence actually differs)
+    and a thin neighbour pins a candidate's uncertainty down less. Three protections stop
+    inclusion making the page worse, because a lucky two-run 99 must inform without steering:
+    it is weighted down; it cannot become a **parent** (candidates branch from *settled* ground —
+    the right response to a promising thin profile is to mature it in the ring, not to extend it
+    before anyone knows its number is real — with thin parents used only when fewer than
+    `MIN_POINTS` settled profiles exist); and it cannot set the bar (`_best_established` keeps
+    "best measured" on the best *confident* profile, the same one the crown names). **The seam it leaves is the overnight module**: the
     engine is a pure function returning runnable per-pipe overrides, so a scheduler can alternate
     *explore* (measure these candidates) with *adjudicate* (duel the survivors) and the field
     grows toward the optimum instead of only being re-ranked.

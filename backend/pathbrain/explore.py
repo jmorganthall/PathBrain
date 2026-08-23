@@ -92,6 +92,10 @@ TRANSPLANT_VALUES = 2
 # much. Taking it whole is exactly how a confounded average turns into a confident
 # prediction, which is the failure this whole section exists to prevent.
 CONFOUNDED_SHRINK = 0.5
+# The least a measurement can be worth, however thin. A profile is never excluded from the
+# model for having few iterations — that would throw away the only reading anyone has of
+# that point — but nor can a five-run wobble carry a curve like a settled measurement.
+THIN_WEIGHT_FLOOR = 0.15
 # Parents to branch candidates from, and how many candidates to return by default.
 CANDIDATE_PARENTS = 5
 DEFAULT_SUGGESTIONS = 3
@@ -182,6 +186,65 @@ def _median(vals: list[float]) -> float:
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
 
 
+def _best_established(points: list[dict]) -> float:
+    """The best Overall the field can actually stand behind — the bar a candidate has to beat.
+
+    Confident profiles when there are any, because that is the same profile the crown names
+    and the number the rest of the app compares against. Thin profiles are in the model (they
+    are evidence) but a lucky five-run 99 is not "the best measured" by any honest reading,
+    and letting it set the bar would make every real candidate look hopeless against a fluke.
+    With nothing confident yet, the pessimistic end of each thin profile's own spread is the
+    most that can be claimed.
+    """
+    settled = [p["overall"] for p in points if p.get("confident")]
+    if settled:
+        return max(settled)
+    return max(p.get("trusted", p["overall"]) for p in points)
+
+
+def _weighted_median(pairs: list[tuple[float, float]]) -> float:
+    """The median of ``(value, weight)`` pairs — the point where half the *weight* lies.
+
+    A profile measured over five iterations and one measured over fifty are both evidence,
+    and they are not the same amount of it. Excluding the thin one throws away the only
+    reading anyone has of that point; counting it equally lets a lucky five-run wobble move
+    a curve as far as a settled measurement. Weighting is the answer to both, and it
+    degenerates to the plain median when every weight is equal.
+    """
+    if not pairs:
+        return 0.0
+    ordered = sorted(pairs)
+    total = sum(w for _, w in ordered)
+    if total <= 0:
+        return _median([v for v, _ in ordered])
+    half = total / 2.0
+    seen = 0.0
+    for i, (value, w) in enumerate(ordered):
+        seen += w
+        # Landing exactly on the halfway mark splits the difference with the next value,
+        # which is what the plain median does for an even count — so equal weights reproduce
+        # it exactly and the weighting changes nothing until the evidence actually differs.
+        if abs(seen - half) < 1e-9 and i + 1 < len(ordered):
+            return (value + ordered[i + 1][0]) / 2.0
+        if seen >= half:
+            return value
+    return ordered[-1][0]
+
+
+def evidence_weight(iterations: int, min_iterations: int) -> float:
+    """How much a profile's measurement counts, from how much of it there is.
+
+    Linear in iterations up to the confidence bar, then flat — a profile with twice the
+    minimum is not twice as believable, it is simply believed. Floored well above zero so a
+    thin profile is never silently worth nothing: the whole point is that a five-iteration
+    reading is a real *initial placement*, to be matured or set aside on evidence rather
+    than ignored until it crosses a line.
+    """
+    if min_iterations <= 0:
+        return 1.0
+    return max(THIN_WEIGHT_FLOOR, min(1.0, float(iterations or 0) / float(min_iterations)))
+
+
 def _stdev(vals: list[float]) -> float:
     n = len(vals)
     if n < 2:
@@ -208,15 +271,19 @@ def _response_curves(points: list[dict], axes: dict[str, dict]) -> list[dict]:
                 continue
             xs.append(x)
             ys.append(pt["overall"])
-            by_value.setdefault(x, []).append(pt["overall"])
+            by_value.setdefault(x, []).append((pt["overall"], pt.get("weight", 1.0)))
         if len(xs) < MIN_POINTS or len(set(xs)) < 2:
             continue
         curve = [
             {
                 "value": v,
-                "overall": round(_median(vs), 2),
-                "best": round(max(vs), 2),
+                "overall": round(_weighted_median(vs), 2),
+                "best": round(max(o for o, _ in vs), 2),
                 "profiles": len(vs),
+                # How much measurement stands behind this point, in whole-profile units: two
+                # profiles at the confidence bar read 2.0, four five-iteration ones read ~0.6.
+                # "Three profiles" and "three *settled* profiles" are different claims.
+                "evidence": round(sum(w for _, w in vs), 2),
             }
             for v, vs in sorted(by_value.items())
         ]
@@ -436,7 +503,10 @@ def _uncertainty(coords: dict[str, float], points: list[dict], axes: dict[str, d
         if d is None:
             continue
         nearest = min(nearest, d)
-        weight += math.exp(-((d / KERNEL_BANDWIDTH) ** 2))
+        # Scaled by the neighbour's own evidence: standing next to a profile measured five
+        # times tells you less than standing next to one measured fifty, and the band should
+        # say so rather than treating "someone has been here" as the whole question.
+        weight += math.exp(-((d / KERNEL_BANDWIDTH) ** 2)) * p.get("weight", 1.0)
     return (spread / math.sqrt(1.0 + weight), nearest if nearest < float("inf") else 1.0)
 
 
@@ -705,7 +775,7 @@ def _candidates(
     """
     by_key = {c["key"]: c for c in curves}
     pairs_by_key = {m["key"]: m for m in (pairs or [])}
-    best_measured = max(p["overall"] for p in points)
+    best_measured = _best_established(points)
     # What NOT to propose again. ``points`` is the *modelling* pool — confident profiles only,
     # because a lucky Overall on two iterations is noise and noise in the model comes back out
     # as a confident-sounding prediction. But "has anyone run this?" is a completely different
@@ -716,7 +786,25 @@ def _candidates(
     measured_coords = already_tried if already_tried is not None else {
         tuple(sorted(p["coords"].items())) for p in points
     }
-    parents = sorted(points, key=lambda p: (-p["overall"], -p["iterations"]))[:CANDIDATE_PARENTS]
+    # Branch from established ground. A thin profile's measurement belongs in the model —
+    # it is the only reading of that point — but a five-iteration Overall is not something
+    # to build a family of new candidates on: the right response to a promising thin profile
+    # is to *mature* it (the ring will race it, the challenger race will top it up), not to
+    # extend it before anyone knows whether its number is real. So settled profiles are the
+    # parents, ranked by the pessimistic end of their own spread — pessimism decides what to
+    # build on, optimism decides what to measure, the same split the duel makes between its
+    # standings floor and its matchmaking ceiling. Thin profiles fill in only when there is
+    # not enough settled ground to branch from at all, since a page with no candidates helps
+    # nobody.
+    def _rank(p: dict) -> tuple:
+        return (-p.get("trusted", p["overall"]), -p["iterations"])
+
+    settled = sorted([p for p in points if p.get("confident")], key=_rank)
+    if len(settled) >= MIN_POINTS:
+        parents = settled[:CANDIDATE_PARENTS]
+    else:
+        thin = sorted([p for p in points if not p.get("confident")], key=_rank)
+        parents = (settled + thin)[:CANDIDATE_PARENTS]
 
     # (axis, value, why) worth trying, computed once per axis rather than per parent.
     moves: list[tuple[str, float, str]] = [
@@ -1037,7 +1125,9 @@ def conditioned_curves(
             "curve": [
                 {
                     "value": v,
-                    "overall": round(_median([q["overall"] for q in ps]), 2),
+                    "overall": round(
+                        _weighted_median([(q["overall"], q.get("weight", 1.0)) for q in ps]), 2
+                    ),
                     "profiles": len(ps),
                     # An exact point — same reference, only this lever moved — is the
                     # strongest evidence on the chart and is worth marking as such.
@@ -1093,6 +1183,18 @@ def basins(points: list[dict], axes: dict[str, dict]) -> list[dict]:
         gaps = [len(_differing(b["coords"], other["coords"])) for other in found[:i]]
         b["levers_from_better"] = min(gaps) if gaps else None
     return found
+
+
+def _min_iterations(session) -> int:
+    """The iteration count that makes a profile confident — the scale evidence weight is
+    measured against. Best-effort: without a session (unit tests, a config hiccup) fall back
+    to the documented default rather than refusing to model anything."""
+    try:
+        from .config_store import get_config
+
+        return int((get_config(session).get("correlation", {}) or {}).get("min_iterations", 15) or 15)
+    except Exception:  # noqa: BLE001 — a config read must never break the landscape
+        return 15
 
 
 def _claimed_coords(session, profiles: list[dict], axes: dict[str, dict]) -> set:
@@ -1158,10 +1260,26 @@ def landscape(
         p for p in field.get("profiles", [])
         if isinstance(p.get("overall"), (int, float))
     ]
-    pool = [p for p in scored if p.get("confident")] if confident_only else list(scored)
+    # Nothing measured is ever excluded. A five-iteration reading is a real *initial
+    # placement* of a profile — thin, but the only reading anyone has of that point — and
+    # dropping it means a quick test teaches the model nothing until it crosses the
+    # confidence bar, which is most of the way to never. ``confident_only`` no longer gates
+    # the pool; it decides whether thin profiles are **down-weighted** (default) or counted
+    # like any other, and the weighting is what stops a lucky five-run wobble carrying a
+    # curve as far as a settled measurement.
+    pool = list(scored)
+    min_iterations = _min_iterations(session)
+    # Kept beside the pool rather than written onto it: these dicts belong to
+    # ``compute_profiles`` — the crown's own payload — and this module only ever reads them.
+    weights = {
+        p["fingerprint"]: (
+            evidence_weight(int(p.get("iterations") or 0), min_iterations)
+            if confident_only
+            else 1.0
+        )
+        for p in pool
+    }
     fell_back = False
-    if len(pool) < MIN_POINTS:
-        pool, fell_back = scored, bool(scored) and confident_only
 
     axes = _numeric_axes(pool)
     points = []
@@ -1176,6 +1294,16 @@ def landscape(
             "overall": float(p["overall"]),
             "iterations": int(p.get("iterations") or 0),
             "confident": bool(p.get("confident")),
+            # How much this measurement counts (1.0 at the confidence bar, floored above
+            # zero) — used by every aggregation so thin readings inform without dominating.
+            "weight": float(weights.get(p["fingerprint"], 1.0)),
+            # What to believe about it when choosing somewhere to branch *from*: the
+            # pessimistic end of its own spread. Optimism decides what to measure, pessimism
+            # decides what to build on — the same split the duel makes between its ceiling
+            # (matchmaking) and its floor (standings).
+            "trusted": float(
+                p["overall_p25"] if p.get("overall_p25") is not None else p["overall"]
+            ),
             "coords": coords,
         })
 
@@ -1251,7 +1379,7 @@ def landscape(
         "candidates": _candidates(
             points, axes, curves, gaps, max(1, int(suggestions)), pairs, already_tried=tried
         ),
-        "best_overall": round(max(p["overall"] for p in points), 2),
+        "best_overall": round(_best_established(points), 2),
         "profiles_modelled": len(points),
         "confident_only": confident_only and not fell_back,
         "exploration_weight": EXPLORATION_WEIGHT,

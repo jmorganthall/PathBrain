@@ -196,9 +196,15 @@ def test_a_point_far_from_everything_carries_more_uncertainty(monkeypatch):
     assert far["uncertainty"] >= near["uncertainty"]
 
 
-def test_thin_profiles_are_kept_out_of_the_model(monkeypatch):
-    """A lucky Overall on two iterations is noise, and noise in the model comes back out as
-    a confident-sounding prediction."""
+def test_a_thin_profile_informs_the_model_without_steering_it(monkeypatch):
+    """The policy this replaces excluded thin profiles outright, which meant a quick test
+    taught the model nothing until it crossed the confidence bar — most of the way to never.
+    A five-iteration reading is a real *initial placement*: the only reading anyone has of
+    that point. So it is never excluded, and never allowed to drive either.
+
+    Three protections, because inclusion alone would have made the page worse:
+    its measurement is weighted down, it cannot become the trunk candidates branch from,
+    and it cannot set the bar those candidates are judged against."""
     profiles = [
         _profile("a", quantum=1000, target=5, overall=60.0),
         _profile("b", quantum=2000, target=5, overall=62.0),
@@ -207,15 +213,27 @@ def test_thin_profiles_are_kept_out_of_the_model(monkeypatch):
         _profile("lucky", quantum=5000, target=5, overall=99.0, iterations=2, confident=False),
     ]
     out = _landscape(monkeypatch, profiles)
-    assert out["confident_only"] is True
-    assert "lucky" not in {p["fingerprint"] for p in out["points"]}
+    points = {p["fingerprint"]: p for p in out["points"]}
+
+    assert "lucky" in points, "a measured profile is never dropped from the model"
+    assert points["lucky"]["weight"] < points["a"]["weight"]
+    assert points["lucky"]["weight"] == explore.THIN_WEIGHT_FLOOR
+
+    # It does not become the trunk: every candidate branches from a settled profile.
+    assert all(c["parent"]["fingerprint"] != "lucky" for c in out["candidates"])
+    # …and it does not set the bar. "Best measured" stays the best SETTLED profile, which is
+    # the same one the crown names; a fluke would make every real candidate look hopeless.
     assert out["best_overall"] == 66.0
 
-    # …but with nothing confident to model, it falls back rather than showing an empty page.
-    thin = [dict(p, confident=False, iterations=2) for p in profiles]
-    out2 = _landscape(monkeypatch, thin)
-    assert out2["confident_only"] is False
-    assert out2["profiles_modelled"] == len(thin)
+
+def test_evidence_weight_is_flat_once_a_profile_is_settled():
+    """Linear in iterations up to the bar, then flat — twice the minimum is not twice as
+    believable — and floored above zero so a thin reading is never worth literally nothing."""
+    assert explore.evidence_weight(15, 15) == 1.0
+    assert explore.evidence_weight(150, 15) == 1.0
+    assert explore.evidence_weight(5, 50) == 0.15
+    assert explore.evidence_weight(0, 50) == explore.THIN_WEIGHT_FLOOR
+    assert explore.evidence_weight(25, 50) == 0.5
 
 
 def test_too_little_data_explains_itself(monkeypatch):

@@ -766,8 +766,9 @@ def build_queue(
 # the matchups that can change the answer.
 CROWN_TIER = 0  # the pooled crown: the two verdicts disagreeing is the most informative bout
 CONTENDER_TIER = 1  # on the ring's own record, could plausibly take the belt
-UNTESTED_TIER = 2  # never been in the ring — unknown, so worth a look
-OUTCLASSED_TIER = 3  # the ring already says they can't reach the belt: raced last, not never
+UNTESTED_TIER = 2  # no ring record, and its pooled ceiling could still reach the belt
+UNPROMISING_TIER = 3  # no ring record, and even its optimistic pooled reading falls short
+OUTCLASSED_TIER = 4  # the ring already says they can't reach the belt: raced last, not never
 FILLER_TIER = UNTESTED_TIER  # legacy alias for the pre-ring-ranking modes
 
 
@@ -803,7 +804,8 @@ def contender_tiers(
 TIER_NAMES = {
     CROWN_TIER: "pooled crown",
     CONTENDER_TIER: "contender",
-    UNTESTED_TIER: "untested",
+    UNTESTED_TIER: "live threat",
+    UNPROMISING_TIER: "own runs say no",
     OUTCLASSED_TIER: "outclassed",
 }
 
@@ -983,9 +985,20 @@ def contender_order(
       informative bout in the system, so it goes first whenever it isn't already defending.
     * ``CONTENDER_TIER`` — rated profiles whose **ceiling clears the champion's rating**:
       on the ring's own evidence they could plausibly win. Ordered by that ceiling.
-    * ``UNTESTED_TIER`` — never been in the ring, so nothing is known about them
-      head-to-head and anything is possible. Ordered by pooled Overall, which is the only
-      signal available for them and is used for nothing else.
+    * ``UNTESTED_TIER`` — no ring record, and its **pooled optimistic ceiling still reaches
+      the pooled crown**: on paper it could displace the best profile found so far, and only
+      the ring can say whether it does. This is where a freshly-explored profile lands after
+      a five-iteration placement — thin, wide-banded, and precisely the thing worth an hour
+      of the ring's time. Ordered by that ceiling, biggest potential threat first.
+    * ``UNPROMISING_TIER`` — no ring record, and even optimistically its own runs fall short
+      of the crown. Given up on, **not excluded**: five iterations is a weak "no", and the
+      ring has not actually asked. Raced after everything with a live claim.
+
+    The division of labour behind this: the pooled Overall is the winner *on paper*, and the
+    ring is the real-world back-to-back result. Paper decides who gets to make a claim —
+    which is all a thin profile's ceiling is, a claim — and the ring decides whether the
+    claim survives contact. That is why an unrated profile is ranked on pooled evidence and
+    a rated one never is: the moment the ring has an opinion, paper stops being consulted.
     * ``OUTCLASSED_TIER`` — rated, and even at their optimistic best they don't reach the
       champion. The ring has answered this; re-asking finds nothing. Not excluded — a long
       window still gets to them — just last, which is the same discipline the rematch
@@ -997,6 +1010,12 @@ def contender_order(
 
     champ = ratings.get(incumbent_fp) or {}
     bar = champ.get("rating")
+    # The pooled crown's Overall — the bar a profile with no ring record has to be able to
+    # reach. Deliberately the *pooled* crown rather than the belt-holder: "could this displace
+    # the best profile we have found so far?" is the question that decides whether a bout on a
+    # thin profile is worth the ring's time.
+    crown = profiles.get(pooled_fp or "") or {}
+    crown_overall = crown.get("overall")
 
     def _ceiling(fp: str) -> tuple[float | None, float | None]:
         r = ratings.get(fp)
@@ -1020,7 +1039,25 @@ def contender_order(
         if fp == pooled_fp:
             tier, why = CROWN_TIER, "the pooled crown — the two verdicts disagreeing is the most informative bout there is"
         elif rating is None:
-            tier, why = UNTESTED_TIER, "never been in the ring — nothing is known about it head to head"
+            # No ring record — so the only question that can be asked is the pooled one, and
+            # it is asked *optimistically*: not "is this better?" but "could this be better?".
+            # A profile with five runs has a wide band, and its ceiling is what says whether
+            # a bout could change the answer. Same number the heirs card and the challenger
+            # race use, so all three agree on what counts as a threat.
+            opt = p.get("optimistic")
+            if crown_overall is None or opt is None or opt >= crown_overall:
+                tier, why = UNTESTED_TIER, (
+                    f"thin but live — its pooled ceiling ({opt:.0f}) still reaches the crown "
+                    f"({crown_overall:.0f}), so a bout can change the answer"
+                    if (opt is not None and crown_overall is not None)
+                    else "never been in the ring, and nothing rules it out — worth a look"
+                )
+            else:
+                tier, why = UNPROMISING_TIER, (
+                    f"its own runs say no — even optimistically it reads {opt:.0f} against a "
+                    f"crown of {crown_overall:.0f}. Raced last, never excluded: that reading "
+                    "is thin, and the ring has not actually asked it yet"
+                )
         elif bar is None or (ceiling is not None and ceiling >= bar):
             tier, why = (
                 CONTENDER_TIER,
@@ -1039,6 +1076,10 @@ def contender_order(
             "rating": round(rating, 1) if rating is not None else None,
             "ceiling": round(ceiling, 1) if ceiling is not None else None,
             "pooled_overall": p.get("overall"),
+            # The pooled optimistic ceiling, which is what orders the profiles the ring has
+            # no rating for — the biggest *potential* threat first, exactly as the rated tier
+            # is ordered by its ring ceiling.
+            "pooled_ceiling": p.get("optimistic"),
             "why": why,
         })
 
@@ -1048,6 +1089,7 @@ def contender_order(
         key=lambda c: (
             c["tier"],
             -(c["ceiling"] if c["ceiling"] is not None else -1e9),
+            -(c["pooled_ceiling"] if c["pooled_ceiling"] is not None else -1e9),
             -(c["pooled_overall"] or -1e9),
         )
     )
