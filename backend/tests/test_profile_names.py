@@ -38,9 +38,10 @@ def test_the_pool_is_large_and_clean():
     assert len(set(profile_names.NOUNS)) == len(profile_names.NOUNS)
     assert all(w[:1].isupper() and w.isalpha() for w in profile_names.ADJECTIVES)
     assert all(w[:1].isupper() and w.isalpha() for w in profile_names.NOUNS)
-    # Every adjective initial has nouns to alliterate with.
-    initials = {n[0] for n in profile_names.NOUNS}
-    assert {a[0] for a in profile_names.ADJECTIVES} <= initials
+    # Every adjective initial has a non-matching noun pool to draw from, so a name can
+    # always be built without alliterating.
+    for letter, pool in profile_names._NOUNS_NOT_STARTING.items():
+        assert pool and all(n[0] != letter for n in pool)
 
 
 def test_names_are_unique_across_a_large_field():
@@ -49,7 +50,9 @@ def test_names_are_unique_across_a_large_field():
     with session_scope() as s:
         names = [profile_names.name_for(s, f"{i:012x}") for i in range(150)]
     assert len(set(names)) == 150
-    assert sum(1 for n in names if n.split()[0][0] == n.split()[1][0]) > 100  # mostly alliterative
+    # …and none of them alliterates. "Paper Plover" is the thing this avoids: at 150 rows
+    # the shared initial stops distinguishing anything and every name reads like the rest.
+    assert not [n for n in names if n.split()[0][0] == n.split()[1][0]]
     _clear()
 
 

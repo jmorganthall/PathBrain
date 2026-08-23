@@ -1274,6 +1274,15 @@ export interface Job {
   cancel_url?: string | null;
   started_at: string;
   finished_at: string | null;
+  // Milliseconds remaining as of this response — deliberately a duration, not a formatted
+  // string (which can't be counted down) and not an absolute server timestamp (which would
+  // be read against the browser's clock, putting any skew straight into the number). The
+  // client anchors it to its own clock on arrival and ticks from there; each poll re-anchors.
+  // null when the job genuinely can't be estimated — better than a fabricated countdown.
+  eta_ms?: number | null;
+  // How the estimate was reached: "scheduled" (a time-boxed job's real deadline),
+  // "measured" (units left x measured unit cost), "observed" (this job's own rate so far).
+  eta_basis?: "scheduled" | "measured" | "observed" | null;
 }
 
 export interface JobsResponse {

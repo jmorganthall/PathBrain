@@ -208,6 +208,22 @@ LLM-based. See `README.md` for the product overview.
     return `202 {job_id}`; `/api/jobs` (`api/routes_jobs.py`) merges them with read-only
     adapters for active runs/sweep/profile-test/experiment so the top-right jobs
     dropdown shows everything. History is in-memory (durable ops live in their DB rows).
+    **Every job carries an ETA** (`routes_jobs._eta_ms`, exposed as `eta_ms` + `eta_basis` on
+    every entry): "3/40" is what a progress bar shows and not what anyone is asking — the
+    question is whether to wait or walk away. Three answers, best first, and the display names
+    which was used because they aren't equally trustworthy: **`scheduled`** (a time-boxed job —
+    duel window, challenger race, "test current for X" — whose finish is a *deadline*, not an
+    estimate), **`measured`** (units left × the per-iteration cost measured over recent runs),
+    **`observed`** (the job's own rate: elapsed ÷ done × remaining — the universal fallback, e.g.
+    a re-grade counting rows). `None` when genuinely unknowable; a fabricated countdown is worse
+    than none, since it's the one number a user plans around. The value is a **duration**, not a
+    formatted string (uncountable) and not an absolute server timestamp (which the browser would
+    read against *its* clock, folding in any skew): the client anchors it to its own clock on
+    arrival and **ticks it down every second** (`JobStatus.Countdown`), re-anchoring on each
+    poll, so the readout keeps falling truthfully between polls instead of freezing and jumping.
+    It floors at "finishing…" rather than counting into the past. The profile test also gained
+    real progress — its completed iterations were only ever in the stage sentence, so its bar was
+    indeterminate; they're now summed from its chunks (`job_group`), like the manual-run series.
   - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
     iterations still needed to reach `correlation.min_iterations`, then **restore the
     baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`

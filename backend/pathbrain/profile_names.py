@@ -17,9 +17,12 @@ tape narratable.
   collisions, so two profiles can never share a call sign. A model sampling names would
   need a uniqueness pass anyway, and would drift between runs.
 
-Names are alliterative *by preference* (the hash picks an adjective, then prefers a noun
-sharing its initial) and fall back to any noun when that pool is exhausted — memorable
-where possible, unique always.
+Names pair an adjective with a noun **starting from a different letter** ("Paper Plover"
+is exactly what this avoids). Alliteration is charming once and wearying at 150: a column
+of Gritty Gibbon, Languid Lavender and Speedy Sloth is harder to scan than it looks,
+because the initial — the letter the eye anchors on first — stops distinguishing anything
+and every row starts to read like every other. Two independent initials make a name easier
+to tell apart at a glance, which is the entire reason the call signs exist.
 """
 from __future__ import annotations
 
@@ -39,9 +42,9 @@ log = get_logger("profile_names")
 SQM_OFF_NAME = "No Shaper"
 
 # ~500 of each: a quarter-million pairings, so the name a profile gets is effectively its
-# own and the collision probe below almost never has to fire. Grouped by initial (the
-# alliteration preference reads them that way) and deliberately plain — evocative,
-# pronounceable, nothing that reads as a slur, a brand, or a person.
+# own and the collision probe below almost never has to fire. Listed by initial for easy
+# editing, and deliberately plain — evocative, pronounceable, nothing that reads as a slur,
+# a brand, or a person.
 ADJECTIVES = tuple(
     """
     Agile Airy Alert Alpine Amber Ambling Ample Ancient Amiable Arctic
@@ -156,10 +159,14 @@ NOUNS = tuple(
 """.split()
 )
 
-_NOUNS_BY_INITIAL: dict[str, tuple[str, ...]] = {}
-for _n in NOUNS:
-    _NOUNS_BY_INITIAL.setdefault(_n[0], ())
-    _NOUNS_BY_INITIAL[_n[0]] += (_n,)
+# For each adjective initial, every noun that does NOT start with it. Precomputed rather
+# than filtered per call so name generation stays a couple of index lookups, and so
+# "no alliteration" is a property of the pool a name is drawn from rather than a check
+# some later edit can forget to apply.
+_NOUNS_NOT_STARTING: dict[str, tuple[str, ...]] = {
+    letter: tuple(n for n in NOUNS if n[0] != letter)
+    for letter in {a[0] for a in ADJECTIVES}
+}
 
 # Odd steps so repeated probing walks the whole list instead of cycling on a short orbit.
 _ADJ_STEP = 37
@@ -184,14 +191,15 @@ def candidates(fingerprint: str):
     seed = _seed(fingerprint)
     for attempt in range(_MAX_ATTEMPTS):
         adjective = ADJECTIVES[(seed + attempt * _ADJ_STEP) % len(ADJECTIVES)]
-        # Alliteration by preference: prefer a noun sharing the adjective's initial, and
-        # fall back to the full list when that letter has nothing left to offer.
-        pool = _NOUNS_BY_INITIAL.get(adjective[0]) or NOUNS
-        if attempt >= len(pool) * 2:  # that letter is crowded — open it up
-            pool = NOUNS
+        # Never alliterative: the noun is drawn from the pool that excludes the adjective's
+        # own initial. Two independent letters make a name easier to tell apart at a glance
+        # than two of the same, which is the whole job a call sign has in a 150-row table.
+        pool = _NOUNS_NOT_STARTING.get(adjective[0]) or NOUNS
         noun = pool[((seed >> 17) + attempt * _NOUN_STEP) % len(pool)]
         yield f"{adjective} {noun}"
-    yield f"{ADJECTIVES[seed % len(ADJECTIVES)]} {NOUNS[(seed >> 17) % len(NOUNS)]} {fingerprint[:4]}"
+    _adj = ADJECTIVES[seed % len(ADJECTIVES)]
+    _pool = _NOUNS_NOT_STARTING.get(_adj[0]) or NOUNS
+    yield f"{_adj} {_pool[(seed >> 17) % len(_pool)]} {fingerprint[:4]}"
 
 
 def _is_sqm_off(fingerprint: str) -> bool:
