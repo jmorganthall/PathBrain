@@ -201,7 +201,21 @@ LLM-based. See `README.md` for the product overview.
     experiment on a non-writable field (scheduler/queues) is refused instead of no-op'ing.
   - `coordinator.py` — process-wide lock that serializes any apply-firewall + benchmark
     session (sweep, profile test, experiment, monitoring, manual run): user-triggered
-    ones `hold` (queue), periodic ones `try_hold` (defer). Pairs with the read-before/
+    ones `hold` (queue), periodic ones `try_hold` (defer).
+    **The zipper merge** (`waiting()` / `yield_if_waiting()`): the duel ladder holds the lock
+    for its **whole window** — hours — so an Explore "Test now" pressed at midnight would
+    otherwise queue behind the entire night, with cancelling the session the only escape (and
+    in continuous mode the scheduler just starts another after `continuous_gap_minutes`).
+    `hold` now counts the queue, and a long session can call `yield_if_waiting` at a natural
+    seam to let **one** waiting session through before taking the lock back. The duel does
+    this **between pairs**, where nothing is in flight: within-pair adjacency — the thing that
+    makes a pair's two legs share their weather — is untouched, because a pair is never
+    interrupted once started. Yielded time is deliberately **not** added back to the deadline:
+    a nightly window is a wall-clock agreement about when the ladder may run, and quietly
+    running past 05:00 to make up a detour would break what the window is for. The mechanism
+    detail that matters: `threading.Lock` is documented **unfair**, so after releasing we wait
+    for the lock to actually be taken before queueing for it again — on CPython the woken
+    waiter usually wins anyway, but "usually" is a tendency and this makes it a guarantee. Pairs with the read-before/
     read-after fingerprint check in `runner.execute_run` (FAILs a run on mid-run drift).
   - `jobs.py` — in-process background-job registry (progress/status/recent history).
     The heavy score passes (`/api/score/regrade|rescore|rederive`) run as jobs and
