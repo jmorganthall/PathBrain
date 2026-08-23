@@ -729,7 +729,12 @@ LLM-based. See `README.md` for the product overview.
     applied). (2) is not redundant: when the firewall can't be driven exactly to a proposal it
     settles on a neighbour and the runs are filed under *that* profile's coordinates, so the
     proposed point never enters the field and a measured-profiles check alone would re-offer it
-    forever. The ledger read is best-effort — bookkeeping must never blank the landscape. They
+    forever. The ledger read is best-effort — bookkeeping must never blank the landscape.
+    **A proposed value is run through `coerce_value` first**, so the number on screen is the
+    number that will run: a lever is only as fine-grained as the firewall's own control, and
+    CoDel target/interval are selects keyed by a bare integer — proposing `6.5ms` proposed
+    something that cannot exist, the apply quantized it to `6`, and the ledger then graded
+    "3ms → 6.5ms" against a profile running 6ms. They
     are ranked by an **upper confidence bound** (`predicted + EXPLORATION_WEIGHT · uncertainty`),
     because the question is "where might we beat everything measured?", not "where would we score
     respectably?" — different questions with different answers, and only the first one explores.

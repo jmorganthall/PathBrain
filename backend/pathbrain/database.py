@@ -100,6 +100,7 @@ def _migrate() -> None:
         },
         "profile_tests": {
             "stage": "VARCHAR(255)",
+            "reached_fingerprint": "VARCHAR(40)",
         },
         "score_results": {
             "sops_stdev": "FLOAT",

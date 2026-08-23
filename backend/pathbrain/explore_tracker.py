@@ -39,7 +39,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .methodology import ensure_current_methodology, overall_metrics, overall_weights
-from .models import ExploreRecommendation, Run, RunStatus
+from .models import ExploreRecommendation, ProfileTest, Run, RunStatus
 from .profile_names import names_for
 
 log = get_logger("explore_tracker")
@@ -440,6 +440,16 @@ def _measured_fingerprint(session, rows: list[ExploreRecommendation]) -> dict[in
     if not by_group:
         return {}
     found: dict[int, str] = {}
+    # The profile test records what the firewall reported the moment it applied, which is
+    # available seconds in — long before any run finishes. Runs still win (below): their
+    # ``settings_fingerprint`` is the column profiles are actually grouped on. This just stops
+    # a freshly-started test pointing at the wrong profile for the length of its first chunk.
+    test_ids = {r.profile_test_id: r.id for r in rows if r.profile_test_id is not None}
+    for pt_id, reached in session.execute(
+        select(ProfileTest.id, ProfileTest.reached_fingerprint)
+        .where(ProfileTest.id.in_(list(test_ids)), ProfileTest.reached_fingerprint.is_not(None))
+    ).all():
+        found[test_ids[pt_id]] = reached
     for group, fp in session.execute(
         select(Run.job_group, Run.settings_fingerprint)
         .where(
@@ -452,7 +462,7 @@ def _measured_fingerprint(session, rows: list[ExploreRecommendation]) -> dict[in
         # First completed chunk wins: every chunk of one test benchmarks the same applied
         # firewall state, and a later chunk differing would mean mid-test drift, which
         # ``execute_run`` fails the run for anyway.
-        found.setdefault(by_group[group], fp)
+        found[by_group[group]] = fp   # a real run outranks the apply-time reading
     return found
 
 
@@ -477,13 +487,16 @@ def _reconcile(rows: list[ExploreRecommendation], actual: dict[int, str]) -> Non
             if row is None:
                 continue
             note = (
-                f"The firewall settled on {fp}, not the {row.fingerprint} this was recorded "
-                "against — the requested profile was not fully reachable (a field the provider "
-                "cannot write, or a value the firewall stores in its own form). Graded against "
-                "the profile that actually ran."
+                f"Filed under {fp} rather than the {row.fingerprint} recorded when the test "
+                "started. The recorded one is a *prediction* of the profile's spelling: a CoDel "
+                "interval is written as 55 and the firewall reports it back as \"55\" — the same "
+                "setting, hashed differently. The apply is verified field by field before any "
+                "benchmark runs, so this is the profile that was asked for; it is graded against "
+                "the runs it actually produced."
             )
-            log.warning(
-                "Explore recommendation %s: recorded %s but the benchmark ran %s; re-pointing",
+            log.info(
+                "Explore recommendation %s: recorded %s, filed under %s; re-pointing (a spelling "
+                "difference is expected — the apply is verified per field before benchmarking)",
                 row.id, row.fingerprint, fp,
             )
             row.note = f"{row.note} {note}" if row.note else note

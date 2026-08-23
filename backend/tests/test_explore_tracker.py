@@ -408,7 +408,7 @@ def test_a_claim_is_repointed_to_the_profile_its_benchmark_actually_ran(client):
     row = next(r for r in body["recommendations"] if r["id"] == rec_id)
     assert row["fingerprint"] == "recactual001"     # re-pointed at what really ran
     assert row["verdict"] == "worse" and row["actual"] == 66.0
-    assert "settled on recactual001" in row["note"]
+    assert "Filed under recactual001" in row["note"]
     # …and the correction is persisted, so the profile link is right on the next read too.
     with session_scope() as s:
         assert s.get(ExploreRecommendation, rec_id).fingerprint == "recactual001"
@@ -620,3 +620,46 @@ def test_the_surviving_row_keeps_a_correction_note_earned_by_any_attempt(client)
     rows = [r for r in client.get("/api/explore/recommendations").json()["recommendations"]
             if r["fingerprint"] == "recnote00001"]
     assert len(rows) == 1 and "could not write Upload Quantum" in (rows[0]["note"] or "")
+
+
+def test_a_changed_duration_field_does_not_read_as_a_different_profile():
+    """The reported wall of "the profile we landed on isn't this one" notes.
+
+    A profile's fingerprint hashes the *values as spelled*. We write a CoDel interval as the
+    bare number the firewall's select is keyed by (55); the firewall echoes it back as "55".
+    `_field_equal` compares numerically, so the apply verifies and the benchmark runs — but
+    the two hash differently, so the recorded fingerprint named a profile that would never
+    appear. Every recommendation touching a duration hit this, which is every recommendation
+    on a CoDel lever.
+
+    Quantum is an int both ways, which is why the earlier repro looked clean and this went
+    unnoticed. The invariant worth pinning is the one that decides whether it matters: the
+    firewall genuinely reached the requested settings, so the divergence is spelling.
+    """
+    from pathbrain.providers import get_provider
+    from pathbrain.providers import mock as mock_mod
+    from pathbrain.settings_profile import _field_equal, normalize, plan_apply
+    from pathbrain.shaper_fields import WRITABLE_FIELDS
+
+    mock_mod._OVERRIDES.clear()
+    provider = get_provider()
+    live_norm = normalize(provider.discover())
+    parent = [dict(p) for p in live_norm]
+    overrides = explore.full_overrides(parent, [{"label": parent[0]["label"], "interval": 55}])
+    target = rs._apply_writable_overrides(live_norm, overrides)
+
+    for change in plan_apply(target, provider.discover())[0]:
+        provider.apply(change)
+    live_after = provider.discover()
+    after = normalize(live_after)
+
+    # The apply took: nothing is left to write, which is the check profile_test raises on.
+    assert plan_apply(target, live_after)[0] == []
+    # Every writable field matches *semantically* — the profile really was reached…
+    for t, a in zip(target, after):
+        for f in WRITABLE_FIELDS:
+            if t.get(f) is not None:
+                assert _field_equal(f, t.get(f), a.get(f)), f"{f}: {t.get(f)!r} vs {a.get(f)!r}"
+    # …while being spelled differently, which is the whole cause of the alarming note.
+    assert target[0]["interval"] == 55 and after[0]["interval"] == "55"
+    mock_mod._OVERRIDES.clear()

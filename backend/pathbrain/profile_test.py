@@ -32,6 +32,7 @@ from .models import ProfileTest, ProfileTestStatus
 from .providers import get_provider
 from .runner import CHUNK_ITERATIONS, run_chunk, teardown_plugins
 from .settings_profile import fingerprint, normalize, plan_apply
+from .shaper_fields import WRITABLE_FIELDS
 
 log = get_logger("profile_test")
 
@@ -149,7 +150,31 @@ def _drive(pt_id: int) -> None:
                         "The apply did not take — check provider write permissions / field support."
                     )
                 reached_fp = fingerprint(after)
-                log.info("Profile test %s: firewall reached %s (target %s)", pt_id, reached_fp, target_fp)
+                # The verify above raises unless every writable field matches, so reaching this
+                # line means the firewall IS on the requested profile. If the fingerprints still
+                # differ it is a spelling difference — we write ``55``, the firewall reports
+                # ``"55"`` — and the runs will be filed under the firewall's version. Log the
+                # actual field values behind it, because "settled on a different fingerprint" is
+                # alarming and unfalsifiable without them.
+                if reached_fp != target_fp:
+                    spelled = "; ".join(
+                        f"{t.get('label')}·{f}: asked {t.get(f)!r} ({type(t.get(f)).__name__}), "
+                        f"reports {a.get(f)!r} ({type(a.get(f)).__name__})"
+                        for t, a in zip(target or [], after)
+                        for f in WRITABLE_FIELDS
+                        if t.get(f) is not None and t.get(f) != a.get(f)
+                    )
+                    log.warning(
+                        "Profile test %s: firewall reports %s, we asked for %s — same profile, "
+                        "different spelling (every field verified equal). %s",
+                        pt_id, reached_fp, target_fp, spelled or "(no field-level difference found)",
+                    )
+                else:
+                    log.info("Profile test %s: firewall reached %s (target %s)", pt_id, reached_fp, target_fp)
+                with session_scope() as session:
+                    row = session.get(ProfileTest, pt_id)
+                    if row is not None:
+                        row.reached_fingerprint = reached_fp
 
                 # Benchmark the target profile in blocks of CHUNK_ITERATIONS, not one long
                 # run, so each block persists as it finishes (an interruption keeps the data
