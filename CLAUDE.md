@@ -719,6 +719,54 @@ LLM-based. See `README.md` for the product overview.
     engine is a pure function returning runnable per-pipe overrides, so a scheduler can alternate
     *explore* (measure these candidates) with *adjudicate* (duel the survivors) and the field
     grows toward the optimum instead of only being re-ranked.
+    **Measuring a candidate is two lengths, not one** (`POST /api/explore/test`): **"Test now"**
+    runs `explore_tracker.QUICK_ITERATIONS` (5 — one `runner.CHUNK_ITERATIONS` block, so it
+    persists as a single chunk), enough to see whether a recommendation went anywhere and cheap
+    enough to try several in an evening; omitting `iterations` keeps the old **"Test to minimum"**
+    top-up for a candidate worth settling. Both go through the one shared
+    `routes_settings.start_settings_test` (validate reachable → apply → benchmark → restore under
+    the coordinator lock), so a caller can't invent a second set of reachability rules. The
+    candidate is materialized on the **parent's stored settings** (`explore.full_overrides`), not
+    on whatever the firewall is currently on: `_apply_writable_overrides` overlays what it's given
+    onto *live*, so sending only the moved lever measures "the firewall as it stands, with this
+    lever moved" — the proposed profile only when the firewall happens to already be on the parent.
+    And a profile test always restores the baseline, so *live* is the baseline profile at the
+    start of every test — the proposal is reproduced only when the parent happens to *be* the
+    baseline, and every candidate branched from another parent measured something nobody
+    proposed. **The existing integrity checks cannot catch this** and were never meant to:
+    `profile_test` verifies the firewall reached `target`, but `target` is *defined* as
+    live-plus-diff so the verify is true by construction; `runner.execute_run`'s
+    read-before/read-after compares the live firewall **against itself**. Both answer "is the
+    measurement internally consistent?" — it is, a real stable profile was applied, measured
+    and attributed to its own fingerprint — not "is the applied profile the one that was
+    proposed?". When the parent's settings can't be found the levers fall back to live and the
+    recommendation is stamped with a `note` saying so.
+  - `explore_tracker.py` — **the recommendation ledger: was the data right?** Explore's output is
+    a *prediction*, and a prediction nobody scores is a horoscope — it costs the same night of
+    benchmarking either way. So the **claim is stored before the measurement exists**
+    (`models.ExploreRecommendation`, written by `POST /explore/test`): what was proposed (parent,
+    levers moved, settings applied), what the model asserted (`predicted` ± `uncertainty`, the
+    `upside` it was ranked on, the `best_overall` it claimed to beat), and — the part that makes
+    the ledger worth keeping — **what the prediction rested on** (`evidence`: a controlled matched
+    pair, the parent's own neighbourhood, or a marginal curve already flagged confounded). The
+    **verdict is derived, never stored** — recomputed from the measured field on every read
+    (`recommendations()`, one indexed query for the rows + one batched `crown_follower.profile_overalls`,
+    deliberately *not* a `compute_profiles` pass, so the page loads it immediately), exactly like
+    every other score here: a re-grade or fresh runs move it instead of leaving a frozen answer.
+    A claim is graded against **its own stated band** (`max(uncertainty, MIN_BAND)` — the model may
+    be wrong by exactly as much as it said it might be; the floor stops a ±0.1 claim manufacturing
+    a miss out of run-to-run noise) → `on_target` / `better` / `worse`, plus `pending` (nothing
+    measured yet — never counted as a success) and **`incomparable`** (proposed under another
+    methodology: a prediction is a number on one rubric's scale, so grading it under a different one
+    compares two yardsticks — the same discipline the run-comparability gate applies). A thin
+    measurement is graded but flagged `provisional`. Every row carries a **`why`** sentence joining
+    the miss to the evidence class it was priced from, and the `summary` aggregates the same split
+    **by evidence class** — which is how "that curve was confounded" turns from a caveat into a
+    measured fact about the model's own failure mode (the claim `CONFOUNDED_SHRINK` was written on
+    a hunch). The bucket is **weakest-link** (`evidence_kind`): a two-lever candidate priced one leg
+    from a matched pair and the other from a confounded curve is only as trustworthy as the
+    confounded leg. `GET /api/explore/recommendations`; rendered as the Explore page's
+    **"Was the data right?"** card.
   - `crowning.py` — **the first-class CROWNING POLICY**: the single resolver for "which
     verdict governs what automation applies". `crown_follow.policy` = **"pooled"** (the
     all-time Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
@@ -912,8 +960,12 @@ LLM-based. See `README.md` for the product overview.
   would refuse to apply;
   plus "Test to minimum" and **"Race challengers"**),
   Experiments, Shotgun Sweep, **Explore** (`Explore.tsx`, `/api/explore/landscape` — the
-  what-haven't-we-tried view: the ranked **next profiles to test** with a one-click "Test to
-  minimum", a response curve per lever per pipe (marginal solid + reference-conditioned dashed,
+  what-haven't-we-tried view: the ranked **next profiles to test** with a one-click **"Test now"**
+  (5 iterations — the cheap "did this go anywhere?" answer) beside "Test to minimum" (the full
+  confidence top-up), the **"Was the data right?"** ledger (`/api/explore/recommendations`) grading
+  every past recommendation against what the link actually did — predicted ± band vs measured, a
+  sentence on *why* it missed, and the calibration split **by evidence class** (do matched pairs
+  predict better than confounded curves? on your link, measured), a response curve per lever per pipe (marginal solid + reference-conditioned dashed,
   with a **confounded** chip where the two disagree), **"What changing one lever actually did"**
   (the matched-pair contrasts), **local optima** (coupled-basin detection), the holes in
   coverage, and the lever pairs that genuinely interact; fetched on demand, read-only apart
@@ -1396,6 +1448,24 @@ docker compose up --build   # -> http://localhost:8000
   wiring re-points automatically. Trade-off named: a calibrated crown means re-anchoring a threshold
   *can* move it — but that lever is exactly what makes the field distinguishable, which percentile
   could not.
+- **Phase 15 (done):** **the exploration feedback loop.** Explore proposed profiles and then
+  forgot it had: the only action was "Test to minimum" (a full confidence top-up before you knew
+  whether the idea went anywhere), and the prediction evaporated the moment the benchmark started
+  — so nobody could answer the question that decides whether the page is worth reading, *when the
+  data suggested something, was the data right?*. Two changes. **(1) Two test lengths**
+  (`POST /api/explore/test`): **"Test now"** runs 5 iterations (`explore_tracker.QUICK_ITERATIONS`,
+  one chunk) for the cheap "did this go anywhere?" reading; omitting `iterations` keeps the
+  top-up. Both share `routes_settings.start_settings_test`, and the candidate is now materialized
+  on the **parent's** stored settings (`explore.full_overrides`) rather than pasted onto whatever
+  the firewall is currently on — without that, every test after the first measured a profile
+  nobody proposed. **(2) The recommendation ledger** (`explore_tracker.py`,
+  `models.ExploreRecommendation`, `GET /api/explore/recommendations`): the claim is written down
+  *before* it is measured, the verdict is **derived on every read** from the measured field
+  (`on_target`/`better`/`worse` against the candidate's own stated band, plus `pending` and
+  `incomparable` for a claim made under another methodology), and each row says **why** it landed
+  or missed. The aggregate splits calibration **by evidence class** (matched pair / conditioned
+  neighbourhood / marginal curve / confounded curve), which turns the model's own stated
+  uncertainty about confounding into a measured number instead of a hunch.
 - **Next:** multi-parameter Bayesian search + interleaved A/B with effect-size/CI + hysteresis;
   routing intelligence / SD-WAN. (Latency-under-load/bufferbloat is explicitly **out of scope**.)
 

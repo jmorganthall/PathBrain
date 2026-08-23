@@ -97,10 +97,46 @@ class TestSettings(BaseModel):
 
     ``settings`` is a list of per-pipe overrides (each with a ``label`` matching a live pipe)
     or a single flat dict of writable fields applied to every pipe. Only *writable* fields are
-    applied — the result is always reachable from the live environment."""
+    applied — the result is always reachable from the live environment.
+
+    ``iterations`` runs exactly that many iterations; omitted, the test tops the profile up to
+    the confidence minimum. A short run answers "did this go anywhere?"; the top-up answers
+    "is this profile confidently better?" — different questions, and the caller picks."""
 
     settings: Any
     label: str | None = None
+    iterations: int | None = None
+
+
+class ExploreTest(BaseModel):
+    """Measure one Explore recommendation — and write the claim down before doing it.
+
+    Carries the candidate exactly as the landscape proposed it: the levers moved, what the
+    model predicted (``predicted`` ± ``uncertainty``, the ``upside`` it was ranked on), the
+    ``best_overall`` it claimed to beat, and **what the prediction rested on** (``evidence``).
+    Those are stored as an ``ExploreRecommendation`` so the proposal can be graded against
+    the measurement later, rather than evaporating the moment the benchmark starts.
+
+    ``parent_fingerprint`` matters more than it looks: the candidate is "*that* profile with
+    a lever moved", so the levers are overlaid on the parent's stored settings, not on
+    whatever the firewall happens to be set to right now. Without it, a recommendation
+    tested while the firewall sits on some third profile measures something nobody proposed.
+    """
+
+    settings: Any
+    label: str | None = None
+    # None → top up to the confidence minimum; an integer → run exactly that many.
+    iterations: int | None = None
+    parent_fingerprint: str | None = None
+    parent_overall: float | None = None
+    changes: Any = None
+    evidence: list[str] | None = None
+    multi_lever: bool = False
+    predicted: float | None = None
+    uncertainty: float | None = None
+    upside: float | None = None
+    best_overall: float | None = None
+    summary: str | None = None
 
 
 class ApplySettings(BaseModel):

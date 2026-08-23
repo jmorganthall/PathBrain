@@ -1,10 +1,18 @@
-"""The exploration landscape API — what the parameter space looks like and what to try next.
+"""The exploration landscape API — what the parameter space looks like, what to try next,
+and whether the last few "try next"s were any good.
 
-One endpoint, deliberately: the page needs the axes, the response curves, the interactions,
-the gaps and the candidates *together* (a candidate is only meaningful beside the gap it
-fills), and they all come from one pass over the profile field. It costs a
-``compute_profiles`` pass, so the page fetches it on demand rather than on load — the same
-bargain the duel's fight card makes.
+Two endpoints beside the landscape, and they're the same loop closed: ``POST /explore/test``
+measures a candidate *and writes down the claim it made first*; ``GET
+/explore/recommendations`` grades every stored claim against what the link actually did.
+Without the second one the landscape is a horoscope — it costs a night of benchmarking
+either way, and nobody could say whether its numbers mean anything.
+
+The landscape itself needs the axes, the response curves, the interactions, the gaps and
+the candidates *together* (a candidate is only meaningful beside the gap it fills), and
+they all come from one pass over the profile field. It costs a ``compute_profiles`` pass,
+so the page fetches it on demand rather than on load — the same bargain the duel's fight
+card makes. The ledger is deliberately much cheaper (two indexed queries), so the page can
+show it immediately.
 """
 from __future__ import annotations
 
@@ -12,9 +20,15 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from .. import explore as explore_mod
+from .. import explore_tracker
+from ..config_store import get_config
 from ..database import get_session
+from ..logging_config import get_logger
+from ..methodology import ensure_current_methodology
+from ..schemas import ExploreTest
 
 router = APIRouter()
+log = get_logger("api.explore")
 
 
 @router.get("/explore/landscape")
@@ -43,3 +57,87 @@ def landscape(
         confident_only=confident_only,
         reference=reference,
     )
+
+
+@router.post("/explore/test")
+def test_candidate(payload: ExploreTest, session: Session = Depends(get_session)) -> dict:
+    """Measure one recommendation — and record the claim it made, before measuring it.
+
+    Two questions, one path. ``iterations`` (default 5, "Test now") runs a short block:
+    enough to see whether the recommendation went anywhere at all, cheap enough to try
+    several in an evening. Omitting it tops the profile up to the confidence minimum — the
+    long answer, for a candidate worth settling. Either way it's the same supervised
+    apply → benchmark → restore session as any profile test, under the coordinator lock.
+
+    The candidate is materialized on the **parent's** stored settings rather than on
+    whatever the firewall is currently set to (see ``explore.full_overrides``), because
+    "Speedy Sloth, with the download quantum nobody has tried" is only that profile if it
+    starts from Speedy Sloth. When the parent's settings can't be found the levers fall
+    back to the live profile and the recommendation is stamped with a ``note`` saying so —
+    a caveat on the record beats a silent substitution.
+    """
+    from .routes_settings import _profile_settings, start_settings_test
+
+    settings = payload.settings
+    note: str | None = None
+    if payload.parent_fingerprint:
+        parent_settings = _profile_settings(session, payload.parent_fingerprint)
+        if parent_settings:
+            settings = explore_mod.full_overrides(parent_settings, payload.settings)
+        else:
+            note = (
+                "The parent profile's stored settings were unavailable, so the levers were "
+                "applied to the live profile instead — this may not be the profile that was "
+                "proposed."
+            )
+
+    started = start_settings_test(session, settings, payload.label, payload.iterations)
+
+    methodology = ensure_current_methodology(session, get_config(session))
+    rec_id = None
+    try:
+        rec_id = explore_tracker.record(
+            fingerprint=started["fingerprint"],
+            parent_fingerprint=payload.parent_fingerprint,
+            parent_overall=payload.parent_overall,
+            label=payload.label,
+            summary=payload.summary,
+            changes=payload.changes,
+            evidence=payload.evidence,
+            multi_lever=payload.multi_lever,
+            predicted=payload.predicted,
+            uncertainty=payload.uncertainty,
+            upside=payload.upside,
+            best_overall=payload.best_overall,
+            methodology_version=methodology.version,
+            iterations_requested=started["iterations"],
+            baseline_iterations=started.get("existing_iterations", 0),
+            profile_test_id=started["id"],
+            note=note,
+        )
+    except Exception:  # noqa: BLE001 — the benchmark is already running; losing the
+        # bookkeeping is a shame, not a reason to report the test as failed.
+        log.exception("Could not record the explore recommendation for test %s", started["id"])
+
+    return {**started, "recommendation_id": rec_id, "note": note}
+
+
+@router.get("/explore/recommendations")
+def recommendations(
+    limit: int = Query(50, ge=1, le=200),
+    session: Session = Depends(get_session),
+) -> dict:
+    """The recommendation ledger: every claim Explore made, graded against the measurement.
+
+    Per row: what was predicted, what the profile actually scores now, whether that landed
+    inside the stated band, and a sentence on **why** — which joins the miss to the kind of
+    evidence it was priced from (a controlled matched pair, the parent's own neighbourhood,
+    or a marginal curve already flagged confounded). The ``summary`` aggregates the same
+    thing across the ledger and splits it by evidence class, which is the measured answer
+    to "how much should I believe this page?".
+
+    Verdicts are **derived on every read**, never stored — a re-grade or fresh runs move
+    them, exactly like every other score here. A claim made under an older methodology is
+    reported ``incomparable`` rather than scored against a yardstick it never claimed.
+    """
+    return explore_tracker.recommendations(session, limit=limit)

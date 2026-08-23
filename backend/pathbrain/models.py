@@ -766,3 +766,72 @@ class UpdateAttempt(Base):
     verdict: Mapped[str] = mapped_column(String(20), default="pending")
     verdict_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ExploreRecommendation(Base):
+    """One exploration proposal we actually spent a benchmark on — and the claim it made.
+
+    The Explore page's whole output is a *prediction*: "this untested profile should score
+    about X, and it might reach Y". Until now that claim evaporated the moment the test
+    started — the run landed in history like any other, the page recomputed a fresh
+    landscape from the new field, and nobody could answer the only question that decides
+    whether the model is worth reading: **when the data suggested something, was the data
+    right?**
+
+    So the claim is written down *before* the measurement exists. The row records what was
+    proposed (the parent, the levers moved, the settings applied), what the model asserted
+    (``predicted`` ± ``uncertainty``, the ``upside`` it was ranked on, and the ``best_overall``
+    it was claiming to beat), and — crucially — **what the prediction rested on**
+    (``evidence``: a controlled matched pair, the parent's own neighbourhood, or a marginal
+    curve we already knew was confounded). The outcome is deliberately *not* stored: it is
+    re-derived from the measured field on every read, exactly like every other score in
+    PathBrain, so a re-grade or fresh runs move the verdict instead of freezing a stale one.
+
+    ``methodology_version`` is what makes the comparison honest. A prediction is a number on
+    one rubric's scale; measured under a different one it is not wrong, it is *incomparable*
+    — so a recommendation made under an older methodology is reported as such rather than
+    scored against a yardstick it never claimed.
+
+    ``baseline_iterations`` is the target's iteration count at proposal time (normally 0 —
+    candidates are by construction untested combinations). It keeps "measured over N
+    iterations" honest if the same combination is ever proposed twice.
+    """
+
+    __tablename__ = "explore_recommendations"
+    __table_args__ = (
+        Index("ix_explore_recommendations_created_at", "created_at"),
+        Index("ix_explore_recommendations_fingerprint", "fingerprint"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    # What was actually applied: the fingerprint of the profile the firewall was driven to,
+    # plus the profile it was branched from (so "X, but with the download quantum nobody has
+    # tried" stays readable long after the landscape that proposed it has been recomputed).
+    fingerprint: Mapped[str] = mapped_column(String(40))
+    parent_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    parent_overall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # The levers moved, and how the prediction for each was arrived at.
+    changes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    evidence: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    multi_lever: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # The claim itself, and the field it was claiming against.
+    predicted: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uncertainty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    upside: Mapped[float | None] = mapped_column(Float, nullable=True)
+    best_overall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    methodology_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # How it was measured.
+    iterations_requested: Mapped[int] = mapped_column(Integer, default=0)
+    baseline_iterations: Mapped[int] = mapped_column(Integer, default=0)
+    profile_test_id: Mapped[int | None] = mapped_column(ForeignKey("profile_tests.id"), nullable=True)
+    # Anything that makes the measurement less than a faithful reproduction of the proposal
+    # (e.g. the parent's stored settings were unavailable, so the levers were pasted onto the
+    # live profile instead). Read it before believing a verdict.
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)

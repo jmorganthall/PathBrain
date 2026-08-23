@@ -2737,18 +2737,33 @@ def _apply_writable_overrides(live_norm: list[dict], suggested) -> list[dict]:
     return out
 
 
-@router.post("/settings/test-settings")
-def test_settings(payload: TestSettings, session: Session = Depends(get_session)) -> dict:
-    """Apply an *arbitrary* set of shaper settings (e.g. an AI suggestion) onto the live profile —
-    overriding only writable fields — then benchmark it to the confidence minimum and restore the
-    baseline (a normal profile test under the coordinator lock). Rejects a no-op or a change that
-    touches a non-writable field up front, so we never apply something unreachable."""
+def start_settings_test(
+    session: Session,
+    settings,
+    label: str | None,
+    iterations: int | None = None,
+) -> dict:
+    """Apply an arbitrary set of writable overrides onto the live profile and benchmark it.
+
+    The shared body behind ``POST /settings/test-settings`` and the Explore page's
+    "test this recommendation" — one validate → apply → benchmark → restore path, so a
+    caller cannot invent a second set of reachability rules.
+
+    ``iterations`` is the number of iterations to run: ``None`` means *top up to the
+    confidence minimum* (the long, "settle the question" answer), an explicit count means
+    run exactly that many (the short, "did this go anywhere?" answer). Both are capped at
+    ``MAX_ITERATIONS`` and floored at one — a top-up on an already-confident profile still
+    collects a fresh reading rather than refusing.
+
+    Returns ``{id, fingerprint, iterations, label, existing_iterations}``; raises
+    ``HTTPException`` for a no-op, an unreachable change, or a busy pipeline.
+    """
     try:
         live = get_provider().discover()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Could not read the live firewall: {exc}") from exc
     live_norm = normalize(live)
-    target = _apply_writable_overrides(live_norm, payload.settings)
+    target = _apply_writable_overrides(live_norm, settings)
     target_fp = fingerprint(target)
     if target_fp == fingerprint(live_norm):
         raise HTTPException(
@@ -2758,17 +2773,36 @@ def test_settings(payload: TestSettings, session: Session = Depends(get_session)
         raise HTTPException(
             status_code=400, detail="Unreachable: the suggestion changes a non-writable field."
         )
-    iterations = min(MAX_ITERATIONS, _min_iterations(session))
+    existing = _profile_iterations(session, target_fp)
+    if iterations is None:
+        wanted = max(1, _min_iterations(session) - existing)
+    else:
+        wanted = max(1, int(iterations))
+    wanted = min(MAX_ITERATIONS, wanted)
     try:
-        test_id = profile_test_mod.start(
-            target_fp, target, payload.label or "AI suggestion", iterations
-        )
+        test_id = profile_test_mod.start(target_fp, target, label or "AI suggestion", wanted)
     except RuntimeError as exc:  # another firewall/benchmark session already running
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Could not start the test: {exc}") from exc
-    log.info("Test-settings %s started (fp %s, %s iteration(s))", test_id, target_fp, iterations)
-    return {"id": test_id, "fingerprint": target_fp, "iterations": iterations, "label": payload.label}
+    log.info("Test-settings %s started (fp %s, %s iteration(s))", test_id, target_fp, wanted)
+    return {
+        "id": test_id,
+        "fingerprint": target_fp,
+        "iterations": wanted,
+        "label": label,
+        "existing_iterations": existing,
+    }
+
+
+@router.post("/settings/test-settings")
+def test_settings(payload: TestSettings, session: Session = Depends(get_session)) -> dict:
+    """Apply an *arbitrary* set of shaper settings (e.g. an AI suggestion) onto the live profile —
+    overriding only writable fields — then benchmark it and restore the baseline (a normal profile
+    test under the coordinator lock). ``iterations`` runs exactly that many; omitted, it tops the
+    profile up to the confidence minimum. Rejects a no-op or a change that touches a non-writable
+    field up front, so we never apply something unreachable."""
+    return start_settings_test(session, payload.settings, payload.label, payload.iterations)
 
 
 @router.get("/settings/test-profile/current")

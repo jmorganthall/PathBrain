@@ -8,10 +8,20 @@
 //
 // So this page reads the measured field and shows four things, in the order you'd act on
 // them: what to run next, what each lever does, where the holes are, and which levers have
-// to be chosen together. It is entirely read-only — the only thing that writes anything is
-// the "Test to minimum" button, which goes through the same supervised apply → benchmark →
-// restore path as an AI suggestion.
-import { useCallback, useMemo, useState } from "react";
+// to be chosen together — and then whether the last few "run next"s were any good.
+//
+// That last part is the loop closing. A prediction nobody scores is a horoscope: it costs
+// the same night of benchmarking either way, and without a record of how the last ten turned
+// out there's no way to know whether "predicted 71.2 ± 3.1" means anything. So starting a
+// test writes the claim down first, and the ledger at the bottom grades every stored claim
+// against what the link actually did — split by what the prediction rested on, which is how
+// "that curve was confounded" turns from a caveat into a measured fact.
+//
+// The only thing that writes anything is the test button, which goes through the same
+// supervised apply → benchmark → restore path as an AI suggestion. It offers two lengths
+// because there are two questions: "did this go anywhere?" (a short block) and "is it
+// confidently better?" (top up to the confidence minimum).
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   CartesianGrid,
@@ -46,6 +56,8 @@ import TableSortLabel from "@mui/material/TableSortLabel";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import ExploreIcon from "@mui/icons-material/Explore";
+import FactCheckIcon from "@mui/icons-material/FactCheck";
+import BoltIcon from "@mui/icons-material/Bolt";
 import ScienceIcon from "@mui/icons-material/Science";
 import TrendingUpIcon from "@mui/icons-material/TrendingUp";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
@@ -60,9 +72,11 @@ import type {
   ExploreConditionedCurve,
   ExploreCurve,
   ExploreLandscape,
+  ExploreLedger,
   ExploreMatchedPairs,
+  ExploreRecommendation,
 } from "../api/types";
-import { fmtNum } from "../utils/format";
+import { fmtNum, fmtTimeShort } from "../utils/format";
 
 const SHAPE_TIP: Record<string, string> = {
   "sweet spot":
@@ -296,12 +310,17 @@ function CandidateCard({
   bestOverall,
   onTest,
   testing,
+  quickIterations,
+  minIterations,
 }: {
   candidate: ExploreCandidate;
   rank: number;
   bestOverall: number | null;
-  onTest: (c: ExploreCandidate) => void;
+  // `iterations` undefined = top up to the confidence minimum.
+  onTest: (c: ExploreCandidate, iterations?: number) => void;
   testing: boolean;
+  quickIterations: number;
+  minIterations: number | null;
 }) {
   const navigate = useNavigate();
   const promising = candidate.beats_best_by > 0;
@@ -325,15 +344,39 @@ function CandidateCard({
             </Tooltip>
           )}
           <Box sx={{ flexGrow: 1 }} />
-          <Button
-            size="small"
-            variant="contained"
-            startIcon={testing ? <CircularProgress size={14} /> : <ScienceIcon />}
-            disabled={testing}
-            onClick={() => onTest(candidate)}
+          {/* Two lengths, because there are two questions. The short one is the default:
+              a recommendation is a guess until something measures it, and the cheapest
+              useful answer to "did this go anywhere?" beats a long run you won't start. */}
+          <Tooltip
+            title={`Apply this profile and benchmark ${quickIterations} iterations — enough to see whether the recommendation went anywhere, cheap enough to try several in an evening. Your settings are restored afterwards either way.`}
           >
-            Test to minimum
-          </Button>
+            <span>
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={testing ? <CircularProgress size={14} /> : <BoltIcon />}
+                disabled={testing}
+                onClick={() => onTest(candidate, quickIterations)}
+              >
+                Test now ({quickIterations})
+              </Button>
+            </span>
+          </Tooltip>
+          <Tooltip
+            title={`Run the full ${minIterations ?? "confidence"} iterations that make a profile confident, so it can be ranked against the field rather than read as an early signal. Much longer — worth it once a quick test looks promising.`}
+          >
+            <span>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<ScienceIcon />}
+                disabled={testing}
+                onClick={() => onTest(candidate)}
+              >
+                Test to minimum
+              </Button>
+            </span>
+          </Tooltip>
         </Stack>
 
         {candidate.changes.map((ch) => (
@@ -728,11 +771,338 @@ function BasinsCard({ basins, maxOther }: { basins: ExploreBasin[]; maxOther?: n
   );
 }
 
+// ── Did the data get it right? ────────────────────────────────────────────────────────
+//
+// The claim was stored before the measurement existed; this is it graded against what the
+// link actually did. Two things make it worth more than a list of hits and misses:
+//
+//  * the verdict is derived on every read, so a re-grade or fresh runs move it — nothing
+//    here is a frozen answer; and
+//  * every row carries WHAT THE PREDICTION RESTED ON, so the aggregate answers the question
+//    the page can't otherwise ask itself: does a controlled matched pair actually predict
+//    better than a curve we'd already flagged as confounded? If it does, that's the shrink
+//    factor earning its place. If confounded curves overshoot every time, that's a measured
+//    instruction to trust them less.
+
+const VERDICTS: Record<
+  string,
+  { label: string; color: "success" | "error" | "warning" | "default"; tip: string }
+> = {
+  on_target: {
+    label: "landed in the band",
+    color: "success",
+    tip: "Measured inside the uncertainty the model stated. It was allowed to be wrong by exactly this much, and it wasn't.",
+  },
+  better: {
+    label: "beat the prediction",
+    color: "success",
+    tip: "Measured above the stated band — the model was too conservative here.",
+  },
+  worse: {
+    label: "missed low",
+    color: "error",
+    tip: "Measured below the stated band. The reason matters more than the number — see the sentence below the row.",
+  },
+  pending: {
+    label: "waiting on data",
+    color: "default",
+    tip: "No comparable runs on this profile yet: the test may still be queued or running, or its runs were quarantined as incomparable.",
+  },
+  incomparable: {
+    label: "different methodology",
+    color: "warning",
+    tip: "Proposed under an older methodology. The prediction was a number on that scale, so grading it against today's Overall would compare two yardsticks — it is excluded from the calibration below rather than scored.",
+  },
+  unscored: {
+    label: "no prediction",
+    color: "default",
+    tip: "No prediction was recorded with this recommendation, so there is nothing to grade.",
+  },
+};
+
+function RecommendationRow({ rec }: { rec: ExploreRecommendation }) {
+  const navigate = useNavigate();
+  const v = VERDICTS[rec.verdict] ?? VERDICTS.unscored;
+  return (
+    <Card variant="outlined">
+      <CardContent sx={{ pb: 1.5 }}>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
+          <Tooltip title={v.tip}>
+            <Chip size="small" color={v.color} label={v.label} />
+          </Tooltip>
+          <Tooltip title="What the prediction was priced from. The bucket is the WEAKEST evidence among the levers moved — a candidate is only as trustworthy as its shakiest leg.">
+            <Chip size="small" variant="outlined" label={rec.evidence_label} sx={{ height: 20 }} />
+          </Tooltip>
+          {rec.provisional && (
+            <Tooltip title="Measured, but on fewer iterations than make a profile confident — an early reading, not a settled one.">
+              <Chip size="small" variant="outlined" color="warning" label="provisional" sx={{ height: 20 }} />
+            </Tooltip>
+          )}
+          {rec.multi_lever && (
+            <Chip size="small" variant="outlined" label="two levers" sx={{ height: 20 }} />
+          )}
+          <Box sx={{ flexGrow: 1 }} />
+          <Typography variant="caption" color="text.secondary">
+            {fmtTimeShort(rec.created_at)}
+          </Typography>
+        </Stack>
+
+        <Typography variant="body2" sx={{ mb: 0.25 }}>
+          <Link
+            component="button"
+            underline="hover"
+            onClick={() => navigate(`/profiles/${encodeURIComponent(rec.fingerprint)}`)}
+            sx={{ font: "inherit", fontWeight: 600 }}
+          >
+            {rec.name || rec.label || rec.fingerprint}
+          </Link>
+          {rec.parent.fingerprint && (
+            <Typography component="span" variant="caption" color="text.secondary">
+              {" "}
+              — from {rec.parent.name || rec.parent.fingerprint}
+              {rec.parent.overall != null && ` (Overall ${fmtNum(rec.parent.overall, 1)})`}
+            </Typography>
+          )}
+        </Typography>
+
+        {(rec.changes ?? []).map((ch) => (
+          <Typography key={ch.key} variant="caption" color="text.secondary" sx={{ display: "block" }}>
+            {ch.pipe} {ch.field_label} {fmtValue(ch.from, ch.unit)} → <b>{fmtValue(ch.to, ch.unit)}</b>
+          </Typography>
+        ))}
+
+        <Stack direction="row" spacing={3} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+          <Box>
+            <Typography variant="caption" color="text.secondary">
+              Predicted
+            </Typography>
+            <Typography variant="body1" sx={{ lineHeight: 1.3 }}>
+              {fmtNum(rec.predicted, 1)}
+              <Typography component="span" variant="caption" color="text.secondary">
+                {" "}
+                ± {fmtNum(rec.band, 1)}
+              </Typography>
+            </Typography>
+          </Box>
+          <Box>
+            <Typography variant="caption" color="text.secondary">
+              Measured
+            </Typography>
+            <Typography variant="body1" sx={{ lineHeight: 1.3 }}>
+              {rec.actual == null ? "—" : fmtNum(rec.actual, 1)}
+              <Typography component="span" variant="caption" color="text.secondary">
+                {" "}
+                {rec.iterations > 0 ? `over ${rec.iterations} it.` : ""}
+              </Typography>
+            </Typography>
+          </Box>
+          <Box>
+            <Typography variant="caption" color="text.secondary">
+              Error
+            </Typography>
+            <Typography
+              variant="body1"
+              sx={{
+                lineHeight: 1.3,
+                color:
+                  rec.error == null || rec.verdict === "incomparable"
+                    ? "text.primary"
+                    : rec.verdict === "worse"
+                      ? "error.main"
+                      : "success.main",
+              }}
+            >
+              {rec.error == null || rec.verdict === "incomparable"
+                ? "—"
+                : `${rec.error > 0 ? "+" : ""}${fmtNum(rec.error, 1)}`}
+            </Typography>
+          </Box>
+          {rec.best_overall != null && (
+            <Tooltip title="A candidate is ranked on its upside beating the best profile measured at the time it was proposed. This is whether it actually did.">
+              <Box>
+                <Typography variant="caption" color="text.secondary">
+                  vs best then ({fmtNum(rec.best_overall, 1)})
+                </Typography>
+                <Typography
+                  variant="body1"
+                  sx={{ lineHeight: 1.3, color: rec.beat_best ? "success.main" : "text.secondary" }}
+                >
+                  {rec.beat_best == null ? "—" : rec.beat_best ? "beat it" : "did not"}
+                </Typography>
+              </Box>
+            </Tooltip>
+          )}
+        </Stack>
+
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+          {rec.why}
+        </Typography>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RecommendationLedger({ ledger }: { ledger: ExploreLedger }) {
+  const [page, setPage] = useState(0);
+  const s = ledger.summary;
+  const rows = ledger.recommendations;
+  const paged = rows.slice(page * ROWS_PER_PAGE, page * ROWS_PER_PAGE + ROWS_PER_PAGE);
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+          <FactCheckIcon color="primary" fontSize="small" />
+          <Typography variant="h6">Was the data right?</Typography>
+        </Stack>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+          Every recommendation you've tested, with the claim it made recorded <i>before</i> it
+          was measured and graded against what the link actually did. Verdicts are recomputed
+          on every read — a re-grade or fresh runs move them — and a claim made under an older
+          methodology is reported as incomparable rather than scored against a yardstick it
+          never claimed.
+        </Typography>
+
+        {s.graded === 0 ? (
+          <Alert severity="info" sx={{ mb: 1.5 }}>
+            {s.pending > 0
+              ? `${s.pending} recommendation${s.pending === 1 ? "" : "s"} recorded and waiting on data. A verdict appears as soon as the profile has comparable runs.`
+              : "Nothing graded yet — test a recommendation above and its prediction will be scored here."}
+          </Alert>
+        ) : (
+          <>
+            <Stack direction="row" spacing={3} sx={{ mb: 1.5 }} flexWrap="wrap" useFlexGap>
+              <Tooltip title="Recommendations with a measurement on the current methodology. Pending and incomparable ones are excluded rather than counted as successes — that's the difference between a calibration statistic and a flattering one.">
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Graded
+                  </Typography>
+                  <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
+                    {s.graded}
+                    {s.pending > 0 && (
+                      <Typography component="span" variant="caption" color="text.secondary">
+                        {" "}
+                        (+{s.pending} pending)
+                      </Typography>
+                    )}
+                  </Typography>
+                </Box>
+              </Tooltip>
+              <Tooltip title="How often the measurement landed inside the uncertainty the model stated. The model is allowed to be wrong by exactly as much as it said it might be.">
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Landed in the band
+                  </Typography>
+                  <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
+                    {s.hit_rate == null ? "—" : `${Math.round(s.hit_rate * 100)}%`}
+                  </Typography>
+                </Box>
+              </Tooltip>
+              <Tooltip title="Mean signed error (measured − predicted). Persistently negative means the model flatters its candidates; near zero means it's honest on average even where individual calls miss.">
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Bias
+                  </Typography>
+                  <Typography
+                    variant="h6"
+                    sx={{
+                      lineHeight: 1.2,
+                      color: s.mean_error != null && s.mean_error < -1 ? "error.main" : "text.primary",
+                    }}
+                  >
+                    {s.mean_error == null ? "—" : `${s.mean_error > 0 ? "+" : ""}${fmtNum(s.mean_error, 1)}`}
+                    {s.mean_abs_error != null && (
+                      <Typography component="span" variant="caption" color="text.secondary">
+                        {" "}
+                        (±{fmtNum(s.mean_abs_error, 1)} typical)
+                      </Typography>
+                    )}
+                  </Typography>
+                </Box>
+              </Tooltip>
+              {s.beat_best_claimed != null && (
+                <Tooltip title="Of the recommendations whose upside claimed to beat the best profile measured at the time, how many actually did. This is the claim the ranking is built on.">
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Beat the best
+                    </Typography>
+                    <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
+                      {s.beat_best}/{s.beat_best_claimed}
+                    </Typography>
+                  </Box>
+                </Tooltip>
+              )}
+            </Stack>
+
+            {s.by_evidence.length > 0 && (
+              <>
+                <Typography variant="subtitle2" sx={{ mt: 1 }}>
+                  Which evidence actually predicts
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+                  The reason this ledger is worth keeping. A controlled matched pair and a
+                  marginal curve are not equally believable, and this is the measured
+                  difference between them on your link — not an assumption baked into the
+                  model.
+                </Typography>
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Priced from</TableCell>
+                        <TableCell align="right">Graded</TableCell>
+                        <TableCell align="right">In band</TableCell>
+                        <TableCell align="right">Bias</TableCell>
+                        <TableCell align="right">Typical miss</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {s.by_evidence.map((b) => (
+                        <TableRow key={b.kind} hover>
+                          <TableCell>{b.label}</TableCell>
+                          <TableCell align="right">{b.graded}</TableCell>
+                          <TableCell align="right">
+                            {b.graded ? `${Math.round((b.on_target / b.graded) * 100)}%` : "—"}
+                          </TableCell>
+                          <TableCell
+                            align="right"
+                            sx={{ color: b.mean_error != null && b.mean_error < -1 ? "error.main" : undefined }}
+                          >
+                            {b.mean_error == null
+                              ? "—"
+                              : `${b.mean_error > 0 ? "+" : ""}${fmtNum(b.mean_error, 1)}`}
+                          </TableCell>
+                          <TableCell align="right">{fmtNum(b.mean_abs_error, 1)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </>
+            )}
+          </>
+        )}
+
+        <Divider sx={{ my: 1.5 }} />
+        <Stack spacing={1.5}>
+          {paged.map((rec) => (
+            <RecommendationRow key={rec.id} rec={rec} />
+          ))}
+        </Stack>
+        <Pager count={rows.length} page={page} onPage={setPage} />
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Explore() {
   const [data, setData] = useState<ExploreLandscape | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
+  // The ledger is two indexed queries, not a compute_profiles pass, so unlike the landscape
+  // it loads with the page — "how did the last ones go?" should be there before you decide
+  // to spend another night on the next one.
+  const [ledger, setLedger] = useState<ExploreLedger | null>(null);
   const [snack, setSnack] = useState<string | null>(null);
   const [gapPage, setGapPage] = useState(0);
   const [allCurves, setAllCurves] = useState(false);
@@ -759,21 +1129,59 @@ export default function Explore() {
     }
   }, []);
 
-  const test = useCallback(async (c: ExploreCandidate) => {
-    const id = c.changes.map((ch) => ch.key).join("|");
-    setTesting(id);
+  const loadLedger = useCallback(async () => {
     try {
-      const label = c.changes
-        .map((ch) => `${ch.pipe} ${ch.field_label} ${fmtValue(ch.to, ch.unit)}`)
-        .join(", ");
-      await api.testSettings({ settings: c.settings, label: `Explore: ${label}` });
-      setSnack("Testing — apply, benchmark to the confidence minimum, then restore. Watch the jobs menu.");
-    } catch (e) {
-      setSnack(e instanceof Error ? e.message : "Could not start the test.");
-    } finally {
-      setTesting(null);
+      setLedger(await api.exploreRecommendations());
+    } catch {
+      // The ledger is a read on top of the page's real job; a failure here shouldn't
+      // shout over the landscape.
+      setLedger(null);
     }
   }, []);
+
+  useEffect(() => {
+    void loadLedger();
+  }, [loadLedger]);
+
+  // Start a measurement — and record the claim it makes first, so it can be graded later.
+  // `iterations` undefined = top up to the confidence minimum; a number = run exactly that.
+  const test = useCallback(
+    async (c: ExploreCandidate, iterations?: number) => {
+      const id = c.changes.map((ch) => ch.key).join("|");
+      setTesting(id);
+      try {
+        const label = c.changes
+          .map((ch) => `${ch.pipe} ${ch.field_label} ${fmtValue(ch.to, ch.unit)}`)
+          .join(", ");
+        const started = await api.exploreTest({
+          settings: c.settings,
+          label: `Explore: ${label}`,
+          iterations,
+          // The candidate is "that profile with a lever moved", so the levers are applied to
+          // the parent's stored settings rather than to whatever the firewall is on now.
+          parent_fingerprint: c.parent.fingerprint,
+          parent_overall: c.parent.overall,
+          changes: c.changes,
+          evidence: c.evidence,
+          multi_lever: c.multi_lever,
+          predicted: c.predicted,
+          uncertainty: c.uncertainty,
+          upside: c.upside,
+          best_overall: data?.best_overall ?? null,
+          summary: c.summary,
+        });
+        setSnack(
+          `Testing ${started.iterations} iteration${started.iterations === 1 ? "" : "s"} — apply, benchmark, then restore your settings. The prediction is recorded; its verdict appears below once runs land.${started.note ? ` ${started.note}` : ""}`,
+        );
+        void loadLedger();
+      } catch (e) {
+        setSnack(e instanceof Error ? e.message : "Could not start the test.");
+      } finally {
+        setTesting(null);
+      }
+    },
+    [data, loadLedger],
+  );
 
   return (
     <Box>
@@ -813,6 +1221,14 @@ export default function Explore() {
 
       {data?.reason && <Alert severity="info">{data.reason}</Alert>}
 
+      {/* The ledger stands on its own — it grades past recommendations from the measured
+          field, so it doesn't need the landscape to have been mapped. */}
+      {(!data || data.reason) && ledger && ledger.recommendations.length > 0 && (
+        <Box sx={{ mt: 2 }}>
+          <RecommendationLedger ledger={ledger} />
+        </Box>
+      )}
+
       {data && !data.reason && (
         <>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
@@ -845,14 +1261,19 @@ export default function Explore() {
                       candidate={c}
                       rank={i + 1}
                       bestOverall={data.best_overall}
-                      onTest={(x) => void test(x)}
+                      onTest={(x, iterations) => void test(x, iterations)}
                       testing={testing === c.changes.map((ch) => ch.key).join("|")}
+                      quickIterations={ledger?.quick_iterations ?? 5}
+                      minIterations={ledger?.min_iterations ?? null}
                     />
                   ))}
                 </Stack>
               )}
             </CardContent>
           </Card>
+
+          {/* ── Was the data right? ────────────────────────────────────────────── */}
+          {ledger && ledger.recommendations.length > 0 && <RecommendationLedger ledger={ledger} />}
 
           {/* ── What each lever does ───────────────────────────────────────────── */}
           <Card sx={{ mb: 2 }}>
