@@ -681,6 +681,7 @@ def _candidates(
     gaps: list[dict],
     limit: int,
     pairs: list[dict] | None = None,
+    already_tried: set | None = None,
 ) -> list[dict]:
     """Untested profiles worth measuring, best first.
 
@@ -698,7 +699,16 @@ def _candidates(
     by_key = {c["key"]: c for c in curves}
     pairs_by_key = {m["key"]: m for m in (pairs or [])}
     best_measured = max(p["overall"] for p in points)
-    measured_coords = {tuple(sorted(p["coords"].items())) for p in points}
+    # What NOT to propose again. ``points`` is the *modelling* pool — confident profiles only,
+    # because a lucky Overall on two iterations is noise and noise in the model comes back out
+    # as a confident-sounding prediction. But "has anyone run this?" is a completely different
+    # question from "is it measured well enough to model?", and answering it from the modelling
+    # pool means anything short of the confidence bar is invisible: a candidate tested with a
+    # 5-iteration quick run is proposed again, with a prediction that ignores the very
+    # measurement it just produced. The caller passes the wider set.
+    measured_coords = already_tried if already_tried is not None else {
+        tuple(sorted(p["coords"].items())) for p in points
+    }
     parents = sorted(points, key=lambda p: (-p["overall"], -p["iterations"]))[:CANDIDATE_PARENTS]
 
     # (axis, value, why) worth trying, computed once per axis rather than per parent.
@@ -1078,6 +1088,43 @@ def basins(points: list[dict], axes: dict[str, dict]) -> list[dict]:
     return found
 
 
+def _claimed_coords(session, profiles: list[dict], axes: dict[str, dict]) -> set:
+    """The coordinates of every proposal a benchmark has already been spent on.
+
+    A recommendation records its parent and the levers it moved, so the point it proposed
+    reconstructs exactly: the parent's coordinates with those moves applied. That matters
+    because a proposal is not always reachable — when the firewall can't be driven all the
+    way there it settles on a neighbour, and the runs are filed under *that* profile's
+    coordinates. The proposed point then never appears in the measured field, so a check
+    against measured profiles alone would re-offer it every single time the page is opened.
+    Asking the ledger instead answers the question that actually matters: have we already
+    spent a night on this?
+
+    Best-effort — the ledger is bookkeeping, and a failure to read it must never take the
+    landscape down with it.
+    """
+    try:
+        from .explore_tracker import claimed_moves
+
+        by_fp = {p.get("fingerprint"): p for p in profiles}
+        out: set = set()
+        for claim in claimed_moves(session):
+            parent = by_fp.get(claim["parent_fingerprint"])
+            if parent is None:
+                continue
+            coords = _coords(parent, axes)
+            if not coords:
+                continue
+            for key, value in claim["moves"].items():
+                if key in axes:
+                    coords[key] = float(value)
+            out.add(tuple(sorted(coords.items())))
+        return out
+    except Exception:  # noqa: BLE001
+        log.debug("Could not read the recommendation ledger for candidate de-duplication", exc_info=True)
+        return set()
+
+
 def landscape(
     session,
     *,
@@ -1150,6 +1197,22 @@ def landscape(
     gaps = _gaps(points, axes, curves)
     pairs = matched_pairs(pool, axes)
 
+    # Everything already tried, so nothing is proposed twice. Two sources, because a profile
+    # can be *attempted* without ever appearing in the field:
+    #   * every profile with settings on record — scored or not, confident or not, thin or
+    #     stale. A quick 5-iteration test lands well under the confidence bar, and it is still
+    #     unquestionably "already tried".
+    #   * every proposal a benchmark has already been spent on (the recommendation ledger).
+    #     When the firewall cannot be driven exactly to a proposal it settles on a neighbour,
+    #     which is filed under *its* coordinates — so the proposed point never appears in the
+    #     field at all and would otherwise be re-offered forever.
+    tried: set = set()
+    for p in field.get("profiles", []):
+        coords = _coords(p, axes)
+        if coords:
+            tried.add(tuple(sorted(coords.items())))
+    tried |= _claimed_coords(session, field.get("profiles", []), axes)
+
     # De-confounding. The marginal curves above answer "how do profiles with this value
     # score?"; these answer "what happens if I change this value", which is the question
     # anyone tuning a shaper is actually asking.
@@ -1178,7 +1241,9 @@ def landscape(
         "condition_max_other_changes": CONDITION_MAX_OTHER_CHANGES,
         "interactions": _interactions(points, axes),
         "gaps": gaps,
-        "candidates": _candidates(points, axes, curves, gaps, max(1, int(suggestions)), pairs),
+        "candidates": _candidates(
+            points, axes, curves, gaps, max(1, int(suggestions)), pairs, already_tried=tried
+        ),
         "best_overall": round(max(p["overall"] for p in points), 2),
         "profiles_modelled": len(points),
         "confident_only": confident_only and not fell_back,

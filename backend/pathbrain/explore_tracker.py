@@ -411,6 +411,45 @@ def _reconcile(rows: list[ExploreRecommendation], actual: dict[int, str]) -> Non
             rec.fingerprint, rec.note = fp, row.note
 
 
+# How many recorded claims to consider when de-duplicating candidates. Generous — the point
+# is not to re-propose something already paid for — but bounded, so the landscape's cost
+# doesn't grow without limit as the ledger fills.
+CLAIM_HISTORY = 500
+
+
+def claimed_moves(session, limit: int = CLAIM_HISTORY) -> list[dict]:
+    """``[{parent_fingerprint, moves: {axis key: value}}]`` — every proposal already paid for.
+
+    The exploration page proposes *untested* profiles, and it decides what is untested by
+    looking at the measured field. That check has a hole a benchmark can fall straight
+    through: a proposal the firewall cannot be driven exactly to settles on a neighbour, and
+    the runs are filed under **that** profile's coordinates — so the point that was proposed
+    never appears in the field, and gets proposed again every time the page is opened.
+
+    The ledger is the record of what was actually attempted, which is the question that
+    matters ("have we already spent a night on this?"). A claim stores its parent and the
+    levers it moved, so the point it proposed reconstructs exactly: the parent's coordinates
+    with those moves applied.
+    """
+    rows = session.scalars(
+        select(ExploreRecommendation)
+        .order_by(ExploreRecommendation.id.desc())
+        .limit(max(1, limit))
+    ).all()
+    out: list[dict] = []
+    for rec in rows:
+        if not rec.parent_fingerprint:
+            continue
+        moves = {
+            ch["key"]: ch["to"]
+            for ch in (rec.changes or [])
+            if isinstance(ch, dict) and ch.get("key") is not None and ch.get("to") is not None
+        }
+        if moves:
+            out.append({"parent_fingerprint": rec.parent_fingerprint, "moves": moves})
+    return out
+
+
 def recommendations(session, limit: int = 50) -> dict:
     """The ledger with every claim graded against what the link actually did.
 
@@ -504,4 +543,4 @@ def recommendations(session, limit: int = 50) -> dict:
     }
 
 
-__all__ = ["record", "recommendations", "evidence_kind", "QUICK_ITERATIONS"]
+__all__ = ["record", "recommendations", "claimed_moves", "evidence_kind", "QUICK_ITERATIONS"]

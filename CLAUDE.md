@@ -697,7 +697,23 @@ LLM-based. See `README.md` for the product overview.
     Overall's 0–100 scale.
     **Candidates** are the headline: existing profiles with one (or two) levers moved to a value
     nobody has tried, each stating *why* that value is interesting — fills the widest untested
-    gap, refines between the best measured value and its neighbour, or steps past an edge. They
+    gap, refines between the best measured value and its neighbour, or steps past an edge.
+    **"Nobody has tried" is answered from two sources, not from the modelling pool**
+    (`already_tried` / `_claimed_coords`). The pool is *confident profiles only* — a lucky
+    Overall on two iterations is noise, and noise in the model comes back out as a
+    confident-sounding prediction — but "is this measured well enough to model?" and "has anyone
+    run this?" are different questions, and answering the second from the first re-proposes
+    everything below the confidence bar. With **"Test now" at 5 iterations against a 15-iteration
+    bar that is every quick test**: the page kept offering a profile whose own measurement was
+    sitting on the ledger right below it, with a prediction that ignored it (the reported *"still
+    suggesting a profile that already exists and has already been tested"*). So the dedup set is
+    **(1)** the coordinates of *every* profile with settings on record — scored or not, confident
+    or not — and **(2)** every proposal a benchmark has already been spent on, reconstructed from
+    the ledger (`explore_tracker.claimed_moves`: a claim's parent coordinates with its moves
+    applied). (2) is not redundant: when the firewall can't be driven exactly to a proposal it
+    settles on a neighbour and the runs are filed under *that* profile's coordinates, so the
+    proposed point never enters the field and a measured-profiles check alone would re-offer it
+    forever. The ledger read is best-effort — bookkeeping must never blank the landscape. They
     are ranked by an **upper confidence bound** (`predicted + EXPLORATION_WEIGHT · uncertainty`),
     because the question is "where might we beat everything measured?", not "where would we score
     respectably?" — different questions with different answers, and only the first one explores.

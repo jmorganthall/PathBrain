@@ -466,3 +466,102 @@ def test_restating_a_field_in_another_notation_does_not_invent_a_profile(client,
         provider.apply(change)
     assert body["fingerprint"] == fingerprint(normalize(provider.discover()))
     mock_mod._OVERRIDES.clear()
+
+
+# ── never propose something we have already spent a benchmark on ───────────────────────
+#
+# Reported as "explore is still suggesting a profile that already exists and has already
+# been tested". The page decided what was untested by looking at the *modelling* pool —
+# confident profiles only — so anything short of the confidence bar was invisible to it.
+# A "Test now" block is 5 iterations against a 15-iteration bar, which means every quick
+# test produced a profile the candidate generator could not see, and re-proposed forever
+# with a prediction that ignored the very measurement it had just paid for.
+
+
+def _field(monkeypatch, profiles):
+    monkeypatch.setattr(rs, "compute_profiles", lambda session: {"profiles": profiles})
+
+
+def _spread_field():
+    """A field with enough structure to generate candidates, none of them tied."""
+    from .test_explore import _profile
+
+    return [
+        _profile("aaaaaaaaaaaa", quantum=1000, target=5, overall=60.0, up_quantum=300),
+        _profile("bbbbbbbbbbbb", quantum=2000, target=5, overall=70.0, up_quantum=600),
+        _profile("cccccccccccc", quantum=3000, target=5, overall=80.0, up_quantum=900),
+        _profile("dddddddddddd", quantum=4000, target=5, overall=75.0, up_quantum=1200),
+        _profile("eeeeeeeeeeee", quantum=5000, target=5, overall=65.0, up_quantum=1500),
+    ]
+
+
+def test_a_thin_already_tested_profile_is_not_proposed_again(monkeypatch):
+    """A 5-iteration quick test is unquestionably "already tried" — but it lands well under
+    the confidence bar, and the dedup used to read the confident-only modelling pool. So the
+    page kept offering a profile whose measurement was sitting right below it on the ledger."""
+    from .test_explore import _profile
+
+    profiles = _spread_field()
+    _field(monkeypatch, profiles)
+    top = explore.landscape(None, suggestions=3)["candidates"][0]
+    coords = top["coords"]
+
+    # Now measure exactly that candidate — thinly, as "Test now" does. It must not come back.
+    tested = _profile(
+        "ffffffffffff",
+        quantum=int(coords["Download::quantum"]),
+        target=5,
+        overall=74.5,
+        up_quantum=int(coords["Upload::quantum"]),
+        iterations=5,
+        confident=False,          # 5 of the 15 iterations that make a profile confident
+    )
+    _field(monkeypatch, profiles + [tested])
+    again = explore.landscape(None, suggestions=6)["candidates"]
+    assert all(c["coords"] != coords for c in again), (
+        "a profile that has been measured — however thinly — must never be proposed again"
+    )
+    # …and the page still has something to say; this is a de-duplication, not a shutdown.
+    assert again
+
+
+def test_a_proposal_already_paid_for_is_not_reoffered_even_if_the_firewall_missed_it(monkeypatch):
+    """The second half, and the one measured profiles alone can never cover.
+
+    When the firewall can't be driven exactly to a proposal it settles on a neighbour, and
+    the runs are filed under *that* profile's coordinates — so the proposed point never
+    appears in the field at all. Checking the measured field would re-offer it every time
+    the page is opened. The ledger is the record of what was actually attempted."""
+    profiles = _spread_field()
+    _field(monkeypatch, profiles)
+    with session_scope() as session:
+        top = explore.landscape(session, suggestions=3)["candidates"][0]
+
+    # Record the claim exactly as pressing "Test now" would — and deliberately do NOT add any
+    # profile at those coordinates, standing in for a firewall that settled elsewhere.
+    _record(
+        "recmissedfp1",
+        predicted=top["predicted"],
+        parent_fingerprint=top["parent"]["fingerprint"],
+        changes=top["changes"],
+    )
+
+    with session_scope() as session:
+        again = explore.landscape(session, suggestions=6)["candidates"]
+    assert all(c["coords"] != top["coords"] for c in again), (
+        "a proposal a benchmark has already been spent on must not be offered again"
+    )
+
+
+def test_de_duplication_never_takes_the_landscape_down_with_it(monkeypatch):
+    """The ledger is bookkeeping. A page that maps the parameter space must not go blank
+    because a bookkeeping read failed, so the lookup is best-effort by construction."""
+    profiles = _spread_field()
+    _field(monkeypatch, profiles)
+    monkeypatch.setattr(
+        explore_tracker, "claimed_moves",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("ledger unavailable")),
+    )
+    with session_scope() as session:
+        out = explore.landscape(session, suggestions=3)
+    assert out["candidates"] and out["reason"] is None
