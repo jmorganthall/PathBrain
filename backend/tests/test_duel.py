@@ -2086,8 +2086,8 @@ def test_a_thin_profile_whose_ceiling_reaches_the_crown_is_raced_before_one_that
     ])
     order = duel_mod.contender_order(field, {}, "belt00000000")
     by_fp = {c["fingerprint"]: c for c in order}
-    assert by_fp["livethreat00"]["tier"] == duel_mod.UNTESTED_TIER
-    assert by_fp["ownrunssayno"]["tier"] == duel_mod.UNPROMISING_TIER
+    assert by_fp["livethreat00"]["tier"] == duel_mod.LIVE_THREAT_TIER
+    assert by_fp["ownrunssayno"]["tier"] == duel_mod.UNTESTED_TIER
     assert [c["fingerprint"] for c in order].index("livethreat00") < \
            [c["fingerprint"] for c in order].index("ownrunssayno")
     # Given up on, never excluded — the ring has not actually asked it yet.
@@ -2107,9 +2107,14 @@ def test_the_biggest_potential_threat_goes_first_among_unrated_profiles():
     assert order.index("hugeupside00") < order.index("modestupside")
 
 
-def test_a_ring_record_still_outranks_any_pooled_reading():
-    """Pooled is what you consult when the ring has nothing to say. The moment it does, the
-    ring's own evidence decides — that is the whole point of running two verdicts."""
+def test_an_unexamined_claim_on_the_crown_is_raced_before_an_examined_one_on_the_belt():
+    """An unresolved claim on the crown outranks a rated contender, deliberately.
+
+    A rated contender has been examined, and its ceiling is a statement about beating the
+    *belt-holder*. A thin profile whose pooled ceiling clears the *crown* is an unexamined
+    claim that it is already the best thing measured — and it is only interesting while it
+    stays unresolved, because the same bout that answers it also matures the profile. So it
+    runs first. Ring evidence still governs wherever the ring HAS spoken (below)."""
     field = _thin_field([
         _thin("crown0000000", 80.0, 80.5, iterations=200, confident=True),
         _thin("ratedcontend", 60.0, 61.0, iterations=200, confident=True),
@@ -2120,6 +2125,25 @@ def test_a_ring_record_still_outranks_any_pooled_reading():
         "ratedcontend": {"rating": 1520.0, "rating_se": 20.0},
     }
     order = [c["fingerprint"] for c in duel_mod.contender_order(field, ratings, "belt00000000")]
-    # The pooled crown leads, then the profile the RING says can win, then the thin unknown.
-    assert order[0] == "crown0000000"
-    assert order.index("ratedcontend") < order.index("thinbutshiny")
+    assert order[0] == "crown0000000"          # the two verdicts disagreeing still leads
+    assert order.index("thinbutshiny") < order.index("ratedcontend")
+
+
+def test_the_ring_still_governs_every_profile_it_has_actually_rated():
+    """The promotion applies only where the ring has no opinion. A profile it has measured
+    and found short stays last however flattering its pooled reading — otherwise a noisy
+    pooled number could keep re-litigating a question the ring already answered."""
+    field = _thin_field([
+        _thin("crown0000000", 80.0, 80.5, iterations=200, confident=True),
+        _thin("ringsaysno00", 90.0, 99.0, iterations=200, confident=True),
+        _thin("thinbutshiny", 79.0, 95.0),
+    ])
+    ratings = {
+        "belt00000000": {"rating": 1500.0, "rating_se": 10.0},
+        "ringsaysno00": {"rating": 1200.0, "rating_se": 10.0},   # examined, and short
+    }
+    order = duel_mod.contender_order(field, ratings, "belt00000000")
+    by_fp = {c["fingerprint"]: c for c in order}
+    assert by_fp["ringsaysno00"]["tier"] == duel_mod.OUTCLASSED_TIER
+    fps = [c["fingerprint"] for c in order]
+    assert fps.index("thinbutshiny") < fps.index("ringsaysno00")

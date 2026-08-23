@@ -453,19 +453,27 @@ LLM-based. See `README.md` for the product overview.
     can consult it every session cheaply; `_pair_record` is the one accumulator both share.
     `contenders="leaders"` keeps the former pooled ordering for comparison and `"heirs"` the
     oldest exploring order.
-    **A thin profile earns the ring by what it could still do** (`contender_order`'s
-    `UNTESTED_TIER` / `UNPROMISING_TIER`). The pooled Overall is the winner *on paper*; the ring
-    is the real-world back-to-back result. Paper decides who gets to make a **claim** — for a
-    profile with no ring record, that claim is its **pooled optimistic ceiling** (`optimistic`,
-    the same p75 number the heirs card and the challenger race use, so all three agree on what
-    counts as a threat) measured against the pooled crown's Overall — and the ring decides
-    whether the claim survives contact. A five-iteration profile whose ceiling still reaches the
-    crown is a **live threat**, ranked among the unrated by that ceiling (biggest potential
-    threat first); one whose own runs fall short even optimistically is **given up on, never
-    excluded** — five iterations is a weak "no" and the ring hasn't actually asked, so it is
-    raced after everything with a live claim but before nothing. The moment the ring *has* a
-    rating, paper stops being consulted entirely (`CONTENDER_TIER`/`OUTCLASSED_TIER` read the
-    fitted rating): that is the whole point of running two verdicts. This is what makes the
+    **A thin profile earns the ring by what it could still do, and an unexamined claim on the
+    crown is raced IMMEDIATELY** (`contender_order`'s `LIVE_THREAT_TIER`). The pooled Overall is
+    the winner *on paper*; the ring is the real-world back-to-back result. Paper decides who gets
+    to make a **claim** — for a profile with no ring record, that claim is its **pooled optimistic
+    ceiling** (`optimistic`, the same p75 number the heirs card and the challenger race use, so
+    all three agree on what counts as a threat) measured against the pooled crown's Overall — and
+    the ring decides whether the claim survives contact. A five-iteration profile whose ceiling
+    reaches the crown is a **live threat** and runs at `LIVE_THREAT_TIER` (1), **ahead of the
+    rated contenders** (2): a rated contender has been examined and its ceiling is a statement
+    about beating the *belt-holder*, while this is an unexamined claim on the *crown itself* —
+    that it may already be the best thing measured and nobody has checked. Racing it answers the
+    claim head-to-head **and matures it**, since a bout's paired runs enter the pooled record like
+    any others, so the same hour buys the verdict and the evidence; waiting is what costs, because
+    the claim is only interesting while unresolved. Among themselves live threats are ordered by
+    ceiling, biggest first. A profile whose own runs fall short even optimistically drops to
+    `UNTESTED_TIER` — **given up on, never excluded**, since five iterations is a weak "no" and
+    the ring hasn't actually asked. The promotion applies **only where the ring has no opinion**:
+    the moment it *has* a rating, paper stops being consulted entirely
+    (`CONTENDER_TIER`/`OUTCLASSED_TIER` read the fitted rating, so a noisy pooled number can't
+    re-litigate a question the ring already answered). That is the whole point of running two
+    verdicts. This is what makes the
     explore→duel relationship real — a proposal is measured briefly for an *initial placement*,
     and the ring then spends its time maturing whatever could displace the best profile found so
     far, which is also why it isn't racing #432 against #567. It changes **matchmaking only**:
