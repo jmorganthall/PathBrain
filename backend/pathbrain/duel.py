@@ -765,10 +765,18 @@ def build_queue(
 # still has someone waiting — that single rule is what keeps a perpetual ladder pointed at
 # the matchups that can change the answer.
 CROWN_TIER = 0  # the pooled crown: the two verdicts disagreeing is the most informative bout
-CONTENDER_TIER = 1  # on the ring's own record, could plausibly take the belt
-UNTESTED_TIER = 2  # no ring record, and its pooled ceiling could still reach the belt
-UNPROMISING_TIER = 3  # no ring record, and even its optimistic pooled reading falls short
+# A profile the ring has never rated whose **pooled ceiling clears the crown** — on the
+# record it could already be the best thing measured, and nobody has checked. It runs before
+# the rated contenders, deliberately: those have been examined and their ceiling is a
+# statement about beating the *belt-holder*, while this is an unexamined claim on the crown
+# itself. Racing it answers that claim head-to-head AND matures it — a bout's paired runs go
+# into the pooled record like any others, so the same hour buys the verdict and the evidence.
+# Waiting is what costs: the claim is only interesting while it is unresolved.
+LIVE_THREAT_TIER = 1
+CONTENDER_TIER = 2  # rated; on the ring's own record, could plausibly take the belt
+UNTESTED_TIER = 3  # no ring record, and its own runs don't reach the crown even optimistically
 OUTCLASSED_TIER = 4  # the ring already says they can't reach the belt: raced last, not never
+UNPROMISING_TIER = UNTESTED_TIER  # the same thing named for what it is
 FILLER_TIER = UNTESTED_TIER  # legacy alias for the pre-ring-ranking modes
 
 
@@ -792,8 +800,16 @@ def contender_tiers(
     out: dict[str, int] = {}
     for fp in queue:
         p = profiles.get(fp) or {}
+        crown_overall = (profiles.get(pooled_fp or "") or {}).get("overall")
+        opt = p.get("optimistic")
         if fp == pooled_fp:
             out[fp] = CROWN_TIER
+        elif not p.get("confident") and opt is not None and (
+            crown_overall is None or opt >= crown_overall
+        ):
+            # Thin, unexamined, and its ceiling reaches the crown — the same claim the ring
+            # ordering promotes, recognised here too so a mode change can't demote it.
+            out[fp] = LIVE_THREAT_TIER
         elif p.get("confident") and p.get("overall") is not None:
             out[fp] = CONTENDER_TIER
         else:
@@ -803,9 +819,9 @@ def contender_tiers(
 
 TIER_NAMES = {
     CROWN_TIER: "pooled crown",
+    LIVE_THREAT_TIER: "live threat",
     CONTENDER_TIER: "contender",
-    UNTESTED_TIER: "live threat",
-    UNPROMISING_TIER: "own runs say no",
+    UNTESTED_TIER: "own runs say no",
     OUTCLASSED_TIER: "outclassed",
 }
 
@@ -1046,14 +1062,14 @@ def contender_order(
             # race use, so all three agree on what counts as a threat.
             opt = p.get("optimistic")
             if crown_overall is None or opt is None or opt >= crown_overall:
-                tier, why = UNTESTED_TIER, (
+                tier, why = LIVE_THREAT_TIER, (
                     f"thin but live — its pooled ceiling ({opt:.0f}) still reaches the crown "
                     f"({crown_overall:.0f}), so a bout can change the answer"
                     if (opt is not None and crown_overall is not None)
                     else "never been in the ring, and nothing rules it out — worth a look"
                 )
             else:
-                tier, why = UNPROMISING_TIER, (
+                tier, why = UNTESTED_TIER, (
                     f"its own runs say no — even optimistically it reads {opt:.0f} against a "
                     f"crown of {crown_overall:.0f}. Raced last, never excluded: that reading "
                     "is thin, and the ring has not actually asked it yet"
