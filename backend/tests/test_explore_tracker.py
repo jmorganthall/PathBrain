@@ -565,3 +565,58 @@ def test_de_duplication_never_takes_the_landscape_down_with_it(monkeypatch):
     with session_scope() as session:
         out = explore.landscape(session, suggestions=3)
     assert out["candidates"] and out["reason"] is None
+
+
+# ── one proposal, one row, one piece of evidence ───────────────────────────────────────
+
+
+def test_testing_the_same_proposal_twice_is_one_row_and_one_data_point(client):
+    """Pressing "Test now" twice on the same candidate writes two claims — correct as a
+    record of what was run, and wrong as calibration: both resolve to the same profile and
+    the same measurement, so counting them separately says the model has been checked twice
+    when it has been checked once. For a ledger whose whole job is an honest count of how
+    often the model is right, that inflation is the one error it cannot afford."""
+    changes = [{"key": "Download::quantum", "from": 6056, "to": 6300},
+               {"key": "Upload::quantum", "from": 3028, "to": 3050}]
+    for _ in range(2):
+        _record("recdupe00001", predicted=81.4, uncertainty=0.1,
+                parent_fingerprint="recparent001", changes=changes)
+    _seed_profile("recdupe00001", 77.2, iterations=10)
+
+    body = client.get("/api/explore/recommendations").json()
+    rows = [r for r in body["recommendations"] if r["fingerprint"] == "recdupe00001"]
+    assert len(rows) == 1, "the same proposal must not be listed twice"
+    assert rows[0]["attempts"] == 2 and len(rows[0]["attempt_ids"]) == 2
+    assert "tested 2 times" in rows[0]["why"]
+    # …and the calibration counts it ONCE. This is the part that matters.
+    assert body["summary"]["graded"] == 1
+    assert body["attempts_recorded"] == 2      # nothing is hidden: both records are still there
+
+
+def test_two_attempts_that_landed_on_different_profiles_stay_separate(client):
+    """The exception, and why the resolved profile is part of a claim's identity: two
+    attempts that measured *different* profiles measured different things. Merging them
+    would hide a disagreement worth seeing."""
+    changes = [{"key": "Download::quantum", "from": 6056, "to": 6300}]
+    _record("recsplit0001", predicted=81.4, parent_fingerprint="recparent001", changes=changes)
+    _record("recsplit0002", predicted=81.4, parent_fingerprint="recparent001", changes=changes)
+    _seed_profile("recsplit0001", 77.2)
+    _seed_profile("recsplit0002", 79.9)
+
+    rows = client.get("/api/explore/recommendations").json()["recommendations"]
+    kept = [r for r in rows if r["fingerprint"].startswith("recsplit")]
+    assert len(kept) == 2 and all(r["attempts"] == 1 for r in kept)
+
+
+def test_the_surviving_row_keeps_a_correction_note_earned_by_any_attempt(client):
+    """The "firewall settled elsewhere" note explains the whole group, so it must not be
+    lost just because it was the older attempt that earned it."""
+    changes = [{"key": "Download::quantum", "from": 6056, "to": 6300}]
+    _record("recnote00001", predicted=81.0, parent_fingerprint="recparent001",
+            changes=changes, note="the firewall could not write Upload Quantum")
+    _record("recnote00001", predicted=81.0, parent_fingerprint="recparent001", changes=changes)
+    _seed_profile("recnote00001", 77.0)
+
+    rows = [r for r in client.get("/api/explore/recommendations").json()["recommendations"]
+            if r["fingerprint"] == "recnote00001"]
+    assert len(rows) == 1 and "could not write Upload Quantum" in (rows[0]["note"] or "")

@@ -811,6 +811,15 @@ LLM-based. See `README.md` for the product overview.
     session comes from the read-only `get_session` dependency and closes without committing). This
     is the backstop behind the two source fixes above, and what rescues data already collected
     against an invented fingerprint.
+    **One proposal is one row and one data point** (`_claim_key`/`_collapse`): testing the same
+    candidate twice writes two claims — right as a record of what was run, wrong as calibration,
+    since both resolve to the same profile and the same measurement, so counting them separately
+    says the model was checked twice when it was checked once. Rows are collapsed by
+    *(parent, levers moved, methodology, resolved profile)*, keeping the newest claim as the
+    representative and carrying `attempts`/`attempt_ids`/`first_proposed_at` (the response also
+    returns `attempts_recorded`, so nothing is hidden). The resolved profile is deliberately part
+    of the identity: two attempts that landed on **different** profiles measured different things
+    and stay separate — a disagreement worth seeing.
   - `crowning.py` — **the first-class CROWNING POLICY**: the single resolver for "which
     verdict governs what automation applies". `crown_follow.policy` = **"pooled"** (the
     all-time Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
