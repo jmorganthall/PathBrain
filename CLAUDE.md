@@ -332,8 +332,8 @@ LLM-based. See `README.md` for the product overview.
     runs a **sequential stopping rule** (Wald SPRT on the pair-win rate, `duel.p1`/`alpha`,
     min/max pairs) plus a practical-significance floor (`duel.min_margin` Overall points —
     statistically real but negligible edges are recorded as draws), so the window never burns
-    all night on a settled question: winner stays on as the new incumbent, next challenger
-    steps up, decided pairs get a `duel.rematch_days` cooldown. Two-ledger discipline: duel
+    all night on a settled question: the ring's #1 defends the next bout (see **The ring's #1
+    defends** below), and decided pairs get a `duel.rematch_days` cooldown. Two-ledger discipline: duel
     *runs* flow into the pooled record like any runs; duel *verdicts* live beside it as the
     head-to-head ledger (`Duel.matchups`, surfaced on the **Dueling Champions** tab) and never
     enter the pooled score. The duel **never writes a winner to the firewall** — it restores
@@ -455,11 +455,13 @@ LLM-based. See `README.md` for the product overview.
     `test_the_cooldown_reorders_contenders_it_does_not_hand_the_ring_to_filler`). `build_queue`
     returns the queue already **tier-sorted** (stable, so intra-tier order is untouched), and
     `fight_card` reports each entry's `tier`/`tier_name` so the preview shows the real running
-    order. Because the winner stays on, the two names in the ring by bout six can be neither
-    the profile that walked in with the belt nor the crown — which reads as "randoms" unless
-    the chain is visible, so each bout records **`challenger_why`** (its tier, and whether it
-    was re-raced), the live stage line reads *"Bout 3 of 12 · X (belt) defends vs Y (pooled
-    crown) — pair 4"*, and the page lists **"this session so far"**: every bout and who took
+    order — a projection rather than a schedule, since the engine re-decides both sides
+    before every bout. Because the defender is re-read each time, the two names in the ring
+    by bout six can be neither the profile that walked in with the belt nor the crown — which
+    reads as "randoms" unless the chain is visible, so each bout records **`challenger_why`**
+    (its tier, and whether it was re-raced), the live stage line reads *"Bout 3 · X (belt)
+    defends vs Y (pooled crown) — pair 4"*, and the page lists **"this session so far"**:
+    every bout and who took
     the belt. An empty queue
     reports *why* (`_no_contenders_reason`): nothing scored under the current methodology, or
     the live environment matches no stored profile. `contenders="heirs"` keeps the exploring
@@ -484,22 +486,46 @@ LLM-based. See `README.md` for the product overview.
     returns `decision` (`sweep_pairs` / `wins_needed` / `win_rate_needed` / `restrictive`) and the
     page states it outright, warning when the cap demands a near-sweep. `p1`/`alpha` are editable
     from the same card ("Edge to detect" / "Error rate").
-    **The reigning champion defends** (`select_incumbent`). Sessions used to restart from the
-    pooled crown every time, so the belt meant "won some session once" and the badge could
-    name a profile that wasn't even in the ring — a ladder whose champion never defends isn't
-    a ladder. A fresh (`rematch_days`), decisive, reachable champion now carries its belt into
-    the next session, and the **pooled crown becomes its first challenger** (`build_queue`
-    prepends it — it is never in `heirs`, which are contenders *to* it, so it has to be added
-    by hand or the two verdicts would never meet). Falls back to the pooled crown when there's
-    no such champion — first session, expired verdict, champion by draws only, or one the live
-    environment can't be set to — and says which in `incumbent.why`. `fight_card` calls the
-    same helper, so the preview can't name a different defender than the one who walks out.
-    The reigning holder is written to `Duel.champion_fingerprint` **after every bout**, not
-    only at session end: the winner stays on, so on a long (or continuous) ladder the belt
-    changes hands mid-session and a badge that waits for the end reads hours stale. This is
-    display only — `latest_champion` still filters to COMPLETE sessions, so the crowning
-    policy never acts on a provisional holder (and can't, mid-duel: the duel owns the
-    firewall while its window is open).
+    **The ring's #1 defends, and the matchup is re-decided before EVERY bout**
+    (`ring_leader` / `select_incumbent` / `next_challenger`). This is the operating model in
+    one line: *always be running the bout most likely to unseat the best profile we have.*
+    Two earlier rules got in the way of it. The belt went to **whoever survived the previous
+    session** (`latest_champion`), which is not the same profile as the best one; and the
+    running order was a **queue built once at session start**, walked to the end. Together
+    they produce the repeatedly-reported symptom: a mid-table profile wins one bout, inherits
+    the belt, and the ladder spends the night defending *it* against opponents chosen for a
+    defender who had already left the ring — bouts between #83 and #128 that say nothing
+    about whether anything beats the leader.
+    Now the ledger is refit before every bout (`ledger_ratings`; `_ledger_sessions` reads the
+    **running** duel, so a challenger that just won is re-rated before the next matchup is
+    picked), the defender is the ring's **#1 by `rating_floor`** — deliberately the same
+    number the standings rank on, so the belt and the top row can never name different
+    profiles — and the challenger is whoever `contender_order` puts first *against that
+    defender's* rating. `select_incumbent` falls back to the pooled crown only when the ring
+    has nothing to say (empty ledger, or no rated profile the live environment can be set
+    to), and says which in `incumbent.why`; `fight_card` calls the same helper, so the
+    preview can't name a different defender than the one who walks out.
+    A consequence worth stating plainly: **the winner does not automatically stay on.**
+    Beating the leader promotes you when it lifts your floor above its — the same bar the
+    standings apply — so a thin challenger that wins one bout keeps a wide error bar and the
+    leader defends again, against the next-best threat; the winner's rating rose, so it comes
+    back around quickly and a second win usually settles it. `Duel.champion_fingerprint` is
+    written **every bout** (the belt changes hands mid-session, and on a continuous ladder a
+    badge that waits for session end reads hours stale) and at session end it is the ring's
+    #1 **unfiltered by reachability** — the champion is a statement about the ledger, and the
+    standings it must agree with aren't filtered either; an unreachable champion simply never
+    defends, and the crown follower already refuses to apply one. Still display only:
+    `latest_champion` filters to COMPLETE sessions, so the crowning policy never acts on a
+    provisional holder (and can't, mid-duel: the duel owns the firewall while its window is
+    open). Two exclusions, deliberately different strengths: a pair already fought **in this
+    session** is a hard skip (re-running the bout you just ran adds nothing, so it may drop a
+    tier), while the **rematch cooldown only orders within a tier** — the fix from the
+    "random duels" report, since the leader and its nearest rivals are the first matchups to
+    cool precisely because they are fought first. One interaction is named rather than
+    hidden: a bout can be a **draw** on the practical margin floor (`min_margin`, default 0)
+    while the *rating* — fitted to pairs, magnitude-blind by design — still moves the belt,
+    because "is this difference worth acting on?" and "which profile is stronger?" are
+    different questions.
     `duel.fight_card` (`GET /api/duel/card`) answers "are we just racing randoms?" with a
     list rather than a paragraph: the champion plus the ordered queue a duel started *now*
     would work through, each entry carrying its Overall, iterations, why it's in the queue

@@ -806,10 +806,13 @@ export default function Duels() {
         <Box>
           <Typography variant="h5">Dueling Champions</Typography>
           <Typography variant="body2" color="text.secondary">
-            Head-to-head adjudication: the crown and its heirs trade one-iteration runs
-            A/B/A/B, so both sides meet the same weather. A sequential test ends each bout
-            the moment it's decided, the winner stays on, and the next challenger steps up.
-            Ranked by what a profile <b>beat</b> — not by what it averaged.
+            Head-to-head adjudication, with one job: <b>keep attacking the best profile we
+            have</b>. The ring's current #1 defends every bout, against whichever profile the
+            ledger says is most likely to beat <i>it</i> — re-decided before each bout, so a
+            profile that wins takes the belt and defends next. Both sides trade one-iteration
+            runs A/B/B/A, so they meet the same weather, and a sequential test ends each bout
+            the moment it's decided. Ranked by what a profile <b>beat</b> — not by what it
+            averaged.
           </Typography>
         </Box>
         <Stack direction="row" spacing={1}>
@@ -1245,8 +1248,9 @@ export default function Duels() {
                 {status?.matchups?.length ?? 0} verdict(s) so far · your pre-duel settings are
                 restored when the window closes
               </Typography>
-              {/* The belt changes hands mid-session — the winner stays on — so show who
-                  holds it right now rather than waiting for the session to end. */}
+              {/* The belt changes hands mid-session — it is the ring's #1, re-read from the
+                  ledger between bouts — so show who holds it right now rather than waiting
+                  for the session to end. */}
               {status?.champion_label && (
                 <Typography variant="body2" sx={{ mt: 0.5 }}>
                   In the ring with the belt: <b>{status.champion_label}</b>
@@ -1257,10 +1261,10 @@ export default function Duels() {
                   </Typography>
                 </Typography>
               )}
-              {/* How the belt got where it is. The winner stays on, so by bout six the two
-                  names in the ring can be neither the profile that walked in with the belt
-                  nor the pooled crown — which reads as "random profiles" unless you can see
-                  the chain that got them there. */}
+              {/* How the belt got where it is. The defender is whoever the ledger ranks #1
+                  at that moment, so by bout six the name holding it can be neither the
+                  profile that walked in with it nor the pooled crown — which reads as
+                  "random profiles" unless you can see the chain that got them there. */}
               {!!status?.matchups?.length && (
                 <Box sx={{ mt: 1 }}>
                   <Typography variant="caption" color="text.secondary">
@@ -1581,7 +1585,9 @@ export default function Duels() {
                 {card.incumbent.overall != null
                   ? ` (Overall ${fmtNum(card.incumbent.overall, 1)})`
                   : ""}
-                . Whoever wins a bout stays on for the next one.
+                {" "}as the ring's current #1. Beating it takes the belt, and the next bout
+                is re-decided from the ledger — so the order below is what a duel starting
+                now would run <i>if nothing upsets it</i>, not a fixed card.
               </Typography>
               {card.contenders === "ring" && (
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>

@@ -236,8 +236,14 @@ def test_duel_margin_floor_records_a_draw(monkeypatch):
     m = d.matchups[0]
     assert m["verdict"] == "draw"
     assert "practically equal" in m["reason"]
-    # The incumbent keeps the crown on a draw.
-    assert d.champion_fingerprint == "inc0000000x"
+    # The belt goes to the ring's #1, which is now the challenger: the bout is a DRAW for
+    # verdict purposes (the margin floor says a 0.4-point edge isn't worth acting on), but
+    # the rating is fitted to PAIRS and the challenger took every one of them. The two
+    # mechanisms answer different questions on purpose — "is this difference worth acting
+    # on?" vs "which profile is stronger?" — and the belt follows the standings, so it can
+    # never name a profile the table underneath it doesn't have at #1. Note this only
+    # arises when a practical floor is opted into; `min_margin` defaults to 0.
+    assert d.champion_fingerprint == "cha0000000x"
     with session_scope() as s:
         save_config(s, {"duel": {"min_margin": 0.0}})  # back to the default (no floor)
 
@@ -1280,90 +1286,138 @@ def _field(*fps_overalls, best):
     }
 
 
-def test_the_reigning_champion_defends_the_next_session():
-    """The belt has to mean something: last session's winner starts the next one holding
-    it, instead of every session restarting from the pooled crown while the badge names a
-    profile that isn't even in the ring."""
+def test_the_ring_number_one_defends_not_last_sessions_survivor():
+    """**The best-ranked dueling profile is what stands in the ring.**
+
+    The belt used to go to whoever ended the previous session on top. That is not the same
+    profile as the best one: a mid-table profile wins one bout, inherits the belt, and the
+    ladder then spends the night defending IT — the "random duels not involving the crown"
+    report, at its root. The defender is now the ring's own #1 by the conservative rating
+    floor: the same number the standings rank on, so the belt and the top row can never
+    name different profiles.
+    """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    field = _field(("champ", 80.0), ("pooled", 90.0), ("other", 70.0), best="pooled")
+    field = _field(("strong", 80.0), ("pooled", 90.0), ("survivor", 70.0), best="pooled")
 
     with session_scope() as s:
         s.query(Duel).delete()
-        # No champion yet → the pooled crown defends.
+        # Nothing on the ledger — the pooled crown stands in until the ring has a verdict.
         fp, why = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
-        assert fp == "pooled" and "no fresh decisive champion" in why
+        assert fp == "pooled" and "no profile has a ring record yet" in why
 
     with session_scope() as s:
+        # "strong" builds a real record. "survivor" ends the LAST session holding the belt
+        # on a single thin bout — under the old rule that alone made it the defender.
         _finished_duel(
             s,
-            matchups=[_mu("champ", "someone", "incumbent", delta=-3.0)],  # decisive
-            champion="champ",
+            matchups=[
+                _mu("strong", "survivor", "incumbent", wins_inc=12, wins_cha=2, delta=-4.0),
+                _mu("strong", "pooled", "incumbent", wins_inc=11, wins_cha=3, delta=-3.0),
+            ],
+            champion="strong",
+            when=now - timedelta(days=1),
+        )
+        _finished_duel(
+            s,
+            matchups=[_mu("survivor", "pooled", "incumbent", wins_inc=4, wins_cha=1, delta=-2.0)],
+            champion="survivor",
             when=now - timedelta(hours=2),
         )
+
     with session_scope() as s:
+        ratings = duel_mod.ledger_ratings(s)
         fp, why = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
-    assert fp == "champ", "the champion should carry its belt into the next session"
-    assert "defends the belt" in why
+    assert fp == "strong", "the ring's #1 defends, not whoever survived the last session"
+    assert "the ring's #1 defends" in why
+    # The belt is exactly the standings' own ordering — not a second, parallel ranking.
+    assert ratings["strong"]["rating_floor"] > ratings["survivor"]["rating_floor"]
 
-    # And the pooled crown becomes a CHALLENGER — the matchup the disagreement demands.
-    heirs = {"items": [{"fingerprint": "other", "reason": "stale"}]}
-    queue = duel_mod.build_queue(field, heirs, "champ", contenders="leaders", top_n=5)
-    assert queue[0] == "pooled", "the pooled crown must get to challenge the belt holder"
-    assert "champ" not in queue
+    # And the profile the ring's #1 fights is the biggest threat to IT, chosen against its
+    # rating — with the pooled crown first, since the two verdicts disagreeing is the most
+    # informative bout available.
+    heirs = {"items": [{"fingerprint": "survivor", "reason": "stale"}]}
+    with session_scope() as s:
+        cha, why_cha = duel_mod.next_challenger(
+            s, field, ratings, "strong", heirs=heirs, rematch_days=0
+        )
+    assert cha == "pooled" and "pooled crown" in why_cha
 
-    # A champion that only inherited by draws doesn't get to hold the belt.
+
+def test_the_defender_is_re_read_from_the_ledger_between_bouts():
+    """A challenger that beats the leader takes the belt *when its floor clears* — the same
+    bar the standings apply — and then defends. That is what "constantly test the best
+    profile" means operationally: no static queue, no winner-stays-on rule, just the ring's
+    current #1 re-read before every bout.
+    """
+    field = _field(("leader", 80.0), ("climber", 70.0), ("filler", 60.0), best="filler")
     with session_scope() as s:
         s.query(Duel).delete()
         _finished_duel(
             s,
-            matchups=[_mu("champ", "someone", "draw")],
-            champion="champ",
-            when=now - timedelta(hours=1),
+            matchups=[
+                _mu("leader", "filler", "incumbent", wins_inc=14, wins_cha=3, delta=-4.0),
+                _mu("leader", "climber", "incumbent", wins_inc=9, wins_cha=7, delta=-1.0),
+            ],
+            champion="leader",
+            when=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1),
         )
     with session_scope() as s:
-        fp, _ = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
-    assert fp == "pooled"
+        before, _ = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
+    assert before == "leader"
 
-    # An expired verdict hands the belt back to the pooled crown too.
+    # The climber comes back and wins the rematch decisively.
     with session_scope() as s:
-        s.query(Duel).delete()
         _finished_duel(
             s,
-            matchups=[_mu("champ", "someone", "incumbent", delta=-3.0)],
-            champion="champ",
-            when=now - timedelta(days=30),
+            matchups=[
+                _mu("leader", "climber", "challenger", wins_inc=2, wins_cha=18, delta=5.0),
+                _mu("climber", "filler", "incumbent", wins_inc=15, wins_cha=2, delta=-4.0),
+            ],
+            champion="climber",
+            when=datetime.now(timezone.utc).replace(tzinfo=None),
         )
     with session_scope() as s:
-        fp, _ = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
+        after, why = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
         s.query(Duel).delete()
-    assert fp == "pooled"
+    assert after == "climber", "beating the leader on the ledger takes the belt"
+    assert "the ring's #1 defends" in why
 
 
-def test_a_champion_the_environment_cant_reach_does_not_defend():
-    """A belt holder the firewall can no longer be set to would abort the session on the
-    first apply — the pooled crown stands in instead."""
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+def test_a_ring_leader_the_environment_cant_reach_does_not_defend():
+    """Who DEFENDS is reachability-filtered — an unreachable profile would abort on the
+    first apply — so the ring's best *applicable* profile stands in instead."""
     field = {
         "best_fingerprint": "pooled",
         "profiles": [
-            {"fingerprint": "champ", "label": "champ", "overall": 80.0,
+            {"fingerprint": "unreachable", "label": "unreachable", "overall": 80.0,
              "settings": [{"label": "wan", "scheduler": "fq_codel", "queues": 8}]},
+            {"fingerprint": "reachable", "label": "reachable", "overall": 75.0,
+             "settings": [{"label": "wan", "scheduler": "fq_pie", "queues": 2}]},
             {"fingerprint": "pooled", "label": "pooled", "overall": 90.0, "settings": []},
         ],
     }
-    live = [{"label": "wan", "scheduler": "fq_pie", "queues": 2}]  # different environment
+    live = [{"label": "wan", "scheduler": "fq_pie", "queues": 2}]
     with session_scope() as s:
         s.query(Duel).delete()
         _finished_duel(
             s,
-            matchups=[_mu("champ", "someone", "incumbent", delta=-3.0)],
-            champion="champ",
-            when=now - timedelta(hours=2),
+            matchups=[
+                # The unreachable profile has the best ring record by far.
+                _mu("unreachable", "reachable", "incumbent", wins_inc=15, wins_cha=2, delta=-4.0),
+                _mu("reachable", "pooled", "incumbent", wins_inc=12, wins_cha=4, delta=-3.0),
+            ],
+            champion="unreachable",
+            when=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2),
         )
     with session_scope() as s:
-        fp, why = duel_mod.select_incumbent(s, field, live, {"rematch_days": 7})
+        ratings = duel_mod.ledger_ratings(s)
+        fp, why = duel_mod.select_incumbent(s, field, live, {"rematch_days": 7}, ratings)
+        # Unfiltered, it really is the ring's #1 — it just can't be applied here.
+        top, _ = duel_mod.ring_leader(field, ratings)
         s.query(Duel).delete()
-    assert fp == "pooled" and "can't be applied" in why
+    assert top == "unreachable"
+    assert fp == "reachable", "the best profile the firewall can actually be set to defends"
+    assert "the ring's #1 defends" in why
 
 
 def test_standings_carry_the_pooled_overall(monkeypatch):
@@ -1460,6 +1514,83 @@ def test_rematch_cooldown_uses_time_not_a_row_cap():
         s.query(Duel).delete()
 
 
+def test_every_bout_defends_the_current_leader_not_a_queue_decided_in_advance(monkeypatch):
+    """The operating model, end to end: **always be running the bout most likely to unseat
+    the best profile we have.**
+
+    Three profiles, and the middle one is genuinely the strongest. The session used to
+    build a queue once, hand the belt to whoever survived, and walk that queue to the end —
+    so after one upset the ladder spent the rest of the night defending a profile that was
+    no longer the best, against opponents chosen for a defender that had already left the
+    ring. Here the ledger is refit before every bout, so the winner of bout 1 is what bout 2
+    defends, and its opponent is chosen against *its* rating.
+    """
+    import pathbrain.api.routes_settings as rs
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+    applied: list[str] = []
+    fake_field = {
+        "best_fingerprint": "aaa0000000x",
+        "profiles": [
+            # Empty settings = reachable from any environment, so this test is about
+            # matchmaking rather than the reachability filter (covered separately).
+            {"fingerprint": "aaa0000000x", "label": "alpha", "overall": 90.0,
+             "confident": True, "settings": []},
+            {"fingerprint": "bbb0000000x", "label": "bravo", "overall": 80.0,
+             "confident": True, "settings": []},
+            {"fingerprint": "ccc0000000x", "label": "charlie", "overall": 70.0,
+             "confident": True, "settings": []},
+        ],
+    }
+    monkeypatch.setattr(rs, "compute_profiles", lambda session: fake_field)
+    monkeypatch.setattr(
+        rs,
+        "_compute_heirs",
+        lambda result, session, live=None: {
+            "items": [{"fingerprint": "bbb0000000x"}, {"fingerprint": "ccc0000000x"}]
+        },
+    )
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    _no_settle()
+    # bravo is the best profile; alpha only *looks* best on the pooled score.
+    _score_by_profile(
+        monkeypatch,
+        applied,
+        {"aaa0000000x": 60.0, "bbb0000000x": 68.0, "ccc0000000x": 55.0},
+    )
+
+    duel_id = duel_mod.start(duration_minutes=10)
+    d = _wait_finish(duel_id)
+    try:
+        assert d.status == DuelStatus.COMPLETE, d.error
+        bouts = list(d.matchups)
+        assert len(bouts) >= 2, "the ladder should keep fighting after the first upset"
+
+        # Bout 1: nothing on the ledger, so the pooled crown stands in and loses to bravo.
+        assert bouts[0]["incumbent"] == "aaa0000000x"
+        assert bouts[0]["challenger"] == "bbb0000000x"
+        assert bouts[0]["verdict"] == "challenger"
+
+        # Bout 2 defends the WINNER — re-read from the ledger, not carried over by a
+        # "winner stays on" rule and not taken from a queue built before bout 1.
+        assert bouts[1]["incumbent"] == "bbb0000000x", (
+            "the profile that just beat the leader is the leader, so it defends next"
+        )
+        assert bouts[1]["challenger"] == "ccc0000000x"
+
+        # Every bout involves the current best profile — never two also-rans.
+        assert all("bbb0000000x" in (b["incumbent"], b["challenger"]) for b in bouts[1:])
+        # And the belt on the page is the ring's #1, so it agrees with the standings.
+        assert d.champion_fingerprint == "bbb0000000x"
+        with session_scope() as s:
+            table = duel_mod.standings()["standings"]
+        assert table[0]["fingerprint"] == "bbb0000000x"
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+
+
 def test_the_cooldown_reorders_contenders_it_does_not_hand_the_ring_to_filler():
     """The bug behind "yet again — random duels not involving the crown".
 
@@ -1502,10 +1633,19 @@ def test_the_cooldown_reorders_contenders_it_does_not_hand_the_ring_to_filler():
         )
 
     try:
+        # Walk the ladder the way the engine does — pick, fight, pick again — with each
+        # fought pair excluded from the next choice.
+        picks = []
+        fought: set = set()
         with session_scope() as s:
-            picks = []
-            while queue:
-                fp, why = duel_mod.next_matchup(s, queue, tiers, "belt", 7)
+            for _ in range(3):
+                fp, why = duel_mod.next_challenger(
+                    s, field, {}, "belt", heirs={"items": []}, rematch_days=7,
+                    mode="leaders", fought=fought,
+                )
+                if fp is None:
+                    break
+                fought.add(frozenset(("belt", fp)))
                 picks.append((fp, why))
         order = [fp for fp, _ in picks]
         # The old behaviour: ["filler"] first, with the crown and the contender set aside.
@@ -1531,7 +1671,6 @@ def test_a_fresh_matchup_still_beats_a_re_race_within_the_same_tier():
     }
     queue = duel_mod.build_queue(field, {"items": []}, "belt", contenders="leaders", top_n=8)
     assert queue == ["fought", "unfought"]  # by Overall, strongest first
-    tiers = duel_mod.contender_tiers(field, queue)
 
     with session_scope() as s:
         s.query(Duel).delete()
@@ -1542,10 +1681,17 @@ def test_a_fresh_matchup_still_beats_a_re_race_within_the_same_tier():
 
     try:
         with session_scope() as s:
-            first, why = duel_mod.next_matchup(s, queue, tiers, "belt", 7)
-        # Same tier, so the cooldown decides: the question we haven't asked yet goes first.
-        assert first == "unfought" and "re-rac" not in why
-        assert queue == ["fought"], "the cooled contender is still raced, just after"
+            first, why = duel_mod.next_challenger(
+                s, field, {}, "belt", heirs={"items": []}, rematch_days=7, mode="leaders"
+            )
+            # Same tier, so the cooldown decides: the unasked question goes first.
+            assert first == "unfought" and "re-rac" not in why
+            # The cooled contender is still raced, just after — never dropped.
+            second, why2 = duel_mod.next_challenger(
+                s, field, {}, "belt", heirs={"items": []}, rematch_days=7, mode="leaders",
+                fought={frozenset(("belt", "unfought"))},
+            )
+        assert second == "fought" and "re-rac" in why2
     finally:
         with session_scope() as s:
             s.query(Duel).delete()
