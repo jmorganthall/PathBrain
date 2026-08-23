@@ -841,6 +841,11 @@ function RecommendationRow({ rec }: { rec: ExploreRecommendation }) {
           {rec.multi_lever && (
             <Chip size="small" variant="outlined" label="two levers" sx={{ height: 20 }} />
           )}
+          {rec.attempts > 1 && (
+            <Tooltip title="This same proposal was tested more than once. The rows are collapsed to one, because both attempts measure the same profile — counting them separately would claim the model had been checked twice when it was checked once. The measurement below pools every run.">
+              <Chip size="small" variant="outlined" label={`tested ${rec.attempts}×`} sx={{ height: 20 }} />
+            </Tooltip>
+          )}
           <Box sx={{ flexGrow: 1 }} />
           <Typography variant="caption" color="text.secondary">
             {fmtTimeShort(rec.created_at)}

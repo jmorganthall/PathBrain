@@ -466,3 +466,157 @@ def test_restating_a_field_in_another_notation_does_not_invent_a_profile(client,
         provider.apply(change)
     assert body["fingerprint"] == fingerprint(normalize(provider.discover()))
     mock_mod._OVERRIDES.clear()
+
+
+# ── never propose something we have already spent a benchmark on ───────────────────────
+#
+# Reported as "explore is still suggesting a profile that already exists and has already
+# been tested". The page decided what was untested by looking at the *modelling* pool —
+# confident profiles only — so anything short of the confidence bar was invisible to it.
+# A "Test now" block is 5 iterations against a 15-iteration bar, which means every quick
+# test produced a profile the candidate generator could not see, and re-proposed forever
+# with a prediction that ignored the very measurement it had just paid for.
+
+
+def _field(monkeypatch, profiles):
+    monkeypatch.setattr(rs, "compute_profiles", lambda session: {"profiles": profiles})
+
+
+def _spread_field():
+    """A field with enough structure to generate candidates, none of them tied."""
+    from .test_explore import _profile
+
+    return [
+        _profile("aaaaaaaaaaaa", quantum=1000, target=5, overall=60.0, up_quantum=300),
+        _profile("bbbbbbbbbbbb", quantum=2000, target=5, overall=70.0, up_quantum=600),
+        _profile("cccccccccccc", quantum=3000, target=5, overall=80.0, up_quantum=900),
+        _profile("dddddddddddd", quantum=4000, target=5, overall=75.0, up_quantum=1200),
+        _profile("eeeeeeeeeeee", quantum=5000, target=5, overall=65.0, up_quantum=1500),
+    ]
+
+
+def test_a_thin_already_tested_profile_is_not_proposed_again(monkeypatch):
+    """A 5-iteration quick test is unquestionably "already tried" — but it lands well under
+    the confidence bar, and the dedup used to read the confident-only modelling pool. So the
+    page kept offering a profile whose measurement was sitting right below it on the ledger."""
+    from .test_explore import _profile
+
+    profiles = _spread_field()
+    _field(monkeypatch, profiles)
+    top = explore.landscape(None, suggestions=3)["candidates"][0]
+    coords = top["coords"]
+
+    # Now measure exactly that candidate — thinly, as "Test now" does. It must not come back.
+    tested = _profile(
+        "ffffffffffff",
+        quantum=int(coords["Download::quantum"]),
+        target=5,
+        overall=74.5,
+        up_quantum=int(coords["Upload::quantum"]),
+        iterations=5,
+        confident=False,          # 5 of the 15 iterations that make a profile confident
+    )
+    _field(monkeypatch, profiles + [tested])
+    again = explore.landscape(None, suggestions=6)["candidates"]
+    assert all(c["coords"] != coords for c in again), (
+        "a profile that has been measured — however thinly — must never be proposed again"
+    )
+    # …and the page still has something to say; this is a de-duplication, not a shutdown.
+    assert again
+
+
+def test_a_proposal_already_paid_for_is_not_reoffered_even_if_the_firewall_missed_it(monkeypatch):
+    """The second half, and the one measured profiles alone can never cover.
+
+    When the firewall can't be driven exactly to a proposal it settles on a neighbour, and
+    the runs are filed under *that* profile's coordinates — so the proposed point never
+    appears in the field at all. Checking the measured field would re-offer it every time
+    the page is opened. The ledger is the record of what was actually attempted."""
+    profiles = _spread_field()
+    _field(monkeypatch, profiles)
+    with session_scope() as session:
+        top = explore.landscape(session, suggestions=3)["candidates"][0]
+
+    # Record the claim exactly as pressing "Test now" would — and deliberately do NOT add any
+    # profile at those coordinates, standing in for a firewall that settled elsewhere.
+    _record(
+        "recmissedfp1",
+        predicted=top["predicted"],
+        parent_fingerprint=top["parent"]["fingerprint"],
+        changes=top["changes"],
+    )
+
+    with session_scope() as session:
+        again = explore.landscape(session, suggestions=6)["candidates"]
+    assert all(c["coords"] != top["coords"] for c in again), (
+        "a proposal a benchmark has already been spent on must not be offered again"
+    )
+
+
+def test_de_duplication_never_takes_the_landscape_down_with_it(monkeypatch):
+    """The ledger is bookkeeping. A page that maps the parameter space must not go blank
+    because a bookkeeping read failed, so the lookup is best-effort by construction."""
+    profiles = _spread_field()
+    _field(monkeypatch, profiles)
+    monkeypatch.setattr(
+        explore_tracker, "claimed_moves",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("ledger unavailable")),
+    )
+    with session_scope() as session:
+        out = explore.landscape(session, suggestions=3)
+    assert out["candidates"] and out["reason"] is None
+
+
+# ── one proposal, one row, one piece of evidence ───────────────────────────────────────
+
+
+def test_testing_the_same_proposal_twice_is_one_row_and_one_data_point(client):
+    """Pressing "Test now" twice on the same candidate writes two claims — correct as a
+    record of what was run, and wrong as calibration: both resolve to the same profile and
+    the same measurement, so counting them separately says the model has been checked twice
+    when it has been checked once. For a ledger whose whole job is an honest count of how
+    often the model is right, that inflation is the one error it cannot afford."""
+    changes = [{"key": "Download::quantum", "from": 6056, "to": 6300},
+               {"key": "Upload::quantum", "from": 3028, "to": 3050}]
+    for _ in range(2):
+        _record("recdupe00001", predicted=81.4, uncertainty=0.1,
+                parent_fingerprint="recparent001", changes=changes)
+    _seed_profile("recdupe00001", 77.2, iterations=10)
+
+    body = client.get("/api/explore/recommendations").json()
+    rows = [r for r in body["recommendations"] if r["fingerprint"] == "recdupe00001"]
+    assert len(rows) == 1, "the same proposal must not be listed twice"
+    assert rows[0]["attempts"] == 2 and len(rows[0]["attempt_ids"]) == 2
+    assert "tested 2 times" in rows[0]["why"]
+    # …and the calibration counts it ONCE. This is the part that matters.
+    assert body["summary"]["graded"] == 1
+    assert body["attempts_recorded"] == 2      # nothing is hidden: both records are still there
+
+
+def test_two_attempts_that_landed_on_different_profiles_stay_separate(client):
+    """The exception, and why the resolved profile is part of a claim's identity: two
+    attempts that measured *different* profiles measured different things. Merging them
+    would hide a disagreement worth seeing."""
+    changes = [{"key": "Download::quantum", "from": 6056, "to": 6300}]
+    _record("recsplit0001", predicted=81.4, parent_fingerprint="recparent001", changes=changes)
+    _record("recsplit0002", predicted=81.4, parent_fingerprint="recparent001", changes=changes)
+    _seed_profile("recsplit0001", 77.2)
+    _seed_profile("recsplit0002", 79.9)
+
+    rows = client.get("/api/explore/recommendations").json()["recommendations"]
+    kept = [r for r in rows if r["fingerprint"].startswith("recsplit")]
+    assert len(kept) == 2 and all(r["attempts"] == 1 for r in kept)
+
+
+def test_the_surviving_row_keeps_a_correction_note_earned_by_any_attempt(client):
+    """The "firewall settled elsewhere" note explains the whole group, so it must not be
+    lost just because it was the older attempt that earned it."""
+    changes = [{"key": "Download::quantum", "from": 6056, "to": 6300}]
+    _record("recnote00001", predicted=81.0, parent_fingerprint="recparent001",
+            changes=changes, note="the firewall could not write Upload Quantum")
+    _record("recnote00001", predicted=81.0, parent_fingerprint="recparent001", changes=changes)
+    _seed_profile("recnote00001", 77.0)
+
+    rows = [r for r in client.get("/api/explore/recommendations").json()["recommendations"]
+            if r["fingerprint"] == "recnote00001"]
+    assert len(rows) == 1 and "could not write Upload Quantum" in (rows[0]["note"] or "")

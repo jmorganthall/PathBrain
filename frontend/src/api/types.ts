@@ -2097,6 +2097,14 @@ export interface ExploreRecommendation {
   beat_parent: boolean | null;
   // One sentence joining the miss to the kind of evidence it was priced from.
   why: string;
+  // How many times this same proposal was tested. The rows are collapsed to one per
+  // proposal: two attempts resolve to the same profile and the same measurement, so
+  // counting them separately would say the model had been checked twice when it was
+  // checked once.
+  attempts: number;
+  attempt_ids: number[];
+  first_proposed_at: string | null;
+  other_predictions?: number[];
 }
 
 export interface ExploreCalibration {
@@ -2124,6 +2132,8 @@ export interface ExploreCalibration {
 
 export interface ExploreLedger {
   recommendations: ExploreRecommendation[];
+  // Raw claim count before collapsing duplicates — nothing is hidden, just not double-counted.
+  attempts_recorded?: number;
   summary: ExploreCalibration;
   methodology_version: string;
   min_iterations: number;

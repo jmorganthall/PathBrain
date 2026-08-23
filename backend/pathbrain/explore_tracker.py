@@ -275,6 +275,86 @@ def _why(rec: ExploreRecommendation, kind: str, graded: dict, actual: float | No
     return lead + tail + extra + note
 
 
+def _claim_key(row: dict) -> tuple:
+    """The identity of a *proposal*, so re-testing one idea doesn't read as new evidence.
+
+    Pressing "Test now" twice on the same candidate writes two claims — which is correct as
+    a record of what was run, and wrong as calibration: both resolve to the same profile and
+    the same measurement, so counting them separately states the model has been checked twice
+    when it has been checked once. Since the whole point of the ledger is an honest count of
+    how often the model is right, that inflation is the one error it cannot afford.
+
+    Two claims are the same proposal when they move the same levers to the same values from
+    the same parent, under the same methodology, **and resolved to the same measured
+    profile**. That last clause matters: two attempts that landed on *different* profiles
+    measured different things and stay separate — a disagreement worth seeing, not hiding.
+    """
+    moves = tuple(sorted(
+        (ch.get("key"), ch.get("to"))
+        for ch in (row.get("changes") or [])
+        if isinstance(ch, dict) and ch.get("key") is not None
+    ))
+    if not moves:
+        # Nothing describes the move (a bare settings test): fall back to the profile itself,
+        # and never merge across methodologies — those predictions aren't on one scale.
+        return ("profile", row.get("fingerprint"), row.get("methodology_version"))
+    return (
+        "moves",
+        (row.get("parent") or {}).get("fingerprint"),
+        moves,
+        row.get("methodology_version"),
+        row.get("fingerprint"),
+    )
+
+
+def _collapse(rows: list[dict]) -> list[dict]:
+    """One row per proposal, carrying how many times it was tested.
+
+    ``rows`` arrives newest-first, so the representative is the most recent claim — the
+    model's current belief about that point — and the group's oldest timestamp is kept as
+    ``first_proposed_at``. Nothing is discarded: the attempt ids stay on the row, and the
+    measurement was never per-attempt anyway (it is the profile's own pooled Overall, so a
+    second 5-iteration test shows up as more iterations behind one verdict, which is exactly
+    what it is).
+    """
+    by_key: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for row in rows:
+        key = _claim_key(row)
+        head = by_key.get(key)
+        if head is None:
+            by_key[key] = {
+                **row,
+                "attempts": 1,
+                "attempt_ids": [row["id"]],
+                "first_proposed_at": row.get("created_at"),
+            }
+            order.append(key)
+            continue
+        head["attempts"] += 1
+        head["attempt_ids"].append(row["id"])
+        head["first_proposed_at"] = row.get("created_at")  # newest-first, so this ends oldest
+        # A note earned by any attempt belongs on the surviving row — most often the
+        # "the firewall settled elsewhere" correction, which explains the whole group.
+        if row.get("note") and not head.get("note"):
+            head["note"] = row["note"]
+        if row.get("predicted") is not None and row["predicted"] != head.get("predicted"):
+            head.setdefault("other_predictions", []).append(row["predicted"])
+
+    out = [by_key[k] for k in order]
+    for row in out:
+        if row["attempts"] > 1:
+            extra = (
+                f" Proposed and tested {row['attempts']} times; the measurement pools every run "
+                "on the profile, so it counts once here rather than once per attempt."
+            )
+            if row.get("other_predictions"):
+                seen = ", ".join(f"{p:.1f}" for p in row["other_predictions"])
+                extra += f" Earlier attempts predicted {seen}."
+            row["why"] = (row.get("why") or "") + extra
+    return out
+
+
 def _summarize(rows: list[dict]) -> dict:
     """Aggregate calibration: is the model's number worth anything, and *which* number?
 
@@ -411,6 +491,45 @@ def _reconcile(rows: list[ExploreRecommendation], actual: dict[int, str]) -> Non
             rec.fingerprint, rec.note = fp, row.note
 
 
+# How many recorded claims to consider when de-duplicating candidates. Generous — the point
+# is not to re-propose something already paid for — but bounded, so the landscape's cost
+# doesn't grow without limit as the ledger fills.
+CLAIM_HISTORY = 500
+
+
+def claimed_moves(session, limit: int = CLAIM_HISTORY) -> list[dict]:
+    """``[{parent_fingerprint, moves: {axis key: value}}]`` — every proposal already paid for.
+
+    The exploration page proposes *untested* profiles, and it decides what is untested by
+    looking at the measured field. That check has a hole a benchmark can fall straight
+    through: a proposal the firewall cannot be driven exactly to settles on a neighbour, and
+    the runs are filed under **that** profile's coordinates — so the point that was proposed
+    never appears in the field, and gets proposed again every time the page is opened.
+
+    The ledger is the record of what was actually attempted, which is the question that
+    matters ("have we already spent a night on this?"). A claim stores its parent and the
+    levers it moved, so the point it proposed reconstructs exactly: the parent's coordinates
+    with those moves applied.
+    """
+    rows = session.scalars(
+        select(ExploreRecommendation)
+        .order_by(ExploreRecommendation.id.desc())
+        .limit(max(1, limit))
+    ).all()
+    out: list[dict] = []
+    for rec in rows:
+        if not rec.parent_fingerprint:
+            continue
+        moves = {
+            ch["key"]: ch["to"]
+            for ch in (rec.changes or [])
+            if isinstance(ch, dict) and ch.get("key") is not None and ch.get("to") is not None
+        }
+        if moves:
+            out.append({"parent_fingerprint": rec.parent_fingerprint, "moves": moves})
+    return out
+
+
 def recommendations(session, limit: int = 50) -> dict:
     """The ledger with every claim graded against what the link actually did.
 
@@ -495,13 +614,17 @@ def recommendations(session, limit: int = 50) -> dict:
         })
         out[-1]["why"] = _why(rec, kind, graded, actual, iterations, min_iterations)
 
+    # One row per proposal. Testing the same candidate twice is two records of what was run
+    # and one piece of evidence about the model — the summary must count the latter.
+    collapsed = _collapse(out)
     return {
-        "recommendations": out,
-        "summary": _summarize(out),
+        "recommendations": collapsed,
+        "summary": _summarize(collapsed),
+        "attempts_recorded": len(out),
         "methodology_version": methodology.version,
         "min_iterations": min_iterations,
         "quick_iterations": QUICK_ITERATIONS,
     }
 
 
-__all__ = ["record", "recommendations", "evidence_kind", "QUICK_ITERATIONS"]
+__all__ = ["record", "recommendations", "claimed_moves", "evidence_kind", "QUICK_ITERATIONS"]
