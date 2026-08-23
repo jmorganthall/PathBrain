@@ -823,8 +823,20 @@ LLM-based. See `README.md` for the product overview.
   plus "Test to minimum" and **"Race challengers"**),
   Experiments, Shotgun Sweep, **Explore** (`Explore.tsx`, `/api/explore/landscape` — the
   what-haven't-we-tried view: the ranked **next profiles to test** with a one-click "Test to
-  minimum", a response curve per lever per pipe, the holes in coverage, and the lever pairs
-  that genuinely interact; fetched on demand, read-only apart from the test button),
+  minimum", a response curve per lever per pipe (marginal solid + reference-conditioned dashed,
+  with a **confounded** chip where the two disagree), **"What changing one lever actually did"**
+  (the matched-pair contrasts), **local optima** (coupled-basin detection), the holes in
+  coverage, and the lever pairs that genuinely interact; fetched on demand, read-only apart
+  from the test button. **The long sections grow with the field, so they page**: a lever with
+  twenty tested values has 190 possible one-lever transitions and a 150-profile field holds
+  dozens of local optima — printed whole that's a wall nobody reads, which is the same as not
+  reporting it. Matched pairs are **flattened across levers** (grouped, the strongest finding in
+  the field can sit halfway down the fourth group) and default-sorted by **evidence** — several
+  agreeing pairs first, then pair count, then effect size — so a dramatic single-pair anecdote
+  can't lead. Local optima default to best-Overall-first and are sortable by *siblings beaten*;
+  the coupling alarm counts only **well-surrounded** optima (≥2 measured siblings), because
+  "39 of 40" from a sparse field is noise wearing a warning's clothes. Lever charts lead with
+  the levers that actually spread the Overall, with the flat ones behind a **show all** toggle),
   **Dueling Champions** (the duel ladder's own view — the
   *controlled-trial* counterpart to Settings Impact's observational standings, so it speaks in
   fight-card terms rather than means: the reigning champion + reign length + which crowning
