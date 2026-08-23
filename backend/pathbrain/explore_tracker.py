@@ -39,7 +39,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .methodology import ensure_current_methodology, overall_metrics, overall_weights
-from .models import ExploreRecommendation
+from .models import ExploreRecommendation, Run, RunStatus
 from .profile_names import names_for
 
 log = get_logger("explore_tracker")
@@ -335,6 +335,82 @@ def _summarize(rows: list[dict]) -> dict:
     return out
 
 
+def _measured_fingerprint(session, rows: list[ExploreRecommendation]) -> dict[int, str]:
+    """``{recommendation id: the fingerprint its benchmark ACTUALLY ran under}``.
+
+    The fingerprint recorded when a test starts is a *prediction*: it is
+    ``fingerprint(target)``, hashed from the profile we intend to drive the firewall to.
+    The fingerprint a run is filed under is ``fingerprint(normalize(discover()))``, read back
+    off the firewall while the benchmark runs. Those are two different numbers whenever the
+    firewall doesn't land exactly where we asked — a field on a pipe the provider can't write
+    (see ``settings_profile.unwritable_diffs``), or a value the firewall echoes back in its
+    own representation. Nothing detects it: the apply succeeds, the verify passes, the
+    read-before/read-after check sees no drift, and the runs are filed — correctly — under
+    the profile that really ran. Only the *claim* points somewhere else, and the
+    recommendation reads as having no history at all.
+
+    So the ledger never trusts the prediction. Every chunk of a profile test carries
+    ``job_group = "profile_test-<id>"``, and each run's ``settings_fingerprint`` is the very
+    column ``compute_profiles`` groups profiles on — so resolving through it makes the
+    correlation correct **by construction**, whatever the firewall did.
+    """
+    by_group = {
+        f"profile_test-{r.profile_test_id}": r.id for r in rows if r.profile_test_id is not None
+    }
+    if not by_group:
+        return {}
+    found: dict[int, str] = {}
+    for group, fp in session.execute(
+        select(Run.job_group, Run.settings_fingerprint)
+        .where(
+            Run.job_group.in_(list(by_group)),
+            Run.status == RunStatus.COMPLETE,
+            Run.settings_fingerprint.is_not(None),
+        )
+        .order_by(Run.id)
+    ).all():
+        # First completed chunk wins: every chunk of one test benchmarks the same applied
+        # firewall state, and a later chunk differing would mean mid-test drift, which
+        # ``execute_run`` fails the run for anyway.
+        found.setdefault(by_group[group], fp)
+    return found
+
+
+def _reconcile(rows: list[ExploreRecommendation], actual: dict[int, str]) -> None:
+    """Correct any recorded fingerprint the benchmark contradicts, and say so on the row.
+
+    Written back rather than corrected on the fly so the profile *link* is right too, and so
+    a row that has already been resolved costs nothing on later reads — the same
+    resolve-it-once-afterwards pattern ``updates.verify_pending_updates`` uses for an update
+    attempt whose outcome only becomes knowable later. Like that one (and like
+    ``profile_names``) the write takes its **own** session: the caller's comes from the
+    read-only ``get_session`` dependency, which closes without committing, so a correction
+    written there would evaporate and every read would redo it. The in-memory rows are
+    updated to match, so the response that triggered the fix already reflects it.
+    """
+    stale = [(rec, fp) for rec in rows if (fp := actual.get(rec.id)) and fp != rec.fingerprint]
+    if not stale:
+        return
+    with session_scope() as session:
+        for rec, fp in stale:
+            row = session.get(ExploreRecommendation, rec.id)
+            if row is None:
+                continue
+            note = (
+                f"The firewall settled on {fp}, not the {row.fingerprint} this was recorded "
+                "against — the requested profile was not fully reachable (a field the provider "
+                "cannot write, or a value the firewall stores in its own form). Graded against "
+                "the profile that actually ran."
+            )
+            log.warning(
+                "Explore recommendation %s: recorded %s but the benchmark ran %s; re-pointing",
+                row.id, row.fingerprint, fp,
+            )
+            row.note = f"{row.note} {note}" if row.note else note
+            row.fingerprint = fp
+            rec.fingerprint, rec.note = fp, row.note
+
+
 def recommendations(session, limit: int = 50) -> dict:
     """The ledger with every claim graded against what the link actually did.
 
@@ -354,6 +430,11 @@ def recommendations(session, limit: int = 50) -> dict:
     min_iterations = int(
         (get_config(session).get("correlation", {}) or {}).get("min_iterations", 15) or 15
     )
+
+    # Re-point any row whose benchmark contradicts the fingerprint it was recorded against,
+    # BEFORE anything is read off it — otherwise the ledger grades a claim against a profile
+    # with no runs and reports it pending forever.
+    _reconcile(rows, _measured_fingerprint(session, rows))
 
     fps = [r.fingerprint for r in rows] + [r.parent_fingerprint for r in rows if r.parent_fingerprint]
     measured: dict = {}

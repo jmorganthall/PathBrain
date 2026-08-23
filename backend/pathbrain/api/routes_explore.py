@@ -93,6 +93,19 @@ def test_candidate(payload: ExploreTest, session: Session = Depends(get_session)
 
     started = start_settings_test(session, settings, payload.label, payload.iterations)
 
+    # Fields the firewall cannot write were reverted so the fingerprint names the profile
+    # that will really be measured — which means the profile measured is not quite the one
+    # proposed. That belongs on the record, not in a log line.
+    dropped = started.get("warnings") or []
+    if dropped:
+        detail = (
+            "The firewall cannot write "
+            + "; ".join(dropped)
+            + " — those fields were left as they are, so this measures the closest reachable "
+            "profile rather than exactly what was proposed."
+        )
+        note = f"{note} {detail}" if note else detail
+
     methodology = ensure_current_methodology(session, get_config(session))
     rec_id = None
     try:

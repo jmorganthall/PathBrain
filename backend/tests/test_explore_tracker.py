@@ -68,13 +68,20 @@ def _current_version() -> str:
         return ensure_current_methodology(s, get_config(s)).version
 
 
-def _seed_profile(fp: str, overall: float, iterations: int = 20) -> None:
-    """A profile measuring ``overall`` — subscores are what the weighted crown grades."""
+def _seed_profile(fp: str, overall: float, iterations: int = 20, job_group: str | None = None) -> None:
+    """A profile measuring ``overall`` — subscores are what the weighted crown grades.
+
+    ``job_group`` stamps the runs the way a profile test's chunks are stamped, which is how
+    the ledger finds the profile a recommendation's benchmark actually ran under."""
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
     _seed_run(
         fp, overall, t0 - timedelta(minutes=5), iterations=iterations,
         crown_subscores={m: overall for m in _crown_metrics()},
     )
+    if job_group:
+        with session_scope() as s:
+            for run in s.query(Run).filter(Run.settings_fingerprint == fp).all():
+                run.job_group = job_group
 
 
 def _ledger(client, fp: str) -> dict:
@@ -309,3 +316,153 @@ def test_a_substituted_parent_is_noted_on_the_record_not_silently_swallowed(clie
     assert body["note"] and "live profile" in body["note"]
     row = _ledger(client, body["fingerprint"])
     assert row["note"] and "live profile" in row["why"]
+
+
+# ── the fingerprint a claim is recorded against must be the one that gets measured ─────
+#
+# The bug this section exists for: "the tests ran, but the profile shows no history."
+# `fingerprint(target)` is a PREDICTION — the profile we intend to drive the firewall to.
+# A run is filed under `fingerprint(normalize(discover()))`, read off the firewall while it
+# measures. When the firewall can't be driven all the way to the target those are different
+# numbers, and nothing in the pipeline notices: plan_apply drops the unappliable field as a
+# *warning*, the apply succeeds, the verify re-plans and again sees no changes, and the
+# read-before/read-after check sees no drift because the firewall genuinely never moved.
+# The runs are filed correctly — against the profile that actually ran. Only the claim
+# points elsewhere, at a fingerprint with no history.
+
+
+def test_a_target_the_firewall_cannot_reach_is_reported_not_dropped():
+    """`plan_apply` skips a pipe it can't write and says so only in `warnings`, which every
+    caller discards. That's harmless when the pipe already matches and quietly wrong when it
+    doesn't — so the difference itself has to be reportable."""
+    from pathbrain.providers import get_provider
+    from pathbrain.providers import mock as mock_mod
+    from pathbrain.settings_profile import normalize, plan_apply, unwritable_diffs
+
+    mock_mod._OVERRIDES.clear()
+    live = get_provider().discover()
+    target = [dict(p) for p in normalize(live)]
+    # The mock's upload pipe deliberately has no uuid — "an OPNsense pipe apply() can't target".
+    target[1]["quantum"] = 555
+
+    changes, warnings = plan_apply(target, live)
+    assert not any(c["label"] == target[1]["label"] for c in changes)   # silently not applied
+    dropped = unwritable_diffs(target, live)
+    assert [(d["label"], d["field"], d["to"]) for d in dropped] == [(target[1]["label"], "quantum", 555)]
+    # …and a pipe that can't be written but doesn't need to be is NOT a finding.
+    assert unwritable_diffs([dict(p) for p in normalize(live)], live) == []
+
+
+def test_the_returned_fingerprint_is_the_profile_that_will_actually_be_measured(client, monkeypatch):
+    """The fix at the source: unappliable fields are reverted, so the fingerprint handed back
+    names a profile the firewall will really be on — instead of one that can never exist, whose
+    runs therefore land under some other key."""
+    from pathbrain.providers import get_provider
+    from pathbrain.providers import mock as mock_mod
+    from pathbrain.settings_profile import fingerprint, normalize, plan_apply
+
+    mock_mod._OVERRIDES.clear()
+    provider = get_provider()
+    applied: dict = {}
+    monkeypatch.setattr(
+        rs.profile_test_mod, "start",
+        lambda fp, target, label, iters: applied.update(fp=fp, target=target) or 91,
+    )
+
+    live_norm = normalize(provider.discover())
+    resp = client.post("/api/explore/test", json={
+        "settings": [
+            {"label": live_norm[0]["label"], "quantum": 6500},   # writable — must take
+            {"label": live_norm[1]["label"], "quantum": 555},    # no uuid — cannot take
+        ],
+        "iterations": 5, "predicted": 70.0,
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["warnings"], "the caller must be told a requested field was not applied"
+
+    # Drive the firewall exactly as the profile test would, then read back what it became.
+    live = provider.discover()
+    for change in plan_apply(applied["target"], live)[0]:
+        provider.apply(change)
+    reached = fingerprint(normalize(provider.discover()))
+    assert body["fingerprint"] == reached, (
+        "the recorded fingerprint must equal the one the runs will be filed under"
+    )
+    # The reachable part still happened — this is a trim, not a refusal.
+    assert applied["target"][0]["quantum"] == 6500
+    mock_mod._OVERRIDES.clear()
+
+
+def test_a_claim_is_repointed_to_the_profile_its_benchmark_actually_ran(client):
+    """The backstop, and what rescues data already collected: whatever the firewall did, the
+    runs of a profile test carry `job_group = profile_test-<id>` and their own
+    `settings_fingerprint` — the very column profiles are grouped on. Resolving through that
+    makes the correlation right by construction, so a claim recorded against a fingerprint
+    that never ran is re-pointed at the one that did instead of reading `pending` forever."""
+    rec_id = _record("recwrongfp01", predicted=70.0, uncertainty=2.0, profile_test_id=4242)
+    # The benchmark ran — but the firewall settled somewhere other than the recorded target.
+    _seed_profile("recactual001", 66.0, job_group="profile_test-4242")
+
+    body = client.get("/api/explore/recommendations").json()
+    row = next(r for r in body["recommendations"] if r["id"] == rec_id)
+    assert row["fingerprint"] == "recactual001"     # re-pointed at what really ran
+    assert row["verdict"] == "worse" and row["actual"] == 66.0
+    assert "settled on recactual001" in row["note"]
+    # …and the correction is persisted, so the profile link is right on the next read too.
+    with session_scope() as s:
+        assert s.get(ExploreRecommendation, rec_id).fingerprint == "recactual001"
+
+
+def test_a_claim_whose_benchmark_matches_is_left_alone(client):
+    """The re-point must fire only on a genuine contradiction — rewriting a correct row would
+    make the ledger unfalsifiable."""
+    rec_id = _record("recrightfp01", predicted=70.0, uncertainty=2.0, profile_test_id=4243)
+    _seed_profile("recrightfp01", 70.5, job_group="profile_test-4243")
+    body = client.get("/api/explore/recommendations").json()
+    row = next(r for r in body["recommendations"] if r["id"] == rec_id)
+    assert row["fingerprint"] == "recrightfp01" and row["note"] is None
+    assert row["verdict"] == "on_target"
+
+
+def test_restating_a_field_in_another_notation_does_not_invent_a_profile(client, monkeypatch):
+    """The dominant cause of the "no history" bug, and the subtlest.
+
+    A candidate carries its parent's WHOLE writable set, so every field — not just the moved
+    one — went through `coerce_value`, which canonicalizes to the firewall's wire form
+    ("5ms" -> 5). For an unchanged field that is a purely textual difference: `plan_apply`
+    compares numerically and plans no write, the firewall keeps reporting "5ms", and yet
+    `fingerprint(target)` hashes a profile that will never exist. Every explore test was
+    filed under the firewall's real fingerprint while the claim held the invented one.
+    """
+    from pathbrain.providers import get_provider
+    from pathbrain.providers import mock as mock_mod
+    from pathbrain.settings_profile import fingerprint, normalize, plan_apply
+
+    mock_mod._OVERRIDES.clear()
+    provider = get_provider()
+    live_norm = normalize(provider.discover())
+    # The firewall reports durations as "5ms"/"100ms"; a parent restates them as 5/100.
+    assert live_norm[0]["target"] == "5ms"
+
+    applied: dict = {}
+    monkeypatch.setattr(
+        rs.profile_test_mod, "start",
+        lambda fp, target, label, iters: applied.update(target=target) or 92,
+    )
+    parent = [dict(p) for p in live_norm]
+    overrides = explore.full_overrides(parent, [{"label": parent[0]["label"], "quantum": 7100}])
+    resp = client.post("/api/explore/test", json={
+        "settings": overrides, "iterations": 5, "predicted": 70.0,
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # Only the genuinely moved lever is restated; the rest keep the firewall's own notation.
+    assert applied["target"][0]["quantum"] == 7100
+    assert applied["target"][0]["target"] == "5ms"
+
+    for change in plan_apply(applied["target"], provider.discover())[0]:
+        provider.apply(change)
+    assert body["fingerprint"] == fingerprint(normalize(provider.discover()))
+    mock_mod._OVERRIDES.clear()
