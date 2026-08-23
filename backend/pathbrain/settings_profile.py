@@ -184,6 +184,66 @@ def _wire_value(param: str, desired):
     return desired
 
 
+def _match_live_pipes(target_list: list[dict], live: list[FqCodelConfig]):
+    """Pair each target pipe with its live counterpart under ONE matching rule.
+
+    By label, falling back to position when the topologies line up. Shared by
+    ``plan_apply`` and ``unwritable_diffs`` so "which live pipe is this?" can never be
+    answered two different ways — the planner and the reachability check disagreeing is
+    exactly how an unappliable field becomes an invisible one.
+    """
+    by_label: dict = {}
+    for cfg in live:
+        extra = cfg.extra or {}
+        lbl = extra.get("description") or extra.get("pipe") or extra.get("direction")
+        by_label.setdefault(lbl, cfg)
+    for i, pipe in enumerate(target_list):
+        match = by_label.get(pipe.get("label"))
+        if match is None and len(target_list) == len(live):
+            match = live[i]  # positional fallback when the topology lines up
+        yield pipe, match
+
+
+def unwritable_diffs(target: list[dict] | None, live: list[FqCodelConfig]) -> list[dict]:
+    """The writable-field differences ``plan_apply`` **cannot** write, and would drop silently.
+
+    ``plan_apply`` skips a target pipe with no live match or no uuid and records only a
+    *warning* — which every caller discards. That is fine when the skipped pipe already
+    matches the firewall (nothing was wanted there), and quietly wrong when it doesn't: the
+    apply "succeeds", the post-apply verify passes (it re-plans and again sees no *changes*),
+    and the firewall settles on a profile that is **not** the target. The benchmark then runs
+    against that other profile and is attributed — correctly — to *its* fingerprint, while
+    the caller goes on believing it measured the target. Nothing in the read-before/read-after
+    integrity check can catch it: the firewall genuinely never moved during the run.
+
+    So this reports what the planner drops: one entry per field a caller asked for and the
+    firewall cannot be driven to. Empty means the target is fully reachable.
+    """
+    out: list[dict] = []
+    for pipe, match in _match_live_pipes(target or [], live):
+        label = pipe.get("label") or "pipe"
+        if match is None:
+            reason = f"no live pipe matches '{label}'"
+        elif not (match.extra or {}).get("uuid"):
+            reason = f"live pipe '{label}' has no uuid, so it cannot be written"
+        else:
+            continue
+        current = match.to_dict() if match is not None else {}
+        for param in WRITABLE_PARAMS:
+            desired = pipe.get(param)
+            if desired is None or _field_equal(param, current.get(param), desired):
+                continue
+            out.append({
+                "label": label,
+                "field": param,
+                "field_label": FIELD_LABELS.get(param, param),
+                "from": current.get(param),
+                "to": desired,
+                "reason": reason,
+            })
+    return out
+
+
 def plan_apply(target: list[dict] | None, live: list[FqCodelConfig]) -> tuple[list[dict], list[str]]:
     """Plan the writes to make the live firewall match a target profile.
 
@@ -193,21 +253,17 @@ def plan_apply(target: list[dict] | None, live: list[FqCodelConfig]) -> tuple[li
     ``provider.apply()``. Fields already at the target value are skipped, so an
     apply is a no-op when the firewall is already on this profile. Returns
     ``(changes, warnings)``; warnings flag target pipes with no live match or uuid.
+
+    A skipped pipe's *differences* are dropped, not reported — see ``unwritable_diffs``,
+    which a caller about to measure the result must consult, because a plan that silently
+    omits them still reports "nothing left to apply" when re-run as a verify.
     """
     target_list = target or []
     warnings: list[str] = []
-    by_label: dict = {}
-    for cfg in live:
-        extra = cfg.extra or {}
-        lbl = extra.get("description") or extra.get("pipe") or extra.get("direction")
-        by_label.setdefault(lbl, cfg)
 
     changes: list[dict] = []
-    for i, pipe in enumerate(target_list):
+    for pipe, match in _match_live_pipes(target_list, live):
         label = pipe.get("label")
-        match = by_label.get(label)
-        if match is None and len(target_list) == len(live):
-            match = live[i]  # positional fallback when the topology lines up
         if match is None:
             warnings.append(f"No live pipe matches '{label or 'pipe'}' — skipped")
             continue

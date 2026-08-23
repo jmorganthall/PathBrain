@@ -36,6 +36,7 @@ from ..schemas import ApplySettings, TestSettings
 from ..scoring import COMPLETION_METRIC_SOURCES
 from .. import profile_names
 from ..settings_profile import (
+    _field_equal,
     _to_number,
     diff_profiles,
     environment_signature,
@@ -43,6 +44,7 @@ from ..settings_profile import (
     normalize,
     plan_apply,
     summarize,
+    unwritable_diffs,
 )
 from ..shaper_fields import SHAPER_FIELDS, SWEEPABLE_FIELDS, WRITABLE_FIELDS, coerce_value, field as shaper_field
 from ..trends import RunPoint, _BaselineResolver, bucket_values, profile_relative
@@ -2729,10 +2731,21 @@ def _apply_writable_overrides(live_norm: list[dict], suggested) -> list[dict]:
         p = dict(pipe)
         override = by_label.get(pipe.get("label")) or flat
         for f in WRITABLE_FIELDS:
-            if isinstance(override, dict) and override.get(f) is not None:
-                # Canonicalize to the firewall's own format (e.g. "5ms", int quantum) so the
-                # target fingerprint matches what discover() reports back after the apply.
-                p[f] = coerce_value(f, override[f])
+            if not isinstance(override, dict) or override.get(f) is None:
+                continue
+            # Overriding a field with the value it already holds is not a change — and
+            # re-writing it in a different notation invents a new profile identity out of
+            # nothing. ``coerce_value`` canonicalizes to the firewall's wire form ("5ms" -> 5),
+            # which for an UNCHANGED field means the target differs from live textually while
+            # being identical semantically: ``plan_apply`` plans no write (it compares
+            # numerically), the firewall keeps reporting "5ms", and ``fingerprint(target)``
+            # names a profile that will never exist. Anything measured then files under the
+            # firewall's real fingerprint while the caller holds the invented one — the
+            # "tests ran but the profile has no history" bug. So leave live's own
+            # representation in place unless the value genuinely differs.
+            if _field_equal(f, p.get(f), override[f]):
+                continue
+            p[f] = coerce_value(f, override[f])
         out.append(p)
     return out
 
@@ -2764,15 +2777,43 @@ def start_settings_test(
         raise HTTPException(status_code=502, detail=f"Could not read the live firewall: {exc}") from exc
     live_norm = normalize(live)
     target = _apply_writable_overrides(live_norm, settings)
-    target_fp = fingerprint(target)
-    if target_fp == fingerprint(live_norm):
-        raise HTTPException(
-            status_code=400, detail="Those settings match the current profile — nothing to change."
-        )
     if environment_signature(target) != environment_signature(live_norm):
         raise HTTPException(
             status_code=400, detail="Unreachable: the suggestion changes a non-writable field."
         )
+
+    # Trim the target to what the firewall can actually be driven to. ``plan_apply`` silently
+    # drops a field on a pipe it can't write (no live match, no uuid) — the apply "succeeds",
+    # the post-apply verify re-plans and again sees nothing left, and the firewall settles on a
+    # DIFFERENT profile, which the benchmark then measures and is filed under. Leaving those
+    # fields in the target means the fingerprint returned here names a profile that will never
+    # exist: the runs land under one key while the caller records another, and the profile
+    # reads as having no history. Reverting them makes this fingerprint honest by construction,
+    # and the caller is told what was dropped instead of it happening behind the count.
+    skipped = unwritable_diffs(target, live)
+    warnings: list[str] = []
+    if skipped:
+        by_label = {p.get("label"): p for p in live_norm}
+        for drop in skipped:
+            pipe = next((p for p in target if p.get("label") == drop["label"]), None)
+            source = by_label.get(drop["label"])
+            if pipe is not None and source is not None:
+                pipe[drop["field"]] = source.get(drop["field"])
+            warnings.append(
+                f"{drop['label']}·{drop['field_label']} left at {drop.get('from')} "
+                f"(wanted {drop.get('to')}) — {drop['reason']}"
+            )
+        log.info("Test-settings: reverted %s unappliable field(s): %s", len(skipped), "; ".join(warnings))
+
+    target_fp = fingerprint(target)
+    if target_fp == fingerprint(live_norm):
+        detail = "Those settings match the current profile — nothing to change."
+        if warnings:
+            detail = (
+                "Nothing left to change: every requested field is on a pipe the firewall "
+                "cannot write — " + "; ".join(warnings)
+            )
+        raise HTTPException(status_code=400, detail=detail)
     existing = _profile_iterations(session, target_fp)
     if iterations is None:
         wanted = max(1, _min_iterations(session) - existing)
@@ -2792,6 +2833,8 @@ def start_settings_test(
         "iterations": wanted,
         "label": label,
         "existing_iterations": existing,
+        # Requested fields the firewall cannot write, reverted so the fingerprint above is real.
+        "warnings": warnings,
     }
 
 

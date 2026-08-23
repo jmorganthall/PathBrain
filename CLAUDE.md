@@ -741,6 +741,24 @@ LLM-based. See `README.md` for the product overview.
     and attributed to its own fingerprint — not "is the applied profile the one that was
     proposed?". When the parent's settings can't be found the levers fall back to live and the
     recommendation is stamped with a `note` saying so.
+    **A predicted fingerprint is not an identity — never correlate on one.** `fingerprint(target)`
+    hashes the profile we *intend* to reach; a run is filed under `fingerprint(normalize(discover()))`,
+    read off the firewall while it measures. Two mechanisms make those differ, and **nothing in the
+    pipeline notices** (the apply succeeds, the post-apply verify re-plans and again sees no
+    *changes*, and the read-before/read-after check sees no drift because the firewall genuinely
+    never moved): **(1) an unappliable field** — `plan_apply` skips a pipe with no live match or no
+    uuid and records only a *warning*, which every caller discards, so the firewall settles on a
+    different profile; `settings_profile.unwritable_diffs` reports exactly those dropped
+    differences (sharing `_match_live_pipes` with `plan_apply`, so the planner and the reachability
+    check can't answer "which live pipe is this?" two ways), and `start_settings_test` **reverts**
+    them so the fingerprint it returns is reachable, listing what it dropped in `warnings`.
+    **(2) a field restated in another notation** — `_apply_writable_overrides` ran `coerce_value`
+    over every supplied field ("5ms" → 5), which for an *unchanged* field is purely textual: no
+    write is planned, the firewall keeps reporting "5ms", and the target hashes a profile that will
+    never exist. It now skips any override already `_field_equal` to live, keeping the firewall's
+    own representation. This was the dominant cause — because `full_overrides` supplies the parent's
+    **whole** writable set, *every* explore test hashed an invented profile, so the runs were filed
+    correctly and the recommendation pointed at a fingerprint with no history at all.
   - `explore_tracker.py` — **the recommendation ledger: was the data right?** Explore's output is
     a *prediction*, and a prediction nobody scores is a horoscope — it costs the same night of
     benchmarking either way. So the **claim is stored before the measurement exists**
@@ -767,6 +785,16 @@ LLM-based. See `README.md` for the product overview.
     from a matched pair and the other from a confounded curve is only as trustworthy as the
     confounded leg. `GET /api/explore/recommendations`; rendered as the Explore page's
     **"Was the data right?"** card.
+    **The ledger never trusts the recorded fingerprint** (`_measured_fingerprint`/`_reconcile`):
+    every chunk of a profile test carries `job_group = "profile_test-<id>"`, and each run's
+    `settings_fingerprint` is the very column `compute_profiles` groups profiles on — so resolving
+    a recommendation's profile *through the runs it produced* makes the correlation right **by
+    construction**, whatever the firewall did with the target. A row the benchmark contradicts is
+    re-pointed at the profile that actually ran and stamped with a note saying so (persisted in its
+    **own** `session_scope`, like `updates.verify_pending_updates` and `profile_names` — the request
+    session comes from the read-only `get_session` dependency and closes without committing). This
+    is the backstop behind the two source fixes above, and what rescues data already collected
+    against an invented fingerprint.
   - `crowning.py` — **the first-class CROWNING POLICY**: the single resolver for "which
     verdict governs what automation applies". `crown_follow.policy` = **"pooled"** (the
     all-time Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
@@ -1466,6 +1494,19 @@ docker compose up --build   # -> http://localhost:8000
   or missed. The aggregate splits calibration **by evidence class** (matched pair / conditioned
   neighbourhood / marginal curve / confounded curve), which turns the model's own stated
   uncertainty about confounding into a measured number instead of a hunch.
+  **(3) Fixed the correlation bug that (1) introduced** — reported as *"tested a recommendation,
+  the tests ran, but the profile shows no history"*. Materializing the parent meant handing the
+  apply path the parent's **whole** writable set, and `_apply_writable_overrides` re-canonicalized
+  every field through `coerce_value` ("5ms" → 5): semantically identical, textually different, so
+  no write was planned, the firewall kept reporting "5ms", and `fingerprint(target)` named a
+  profile that could never exist. The runs were filed — correctly — under the firewall's own
+  fingerprint while the recommendation held the invented one. Three fixes, in increasing order of
+  robustness: `_apply_writable_overrides` keeps live's representation for any value already
+  `_field_equal` to it; `settings_profile.unwritable_diffs` surfaces the differences `plan_apply`
+  silently drops on a pipe it can't write, which `start_settings_test` reverts (reporting them) so
+  its fingerprint is reachable; and the ledger resolves each claim's profile from the **runs its
+  profile test actually produced** (`job_group`), re-pointing and noting any row the benchmark
+  contradicts — correlation by construction rather than by a hash agreeing with reality.
 - **Next:** multi-parameter Bayesian search + interleaved A/B with effect-size/CI + hysteresis;
   routing intelligence / SD-WAN. (Latency-under-load/bufferbloat is explicitly **out of scope**.)
 
