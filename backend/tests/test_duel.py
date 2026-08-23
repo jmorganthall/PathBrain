@@ -1672,6 +1672,90 @@ def test_every_bout_defends_the_current_leader_not_a_queue_decided_in_advance(mo
             s.query(Duel).delete()
 
 
+def test_a_challenger_that_wins_without_taking_the_belt_gets_its_rematch(monkeypatch):
+    """The reported oddity: "two profiles beat this one but it keeps the belt".
+
+    Beating the leader only takes the belt when it lifts your floor above its — so a thin
+    challenger can genuinely win a bout and the leader still ranks first. That part is
+    correct. What was wrong is what happened next: the pair went into the already-fought
+    set for the rest of the session, so the profile with the single strongest claim to the
+    belt was set aside and couldn't finish the job, while the leader went on to defend
+    against fresher, weaker challengers.
+
+    A win without a belt change is now re-opened — once — so the bout that would settle it
+    actually gets run.
+    """
+    import pathbrain.api.routes_settings as rs
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+        # The leader arrives with a deep record AND a long winning head-to-head over the
+        # upstart, so one win — even a clean sweep — cannot lift the upstart's floor past
+        # it. (Checked numerically: after a 9-0 win the upstart sits at floor ~1504 against
+        # the leader's ~1610.) This is the live situation the report came from.
+        _finished_duel(
+            s,
+            matchups=[
+                _mu("leader00000", f"opp{i}", "incumbent", wins_inc=12, wins_cha=4, delta=-3.0)
+                for i in range(6)
+            ]
+            + [
+                _mu("leader00000", "upstart0000", "incumbent", wins_inc=16, wins_cha=2, delta=-3.0)
+            ],
+            champion="leader00000",
+            when=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=30),
+        )
+
+    applied: list[str] = []
+    fake_field = {
+        "best_fingerprint": "leader00000",
+        "profiles": [
+            {"fingerprint": "leader00000", "label": "leader", "overall": 90.0,
+             "confident": True, "settings": []},
+            {"fingerprint": "upstart0000", "label": "upstart", "overall": 80.0,
+             "confident": True, "settings": []},
+        ]
+        + [
+            {"fingerprint": f"opp{i}", "label": f"opp{i}", "overall": 60.0,
+             "confident": True, "settings": []}
+            for i in range(6)
+        ],
+    }
+    monkeypatch.setattr(rs, "compute_profiles", lambda session: fake_field)
+    monkeypatch.setattr(rs, "_compute_heirs", lambda result, session, live=None: {"items": []})
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    _no_settle()
+    # The upstart is genuinely better and wins every pair it plays.
+    scores = {"leader00000": 60.0, "upstart0000": 64.0}
+    scores.update({f"opp{i}": 50.0 for i in range(6)})
+    _score_by_profile(monkeypatch, applied, scores)
+
+    duel_id = duel_mod.start(duration_minutes=10)
+    d = _wait_finish(duel_id)
+    try:
+        assert d.status == DuelStatus.COMPLETE, d.error
+        bouts = list(d.matchups)
+        pairs = [frozenset((b["incumbent"], b["challenger"])) for b in bouts]
+        upstart_bouts = [
+            i for i, b in enumerate(bouts)
+            if "upstart0000" in (b["incumbent"], b["challenger"])
+        ]
+        assert len(upstart_bouts) >= 2, (
+            "a profile that beat the belt must get to come back and finish the job, "
+            f"not be set aside for the session — bouts were {pairs}"
+        )
+        # The rematch says why it's in the ring, so the tape explains itself.
+        assert any(
+            "rematch" in (b.get("challenger_why") or "") for b in bouts
+        ), "the rematch should be labelled as one"
+        # …and only once: the ladder must not ping-pong on a single pair.
+        leader_upstart = frozenset(("leader00000", "upstart0000"))
+        assert pairs.count(leader_upstart) <= 2
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+
+
 def test_the_cooldown_reorders_contenders_it_does_not_hand_the_ring_to_filler():
     """The bug behind "yet again — random duels not involving the crown".
 

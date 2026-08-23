@@ -1276,23 +1276,41 @@ export default function Duels() {
                   <Typography variant="caption" color="text.secondary">
                     This session so far:
                   </Typography>
-                  {status.matchups.map((m, i) => (
-                    <Typography
-                      key={i}
-                      variant="caption"
-                      color="text.secondary"
-                      sx={{ display: "block", fontFamily: "monospace" }}
-                    >
-                      {i + 1}. {m.incumbent_name || m.incumbent_label} vs{" "}
-                      {m.challenger_name || m.challenger_label}
-                      {m.challenger_why ? ` (${m.challenger_why})` : ""} →{" "}
-                      {m.verdict === "challenger"
-                        ? `${m.challenger_name || m.challenger_label} takes the belt`
+                  {status.matchups.map((m, i) => {
+                    // Winning a bout is NOT the same as taking the belt: the belt goes to
+                    // the ring's #1, so beating the leader only takes it once your Proven
+                    // score clears theirs. Saying "takes the belt" on every challenger win
+                    // is how the tape ended up contradicting the standings. Read the actual
+                    // belt from who defends the NEXT bout (or, for the newest bout, from
+                    // the session's current holder).
+                    const next = status.matchups?.[i + 1];
+                    const beltAfter = next ? next.incumbent : status.champion_fingerprint;
+                    const held = beltAfter === m.incumbent;
+                    const winner =
+                      m.verdict === "challenger"
+                        ? m.challenger_name || m.challenger_label
                         : m.verdict === "incumbent"
-                          ? "belt held"
-                          : "draw"}
-                    </Typography>
-                  ))}
+                          ? m.incumbent_name || m.incumbent_label
+                          : null;
+                    return (
+                      <Typography
+                        key={i}
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block", fontFamily: "monospace" }}
+                      >
+                        {i + 1}. {m.incumbent_name || m.incumbent_label} vs{" "}
+                        {m.challenger_name || m.challenger_label}
+                        {m.challenger_why ? ` (${m.challenger_why})` : ""} →{" "}
+                        {winner ? `${winner} wins the bout` : "draw"}
+                        {m.verdict === "challenger" && beltAfter
+                          ? held
+                            ? " · belt stays (not enough to clear the leader's Proven yet)"
+                            : " · and takes the belt"
+                          : ""}
+                      </Typography>
+                    );
+                  })}
                 </Box>
               )}
             </Box>
