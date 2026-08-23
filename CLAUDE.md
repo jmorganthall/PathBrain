@@ -573,6 +573,19 @@ LLM-based. See `README.md` for the product overview.
     significance gate: two well-measured profiles a hair apart both have narrow bars, so the
     better one still ranks first ("best by a statistically insignificant fraction is still
     best"); the floor only overturns an order that rests on a bar wider than the gap.
+    **The reigning champion IS row 1** (`ledger_leader`). The badge used to read a stored
+    `Duel.champion_fingerprint` written at session end — the profile that *survived that
+    session* — while the standings are fitted live over the whole ledger, so the two were
+    computed by different logic and inevitably disagreed: every row written before the belt
+    became the ring's #1 recorded a survivor, and a bout in a **running** session moved the
+    table without touching any stored row. Both `standings()["champion"]` and
+    `latest_champion` now derive from the same fit (`ledger_leader` = highest `rating_floor`),
+    so "reigning champion", "row 1", and "who defends" cannot name different profiles.
+    `latest_champion` — which the crowning policy acts on — keeps its guards, translated onto
+    the ledger: `decisive` (a record of nothing but draws demonstrates nothing) and a
+    freshness window over the champion's own **most recent completed** bout, so it either
+    agrees with row 1 or returns None (fall back to pooled) — never a third answer. A
+    mid-session leader is therefore shown immediately but is not yet actionable.
     `duel.standings` (`GET /api/duel/standings`) aggregates the ledger into the **head-to-head
     league table** that page ranks on — per profile the **rating** (+ `rating_se` /
     `rating_pairs` / `rating_provisional` / `expected_pair_wins`), W–L–D, match points (win 3 /

@@ -1194,10 +1194,16 @@ export default function Duels() {
                       </Link>
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
-                      Held for {champion.consecutive_sessions} consecutive session
-                      {champion.consecutive_sessions === 1 ? "" : "s"} · crowned in duel #
-                      {champion.duel_id} · {fmtDateTime(champion.finished_at)}
-                      {champion.decisive ? "" : " · inherited by draws only"}
+                      Top of the ladder{" "}
+                      {champion.consecutive_sessions > 0
+                        ? `for ${champion.consecutive_sessions} consecutive session${
+                            champion.consecutive_sessions === 1 ? "" : "s"
+                          }`
+                        : "as of the latest bout"}
+                      {champion.duel_id != null ? ` · duel #${champion.duel_id}` : ""}
+                      {champion.finished_at ? ` · ${fmtDateTime(champion.finished_at)}` : ""}
+                      {champion.decisive ? "" : " · draws only, nothing proven"}
+                      {champion.provisional ? " · provisional record" : ""}
                     </Typography>
                   </>
                 ) : loadingStandings ? (
