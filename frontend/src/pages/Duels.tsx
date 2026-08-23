@@ -151,6 +151,7 @@ const PRESET_NAME: Record<string, string> = {
 type StandingSortKey =
   | "rank"
   | "rating"
+  | "rating_floor"
   | "name"
   | "wins"
   | "points"
@@ -169,6 +170,8 @@ const standingValue = (r: DuelStanding, key: StandingSortKey): number | string |
       return r.rank;
     case "rating":
       return r.rating ?? null;
+    case "rating_floor":
+      return r.rating_floor ?? null;
     case "name":
       return (r.name || r.label || "").toLowerCase();
     case "wins":
@@ -220,7 +223,8 @@ const pooledRanking = (rows: DuelStanding[]): Map<string, number> => {
 // The duel rating: a Bradley-Terry strength fitted to every pair on the ledger, printed
 // on the Elo scale. The error bar is not decoration — a rating built on eight pairs and
 // one built on eight hundred are different claims, and a table that prints them
-// identically invites the reader to act on the wrong one.
+// identically invites the reader to act on the wrong one. It is the headline number but
+// NOT the sort: the table orders on the conservative floor beside it (see `Proven`).
 function RatingCell({ row }: { row: DuelStanding }) {
   if (row.rating == null) return <>—</>;
   const se = row.rating_se;
@@ -243,6 +247,9 @@ function RatingCell({ row }: { row: DuelStanding }) {
           `${row.opponents} opponent${row.opponents === 1 ? "" : "s"}` +
           (row.expected_pair_wins != null
             ? ` · won ${row.pair_wins} where the fit expected ${row.expected_pair_wins}`
+            : "") +
+          (row.rating_floor != null
+            ? ` · ranked on ${Math.round(row.rating_floor)} (rating − 1 error bar)`
             : "")
         }
       >
@@ -1293,14 +1300,19 @@ export default function Duels() {
         <CardContent>
           <Typography variant="h6">Ladder standings</Typography>
           <Typography variant="caption" color="text.secondary">
-            <b>Duel rank</b> is the ring standing and the default order here, by{" "}
-            <b>Rating</b>: a strength fitted to every pair ever fought, so <i>who</i> you beat
-            is what moves you — beating the profile at the top is worth far more than beating
-            the one at the bottom, and losing to the best costs little. 1500 is the middle of
-            the field and ± is the error bar. An amber tag (<i>1 opponent</i>, <i>8 pairs</i>)
-            marks a <b>provisional</b> rating: it's ranked where the evidence puts it, but that
-            evidence is one comparison — beating the champion once really does put you on top
-            here, and it really is one result.
+            <b>Rating</b> is a strength fitted to every pair ever fought, so <i>who</i> you
+            beat is what moves you — beating the profile at the top is worth far more than
+            beating the one at the bottom, and losing to the best costs little. 1500 is the
+            middle of the field and ± is the error bar.{" "}
+            <b>Duel rank</b> is the ring standing and the default order here, and it sorts on{" "}
+            <b>Proven</b> — the rating minus one error bar, i.e. what the record has{" "}
+            <i>demonstrated</i> rather than what it suggests. That distinction is the point: a
+            4–1 record against one opponent can fit a higher rating than a 29–15 record against
+            seven, but on an error bar twice the gap between them, so ordering them by the
+            fitted number presents noise as a standing. A thin record keeps its high rating and
+            an amber tag (<i>1 opponent</i>, <i>8 pairs</i>) — it just has to be measured before
+            it leads. Two well-measured profiles a hair apart both have narrow bars, so the
+            better one still ranks first.
             Points and win rate are the plain ledger, kept beside it. <b>Overall</b> and{" "}
             <b>Overall rank</b> are the pooled all-history score for the same profile, so the
             two verdicts sit side by side — the ▲▼ next to a rank is how far they disagree.
@@ -1323,9 +1335,10 @@ export default function Duels() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <StandingHeader id="rank" label="Duel rank" orderBy={orderBy} order={order} onSort={handleSort} tip="Standing in the ring — the page's default order, by duel rating. Nothing pooled goes into it." />
+                    <StandingHeader id="rank" label="Duel rank" orderBy={orderBy} order={order} onSort={handleSort} tip="Standing in the ring — the page's default order, by the Proven column (rating minus one error bar). Nothing pooled goes into it." />
                     <StandingHeader id="name" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} />
-                    <StandingHeader id="rating" label="Rating" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Strength fitted to every pair this profile has ever fought (Bradley–Terry, on the Elo scale — 1500 is the middle of the field, +400 means winning 10 pairs for every 1 lost against an average opponent). Beating a strong profile moves it a lot and beating a weak one barely at all, so who you beat is what changes your standing. ± is the error bar; a thin record is marked provisional." />
+                    <StandingHeader id="rating" label="Rating" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Strength fitted to every pair this profile has ever fought (Bradley–Terry, on the Elo scale — 1500 is the middle of the field, +400 means winning 10 pairs for every 1 lost against an average opponent). Beating a strong profile moves it a lot and beating a weak one barely at all, so who you beat is what changes your standing. ± is the error bar; a thin record is marked provisional. This is the headline number, not the sort — see Proven." />
+                    <StandingHeader id="rating_floor" label="Proven" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Rating minus one error bar — what the record has demonstrated rather than what it suggests, and what Duel rank orders on. A thin record fits a wide bar, so it has to be measured before it can lead; two well-measured profiles a hair apart both have narrow bars, so the better one still ranks first." />
                     <StandingHeader id="wins" label="W–L–D" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match record across every duel session: wins–losses–draws. Sorts by wins." />
                     <StandingHeader id="points" label="Pts" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match points: 3 for a win, 1 for a draw." />
                     <StandingHeader id="win_rate" label="Win rate" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Share of DECIDED matchups won (draws excluded)." />
@@ -1387,6 +1400,11 @@ export default function Duels() {
                       </TableCell>
                       <TableCell align="right">
                         <RatingCell row={r} />
+                      </TableCell>
+                      {/* What the record has demonstrated — and what the rank is built on,
+                          so it is printed rather than left implied in a sort order. */}
+                      <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                        {r.rating_floor == null ? "—" : Math.round(r.rating_floor)}
                       </TableCell>
                       <TableCell align="right">
                         {r.wins}–{r.losses}–{r.draws}

@@ -11,6 +11,7 @@ from pathbrain.config_store import get_config
 from pathbrain.database import session_scope
 from pathbrain.duel import SprtState
 from pathbrain.models import Duel, DuelStatus
+from pathbrain.rating import RANK_SIGMA
 
 
 # ── The sequential stopping rule ──────────────────────────────────────────────────────
@@ -364,6 +365,44 @@ def _mu(inc, cha, verdict, *, wins_inc=6, wins_cha=4, delta=-2.0):
     }
 
 
+def test_a_one_opponent_record_does_not_top_the_ladder():
+    """The reported defect, end to end: "why is the top profile ranked #1 with only one
+    opponent?" — it was, because the table sorted on the fitted rating alone and a five-pair
+    record can fit high. The standings rank on the conservative floor instead, so the thin
+    record keeps its rating (and its row) but has to be measured before it can lead."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        # A veteran with a long, winning record across several opponents.
+        _finished_duel(
+            s,
+            matchups=[
+                _mu("veteran", "opp1", "incumbent", wins_inc=6, wins_cha=3, delta=-2.0),
+                _mu("veteran", "opp2", "incumbent", wins_inc=5, wins_cha=2, delta=-2.0),
+                _mu("veteran", "opp3", "incumbent", wins_inc=5, wins_cha=2, delta=-2.0),
+                _mu("veteran", "opp4", "incumbent", wins_inc=5, wins_cha=2, delta=-2.0),
+            ],
+            champion="veteran",
+            when=now - timedelta(days=2),
+        )
+        # A newcomer that has fought exactly once, and won 4-1.
+        _finished_duel(
+            s,
+            matchups=[_mu("opp1", "newcomer", "challenger", wins_inc=1, wins_cha=4, delta=3.0)],
+            champion="newcomer",
+            when=now,
+        )
+
+    out = duel_mod.standings()
+    by_fp = {r["fingerprint"]: r for r in out["standings"]}
+    assert by_fp["newcomer"]["opponents"] == 1
+    assert by_fp["newcomer"]["rating_provisional"] is True
+    # The fit is free to like it; the ladder is not free to crown it on that alone.
+    assert by_fp["newcomer"]["rating_se"] > by_fp["veteran"]["rating_se"]
+    assert out["standings"][0]["fingerprint"] == "veteran"
+    assert by_fp["veteran"]["rating_floor"] > by_fp["newcomer"]["rating_floor"]
+
+
 def test_standings_rank_by_head_to_head_record():
     """Ranking is earned in the ring — by the Bradley-Terry rating fitted to every pair,
     with the W-L-D / points columns kept beside it as the readable record."""
@@ -396,8 +435,14 @@ def test_standings_rank_by_head_to_head_record():
     # C beat A, and A beat B — so C rates above A above B, and the ledger columns still
     # read as before (C: 1 win + 1 draw = 4 points).
     assert [r["fingerprint"] for r in out["standings"]] == ["ccc", "aaa", "bbb"]
-    assert out["ranked_by"] == "rating"
+    assert out["ranked_by"] == "rating_floor"
+    assert out["rank_sigma"] == RANK_SIGMA
     assert by_fp["ccc"]["rating"] > by_fp["aaa"]["rating"] > by_fp["bbb"]["rating"]
+    assert (
+        by_fp["ccc"]["rating_floor"]
+        > by_fp["aaa"]["rating_floor"]
+        > by_fp["bbb"]["rating_floor"]
+    )
     assert by_fp["ccc"]["points"] == 4 and by_fp["ccc"]["win_rate"] == 1.0
     assert by_fp["aaa"]["wins"] == 1 and by_fp["aaa"]["losses"] == 1 and by_fp["aaa"]["draws"] == 1
     assert by_fp["bbb"]["points"] == 0 and by_fp["bbb"]["losses"] == 1

@@ -532,6 +532,21 @@ LLM-based. See `README.md` for the product overview.
     entire point. A rating is flagged **provisional** (still shown and ranked, marked `?`) until
     it rests on ≥`PROVISIONAL_PAIRS` pairs **and** ≥2 opponents — one opponent is a single edge
     restated, not a position in the network.
+    **The standings rank on the conservative FLOOR, not the fitted rating** (`RANK_SIGMA`,
+    `rating_floor` = `rating − 1·rating_se`). The reported symptom was *"why is the top profile
+    ranked #1 with only one opponent?"* — and it genuinely was: a 4–1 record against a single
+    opponent fitted 55 Elo points above a 29–15 record against seven, on error bars of ±123 and
+    ±53. The point estimate was higher; the gap was a third of the pooled bar, so the ordering
+    was noise printed as a leaderboard. Ranking on what a record has *demonstrated* rather than
+    what it *suggests* fixes it without discarding anything: the thin record keeps its high
+    rating (and its row), and the wide bar that comes with it is what costs it the top spot
+    until it has been measured. Note the **symmetry with matchmaking**, which ranks on the
+    optimistic **ceiling** (`CEILING_SIGMA`): optimism decides who to *race*, because a profile
+    that might be good is worth measuring; pessimism decides who is *best*, because a claim to
+    be best has to be earned — same machinery, opposite directions. It is deliberately **not** a
+    significance gate: two well-measured profiles a hair apart both have narrow bars, so the
+    better one still ranks first ("best by a statistically insignificant fraction is still
+    best"); the floor only overturns an order that rests on a bar wider than the gap.
     `duel.standings` (`GET /api/duel/standings`) aggregates the ledger into the **head-to-head
     league table** that page ranks on — per profile the **rating** (+ `rating_se` /
     `rating_pairs` / `rating_provisional` / `expected_pair_wins`), W–L–D, match points (win 3 /
@@ -540,8 +555,10 @@ LLM-based. See `README.md` for the product overview.
     side*, opponents beaten/lost to, title count — plus the reigning champion (with reign
     length) and the `head_to_head[a][b]` matrix. It is **pure ledger**: only decided matchups,
     nothing pooled, nothing averaged over history, so it never touches the crown. Rank order:
-    **rating** → pairs behind it → points (`ranked_by: "rating"` in the payload); the points /
-    win-rate / pair-rate columns stay as the readable ledger and remain sortable. Each row also carries the
+    **`rating_floor`** → pairs behind it → points (`ranked_by: "rating_floor"` + `rank_sigma` in
+    the payload); the floor is printed as its own sortable **"Proven"** column beside the rating
+    rather than left implied in a sort order, and the points / win-rate / pair-rate columns stay
+    as the readable ledger and remain sortable. Each row also carries the
     profile's **pooled Overall** (`_pooled_overalls` → `crown_follower._profile_overall`, one
     indexed query per profile rather than a full `compute_profiles` pass) so the ring record
     and the raw measured record sit on one line — a profile winning its bouts while mid-table

@@ -43,7 +43,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .models import Duel, DuelStatus, Score
-from .rating import PROVISIONAL_PAIRS, fit_bradley_terry
+from .rating import PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
 from .providers import get_provider
 from .runner import run_chunk, teardown_plugins
 from .settings_profile import fingerprint, normalize, plan_apply
@@ -1674,16 +1674,25 @@ def standings(limit_sessions: int = 50) -> dict:
         r = ratings.get(row["fingerprint"]) or {}
         row["rating"] = r.get("rating")
         row["rating_se"] = r.get("rating_se")
+        # The conservative floor is what the table ranks on — see rating.RANK_SIGMA.
+        row["rating_floor"] = r.get("rating_floor")
         row["rating_pairs"] = r.get("pairs")
         row["rating_provisional"] = bool(r.get("provisional", True))
         # How many pairs the fit expected this profile to win against the exact opponents
         # it actually faced — "beating your schedule" in one number.
         row["expected_pair_wins"] = r.get("expected_wins")
 
+    # Ranked on the CONSERVATIVE floor, not the fitted rating. The four best profiles in a
+    # real field sat within 55 points of each other with error bars of 50-120: ordering them
+    # by the point estimate put a five-pair record on top of a forty-four-pair one on a
+    # difference smaller than either bar, which is presenting noise as a standing. The floor
+    # asks what a record has *demonstrated*, so evidence has to be earned rather than
+    # borrowed from one lucky bout. The fitted rating stays the headline number and stays
+    # sortable — this changes which claim the default order is making.
     table.sort(
         key=lambda r: (
-            r["rating"] if r["rating"] is not None else -1e9,
-            r["rating_pairs"] or 0,  # more evidence first among equal ratings
+            r["rating_floor"] if r["rating_floor"] is not None else -1e9,
+            r["rating_pairs"] or 0,  # more evidence first among equal floors
             r["points"],
         ),
         reverse=True,
@@ -1714,8 +1723,9 @@ def standings(limit_sessions: int = 50) -> dict:
         "decisive_matchups": decisive,
         "generated_from": limit_sessions,
         # What the ranking means, so the page can explain it rather than assert it.
-        "ranked_by": "rating",
+        "ranked_by": "rating_floor",
         "provisional_pairs": PROVISIONAL_PAIRS,
+        "rank_sigma": RANK_SIGMA,
         "rating_pairs_total": sum(pair_wins.values()),
     }
 

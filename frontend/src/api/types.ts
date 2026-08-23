@@ -1747,6 +1747,10 @@ export interface DuelStanding {
   // still comparable through shared opponents.
   rating: number | null;
   rating_se: number | null;
+  // rating − 1 SE: what the record has DEMONSTRATED rather than what it suggests. This is
+  // the default order — a five-pair record can fit a high rating, but its error bar is
+  // wide, so it has to be measured before it can lead a table of forty-pair records.
+  rating_floor: number | null;
   rating_pairs: number | null;
   // Too few pairs for the fit to say much — mostly the prior talking.
   rating_provisional: boolean;
@@ -1803,6 +1807,8 @@ export interface DuelStandings {
   generated_from: number;
   // What the default order means, and the pair count below which a rating is provisional.
   ranked_by?: string;
+  // How many standard errors the default order subtracts from the fitted rating.
+  rank_sigma?: number;
   provisional_pairs?: number;
   rating_pairs_total?: number;
 }

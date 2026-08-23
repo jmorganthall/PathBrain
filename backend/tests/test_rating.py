@@ -163,3 +163,71 @@ def test_the_prior_is_calibrated_between_the_two_failure_modes():
     assert upset["climber"]["rating"] == max(r["rating"] for r in upset.values()), (
         "beating the ladder's leader 9-3 must take the top of the table"
     )
+
+
+def test_the_ranking_floor_makes_a_thin_record_earn_its_place():
+    """The reported defect: #1 on the ladder with a single opponent.
+
+    Reproduces the shape of the live standings that surfaced it — a 4-1 record against one
+    opponent fitted 55 rating points above a 29-15 record against seven, on error bars of
+    ±123 and ±53. The point estimate genuinely was higher; the gap was a third of the
+    pooled error bar, so the ordering was noise presented as a leaderboard.
+
+    Ranking on `rating - RANK_SIGMA·se` fixes it without discarding anything: the thin
+    record keeps its (high) rating, and the wide bar it comes with is what costs it the
+    top spot until it has been measured. Note this is not a significance gate on the
+    crown — two well-measured profiles a hair apart still rank in order, because their
+    bars are narrow. It only bites when the evidence is thin.
+    """
+    record = {
+        # The well-evidenced veteran: seven opponents, 44 pairs.
+        ("veteran", "a"): 6, ("a", "veteran"): 3,
+        ("veteran", "b"): 5, ("b", "veteran"): 2,
+        ("veteran", "c"): 4, ("c", "veteran"): 2,
+        ("veteran", "d"): 4, ("d", "veteran"): 2,
+        ("veteran", "e"): 4, ("e", "veteran"): 2,
+        ("veteran", "f"): 3, ("f", "veteran"): 2,
+        ("veteran", "g"): 3, ("g", "veteran"): 2,
+        # Its opponents also play each other, so the network has some depth.
+        ("a", "b"): 5, ("b", "a"): 4,
+        ("c", "d"): 5, ("d", "c"): 4,
+        ("e", "f"): 5, ("f", "e"): 4,
+        # The newcomer: one opponent, five pairs, 4-1.
+        ("newcomer", "a"): 4, ("a", "newcomer"): 1,
+    }
+    fit = fit_bradley_terry(record)
+    thin, deep = fit["newcomer"], fit["veteran"]
+
+    assert thin["opponents"] == 1 and thin["pairs"] == 5
+    assert deep["opponents"] == 7 and deep["pairs"] == 44
+    assert thin["rating_se"] > deep["rating_se"], "five pairs is a wider bar than forty-four"
+    assert thin["rating"] > deep["rating"], (
+        "the fit still likes the newcomer — the defect was ranking on this number alone"
+    )
+    assert deep["rating_floor"] > thin["rating_floor"], (
+        "but on what each record has demonstrated, the measured profile leads"
+    )
+
+
+def test_the_floor_still_ranks_two_well_measured_profiles_in_order():
+    """Pessimism must not become a significance gate.
+
+    'Best by a statistically insignificant fraction is still best' — when both records are
+    thick their bars are narrow, so a small honest edge survives the floor and the better
+    profile still ranks first. The floor only overturns an ordering that rests on a bar
+    wider than the gap.
+    """
+    record = {
+        ("slightly_better", "field1"): 26, ("field1", "slightly_better"): 21,
+        ("slightly_better", "field2"): 25, ("field2", "slightly_better"): 21,
+        ("rival", "field1"): 25, ("field1", "rival"): 21,
+        ("rival", "field2"): 24, ("field2", "rival"): 21,
+        ("field1", "field2"): 20, ("field2", "field1"): 20,
+    }
+    fit = fit_bradley_terry(record)
+    a, b = fit["slightly_better"], fit["rival"]
+
+    assert 0 < a["rating"] - b["rating"] < a["rating_se"], "a hair apart, well inside the bar"
+    assert a["rating_floor"] > b["rating_floor"], (
+        "equally-measured profiles still rank by who is ahead, however narrowly"
+    )
