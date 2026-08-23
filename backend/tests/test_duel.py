@@ -2053,3 +2053,73 @@ def test_build_queue_ring_mode_uses_the_ratings_it_is_handed():
     assert queue[0] == "crown", "the pooled crown is still the first bout"
     assert queue[1] == "riser", "then whoever the RING says could take the belt"
     assert queue[-1] == "beaten", "and the settled question goes last"
+
+
+# ── a thin profile earns the ring by what it could still do, not by what it has done ────
+#
+# The operating model: measure a proposal briefly to get an initial placement, then spend
+# the ring's time maturing the ones that could displace the best profile found so far — and
+# give up on the ones whose own runs say no WITHOUT excluding them. A bout does both jobs at
+# once: the paired runs mature the pooled record, and the verdict says whether it actually
+# beats the crown. That is what stops the ladder racing #432 against #567.
+
+
+def _thin_field(profiles):
+    return {"profiles": profiles, "best_fingerprint": "crown0000000"}
+
+
+def _thin(fp, overall, optimistic, *, iterations=5, confident=False):
+    return {
+        "fingerprint": fp, "label": fp, "overall": overall, "optimistic": optimistic,
+        "iterations": iterations, "confident": confident, "settings": [],
+    }
+
+
+def test_a_thin_profile_whose_ceiling_reaches_the_crown_is_raced_before_one_that_cannot():
+    """Five runs give a wide band, so the question isn't "is it better?" but "could it be?".
+    A thin profile whose optimistic pooled reading still reaches the crown can change the
+    answer; one whose ceiling falls short cannot, on the evidence it has."""
+    field = _thin_field([
+        _thin("crown0000000", 80.0, 80.5, iterations=200, confident=True),
+        _thin("livethreat00", 78.0, 83.0),      # thin, but could still get there
+        _thin("ownrunssayno", 70.0, 72.0),      # thin, and even optimistically short of 80
+    ])
+    order = duel_mod.contender_order(field, {}, "belt00000000")
+    by_fp = {c["fingerprint"]: c for c in order}
+    assert by_fp["livethreat00"]["tier"] == duel_mod.UNTESTED_TIER
+    assert by_fp["ownrunssayno"]["tier"] == duel_mod.UNPROMISING_TIER
+    assert [c["fingerprint"] for c in order].index("livethreat00") < \
+           [c["fingerprint"] for c in order].index("ownrunssayno")
+    # Given up on, never excluded — the ring has not actually asked it yet.
+    assert "ownrunssayno" in by_fp
+    assert "never excluded" in by_fp["ownrunssayno"]["why"]
+
+
+def test_the_biggest_potential_threat_goes_first_among_unrated_profiles():
+    """Ordered by ceiling, not by point estimate: the profile most likely to dethrone the
+    crown gets confirmed or refuted first — the same priority the challenger race uses."""
+    field = _thin_field([
+        _thin("crown0000000", 80.0, 80.5, iterations=200, confident=True),
+        _thin("modestupside", 79.5, 81.0),
+        _thin("hugeupside00", 78.0, 88.0),   # lower measured, far wider band
+    ])
+    order = [c["fingerprint"] for c in duel_mod.contender_order(field, {}, "belt00000000")]
+    assert order.index("hugeupside00") < order.index("modestupside")
+
+
+def test_a_ring_record_still_outranks_any_pooled_reading():
+    """Pooled is what you consult when the ring has nothing to say. The moment it does, the
+    ring's own evidence decides — that is the whole point of running two verdicts."""
+    field = _thin_field([
+        _thin("crown0000000", 80.0, 80.5, iterations=200, confident=True),
+        _thin("ratedcontend", 60.0, 61.0, iterations=200, confident=True),
+        _thin("thinbutshiny", 79.0, 95.0),
+    ])
+    ratings = {
+        "belt00000000": {"rating": 1500.0, "rating_se": 20.0},
+        "ratedcontend": {"rating": 1520.0, "rating_se": 20.0},
+    }
+    order = [c["fingerprint"] for c in duel_mod.contender_order(field, ratings, "belt00000000")]
+    # The pooled crown leads, then the profile the RING says can win, then the thin unknown.
+    assert order[0] == "crown0000000"
+    assert order.index("ratedcontend") < order.index("thinbutshiny")
