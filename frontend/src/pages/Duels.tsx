@@ -1462,13 +1462,28 @@ export default function Duels() {
                     // the session's current holder).
                     const next = status.matchups?.[i + 1];
                     const beltAfter = next ? next.incumbent : status.champion_fingerprint;
-                    const held = beltAfter === m.incumbent;
+                    const beltAfterName = next
+                      ? next.incumbent_name || next.incumbent_label
+                      : status.champion_label;
                     const winner =
                       m.verdict === "challenger"
                         ? m.challenger_name || m.challenger_label
                         : m.verdict === "incumbent"
                           ? m.incumbent_name || m.incumbent_label
                           : null;
+                    // Three outcomes, not two. Asking only "did the old holder keep it?"
+                    // credits the belt to whoever won this bout whenever the defender
+                    // changes — but the belt is the ring's #1 by Proven score, re-fitted
+                    // after every bout, so it can pass to a profile that wasn't in this
+                    // bout at all. That reads as random unless it's said out loud.
+                    let beltNote = "";
+                    if (beltAfter && beltAfter === m.challenger) {
+                      beltNote = " · and takes the belt";
+                    } else if (beltAfter && beltAfter !== m.incumbent && beltAfterName) {
+                      beltNote = ` · belt passed to ${beltAfterName} (the ring's new #1)`;
+                    } else if (beltAfter && m.verdict === "challenger") {
+                      beltNote = " · belt stays — one win didn't lift its Proven above the leader's";
+                    }
                     return (
                       <Typography
                         key={i}
@@ -1480,11 +1495,7 @@ export default function Duels() {
                         {m.challenger_name || m.challenger_label}
                         {m.challenger_why ? ` (${m.challenger_why})` : ""} →{" "}
                         {winner ? `${winner} wins the bout` : "draw"}
-                        {m.verdict === "challenger" && beltAfter
-                          ? held
-                            ? " · belt stays (not enough to clear the leader's Proven yet)"
-                            : " · and takes the belt"
-                          : ""}
+                        {beltNote}
                       </Typography>
                     );
                   })}
