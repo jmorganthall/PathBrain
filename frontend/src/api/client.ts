@@ -57,6 +57,9 @@ import type {
   UpdateConnectionTest,
   UpdateLog,
   ExploreLandscape,
+  ExploreLedger,
+  ExploreTestRequest,
+  ExploreTestResult,
   SettingsProfilesResponse,
   WeatherSensitivity,
   Sweep,
@@ -379,6 +382,19 @@ export const api = {
     request<ExploreLandscape>(
       `/explore/landscape?suggestions=${suggestions}&confident_only=${confidentOnly}`,
     ),
+  // Measure one recommendation — and record the claim it made first, so the ledger below
+  // can grade it later. `iterations` omitted = top up to the confidence minimum.
+  exploreTest: (body: ExploreTestRequest) =>
+    startingJob(
+      request<ExploreTestResult>("/explore/test", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    ),
+  // The recommendation ledger: every claim Explore made, graded against what the link
+  // actually did. Two indexed queries, so unlike the landscape it's cheap to fetch on load.
+  exploreRecommendations: (limit = 50) =>
+    request<ExploreLedger>(`/explore/recommendations?limit=${limit}`),
 
   // The self-update ledger: every attempt and whether the build actually changed.
   updateLog: (limit = 10) => request<UpdateLog>(`/update/log?limit=${limit}`),
@@ -527,7 +543,7 @@ export const api = {
       }),
     ),
   // Apply arbitrary settings (e.g. an AI suggestion) onto the live profile and test to minimum.
-  testSettings: (body: { settings: unknown; label?: string }) =>
+  testSettings: (body: { settings: unknown; label?: string; iterations?: number }) =>
     startingJob(
       request<{ id: number; fingerprint: string; iterations: number; label: string | null }>(
         "/settings/test-settings",

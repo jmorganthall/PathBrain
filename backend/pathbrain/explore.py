@@ -623,6 +623,46 @@ def _settings_for(parent: dict, changes: dict[str, float], axes: dict[str, dict]
     return list(by_pipe.values())
 
 
+def full_overrides(parent_settings: list[dict] | None, changes: list[dict] | None) -> list[dict]:
+    """The parent's writable fields with the candidate's changes applied — per pipe.
+
+    A candidate is "*that* profile with a lever moved", and ``_settings_for`` deliberately
+    emits only the moved levers, because the landscape is a proposal and the page should
+    show a diff. But the apply path overlays whatever it is given onto the **live** profile,
+    so sending only the diff measures "the firewall as it stands, with this lever moved" —
+    which is the proposed profile only when the firewall happens to already be on the parent.
+    Test three candidates in a row and every one after the first measures something nobody
+    proposed, and the recommendation ledger grades a claim against a profile that isn't it.
+
+    So the whole parent is materialized here. Non-writable fields are left out on purpose:
+    they can't be applied anyway, and the apply path keeps the live environment's — which is
+    the same reachability rule the race and the crown follower use.
+    """
+    by_label: dict[str, dict] = {}
+    for pipe in parent_settings or []:
+        label = pipe.get("label")
+        if not label:
+            continue
+        out = {"label": label}
+        for f in WRITABLE_FIELDS:
+            if pipe.get(f) is not None:
+                out[f] = pipe[f]
+        by_label[label] = out
+    for override in changes or []:
+        if not isinstance(override, dict):
+            continue
+        label = override.get("label")
+        if not label:
+            continue
+        # A candidate can name a pipe the parent's stored settings don't have (settings
+        # captured before a pipe existed); keep the change rather than silently dropping it.
+        target = by_label.setdefault(label, {"label": label})
+        for f in WRITABLE_FIELDS:
+            if override.get(f) is not None:
+                target[f] = override[f]
+    return list(by_label.values())
+
+
 def _candidates(
     points: list[dict],
     axes: dict[str, dict],
@@ -1136,4 +1176,4 @@ def landscape(
     }
 
 
-__all__ = ["landscape"]
+__all__ = ["landscape", "full_overrides"]

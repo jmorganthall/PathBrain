@@ -2012,6 +2012,124 @@ export interface ExplorePoint {
   coords: Record<string, number>;
 }
 
+// ── The recommendation ledger ─────────────────────────────────────────────────────────
+// Explore's output is a prediction, and a prediction nobody scores is a horoscope. The
+// claim is written down before the test runs; the verdict is derived from the measured
+// field on every read, so a re-grade or fresh runs move it.
+
+export interface ExploreTestRequest {
+  settings: unknown;
+  label?: string;
+  // Omitted → top up to the confidence minimum. A number → run exactly that many.
+  iterations?: number;
+  // The profile the candidate branches from: the levers are applied to ITS stored settings,
+  // not to whatever the firewall is currently on, so the test measures what was proposed.
+  parent_fingerprint?: string;
+  parent_overall?: number;
+  changes?: unknown;
+  evidence?: string[];
+  multi_lever?: boolean;
+  predicted?: number;
+  uncertainty?: number;
+  upside?: number;
+  best_overall?: number | null;
+  summary?: string;
+}
+
+export interface ExploreTestResult {
+  id: number;
+  fingerprint: string;
+  iterations: number;
+  label: string | null;
+  existing_iterations?: number;
+  recommendation_id: number | null;
+  // Set when the measurement is not a faithful reproduction of the proposal.
+  note: string | null;
+}
+
+// "pending" = nothing measured yet; "incomparable" = proposed under another methodology, so
+// the prediction and the measurement aren't on the same scale; otherwise the claim is graded
+// against its own stated band.
+export type ExploreVerdict =
+  | "pending"
+  | "incomparable"
+  | "unscored"
+  | "on_target"
+  | "better"
+  | "worse";
+
+export interface ExploreRecommendation {
+  id: number;
+  created_at: string | null;
+  fingerprint: string;
+  name: string | null;
+  label: string | null;
+  summary: string | null;
+  parent: {
+    fingerprint: string | null;
+    name: string | null;
+    overall: number | null;
+    overall_now: number | null;
+  };
+  changes: ExploreCandidate["changes"];
+  evidence: string[];
+  // Weakest-link: a candidate priced part from a matched pair and part from a confounded
+  // curve is scored as confounded.
+  evidence_kind: string;
+  evidence_label: string;
+  multi_lever: boolean;
+  predicted: number | null;
+  uncertainty: number | null;
+  upside: number | null;
+  best_overall: number | null;
+  methodology_version: string | null;
+  iterations_requested: number;
+  profile_test_id: number | null;
+  note: string | null;
+  actual: number | null;
+  iterations: number;
+  verdict: ExploreVerdict;
+  band: number;
+  error: number | null;
+  provisional: boolean;
+  stale_methodology: boolean;
+  beat_best: boolean | null;
+  beat_parent: boolean | null;
+  // One sentence joining the miss to the kind of evidence it was priced from.
+  why: string;
+}
+
+export interface ExploreCalibration {
+  recorded: number;
+  graded: number;
+  pending: number;
+  incomparable: number;
+  on_target: number;
+  better: number;
+  worse: number;
+  mean_error: number | null;
+  mean_abs_error: number | null;
+  hit_rate: number | null;
+  beat_best: number | null;
+  beat_best_claimed: number | null;
+  by_evidence: {
+    kind: string;
+    label: string;
+    graded: number;
+    on_target: number;
+    mean_error: number | null;
+    mean_abs_error: number | null;
+  }[];
+}
+
+export interface ExploreLedger {
+  recommendations: ExploreRecommendation[];
+  summary: ExploreCalibration;
+  methodology_version: string;
+  min_iterations: number;
+  quick_iterations: number;
+}
+
 export interface ExploreLandscape {
   axes: ExploreAxis[];
   points: ExplorePoint[];
