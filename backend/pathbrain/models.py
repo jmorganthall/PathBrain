@@ -705,6 +705,12 @@ class Duel(Base):
     matchups: Mapped[list | None] = mapped_column(JSON, nullable=True)
     iterations_run: Mapped[int] = mapped_column(Integer, default=0)
     run_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # The bout in progress, as structured state rather than prose. ``stage`` is a sentence
+    # for a status line; a scoreline like "(2-1)" in a sentence cannot say *who* those wins
+    # belong to, by how much, or how close the bout is to being decided — which is the only
+    # thing anyone watching a duel wants to know. Rewritten after every pair, cleared when
+    # the session ends.
+    live: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # The ladder's final incumbent (the duel champion) when the session completed.
     champion_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     champion_label: Mapped[str | None] = mapped_column(String(255), nullable=True)

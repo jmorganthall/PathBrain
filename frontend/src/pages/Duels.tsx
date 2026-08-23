@@ -52,6 +52,7 @@ import { api } from "../api/client";
 import type {
   DuelCard,
   DuelConfig,
+  DuelLive,
   DuelMatchup,
   DuelSession,
   DuelStanding,
@@ -604,6 +605,175 @@ function BoutRow({ m }: { m: DuelMatchup }) {
       <Typography variant="caption" color="text.secondary">
         {m.reason}
       </Typography>
+    </Box>
+  );
+}
+
+
+// ── The bout in progress ───────────────────────────────────────────────────────────────
+//
+// "pair 4 (2-1)" told you a bout was happening and almost nothing else: not whose wins
+// those were, not by how much, not how close a verdict was. All three are the question.
+// So: both names with their own tally, a bar whose fill is the split, the median margin
+// signed from the challenger's side (which is what the verdict is actually decided on),
+// and how far the bout has to go before it can end.
+function BoutScoreboard({ live }: { live: DuelLive }) {
+  const { incumbent, challenger, leader, pairs } = live;
+  const decided = incumbent.wins + challenger.wins;
+  // Split of the bar. Level (or nothing yet) sits at the midpoint rather than implying a
+  // lead in either direction.
+  const share = decided > 0 ? (challenger.wins / decided) * 100 : 50;
+  const incName = incumbent.name || incumbent.label || "belt";
+  const chaName = challenger.name || challenger.label || "challenger";
+  const margin = live.median_margin;
+
+  const side = (name: string, wins: number, ahead: boolean, align: "left" | "right") => (
+    <Box sx={{ textAlign: align, minWidth: 0, flex: 1 }}>
+      <Typography
+        variant="body2"
+        noWrap
+        sx={{ fontWeight: ahead ? 700 : 500, color: ahead ? "text.primary" : "text.secondary" }}
+      >
+        {name}
+      </Typography>
+      <Typography
+        variant="h4"
+        sx={{ lineHeight: 1.1, color: ahead ? "primary.main" : "text.secondary", fontVariantNumeric: "tabular-nums" }}
+      >
+        {wins}
+      </Typography>
+    </Box>
+  );
+
+  return (
+    <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 1, border: 1, borderColor: "divider" }}>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+        <Chip size="small" label={`Bout ${live.bout}`} />
+        <Typography variant="caption" color="text.secondary" sx={{ flexGrow: 1 }}>
+          pair {pairs + 1} · {pairs} decided
+        </Typography>
+        <Tooltip title="Why this profile is in the ring at all.">
+          <Typography variant="caption" color="text.secondary" noWrap sx={{ maxWidth: "50%" }}>
+            {challenger.why}
+          </Typography>
+        </Tooltip>
+      </Stack>
+
+      <Stack direction="row" spacing={2} alignItems="flex-end">
+        {side(`${incName} (belt)`, incumbent.wins, leader === "incumbent", "left")}
+        <Typography variant="caption" color="text.secondary" sx={{ pb: 1 }}>
+          vs
+        </Typography>
+        {side(chaName, challenger.wins, leader === "challenger", "right")}
+      </Stack>
+
+      {/* The split, as one bar: left is the belt, right is the challenger. */}
+      <Box
+        sx={{
+          mt: 1, height: 8, borderRadius: 4, overflow: "hidden", display: "flex",
+          bgcolor: "action.hover",
+        }}
+      >
+        <Box sx={{ width: `${100 - share}%`, bgcolor: leader === "incumbent" ? "primary.main" : "text.disabled" }} />
+        <Box sx={{ width: `${share}%`, bgcolor: leader === "challenger" ? "success.main" : "text.disabled" }} />
+      </Box>
+
+      <Stack direction="row" spacing={2} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+        <Tooltip title="The median Overall-point gap across the pairs so far, signed from the challenger's side: positive means the challenger is ahead. This — not the pair count — is what the verdict is decided on, because it keeps the size of each win instead of throwing it away.">
+          <Box>
+            <Typography variant="caption" color="text.secondary">
+              Median margin
+            </Typography>
+            <Typography
+              variant="body1"
+              sx={{
+                lineHeight: 1.3,
+                color: margin == null ? "text.secondary" : margin > 0 ? "success.main" : margin < 0 ? "primary.main" : "text.primary",
+              }}
+            >
+              {margin == null ? "—" : `${margin > 0 ? "+" : ""}${fmtNum(margin, 2)}`}
+              {margin != null && (
+                <Typography component="span" variant="caption" color="text.secondary">
+                  {" "}
+                  {margin > 0 ? chaName : margin < 0 ? incName : "level"}
+                </Typography>
+              )}
+            </Typography>
+          </Box>
+        </Tooltip>
+
+        <Tooltip title={`A bout can't be called before ${live.min_pairs} pairs, and is a draw if it reaches ${live.max_pairs} undecided.`}>
+          <Box>
+            <Typography variant="caption" color="text.secondary">
+              Pairs
+            </Typography>
+            <Typography variant="body1" sx={{ lineHeight: 1.3 }}>
+              {pairs}
+              <Typography component="span" variant="caption" color="text.secondary">
+                {" "}
+                / {live.min_pairs} min · {live.max_pairs} cap
+              </Typography>
+            </Typography>
+          </Box>
+        </Tooltip>
+
+        <Tooltip title="An unbroken run of pair wins ends the bout on its own — a clean run is worth more than a long scrappy one, and this is how close either side is to it.">
+          <Box>
+            <Typography variant="caption" color="text.secondary">
+              Streak
+            </Typography>
+            <Typography variant="body1" sx={{ lineHeight: 1.3 }}>
+              {live.streak.length}/{live.streak.needed}
+              {live.streak.side && (
+                <Typography component="span" variant="caption" color="text.secondary">
+                  {" "}
+                  {live.streak.side === "challenger" ? chaName : incName}
+                </Typography>
+              )}
+            </Typography>
+          </Box>
+        </Tooltip>
+
+        {live.p_value != null && (
+          <Tooltip title={`How unlikely this run of margins would be if the two profiles were actually equal. The bout is called when it drops below ${live.alpha} (already corrected for checking after every pair).`}>
+            <Box>
+              <Typography variant="caption" color="text.secondary">
+                Evidence
+              </Typography>
+              <Typography
+                variant="body1"
+                sx={{ lineHeight: 1.3, color: live.p_value <= live.alpha ? "success.main" : "text.primary" }}
+              >
+                p {fmtNum(live.p_value, 3)}
+                <Typography component="span" variant="caption" color="text.secondary">
+                  {" "}
+                  / {fmtNum(live.alpha, 3)} needed
+                </Typography>
+              </Typography>
+            </Box>
+          </Tooltip>
+        )}
+      </Stack>
+
+      {/* Every pair so far, in order — a steady lead and one lucky pair look nothing alike,
+          and the median alone can't tell them apart. */}
+      {live.margins.length > 1 && (
+        <Box sx={{ display: "flex", alignItems: "center", gap: "2px", height: 26, mt: 1 }}>
+          {live.margins.map((m, i) => (
+            <Tooltip key={i} title={`pair ${pairs - live.margins.length + i + 1}: ${m > 0 ? "+" : ""}${fmtNum(m, 2)} ${m > 0 ? chaName : incName}`}>
+              <Box
+                sx={{
+                  flex: 1, minWidth: 3, height: `${Math.min(100, 20 + Math.abs(m) * 30)}%`,
+                  alignSelf: m > 0 ? "flex-start" : "flex-end",
+                  borderRadius: 0.5,
+                  bgcolor: m > 0 ? "success.main" : "primary.main",
+                  opacity: 0.85,
+                }}
+              />
+            </Tooltip>
+          ))}
+        </Box>
+      )}
     </Box>
   );
 }
@@ -1246,9 +1416,16 @@ export default function Duels() {
           {active && (
             <Box sx={{ mt: 2 }}>
               <LinearProgress />
-              <Typography variant="body2" sx={{ mt: 0.5 }}>
-                {status?.stage || "starting…"}
-              </Typography>
+              {/* The scoreboard when a bout is actually under way; the stage sentence is
+                  the fallback for the moments between bouts (applying a profile, ranking
+                  the field, restoring settings) where there is no score to show. */}
+              {status?.live ? (
+                <BoutScoreboard live={status.live} />
+              ) : (
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  {status?.stage || "starting…"}
+                </Typography>
+              )}
               <Typography variant="caption" color="text.secondary">
                 {status?.iterations_run ?? 0} iteration(s) run ·{" "}
                 {status?.matchups?.length ?? 0} verdict(s) so far · your pre-duel settings are
