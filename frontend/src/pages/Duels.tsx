@@ -1565,6 +1565,19 @@ export default function Duels() {
                   : ""}
                 . Whoever wins a bout stays on for the next one.
               </Typography>
+              {card.contenders === "ring" && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                  Challengers are ordered by <b>the ring's own findings</b> — each one's
+                  optimistic ceiling on its head-to-head rating, so the bout most likely to
+                  unseat the belt runs first
+                  {card.incumbent_rating != null
+                    ? ` (the bar to clear is the belt's ${Math.round(card.incumbent_rating)})`
+                    : ""}
+                  . A profile the ladder has already beaten waits its turn rather than being
+                  struck off. The pooled score decides nothing here except the order among
+                  profiles that have never been in the ring.
+                </Typography>
+              )}
               {card.incumbent.why && (
                 <Typography variant="caption" color="text.secondary">
                   {card.incumbent.why}.
@@ -1600,7 +1613,10 @@ export default function Duels() {
                         <TableCell align="right">{c.iterations ?? "—"}</TableCell>
                         <TableCell>
                           <Typography variant="caption" color="text.secondary">
-                            {CARD_REASON[c.reason] ?? c.reason}
+                            {/* Under the "ring" model the queue is ordered by the ladder's
+                                own findings, so the reason should be stated in those terms
+                                — the pooled label is the fallback for the older modes. */}
+                            {c.ring_why || CARD_REASON[c.reason] || c.reason}
                             {c.on_cooldown
                               ? ` · re-raced (settled within ${card.rematch_days ?? 7} days, so it goes last among its equals)`
                               : ""}

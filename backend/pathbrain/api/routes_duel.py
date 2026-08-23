@@ -75,7 +75,8 @@ def _schedule_payload(cfg: dict) -> dict:
         "streak_wins": int(d.get("streak_wins", 0) or 0),
         "continuous": bool(d.get("continuous", False)),
         "continuous_gap_minutes": float(d.get("continuous_gap_minutes", 5) or 0),
-        "contenders": str(d.get("contenders", "leaders") or "leaders"),
+        "contenders": str(d.get("contenders", "ring") or "ring"),
+        "contender_modes": ["ring", "leaders", "heirs"],
         "contender_top_n": int(d.get("contender_top_n", 8) or 8),
         "alpha": float(d.get("alpha", 0.05) or 0.05),
         # How a bout is judged: "margins" (default — Wilcoxon signed-rank on the paired
@@ -192,9 +193,9 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
             raise HTTPException(status_code=422, detail="the gap cannot be negative")
         updates["continuous_gap_minutes"] = float(payload.continuous_gap_minutes)
     if payload.contenders is not None:
-        if payload.contenders not in ("leaders", "heirs"):
+        if payload.contenders not in ("ring", "leaders", "heirs"):
             raise HTTPException(
-                status_code=422, detail="contenders must be 'leaders' or 'heirs'"
+                status_code=422, detail="contenders must be 'ring', 'leaders' or 'heirs'"
             )
         updates["contenders"] = payload.contenders
     if payload.contender_top_n is not None:

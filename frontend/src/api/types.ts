@@ -1593,6 +1593,11 @@ export interface DuelCardEntry {
   confident: boolean | null;
   // Why it's in the queue: a contender near the crown, a limited-data/stale heir, or untested.
   reason: string;
+  // What the RING says: its fitted head-to-head rating, the optimistic ceiling the queue is
+  // ordered by, and the reason it sits where it does under the "ring" model.
+  rating?: number | null;
+  ceiling?: number | null;
+  ring_why?: string | null;
   // Priority tier: 0 pooled crown, 1 contender, 2 untested. The ladder never gives the ring
   // to a lower tier while a higher one still has someone waiting.
   tier?: number;
@@ -1616,9 +1621,12 @@ export interface DuelCard {
   } | null;
   queue: DuelCardEntry[];
   total?: number;
-  contenders: "leaders" | "heirs";
+  contenders: "ring" | "leaders" | "heirs";
   top_n: number;
   rematch_days?: number;
+  // The belt-holder's own ring rating — the bar every ceiling is measured against.
+  incumbent_rating?: number | null;
+  contender_modes?: string[];
   // Set when there's nothing to race (e.g. no confident crown yet).
   reason: string | null;
 }
@@ -1689,7 +1697,7 @@ export interface DuelConfig {
   continuous: boolean;
   continuous_gap_minutes: number;
   // Who the champion fights: the profiles nearest the crown, or the exploring heirs order.
-  contenders: "leaders" | "heirs";
+  contenders: "ring" | "leaders" | "heirs";
   contender_top_n: number;
   presets: DuelPreset[];
   decision: DuelDecisionCost;

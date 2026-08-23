@@ -1589,3 +1589,111 @@ def test_a_thin_record_is_flagged_provisional_rather_than_crowned():
     finally:
         with session_scope() as s:
             s.query(Duel).delete()
+
+
+# ── The operating model: always be trying to beat whoever holds the belt ─────────────
+
+
+def _ring_field(*profiles):
+    return {
+        "best_fingerprint": profiles[0][0],
+        "profiles": [
+            {"fingerprint": fp, "label": fp, "overall": ov, "confident": True, "settings": []}
+            for fp, ov in profiles
+        ],
+    }
+
+
+def test_the_queue_is_ordered_by_the_rings_findings_not_the_pooled_score():
+    """The circularity fix, stated as a test.
+
+    The duel exists to be the independent check on the pooled verdict, so the pooled verdict
+    must not decide who gets checked. Here the ring has proven "provenstrong" — it beat the
+    belt-holder decisively — while its pooled Overall is mid-table, and "pooledfave" has the
+    best pooled Overall but a ring record of nothing but losses. Ordering by pooled sends the
+    loser in first and buries the profile that actually beat the champion.
+    """
+    field = _ring_field(("pooledfave", 90.0), ("belt", 80.0), ("provenstrong", 70.0))
+    ratings = {
+        "belt": {"rating": 1500.0, "rating_se": 20.0},
+        "provenstrong": {"rating": 1650.0, "rating_se": 40.0},   # beat the belt
+        "pooledfave": {"rating": 1200.0, "rating_se": 15.0},     # lost, repeatedly and clearly
+    }
+    order = duel_mod.contender_order(field, ratings, "belt")
+    by_fp = {c["fingerprint"]: c for c in order}
+
+    # The pooled crown still leads — the two verdicts disagreeing is the most informative
+    # bout there is — but note it is ALSO the profile the ring has beaten, so it's there on
+    # its own merit as a verdict, not because its pooled score is high.
+    assert order[0]["fingerprint"] == "pooledfave"
+    assert order[0]["tier"] == duel_mod.CROWN_TIER
+    # …and the profile the ring rates above the belt is next, not last.
+    assert order[1]["fingerprint"] == "provenstrong"
+    assert by_fp["provenstrong"]["tier"] == duel_mod.CONTENDER_TIER
+    assert "plausibly beat the belt" in by_fp["provenstrong"]["why"]
+
+
+def test_a_profile_the_ring_has_already_beaten_is_raced_last_not_never():
+    """Re-asking a question the ring has answered finds nothing — but conditions change, so
+    it waits its turn rather than being struck off, the same discipline the cooldown follows."""
+    field = _ring_field(("belt", 90.0), ("hopeful", 80.0), ("outclassed", 85.0))
+    ratings = {
+        "belt": {"rating": 1600.0, "rating_se": 20.0},
+        # Ceiling 1560 + 30 = 1590 — just short of the belt, so it can't plausibly win.
+        "outclassed": {"rating": 1560.0, "rating_se": 30.0},
+        # Thin record, wide bar: could be anything, so it gets the ring first.
+        "hopeful": {"rating": 1500.0, "rating_se": 200.0},
+    }
+    order = duel_mod.contender_order(field, ratings, "belt")
+    tiers = {c["fingerprint"]: c["tier"] for c in order}
+    assert tiers["hopeful"] == duel_mod.CONTENDER_TIER
+    assert tiers["outclassed"] == duel_mod.OUTCLASSED_TIER
+    assert [c["fingerprint"] for c in order].index("hopeful") < [
+        c["fingerprint"] for c in order
+    ].index("outclassed")
+    # Still in the queue — a long window gets to it.
+    assert "outclassed" in tiers
+
+
+def test_an_unknown_outranks_a_measured_weakling():
+    """The optimistic ceiling does the exploring: a profile nobody has raced could be
+    anything, while one the ring has measured as weak is a settled question."""
+    field = _ring_field(("belt", 90.0), ("unknown", 50.0), ("weak", 88.0))
+    ratings = {
+        "belt": {"rating": 1600.0, "rating_se": 20.0},
+        "weak": {"rating": 1300.0, "rating_se": 15.0},
+    }  # "unknown" has no ring record at all
+    order = [c["fingerprint"] for c in duel_mod.contender_order(field, ratings, "belt")]
+    assert order.index("unknown") < order.index("weak")
+
+
+def test_untested_profiles_are_ordered_among_themselves_by_pooled_overall():
+    """Pooled keeps exactly one job: separating profiles the ring knows nothing about."""
+    field = _ring_field(("belt", 90.0), ("promising", 85.0), ("unpromising", 40.0))
+    order = [
+        c["fingerprint"]
+        for c in duel_mod.contender_order(field, {"belt": {"rating": 1500.0, "rating_se": 20.0}}, "belt")
+    ]
+    assert order.index("promising") < order.index("unpromising")
+
+
+def test_a_beltholder_with_no_ring_record_makes_everything_a_contender():
+    """Nothing to clear, so nothing is ruled out — the first session of a fresh ladder."""
+    field = _ring_field(("belt", 90.0), ("a", 80.0), ("b", 70.0))
+    order = duel_mod.contender_order(field, {"a": {"rating": 1200.0, "rating_se": 10.0}}, "belt")
+    tiers = {c["fingerprint"]: c["tier"] for c in order}
+    assert tiers["a"] == duel_mod.CONTENDER_TIER
+    assert "no ring record yet" in next(c for c in order if c["fingerprint"] == "a")["why"]
+
+
+def test_build_queue_ring_mode_uses_the_ratings_it_is_handed():
+    field = _ring_field(("crown", 90.0), ("belt", 88.0), ("riser", 60.0), ("beaten", 87.0))
+    ratings = {
+        "belt": {"rating": 1500.0, "rating_se": 20.0},
+        "riser": {"rating": 1700.0, "rating_se": 30.0},
+        "beaten": {"rating": 1100.0, "rating_se": 10.0},
+    }
+    queue = duel_mod.build_queue(field, {"items": []}, "belt", contenders="ring", ratings=ratings)
+    assert queue[0] == "crown", "the pooled crown is still the first bout"
+    assert queue[1] == "riser", "then whoever the RING says could take the belt"
+    assert queue[-1] == "beaten", "and the settled question goes last"
