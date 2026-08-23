@@ -224,40 +224,62 @@ const pooledRanking = (rows: DuelStanding[]): Map<string, number> => {
 function RatingCell({ row }: { row: DuelStanding }) {
   if (row.rating == null) return <>—</>;
   const se = row.rating_se;
+  const pairs = row.rating_pairs ?? 0;
+  // WHY it's provisional, not just that it is. A bare "?" next to a #1 rating reads as a
+  // typo; "1 opponent" reads as the actual caveat — that the whole rating rests on a single
+  // edge of the comparison network, and is really a statement about that one opponent
+  // rather than a position among all of them.
+  const why =
+    row.opponents < 2
+      ? `${row.opponents} opponent`
+      : pairs < 20
+        ? `${pairs} pair${pairs === 1 ? "" : "s"}`
+        : "thin record";
   return (
-    <Tooltip
-      title={
-        `Fitted from ${row.rating_pairs ?? 0} interleaved pair${row.rating_pairs === 1 ? "" : "s"}` +
-        (row.expected_pair_wins != null
-          ? ` · won ${row.pair_wins} where the fit expected ${row.expected_pair_wins}`
-          : "") +
-        (row.rating_provisional
-          ? " · provisional: too few pairs to separate it from the middle of the field yet"
-          : "")
-      }
-    >
-      <span>
-        <Typography
-          component="span"
-          variant="body2"
-          sx={{ fontVariantNumeric: "tabular-nums", opacity: row.rating_provisional ? 0.6 : 1 }}
+    <Stack direction="row" spacing={0.5} alignItems="baseline" justifyContent="flex-end">
+      <Tooltip
+        title={
+          `Fitted from ${pairs} interleaved pair${pairs === 1 ? "" : "s"} against ` +
+          `${row.opponents} opponent${row.opponents === 1 ? "" : "s"}` +
+          (row.expected_pair_wins != null
+            ? ` · won ${row.pair_wins} where the fit expected ${row.expected_pair_wins}`
+            : "")
+        }
+      >
+        <span>
+          <Typography
+            component="span"
+            variant="body2"
+            sx={{ fontVariantNumeric: "tabular-nums", opacity: row.rating_provisional ? 0.7 : 1 }}
+          >
+            {Math.round(row.rating)}
+          </Typography>
+          {se != null && (
+            <Typography component="span" variant="caption" color="text.secondary">
+              {" "}
+              ±{Math.round(se)}
+            </Typography>
+          )}
+        </span>
+      </Tooltip>
+      {row.rating_provisional && (
+        <Tooltip
+          title={
+            row.opponents < 2
+              ? "Provisional: it has faced one opponent, so its rating rests on a single comparison — it says this profile beat that one, not where it stands in the field. It is still ranked where the evidence puts it; race it against someone else to confirm."
+              : "Provisional: too few pairs to separate it from the middle of the field yet. It is still ranked where the evidence puts it — more bouts will pin it down."
+          }
         >
-          {Math.round(row.rating)}
-        </Typography>
-        {se != null && (
-          <Typography component="span" variant="caption" color="text.secondary">
-            {" "}
-            ±{Math.round(se)}
-          </Typography>
-        )}
-        {row.rating_provisional && (
-          <Typography component="span" variant="caption" color="text.secondary">
-            {" "}
-            ?
-          </Typography>
-        )}
-      </span>
-    </Tooltip>
+          <Chip
+            size="small"
+            variant="outlined"
+            color="warning"
+            label={why}
+            sx={{ height: 17, "& .MuiChip-label": { px: 0.6, fontSize: 10 } }}
+          />
+        </Tooltip>
+      )}
+    </Stack>
   );
 }
 
@@ -1275,7 +1297,10 @@ export default function Duels() {
             <b>Rating</b>: a strength fitted to every pair ever fought, so <i>who</i> you beat
             is what moves you — beating the profile at the top is worth far more than beating
             the one at the bottom, and losing to the best costs little. 1500 is the middle of
-            the field; ± is the error bar and <b>?</b> marks a record too thin to trust yet.
+            the field and ± is the error bar. An amber tag (<i>1 opponent</i>, <i>8 pairs</i>)
+            marks a <b>provisional</b> rating: it's ranked where the evidence puts it, but that
+            evidence is one comparison — beating the champion once really does put you on top
+            here, and it really is one result.
             Points and win rate are the plain ledger, kept beside it. <b>Overall</b> and{" "}
             <b>Overall rank</b> are the pooled all-history score for the same profile, so the
             two verdicts sit side by side — the ▲▼ next to a rank is how far they disagree.
