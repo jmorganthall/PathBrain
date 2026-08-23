@@ -538,33 +538,75 @@ def _recently_decided(session, a_fp: str, b_fp: str, rematch_days: int) -> bool:
     return False
 
 
-def select_incumbent(session, field: dict, baseline: list[dict] | None, cfg: dict) -> tuple[str | None, str]:
-    """Who starts the session holding the belt, and why.
+def ring_leader(
+    field: dict, ratings: dict[str, dict], baseline: list[dict] | None = None
+) -> tuple[str | None, str]:
+    """The ring's own #1 — the top of the standings, by the conservative rating floor.
 
-    **The reigning champion defends.** A ladder whose champion never has to defend isn't a
-    ladder: before this, every session restarted from the pooled crown, so the belt meant
-    "won some session once" and the badge could name a profile that wasn't even in the
-    ring. Now a fresh, decisive, reachable champion carries its belt into the next session
-    and the pooled crown has to come and take it — which is exactly the matchup worth
-    running, and the one the crowning policy is deciding on.
+    This is the one profile the ladder exists to attack, so it is the one that defends. It
+    is deliberately the SAME number the standings rank on (`rating - RANK_SIGMA*se`), which
+    is what makes the belt and the league table impossible to disagree: the badge naming a
+    profile that isn't #1 on the table underneath it is a bug, not a nuance.
 
-    Falls back to the pooled crown when there's no such champion (first ever session, an
-    expired verdict, a champion that only won by draws, or one the live environment can no
-    longer be set to). Returns ``(fingerprint, reason)``.
+    Returns ``(fingerprint, why)``, or ``(None, "")`` when nothing rated and reachable
+    exists — a fresh ledger, or a live environment no stored profile matches.
     """
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
-    pooled_fp = field.get("best_fingerprint")
-    rematch_days = int(cfg.get("rematch_days", 7) or 7)
+    best_fp: str | None = None
+    best: tuple[float, int] | None = None
+    for fp, r in ratings.items():
+        if fp not in profiles or r.get("rating_floor") is None:
+            continue
+        if not _reachable(profiles[fp].get("settings"), baseline):
+            continue
+        # Ties break toward the deeper record, exactly as the standings do.
+        key = (float(r["rating_floor"]), int(r.get("pairs") or 0))
+        if best is None or key > best:
+            best_fp, best = fp, key
+    if best_fp is None:
+        return None, ""
+    r = ratings[best_fp]
+    return best_fp, (
+        f"the ring's #1 defends (proven {best[0]:.0f} over {r.get('pairs') or 0} pairs "
+        f"against {r.get('opponents') or 0} opponent{'' if (r.get('opponents') or 0) == 1 else 's'})"
+    )
 
-    champion = latest_champion(session, max_age_days=rematch_days)
-    if champion and champion.get("decisive"):
-        fp = champion["fingerprint"]
-        if fp in profiles and _reachable(profiles[fp].get("settings"), baseline):
-            return fp, f"reigning champion from duel #{champion['duel_id']} defends the belt"
-        if fp in profiles:
-            return pooled_fp, "the champion can't be applied in this environment — the pooled crown defends"
-        return pooled_fp, "the champion has no comparable data any more — the pooled crown defends"
-    return pooled_fp, "no fresh decisive champion — the pooled crown defends"
+
+def select_incumbent(
+    session,
+    field: dict,
+    baseline: list[dict] | None,
+    cfg: dict,
+    ratings: dict[str, dict] | None = None,
+) -> tuple[str | None, str]:
+    """Who holds the belt, and why. **The ring's #1 defends — always.**
+
+    This replaced "the reigning champion defends", which meant *whoever survived the last
+    session*. That is not the same profile as the best one, and on a continuous ladder the
+    two drift apart within hours: a mid-table profile wins one bout, inherits the belt, and
+    the ladder then spends the night defending IT — bouts between profiles ranked #83 and
+    #128 that tell us nothing about whether anything beats the leader. The whole purpose of
+    the ring is to keep attacking the best profile we have, so the best profile is what
+    stands in it, re-read from the ledger **before every bout** rather than once a session.
+
+    A consequence worth stating: the winner does not automatically stay on. Beating the
+    leader promotes you only when it moves your floor above its — which is the same bar the
+    standings apply, so "who is champion" and "who is #1" can never disagree. A challenger
+    that wins one bout but is still thin keeps a wide error bar, so the leader defends
+    again, against the next-best threat; the winner's rating rose, so it comes back around
+    quickly, and a second win usually settles it.
+
+    Falls back to the pooled crown only when the ring has nothing to say yet — an empty
+    ledger, or no rated profile the live environment can be set to. Returns
+    ``(fingerprint, reason)``.
+    """
+    pooled_fp = field.get("best_fingerprint")
+    if ratings is None:
+        ratings = ledger_ratings(session)
+    fp, why = ring_leader(field, ratings, baseline)
+    if fp is not None:
+        return fp, why
+    return pooled_fp, "no profile has a ring record yet — the pooled crown defends"
 
 
 def _reachable(settings: list[dict] | None, baseline: list[dict] | None) -> bool:
@@ -734,46 +776,97 @@ def contender_tiers(
     return out
 
 
-def next_matchup(
-    session, queue: list[str], tiers: dict[str, int], incumbent_fp: str, rematch_days: int
-) -> tuple[str | None, str]:
-    """Pop the next challenger — **the rematch cooldown orders, it does not exclude.**
-
-    This is the fix for "yet again, random duels not involving the crown". The cooldown
-    used to set a recently-fought contender aside and move on down the queue, which is
-    self-defeating on a ladder that runs continuously: the top of the queue is what gets
-    fought first, so it is also what goes on cooldown first. Within a day or two the crown
-    and every leader were cooled, and the only entries still un-fought were the profiles
-    nobody had ever raced — so a mode built to race the leaders raced nothing but filler,
-    and the pooled crown, first in the queue *by design*, was the first thing pushed out
-    of the ring.
-
-    So the cooldown now only decides the order **within a tier**. We take the best tier
-    that still has anyone in it, prefer a matchup that hasn't been run inside the window,
-    and otherwise **re-race** the best of that tier rather than dropping a tier: on a
-    continuous ladder re-confirming the crown against the current belt-holder is worth more
-    than a first look at a profile the field already ranks far below it. Returns
-    ``(fingerprint, why)``; ``(None, "")`` when the queue is empty.
-    """
-    if not queue:
-        return None, ""
-    best = min(tiers.get(fp, FILLER_TIER) for fp in queue)
-    tier_fps = [fp for fp in queue if tiers.get(fp, FILLER_TIER) == best]
-    for fp in tier_fps:
-        if not _recently_decided(session, incumbent_fp, fp, rematch_days):
-            queue.remove(fp)
-            return fp, TIER_NAMES.get(best, "contender")
-    fp = tier_fps[0]
-    queue.remove(fp)
-    return fp, f"{TIER_NAMES.get(best, 'contender')}, re-raced (last decided within {rematch_days}d)"
-
-
 TIER_NAMES = {
     CROWN_TIER: "pooled crown",
     CONTENDER_TIER: "contender",
     UNTESTED_TIER: "untested",
     OUTCLASSED_TIER: "outclassed",
 }
+
+
+def _challenger_order(
+    field: dict,
+    ratings: dict[str, dict],
+    defender_fp: str,
+    *,
+    mode: str,
+    heirs: dict,
+    baseline: list[dict] | None,
+    top_n: int,
+) -> list[dict]:
+    """The candidates to face ``defender_fp``, best first, as ``[{fingerprint, tier, why}]``.
+
+    Under the default ``"ring"`` mode this is ``contender_order`` — ranked by each
+    profile's optimistic ceiling against *this* defender's rating, so it is re-derived
+    whenever the defender changes. The legacy ``"leaders"``/``"heirs"`` orders are mapped
+    onto the same shape so the engine has one loop rather than one per mode.
+    """
+    if mode == "ring":
+        return contender_order(field, ratings, defender_fp, baseline=baseline, heirs=heirs)
+    fps = build_queue(
+        field, heirs, defender_fp, contenders=mode, top_n=top_n, baseline=baseline, ratings=ratings
+    )
+    tiers = contender_tiers(field, fps, None, defender_fp)
+    return [
+        {
+            "fingerprint": fp,
+            "tier": tiers.get(fp, FILLER_TIER),
+            "why": TIER_NAMES.get(tiers.get(fp, FILLER_TIER), "contender"),
+        }
+        for fp in fps
+    ]
+
+
+def next_challenger(
+    session,
+    field: dict,
+    ratings: dict[str, dict],
+    defender_fp: str,
+    *,
+    heirs: dict,
+    baseline: list[dict] | None = None,
+    rematch_days: int = 7,
+    mode: str = "ring",
+    top_n: int = 8,
+    fought: set[frozenset[str]] | None = None,
+) -> tuple[str | None, str]:
+    """The single best next opponent for whoever currently holds the belt.
+
+    Called **before every bout**, against ratings refit over the ledger including the bouts
+    already fought in this session — so the ladder is always running the matchup most
+    likely to unseat the current leader, not walking a running order decided hours ago
+    against a defender that may since have been replaced.
+
+    Two different exclusions, deliberately not the same strength:
+
+    * ``fought`` — pairs already fought **in this session**. A hard skip: re-running the
+      bout you just ran adds nothing, so this may drop to a lower tier.
+    * the rematch cooldown — **orders within a tier, never excludes** (the fix from the
+      "random duels not involving the crown" report). The leader and its nearest rivals are
+      the first matchups to go on cooldown precisely because they are fought first, so
+      treating the cooldown as an exclusion hands the ring to filler within a day.
+
+    Returns ``(fingerprint, why)``; ``(None, "")`` once this defender has faced everything
+    reachable in the session, which ends it — the next session refits and starts again.
+    """
+    fought = fought or set()
+    order = [
+        c
+        for c in _challenger_order(
+            field, ratings, defender_fp, mode=mode, heirs=heirs, baseline=baseline, top_n=top_n
+        )
+        if c["fingerprint"] != defender_fp
+        and frozenset((defender_fp, c["fingerprint"])) not in fought
+    ]
+    if not order:
+        return None, ""
+    best = min(c["tier"] for c in order)
+    tier = [c for c in order if c["tier"] == best]
+    for c in tier:
+        if not _recently_decided(session, defender_fp, c["fingerprint"], rematch_days):
+            return c["fingerprint"], c["why"]
+    c = tier[0]
+    return c["fingerprint"], f"{c['why']} — re-raced (last decided within {rematch_days}d)"
 
 
 
@@ -969,64 +1062,74 @@ def _drive(duel_id: int) -> None:
             rematch_days = int(cfg.get("rematch_days", 7) or 7)
             settle_s = max(0, int(cfg.get("settle_seconds", 3) or 0))
 
-            # Matchmaking: the reigning champion defends (pooled crown if there isn't one);
-            # challengers are the contenders nearest the crown, skipping rematch cooldowns.
+            # Matchmaking, re-decided BEFORE EVERY BOUT rather than once a session: the
+            # ring's current #1 defends, against whichever profile the ledger says is most
+            # likely to beat *it*. Deciding this once up front is what produced "random
+            # duels" — a queue chosen hours ago against a defender that had since been
+            # replaced, walked to the end regardless of what the bouts in between found.
             _set_stage(duel_id, "Ranking the field for matchmaking")
             with session_scope() as session:
                 field = compute_profiles(session)
                 heirs = _compute_heirs(field, session, baseline)
-                incumbent_fp, incumbent_why = select_incumbent(session, field, baseline, cfg)
-                # The ring's own verdict on every profile — what the queue is ordered by, so
-                # the ladder's findings decide what it does next instead of the pooled score
-                # it exists to check.
-                ratings = ledger_ratings(session)
             settings_by_fp = {p["fingerprint"]: p for p in field.get("profiles", [])}
-            if incumbent_fp is None or incumbent_fp not in settings_by_fp:
-                raise RuntimeError("No confident profile to defend — nothing to duel.")
-            log.info("Duel %s: %s (%s)", duel_id, incumbent_why, incumbent_fp)
-            # Record the holder up front so the belt names whoever is actually in the ring,
-            # rather than last session's winner, from the first pair onward.
-            holder = settings_by_fp.get(incumbent_fp) or {}
-            with session_scope() as session:
-                d = session.get(Duel, duel_id)
-                if d is not None:
-                    d.champion_fingerprint = incumbent_fp
-                    d.champion_label = holder.get("name") or holder.get("label")
             mode = str(cfg.get("contenders", "ring") or "ring")
-            queue = build_queue(
-                field,
-                heirs,
-                incumbent_fp,
-                contenders=mode,
-                top_n=int(cfg.get("contender_top_n", 8) or 8),
-                baseline=baseline,
-                ratings=ratings,
-            )
-            if not queue:
-                raise RuntimeError(_no_contenders_reason(field, heirs, incumbent_fp, baseline))
+            top_n = int(cfg.get("contender_top_n", 8) or 8)
 
             deadline = time.monotonic() + duration_s
             matchups: list[dict] = []
-            tiers = contender_tiers(
-                field, queue, ratings if mode == "ring" else None, incumbent_fp
-            )
-            bouts_total = len(queue)
+            # Pairs already fought in this session — a hard skip, so the ladder moves down
+            # the threat list instead of re-running the bout it just ran.
+            fought: set[frozenset[str]] = set()
+            incumbent_fp: str | None = None
 
-            while queue and time.monotonic() < deadline and not _state.get("cancel"):
-                # The rematch cooldown orders the queue, it never hands the ring to a
-                # lower tier (see next_matchup): the crown and the leaders are exactly the
-                # matchups that go on cooldown first, so excluding them was what left the
-                # ladder racing nothing but unmeasured filler.
+            while time.monotonic() < deadline and not _state.get("cancel"):
+                # Refit the ring's own verdict over the whole ledger INCLUDING this
+                # session's bouts (`_ledger_sessions` reads the running duel), so a
+                # challenger that just won is re-rated before the next matchup is chosen.
                 with session_scope() as session:
-                    challenger_fp, why_challenger = next_matchup(
-                        session, queue, tiers, incumbent_fp, rematch_days
+                    ratings = ledger_ratings(session)
+                    defender_fp, defender_why = select_incumbent(
+                        session, field, baseline, cfg, ratings
                     )
-                if challenger_fp is None:
+                    if defender_fp is None or defender_fp not in settings_by_fp:
+                        if not matchups:
+                            raise RuntimeError(
+                                "No confident profile to defend — nothing to duel."
+                            )
+                        break
+                    challenger_fp, why_challenger = next_challenger(
+                        session,
+                        field,
+                        ratings,
+                        defender_fp,
+                        heirs=heirs,
+                        baseline=baseline,
+                        rematch_days=rematch_days,
+                        mode=mode,
+                        top_n=top_n,
+                        fought=fought,
+                    )
+                if challenger_fp is None or challenger_fp not in settings_by_fp:
+                    if not matchups:
+                        raise RuntimeError(
+                            _no_contenders_reason(field, heirs, defender_fp, baseline)
+                        )
                     break
+                if defender_fp != incumbent_fp:
+                    log.info("Duel %s: %s (%s)", duel_id, defender_why, defender_fp)
+                incumbent_fp = defender_fp
+                # The belt names whoever is actually in the ring, from the first pair on.
+                holder = settings_by_fp.get(incumbent_fp) or {}
+                with session_scope() as session:
+                    d = session.get(Duel, duel_id)
+                    if d is not None:
+                        d.champion_fingerprint = incumbent_fp
+                        d.champion_label = holder.get("name") or holder.get("label")
                 log.info(
-                    "Duel %s bout %s/%s: challenger %s (%s)",
-                    duel_id, len(matchups) + 1, bouts_total, challenger_fp, why_challenger,
+                    "Duel %s bout %s: challenger %s (%s)",
+                    duel_id, len(matchups) + 1, challenger_fp, why_challenger,
                 )
+                fought.add(frozenset((incumbent_fp, challenger_fp)))
                 inc = settings_by_fp[incumbent_fp]
                 cha = settings_by_fp[challenger_fp]
                 sprt = SprtState(p1, alpha)
@@ -1048,7 +1151,7 @@ def _drive(duel_id: int) -> None:
                     # answer, and a bare pair of names doesn't.
                     _set_stage(
                         duel_id,
-                        f"Bout {len(matchups) + 1} of {bouts_total} · "
+                        f"Bout {len(matchups) + 1} · "
                         f"{inc.get('name') or inc['label']} (belt) defends vs "
                         f"{cha.get('name') or cha['label']} ({why_challenger}) — pair "
                         f"{sprt.pairs + 1} ({sprt.wins_incumbent}-{sprt.wins_challenger})",
@@ -1188,34 +1291,36 @@ def _drive(duel_id: int) -> None:
                     "reason": reason,
                 }
                 matchups.append(record)
-                # The winner stays on, so the holder changes DURING the session — record it
-                # per bout rather than only at the end. On a continuous ladder the end may
-                # be hours away, and a belt that reads hours stale is worse than no belt.
-                # The crowning policy still reads completed sessions only (latest_champion),
-                # so this changes what's shown, never what automation acts on.
-                next_incumbent = challenger_fp if verdict == "challenger" else incumbent_fp
-                holder = settings_by_fp.get(next_incumbent) or {}
+                # Persist the bout, which is also what the next loop's rating refit reads:
+                # who defends next is re-derived from the ledger, not carried over. So the
+                # winner does not simply "stay on" — beating the leader promotes you when
+                # it lifts your floor above its, the same bar the standings apply, which is
+                # what keeps the belt and the #1 row from ever naming different profiles.
                 with session_scope() as session:
                     d = session.get(Duel, duel_id)
                     if d is not None:
                         d.matchups = list(matchups)
-                        d.champion_fingerprint = next_incumbent
-                        d.champion_label = holder.get("name") or holder.get("label")
                 log.info(
                     "Duel %s verdict: %s vs %s → %s (%s; pairs=%s Δmed=%s)",
                     duel_id, inc["label"], cha["label"], verdict, reason,
                     sprt.pairs, record["median_delta"],
                 )
-                # Winner stays on as the incumbent (a draw keeps the current incumbent).
-                if verdict == "challenger":
-                    incumbent_fp = challenger_fp
 
-            # The ladder's final incumbent is the duel champion of this session.
-            champion = settings_by_fp.get(incumbent_fp) or {}
+            # The session's champion is the ring's #1 over the ledger this session just
+            # extended — the same profile the standings put at the top, so the belt on the
+            # page and the row underneath it can't disagree.
             with session_scope() as session:
+                # Deliberately NOT reachability-filtered, unlike the choice of who defends:
+                # the champion is a statement about the ledger, and the standings it has to
+                # agree with aren't filtered either. A champion the live environment can't
+                # be set to simply never defends, and the crown follower already refuses to
+                # apply an unreachable profile.
+                final_fp, _ = ring_leader(field, ledger_ratings(session))
+                final_fp = final_fp or incumbent_fp
+                champion = settings_by_fp.get(final_fp) or {}
                 d = session.get(Duel, duel_id)
-                if d is not None:
-                    d.champion_fingerprint = incumbent_fp
+                if d is not None and final_fp is not None:
+                    d.champion_fingerprint = final_fp
                     d.champion_label = champion.get("name") or champion.get("label")
             if _state.get("cancel"):
                 final_status = DuelStatus.CANCELLED
@@ -1266,13 +1371,19 @@ def _drive(duel_id: int) -> None:
 
 
 def fight_card(session, limit: int = 12) -> dict:
-    """The matchups a duel started right now would actually run, in order.
+    """The matchups a duel started right now would run, in order, if nothing upsets them.
 
     "Are we just racing randoms?" is a fair question to ask of any ladder, and the honest
     answer is a list, not a paragraph — so this builds the queue with exactly the code the
     engine uses (``build_queue`` over ``compute_profiles`` + ``_compute_heirs``) and hands
     it back with each contender's standing and why it's there. Anything on rematch cooldown
     is marked rather than silently skipped.
+
+    The **first** entry is exactly what the engine would fight, because both call the same
+    ``select_incumbent`` and the same ordering. The rest is a projection rather than a
+    schedule: the engine re-decides the defender and the challenger from the ledger before
+    every bout, so an upset in bout 1 re-orders everything after it. That is the point of
+    the ladder, not a caveat about the preview.
 
     Costs a ``compute_profiles`` pass, so it's fetched on demand rather than on page load.
     """
@@ -1815,6 +1926,8 @@ __all__ = [
     "PRESETS",
     "PairedEvidence",
     "build_queue",
+    "next_challenger",
+    "ring_leader",
     "select_incumbent",
     "fight_card",
     "SprtState",
