@@ -60,6 +60,17 @@ ELO_ANCHOR = 1500.0
 # pins both ends.
 DEFAULT_PRIOR_PAIRS = 4.0
 
+# How many standard errors to subtract when RANKING. The fitted rating is the best guess;
+# the floor is what the record has actually demonstrated. Ranking a leaderboard on the
+# guess lets a five-pair record outrank a forty-four-pair one on a difference far smaller
+# than either error bar — an ordering the data doesn't support, presented as if it did.
+#
+# Note the symmetry with matchmaking, which ranks on the optimistic CEILING
+# (`duel.CEILING_SIGMA`): optimism decides who to race, because a profile that might be
+# good is worth measuring; pessimism decides who is best, because a claim to be best has
+# to be earned. Same machinery, opposite directions, each doing the job it suits.
+RANK_SIGMA = 1.0
+
 # A rating is flagged provisional — shown, ranked, but marked as not yet established —
 # until it rests on more than one bout's worth of pairs AND more than one opponent. The
 # second condition matters as much as the first: a profile that has only ever fought one
@@ -145,9 +156,15 @@ def fit_bradley_terry(
         phantom_prob = gamma[p] / (gamma[p] + 1.0)
         info += prior_pairs * phantom_prob * (1.0 - phantom_prob)
         faced = len(opponents[p])
+        rating = ELO_ANCHOR + ELO_SCALE * math.log(gamma[p])
+        se = ELO_SCALE / math.sqrt(info) if info > 0 else None
         out[p] = {
-            "rating": round(ELO_ANCHOR + ELO_SCALE * math.log(gamma[p]), 1),
-            "rating_se": round(ELO_SCALE / math.sqrt(info), 1) if info > 0 else None,
+            "rating": round(rating, 1),
+            "rating_se": round(se, 1) if se is not None else None,
+            # What the record has demonstrated rather than what it suggests — the number
+            # the standings rank on. A thin record has a wide bar and therefore a low
+            # floor, so it has to earn its place instead of borrowing it from one bout.
+            "rating_floor": round(rating - RANK_SIGMA * (se or 0.0), 1),
             "pairs": total_pairs,
             "opponents": faced,
             "wins": won[p],
@@ -168,6 +185,7 @@ __all__ = [
     "ELO_ANCHOR",
     "PROVISIONAL_OPPONENTS",
     "PROVISIONAL_PAIRS",
+    "RANK_SIGMA",
     "fit_bradley_terry",
     "win_probability",
 ]
