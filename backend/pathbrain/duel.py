@@ -1104,6 +1104,9 @@ def _drive(duel_id: int) -> None:
             # Pairs already fought in this session — a hard skip, so the ladder moves down
             # the threat list instead of re-running the bout it just ran.
             fought: set[frozenset[str]] = set()
+            # …with one exception, tracked here so it can only be taken once per pair.
+            rematched: set[frozenset[str]] = set()
+            rematch_now: frozenset[str] | None = None
             incumbent_fp: str | None = None
 
             while time.monotonic() < deadline and not _state.get("cancel"):
@@ -1121,6 +1124,34 @@ def _drive(duel_id: int) -> None:
                                 "No confident profile to defend — nothing to duel."
                             )
                         break
+                    # **Unfinished business gets its rematch.** A challenger that WON its
+                    # bout but didn't take the belt — its floor hasn't cleared the
+                    # leader's yet — has raised the most informative question on the
+                    # ledger: its record says it is the better profile and the standings
+                    # still say the other one is. Setting that pair aside for the rest of
+                    # the session (as the plain "already fought" skip does) leaves exactly
+                    # the profile most likely to dethrone the leader unable to finish the
+                    # job, which is the "two profiles beat this one but it keeps the belt"
+                    # report. So the pair is re-opened — once, so the ladder can't
+                    # ping-pong on it — and its freshly-raised rating puts it near the top
+                    # of the order on its own.
+                    rematch_now = None
+                    if matchups:
+                        last = matchups[-1]
+                        pair = frozenset((last["incumbent"], last["challenger"]))
+                        # Only when the LEDGER is what put this profile in the ring. On the
+                        # pooled fallback (nothing rated and reachable) "the belt didn't
+                        # move" says nothing about the head-to-head record, so there is no
+                        # unfinished business to re-open.
+                        if (
+                            last["verdict"] == "challenger"
+                            and defender_fp == last["incumbent"]
+                            and defender_fp == ledger_leader(ratings)
+                            and pair not in rematched
+                        ):
+                            rematched.add(pair)
+                            fought.discard(pair)
+                            rematch_now = pair
                     challenger_fp, why_challenger = next_challenger(
                         session,
                         field,
@@ -1139,6 +1170,11 @@ def _drive(duel_id: int) -> None:
                             _no_contenders_reason(field, heirs, defender_fp, baseline)
                         )
                     break
+                if rematch_now == frozenset((defender_fp, challenger_fp)):
+                    why_challenger = (
+                        f"{why_challenger} — rematch: it won the last bout without taking "
+                        f"the belt"
+                    )
                 if defender_fp != incumbent_fp:
                     log.info("Duel %s: %s (%s)", duel_id, defender_why, defender_fp)
                 incumbent_fp = defender_fp

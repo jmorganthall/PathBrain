@@ -518,8 +518,17 @@ LLM-based. See `README.md` for the product overview.
     `latest_champion` filters to COMPLETE sessions, so the crowning policy never acts on a
     provisional holder (and can't, mid-duel: the duel owns the firewall while its window is
     open). Two exclusions, deliberately different strengths: a pair already fought **in this
-    session** is a hard skip (re-running the bout you just ran adds nothing, so it may drop a
-    tier), while the **rematch cooldown only orders within a tier** — the fix from the
+    session** is a hard skip — with one exception: **unfinished business gets its rematch.**
+    A challenger that *won* its bout but didn't take the belt (its floor hasn't cleared the
+    leader's) has raised the most informative question on the ledger — its record says it is
+    the better profile and the standings still say the other one is — so that pair is
+    re-opened, **once** per session, and its freshly-raised rating puts it near the top of
+    the order on its own. Without it the profile with the single strongest claim to the belt
+    was set aside for the rest of the session while the leader defended against fresher,
+    weaker challengers (the *"two profiles beat this one but it keeps the belt"* report).
+    Gated on the defender actually being ledger-derived, since on the pooled fallback "the
+    belt didn't move" says nothing about the head-to-head record. Meanwhile the **rematch
+    cooldown only orders within a tier** — the fix from the
     "random duels" report, since the leader and its nearest rivals are the first matchups to
     cool precisely because they are fought first. One interaction is named rather than
     hidden: a bout can be a **draw** on the practical margin floor (`min_margin`, default 0)
