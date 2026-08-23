@@ -98,6 +98,9 @@ def _migrate() -> None:
         "challenger_races": {
             "incumbent_refreshes": "INTEGER DEFAULT 0",
         },
+        "duels": {
+            "live": "JSON",
+        },
         "profile_tests": {
             "stage": "VARCHAR(255)",
             "reached_fingerprint": "VARCHAR(40)",

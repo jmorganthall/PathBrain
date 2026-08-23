@@ -459,6 +459,88 @@ def _duel_config(session) -> dict:
     return get_config(session).get("duel", {}) or {}
 
 
+def _live_scoreboard(
+    *,
+    bout: int,
+    inc: dict,
+    cha: dict,
+    sprt,
+    paired,
+    why_challenger: str,
+    min_pairs: int,
+    max_pairs: int,
+    min_margin: float,
+    streak_needed: int,
+) -> dict:
+    """The bout in progress as structured state — who is ahead, by how much, how close.
+
+    A scoreline in a sentence ("pair 4 (2-1)") cannot answer the only question a live duel
+    raises: *who is winning?* It doesn't say which side those wins belong to, it discards
+    the margins the verdict is actually decided on, and it gives no sense of how near the
+    bout is to ending. All three are known at this point in the loop; this hands them over
+    instead of formatting them away.
+    """
+    deltas = list(paired.deltas)
+    median = _median(deltas) if deltas else None
+    streak_len, streak_dir = paired.current_streak
+    inc_wins, cha_wins = sprt.wins_incumbent, sprt.wins_challenger
+    if cha_wins > inc_wins:
+        leader = "challenger"
+    elif inc_wins > cha_wins:
+        leader = "incumbent"
+    else:
+        leader = "level"
+    # The p-value is only meaningful in the direction the margins actually point.
+    p_value = None
+    if deltas and median is not None and median != 0:
+        p_value = paired.p_value(1 if median > 0 else -1)
+    return {
+        "bout": bout,
+        "pairs": sprt.pairs,
+        "incumbent": {
+            "fingerprint": inc.get("fingerprint"),
+            "name": inc.get("name"),
+            "label": inc.get("label"),
+            "wins": inc_wins,
+        },
+        "challenger": {
+            "fingerprint": cha.get("fingerprint"),
+            "name": cha.get("name"),
+            "label": cha.get("label"),
+            "wins": cha_wins,
+            "why": why_challenger,
+        },
+        "leader": leader,
+        # Margins are challenger − incumbent, in Overall points: positive means the
+        # challenger is ahead. The median is what the verdict is decided on; the series
+        # is what shows whether the lead is steady or a single lucky pair.
+        "median_margin": round(median, 2) if median is not None else None,
+        "last_margin": round(deltas[-1], 2) if deltas else None,
+        "margins": [round(d, 2) for d in deltas[-24:]],
+        "min_pairs": min_pairs,
+        "max_pairs": max_pairs,
+        "min_margin": min_margin,
+        "p_value": round(p_value, 4) if p_value is not None else None,
+        "alpha": round(paired.nominal_alpha, 4),
+        "streak": {
+            "length": streak_len,
+            "side": ("challenger" if streak_dir > 0 else "incumbent") if streak_len else None,
+            "needed": streak_needed,
+        },
+    }
+
+
+def _set_live(duel_id: int, payload: dict | None) -> None:
+    """Persist the live scoreboard (or clear it when no bout is running)."""
+    try:
+        with session_scope() as session:
+            d = session.get(Duel, duel_id)
+            if d is not None:
+                d.live = payload
+    except Exception:  # noqa: BLE001 — a status write must never break the duel
+        log.debug("Duel %s: could not persist live state", duel_id, exc_info=True)
+
+
 def _set_stage(duel_id: int, stage: str) -> None:
     log.info("Duel %s: %s", duel_id, stage)
     try:
@@ -1274,6 +1356,14 @@ def _drive(duel_id: int) -> None:
                         f"{cha.get('name') or cha['label']} ({why_challenger}) — pair "
                         f"{sprt.pairs + 1} ({sprt.wins_incumbent}-{sprt.wins_challenger})",
                     )
+                    # …and the same bout as structured state, so the page can say who is
+                    # ahead and by how much rather than printing an unattributed scoreline.
+                    _set_live(duel_id, _live_scoreboard(
+                        bout=len(matchups) + 1, inc=inc, cha=cha, sprt=sprt, paired=paired,
+                        why_challenger=why_challenger, min_pairs=min_pairs,
+                        max_pairs=max_pairs, min_margin=min_margin,
+                        streak_needed=streak_to_decide(alpha, min_pairs, max_pairs, streak_wins),
+                    ))
                     # ABBA, not ABAB. The incumbent used to run first in every single
                     # pair, which makes "goes first" and "is the incumbent" the same
                     # variable: any position-in-pair effect — the state the previous run
@@ -1446,6 +1536,7 @@ def _drive(duel_id: int) -> None:
             # Always restore the pre-duel baseline: the duel adjudicates, it never
             # promotes. Applying the champion is the crown follower's job under the
             # crowning policy (crown_follow.policy = "duel").
+            _set_live(duel_id, None)  # no bout in progress any more
             _set_stage(duel_id, "Restoring your original settings")
             try:
                 restore, _ = plan_apply(baseline, provider.discover())
@@ -2049,6 +2140,7 @@ def _serialize(d: Duel, session=None) -> dict:
         "trigger": d.trigger,
         "duration_s": d.duration_s,
         "matchups": matchups,
+        "live": d.live,
         "iterations_run": d.iterations_run,
         "run_ids": d.run_ids or [],
         "champion_fingerprint": d.champion_fingerprint,

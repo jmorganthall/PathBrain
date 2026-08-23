@@ -2147,3 +2147,61 @@ def test_the_ring_still_governs_every_profile_it_has_actually_rated():
     assert by_fp["ringsaysno00"]["tier"] == duel_mod.OUTCLASSED_TIER
     fps = [c["fingerprint"] for c in order]
     assert fps.index("thinbutshiny") < fps.index("ringsaysno00")
+
+
+# ── the live scoreboard ────────────────────────────────────────────────────────────────
+
+
+def test_the_live_scoreboard_says_who_is_ahead_and_by_how_much():
+    """"(2-1)" in a sentence cannot say *whose* wins those are, by how much, or how close
+    the bout is to ending — which is the whole of what a live duel readout is for."""
+    sprt = duel_mod.SprtState(p1=0.7, alpha=0.05)
+    paired = duel_mod.PairedEvidence(alpha=0.05, min_margin=0.0, min_pairs=6, max_pairs=40)
+    # Challenger takes two of three, and by a clear margin each time.
+    for delta in (1.4, -0.3, 1.1):
+        sprt.add_pair(delta > 0)
+        paired.add(delta)
+
+    live = duel_mod._live_scoreboard(
+        bout=1,
+        inc={"fingerprint": "belt", "name": "Languid Lavender", "label": "belt"},
+        cha={"fingerprint": "thin", "name": "Gritty Gibbon", "label": "thin"},
+        sprt=sprt, paired=paired, why_challenger="thin but live",
+        min_pairs=6, max_pairs=40, min_margin=0.0, streak_needed=8,
+    )
+    assert live["incumbent"]["wins"] == 1 and live["incumbent"]["name"] == "Languid Lavender"
+    assert live["challenger"]["wins"] == 2 and live["challenger"]["name"] == "Gritty Gibbon"
+    assert live["leader"] == "challenger"
+    # Margins are challenger − incumbent, so the sign alone says which way it's going.
+    assert live["median_margin"] == 1.1 and live["last_margin"] == 1.1
+    assert live["margins"] == [1.4, -0.3, 1.1]
+    # …and how far there is to go.
+    assert live["pairs"] == 3 and live["min_pairs"] == 6 and live["max_pairs"] == 40
+    assert live["streak"] == {"length": 1, "side": "challenger", "needed": 8}
+
+
+def test_a_level_bout_says_level_rather_than_picking_a_side():
+    """One-all is not a lead, and a readout that implies one is worse than no readout."""
+    sprt = duel_mod.SprtState(p1=0.7, alpha=0.05)
+    paired = duel_mod.PairedEvidence(alpha=0.05, min_margin=0.0, min_pairs=6, max_pairs=40)
+    for delta in (0.8, -0.9):
+        sprt.add_pair(delta > 0)
+        paired.add(delta)
+    live = duel_mod._live_scoreboard(
+        bout=1, inc={"label": "a"}, cha={"label": "b"}, sprt=sprt, paired=paired,
+        why_challenger="", min_pairs=6, max_pairs=40, min_margin=0.0, streak_needed=8,
+    )
+    assert live["leader"] == "level" and live["incumbent"]["wins"] == live["challenger"]["wins"]
+
+
+def test_the_scoreboard_is_empty_before_any_pair_completes():
+    """Nothing measured yet has to read as nothing, not as a nil-all lead."""
+    sprt = duel_mod.SprtState(p1=0.7, alpha=0.05)
+    paired = duel_mod.PairedEvidence(alpha=0.05, min_margin=0.0, min_pairs=6, max_pairs=40)
+    live = duel_mod._live_scoreboard(
+        bout=1, inc={"label": "a"}, cha={"label": "b"}, sprt=sprt, paired=paired,
+        why_challenger="", min_pairs=6, max_pairs=40, min_margin=0.0, streak_needed=8,
+    )
+    assert live["pairs"] == 0 and live["leader"] == "level"
+    assert live["median_margin"] is None and live["margins"] == []
+    assert live["p_value"] is None

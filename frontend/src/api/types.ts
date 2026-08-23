@@ -1830,10 +1830,42 @@ export interface DuelStandings {
   rating_pairs_total?: number;
 }
 
+/**
+ * The bout in progress, as structured state rather than prose.
+ *
+ * A scoreline inside a sentence ("pair 4 (2-1)") can't say WHOSE wins those are, by how
+ * much, or how near the bout is to a verdict — which is all anyone watching a duel wants.
+ * Margins are challenger − incumbent in Overall points, so a positive number always means
+ * the challenger is ahead. Null while a session is between bouts or finished.
+ */
+export interface DuelLive {
+  bout: number;
+  pairs: number;
+  incumbent: { fingerprint: string | null; name: string | null; label: string | null; wins: number };
+  challenger: {
+    fingerprint: string | null;
+    name: string | null;
+    label: string | null;
+    wins: number;
+    why: string;
+  };
+  leader: "incumbent" | "challenger" | "level";
+  median_margin: number | null;
+  last_margin: number | null;
+  margins: number[];
+  min_pairs: number;
+  max_pairs: number;
+  min_margin: number;
+  p_value: number | null;
+  alpha: number;
+  streak: { length: number; side: "incumbent" | "challenger" | null; needed: number };
+}
+
 export interface DuelSession {
   id: number;
   status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
   stage: string | null;
+  live?: DuelLive | null;
   trigger: string;
   duration_s: number;
   matchups: DuelMatchup[];

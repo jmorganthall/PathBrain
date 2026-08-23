@@ -576,6 +576,18 @@ LLM-based. See `README.md` for the product overview.
     while the *rating* — fitted to pairs, magnitude-blind by design — still moves the belt,
     because "is this difference worth acting on?" and "which profile is stronger?" are
     different questions.
+    **The bout in progress is structured state, not a sentence** (`_live_scoreboard`,
+    persisted to `Duel.live` after every pair and cleared at session end). A scoreline inside
+    the stage line — *"pair 4 (2-1)"* — can't say **whose** wins those are, by how much, or how
+    near a verdict is, which is the whole of what a live duel readout is for. The payload
+    carries both sides with their own tally, who leads (`level` when tied, never an implied
+    lead), the **median margin signed from the challenger's side** (positive = challenger
+    ahead; this, not the pair count, is what the verdict is decided on), the per-pair margin
+    series, progress against `min_pairs`/`max_pairs`, the current streak against the streak
+    that would end it, and the running p-value against its peek-corrected threshold. The
+    Dueling Champions page renders it as a scoreboard (`BoutScoreboard`) — two tallies, a
+    split bar, and a per-pair margin strip so a steady lead and one lucky pair don't look
+    alike — falling back to the stage sentence between bouts, when there is no score to show.
     `duel.fight_card` (`GET /api/duel/card`) answers "are we just racing randoms?" with a
     list rather than a paragraph: the champion plus the ordered queue a duel started *now*
     would work through, each entry carrying its Overall, iterations, why it's in the queue
