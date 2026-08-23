@@ -412,6 +412,31 @@ LLM-based. See `README.md` for the product overview.
     pairs. Mocked-engine tests set it to 0 and score each leg **by the profile applied**, not by
     its position (`_score_by_profile`) — a fake keyed on run order would bake in exactly the
     confound the alternation removes.
+    **The operating model: always be running the bout most likely to unseat the belt**
+    (`contender_order`, `ledger_ratings`, `duel.contenders = "ring"`, the default). The queue
+    used to be ordered by the **pooled** Overall, which made the ladder circular: the duel
+    exists to be the independent check on the pooled verdict, and the pooled verdict decided
+    who got checked. A profile the ring had *proven* strong stayed buried if its pooled score
+    was mid-table, and a pooled-flattered profile got first billing every session after losing
+    five bouts running — measured end-to-end, the old order raced the two profiles the ring had
+    already beaten and put the one that beat the belt **last**. Challengers are now ranked by
+    the **ring's own findings**: each one's **optimistic ceiling** on the fitted head-to-head
+    rating (`rating + CEILING_SIGMA·rating_se`), which does the right thing three ways at once —
+    a strong established contender ranks high on its rating, an unknown ranks high on its wide
+    error bar (it might be anything, so go and look), and a well-measured weak profile ranks low
+    and stays out of the way, because the ring has answered that question and re-asking finds
+    nothing. Four tiers, and the ring is never given to a lower one while a higher still has
+    someone: `CROWN_TIER` (the pooled crown — the two verdicts disagreeing is the most
+    informative bout there is) < `CONTENDER_TIER` (ceiling clears the belt-holder's rating) <
+    `UNTESTED_TIER` (never been in the ring, so anything is possible; ordered among themselves
+    by pooled Overall, the **only** job pooled keeps) < `OUTCLASSED_TIER` (the ring says they
+    can't reach — raced *last*, not never, the same discipline the cooldown follows). A profile
+    with no pooled score at all is still raceable: requiring one would put the pooled verdict
+    back in charge of who gets checked. `ledger_ratings` fits the same Bradley–Terry model the
+    standings rank on, straight from the matchup ledger without the pooled join, so matchmaking
+    can consult it every session cheaply; `_pair_record` is the one accumulator both share.
+    `contenders="leaders"` keeps the former pooled ordering for comparison and `"heirs"` the
+    oldest exploring order.
     **The rematch cooldown ORDERS, it never excludes** (`contender_tiers` / `next_matchup`).
     Queued profiles carry a priority **tier** — `CROWN_TIER` (the pooled crown) <
     `CONTENDER_TIER` (confident, scored) < `FILLER_TIER` (thin/untested) — and the ring is

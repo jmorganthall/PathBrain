@@ -617,13 +617,21 @@ def build_queue(
     heirs: dict,
     incumbent_fp: str,
     *,
-    contenders: str = "leaders",
+    contenders: str = "ring",
     top_n: int = 8,
     baseline: list[dict] | None = None,
+    ratings: dict[str, dict] | None = None,
 ) -> list[str]:
     """Who the champion actually fights, in order.
 
-    ``"leaders"`` (default) races **contenders**: the reachable profiles closest to the
+    ``"ring"`` (default) orders challengers by **the ring's own findings** — each one's
+    optimistic ceiling on the fitted head-to-head rating, so the bout most likely to unseat
+    the belt-holder runs first. See ``contender_order``. This is the fix for the ladder's
+    circularity: the duel exists to check the pooled verdict, so the pooled verdict must not
+    be what decides who gets checked. It keeps one job — seeding profiles that have never
+    been in the ring, which have no other signal.
+
+    ``"leaders"`` is the previous behaviour, kept for comparison: it races **contenders**: the reachable profiles closest to the
     crown by Overall, best-established first. That is what makes a perpetual ladder worth
     running — a night spent adjudicating the top of the table keeps finding better
     profiles, while a night spent sampling arbitrary unmeasured ones mostly re-confirms
@@ -651,6 +659,11 @@ def build_queue(
     pooled_fp = field.get("best_fingerprint")
     if pooled_fp and pooled_fp != incumbent_fp and pooled_fp in profiles:
         heir_order = [pooled_fp] + [fp for fp in heir_order if fp != pooled_fp]
+    if contenders == "ring":
+        order = contender_order(
+            field, ratings or {}, incumbent_fp, baseline=baseline, heirs=heirs
+        )
+        return [c["fingerprint"] for c in order]
     if contenders != "leaders":
         return heir_order
 
@@ -686,13 +699,27 @@ def build_queue(
 # still has someone waiting — that single rule is what keeps a perpetual ladder pointed at
 # the matchups that can change the answer.
 CROWN_TIER = 0  # the pooled crown: the two verdicts disagreeing is the most informative bout
-CONTENDER_TIER = 1  # well-measured profiles near the top — the ones that could take the belt
-FILLER_TIER = 2  # thin / unmeasured profiles: worth a look, but last
+CONTENDER_TIER = 1  # on the ring's own record, could plausibly take the belt
+UNTESTED_TIER = 2  # never been in the ring — unknown, so worth a look
+OUTCLASSED_TIER = 3  # the ring already says they can't reach the belt: raced last, not never
+FILLER_TIER = UNTESTED_TIER  # legacy alias for the pre-ring-ranking modes
 
 
-def contender_tiers(field: dict, queue: list[str]) -> dict[str, int]:
+def contender_tiers(
+    field: dict,
+    queue: list[str],
+    ratings: dict[str, dict] | None = None,
+    incumbent_fp: str | None = None,
+) -> dict[str, int]:
     """Each queued profile's priority tier, derived from the same field the queue was built
-    from (so there is no second ranking to drift out of step with the first)."""
+    from (so there is no second ranking to drift out of step with the first).
+
+    When ring ratings are supplied the tiers come from ``contender_order`` — the one place
+    that decides them — so the loop can never disagree with the order it was handed.
+    """
+    if ratings is not None and incumbent_fp is not None:
+        by_fp = {c["fingerprint"]: c["tier"] for c in contender_order(field, ratings, incumbent_fp)}
+        return {fp: by_fp.get(fp, UNTESTED_TIER) for fp in queue}
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
     pooled_fp = field.get("best_fingerprint")
     out: dict[str, int] = {}
@@ -741,7 +768,173 @@ def next_matchup(
     return fp, f"{TIER_NAMES.get(best, 'contender')}, re-raced (last decided within {rematch_days}d)"
 
 
-TIER_NAMES = {CROWN_TIER: "pooled crown", CONTENDER_TIER: "contender", FILLER_TIER: "untested"}
+TIER_NAMES = {
+    CROWN_TIER: "pooled crown",
+    CONTENDER_TIER: "contender",
+    UNTESTED_TIER: "untested",
+    OUTCLASSED_TIER: "outclassed",
+}
+
+
+
+# ── The operating model: always be trying to beat the profile holding the crown ──────
+#
+# For a long time the queue was ordered by the POOLED Overall, which made the ladder
+# circular: the duel exists to be the independent check on the pooled verdict, and the
+# pooled verdict decided who got checked. A profile the ring had proven strong stayed
+# buried if its pooled score was mid-table; a pooled-flattered profile got first billing
+# every session even after losing five bouts running.
+#
+# So the queue is now ordered by **the ring's own findings**, with one objective: run the
+# bout most likely to unseat the profile currently holding the crown. Each contender is
+# scored by its **optimistic ceiling** — the fitted rating plus `CEILING_SIGMA` standard
+# errors, i.e. how good it could plausibly turn out to be. That single number does the
+# right thing three ways at once:
+#
+# * a strong, well-established contender ranks high (high rating);
+# * an unknown ranks high (wide error bar) — it might be anything, so go and look;
+# * a well-measured weak profile ranks low and stays out of the way, because the ring has
+#   already answered that question and re-answering it finds nothing.
+#
+# Pooled Overall keeps exactly one job: seeding profiles that have never been in the ring,
+# so they can be ordered among themselves. It no longer decides who fights.
+CEILING_SIGMA = 1.0
+# What an unrated profile's error bar is taken to be. Wide on purpose: we know nothing
+# about it head-to-head, so its ceiling should be high enough to earn a look.
+UNRATED_SE = 150.0
+
+
+def _pair_record(sessions_data: list[dict]) -> dict[tuple[str, str], int]:
+    """``{(winner, loser): pairs won}`` over the ledger — the evidence the rating fits.
+
+    The unit is the **pair**, not the bout: a hard-fought 12-8 carries more than a 3-0
+    snap, and a drawn bout still informs the rating instead of being discarded.
+    """
+    out: dict[tuple[str, str], int] = {}
+    for sess in sessions_data:
+        for m in sess.get("matchups") or []:
+            if not m or not m.get("incumbent") or not m.get("challenger"):
+                continue
+            inc, cha = str(m["incumbent"]), str(m["challenger"])
+            for key, wins in (((inc, cha), m.get("wins_incumbent")), ((cha, inc), m.get("wins_challenger"))):
+                n = int(wins or 0)
+                if n > 0:
+                    out[key] = out.get(key, 0) + n
+    return out
+
+
+def _ledger_sessions(session, limit_sessions: int = 50) -> list[dict]:
+    rows = session.scalars(
+        select(Duel).order_by(Duel.id.desc()).limit(max(1, min(int(limit_sessions or 50), 200)))
+    ).all()
+    return [
+        {
+            "id": d.id,
+            "status": d.status.value if hasattr(d.status, "value") else str(d.status),
+            "matchups": list(d.matchups or []),
+            "champion_fingerprint": d.champion_fingerprint,
+            "champion_label": d.champion_label,
+            "finished_at": d.finished_at.isoformat() if d.finished_at else None,
+        }
+        for d in rows
+    ]
+
+
+def ledger_ratings(session, limit_sessions: int = 50) -> dict[str, dict]:
+    """Each profile's fitted strength from the head-to-head ledger alone.
+
+    The same fit the standings table ranks on, without the pooled join — so matchmaking
+    can consult the ring's own verdict cheaply, every session.
+    """
+    return fit_bradley_terry(_pair_record(_ledger_sessions(session, limit_sessions)))
+
+
+def contender_order(
+    field: dict,
+    ratings: dict[str, dict],
+    incumbent_fp: str,
+    *,
+    baseline: list[dict] | None = None,
+    heirs: dict | None = None,
+) -> list[dict]:
+    """Who should challenge the belt-holder, best chance of unseating it first.
+
+    Returns ``[{fingerprint, tier, ceiling, rating, why}, …]`` in running order. The tiers
+    exist so the ring is never handed to a lower one while a higher still has someone:
+
+    * ``CROWN_TIER`` — the pooled crown. The two verdicts disagreeing is the single most
+      informative bout in the system, so it goes first whenever it isn't already defending.
+    * ``CONTENDER_TIER`` — rated profiles whose **ceiling clears the champion's rating**:
+      on the ring's own evidence they could plausibly win. Ordered by that ceiling.
+    * ``UNTESTED_TIER`` — never been in the ring, so nothing is known about them
+      head-to-head and anything is possible. Ordered by pooled Overall, which is the only
+      signal available for them and is used for nothing else.
+    * ``OUTCLASSED_TIER`` — rated, and even at their optimistic best they don't reach the
+      champion. The ring has answered this; re-asking finds nothing. Not excluded — a long
+      window still gets to them — just last, which is the same discipline the rematch
+      cooldown follows.
+    """
+    profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
+    pooled_fp = field.get("best_fingerprint")
+    heir_set = {h.get("fingerprint") for h in ((heirs or {}).get("items") or [])}
+
+    champ = ratings.get(incumbent_fp) or {}
+    bar = champ.get("rating")
+
+    def _ceiling(fp: str) -> tuple[float | None, float | None]:
+        r = ratings.get(fp)
+        if not r or r.get("rating") is None:
+            return (None, None)
+        return (r["rating"], r["rating"] + CEILING_SIGMA * (r.get("rating_se") or UNRATED_SE))
+
+    out: list[dict] = []
+    for fp, p in profiles.items():
+        if fp == incumbent_fp:
+            continue
+        # A profile with no pooled score is still raceable — it's simply unknown twice over
+        # (no ring record and no measured standing), which makes it a legitimate unknown to
+        # go and measure, just the last of them. Requiring a pooled Overall here would put
+        # the pooled verdict back in charge of who gets checked.
+        # The heirs pass already applied the environment check; everything else is tested
+        # against the live settings directly.
+        if fp not in heir_set and fp != pooled_fp and not _reachable(p.get("settings"), baseline):
+            continue
+        rating, ceiling = _ceiling(fp)
+        if fp == pooled_fp:
+            tier, why = CROWN_TIER, "the pooled crown — the two verdicts disagreeing is the most informative bout there is"
+        elif rating is None:
+            tier, why = UNTESTED_TIER, "never been in the ring — nothing is known about it head to head"
+        elif bar is None or (ceiling is not None and ceiling >= bar):
+            tier, why = (
+                CONTENDER_TIER,
+                f"could plausibly beat the belt on its ring record (ceiling {ceiling:.0f} vs {bar:.0f})"
+                if bar is not None
+                else "the belt-holder has no ring record yet, so everything is a live contender",
+            )
+        else:
+            tier, why = (
+                OUTCLASSED_TIER,
+                f"the ring already says it can't reach the belt (ceiling {ceiling:.0f} vs {bar:.0f}) — raced last",
+            )
+        out.append({
+            "fingerprint": fp,
+            "tier": tier,
+            "rating": round(rating, 1) if rating is not None else None,
+            "ceiling": round(ceiling, 1) if ceiling is not None else None,
+            "pooled_overall": p.get("overall"),
+            "why": why,
+        })
+
+    # Within a tier: by ceiling where we have one (best chance of dethroning first), by
+    # pooled Overall where we don't (the only thing that distinguishes two unknowns).
+    out.sort(
+        key=lambda c: (
+            c["tier"],
+            -(c["ceiling"] if c["ceiling"] is not None else -1e9),
+            -(c["pooled_overall"] or -1e9),
+        )
+    )
+    return out
 
 
 def _drive(duel_id: int) -> None:
@@ -783,6 +976,10 @@ def _drive(duel_id: int) -> None:
                 field = compute_profiles(session)
                 heirs = _compute_heirs(field, session, baseline)
                 incumbent_fp, incumbent_why = select_incumbent(session, field, baseline, cfg)
+                # The ring's own verdict on every profile — what the queue is ordered by, so
+                # the ladder's findings decide what it does next instead of the pooled score
+                # it exists to check.
+                ratings = ledger_ratings(session)
             settings_by_fp = {p["fingerprint"]: p for p in field.get("profiles", [])}
             if incumbent_fp is None or incumbent_fp not in settings_by_fp:
                 raise RuntimeError("No confident profile to defend — nothing to duel.")
@@ -795,20 +992,24 @@ def _drive(duel_id: int) -> None:
                 if d is not None:
                     d.champion_fingerprint = incumbent_fp
                     d.champion_label = holder.get("name") or holder.get("label")
+            mode = str(cfg.get("contenders", "ring") or "ring")
             queue = build_queue(
                 field,
                 heirs,
                 incumbent_fp,
-                contenders=str(cfg.get("contenders", "leaders") or "leaders"),
+                contenders=mode,
                 top_n=int(cfg.get("contender_top_n", 8) or 8),
                 baseline=baseline,
+                ratings=ratings,
             )
             if not queue:
                 raise RuntimeError(_no_contenders_reason(field, heirs, incumbent_fp, baseline))
 
             deadline = time.monotonic() + duration_s
             matchups: list[dict] = []
-            tiers = contender_tiers(field, queue)
+            tiers = contender_tiers(
+                field, queue, ratings if mode == "ring" else None, incumbent_fp
+            )
             bouts_total = len(queue)
 
             while queue and time.monotonic() < deadline and not _state.get("cancel"):
@@ -1091,11 +1292,12 @@ def fight_card(session, limit: int = 12) -> dict:
     # Exactly the engine's choice of who defends, so the preview can't promise a different
     # champion than the one that actually walks out.
     incumbent_fp, incumbent_why = select_incumbent(session, field, live, cfg)
+    ratings = ledger_ratings(session)
     if incumbent_fp is None or incumbent_fp not in profiles:
         return {
             "incumbent": None,
             "queue": [],
-            "contenders": str(cfg.get("contenders", "leaders") or "leaders"),
+            "contenders": str(cfg.get("contenders", "ring") or "ring"),
             "top_n": int(cfg.get("contender_top_n", 8) or 8),
             "reason": "No confident profile to defend yet — collect more iterations.",
         }
@@ -1103,25 +1305,33 @@ def fight_card(session, limit: int = 12) -> dict:
     heir_reason = {
         h["fingerprint"]: h.get("reason") for h in (heirs.get("items") or []) if h.get("fingerprint")
     }
+    mode = str(cfg.get("contenders", "ring") or "ring")
     order = build_queue(
         field,
         heirs,
         incumbent_fp,
-        contenders=str(cfg.get("contenders", "leaders") or "leaders"),
+        contenders=mode,
         top_n=int(cfg.get("contender_top_n", 8) or 8),
         baseline=live,
+        ratings=ratings,
     )
+    # The ring's reason for each entry — so the preview explains the running order in the
+    # ladder's own terms rather than restating the pooled standings.
+    ring_why = {
+        c["fingerprint"]: c
+        for c in contender_order(field, ratings, incumbent_fp, baseline=live, heirs=heirs)
+    }
     if not order:
         return {
             "incumbent": None,
             "queue": [],
-            "contenders": str(cfg.get("contenders", "leaders") or "leaders"),
+            "contenders": str(cfg.get("contenders", "ring") or "ring"),
             "top_n": int(cfg.get("contender_top_n", 8) or 8),
             "reason": _no_contenders_reason(field, heirs, incumbent_fp, live),
         }
     rematch_days = int(cfg.get("rematch_days", 7) or 7)
 
-    tiers = contender_tiers(field, order)
+    tiers = contender_tiers(field, order, ratings if mode == "ring" else None, incumbent_fp)
 
     def _entry(fp: str, position: int) -> dict:
         p = profiles.get(fp, {})
@@ -1140,6 +1350,11 @@ def fight_card(session, limit: int = 12) -> dict:
                 else heir_reason.get(fp)
                 or ("contender" if p.get("overall") is not None else "untested")
             ),
+            # What the RING says about it: its fitted rating, the optimistic ceiling the
+            # queue is ordered by, and why it sits where it does.
+            "rating": (ring_why.get(fp) or {}).get("rating"),
+            "ceiling": (ring_why.get(fp) or {}).get("ceiling"),
+            "ring_why": (ring_why.get(fp) or {}).get("why"),
             # Its priority tier — the ring is never given to a lower tier while a higher
             # one still has someone waiting, so this is the real running order.
             "tier": tiers.get(fp, FILLER_TIER),
@@ -1166,9 +1381,11 @@ def fight_card(session, limit: int = 12) -> dict:
         },
         "queue": [_entry(fp, i + 1) for i, fp in enumerate(order[: max(int(limit), 1)])],
         "total": len(order),
-        "contenders": str(cfg.get("contenders", "leaders") or "leaders"),
+        "contenders": mode,
         "top_n": int(cfg.get("contender_top_n", 8) or 8),
         "rematch_days": rematch_days,
+        # The belt-holder's own ring rating — the bar every ceiling above is measured against.
+        "incumbent_rating": (ratings.get(incumbent_fp) or {}).get("rating"),
         "reason": None,
     }
 

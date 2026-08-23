@@ -219,17 +219,27 @@ DEFAULT_CONFIG: dict = {
         # snap verdict: on a nightly ladder a wrong call is cheap and self-correcting, and
         # at a true 1-point edge 3-in-a-row still names the better profile ~91% of the time.
         "streak_wins": 0,
-        # Who the champion fights. "leaders" (default) races the reachable profiles closest
-        # to the crown — the matchups that can actually change the answer — with limited-data
-        # heirs that could still beat it taken first. "heirs" keeps the older behavior, which
-        # also samples untested profiles (better for exploring a fresh field).
+        # Who the champion fights.
+        #
+        # "ring" (default) is the operating model: always be running the bout most likely to
+        # unseat whoever holds the belt. Challengers are ordered by the RING'S OWN findings —
+        # each one's optimistic ceiling on the fitted head-to-head rating (`duel.contender_order`)
+        # — so a strong or an unknown profile gets the ring and one the ladder has already
+        # beaten waits its turn. This replaced ordering by the pooled Overall, which made the
+        # ladder circular: the duel exists to check the pooled verdict, so the pooled verdict
+        # must not decide who gets checked. Pooled keeps one job — seeding profiles that have
+        # never been in the ring and so have no other signal.
+        #
+        # "leaders" is that former behaviour (reachable profiles closest to the pooled crown,
+        # limited-data heirs first), kept for comparison. "heirs" is the oldest, exploring
+        # order, which samples untested profiles harder (better for a fresh field).
         # Keep the ladder running instead of once a night: a perpetual race that keeps
         # accruing head-to-head evidence, so a better profile can surface at any hour.
         # Sessions still hold the coordinator lock and still restore the baseline; the gap
         # leaves the pipeline free for monitoring and manual runs in between.
         "continuous": False,
         "continuous_gap_minutes": 5,
-        "contenders": "leaders",
+        "contenders": "ring",
         "contender_top_n": 8,
         "p1": 0.70,
         "alpha": 0.05,
