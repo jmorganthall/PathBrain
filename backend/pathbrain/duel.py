@@ -1346,6 +1346,26 @@ def _drive(duel_id: int) -> None:
                 reason = ""
 
                 while verdict is None and time.monotonic() < deadline and not _state.get("cancel"):
+                    # Zipper merge. The ladder holds the coordination lock for its whole
+                    # window — hours — so anything a user starts meanwhile (an Explore
+                    # "Test now", a manual run) would otherwise queue behind the entire
+                    # night. Between pairs nothing is in flight, so this is the seam: let
+                    # ONE queued session through, then take the ring back for the next
+                    # pair, then look again. Within-pair adjacency — the thing that makes
+                    # the two legs share their weather — is untouched, because a pair is
+                    # never interrupted once it starts.
+                    #
+                    # The yielded time is deliberately NOT added back to the deadline: a
+                    # nightly window is a wall-clock agreement about when the ladder may
+                    # run, and quietly running past 05:00 to make up for a detour would
+                    # break the thing the window is for.
+                    yielded = coordinator.yield_if_waiting(f"duel#{duel_id}")
+                    if yielded:
+                        log.info(
+                            "Duel %s: stepped aside for %.0fs of queued work", duel_id, yielded
+                        )
+                        if time.monotonic() >= deadline or _state.get("cancel"):
+                            break
                     # Name the bout AND why this challenger is in the ring — "who are these
                     # two and how did they get here?" is the question a live readout has to
                     # answer, and a bare pair of names doesn't.

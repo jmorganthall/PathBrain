@@ -29,6 +29,7 @@ watchdog never stalls behind a long session.
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 
 from .logging_config import get_logger
@@ -42,6 +43,15 @@ _lock = threading.Lock()
 # lock so a status read never blocks on the (possibly long-held) session lock.
 _owner: str | None = None
 _owner_lock = threading.Lock()
+# How many sessions are queued on ``hold`` right now — the merge lane. A long session can
+# read this and step aside for one of them (see ``yield_if_waiting``); without it, a holder
+# has no way to know anyone is waiting and simply runs to completion.
+_waiters = 0
+_waiters_lock = threading.Lock()
+# How long to wait for a queued session to actually pick the lock up after we let go. This
+# is not a guess about how long their work takes — only about how long the handoff takes,
+# and a thread already blocked in ``acquire`` is woken immediately.
+HANDOFF_GRACE_S = 2.0
 
 
 class CoordinatorBusy(RuntimeError):
@@ -60,6 +70,47 @@ class CoordinatorBusy(RuntimeError):
 def busy() -> bool:
     """True if a session currently holds the lock."""
     return _lock.locked()
+
+
+def waiting() -> int:
+    """How many sessions are queued behind the current holder."""
+    with _waiters_lock:
+        return _waiters
+
+
+def yield_if_waiting(owner_label: str, *, grace: float = HANDOFF_GRACE_S) -> float:
+    """Let **one** queued session through, then take the lock back. Returns seconds yielded.
+
+    A zipper merge, not a free-for-all. A long session (the duel ladder runs for hours)
+    otherwise holds the lock end to end, so pressing "Test now" queues behind the whole
+    night. Calling this at a natural seam — between pairs, where nothing is in flight —
+    lets one waiting session in and then resumes.
+
+    The subtlety worth stating: ``threading.Lock`` is documented as **unfair**. Releasing
+    it does wake a blocked waiter, and on CPython that waiter usually beats the releasing
+    thread's fresh ``acquire`` — but "usually" is not a handoff, and the odds worsen with
+    several waiters or a different implementation. So after releasing we wait for the lock
+    to actually be taken before queueing for it again, which turns an alternating merge
+    from a tendency into a guarantee. If nobody picks it up within ``grace`` (the waiter
+    gave up, or was a ``try_hold`` that already deferred), we simply carry on.
+
+    Returns 0.0 when nothing was waiting, so callers can cheaply do this every iteration.
+    """
+    if waiting() <= 0:
+        return 0.0
+    started = time.monotonic()
+    _set_owner(None)
+    _lock.release()
+    log.info("Coordinator: %s yielding to %s queued session(s)", owner_label, waiting())
+    deadline = started + max(grace, 0.0)
+    while time.monotonic() < deadline and not _lock.locked():
+        time.sleep(0.01)
+    # Queue behind whoever took it (or re-take it immediately if nobody did).
+    _lock.acquire()
+    _set_owner(owner_label)
+    yielded = time.monotonic() - started
+    log.info("Coordinator: %s resumed after yielding %.1fs", owner_label, yielded)
+    return yielded
 
 
 def owner() -> str | None:
@@ -81,7 +132,14 @@ def hold(owner_label: str, *, timeout: float | None = None):
     Queues behind any in-progress session. With ``timeout`` set, raises
     ``CoordinatorBusy`` if the lock can't be acquired within that many seconds.
     """
-    acquired = _lock.acquire(timeout=timeout if timeout is not None else -1)
+    global _waiters
+    with _waiters_lock:
+        _waiters += 1
+    try:
+        acquired = _lock.acquire(timeout=timeout if timeout is not None else -1)
+    finally:
+        with _waiters_lock:
+            _waiters -= 1
     if not acquired:
         raise CoordinatorBusy(owner())
     _set_owner(owner_label)
