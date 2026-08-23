@@ -43,7 +43,7 @@ import math
 
 from .logging_config import get_logger
 from .settings_profile import _to_number
-from .shaper_fields import WRITABLE_FIELDS, field as shaper_field
+from .shaper_fields import WRITABLE_FIELDS, coerce_value, field as shaper_field
 from .stats import spearman
 
 log = get_logger("explore")
@@ -596,14 +596,21 @@ def _candidate_values(axis: dict, curve: dict | None) -> list[tuple[float, str]]
                         f"refines between {best:g} (the best measured) and {vals[j]:g}",
                     ))
 
-    # Coerce to the field's own granularity — an int lever has no use for 4213.5 — and drop
-    # untested-interval values that land back on something already tried. A *transplant* is
-    # allowed to be an already-tested value: that's the point of it.
+    # Coerce to the value the field can actually HOLD, not merely to its Python type. A lever
+    # is only as fine-grained as the firewall's own control: CoDel target and interval are
+    # selects keyed by a bare integer, so proposing 6.5ms proposes something that cannot
+    # exist — the apply quantizes it to 6 and the ledger then grades "3ms → 6.5ms" against a
+    # profile running 6ms. ``coerce_value`` is the single source of truth for what a field
+    # accepts, and is the same function the apply path puts the value through, so running the
+    # proposal through it here means the number on screen is the number that will run.
+    # Untested-interval values that land back on something already tried are then dropped; a
+    # *transplant* is allowed to be an already-tested value, which is the point of it.
     fld = shaper_field(axis["field"])
     cleaned: list[tuple[float, str]] = []
     seen: set[float] = set()
     for v, why in out:
-        val = float(round(v)) if not fld or fld.kind != "str" else float(v)
+        coerced = coerce_value(axis["field"], v)
+        val = float(coerced) if isinstance(coerced, (int, float)) else float(v)
         if val <= 0 or val in seen or (val in set(vals) and val not in proven):
             continue
         seen.add(val)

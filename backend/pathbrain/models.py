@@ -420,6 +420,14 @@ class ProfileTest(Base):
     baseline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # The benchmark run this test produced (once it starts), for linking.
     run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    # The fingerprint the firewall ACTUALLY reported after the apply, which is not always the
+    # one we asked for: ``fingerprint`` above hashes the profile we intended to reach, and the
+    # firewall echoes values in its own spelling (we write the CoDel interval as ``55``, it
+    # reports ``"55"``). Semantically identical — the verify compares numerically and passes —
+    # but a different hash, and runs are filed under the firewall's version. Recording it here
+    # makes "which profile did this test actually measure?" answerable immediately, instead of
+    # being inferred from the runs once they land.
+    reached_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class ChallengerRaceStatus(str, enum.Enum):
