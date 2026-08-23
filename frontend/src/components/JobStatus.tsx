@@ -22,6 +22,62 @@ import { fmtTimeShort } from "../utils/format";
 
 const ACTIVE_POLL_MS = 2000;
 const IDLE_POLL_MS = 10000;
+// The countdown ticks on its own clock, far faster than the poll. A progress bar that only
+// moves when a poll lands reads as frozen between updates, and "when will this be done?" is
+// the question it is standing in for anyway — 3/40 doesn't tell you whether to wait or walk
+// away. One second is the coarsest tick that still looks alive.
+const TICK_MS = 1000;
+
+/** "1m 04s" / "42s" — the countdown itself, no "~" and no "left" (the label says that). */
+function fmtCountdown(ms: number): string {
+  const secs = Math.max(0, Math.round(ms / 1000));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ${String(secs % 60).padStart(2, "0")}s`;
+  return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
+}
+
+const ETA_TITLE: Record<string, string> = {
+  scheduled: "This job is time-boxed, so this isn't an estimate — it's when the window closes.",
+  measured: "Work left x how long that unit has actually been taking on recent runs.",
+  observed: "Extrapolated from this job's own rate so far, and it self-corrects as it goes.",
+};
+
+/**
+ * The live countdown for one job.
+ *
+ * Anchored on arrival: the server sends how many milliseconds remain *as of that response*,
+ * and this converts it to a deadline on the BROWSER's clock. That keeps it immune to any
+ * skew between the two machines, and means the number keeps falling truthfully between
+ * polls instead of sitting still and then jumping. A fresh `eta_ms` re-anchors it.
+ *
+ * It floors at zero rather than going negative: an over-running job says "finishing…",
+ * which is honest about an estimate that has been overtaken rather than pretending to
+ * count into the past.
+ */
+function Countdown({ etaMs, basis }: { etaMs: number; basis?: string | null }) {
+  const [deadline, setDeadline] = useState(() => Date.now() + etaMs);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    setDeadline(Date.now() + etaMs);
+    setNow(Date.now());
+  }, [etaMs]);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), TICK_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  const left = deadline - now;
+  return (
+    <Tooltip title={ETA_TITLE[basis ?? ""] ?? "Estimated time remaining."}>
+      <Typography component="span" variant="caption" color="text.secondary">
+        {left > 0 ? `${fmtCountdown(left)} left` : "finishing…"}
+      </Typography>
+    </Tooltip>
+  );
+}
 
 function StatusIcon({ status }: { status: Job["status"] }) {
   if (status === "running") return <CircularProgress size={16} />;
@@ -88,11 +144,27 @@ function JobRow({
           sx={{ borderRadius: 1, my: 0.5 }}
         />
       )}
-      {(job.message || job.error) && (
-        <Typography variant="caption" color={job.error ? "error.main" : "text.secondary"}>
-          {job.error ?? job.message}
-          {determinate && job.status === "running" ? ` · ${pct}%` : ""}
-        </Typography>
+      {(job.message || job.error || job.status === "running") && (
+        <Stack direction="row" spacing={0.75} alignItems="baseline" flexWrap="wrap" useFlexGap>
+          <Typography variant="caption" color={job.error ? "error.main" : "text.secondary"}>
+            {job.error ?? job.message}
+            {determinate && job.status === "running" ? ` · ${pct}%` : ""}
+          </Typography>
+          {job.status === "running" && !job.error && (
+            <Typography component="span" variant="caption" color="text.secondary">
+              {job.eta_ms != null ? (
+                <>
+                  {"· "}
+                  <Countdown etaMs={job.eta_ms} basis={job.eta_basis} />
+                </>
+              ) : (
+                // Say so rather than showing nothing: "no estimate yet" is information
+                // ("it hasn't finished a unit"), an empty space is ambiguous.
+                "· no estimate yet"
+              )}
+            </Typography>
+          )}
+        </Stack>
       )}
     </Box>
   );

@@ -1,6 +1,7 @@
 """Tests for the background-job registry and the unified /api/jobs feed."""
 from __future__ import annotations
 
+import importlib
 import threading
 import time
 
@@ -144,3 +145,105 @@ def test_chunked_series_nests_under_a_parent_with_aggregate_progress(client):
             row = s.get(Run, rid)
             if row is not None:
                 s.delete(row)
+
+
+# ── ETAs: every job answers "when is this done?" ───────────────────────────────────────
+#
+# A progress bar stands in for that question and usually can't answer it — 3/40 says nothing
+# about whether to wait or walk away. Three ways to answer, and the display says which was
+# used, because they are not equally trustworthy.
+
+
+def test_a_time_boxed_job_reports_its_deadline_not_an_estimate():
+    """A duel window, a challenger race, "test current for 20 minutes" — these don't need
+    estimating. The finish time is a fact, and it must outrank any extrapolation."""
+    from datetime import datetime, timedelta, timezone
+
+    from pathbrain.api.routes_jobs import _eta_ms
+
+    started = datetime.now(timezone.utc) - timedelta(minutes=5)
+    ms, basis = _eta_ms(started_at=started, budget_s=20 * 60)
+    assert basis == "scheduled"
+    assert 14 * 60_000 < ms <= 15 * 60_000          # ~15 minutes of the window left
+
+    # …and it wins over the other two even when both are available.
+    ms2, basis2 = _eta_ms(
+        started_at=started, budget_s=20 * 60,
+        remaining_units=100, per_unit_ms=60_000, current=1, total=500,
+    )
+    assert basis2 == "scheduled" and abs(ms2 - ms) < 1_000
+
+
+def test_a_measured_unit_cost_beats_extrapolating_this_jobs_own_rate():
+    """Iterations left x how long an iteration has actually been taking is a better answer
+    than this job's rate so far, which on its first unit is barely evidence at all."""
+    from datetime import datetime, timedelta, timezone
+
+    from pathbrain.api.routes_jobs import _eta_ms
+
+    started = datetime.now(timezone.utc) - timedelta(seconds=30)
+    ms, basis = _eta_ms(
+        started_at=started, remaining_units=4, per_unit_ms=15_000, current=1, total=5
+    )
+    assert basis == "measured" and ms == 60_000
+
+
+def test_a_job_with_no_deadline_and_no_unit_cost_extrapolates_its_own_rate():
+    """The universal fallback — a re-grade counting rows has neither a deadline nor a priced
+    unit, but once it has done some it knows how fast it is going."""
+    from datetime import datetime, timedelta, timezone
+
+    from pathbrain.api.routes_jobs import _eta_ms
+
+    started = datetime.now(timezone.utc) - timedelta(seconds=10)
+    ms, basis = _eta_ms(started_at=started, current=100, total=400)
+    assert basis == "observed"
+    assert 29_000 < ms < 31_000        # 10s bought 100 of 400 → ~30s for the remaining 300
+
+
+def test_an_unestimatable_job_says_nothing_rather_than_guessing():
+    """A fabricated countdown is worse than none: it's the one number a user plans around."""
+    from pathbrain.api.routes_jobs import _eta_ms
+
+    assert _eta_ms() == (None, None)
+    # Progress that hasn't completed a single unit can't imply a rate.
+    from datetime import datetime, timezone
+    assert _eta_ms(started_at=datetime.now(timezone.utc), current=0, total=40) == (None, None)
+
+
+def test_every_job_entry_carries_the_eta_fields(client):
+    """The dropdown renders one countdown for every kind, so the shape has to be uniform —
+    present on every entry, null only when genuinely unknown."""
+    def work(job):
+        job.set_progress(1, 10, "working")
+        time.sleep(0.05)
+        return {}
+
+    jobs.start("unit-eta", "eta job", work)
+    body = client.get("/api/jobs").json()
+    assert body["jobs"], "expected at least the job just started"
+    for entry in body["jobs"]:
+        assert "eta_ms" in entry and "eta_basis" in entry
+        assert entry["eta_ms"] is None or entry["eta_ms"] >= 0
+
+
+def test_a_running_profile_test_reports_real_progress_from_its_chunks():
+    """Its progress used to live only in the stage sentence ("part 1/1 (0/5 done)"), so the
+    bar was indeterminate and there was no ETA at all. The chunks carry the counts."""
+    from pathbrain.api import routes_jobs
+
+    with session_scope() as s:
+        run = Run(status=RunStatus.COMPLETE, iterations=5, iterations_completed=3,
+                  job_group="profile_test-4321")
+        s.add(run)
+
+    routes_jobs.profile_test.current = lambda: {          # type: ignore[assignment]
+        "id": 4321, "status": "running", "iterations": 5, "label": "x",
+        "stage": "Benchmarking", "started_at": None, "created_at": None,
+    }
+    try:
+        with session_scope() as s:
+            entry = routes_jobs._active_profile_test_job(s)[0]
+        assert entry["current"] == 3 and entry["total"] == 5
+    finally:
+        importlib.reload(routes_jobs)
