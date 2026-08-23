@@ -40,10 +40,20 @@ import Typography from "@mui/material/Typography";
 import ExploreIcon from "@mui/icons-material/Explore";
 import ScienceIcon from "@mui/icons-material/Science";
 import TrendingUpIcon from "@mui/icons-material/TrendingUp";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
+import CompareArrowsIcon from "@mui/icons-material/CompareArrows";
+import TerrainIcon from "@mui/icons-material/Terrain";
 import { useTheme } from "@mui/material/styles";
 
 import { api } from "../api/client";
-import type { ExploreCandidate, ExploreCurve, ExploreLandscape } from "../api/types";
+import type {
+  ExploreBasin,
+  ExploreCandidate,
+  ExploreConditionedCurve,
+  ExploreCurve,
+  ExploreLandscape,
+  ExploreMatchedPairs,
+} from "../api/types";
 import { fmtNum } from "../utils/format";
 
 const SHAPE_TIP: Record<string, string> = {
@@ -71,9 +81,24 @@ const fmtValue = (v: number, unit: string | null) =>
 // One lever's response curve. The chart is the point of this page: a lever can be flat on
 // its correlation and still have an obvious peak in the middle, and no coefficient can say
 // "best at 3000" — only the shape can.
-function CurveCard({ curve }: { curve: ExploreCurve }) {
+function CurveCard({
+  curve,
+  conditioned,
+  referenceName,
+}: {
+  curve: ExploreCurve;
+  conditioned?: ExploreConditionedCurve;
+  referenceName?: string;
+}) {
   const theme = useTheme();
-  const data = curve.curve.map((p) => ({ ...p, label: fmtValue(p.value, curve.unit) }));
+  // Both series on one pair of axes, because the comparison IS the finding: where they
+  // disagree, the marginal curve is describing a different neighbourhood than yours.
+  const near = new Map((conditioned?.curve ?? []).map((p) => [p.value, p.overall]));
+  const data = curve.curve.map((p) => ({
+    ...p,
+    label: fmtValue(p.value, curve.unit),
+    conditioned: near.get(p.value) ?? null,
+  }));
   return (
     <Card variant="outlined">
       <CardContent sx={{ pb: 1 }}>
@@ -84,12 +109,29 @@ function CurveCard({ curve }: { curve: ExploreCurve }) {
           <Tooltip title={SHAPE_TIP[curve.shape] ?? curve.shape}>
             <Chip size="small" label={curve.shape} color={SHAPE_COLOR[curve.shape] ?? "default"} />
           </Tooltip>
+          {curve.confounded && (
+            <Tooltip
+              title={
+                "Some points on this curve are measuring two levers at once — the profiles " +
+                "sitting at those values also differ systematically in another lever. " +
+                (curve.imbalance ?? []).map((r) => r.detail).join(" ")
+              }
+            >
+              <Chip size="small" color="warning" variant="outlined" icon={<WarningAmberIcon />} label="confounded" />
+            </Tooltip>
+          )}
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
           Best at <b>{fmtValue(curve.best_value, curve.unit)}</b> ({fmtNum(curve.best_overall, 1)})
           {curve.best_at_edge ? " — the end of the tested range, so the optimum may lie beyond it" : ""}
           {curve.spearman != null ? ` · ρ ${curve.spearman.toFixed(2)}` : ""}
         </Typography>
+        {!!conditioned && (
+          <Typography variant="caption" sx={{ display: "block", mb: 0.5, color: "success.main" }}>
+            Dashed: only profiles otherwise like {referenceName ?? "the reference"} — the
+            neighbourhood you'd actually be moving through.
+          </Typography>
+        )}
         <Box sx={{ height: 150 }}>
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
@@ -112,10 +154,23 @@ function CurveCard({ curve }: { curve: ExploreCurve }) {
               <Line
                 type="monotone"
                 dataKey="overall"
+                name="all profiles"
                 stroke={theme.palette.primary.main}
                 strokeWidth={2}
                 dot={{ r: 3 }}
               />
+              {!!conditioned && (
+                <Line
+                  type="monotone"
+                  dataKey="conditioned"
+                  name={`near ${referenceName ?? "the reference"}`}
+                  stroke={theme.palette.success.main}
+                  strokeWidth={2}
+                  strokeDasharray="5 3"
+                  connectNulls
+                  dot={{ r: 3 }}
+                />
+              )}
             </LineChart>
           </ResponsiveContainer>
         </Box>
@@ -185,6 +240,23 @@ function CandidateCard({
           </Typography>
         ))}
 
+        <Stack direction="row" spacing={0.75} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
+          {candidate.evidence.includes("measured directly on a matched pair") && (
+            <Tooltip title="This exact move has been made before with everything else held identical, so the predicted change is a controlled measurement rather than an estimate.">
+              <Chip size="small" color="success" variant="outlined" label="backed by a matched pair" sx={{ height: 20 }} />
+            </Tooltip>
+          )}
+          {candidate.evidence.some((e) => e.startsWith("estimated")) && (
+            <Tooltip title="No controlled comparison exists for this move, so the change is estimated from the marginal curve — which averages over profiles that differ in other levers too. Treat it as a guess.">
+              <Chip size="small" variant="outlined" label="estimated from the curve" sx={{ height: 20 }} />
+            </Tooltip>
+          )}
+          {candidate.multi_lever && (
+            <Tooltip title="Moves two levers at once. The prediction adds their separate effects, and the local-optima analysis below is the demonstration that they may not add — so the band is deliberately wider.">
+              <Chip size="small" color="warning" variant="outlined" icon={<WarningAmberIcon />} label="two levers — effects assumed to add" sx={{ height: 20 }} />
+            </Tooltip>
+          )}
+        </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
           Starting from{" "}
           <Link
@@ -234,6 +306,157 @@ function CandidateCard({
             </Box>
           )}
         </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// The strongest evidence the record can give: profiles differing in exactly ONE lever.
+// Everything else is identical by construction, so the difference in Overall is that
+// lever's effect with no confounding — a controlled experiment you already ran without
+// meaning to. Where this disagrees with the marginal curve above, believe this.
+function MatchedPairsCard({ rows }: { rows: ExploreMatchedPairs[] }) {
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <CompareArrowsIcon color="primary" />
+          <Typography variant="h6">What changing one lever actually did</Typography>
+        </Stack>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+          Every pair of profiles that differs in <b>exactly one lever</b> — everything else
+          identical, so the gap between them is that lever's effect with nothing else mixed
+          in. This is a controlled experiment already sitting in your record, and where it
+          disagrees with a curve above, this is the one to believe: the curve averages over
+          whatever the other levers happened to be, these hold them fixed.
+        </Typography>
+        {rows.length === 0 ? (
+          <Alert severity="info">
+            No two profiles differ in exactly one lever, so the record contains no controlled
+            comparison. Nothing can de-confound that except running one — measure a profile
+            that changes a single setting from one you already have.
+          </Alert>
+        ) : (
+          <Stack spacing={1.5}>
+            {rows.map((r) => (
+              <Box key={r.key}>
+                <Typography variant="subtitle2">
+                  {r.pipe} · {r.field_label}
+                  <Typography component="span" variant="caption" color="text.secondary">
+                    {" "}
+                    — {r.total_pairs} matched pair{r.total_pairs === 1 ? "" : "s"}
+                  </Typography>
+                </Typography>
+                <Stack spacing={0.25} sx={{ mt: 0.25 }}>
+                  {r.transitions.map((t) => {
+                    const better = t.median_delta > 0;
+                    return (
+                      <Stack
+                        key={`${t.from}-${t.to}`}
+                        direction="row"
+                        spacing={1}
+                        alignItems="baseline"
+                        flexWrap="wrap"
+                        useFlexGap
+                      >
+                        <Typography variant="body2" sx={{ fontFamily: "monospace", minWidth: 150 }}>
+                          {fmtValue(t.from, r.unit)} → {fmtValue(t.to, r.unit)}
+                        </Typography>
+                        <Typography
+                          variant="body2"
+                          sx={{ color: better ? "success.main" : "error.main", fontWeight: 600 }}
+                        >
+                          {better ? "+" : ""}
+                          {fmtNum(t.median_delta, 2)}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          over {t.pairs} pair{t.pairs === 1 ? "" : "s"}
+                          {t.pairs > 1 ? ` (${fmtNum(t.worst, 2)} … ${fmtNum(t.best, 2)})` : ""}
+                        </Typography>
+                        {t.consistent && t.pairs > 1 && (
+                          <Tooltip title="Every matched pair agreed on the direction — not an average over a mix of outcomes.">
+                            <Chip size="small" color="success" variant="outlined" label="every pair agrees" sx={{ height: 18 }} />
+                          </Tooltip>
+                        )}
+                      </Stack>
+                    );
+                  })}
+                </Stack>
+              </Box>
+            ))}
+          </Stack>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// Local optima under one-lever moves. If there were one, marginal curves would describe it
+// and tuning one setting at a time would find it. Several means the levers are coupled.
+function BasinsCard({ basins, maxOther }: { basins: ExploreBasin[]; maxOther?: number }) {
+  const navigate = useNavigate();
+  const separated = basins.filter((b) => (b.levers_from_better ?? 0) >= 2).length;
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <TerrainIcon color="primary" />
+          <Typography variant="h6">Local optima</Typography>
+        </Stack>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+          Profiles that <b>no measured one-lever change improves on</b>. If the surface had a
+          single optimum, the curves above would describe it and moving one setting at a time
+          from anywhere would reach it. Several separated basins mean the levers are{" "}
+          <b>coupled</b> — each optimum is a combination, tuning one setting at a time gets
+          stuck in whichever basin you started in, and a curve that averages across basins
+          describes none of them.
+        </Typography>
+        {basins.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            No profile has a measured one-lever sibling yet, so nothing can be called a peak.
+          </Typography>
+        ) : (
+          <>
+            {separated > 0 && (
+              <Alert severity="warning" sx={{ mb: 1.5 }}>
+                {separated + 1} optima sit two or more levers apart — no single change gets
+                you from one to another. Marginal curves cannot describe this surface, and
+                one-lever-at-a-time search will not cross between them.
+              </Alert>
+            )}
+            <Stack spacing={0.5}>
+              {basins.map((b, i) => (
+                <Stack key={b.fingerprint} direction="row" spacing={1} alignItems="baseline" flexWrap="wrap" useFlexGap>
+                  <Chip size="small" label={i === 0 ? "best" : `#${i + 1}`} color={i === 0 ? "success" : "default"} sx={{ height: 20 }} />
+                  <Link
+                    component="button"
+                    underline="hover"
+                    onClick={() => navigate(`/profiles/${encodeURIComponent(b.fingerprint)}`)}
+                    sx={{ font: "inherit", textAlign: "left" }}
+                  >
+                    {b.name || b.label}
+                  </Link>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                    {fmtNum(b.overall, 1)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    beats all {b.siblings} measured one-lever variant{b.siblings === 1 ? "" : "s"}
+                    {b.levers_from_better != null
+                      ? ` · ${b.levers_from_better} lever${b.levers_from_better === 1 ? "" : "s"} from a better one`
+                      : ""}
+                  </Typography>
+                </Stack>
+              ))}
+            </Stack>
+            {!!maxOther && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                The dashed curves above are conditioned the same way — profiles differing from
+                the reference in the plotted lever plus at most {maxOther} other.
+              </Typography>
+            )}
+          </>
+        )}
       </CardContent>
     </Card>
   );
@@ -358,9 +581,13 @@ export default function Explore() {
             <CardContent>
               <Typography variant="h6">What each lever does</Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-                Median Overall at each value actually measured, per lever, with the Download
-                and Upload legs kept separate — they're different knobs and they don't
-                behave the same. The dashed line marks the best value tested.
+                Solid: median Overall at each value measured, across <i>all</i> profiles —
+                which marginalizes over whatever the other levers happened to be, and so
+                answers "how do profiles with this value score?". Dashed: the same lever
+                restricted to profiles otherwise like the reference — "what happens if I
+                change <i>this</i> profile", which is usually the question you're asking.
+                Where they disagree, the lever is confounded and the dashed line is the one
+                about your neighbourhood. Download and Upload are kept separate throughout.
               </Typography>
               <Box
                 sx={{
@@ -370,11 +597,20 @@ export default function Explore() {
                 }}
               >
                 {data.curves.map((c) => (
-                  <CurveCard key={c.key} curve={c} />
+                  <CurveCard
+                    key={c.key}
+                    curve={c}
+                    conditioned={data.conditioned_curves.find((cc) => cc.key === c.key)}
+                    referenceName={data.reference?.name || data.reference?.label}
+                  />
                 ))}
               </Box>
             </CardContent>
           </Card>
+
+          {/* ── De-confounded evidence ─────────────────────────────────────────── */}
+          <MatchedPairsCard rows={data.matched_pairs} />
+          <BasinsCard basins={data.basins} maxOther={data.condition_max_other_changes} />
 
           {/* ── Holes in coverage ──────────────────────────────────────────────── */}
           <Card sx={{ mb: 2 }}>
