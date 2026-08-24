@@ -2010,6 +2010,10 @@ export interface ExploreGap {
   suggest: number;
   width_fraction: number | null;
   detail: string;
+  // The profile that would fill the hole: the best measured one with this single lever
+  // moved to `suggest`, priced exactly like a headline candidate so the row can post it.
+  // Absent only when no measured profile carries this lever.
+  candidate?: ExploreCandidate;
 }
 
 export interface ExploreCandidate {
@@ -2041,6 +2045,9 @@ export interface ExploreCandidate {
   summary: string;
   // Per-pipe writable overrides, ready to POST to /settings/test-settings.
   settings: Record<string, unknown>[];
+  // Only on a gap's variant: every candidate parent has already been to this value, so the
+  // hole is closed. Flagged rather than dropped — "already measured" is a real answer.
+  already_measured?: boolean;
 }
 
 export interface ExplorePoint {

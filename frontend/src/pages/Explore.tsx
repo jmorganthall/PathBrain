@@ -71,6 +71,7 @@ import type {
   ExploreCandidate,
   ExploreConditionedCurve,
   ExploreCurve,
+  ExploreGap,
   ExploreLandscape,
   ExploreLedger,
   ExploreMatchedPairs,
@@ -464,6 +465,100 @@ function CandidateCard({
 }
 
 
+// One hole in coverage — and the profile that would fill it. A gap names a *value* nobody
+// has measured, which is a finding and not something you can run: turning it into a
+// profile is the move a person makes by hand, taking the best profile measured and setting
+// that one lever to the untested value. The backend attaches exactly that variant, priced
+// by the same machinery as a ranked candidate, so this row posts the same payload.
+function GapRow({
+  gap,
+  first,
+  onTest,
+  testing,
+  quickIterations,
+  minIterations,
+}: {
+  gap: ExploreGap;
+  first: boolean;
+  onTest: (c: ExploreCandidate, iterations: number | undefined, key: string) => void;
+  testing: boolean;
+  quickIterations: number;
+  minIterations: number | null;
+}) {
+  const candidate = gap.candidate;
+  const key = `gap:${gap.key}:${gap.kind}`;
+  const closed = candidate?.already_measured;
+  return (
+    <Box sx={{ pt: first ? 0 : 0.75 }}>
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Chip
+          size="small"
+          label={gap.kind}
+          color={gap.kind === "edge" ? "warning" : "default"}
+          variant={gap.kind === "edge" ? "filled" : "outlined"}
+          sx={{ height: 20 }}
+        />
+        <Typography variant="body2">
+          {gap.pipe} {gap.field_label}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          try {fmtValue(gap.suggest, gap.unit)}
+        </Typography>
+        <Box sx={{ flexGrow: 1 }} />
+        {candidate && !closed && (
+          <>
+            <Tooltip
+              title={`Measure it: ${candidate.parent.name || candidate.parent.label} with ${gap.pipe} ${gap.field_label} set to ${fmtValue(gap.suggest, gap.unit)} — ${quickIterations} iterations, then your settings are restored. Predicted ${fmtNum(candidate.predicted, 1)} ± ${fmtNum(candidate.uncertainty, 1)}.`}
+            >
+              <span>
+                <Button
+                  size="small"
+                  variant="contained"
+                  startIcon={testing ? <CircularProgress size={14} /> : <BoltIcon />}
+                  disabled={testing}
+                  onClick={() => onTest(candidate, quickIterations, key)}
+                >
+                  Test now ({quickIterations})
+                </Button>
+              </span>
+            </Tooltip>
+            <Tooltip
+              title={`Run the full ${minIterations ?? "confidence"} iterations, so the value can be ranked against the field rather than read as an early signal.`}
+            >
+              <span>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<ScienceIcon />}
+                  disabled={testing}
+                  onClick={() => onTest(candidate, undefined, key)}
+                >
+                  Test to minimum
+                </Button>
+              </span>
+            </Tooltip>
+          </>
+        )}
+        {closed && (
+          <Tooltip title="Every profile worth branching from has already run this value, so there is no new profile to make from it — the hole is closed even though the lever still shows a blank.">
+            <Chip size="small" variant="outlined" label="already measured" sx={{ height: 20 }} />
+          </Tooltip>
+        )}
+      </Stack>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+        {gap.detail}
+      </Typography>
+      {candidate && !closed && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+          Would run <b>{candidate.parent.name || candidate.parent.label}</b> (Overall{" "}
+          {fmtNum(candidate.parent.overall, 1)}) with that one lever moved — predicted{" "}
+          {fmtNum(candidate.predicted, 1)} ± {fmtNum(candidate.uncertainty, 1)}, upside{" "}
+          {fmtNum(candidate.upside, 1)}.
+        </Typography>
+      )}
+    </Box>
+  );
+}
 // The strongest evidence the record can give: profiles differing in exactly ONE lever.
 // Everything else is identical by construction, so the difference in Overall is that
 // lever's effect with no confounding — a controlled experiment you already ran without
@@ -1110,6 +1205,10 @@ export default function Explore() {
   const [ledger, setLedger] = useState<ExploreLedger | null>(null);
   const [snack, setSnack] = useState<string | null>(null);
   const [gapPage, setGapPage] = useState(0);
+  // Both test lengths come from the server's own settings, so the buttons on a hole and on
+  // a candidate can never promise different run counts.
+  const quickIterations = ledger?.quick_iterations ?? 5;
+  const minIterations = ledger?.min_iterations ?? null;
   const [allCurves, setAllCurves] = useState(false);
 
   // Lead with the levers whose measured values actually spread the Overall — a flat lever
@@ -1151,8 +1250,11 @@ export default function Explore() {
   // Start a measurement — and record the claim it makes first, so it can be graded later.
   // `iterations` undefined = top up to the confidence minimum; a number = run exactly that.
   const test = useCallback(
-    async (c: ExploreCandidate, iterations?: number) => {
-      const id = c.changes.map((ch) => ch.key).join("|");
+    async (c: ExploreCandidate, iterations?: number, key?: string) => {
+      // The same lever move can appear twice on the page — once as a ranked candidate and
+      // once as the variant that fills a hole — so the busy marker is keyed by where it was
+      // pressed, not only by what it changes.
+      const id = key ?? c.changes.map((ch) => ch.key).join("|");
       setTesting(id);
       try {
         const label = c.changes
@@ -1268,8 +1370,8 @@ export default function Explore() {
                       bestOverall={data.best_overall}
                       onTest={(x, iterations) => void test(x, iterations)}
                       testing={testing === c.changes.map((ch) => ch.key).join("|")}
-                      quickIterations={ledger?.quick_iterations ?? 5}
-                      minIterations={ledger?.min_iterations ?? null}
+                      quickIterations={quickIterations}
+                      minIterations={minIterations}
                     />
                   ))}
                 </Stack>
@@ -1342,26 +1444,15 @@ export default function Explore() {
                   {data.gaps
                     .slice(gapPage * ROWS_PER_PAGE, gapPage * ROWS_PER_PAGE + ROWS_PER_PAGE)
                     .map((g, i) => (
-                    <Box key={`${g.key}-${g.kind}-${i}`} sx={{ pt: i ? 0.75 : 0 }}>
-                      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                        <Chip
-                          size="small"
-                          label={g.kind}
-                          color={g.kind === "edge" ? "warning" : "default"}
-                          variant={g.kind === "edge" ? "filled" : "outlined"}
-                          sx={{ height: 20 }}
-                        />
-                        <Typography variant="body2">
-                          {g.pipe} {g.field_label}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          try {fmtValue(g.suggest, g.unit)}
-                        </Typography>
-                      </Stack>
-                      <Typography variant="caption" color="text.secondary">
-                        {g.detail}
-                      </Typography>
-                    </Box>
+                    <GapRow
+                      key={`${g.key}-${g.kind}-${i}`}
+                      gap={g}
+                      first={i === 0}
+                      onTest={test}
+                      testing={testing === `gap:${g.key}:${g.kind}`}
+                      quickIterations={quickIterations}
+                      minIterations={minIterations}
+                    />
                   ))}
                 </Stack>
               )}
