@@ -19,15 +19,50 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import baseline_test, challenger, current_test, duel, jobs, profile_test, refresh, sweep
+from .. import (
+    baseline_test,
+    challenger,
+    current_test,
+    duel,
+    jobs,
+    profile_names,
+    profile_test,
+    refresh,
+    sweep,
+)
 from ..database import get_session
-from ..models import Experiment, ExperimentStatus, Run, RunStatus, Sweep
+from ..logging_config import get_logger
+from ..models import Experiment, ExperimentStatus, Run, RunStatus, Sweep, SweepStatus
 
+log = get_logger("api.jobs")
 router = APIRouter()
 
 
 def _iso(dt) -> str | None:
     return dt.isoformat() if dt else None
+
+
+def _call_sign(session: Session, fingerprint: str | None) -> str | None:
+    """The profile's **call sign** ("Speedy Sloth"), or None.
+
+    A job about a profile is read in a 380px dropdown, and the technical label is a full
+    settings summary — *"Download: 880Mbit q3550 t3 i60 ecn | Upload: 880Mbit q500 t3 i60
+    ecn"* — which wraps over three lines and, worse, doesn't say **which profile** without
+    the reader decoding it. That's exactly the problem call signs exist to solve, and every
+    other view already leads with one; the jobs feed was the last place still printing raw
+    settings at people.
+
+    Resolved by **fingerprint**, like the duel tape and the standings, so a profile renamed
+    since the job started reads under today's name rather than a label frozen at launch.
+    Best-effort: naming must never be the reason the jobs feed fails.
+    """
+    if not fingerprint:
+        return None
+    try:
+        return profile_names.names_for(session, [fingerprint]).get(fingerprint)
+    except Exception:  # noqa: BLE001 — a cosmetic lookup can't break the feed
+        log.debug("Jobs feed: could not resolve a call sign", exc_info=True)
+        return None
 
 
 def _per_iteration_estimate(session: Session) -> float | None:
@@ -71,6 +106,7 @@ def _eta_ms(
     per_unit_ms: float | None = None,
     current: float | None = None,
     total: float | None = None,
+    queued: bool = False,
 ) -> tuple[float | None, str | None]:
     """``(milliseconds remaining, how we know)`` for any job — one rule for every kind.
 
@@ -87,12 +123,30 @@ def _eta_ms(
       elapsed ÷ done × remaining. Needs one completed unit before it says anything, and
       it self-corrects as the job goes.
 
+    A **queued** job — one that exists but is still waiting on the coordination lock — gets
+    none of those, because all three answer "when does this finish?" and that is precisely
+    what nobody knows: the job's clock has not started, and how long the current lock holder
+    keeps running is its own open question. What *is* known is how much work the job will be
+    **once it starts**, so that is what ``queued`` reports: a duration of work, not a
+    countdown, flagged so the display shows it standing still. Counting it down from now is
+    the one answer guaranteed to be wrong — every second spent waiting would silently eat an
+    estimate of time that hasn't begun to elapse, and a long enough queue would show
+    "finishing…" for a job that never ran a single iteration.
+
     ``None`` when a job genuinely can't be estimated (no deadline, no unit cost, no progress
     yet) — the display then says so, because a fabricated countdown is worse than no
     countdown: it is the one number a user would actually plan around.
     """
     now = datetime.now(timezone.utc)
     start = _as_dt(started_at)
+
+    if queued:
+        # Not started: report the size of the work, never a countdown (see the docstring).
+        if budget_s:
+            return max(0.0, float(budget_s) * 1000.0), "queued"
+        if remaining_units is not None and per_unit_ms:
+            return max(0.0, float(remaining_units) * float(per_unit_ms)), "queued"
+        return None, None
 
     if budget_s and start is not None:
         left = (start + timedelta(seconds=float(budget_s)) - now).total_seconds() * 1000.0
@@ -109,7 +163,7 @@ def _eta_ms(
     return None, None
 
 
-def _with_eta(entry: dict, eta: tuple[float | None, str | None]) -> dict:
+def _with_eta(entry: dict, eta: tuple[float | None, str | None], *, queued: bool = False) -> dict:
     """Attach the ETA to a job entry.
 
     Deliberately a **number of milliseconds remaining**, not a formatted string and not an
@@ -121,6 +175,11 @@ def _with_eta(entry: dict, eta: tuple[float | None, str | None]) -> dict:
     ms, basis = eta
     entry["eta_ms"] = None if ms is None else round(ms)
     entry["eta_basis"] = basis
+    # Whether the job has started is stated by the caller, never inferred from the basis: a
+    # queued job whose work can't be priced at all has no basis to read it off, and that is
+    # exactly the job whose (absent) countdown would otherwise look like a running one's.
+    # It decides whether the client ticks the number or shows it standing still.
+    entry["queued"] = queued
     return entry
 
 
@@ -132,13 +191,18 @@ def _run_entry(r: Run, est: float | None, holder: str | None, parent_id: str | N
         message = f"iteration {min(done + 1, total)}/{total}"
     else:  # PENDING — queued behind the coordination lock; say what it's waiting on.
         message = f"queued — waiting for {holder}" if holder else "queued"
+    queued = r.status != RunStatus.RUNNING
     eta = _eta_ms(
-        started_at=r.started_at or r.created_at,
-        remaining_units=max(0, total - done) if r.status == RunStatus.RUNNING else None,
+        # Only a run that has actually started has a clock to count down: `started_at` is
+        # written at the PENDING → RUNNING transition, so falling back to `created_at` here
+        # would time a queued run from the moment it joined the queue.
+        started_at=r.started_at,
+        remaining_units=max(0, total - done),
         per_unit_ms=est,
         current=done,
         total=total,
-    ) if r.status == RunStatus.RUNNING else (None, None)
+        queued=queued,
+    )
     return _with_eta({
         "id": f"run-{r.id}",
         "kind": "run",
@@ -156,7 +220,7 @@ def _run_entry(r: Run, est: float | None, holder: str | None, parent_id: str | N
         "cancel_url": f"/runs/{r.id}/cancel",
         "started_at": _iso(r.started_at or r.created_at),
         "finished_at": None,
-    }, eta)
+    }, eta, queued=queued)
 
 
 def _series_parent(session: Session, group: str, children: list[Run]) -> dict:
@@ -176,12 +240,16 @@ def _series_parent(session: Session, group: str, children: list[Run]) -> dict:
     msg = f"{done}/{total} iteration(s)" if total else f"{done} iteration(s)"
     started = children[0].started_at or children[0].created_at if children else None
     est = _per_iteration_estimate(session)
+    # The series is queued until one of its chunks is actually running — the whole series
+    # waits on a single lock hold, so no chunk starts before the series does.
+    queued = not any(c.status == RunStatus.RUNNING for c in children)
     eta = _eta_ms(
-        started_at=started,
+        started_at=next((c.started_at for c in children if c.status == RunStatus.RUNNING), None),
         remaining_units=max(0, (total or 0) - int(done)) if total else None,
         per_unit_ms=est,
         current=int(done),
         total=total,
+        queued=queued,
     )
     return _with_eta({
         "id": group,
@@ -198,7 +266,7 @@ def _series_parent(session: Session, group: str, children: list[Run]) -> dict:
         "cancel_url": f"/runs/{active_child}/cancel" if active_child else None,
         "started_at": _iso(started),
         "finished_at": None,
-    }, eta)
+    }, eta, queued=queued)
 
 
 def _active_run_jobs(session: Session) -> list[dict]:
@@ -237,7 +305,8 @@ def _active_sweep_job(session: Session) -> list[dict]:
     if sw is None:
         return []
     done, total = sw.completed_variants or 0, sw.total_variants or 0
-    eta = _eta_ms(started_at=sw.started_at or sw.created_at, current=done, total=total)
+    queued = sw.status == SweepStatus.PENDING
+    eta = _eta_ms(started_at=sw.started_at, current=done, total=total, queued=queued)
     return [
         _with_eta({
             "id": f"sweep-{sw.id}",
@@ -246,14 +315,18 @@ def _active_sweep_job(session: Session) -> list[dict]:
             "status": "running",
             "current": done,
             "total": total,
-            "message": f"variant {min(done + 1, total)}/{total}" if total else "starting…",
+            "message": (
+                "queued — waiting for the pipeline"
+                if queued
+                else f"variant {min(done + 1, total)}/{total}" if total else "starting…"
+            ),
             "error": None,
             "href": "/sweep",
             "parent_id": None,
             "cancel_url": f"/sweep/{sw.id}/cancel",
             "started_at": _iso(sw.started_at or sw.created_at),
             "finished_at": None,
-        }, eta)
+        }, eta, queued=queued)
     ]
 
 
@@ -265,7 +338,11 @@ def _active_profile_test_job(session: Session) -> list[dict]:
     if not t:
         return []
     status = t.get("status")
-    label = f"Test to minimum: {t.get('label') or t.get('fingerprint')}"
+    # The call sign names the profile under test; the technical settings summary rides along
+    # as `detail` (a tooltip) rather than in the line, since it is what made this unreadable.
+    name = _call_sign(session, t.get("fingerprint"))
+    detail = t.get("label")
+    label = f"Test to minimum: {name or detail or t.get('fingerprint')}"
     if status in ("running", "pending"):
         # Progress lived only in the stage sentence ("part 1/1 (0/5 done)"), so the bar was
         # indeterminate and there was no ETA at all. The test's chunks carry
@@ -278,17 +355,19 @@ def _active_profile_test_job(session: Session) -> list[dict]:
         ).scalar_one()
         total = t.get("iterations")
         eta = _eta_ms(
-            started_at=t.get("started_at") or t.get("created_at"),
+            started_at=t.get("started_at"),
             remaining_units=max(0, (total or 0) - int(done)) if total else None,
             per_unit_ms=_per_iteration_estimate(session),
             current=int(done),
             total=total,
+            queued=status == "pending",
         )
         return [
             _with_eta({
                 "id": f"profile_test-{t['id']}",
                 "kind": "profile_test",
                 "label": label,
+                "detail": detail,
                 "status": "running",
                 "current": int(done),
                 "total": total,
@@ -300,7 +379,7 @@ def _active_profile_test_job(session: Session) -> list[dict]:
                 "cancel_url": "/settings/test-profile/cancel",
                 "started_at": t.get("started_at") or t.get("created_at"),
                 "finished_at": None,
-            }, eta)
+            }, eta, queued=status == "pending")
         ]
     # Finished — keep it in the feed for a few minutes so the outcome is readable.
     if not _finished_recently(t.get("finished_at"), minutes=5):
@@ -312,6 +391,7 @@ def _active_profile_test_job(session: Session) -> list[dict]:
             "id": f"profile_test-{t['id']}",
             "kind": "profile_test",
             "label": label,
+            "detail": detail,
             "status": "failed" if failed else "succeeded",
             "current": None,
             "total": t.get("iterations"),
@@ -349,7 +429,7 @@ def _baseline_per_iteration() -> float | None:
     return None
 
 
-def _active_current_test_job() -> list[dict]:
+def _active_current_test_job(session: Session) -> list[dict]:
     if not current_test.active():
         return []
     t = current_test.current()
@@ -357,14 +437,14 @@ def _active_current_test_job() -> list[dict]:
         return []
     mins = int((t.get("duration_s") or 0) // 60)
     collected = t.get("iterations_run") or 0
-    eta = _eta_ms(
-        started_at=t.get("started_at") or t.get("created_at"), budget_s=t.get("duration_s")
-    )
+    queued = t.get("status") == "pending"
+    eta = _eta_ms(started_at=t.get("started_at"), budget_s=t.get("duration_s"), queued=queued)
     return [
         _with_eta({
             "id": f"current_test-{t['id']}",
             "kind": "current_test",
-            "label": f"Test current: {t.get('label') or 'live profile'}",
+            "label": f"Test current: {_call_sign(session, t.get('fingerprint')) or t.get('label') or 'live profile'}",
+            "detail": t.get("label"),
             "status": "running",
             "current": collected,
             "total": None,
@@ -375,7 +455,7 @@ def _active_current_test_job() -> list[dict]:
             "cancel_url": "/current/test/cancel",
             "started_at": t.get("started_at") or t.get("created_at"),
             "finished_at": None,
-        }, eta)
+        }, eta, queued=queued)
     ]
 
 
@@ -391,11 +471,12 @@ def _active_baseline_test_job() -> list[dict]:
         done_iters = t.get("iterations_run") or 0
         total_iters = t.get("iterations")
         eta = _eta_ms(
-            started_at=t.get("started_at") or t.get("created_at"),
+            started_at=t.get("started_at"),
             remaining_units=max(0, (total_iters or 0) - done_iters) if total_iters else None,
             per_unit_ms=_baseline_per_iteration(),
             current=done_iters,
             total=total_iters,
+            queued=status == "pending",
         )
         return [
             _with_eta({
@@ -412,7 +493,7 @@ def _active_baseline_test_job() -> list[dict]:
                 "cancel_url": "/baseline/test/cancel",
                 "started_at": t.get("started_at") or t.get("created_at"),
                 "finished_at": None,
-            }, eta)
+            }, eta, queued=status == "pending")
         ]
     if not _finished_recently(t.get("finished_at"), minutes=5):
         return []
@@ -489,24 +570,27 @@ def _active_experiment_job(session: Session) -> list[dict]:
     ]
 
 
-def _active_challenger_job() -> list[dict]:
+def _active_challenger_job(session: Session) -> list[dict]:
     if not challenger.active():
         return []
     r = challenger.current()
     if not r or r.get("status") not in ("running", "pending"):
         return []
     n_elim = len(r.get("eliminated") or [])
-    leader = r.get("leader_label") or "…"
+    # This is the line the whole feed was judged on: "leader Download: 880Mbit q3550 t3 i60
+    # ecn | Upload: 880Mbit q500 t3 i60 ecn" is three wrapped lines that never say *which*
+    # profile is leading. "leader Speedy Sloth" does, in two words.
+    leader = _call_sign(session, r.get("leader_fingerprint")) or r.get("leader_label") or "…"
     n_refresh = r.get("incumbent_refreshes") or 0
     refresh_note = f" · {n_refresh} incumbent refresh{'es' if n_refresh != 1 else ''}" if n_refresh else ""
-    eta = _eta_ms(
-        started_at=r.get("started_at") or r.get("created_at"), budget_s=r.get("time_budget_s")
-    )
+    queued = r.get("status") == "pending"
+    eta = _eta_ms(started_at=r.get("started_at"), budget_s=r.get("time_budget_s"), queued=queued)
     return [
         _with_eta({
             "id": f"challenger-{r['id']}",
             "kind": "challenger",
             "label": "Challenger race",
+            "detail": r.get("leader_label"),
             "status": "running",
             "current": r.get("iterations_run") or 0,
             "total": None,
@@ -517,29 +601,29 @@ def _active_challenger_job() -> list[dict]:
             "cancel_url": "/settings/race/cancel",
             "started_at": r.get("started_at") or r.get("created_at"),
             "finished_at": None,
-        }, eta)
+        }, eta, queued=queued)
     ]
 
 
-def _active_refresh_job() -> list[dict]:
+def _active_refresh_job(session: Session) -> list[dict]:
     if not refresh.active():
         return []
     r = refresh.current()
     if not r or r.get("status") not in ("running", "pending"):
         return []
     done, total = r.get("profiles_done") or 0, r.get("profiles_total") or 0
-    cur = r.get("current_label")
+    cur = _call_sign(session, r.get("current_fingerprint")) or r.get("current_label")
     message = f"profile {min(done + 1, total)}/{total}" if total else "starting…"
     if cur:
         message += f" · {cur}"
-    eta = _eta_ms(
-        started_at=r.get("started_at") or r.get("created_at"), current=done, total=total
-    )
+    queued = r.get("status") == "pending"
+    eta = _eta_ms(started_at=r.get("started_at"), current=done, total=total, queued=queued)
     return [
         _with_eta({
             "id": f"refresh-{r['id']}",
             "kind": "refresh",
             "label": "Re-run all profiles",
+            "detail": r.get("current_label"),
             "status": "running",
             "current": done,
             "total": total,
@@ -550,7 +634,7 @@ def _active_refresh_job() -> list[dict]:
             "cancel_url": "/settings/refresh/cancel",
             "started_at": r.get("started_at") or r.get("created_at"),
             "finished_at": None,
-        }, eta)
+        }, eta, queued=queued)
     ]
 
 
@@ -561,9 +645,8 @@ def _active_duel_job() -> list[dict]:
     if not d or d.get("status") not in ("running", "pending"):
         return []
     n_verdicts = len(d.get("matchups") or [])
-    eta = _eta_ms(
-        started_at=d.get("started_at") or d.get("created_at"), budget_s=d.get("duration_s")
-    )
+    queued = d.get("status") == "pending"
+    eta = _eta_ms(started_at=d.get("started_at"), budget_s=d.get("duration_s"), queued=queued)
     return [
         _with_eta({
             # id matches the chunks' job_group so they nest under this parent line.
@@ -580,7 +663,7 @@ def _active_duel_job() -> list[dict]:
             "cancel_url": "/duel/cancel",
             "started_at": d.get("started_at") or d.get("created_at"),
             "finished_at": None,
-        }, eta)
+        }, eta, queued=queued)
     ]
 
 
@@ -596,11 +679,11 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     adapters += _active_run_jobs(session)
     adapters += _active_sweep_job(session)
     adapters += _active_profile_test_job(session)
-    adapters += _active_current_test_job()
+    adapters += _active_current_test_job(session)
     adapters += _active_baseline_test_job()
     adapters += _active_experiment_job(session)
-    adapters += _active_challenger_job()
-    adapters += _active_refresh_job()
+    adapters += _active_challenger_job(session)
+    adapters += _active_refresh_job(session)
     adapters += _active_duel_job()
 
     # In-process score jobs (re-grade/rescore/rederive) are always top-level with no cancel.
@@ -618,13 +701,20 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     feed = adapters + inproc
     # One uniform shape for the whole feed: the dropdown renders a countdown for every entry,
     # so `eta_ms` must always be *present* (null where unknown or already finished) rather
-    # than missing on whichever branch forgot it. Guaranteed here rather than trusted to each
-    # adapter, because a missing key and a null one look identical until something reads it.
+    # than missing on whichever branch forgot it — and `queued` decides whether that number
+    # is a countdown at all or a standing "this much work, once it starts". Guaranteed here
+    # rather than trusted to each adapter, because a missing key and a null one look
+    # identical until something reads it.
     for entry in feed:
         entry.setdefault("eta_ms", None)
         entry.setdefault("eta_basis", None)
+        entry.setdefault("queued", False)
+        # The technical settings summary behind a call sign, for the row's tooltip. Present
+        # (null where there is none) on every entry for the same reason `eta_ms` is.
+        entry.setdefault("detail", None)
         if entry["status"] != "running":
             entry["eta_ms"] = entry["eta_basis"] = None
+            entry["queued"] = False
 
     # The badge counts distinct top-level running jobs — a nested chunk shouldn't double-count
     # with its parent.

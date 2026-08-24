@@ -2205,3 +2205,89 @@ def test_the_scoreboard_is_empty_before_any_pair_completes():
     assert live["pairs"] == 0 and live["leader"] == "level"
     assert live["median_margin"] is None and live["margins"] == []
     assert live["p_value"] is None
+
+
+# ── One profile's record in the ring (GET /duel/profile/{fp}) ─────────────────────────
+#
+# The Profile Detail page shows what a profile has *measured*. This is the other verdict:
+# what it has *beaten*, head to head. Everything must read from that profile's own side —
+# a page that flipped the sign of a margin because the profile happened to be the
+# incumbent would state the opposite of what happened.
+
+
+def test_a_profiles_ring_record_is_signed_from_its_own_side():
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            # "mine" defends and wins by 2 Overall points (median_delta is stored
+            # challenger-minus-incumbent, so the winning defender's own margin is +2).
+            matchups=[_mu("mine", "rival", "incumbent", wins_inc=7, wins_cha=2, delta=-2.0)],
+            champion="mine",
+            when=now - timedelta(days=1),
+        )
+        _finished_duel(
+            s,
+            # …then challenges "boss" and loses.
+            matchups=[_mu("boss", "mine", "incumbent", wins_inc=8, wins_cha=1, delta=-3.0)],
+            champion="boss",
+            when=now,
+        )
+
+    out = duel_mod.profile_ledger("mine")
+    assert out["in_ring"] is True
+    assert out["record"]["wins"] == 1 and out["record"]["losses"] == 1
+
+    won, lost = out["bouts"][1], out["bouts"][0]  # newest session first
+    assert (won["opponent"], won["role"], won["result"]) == ("rival", "defended", "win")
+    assert won["pair_wins"] == 7 and won["pair_losses"] == 2
+    assert won["margin"] == 2.0            # its own side, not the stored -2.0
+    assert (lost["opponent"], lost["role"], lost["result"]) == ("boss", "challenged", "loss")
+    assert lost["margin"] == -3.0
+    assert lost["pair_wins"] == 1 and lost["pair_losses"] == 8
+
+    # Per-opponent aggregate, and the ranking numbers come from the league table itself so
+    # the profile page can't disagree with the standings.
+    by_opp = {o["fingerprint"]: o for o in out["opponents"]}
+    assert by_opp["rival"]["wins"] == 1 and by_opp["boss"]["losses"] == 1
+    table = duel_mod.standings()
+    row = next(r for r in table["standings"] if r["fingerprint"] == "mine")
+    assert out["record"]["rank"] == row["rank"] and out["rank_of"] == len(table["standings"])
+    assert out["champion"]["fingerprint"] == table["champion"]["fingerprint"]
+
+
+def test_a_profile_that_never_fought_reports_an_empty_record_not_an_error():
+    """Most profiles have never been in the ring — an ordinary state, and the page needs to
+    say so rather than showing a blank table or failing."""
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[_mu("aaa", "bbb", "incumbent")],
+            champion="aaa",
+            when=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+
+    out = duel_mod.profile_ledger("never-fought")
+    assert out["in_ring"] is False
+    assert out["record"] is None and out["bouts"] == [] and out["opponents"] == []
+    # The ledger still exists around it — that's a different fact and stays visible.
+    assert out["sessions_analyzed"] == 1
+
+
+def test_duel_profile_endpoint_serves_the_record(client):
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[_mu("api-mine", "api-rival", "challenger", wins_inc=2, wins_cha=8, delta=4.0)],
+            champion="api-rival",
+            when=now,
+        )
+    body = client.get("/api/duel/profile/api-mine").json()
+    assert body["fingerprint"] == "api-mine"
+    assert body["record"]["losses"] == 1
+    assert body["bouts"][0]["margin"] == -4.0
+    assert body["bouts"][0]["opponent_name"]  # call signs resolved by fingerprint

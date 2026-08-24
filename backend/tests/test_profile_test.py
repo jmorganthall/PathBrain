@@ -209,3 +209,35 @@ def test_profile_test_cancel_stops_after_chunk(monkeypatch):
     assert get_provider().discover()[0].quantum == 1514  # baseline restored
     assert not pt_mod.active()
     mock_mod._OVERRIDES.clear()
+
+
+def test_a_confident_profile_can_still_be_re_measured_with_an_explicit_count(client, monkeypatch):
+    """"Test this profile" on a profile that is already confident is not a top-up — there is
+    nothing to top up — it is "how is this doing right now?". So an explicit iteration count
+    runs exactly that many whatever the profile already has, while omitting it keeps the
+    top-up contract (and its refusal), the same split `start_settings_test` uses."""
+    from pathbrain.api import routes_settings as rs
+
+    started: dict = {}
+
+    monkeypatch.setattr(rs, "_profile_settings", lambda s, fp: [{"label": "wan-download"}])
+    monkeypatch.setattr(rs, "_min_iterations", lambda s: 15)
+    monkeypatch.setattr(rs, "_profile_iterations", lambda s, fp: 120)  # long past confident
+    monkeypatch.setattr(
+        rs.profile_test_mod,
+        "start",
+        lambda fp, target, label, iterations: started.setdefault("iterations", iterations) or 7,
+    )
+
+    # No count → nothing to top up, and the refusal says what to do instead.
+    resp = client.post("/api/settings/test-profile", json={"fingerprint": "settled"})
+    assert resp.status_code == 400
+    assert "explicit iteration count" in resp.json()["detail"]
+
+    # An explicit count runs exactly that many.
+    body = client.post(
+        "/api/settings/test-profile", json={"fingerprint": "settled", "iterations": 5}
+    ).json()
+    assert body["iterations"] == 5 and body["mode"] == "exact"
+    assert body["current_iterations"] == 120
+    assert started["iterations"] == 5

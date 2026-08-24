@@ -363,7 +363,7 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
                         _apply_profile(provider, incumbent["settings"], best_fp)
                         applied_fp = best_fp
                     run_id = create_run(
-                        label=f"race · incumbent {incumbent['label']}",
+                        label=f"race · incumbent {incumbent.get('name') or incumbent['label']}",
                         notes=f"Challenger race #{race_id}: refresh stale incumbent {best_fp}",
                         iterations=1,
                     )
@@ -388,7 +388,7 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
                     applied_fp = leader_fp
 
                 run_id = create_run(
-                    label=f"race · {leader['label']}",
+                    label=f"race · {leader.get('name') or leader['label']}",
                     notes=f"Challenger race #{race_id}: one iteration of {leader_fp}",
                     iterations=1,
                 )

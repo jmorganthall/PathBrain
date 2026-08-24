@@ -97,9 +97,17 @@ export function ImpactBanner({ impact }: { impact: SettingsImpact }) {
             ? "This exceeds your significance threshold."
             : `Below the ${impact.threshold_pct}% significance threshold.`}
       </Typography>
-      <Typography variant="caption" color="text.secondary">
-        {impact.before?.label} → {impact.after?.label}
+      {/* Names lead: two full settings summaries are four wrapped lines on a phone and still
+          don't say which profiles they are. The summaries stay underneath, dimmer. */}
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+        <b>{impact.before?.name ?? impact.before?.label}</b> →{" "}
+        <b>{impact.after?.name ?? impact.after?.label}</b>
       </Typography>
+      {(impact.before?.name || impact.after?.name) && (
+        <Typography variant="caption" color="text.disabled" sx={{ display: "block" }}>
+          {impact.before?.label} → {impact.after?.label}
+        </Typography>
+      )}
     </Alert>
   );
 }
@@ -276,10 +284,15 @@ export function ProfileDiffCard({
             </Typography>
           )}
         </Stack>
+        {/* The names carry the sentence; the two settings summaries used to sit inline in
+            parentheses, which on a phone is four lines of "q4814 t3ms i60ms ecn" between the
+            two profiles being compared — and the field-by-field diff right below says
+            everything those summaries did, better. They stay as the hover. */}
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-          Best profile <b>{diff.best.name || diff.best.label}</b> ({diff.best.label}) vs next‑best{" "}
-          <b>{diff.comparison.name || diff.comparison.label}</b> ({diff.comparison.label}). Shaper fields that differ —
-          candidates to push further in experiments.
+          Best profile <b title={diff.best.label}>{diff.best.name || diff.best.label}</b> vs
+          next‑best{" "}
+          <b title={diff.comparison.label}>{diff.comparison.name || diff.comparison.label}</b>.
+          Shaper fields that differ — candidates to push further in experiments.
         </Typography>
         {diff.changes.length === 0 ? (
           <Typography variant="body2" color="text.secondary">
@@ -1379,7 +1392,9 @@ export default function Settings() {
         sx={{ mb: 1 }}
       >
         <Typography variant="h4">Settings Impact</Typography>
-        <Stack direction="row" spacing={1}>
+        {/* Wrap rather than squeeze: two long-labelled buttons side by side on a phone become
+            two narrow columns of wrapped words, which reads worse than one per line. */}
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
           <Tooltip title="Stamp the current firewall settings onto past runs that captured none (e.g. before discovery worked). Only do this if the firewall is unchanged since those runs.">
             <span>
               <Button
@@ -1600,7 +1615,7 @@ export default function Settings() {
               sx={{ mb: 1 }}
             >
               <Typography variant="h6">Profile scatter</Typography>
-              <Stack direction="row" spacing={1} alignItems="center">
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                 <Tooltip title="Adaptively test promising limited-data profiles one iteration at a time, eliminating any that can't overtake the best.">
                   <span>
                     <Badge
@@ -1667,13 +1682,24 @@ export default function Settings() {
                       borderColor: "divider",
                       bgcolor: "action.hover",
                       display: "flex",
-                      alignItems: "center",
+                      // Column on a phone: as a row, the buttons take their width first and
+                      // the text half collapses, so the call sign renders as "N…" and each
+                      // metric chip as "F.." — the panel truncates away everything it exists
+                      // to say while three buttons sit at full size.
+                      flexDirection: { xs: "column", sm: "row" },
+                      alignItems: { xs: "stretch", sm: "center" },
                       flexWrap: "wrap",
                       gap: 1,
                     }}
                   >
-                    <Box sx={{ minWidth: 0, flex: 1 }}>
-                      <Typography variant="subtitle2" noWrap title={sp.label}>
+                    <Box sx={{ minWidth: 0, flex: { xs: "none", sm: 1 } }}>
+                      <Typography
+                        variant="subtitle2"
+                        title={sp.label}
+                        // Wrap rather than ellipsize on a narrow screen: a truncated call
+                        // sign identifies nothing, and there is a whole line free here.
+                        sx={{ overflowWrap: "anywhere" }}
+                      >
                         {sp.name || sp.label}
                         {sp.fingerprint === bestFingerprint ? " · best" : ""}
                         {sp.fingerprint !== bestFingerprint && coLeaders.has(sp.fingerprint)
@@ -1716,28 +1742,30 @@ export default function Settings() {
                           })}
                       </Box>
                     </Box>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      onClick={() => navigate(`/profiles/${encodeURIComponent(sp.fingerprint)}`)}
-                    >
-                      View history
-                    </Button>
-                    <Tooltip title="Write this profile's shaper settings to the firewall now. You'll preview the exact changes and confirm first.">
-                      <span>
-                        <Button
-                          size="small"
-                          variant="contained"
-                          onClick={() => handleApplyClick(sp)}
-                          disabled={applying || sp.fingerprint === currentFingerprint}
-                        >
-                          Apply this profile
-                        </Button>
-                      </span>
-                    </Tooltip>
-                    <Button size="small" color="inherit" onClick={() => setScatterFp(null)}>
-                      Dismiss
-                    </Button>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => navigate(`/profiles/${encodeURIComponent(sp.fingerprint)}`)}
+                      >
+                        View history
+                      </Button>
+                      <Tooltip title="Write this profile's shaper settings to the firewall now. You'll preview the exact changes and confirm first.">
+                        <span>
+                          <Button
+                            size="small"
+                            variant="contained"
+                            onClick={() => handleApplyClick(sp)}
+                            disabled={applying || sp.fingerprint === currentFingerprint}
+                          >
+                            Apply this profile
+                          </Button>
+                        </span>
+                      </Tooltip>
+                      <Button size="small" color="inherit" onClick={() => setScatterFp(null)}>
+                        Dismiss
+                      </Button>
+                    </Stack>
                   </Box>
                 );
               })()}
@@ -1788,9 +1816,9 @@ export default function Settings() {
         <Card sx={{ mb: 2 }}>
           <CardContent>
             <Stack
-              direction="row"
+              direction={{ xs: "column", sm: "row" }}
               justifyContent="space-between"
-              alignItems="center"
+              alignItems={{ xs: "flex-start", sm: "center" }}
               spacing={1}
               sx={{ mb: 0.5 }}
             >
@@ -1798,7 +1826,9 @@ export default function Settings() {
                 Profiles ({rowCount}
                 {hideBelowBaseline && hiddenCount > 0 ? ` of ${profiles.length}` : ""})
               </Typography>
-              <Stack direction="row" spacing={1} alignItems="center">
+              {/* The controls wrap onto as many lines as they need instead of overlapping the
+                  heading — on a phone there is room for about one of them per line. */}
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                 <Button
                   size="small"
                   variant="outlined"

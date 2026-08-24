@@ -235,7 +235,29 @@ LLM-based. See `README.md` for the product overview.
     read against *its* clock, folding in any skew): the client anchors it to its own clock on
     arrival and **ticks it down every second** (`JobStatus.Countdown`), re-anchoring on each
     poll, so the readout keeps falling truthfully between polls instead of freezing and jumping.
-    It floors at "finishing…" rather than counting into the past. The profile test also gained
+    It floors at "finishing…" rather than counting into the past. A **queued** job — waiting on
+    the `coordinator` lock, which on a busy pipeline can be most of an hour — gets none of the
+    three, because all three answer *when does this finish?* and that is exactly what nobody
+    knows: its clock hasn't started, and how long the current holder runs is its own open
+    question. Timing it from `created_at` (the old fallback) charged the wait against work that
+    hadn't begun, so the estimate drained while the job stood still and a long enough queue read
+    "finishing…" for a job that never ran an iteration. So a fourth basis **`queued`** reports
+    the *size of the work* instead — the full time-box, or units × measured unit cost — and the
+    entry carries **`queued: true`** (stated by the adapter, never inferred from the basis, since
+    an unpriceable queued job has no basis to read it off) so the client renders it **standing
+    still** ("20m once it starts", `JobStatus.QueuedEta`) rather than ticking. `started_at` is
+    written at the PENDING → RUNNING transition, so the countdown starts when the job does.
+    **A job about a profile says WHICH profile** (`routes_jobs._call_sign`): the feed used to
+    print the technical settings summary — *"leader Download: 880Mbit q3550 t3 i60 ecn | Upload:
+    880Mbit q500 t3 i60 ecn"*, three wrapped lines on a phone that never name the profile — so
+    every adapter now resolves the **call sign** by fingerprint (like the duel tape and the
+    standings, so a rename lands immediately) and leads with it, keeping the settings summary as
+    the entry's `detail` (the row's hover). Best-effort: naming can never be why the feed fails,
+    and an unresolvable fingerprint falls back to the label. `CurrentTest` gained a
+    `target_fingerprint` column for this — it stored only a label, which can't be resolved back
+    to a profile — and `challenger`/`refresh` mint their **run labels** from the call sign too
+    (`race · Speedy Sloth`, as `duel` already did), so History reads in names as well. The
+    profile test also gained
     real progress — its completed iterations were only ever in the stage sentence, so its bar was
     indeterminate; they're now summed from its chunks (`job_group`), like the manual-run series.
   - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
@@ -253,7 +275,19 @@ LLM-based. See `README.md` for the product overview.
     (`_wire_value`/`shaper_fields.format_value`) — writing `"5ms"` to an option-keyed select
     silently doesn't take (the real "apply didn't happen" bug); `"ms"` is display-only
     (`format_display`). Each step is written to `ProfileTest.stage` (snapshot → apply → verify →
-    benchmark → restore → done/failed) for a live UI readout.
+    benchmark → restore → done/failed) for a live UI readout. `POST /api/settings/test-profile`
+    takes **two lengths**, the same split `start_settings_test` uses: `iterations` **omitted**
+    tops up to `correlation.min_iterations` (refused once the profile is already confident —
+    there is nothing to top up), an **explicit count** runs exactly that many whatever the
+    profile already has. The second is what "test this profile" means on a *confident* profile:
+    not a top-up but a re-measurement — "is it still this good?" — which the crown, of all
+    profiles, is the one you most want to be able to ask. The response says which ran (`mode`:
+    `top_up`/`exact`). The **Profile Detail** page leads with it: a `Test this profile (5)`
+    split button at the top (quick / longer / top-up in its menu) beside `Apply this profile`,
+    which is demoted to outlined — testing restores your settings afterwards and is the
+    everyday action, applying is the commitment. A live stage readout runs under the header
+    and the page **refreshes itself in place** when the test finishes, since the new data is
+    the entire point of having run it.
   - `current_test.py` — **Test current for X minutes**: a time-boxed data-collection loop on
     whatever profile the firewall is **already** on. Unlike the other engines it **never writes
     the firewall** (it measures the live profile as-is), so there's no baseline to snapshot or
@@ -693,6 +727,20 @@ LLM-based. See `README.md` for the product overview.
     ▲▼ gap chip on the rank itself, so the two verdicts are one glance apart: "duel rank 1,
     ▲5" is a profile that beats everyone in the ring while sitting 6th on the raw measured
     record — the disagreement running two verdicts exists to surface.
+    `duel.profile_ledger` (`GET /api/duel/profile/{fingerprint}`) is the **per-profile slice
+    of the ladder**, for the Profile Detail page's **"In the ring"** card: that profile's
+    standings row (rank / rating ± SE / W–L–D / round record / median margin, taken from
+    `standings()` rather than recomputed, so the profile page and the league table can never
+    print different numbers for one record), its per-opponent record off the same head-to-head
+    matrix, and its own **bout tape** — every match it fought, with the corner it fought from
+    (`defended`/`challenged`), the round scoreline, and what ended it. Everything is signed
+    **from that profile's own side** (`_matchup_sides`), so a bout it lost reads as a loss with
+    a negative margin whichever corner it occupied. A profile that has never fought returns
+    `record: null` + `in_ring: false` — the ordinary case (most profiles haven't), which the
+    card says outright instead of rendering an empty table. Names resolve by fingerprint like
+    the tape and the standings, and deliberately only for fingerprints the ledger actually
+    holds: naming *persists* what it derives, so reading an empty ring record must not mint a
+    name row for a profile that was only ever looked at.
     `GET /api/settings/crowns` (`routes_settings.crowns`) serves **both verdicts side by
     side** for the Dashboard's **"The two crowns"** card (`TwoCrowns.tsx`): the pooled crown
     (trophy) and the duel champion (belt/medal), each marked *following* or *for reference*
@@ -1147,7 +1195,17 @@ LLM-based. See `README.md` for the product overview.
   rankings don't duplicate controls; `Duels.tsx`, `/api/duel/*`), **Baseline (SQM off)** (the "Test baseline behavior" tab: arm the
   nightly schedule — time/iterations/settle all configurable — or run one on demand, with a live
   stage readout; `Baseline.tsx`, `/api/baseline/*`), Config, Methodology, Plugins, Data Dump, AI,
-  Run Detail. A
+  Run Detail.
+  The pages are **read on a phone**, so a control row is never a fixed `direction="row"`: the
+  Settings-Impact scatter's selected-dot panel stacks under `sm` (as a row the buttons took
+  their width first and collapsed the text half — the call sign rendered as "N…" and each
+  crown-metric chip as "F.."), the page/table header actions wrap one per line, the Dashboard's
+  run controls wrap instead of pushing "Run Benchmark" off-screen, and Profile Detail's bout
+  tape becomes a stacked list (a 7-column table showed 3 columns and hid the result, scoreline
+  and margin behind a sideways scroll nobody finds). Settings summaries never lead: the impact
+  banner reads *"Tall Garland → Sincere Kite"* with the summaries dimmed beneath, and the
+  two-crowns detail is line-clamped with the full string on hover.
+  A
   top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
   (re-grade, sweep, run, profile test, challenger race, …); next to it the top-bar
   **"Follow best" switch** (`FollowBest.tsx`) arms the crown follower

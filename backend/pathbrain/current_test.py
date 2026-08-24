@@ -26,7 +26,7 @@ from .logging_config import get_logger
 from .models import CurrentTest, CurrentTestStatus
 from .providers import get_provider
 from .runner import CHUNK_ITERATIONS, run_chunk, teardown_plugins
-from .settings_profile import normalize, summarize
+from .settings_profile import fingerprint, normalize, summarize
 
 log = get_logger("current_test")
 
@@ -39,13 +39,19 @@ def active() -> bool:
     return bool(_state.get("active"))
 
 
-def _current_label() -> str | None:
-    """Short human summary of the live profile (best-effort), for the status display."""
+def _current_target() -> tuple[str | None, str | None]:
+    """``(label, fingerprint)`` for the live profile (best-effort), for the status display.
+
+    The fingerprint is the part that matters beyond cosmetics: it is what the profile's call
+    sign and its history are keyed on, so without it a status readout can only ever print
+    the raw settings summary — which is what a name exists to replace.
+    """
     try:
-        return summarize(normalize(get_provider().discover()))
-    except Exception:  # noqa: BLE001 — label is cosmetic; the test still runs
-        log.debug("Could not summarize current settings for test-current label", exc_info=True)
-        return None
+        live = normalize(get_provider().discover())
+        return summarize(live), fingerprint(live)
+    except Exception:  # noqa: BLE001 — both are cosmetic; the test still runs
+        log.debug("Could not read current settings for the test-current label", exc_info=True)
+        return None, None
 
 
 def start(minutes: float) -> int:
@@ -59,11 +65,13 @@ def start(minutes: float) -> int:
     if active():
         raise RuntimeError("A test-current session is already running.")
     duration_s = int(round(minutes * 60))
+    target_label, target_fp = _current_target()
     with session_scope() as session:
         ct = CurrentTest(
             status=CurrentTestStatus.PENDING,
             duration_s=duration_s,
-            target_label=_current_label(),
+            target_label=target_label,
+            target_fingerprint=target_fp,
             iterations_run=0,
             runs_created=0,
             run_ids=[],
@@ -156,6 +164,7 @@ def _serialize(ct: CurrentTest) -> dict:
         "id": ct.id,
         "status": ct.status.value if hasattr(ct.status, "value") else str(ct.status),
         "label": ct.target_label,
+        "fingerprint": ct.target_fingerprint,
         "duration_s": ct.duration_s,
         "iterations_run": ct.iterations_run,
         "runs_created": ct.runs_created,

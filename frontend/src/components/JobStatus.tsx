@@ -41,6 +41,9 @@ const ETA_TITLE: Record<string, string> = {
   scheduled: "This job is time-boxed, so this isn't an estimate — it's when the window closes.",
   measured: "Work left x how long that unit has actually been taking on recent runs.",
   observed: "Extrapolated from this job's own rate so far, and it self-corrects as it goes.",
+  queued:
+    "This job hasn't started — it's waiting for the pipeline. That's how long the work takes " +
+    "once it begins, so it stays put until then.",
 };
 
 /**
@@ -79,6 +82,26 @@ function Countdown({ etaMs, basis }: { etaMs: number; basis?: string | null }) {
   );
 }
 
+/**
+ * A queued job's estimate, shown STANDING STILL.
+ *
+ * The clock it will run on hasn't started: it waits on the coordination lock, and nothing
+ * knows when the current holder lets go. So this is a size of work ("20m once it starts"),
+ * not a time remaining, and ticking it would be the one reading guaranteed to be wrong —
+ * the wait would quietly eat an estimate of time that hasn't begun to elapse, until a job
+ * that never ran an iteration read "finishing…". It starts counting when the job does, at
+ * which point the server sends a real basis and the countdown below takes over.
+ */
+function QueuedEta({ etaMs }: { etaMs: number }) {
+  return (
+    <Tooltip title={ETA_TITLE.queued}>
+      <Typography component="span" variant="caption" color="text.secondary">
+        {`${fmtCountdown(etaMs)} once it starts`}
+      </Typography>
+    </Tooltip>
+  );
+}
+
 function StatusIcon({ status }: { status: Job["status"] }) {
   if (status === "running") return <CircularProgress size={16} />;
   if (status === "succeeded") return <CheckCircleIcon color="success" fontSize="small" />;
@@ -111,6 +134,9 @@ function JobRow({
         <StatusIcon status={job.status} />
         <Typography
           variant={indent ? "caption" : "body2"}
+          // The label is the profile's call sign; the settings summary behind it is the
+          // hover, so a narrow dropdown isn't three lines of "q3550 t3 i60 ecn".
+          title={job.detail ?? undefined}
           sx={{ fontWeight: indent ? 500 : 600, flexGrow: 1, wordBreak: "break-word" }}
         >
           {job.href ? (
@@ -152,15 +178,20 @@ function JobRow({
           </Typography>
           {job.status === "running" && !job.error && (
             <Typography component="span" variant="caption" color="text.secondary">
-              {job.eta_ms != null ? (
+              {job.eta_ms == null ? (
+                // Say so rather than showing nothing: "no estimate yet" is information
+                // ("it hasn't finished a unit"), an empty space is ambiguous. A job that
+                // hasn't started says the more specific thing.
+                job.queued ? "· waiting to start" : "· no estimate yet"
+              ) : (
                 <>
                   {"· "}
-                  <Countdown etaMs={job.eta_ms} basis={job.eta_basis} />
+                  {job.queued ? (
+                    <QueuedEta etaMs={job.eta_ms} />
+                  ) : (
+                    <Countdown etaMs={job.eta_ms} basis={job.eta_basis} />
+                  )}
                 </>
-              ) : (
-                // Say so rather than showing nothing: "no estimate yet" is information
-                // ("it hasn't finished a unit"), an empty space is ambiguous.
-                "· no estimate yet"
               )}
             </Typography>
           )}

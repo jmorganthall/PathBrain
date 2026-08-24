@@ -2667,13 +2667,18 @@ def test_profile(
     body: dict = Body(...),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Top a "limited data" profile up to the confidence minimum.
+    """Benchmark a stored profile: apply it, run it, restore the previous settings.
 
-    Body: ``{"fingerprint": "<12-hex>"}``. Applies the profile to the firewall,
-    runs exactly the iterations still needed to reach ``correlation.min_iterations``
-    (capped at ``MAX_ITERATIONS``), then restores the pre-test settings. Returns the
-    started test's id; poll ``GET /settings/test-profile/current`` for status. The
-    run holds the coordination lock, so a test queues behind any other firewall
+    Body: ``{"fingerprint": "<12-hex>", "iterations": <int|null>}``. ``iterations`` is the
+    same contract as ``start_settings_test`` — **omitted means top up to the confidence
+    minimum** (the long "settle the question" answer, refused when the profile is already
+    confident, since there is nothing to top up), and an **explicit count runs exactly that
+    many** whatever the profile already has (the short "how is it doing right now?" answer,
+    which a confident profile is precisely the kind you want to re-measure). Both are capped
+    at ``MAX_ITERATIONS``.
+
+    Returns the started test's id; poll ``GET /settings/test-profile/current`` for status.
+    The run holds the coordination lock, so a test queues behind any other firewall
     operation.
     """
     fp = (body or {}).get("fingerprint")
@@ -2686,12 +2691,22 @@ def test_profile(
 
     min_iterations = _min_iterations(session)
     current_iters = _profile_iterations(session, fp)
-    needed = min(MAX_ITERATIONS, max(0, min_iterations - current_iters))
-    if needed <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Profile already has {current_iters} iteration(s) (minimum {min_iterations}).",
-        )
+    requested = (body or {}).get("iterations")
+    if requested is not None:
+        try:
+            needed = max(1, min(MAX_ITERATIONS, int(requested)))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="iterations must be a number") from None
+    else:
+        needed = min(MAX_ITERATIONS, max(0, min_iterations - current_iters))
+        if needed <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Profile already has {current_iters} iteration(s) (minimum "
+                    f"{min_iterations}). Pass an explicit iteration count to re-measure it."
+                ),
+            )
 
     try:
         test_id = profile_test_mod.start(fp, target, summarize(target), needed)
@@ -2710,6 +2725,9 @@ def test_profile(
         "iterations": needed,
         "current_iterations": current_iters,
         "min_iterations": min_iterations,
+        # Which of the two lengths ran, so the caller can say "quick test" vs "topping up"
+        # without re-deriving it from the counts.
+        "mode": "exact" if requested is not None else "top_up",
     }
 
 
@@ -3269,6 +3287,9 @@ def settings_impact(
     # Don't make significance calls until both profiles have enough iterations.
     enough_data = prev["iterations"] >= min_iterations and cur["iterations"] >= min_iterations
     significant = enough_data and delta_pct is not None and abs(delta_pct) >= threshold
+    # Call signs for the two sides: "Tall Garland → Sincere Kite" is the sentence a human
+    # reads; the settings summaries stay beside them for the reader who wants the numbers.
+    names = profile_names.names_for(session, [prev["fingerprint"], cur["fingerprint"]])
     return {
         "changed": True,
         "changed_at": cur["changed_at"].isoformat(),
@@ -3281,6 +3302,7 @@ def settings_impact(
         "significant": significant,
         "before": {
             "label": summarize(prev["settings"]),
+            "name": names.get(prev["fingerprint"]),
             "fingerprint": prev["fingerprint"],
             "median": before,
             "count": len(prev["scores"]),
@@ -3288,6 +3310,7 @@ def settings_impact(
         },
         "after": {
             "label": summarize(cur["settings"]),
+            "name": names.get(cur["fingerprint"]),
             "fingerprint": cur["fingerprint"],
             "median": after,
             "count": len(cur["scores"]),

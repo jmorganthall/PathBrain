@@ -441,6 +441,9 @@ export interface ProfileTestStart {
   iterations: number;
   current_iterations: number;
   min_iterations: number;
+  // Which of the two lengths ran: "top_up" (to the confidence minimum) or "exact" (the
+  // caller named a count — a re-measurement, which a confident profile can still have).
+  mode?: "top_up" | "exact";
 }
 
 export interface ChallengerRace {
@@ -612,6 +615,9 @@ export interface UpdateConnectionTest extends UpdateConfig {
 
 export interface ImpactSide {
   label: string;
+  // The profile's call sign — what the sentence should read as ("Tall Garland"), with the
+  // settings summary above kept as the detail for whoever wants the numbers.
+  name?: string | null;
   fingerprint: string;
   median: number;
   count: number;
@@ -1265,6 +1271,10 @@ export interface Job {
   current: number | null;
   total: number | null;
   message: string | null;
+  // The technical settings summary behind a job's call sign ("Download: 880Mbit q3550 t3
+  // i60 ecn | …"). The row leads with the name, which is what identifies a profile at a
+  // glance; this is the detail, shown on hover rather than wrapped over three lines.
+  detail?: string | null;
   error: string | null;
   href: string | null;
   // When set, this job is a chunk nested under the broader job with this id (the parent line).
@@ -1281,8 +1291,13 @@ export interface Job {
   // null when the job genuinely can't be estimated — better than a fabricated countdown.
   eta_ms?: number | null;
   // How the estimate was reached: "scheduled" (a time-boxed job's real deadline),
-  // "measured" (units left x measured unit cost), "observed" (this job's own rate so far).
-  eta_basis?: "scheduled" | "measured" | "observed" | null;
+  // "measured" (units left x measured unit cost), "observed" (this job's own rate so far),
+  // "queued" (the job hasn't started — this is how much work it is, not how long is left).
+  eta_basis?: "scheduled" | "measured" | "observed" | "queued" | null;
+  // True while the job is still waiting on the coordination lock. Its clock hasn't started,
+  // so `eta_ms` is a duration of work rather than a remaining time and must NOT be ticked
+  // down — a queued job's finish time moves out for as long as it waits.
+  queued?: boolean;
 }
 
 export interface JobsResponse {
@@ -1478,9 +1493,15 @@ export interface CrownFollowConfig {
 export interface DuelChampion {
   fingerprint: string;
   label: string | null;
+  // Call sign, resolved by fingerprint (absent on payloads built before naming).
+  name?: string | null;
   duel_id: number;
   finished_at: string;
   decisive: boolean;
+  // From the standings: consecutive sessions ended holding the belt, and whether the fit
+  // behind it is still mostly prior.
+  consecutive_sessions?: number;
+  provisional?: boolean;
 }
 
 // The result of one crown-follower check (tracking + optional apply).
@@ -1828,6 +1849,67 @@ export interface DuelStandings {
   rank_sigma?: number;
   provisional_pairs?: number;
   rating_pairs_total?: number;
+}
+
+/** One bout on a profile's own tape, signed from that profile's side. */
+export interface DuelProfileBout {
+  duel_id: number;
+  finished_at: string | null;
+  session_status: string;
+  // Which corner it fought from. The verdict doesn't depend on it (the lead alternates
+  // within a bout), but "defended" and "challenged" are different stories about a record.
+  role: "defended" | "challenged";
+  opponent: string;
+  opponent_label: string;
+  opponent_name?: string | null;
+  label: string;
+  result: "win" | "loss" | "draw";
+  pairs: number;
+  pair_wins: number;
+  pair_losses: number;
+  // Median Overall-point margin from THIS profile's point of view (+ = it was better).
+  margin: number | null;
+  reason?: string | null;
+  method?: string | null;
+  p_value?: number | null;
+  challenger_why?: string | null;
+  lead_alternated?: boolean | null;
+}
+
+/** This profile's record against one opponent. */
+export interface DuelProfileOpponent {
+  fingerprint: string;
+  name?: string | null;
+  wins: number;
+  losses: number;
+  draws: number;
+  pairs: number;
+  median_margin: number | null;
+}
+
+/**
+ * One profile's record in the ring (GET /duel/profile/{fingerprint}).
+ *
+ * The head-to-head verdict beside the pooled one the profile page already shows — what this
+ * profile has BEATEN, not what it averaged. `record` is null for a profile that has never
+ * fought, which is the ordinary case, not an error.
+ */
+export interface DuelProfileLedger {
+  fingerprint: string;
+  name?: string | null;
+  label?: string | null;
+  in_ring: boolean;
+  record: DuelStanding | null;
+  rank_of: number;
+  champion: DuelChampion | null;
+  is_champion: boolean;
+  opponents: DuelProfileOpponent[];
+  bouts: DuelProfileBout[];
+  sessions_analyzed: number;
+  matchups_analyzed: number;
+  ranked_by?: string;
+  rank_sigma?: number;
+  provisional_pairs?: number;
 }
 
 /**
