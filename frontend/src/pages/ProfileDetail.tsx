@@ -3,13 +3,17 @@ import { useNavigate, useParams } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import ButtonGroup from "@mui/material/ButtonGroup";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
+import Menu from "@mui/material/Menu";
+import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
@@ -22,9 +26,12 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
+import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
+import BoltIcon from "@mui/icons-material/Bolt";
 import EditIcon from "@mui/icons-material/Edit";
 import SaveIcon from "@mui/icons-material/Save";
 import IconButton from "@mui/material/IconButton";
+import Link from "@mui/material/Link";
 import TextField from "@mui/material/TextField";
 
 import { api } from "../api/client";
@@ -33,7 +40,9 @@ import type {
   AxisSeriesResponse,
   CrownConfidence,
   DerivationAudit,
+  DuelProfileLedger,
   ProfilePauseRollup,
+  ProfileTest,
   RunSummary,
   SettingsProfile,
 } from "../api/types";
@@ -59,6 +68,13 @@ const AXIS_COLORS: Record<string, string> = {
 };
 const axisColor = (key: string) => AXIS_COLORS[key] ?? "#4dd0e1";
 
+// The short test: one runner chunk (`runner.CHUNK_ITERATIONS`), the same length Explore's
+// "Test now" runs. Sent explicitly with the request, so the label and what runs can't drift.
+const QUICK_ITERATIONS = 5;
+
+/** A duel result from this profile's side, in the ring's own vocabulary. */
+const BOUT_COLOR = { win: "success", loss: "error", draw: "default" } as const;
+
 export default function ProfileDetail() {
   const { fingerprint = "" } = useParams<{ fingerprint: string }>();
   const navigate = useNavigate();
@@ -70,6 +86,8 @@ export default function ProfileDetail() {
   // the standings boxes always follow the crown — never a hardcoded axis set.
   const [overallMetrics, setOverallMetrics] = useState<string[]>([]);
   const [currentFp, setCurrentFp] = useState<string | null>(null);
+  // The confidence bar (total iterations), so the page can say how far a top-up would go.
+  const [minIterations, setMinIterations] = useState<number | null>(null);
   const [bestFp, setBestFp] = useState<string | null>(null);
   // Fingerprints statistically tied with the crown (within run-to-run noise). Lets the standings
   // say "tied for #1" instead of implying a precise, decisive rank when the top is a photo finish.
@@ -102,6 +120,17 @@ export default function ProfileDetail() {
     }
   }, [fingerprint]);
 
+  // This profile's record in the ring (GET /duel/profile/{fp}). Best-effort and fetched
+  // beside the page rather than blocking it: the ladder is a second opinion, not a
+  // prerequisite for reading what the profile measured.
+  const [ring, setRing] = useState<DuelProfileLedger | null>(null);
+  const [boutsShown, setBoutsShown] = useState(8);
+
+  // "Test this profile": apply it, benchmark it, restore the previous settings.
+  const [testMenu, setTestMenu] = useState<HTMLElement | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [activeTest, setActiveTest] = useState<ProfileTest | null>(null);
+
   // Apply (preview → confirm → commit) state.
   const [applyPreview, setApplyPreview] = useState<ApplyProfileResult | null>(null);
   const [applying, setApplying] = useState(false);
@@ -115,9 +144,9 @@ export default function ProfileDetail() {
     [fingerprint],
   );
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
+  const load = useCallback(
+    async ({ spinner = true }: { spinner?: boolean } = {}) => {
+      if (spinner) setLoading(true);
       setError(null);
       try {
         const [profsResp, s, c] = await Promise.all([
@@ -129,6 +158,7 @@ export default function ProfileDetail() {
         setAllProfiles(profsResp.profiles);
         setOverallMetrics(profsResp.overall_metrics ?? []);
         setCurrentFp(profsResp.current_fingerprint);
+        setMinIterations(profsResp.min_iterations ?? null);
         setBestFp(profsResp.best_fingerprint);
         setCoLeaders(profsResp.co_leaders ?? []);
         setCrownConf(profsResp.crown_confidence ?? null);
@@ -136,16 +166,23 @@ export default function ProfileDetail() {
         setTotal(c.count);
         await loadPage(0, rowsPerPage);
         setPage(0);
-        // Best-effort pause roll-up (reads raw across runs, so don't block the page on it).
+        // Best-effort side loads (each reads more than the page needs to paint, so neither
+        // blocks it and neither failing empties the page).
         api.profilePauses(fingerprint).then(setPauses).catch(() => setPauses(null));
+        api.duelProfile(fingerprint).then(setRing).catch(() => setRing(null));
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load profile");
       } finally {
-        setLoading(false);
+        if (spinner) setLoading(false);
       }
-    })();
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fingerprint]);
+    [fingerprint],
+  );
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const handlePage = (_e: unknown, next: number) => {
     setPage(next);
@@ -157,6 +194,55 @@ export default function ProfileDetail() {
     setPage(0);
     loadPage(0, rpp).catch(() => {});
   };
+
+  // ── Test this profile ────────────────────────────────────────────────────────
+  //
+  // Two lengths, because there are two questions, and the page knows which one applies:
+  // a profile short of the confidence bar wants topping up (`iterations` omitted), and one
+  // already past it wants re-measuring — "is it still this good?" — which is an explicit
+  // count. Both apply the profile, benchmark it, and restore the previous settings.
+  const startTest = useCallback(
+    async (iterations?: number) => {
+      setTestMenu(null);
+      setStarting(true);
+      setError(null);
+      try {
+        const r = await api.testProfile(fingerprint, iterations);
+        setToast(
+          r.mode === "exact"
+            ? `Testing this profile: ${r.iterations} iteration(s), then your settings are restored.`
+            : `Topping up: ${r.iterations} iteration(s) to reach the ${r.min_iterations}-iteration minimum.`,
+        );
+        // Show the live stage readout straight away; the poller below keeps it fresh.
+        setActiveTest((await api.profileTestCurrent()).test);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to start the profile test");
+      } finally {
+        setStarting(false);
+      }
+    },
+    [fingerprint],
+  );
+
+  // Follow the test to the end, then refresh the page in place — the point of running it is
+  // the new data, and a page still showing the pre-test numbers hides exactly that.
+  useEffect(() => {
+    if (!activeTest || (activeTest.status !== "running" && activeTest.status !== "pending")) return;
+    const t = setInterval(async () => {
+      try {
+        const cur = (await api.profileTestCurrent()).test;
+        setActiveTest(cur);
+        if (cur && (cur.status === "complete" || cur.status === "failed")) {
+          if (cur.status === "failed") setError(`Profile test failed: ${cur.error ?? "unknown error"}`);
+          else setToast("Profile test finished — your settings were restored.");
+          await load({ spinner: false });
+        }
+      } catch {
+        /* transient; the next tick retries */
+      }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [activeTest, load]);
 
   const previewApply = async () => {
     try {
@@ -229,6 +315,10 @@ export default function ProfileDetail() {
   if (loading) return <Loading label="Loading profile…" />;
 
   const isActive = currentFp != null && currentFp === fingerprint;
+  const testRunning =
+    activeTest != null && (activeTest.status === "running" || activeTest.status === "pending");
+  // How many iterations a top-up would still run (0 once the profile is confident).
+  const topUpNeeded = Math.max(0, (minIterations ?? 0) - (profile?.iterations ?? 0));
   const isBest = bestFp != null && bestFp === fingerprint;
   // Crown-confidence context: is #1 a decisive lead or a statistical tie? The tie group is the
   // crown plus every co-leader (median lead within run-to-run noise). Surfacing this reframes a
@@ -324,17 +414,59 @@ export default function ProfileDetail() {
             {fingerprint}
           </Typography>
         </Box>
-        <Tooltip title="Write this profile's shaper settings to the firewall now. You'll preview the exact changes and confirm first.">
-          <span>
-            <Button
-              variant="contained"
-              onClick={previewApply}
-              disabled={applying || isActive}
-            >
-              {isActive ? "Active" : "Apply this profile"}
-            </Button>
-          </span>
-        </Tooltip>
+        {/* Two actions, in order of how often you want them: measuring this profile is the
+            everyday, self-reversing one (it restores your settings afterwards), while
+            applying it is the commitment — so the test leads and the apply sits beside it. */}
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Tooltip
+            title={`Apply this profile, benchmark ${QUICK_ITERATIONS} iteration(s), then restore your current settings. Queues behind any other firewall operation; the arrow has the longer lengths.`}
+          >
+            <span>
+              <ButtonGroup variant="contained" disabled={starting || testRunning}>
+                <Button
+                  startIcon={testRunning ? <CircularProgress size={16} /> : <BoltIcon />}
+                  onClick={() => void startTest(QUICK_ITERATIONS)}
+                >
+                  {testRunning ? "Testing…" : `Test this profile (${QUICK_ITERATIONS})`}
+                </Button>
+                <Button
+                  size="small"
+                  aria-label="other test lengths"
+                  onClick={(e) => setTestMenu(e.currentTarget)}
+                  sx={{ minWidth: 32, px: 0.5 }}
+                >
+                  <ArrowDropDownIcon fontSize="small" />
+                </Button>
+              </ButtonGroup>
+            </span>
+          </Tooltip>
+          <Menu anchorEl={testMenu} open={Boolean(testMenu)} onClose={() => setTestMenu(null)}>
+            <MenuItem onClick={() => void startTest(QUICK_ITERATIONS)}>
+              Quick test · {QUICK_ITERATIONS} iterations
+            </MenuItem>
+            <MenuItem onClick={() => void startTest(QUICK_ITERATIONS * 4)}>
+              Longer test · {QUICK_ITERATIONS * 4} iterations
+            </MenuItem>
+            {/* Only offered when there is something to top up: past the bar the top-up has
+                nothing to run, and the server refuses it rather than pretending. */}
+            <MenuItem onClick={() => void startTest()} disabled={topUpNeeded <= 0}>
+              {topUpNeeded > 0
+                ? `Test to minimum · ${topUpNeeded} more to reach ${minIterations}`
+                : `Already at the ${minIterations ?? ""}-iteration minimum`}
+            </MenuItem>
+          </Menu>
+          <Tooltip title="Write this profile's shaper settings to the firewall now. You'll preview the exact changes and confirm first.">
+            <span>
+              <Button
+                variant="outlined"
+                onClick={previewApply}
+                disabled={applying || isActive}
+              >
+                {isActive ? "Active" : "Apply this profile"}
+              </Button>
+            </span>
+          </Tooltip>
+        </Stack>
       </Stack>
 
       {/* Status chips */}
@@ -372,6 +504,19 @@ export default function ProfileDetail() {
           <Chip variant="outlined" label={`${profile.iterations} iterations · ${profile.count} runs`} />
         )}
       </Stack>
+
+      {/* The test in flight, step by step (snapshot → apply → verify → benchmark → restore).
+          The jobs dropdown carries it too, but the page you started it from should say what
+          it is doing without you going looking. */}
+      {testRunning && (
+        <Alert severity="info" icon={<CircularProgress size={16} />} sx={{ mb: 2 }}>
+          Testing this profile ({activeTest?.iterations} iteration
+          {activeTest?.iterations === 1 ? "" : "s"}) —{" "}
+          {activeTest?.stage ??
+            (activeTest?.status === "pending" ? "queued behind another operation" : "starting…")}
+          . Your current settings are restored when it finishes.
+        </Alert>
+      )}
 
       {/* Standings: this profile's rank (1 = best) per Overall + headline axis, green→red. */}
       {standings.length > 0 && (
@@ -452,6 +597,277 @@ export default function ProfileDetail() {
                 </Box>
               ))}
             </Box>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── In the ring: this profile's head-to-head record ────────────────────────────
+          The standings above are the OBSERVATIONAL verdict — everything this profile has
+          ever measured, pooled. This is the controlled one: who it actually beat, in
+          interleaved back-to-back rounds that shared their weather. They answer different
+          questions, and their disagreement is the whole reason the ladder exists, so both
+          belong on the page that is about this one profile. Everything here is signed from
+          this profile's own side. */}
+      {ring && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+              <Typography variant="h6" sx={{ flexGrow: 1 }}>
+                In the ring
+              </Typography>
+              {ring.is_champion && <Chip color="warning" size="small" label="reigning champion" />}
+              <Button size="small" onClick={() => navigate("/duels")}>
+                Dueling Champions
+              </Button>
+            </Stack>
+
+            {!ring.in_ring ? (
+              <Typography variant="body2" color="text.secondary">
+                This profile hasn&apos;t fought a duel yet
+                {ring.sessions_analyzed > 0
+                  ? ` — the ladder has run ${ring.sessions_analyzed} session${
+                      ring.sessions_analyzed === 1 ? "" : "s"
+                    } without matching it.`
+                  : " — no duel sessions on record yet."}{" "}
+                The ladder races the profiles most likely to unseat the leader, so an untested
+                profile gets the ring once its measured ceiling makes it a threat.
+              </Typography>
+            ) : (
+              <>
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+                  What this profile has <b>beaten</b>, head to head — not what it averaged. Ranked
+                  on the ring&apos;s fitted strength ({ring.ranked_by === "rating_floor"
+                    ? `rating − ${ring.rank_sigma ?? 1} SE, so a record has to be measured before it can lead`
+                    : ring.ranked_by}), over {ring.matchups_analyzed} match
+                  {ring.matchups_analyzed === 1 ? "" : "es"} across {ring.sessions_analyzed} session
+                  {ring.sessions_analyzed === 1 ? "" : "s"}.
+                </Typography>
+
+                {ring.record && (
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: 1.5,
+                      mb: 2,
+                      gridTemplateColumns: { xs: "repeat(2, 1fr)", sm: "repeat(4, 1fr)" },
+                    }}
+                  >
+                    {[
+                      {
+                        label: "Duel rank",
+                        value: `#${ring.record.rank}`,
+                        sub: `of ${ring.rank_of} in the ring`,
+                        color: rankColor(ring.record.rank, ring.rank_of),
+                        tip: "Where this profile sits in the head-to-head league table — a different ranking from the pooled standings above, earned only against opponents it actually faced.",
+                      },
+                      {
+                        label: "Rating",
+                        value: ring.record.rating != null ? Math.round(ring.record.rating) : "—",
+                        sub:
+                          ring.record.rating_se != null
+                            ? `± ${Math.round(ring.record.rating_se)} · ${ring.record.rating_pairs ?? 0} rounds`
+                            : "no fit yet",
+                        color: undefined,
+                        tip: "Bradley-Terry strength fitted to every round on the ledger (Elo scale, 1500 = middle of the field). Beating a strong profile moves it a lot; beating a weak one barely at all.",
+                      },
+                      {
+                        label: "Record",
+                        value: `${ring.record.wins}-${ring.record.losses}-${ring.record.draws}`,
+                        sub: `W-L-D · ${ring.record.opponents} opponent${ring.record.opponents === 1 ? "" : "s"}`,
+                        color: undefined,
+                        tip: "Matches won, lost and drawn. A draw means the two profiles were practically equal, not that the match was inconclusive.",
+                      },
+                      {
+                        label: "Rounds",
+                        value: `${ring.record.pair_wins}-${ring.record.pair_losses}`,
+                        sub:
+                          ring.record.pair_win_rate != null
+                            ? `${Math.round(ring.record.pair_win_rate * 100)}% of rounds won`
+                            : "—",
+                        color: undefined,
+                        tip: "Individual interleaved rounds won and lost — the unit of evidence the rating is fitted to, so a hard-fought 12-8 counts for more than a 3-0 snap.",
+                      },
+                    ].map((b) => (
+                      <Tooltip key={b.label} title={b.tip}>
+                        <Box
+                          sx={{
+                            p: 1.5,
+                            borderRadius: 1,
+                            border: 1,
+                            borderColor: "divider",
+                            textAlign: "center",
+                          }}
+                        >
+                          <Typography variant="overline" color="text.secondary" sx={{ display: "block" }}>
+                            {b.label}
+                          </Typography>
+                          <Typography sx={{ fontWeight: 800, fontSize: "1.5rem", lineHeight: 1.15, color: b.color }}>
+                            {b.value}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                            {b.sub}
+                          </Typography>
+                        </Box>
+                      </Tooltip>
+                    ))}
+                  </Box>
+                )}
+
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+                  {ring.record?.rating_provisional && (
+                    <Tooltip
+                      title={`Fewer than ${ring.provisional_pairs ?? "enough"} rounds, or only one opponent — the rating is mostly the prior talking. It still ranks; it just hasn't been earned yet.`}
+                    >
+                      <Chip size="small" variant="outlined" color="warning" label="provisional rating" />
+                    </Tooltip>
+                  )}
+                  {ring.record?.median_margin != null && (
+                    <Tooltip title="Median Overall-point margin across this profile's rounds, from its own side. Positive means it was the better profile in the ring, by that many points.">
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={ring.record.median_margin >= 0 ? "success" : "error"}
+                        label={`${ring.record.median_margin >= 0 ? "+" : ""}${ring.record.median_margin.toFixed(2)} median margin`}
+                      />
+                    </Tooltip>
+                  )}
+                  {(ring.record?.championships ?? 0) > 0 && (
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={`${ring.record!.championships} session${ring.record!.championships === 1 ? "" : "s"} ended holding the belt`}
+                    />
+                  )}
+                  {ring.champion && !ring.is_champion && (
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      onClick={() => navigate(`/profiles/${encodeURIComponent(ring.champion!.fingerprint)}`)}
+                      label={`belt: ${ring.champion.name ?? ring.champion.label ?? ring.champion.fingerprint}`}
+                    />
+                  )}
+                </Stack>
+
+                {/* Per-opponent: the record against each profile it has actually faced. A
+                    rating is comparable across the field, but "who did it beat?" is the
+                    question a page about one profile is really being asked. */}
+                {ring.opponents.length > 0 && (
+                  <Box sx={{ mb: 2 }}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Against each opponent
+                    </Typography>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      {ring.opponents.map((o) => (
+                        <Tooltip
+                          key={o.fingerprint}
+                          title={`${o.pairs} round${o.pairs === 1 ? "" : "s"}${
+                            o.median_margin != null
+                              ? ` · median margin ${o.median_margin >= 0 ? "+" : ""}${o.median_margin.toFixed(2)} Overall points from this profile's side`
+                              : ""
+                          }`}
+                        >
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            color={o.wins > o.losses ? "success" : o.losses > o.wins ? "error" : "default"}
+                            onClick={() => navigate(`/profiles/${encodeURIComponent(o.fingerprint)}`)}
+                            label={`${o.name ?? o.fingerprint.slice(0, 8)} · ${o.wins}-${o.losses}-${o.draws}`}
+                          />
+                        </Tooltip>
+                      ))}
+                    </Stack>
+                  </Box>
+                )}
+
+                {/* The tape: every bout this profile fought, newest first. */}
+                <Typography variant="subtitle2" gutterBottom>
+                  Bouts ({ring.bouts.length})
+                </Typography>
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>When</TableCell>
+                        <TableCell>Opponent</TableCell>
+                        <TableCell>Corner</TableCell>
+                        <TableCell>Result</TableCell>
+                        <TableCell align="right">Rounds</TableCell>
+                        <TableCell align="right">Margin</TableCell>
+                        <TableCell>What ended it</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {ring.bouts.slice(0, boutsShown).map((b, i) => (
+                        <TableRow key={`${b.duel_id}-${b.opponent}-${i}`} hover>
+                          <TableCell sx={{ whiteSpace: "nowrap" }}>
+                            {b.finished_at ? fmtDateTime(b.finished_at) : `duel #${b.duel_id}`}
+                          </TableCell>
+                          <TableCell>
+                            <Link
+                              component="button"
+                              type="button"
+                              underline="hover"
+                              color="inherit"
+                              onClick={() => navigate(`/profiles/${encodeURIComponent(b.opponent)}`)}
+                            >
+                              {b.opponent_name ?? b.opponent_label}
+                            </Link>
+                          </TableCell>
+                          <TableCell>
+                            <Tooltip
+                              title={
+                                b.role === "defended"
+                                  ? "This profile held the belt and defended it."
+                                  : "This profile challenged for the belt."
+                              }
+                            >
+                              <Typography variant="caption" color="text.secondary">
+                                {b.role}
+                              </Typography>
+                            </Tooltip>
+                          </TableCell>
+                          <TableCell>
+                            <Chip
+                              size="small"
+                              color={BOUT_COLOR[b.result]}
+                              variant={b.result === "draw" ? "outlined" : "filled"}
+                              label={b.result}
+                            />
+                          </TableCell>
+                          <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                            {b.pair_wins}–{b.pair_losses}
+                          </TableCell>
+                          <TableCell align="right">
+                            {b.margin == null ? (
+                              "—"
+                            ) : (
+                              <Typography
+                                component="span"
+                                variant="body2"
+                                sx={{ fontWeight: 700, color: b.margin >= 0 ? "success.main" : "error.main" }}
+                              >
+                                {b.margin >= 0 ? "+" : ""}
+                                {b.margin.toFixed(2)}
+                              </Typography>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="caption" color="text.secondary">
+                              {b.reason ?? "—"}
+                            </Typography>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+                {ring.bouts.length > boutsShown && (
+                  <Button size="small" sx={{ mt: 1 }} onClick={() => setBoutsShown((n) => n + 20)}>
+                    Show earlier bouts ({ring.bouts.length - boutsShown} more)
+                  </Button>
+                )}
+              </>
+            )}
           </CardContent>
         </Card>
       )}

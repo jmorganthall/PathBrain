@@ -265,7 +265,19 @@ LLM-based. See `README.md` for the product overview.
     (`_wire_value`/`shaper_fields.format_value`) — writing `"5ms"` to an option-keyed select
     silently doesn't take (the real "apply didn't happen" bug); `"ms"` is display-only
     (`format_display`). Each step is written to `ProfileTest.stage` (snapshot → apply → verify →
-    benchmark → restore → done/failed) for a live UI readout.
+    benchmark → restore → done/failed) for a live UI readout. `POST /api/settings/test-profile`
+    takes **two lengths**, the same split `start_settings_test` uses: `iterations` **omitted**
+    tops up to `correlation.min_iterations` (refused once the profile is already confident —
+    there is nothing to top up), an **explicit count** runs exactly that many whatever the
+    profile already has. The second is what "test this profile" means on a *confident* profile:
+    not a top-up but a re-measurement — "is it still this good?" — which the crown, of all
+    profiles, is the one you most want to be able to ask. The response says which ran (`mode`:
+    `top_up`/`exact`). The **Profile Detail** page leads with it: a `Test this profile (5)`
+    split button at the top (quick / longer / top-up in its menu) beside `Apply this profile`,
+    which is demoted to outlined — testing restores your settings afterwards and is the
+    everyday action, applying is the commitment. A live stage readout runs under the header
+    and the page **refreshes itself in place** when the test finishes, since the new data is
+    the entire point of having run it.
   - `current_test.py` — **Test current for X minutes**: a time-boxed data-collection loop on
     whatever profile the firewall is **already** on. Unlike the other engines it **never writes
     the firewall** (it measures the live profile as-is), so there's no baseline to snapshot or
@@ -705,6 +717,20 @@ LLM-based. See `README.md` for the product overview.
     ▲▼ gap chip on the rank itself, so the two verdicts are one glance apart: "duel rank 1,
     ▲5" is a profile that beats everyone in the ring while sitting 6th on the raw measured
     record — the disagreement running two verdicts exists to surface.
+    `duel.profile_ledger` (`GET /api/duel/profile/{fingerprint}`) is the **per-profile slice
+    of the ladder**, for the Profile Detail page's **"In the ring"** card: that profile's
+    standings row (rank / rating ± SE / W–L–D / round record / median margin, taken from
+    `standings()` rather than recomputed, so the profile page and the league table can never
+    print different numbers for one record), its per-opponent record off the same head-to-head
+    matrix, and its own **bout tape** — every match it fought, with the corner it fought from
+    (`defended`/`challenged`), the round scoreline, and what ended it. Everything is signed
+    **from that profile's own side** (`_matchup_sides`), so a bout it lost reads as a loss with
+    a negative margin whichever corner it occupied. A profile that has never fought returns
+    `record: null` + `in_ring: false` — the ordinary case (most profiles haven't), which the
+    card says outright instead of rendering an empty table. Names resolve by fingerprint like
+    the tape and the standings, and deliberately only for fingerprints the ledger actually
+    holds: naming *persists* what it derives, so reading an empty ring record must not mint a
+    name row for a profile that was only ever looked at.
     `GET /api/settings/crowns` (`routes_settings.crowns`) serves **both verdicts side by
     side** for the Dashboard's **"The two crowns"** card (`TwoCrowns.tsx`): the pooled crown
     (trophy) and the duel champion (belt/medal), each marked *following* or *for reference*

@@ -35,6 +35,7 @@ import type {
   DuelConfig,
   DuelSession,
   DuelCard,
+  DuelProfileLedger,
   DuelStandings,
   CrownsOut,
   AiConfig,
@@ -202,6 +203,12 @@ export const api = {
   duelCard: (limit = 12) => request<DuelCard>(`/duel/card?limit=${limit}`),
   duelStandings: (sessions = 50) =>
     request<DuelStandings>(`/duel/standings?sessions=${sessions}`),
+  // One profile's head-to-head record — its standings row, opponents and bout tape, all
+  // signed from that profile's own side (for the Profile Detail page's ring card).
+  duelProfile: (fingerprint: string, sessions = 50) =>
+    request<DuelProfileLedger>(
+      `/duel/profile/${encodeURIComponent(fingerprint)}?sessions=${sessions}`,
+    ),
 
   // Results
   latestResult: () => request<RunDetail>("/results/latest"),
@@ -307,13 +314,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ fingerprint, preview, run_benchmark: runBenchmark }),
     }),
-  // Top a "limited data" profile up to the confidence minimum: applies it, runs the
-  // iterations still needed, then restores the prior settings.
-  testProfile: (fingerprint: string) =>
+  // Benchmark a stored profile: apply it, run it, restore the prior settings. `iterations`
+  // omitted tops it up to the confidence minimum (refused once it's already confident — there
+  // is nothing to top up); an explicit count runs exactly that many, which is how an already
+  // confident profile gets re-measured.
+  testProfile: (fingerprint: string, iterations?: number) =>
     startingJob(
       request<ProfileTestStart>("/settings/test-profile", {
         method: "POST",
-        body: JSON.stringify({ fingerprint }),
+        body: JSON.stringify({ fingerprint, iterations: iterations ?? null }),
       }),
     ),
   profileTestCurrent: () =>

@@ -441,6 +441,9 @@ export interface ProfileTestStart {
   iterations: number;
   current_iterations: number;
   min_iterations: number;
+  // Which of the two lengths ran: "top_up" (to the confidence minimum) or "exact" (the
+  // caller named a count — a re-measurement, which a confident profile can still have).
+  mode?: "top_up" | "exact";
 }
 
 export interface ChallengerRace {
@@ -1483,9 +1486,15 @@ export interface CrownFollowConfig {
 export interface DuelChampion {
   fingerprint: string;
   label: string | null;
+  // Call sign, resolved by fingerprint (absent on payloads built before naming).
+  name?: string | null;
   duel_id: number;
   finished_at: string;
   decisive: boolean;
+  // From the standings: consecutive sessions ended holding the belt, and whether the fit
+  // behind it is still mostly prior.
+  consecutive_sessions?: number;
+  provisional?: boolean;
 }
 
 // The result of one crown-follower check (tracking + optional apply).
@@ -1833,6 +1842,67 @@ export interface DuelStandings {
   rank_sigma?: number;
   provisional_pairs?: number;
   rating_pairs_total?: number;
+}
+
+/** One bout on a profile's own tape, signed from that profile's side. */
+export interface DuelProfileBout {
+  duel_id: number;
+  finished_at: string | null;
+  session_status: string;
+  // Which corner it fought from. The verdict doesn't depend on it (the lead alternates
+  // within a bout), but "defended" and "challenged" are different stories about a record.
+  role: "defended" | "challenged";
+  opponent: string;
+  opponent_label: string;
+  opponent_name?: string | null;
+  label: string;
+  result: "win" | "loss" | "draw";
+  pairs: number;
+  pair_wins: number;
+  pair_losses: number;
+  // Median Overall-point margin from THIS profile's point of view (+ = it was better).
+  margin: number | null;
+  reason?: string | null;
+  method?: string | null;
+  p_value?: number | null;
+  challenger_why?: string | null;
+  lead_alternated?: boolean | null;
+}
+
+/** This profile's record against one opponent. */
+export interface DuelProfileOpponent {
+  fingerprint: string;
+  name?: string | null;
+  wins: number;
+  losses: number;
+  draws: number;
+  pairs: number;
+  median_margin: number | null;
+}
+
+/**
+ * One profile's record in the ring (GET /duel/profile/{fingerprint}).
+ *
+ * The head-to-head verdict beside the pooled one the profile page already shows — what this
+ * profile has BEATEN, not what it averaged. `record` is null for a profile that has never
+ * fought, which is the ordinary case, not an error.
+ */
+export interface DuelProfileLedger {
+  fingerprint: string;
+  name?: string | null;
+  label?: string | null;
+  in_ring: boolean;
+  record: DuelStanding | null;
+  rank_of: number;
+  champion: DuelChampion | null;
+  is_champion: boolean;
+  opponents: DuelProfileOpponent[];
+  bouts: DuelProfileBout[];
+  sessions_analyzed: number;
+  matchups_analyzed: number;
+  ranked_by?: string;
+  rank_sigma?: number;
+  provisional_pairs?: number;
 }
 
 /**

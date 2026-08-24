@@ -2133,6 +2133,119 @@ def standings(limit_sessions: int = 50) -> dict:
     }
 
 
+def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
+    """**One profile's record in the ring** — its standings row, its opponents, its bouts.
+
+    The Profile Detail page shows what a profile has *measured* (pooled runs, its Overall,
+    its rank in the field). That's the observational verdict. This is the other one: what it
+    has actually *beaten*, head to head, under shared weather — and the two disagreeing is
+    the entire reason the ladder exists, so a profile page that shows only the first is
+    telling half the story.
+
+    Everything is signed from **this profile's point of view**: a bout it lost reads as a
+    loss with a negative margin, whichever corner it happened to occupy. The ranking, rating
+    and champion come from :func:`standings` rather than being recomputed, so the profile
+    page and the league table can never name different numbers for the same record.
+
+    Returns ``{fingerprint, name, label, in_ring, record, rank_of, champion, is_champion,
+    opponents, bouts, sessions_analyzed, ranked_by, rank_sigma, provisional_pairs}``.
+    ``record`` is None for a profile that has never been in the ring — an ordinary state
+    (most profiles haven't fought), not an error.
+    """
+    fp = str(fingerprint)
+    table = standings(limit_sessions)
+    rows = table.get("standings") or []
+    record = next((r for r in rows if r.get("fingerprint") == fp), None)
+
+    # Per-opponent aggregate, read off the same head-to-head matrix the grid renders.
+    cells = (table.get("head_to_head") or {}).get(fp) or {}
+    opponents = [
+        {
+            "fingerprint": opp,
+            "wins": cell.get("wins", 0),
+            "losses": cell.get("losses", 0),
+            "draws": cell.get("draws", 0),
+            "pairs": cell.get("pairs", 0),
+            "median_margin": cell.get("median_margin"),
+        }
+        for opp, cell in cells.items()
+    ]
+    opponents.sort(key=lambda o: (o["wins"] + o["losses"] + o["draws"], o["pairs"]), reverse=True)
+
+    # The bout tape, matchup by matchup. `standings` aggregates the ledger and can't answer
+    # "which bouts, against whom, when" — that detail only exists on the matchup records.
+    bouts: list[dict] = []
+    with session_scope() as session:
+        for sess in _ledger_sessions(session, limit_sessions):  # newest session first
+            for m in sess.get("matchups") or []:
+                if not m or fp not in (m.get("incumbent"), m.get("challenger")):
+                    continue
+                sides = _matchup_sides(m)
+                mine = 0 if sides[0][0] == fp else 1
+                _, label, result, margin, pair_wins, pair_losses = sides[mine]
+                opp_fp, opp_label = sides[1 - mine][0], sides[1 - mine][1]
+                bouts.append(
+                    {
+                        "duel_id": sess["id"],
+                        "finished_at": sess["finished_at"],
+                        "session_status": sess["status"],
+                        # Which corner it fought from. The verdict doesn't depend on it (the
+                        # lead alternates within a bout), but "defended the belt" and
+                        # "challenged for it" are different stories about the same record.
+                        "role": "defended" if mine == 0 else "challenged",
+                        "opponent": opp_fp,
+                        "opponent_label": opp_label,
+                        "opponent_name": m.get(
+                            "challenger_name" if mine == 0 else "incumbent_name"
+                        ),
+                        "label": label,
+                        "result": result,
+                        "pairs": int(m.get("pairs") or (pair_wins + pair_losses)),
+                        "pair_wins": pair_wins,
+                        "pair_losses": pair_losses,
+                        # Median Overall-point margin from this profile's side (+ = better).
+                        "margin": margin,
+                        "reason": m.get("reason"),
+                        "method": m.get("method"),
+                        "p_value": m.get("p_value"),
+                        "challenger_why": m.get("challenger_why"),
+                        "lead_alternated": m.get("lead_alternated"),
+                    }
+                )
+        # Resolve call signs by fingerprint, exactly as the tape and the standings do, so a
+        # bout fought before naming (or before a rename) reads under today's names. Only for
+        # fingerprints that actually appear in the ledger: naming persists what it derives,
+        # and reading a profile's (empty) ring record shouldn't mint a name row for it.
+        wanted = [b["opponent"] for b in bouts] + [o["fingerprint"] for o in opponents]
+        if record or bouts:
+            wanted.append(fp)
+        call_signs = profile_names.names_for(session, wanted) if wanted else {}
+    for b in bouts:
+        b["opponent_name"] = call_signs.get(b["opponent"]) or b["opponent_name"] or b["opponent_label"]
+    for o in opponents:
+        o["name"] = call_signs.get(o["fingerprint"])
+
+    champion = table.get("champion")
+    return {
+        "fingerprint": fp,
+        "name": (record or {}).get("name") or call_signs.get(fp),
+        "label": (record or {}).get("label"),
+        # Has this profile ever fought? Distinguishes "no ring record" from "no ledger yet".
+        "in_ring": bool(bouts),
+        "record": record,
+        "rank_of": len(rows),
+        "champion": champion,
+        "is_champion": bool(champion and champion.get("fingerprint") == fp),
+        "opponents": opponents,
+        "bouts": bouts,
+        "sessions_analyzed": table.get("sessions_analyzed", 0),
+        "matchups_analyzed": table.get("matchups_analyzed", 0),
+        "ranked_by": table.get("ranked_by"),
+        "rank_sigma": table.get("rank_sigma"),
+        "provisional_pairs": table.get("provisional_pairs"),
+    }
+
+
 def _name_matchups(session, matchups: list[dict]) -> list[dict]:
     """Fill in call signs on a tape, resolving by fingerprint.
 

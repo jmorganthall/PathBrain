@@ -289,6 +289,17 @@ def duel_standings(sessions: int = 50) -> dict:
     return duel.standings(limit_sessions=max(1, min(sessions, 200)))
 
 
+@router.get("/duel/profile/{fingerprint}")
+def duel_profile(fingerprint: str, sessions: int = 50) -> dict:
+    """One profile's head-to-head record — its standings row, opponents and bout tape.
+
+    The per-profile slice of the ladder, for the Profile Detail page: the ring's verdict on
+    a profile, beside the pooled measurements that page already shows. Signed throughout
+    from that profile's own side, and ranked by the same fit the league table uses.
+    """
+    return duel.profile_ledger(fingerprint, limit_sessions=max(1, min(sessions, 200)))
+
+
 @router.get("/duel/history")
 def duel_history(limit: int = 10) -> dict:
     """Recent duel sessions, newest first — the head-to-head ledger."""
