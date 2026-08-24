@@ -30,6 +30,7 @@ from . import coordinator
 from .database import session_scope
 from .logging_config import get_logger
 from .models import Methodology, ProfileRefresh, ProfileRefreshStatus, Run, RunStatus, Score
+from .profile_names import names_for
 from .profile_test import _apply_all
 from .providers import get_provider
 from .runner import MAX_ITERATIONS, create_run, execute_run
@@ -57,7 +58,12 @@ def cancel() -> bool:
 
 def list_profiles(session) -> list[dict]:
     """Every distinct stored profile (newest settings per fingerprint), as
-    ``[{fingerprint, settings, label}]`` — the candidates a refresh re-runs."""
+    ``[{fingerprint, settings, label, name}]`` — the candidates a refresh re-runs.
+
+    ``name`` is the profile's call sign, resolved in one query for the whole list: a run
+    labelled *"refresh · Speedy Sloth"* says which profile it measured, while one labelled
+    with the settings summary makes the reader decode the settings to find out.
+    """
     rows = session.execute(
         select(Run.settings_fingerprint, Run.settings)
         .where(
@@ -70,8 +76,14 @@ def list_profiles(session) -> list[dict]:
     latest: dict[str, list] = {}
     for fp, settings in rows:
         latest.setdefault(fp, settings)  # desc order → first seen is the newest settings
+    names = names_for(session, list(latest))
     return [
-        {"fingerprint": fp, "settings": settings, "label": summarize(settings)}
+        {
+            "fingerprint": fp,
+            "settings": settings,
+            "label": summarize(settings),
+            "name": names.get(fp),
+        }
         for fp, settings in latest.items()
     ]
 
@@ -270,7 +282,7 @@ def _drive(refresh_id: int) -> None:
                     try:
                         _apply_profile(provider, settings, fp)
                         run_id = create_run(
-                            label=f"refresh · {label}",
+                            label=f"refresh · {item.get('name') or label}",
                             notes=f"Profile refresh #{refresh_id}: {needed} fresh iteration(s) of {fp}",
                             iterations=needed,
                         )

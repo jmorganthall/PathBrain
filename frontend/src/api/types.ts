@@ -615,6 +615,9 @@ export interface UpdateConnectionTest extends UpdateConfig {
 
 export interface ImpactSide {
   label: string;
+  // The profile's call sign — what the sentence should read as ("Tall Garland"), with the
+  // settings summary above kept as the detail for whoever wants the numbers.
+  name?: string | null;
   fingerprint: string;
   median: number;
   count: number;
@@ -1268,6 +1271,10 @@ export interface Job {
   current: number | null;
   total: number | null;
   message: string | null;
+  // The technical settings summary behind a job's call sign ("Download: 880Mbit q3550 t3
+  // i60 ecn | …"). The row leads with the name, which is what identifies a profile at a
+  // glance; this is the detail, shown on hover rather than wrapped over three lines.
+  detail?: string | null;
   error: string | null;
   href: string | null;
   // When set, this job is a chunk nested under the broader job with this id (the parent line).

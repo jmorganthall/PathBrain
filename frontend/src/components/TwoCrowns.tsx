@@ -109,7 +109,20 @@ function CrownTile({
             {subtitle}
           </Typography>
           {!!detail && (
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+            <Typography
+              variant="caption"
+              color="text.disabled"
+              // Clamped to two lines: the detail is a full settings summary, which on a phone
+              // pushes the crown that matters — the name and its Overall — off the card in
+              // favour of "q4814 t3ms i60ms ecn". The whole string stays as the hover.
+              title={detail}
+              sx={{
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+              }}
+            >
               {detail}
             </Typography>
           )}

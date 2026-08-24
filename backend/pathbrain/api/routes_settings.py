@@ -3287,6 +3287,9 @@ def settings_impact(
     # Don't make significance calls until both profiles have enough iterations.
     enough_data = prev["iterations"] >= min_iterations and cur["iterations"] >= min_iterations
     significant = enough_data and delta_pct is not None and abs(delta_pct) >= threshold
+    # Call signs for the two sides: "Tall Garland → Sincere Kite" is the sentence a human
+    # reads; the settings summaries stay beside them for the reader who wants the numbers.
+    names = profile_names.names_for(session, [prev["fingerprint"], cur["fingerprint"]])
     return {
         "changed": True,
         "changed_at": cur["changed_at"].isoformat(),
@@ -3299,6 +3302,7 @@ def settings_impact(
         "significant": significant,
         "before": {
             "label": summarize(prev["settings"]),
+            "name": names.get(prev["fingerprint"]),
             "fingerprint": prev["fingerprint"],
             "median": before,
             "count": len(prev["scores"]),
@@ -3306,6 +3310,7 @@ def settings_impact(
         },
         "after": {
             "label": summarize(cur["settings"]),
+            "name": names.get(cur["fingerprint"]),
             "fingerprint": cur["fingerprint"],
             "median": after,
             "count": len(cur["scores"]),

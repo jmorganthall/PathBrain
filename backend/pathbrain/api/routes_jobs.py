@@ -19,15 +19,50 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import baseline_test, challenger, current_test, duel, jobs, profile_test, refresh, sweep
+from .. import (
+    baseline_test,
+    challenger,
+    current_test,
+    duel,
+    jobs,
+    profile_names,
+    profile_test,
+    refresh,
+    sweep,
+)
 from ..database import get_session
+from ..logging_config import get_logger
 from ..models import Experiment, ExperimentStatus, Run, RunStatus, Sweep, SweepStatus
 
+log = get_logger("api.jobs")
 router = APIRouter()
 
 
 def _iso(dt) -> str | None:
     return dt.isoformat() if dt else None
+
+
+def _call_sign(session: Session, fingerprint: str | None) -> str | None:
+    """The profile's **call sign** ("Speedy Sloth"), or None.
+
+    A job about a profile is read in a 380px dropdown, and the technical label is a full
+    settings summary — *"Download: 880Mbit q3550 t3 i60 ecn | Upload: 880Mbit q500 t3 i60
+    ecn"* — which wraps over three lines and, worse, doesn't say **which profile** without
+    the reader decoding it. That's exactly the problem call signs exist to solve, and every
+    other view already leads with one; the jobs feed was the last place still printing raw
+    settings at people.
+
+    Resolved by **fingerprint**, like the duel tape and the standings, so a profile renamed
+    since the job started reads under today's name rather than a label frozen at launch.
+    Best-effort: naming must never be the reason the jobs feed fails.
+    """
+    if not fingerprint:
+        return None
+    try:
+        return profile_names.names_for(session, [fingerprint]).get(fingerprint)
+    except Exception:  # noqa: BLE001 — a cosmetic lookup can't break the feed
+        log.debug("Jobs feed: could not resolve a call sign", exc_info=True)
+        return None
 
 
 def _per_iteration_estimate(session: Session) -> float | None:
@@ -303,7 +338,11 @@ def _active_profile_test_job(session: Session) -> list[dict]:
     if not t:
         return []
     status = t.get("status")
-    label = f"Test to minimum: {t.get('label') or t.get('fingerprint')}"
+    # The call sign names the profile under test; the technical settings summary rides along
+    # as `detail` (a tooltip) rather than in the line, since it is what made this unreadable.
+    name = _call_sign(session, t.get("fingerprint"))
+    detail = t.get("label")
+    label = f"Test to minimum: {name or detail or t.get('fingerprint')}"
     if status in ("running", "pending"):
         # Progress lived only in the stage sentence ("part 1/1 (0/5 done)"), so the bar was
         # indeterminate and there was no ETA at all. The test's chunks carry
@@ -328,6 +367,7 @@ def _active_profile_test_job(session: Session) -> list[dict]:
                 "id": f"profile_test-{t['id']}",
                 "kind": "profile_test",
                 "label": label,
+                "detail": detail,
                 "status": "running",
                 "current": int(done),
                 "total": total,
@@ -351,6 +391,7 @@ def _active_profile_test_job(session: Session) -> list[dict]:
             "id": f"profile_test-{t['id']}",
             "kind": "profile_test",
             "label": label,
+            "detail": detail,
             "status": "failed" if failed else "succeeded",
             "current": None,
             "total": t.get("iterations"),
@@ -388,7 +429,7 @@ def _baseline_per_iteration() -> float | None:
     return None
 
 
-def _active_current_test_job() -> list[dict]:
+def _active_current_test_job(session: Session) -> list[dict]:
     if not current_test.active():
         return []
     t = current_test.current()
@@ -402,7 +443,8 @@ def _active_current_test_job() -> list[dict]:
         _with_eta({
             "id": f"current_test-{t['id']}",
             "kind": "current_test",
-            "label": f"Test current: {t.get('label') or 'live profile'}",
+            "label": f"Test current: {_call_sign(session, t.get('fingerprint')) or t.get('label') or 'live profile'}",
+            "detail": t.get("label"),
             "status": "running",
             "current": collected,
             "total": None,
@@ -528,14 +570,17 @@ def _active_experiment_job(session: Session) -> list[dict]:
     ]
 
 
-def _active_challenger_job() -> list[dict]:
+def _active_challenger_job(session: Session) -> list[dict]:
     if not challenger.active():
         return []
     r = challenger.current()
     if not r or r.get("status") not in ("running", "pending"):
         return []
     n_elim = len(r.get("eliminated") or [])
-    leader = r.get("leader_label") or "…"
+    # This is the line the whole feed was judged on: "leader Download: 880Mbit q3550 t3 i60
+    # ecn | Upload: 880Mbit q500 t3 i60 ecn" is three wrapped lines that never say *which*
+    # profile is leading. "leader Speedy Sloth" does, in two words.
+    leader = _call_sign(session, r.get("leader_fingerprint")) or r.get("leader_label") or "…"
     n_refresh = r.get("incumbent_refreshes") or 0
     refresh_note = f" · {n_refresh} incumbent refresh{'es' if n_refresh != 1 else ''}" if n_refresh else ""
     queued = r.get("status") == "pending"
@@ -545,6 +590,7 @@ def _active_challenger_job() -> list[dict]:
             "id": f"challenger-{r['id']}",
             "kind": "challenger",
             "label": "Challenger race",
+            "detail": r.get("leader_label"),
             "status": "running",
             "current": r.get("iterations_run") or 0,
             "total": None,
@@ -559,14 +605,14 @@ def _active_challenger_job() -> list[dict]:
     ]
 
 
-def _active_refresh_job() -> list[dict]:
+def _active_refresh_job(session: Session) -> list[dict]:
     if not refresh.active():
         return []
     r = refresh.current()
     if not r or r.get("status") not in ("running", "pending"):
         return []
     done, total = r.get("profiles_done") or 0, r.get("profiles_total") or 0
-    cur = r.get("current_label")
+    cur = _call_sign(session, r.get("current_fingerprint")) or r.get("current_label")
     message = f"profile {min(done + 1, total)}/{total}" if total else "starting…"
     if cur:
         message += f" · {cur}"
@@ -577,6 +623,7 @@ def _active_refresh_job() -> list[dict]:
             "id": f"refresh-{r['id']}",
             "kind": "refresh",
             "label": "Re-run all profiles",
+            "detail": r.get("current_label"),
             "status": "running",
             "current": done,
             "total": total,
@@ -632,11 +679,11 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     adapters += _active_run_jobs(session)
     adapters += _active_sweep_job(session)
     adapters += _active_profile_test_job(session)
-    adapters += _active_current_test_job()
+    adapters += _active_current_test_job(session)
     adapters += _active_baseline_test_job()
     adapters += _active_experiment_job(session)
-    adapters += _active_challenger_job()
-    adapters += _active_refresh_job()
+    adapters += _active_challenger_job(session)
+    adapters += _active_refresh_job(session)
     adapters += _active_duel_job()
 
     # In-process score jobs (re-grade/rescore/rederive) are always top-level with no cancel.
@@ -662,6 +709,9 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
         entry.setdefault("eta_ms", None)
         entry.setdefault("eta_basis", None)
         entry.setdefault("queued", False)
+        # The technical settings summary behind a call sign, for the row's tooltip. Present
+        # (null where there is none) on every entry for the same reason `eta_ms` is.
+        entry.setdefault("detail", None)
         if entry["status"] != "running":
             entry["eta_ms"] = entry["eta_basis"] = None
             entry["queued"] = False

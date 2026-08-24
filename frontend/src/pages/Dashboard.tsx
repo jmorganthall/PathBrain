@@ -263,8 +263,10 @@ export default function Dashboard() {
         sx={{ mb: 3 }}
       >
         <Typography variant="h4">Dashboard</Typography>
-        <Stack spacing={0.5} alignItems={{ xs: "flex-start", sm: "flex-end" }}>
-          <Stack direction="row" spacing={1} alignItems="center">
+        <Stack spacing={0.5} alignItems={{ xs: "flex-start", sm: "flex-end" }} sx={{ maxWidth: "100%" }}>
+          {/* Wraps on a phone: three controls in a fixed row push "Run Benchmark" off the
+              right edge of the screen, where it can't be pressed at all. */}
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <Tooltip
               title={`How many times to run the full suite and average the results (1–${maxIterations}). More iterations = steadier score, longer run.`}
             >

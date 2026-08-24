@@ -134,6 +134,9 @@ function JobRow({
         <StatusIcon status={job.status} />
         <Typography
           variant={indent ? "caption" : "body2"}
+          // The label is the profile's call sign; the settings summary behind it is the
+          // hover, so a narrow dropdown isn't three lines of "q3550 t3 i60 ecn".
+          title={job.detail ?? undefined}
           sx={{ fontWeight: indent ? 500 : 600, flexGrow: 1, wordBreak: "break-word" }}
         >
           {job.href ? (

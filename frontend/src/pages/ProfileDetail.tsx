@@ -24,6 +24,8 @@ import TablePagination from "@mui/material/TablePagination";
 import TableRow from "@mui/material/TableRow";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
+import useMediaQuery from "@mui/material/useMediaQuery";
+import { useTheme } from "@mui/material/styles";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
@@ -51,7 +53,7 @@ import Waterfall from "../components/Waterfall";
 import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
-import { fmtDateTime, fmtScore } from "../utils/format";
+import { fmtDateTime, fmtScore, fmtTimeShort } from "../utils/format";
 import { profileValue } from "../utils/profileFields";
 import { rankByMetric, rankColor } from "../utils/ranking";
 import { useMetricMeta } from "../utils/metrics";
@@ -78,6 +80,10 @@ const BOUT_COLOR = { win: "success", loss: "error", draw: "default" } as const;
 export default function ProfileDetail() {
   const { fingerprint = "" } = useParams<{ fingerprint: string }>();
   const navigate = useNavigate();
+  // A seven-column table on a 390px screen shows three columns and hides the result, the
+  // scoreline and the margin — everything a bout actually says — behind a sideways scroll
+  // nobody discovers. On a phone the same rows are rendered as a stacked list instead.
+  const narrow = useMediaQuery(useTheme().breakpoints.down("sm"));
   const [profile, setProfile] = useState<SettingsProfile | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -783,6 +789,58 @@ export default function ProfileDetail() {
                 <Typography variant="subtitle2" gutterBottom>
                   Bouts ({ring.bouts.length})
                 </Typography>
+                {narrow ? (
+                  <Stack spacing={1}>
+                    {ring.bouts.slice(0, boutsShown).map((b, i) => (
+                      <Box
+                        key={`${b.duel_id}-${b.opponent}-${i}`}
+                        sx={{ p: 1, borderRadius: 1, border: 1, borderColor: "divider" }}
+                      >
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <Link
+                            component="button"
+                            type="button"
+                            underline="hover"
+                            color="inherit"
+                            sx={{ font: "inherit", fontWeight: 600, textAlign: "left", minWidth: 0 }}
+                            onClick={() => navigate(`/profiles/${encodeURIComponent(b.opponent)}`)}
+                          >
+                            {b.opponent_name ?? b.opponent_label}
+                          </Link>
+                          <Box sx={{ flexGrow: 1 }} />
+                          <Chip
+                            size="small"
+                            color={BOUT_COLOR[b.result]}
+                            variant={b.result === "draw" ? "outlined" : "filled"}
+                            label={b.result}
+                          />
+                        </Stack>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                          {b.role} · {b.pair_wins}–{b.pair_losses} rounds
+                          {b.margin != null && (
+                            <>
+                              {" · "}
+                              <Typography
+                                component="span"
+                                variant="caption"
+                                sx={{ fontWeight: 700, color: b.margin >= 0 ? "success.main" : "error.main" }}
+                              >
+                                {b.margin >= 0 ? "+" : ""}
+                                {b.margin.toFixed(2)}
+                              </Typography>
+                            </>
+                          )}
+                          {b.finished_at ? ` · ${fmtTimeShort(b.finished_at)}` : ` · duel #${b.duel_id}`}
+                        </Typography>
+                        {b.reason && (
+                          <Typography variant="caption" color="text.disabled" sx={{ display: "block" }}>
+                            {b.reason}
+                          </Typography>
+                        )}
+                      </Box>
+                    ))}
+                  </Stack>
+                ) : (
                 <TableContainer>
                   <Table size="small">
                     <TableHead>
@@ -861,6 +919,7 @@ export default function ProfileDetail() {
                     </TableBody>
                   </Table>
                 </TableContainer>
+                )}
                 {ring.bouts.length > boutsShown && (
                   <Button size="small" sx={{ mt: 1 }} onClick={() => setBoutsShown((n) => n + 20)}>
                     Show earlier bouts ({ring.bouts.length - boutsShown} more)

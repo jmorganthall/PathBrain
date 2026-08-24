@@ -606,9 +606,13 @@ class CurrentTest(Base):
     )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # How long to keep collecting (seconds) + a short human label of the profile under test.
+    # How long to keep collecting (seconds) + which profile is under test: its fingerprint
+    # (the identity — what its call sign and its history are keyed on) and a short technical
+    # label. The label alone can't be resolved back to a profile, so a status readout built
+    # from it could only ever print the raw settings string.
     duration_s: Mapped[int] = mapped_column(Integer, default=300)
     target_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    target_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     # Live/result progress: total iterations collected, chunk runs created, and their ids.
     iterations_run: Mapped[int] = mapped_column(Integer, default=0)

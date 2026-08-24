@@ -246,7 +246,17 @@ LLM-based. See `README.md` for the product overview.
     entry carries **`queued: true`** (stated by the adapter, never inferred from the basis, since
     an unpriceable queued job has no basis to read it off) so the client renders it **standing
     still** ("20m once it starts", `JobStatus.QueuedEta`) rather than ticking. `started_at` is
-    written at the PENDING → RUNNING transition, so the countdown starts when the job does. The
+    written at the PENDING → RUNNING transition, so the countdown starts when the job does.
+    **A job about a profile says WHICH profile** (`routes_jobs._call_sign`): the feed used to
+    print the technical settings summary — *"leader Download: 880Mbit q3550 t3 i60 ecn | Upload:
+    880Mbit q500 t3 i60 ecn"*, three wrapped lines on a phone that never name the profile — so
+    every adapter now resolves the **call sign** by fingerprint (like the duel tape and the
+    standings, so a rename lands immediately) and leads with it, keeping the settings summary as
+    the entry's `detail` (the row's hover). Best-effort: naming can never be why the feed fails,
+    and an unresolvable fingerprint falls back to the label. `CurrentTest` gained a
+    `target_fingerprint` column for this — it stored only a label, which can't be resolved back
+    to a profile — and `challenger`/`refresh` mint their **run labels** from the call sign too
+    (`race · Speedy Sloth`, as `duel` already did), so History reads in names as well. The
     profile test also gained
     real progress — its completed iterations were only ever in the stage sentence, so its bar was
     indeterminate; they're now summed from its chunks (`job_group`), like the manual-run series.
@@ -1173,7 +1183,17 @@ LLM-based. See `README.md` for the product overview.
   rankings don't duplicate controls; `Duels.tsx`, `/api/duel/*`), **Baseline (SQM off)** (the "Test baseline behavior" tab: arm the
   nightly schedule — time/iterations/settle all configurable — or run one on demand, with a live
   stage readout; `Baseline.tsx`, `/api/baseline/*`), Config, Methodology, Plugins, Data Dump, AI,
-  Run Detail. A
+  Run Detail.
+  The pages are **read on a phone**, so a control row is never a fixed `direction="row"`: the
+  Settings-Impact scatter's selected-dot panel stacks under `sm` (as a row the buttons took
+  their width first and collapsed the text half — the call sign rendered as "N…" and each
+  crown-metric chip as "F.."), the page/table header actions wrap one per line, the Dashboard's
+  run controls wrap instead of pushing "Run Benchmark" off-screen, and Profile Detail's bout
+  tape becomes a stacked list (a 7-column table showed 3 columns and hid the result, scoreline
+  and margin behind a sideways scroll nobody finds). Settings summaries never lead: the impact
+  banner reads *"Tall Garland → Sincere Kite"* with the summaries dimmed beneath, and the
+  two-crowns detail is line-clamped with the full string on hover.
+  A
   top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
   (re-grade, sweep, run, profile test, challenger race, …); next to it the top-bar
   **"Follow best" switch** (`FollowBest.tsx`) arms the crown follower

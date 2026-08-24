@@ -350,3 +350,54 @@ def test_every_job_entry_says_whether_it_has_started(client):
         # An in-process job never queues — it gets its own thread immediately.
         if entry["queued"]:
             assert entry["eta_basis"] == "queued"
+
+
+# ── Call signs: a job says WHICH profile, not which settings ───────────────────────────
+#
+# Reported from a phone: the challenger race read "leader Download: 880Mbit q3550 t3 i60 ecn
+# | Upload: 880Mbit q500 t3 i60 ecn" — three wrapped lines that never say which profile is
+# leading. Every other view leads with the call sign; the jobs feed was the last place still
+# printing raw settings at people.
+
+
+def test_a_job_about_a_profile_is_named_by_its_call_sign():
+    from pathbrain import profile_names
+    from pathbrain.api import routes_jobs
+
+    with session_scope() as s:
+        name = profile_names.names_for(s, ["feedfacecafe"])["feedfacecafe"]
+
+    routes_jobs.challenger.active = lambda: True                     # type: ignore[assignment]
+    routes_jobs.challenger.current = lambda: {                       # type: ignore[assignment]
+        "id": 9, "status": "running", "iterations_run": 1, "eliminated": [],
+        "leader_fingerprint": "feedfacecafe",
+        "leader_label": "Download: 880Mbit q3550 t3 i60 ecn | Upload: 880Mbit q500 t3 i60 ecn",
+        "started_at": None, "created_at": None, "time_budget_s": 7200,
+    }
+    try:
+        with session_scope() as s:
+            entry = routes_jobs._active_challenger_job(s)[0]
+        assert f"leader {name}" in entry["message"]
+        assert "q3550" not in entry["message"]        # the settings string is gone from the line
+        assert "q3550" in (entry["detail"] or "")     # …and kept as the hover detail
+    finally:
+        importlib.reload(routes_jobs)
+
+
+def test_a_profile_with_no_call_sign_falls_back_to_its_label():
+    """Naming is best-effort and must never blank a job line: a fingerprint the feed can't
+    resolve (or an engine that never recorded one) still reads as something."""
+    from pathbrain.api import routes_jobs
+
+    routes_jobs.challenger.active = lambda: True                     # type: ignore[assignment]
+    routes_jobs.challenger.current = lambda: {                       # type: ignore[assignment]
+        "id": 9, "status": "running", "iterations_run": 1, "eliminated": [],
+        "leader_fingerprint": None, "leader_label": "q1514 t5ms",
+        "started_at": None, "created_at": None, "time_budget_s": 7200,
+    }
+    try:
+        with session_scope() as s:
+            entry = routes_jobs._active_challenger_job(s)[0]
+        assert "leader q1514 t5ms" in entry["message"]
+    finally:
+        importlib.reload(routes_jobs)
