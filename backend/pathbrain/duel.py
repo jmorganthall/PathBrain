@@ -139,8 +139,8 @@ PRESETS: dict[str, dict] = {
         "min_pairs": 3,
         "max_pairs": 12,
         "streak_wins": 3,
-        "summary": "3 wins in a row ends it. Fast, and self-correcting on a nightly ladder.",
-        "detail": "Names the better profile ~91% of the time at a 1-point edge. Between equal profiles it's a coin toss — read the standings, not one bout.",
+        "summary": "3 rounds in a row ends it. Fast, and self-correcting on a nightly ladder.",
+        "detail": "Names the better profile ~91% of the time at a 1-point edge. Between equal profiles it's a coin toss — read the standings, not one match.",
     },
     "quick": {
         "label": "Quick call",
@@ -148,8 +148,8 @@ PRESETS: dict[str, dict] = {
         "streak_wins": 0,
         "min_pairs": 5,
         "max_pairs": 20,
-        "summary": "6 wins in a row ends it. About 1 verdict in 9 will be wrong.",
-        "detail": "Also calls a profile that wins most (not all) pairs — ~80% of true 1-point edges, usually within 10.",
+        "summary": "6 rounds in a row ends it. About 1 verdict in 9 will be wrong.",
+        "detail": "Also calls a profile that wins most (not all) rounds — ~80% of true 1-point edges, usually within 10.",
     },
     "balanced": {
         "label": "Balanced",
@@ -157,8 +157,8 @@ PRESETS: dict[str, dict] = {
         "streak_wins": 0,
         "min_pairs": 8,
         "max_pairs": 30,
-        "summary": "8 wins in a row ends it. About 1 verdict in 16 will be wrong.",
-        "detail": "Also calls a profile that wins most (not all) pairs — ~85% of true 1-point edges, usually within 14.",
+        "summary": "8 rounds in a row ends it. About 1 verdict in 16 will be wrong.",
+        "detail": "Also calls a profile that wins most (not all) rounds — ~85% of true 1-point edges, usually within 14.",
     },
     "strict": {
         "label": "Only when certain",
@@ -166,8 +166,8 @@ PRESETS: dict[str, dict] = {
         "streak_wins": 0,
         "min_pairs": 12,
         "max_pairs": 60,
-        "summary": "12 wins in a row ends it. Rarely wrong (~1 verdict in 60).",
-        "detail": "Also calls a profile that wins most (not all) pairs — ~97% of true 1-point edges, usually within 24.",
+        "summary": "12 rounds in a row ends it. Rarely wrong (~1 verdict in 60).",
+        "detail": "Also calls a profile that wins most (not all) rounds — ~97% of true 1-point edges, usually within 24.",
     },
 }
 
@@ -674,7 +674,7 @@ def ring_leader(
     opps = int(r.get("opponents") or 0)
     return best_fp, (
         f"the ring's #1 defends (proven {r.get('rating_floor'):.0f} over "
-        f"{r.get('pairs') or 0} pairs against {opps} opponent{'' if opps == 1 else 's'})"
+        f"{r.get('pairs') or 0} rounds against {opps} opponent{'' if opps == 1 else 's'})"
     )
 
 
@@ -1135,7 +1135,7 @@ def contender_order(
             continue
         rating, ceiling = _ceiling(fp)
         if fp == pooled_fp:
-            tier, why = CROWN_TIER, "the pooled crown — the two verdicts disagreeing is the most informative bout there is"
+            tier, why = CROWN_TIER, "the pooled crown — the two verdicts disagreeing is the most informative match there is"
         elif rating is None:
             # No ring record — so the only question that can be asked is the pooled one, and
             # it is asked *optimistically*: not "is this better?" but "could this be better?".
@@ -1146,7 +1146,7 @@ def contender_order(
             if crown_overall is None or opt is None or opt >= crown_overall:
                 tier, why = LIVE_THREAT_TIER, (
                     f"thin but live — its pooled ceiling ({opt:.0f}) still reaches the crown "
-                    f"({crown_overall:.0f}), so a bout can change the answer"
+                    f"({crown_overall:.0f}), so a match can change the answer"
                     if (opt is not None and crown_overall is not None)
                     else "never been in the ring, and nothing rules it out — worth a look"
                 )
@@ -1312,7 +1312,7 @@ def _drive(duel_id: int) -> None:
                     break
                 if rematch_now == frozenset((defender_fp, challenger_fp)):
                     why_challenger = (
-                        f"{why_challenger} — rematch: it won the last bout without taking "
+                        f"{why_challenger} — rematch: it won the last match without taking "
                         f"the belt"
                     )
                 if defender_fp != incumbent_fp:
@@ -1371,9 +1371,9 @@ def _drive(duel_id: int) -> None:
                     # answer, and a bare pair of names doesn't.
                     _set_stage(
                         duel_id,
-                        f"Bout {len(matchups) + 1} · "
+                        f"Match {len(matchups) + 1} · "
                         f"{inc.get('name') or inc['label']} (belt) defends vs "
-                        f"{cha.get('name') or cha['label']} ({why_challenger}) — pair "
+                        f"{cha.get('name') or cha['label']} ({why_challenger}) — round "
                         f"{sprt.pairs + 1} ({sprt.wins_incumbent}-{sprt.wins_challenger})",
                     )
                     # …and the same bout as structured state, so the page can say who is
@@ -1425,7 +1425,7 @@ def _drive(duel_id: int) -> None:
                     if inc_val is None or cha_val is None:
                         bad_streak += 1
                         if bad_streak >= MAX_CONSECUTIVE_BAD_PAIRS:
-                            verdict, reason = "draw", "aborted: repeated unusable pairs"
+                            verdict, reason = "draw", "aborted: repeated unusable rounds"
                         continue
                     bad_streak = 0
                     delta = cha_val - inc_val
@@ -1445,9 +1445,9 @@ def _drive(duel_id: int) -> None:
                                 reason = "SPRT boundary crossed"
                         elif verdict == "draw":
                             reason = (
-                                "mutual futility (pair wins ~50/50)"
+                                "mutual futility (round wins ~50/50)"
                                 if sprt.pairs < max_pairs
-                                else f"no decision in {max_pairs} pairs"
+                                else f"no decision in {max_pairs} rounds"
                             )
                     else:
                         # Default: decide on the paired MARGINS (signed-rank), which is
@@ -1474,7 +1474,7 @@ def _drive(duel_id: int) -> None:
                             if below_floor:
                                 verdict = "draw"
                                 reason = (
-                                    f"one side wins the pairs, but by < {min_margin} "
+                                    f"one side wins the rounds, but by < {min_margin} "
                                     f"Overall pts — practically equal"
                                 )
                             elif sign_verdict == "draw":
@@ -1482,7 +1482,7 @@ def _drive(duel_id: int) -> None:
                                 reason = "mutual futility (no consistent margin either way)"
                             elif paired.pairs >= max_pairs:
                                 verdict = "draw"
-                                reason = f"no decision in {max_pairs} pairs"
+                                reason = f"no decision in {max_pairs} rounds"
 
                 if verdict is None:
                     verdict, reason = "draw", "window closed mid-matchup (undecided)"

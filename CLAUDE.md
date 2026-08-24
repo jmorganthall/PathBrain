@@ -353,7 +353,16 @@ LLM-based. See `README.md` for the product overview.
     now); driven by the top-bar **"Follow best" switch** (`FollowBest.tsx`) with a status/churn
     popover.
   - `duel.py` — **Duel ladder**: interleaved head-to-head adjudication, the controlled-trial
-    complement to the observational pooled crown. **Counterbalanced** alternation — one iteration
+    complement to the observational pooled crown.
+    **Vocabulary (user-facing):** a **session** is a night of **matches**; a **match** is two
+    profiles head to head, decided over **rounds**; a **round** is one interleaved pair of
+    runs, one per profile, back to back so they share their conditions. The code still says
+    `bout`/`pair` throughout — those are identifiers, JSON keys (`pairs`, `min_pairs`,
+    `wins_incumbent`) and stored config, and renaming them would re-key live `AppConfig` and
+    `Duel.matchups` rows for a wording change. So the rename is **display-only**: labels and
+    sentences read match/round, the wire and the DB keep bout/pair, and the Dueling Champions
+    page states the hierarchy outright since "bout" and "pair" never said which contained
+    which. **Counterbalanced** alternation — one iteration
     a side, with the lead alternating every pair (ABBA) — between an incumbent (the pooled crown
     at window start) and a ladder of challengers
     (heirs priority order, reachability-filtered), so each adjacent pair shares its weather
