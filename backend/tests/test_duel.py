@@ -917,7 +917,7 @@ def test_a_clean_streak_ends_a_bout_and_is_the_length_the_card_advertises():
         )
         assert n is not None
         # The card's promise must be the code's behavior.
-        assert f"{n} wins in a row" in preset["summary"], (name, preset["summary"], n)
+        assert f"{n} rounds in a row" in preset["summary"], (name, preset["summary"], n)
 
         ev = PairedEvidence(
             cfg["alpha"],
