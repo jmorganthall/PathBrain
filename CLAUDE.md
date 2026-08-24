@@ -235,7 +235,19 @@ LLM-based. See `README.md` for the product overview.
     read against *its* clock, folding in any skew): the client anchors it to its own clock on
     arrival and **ticks it down every second** (`JobStatus.Countdown`), re-anchoring on each
     poll, so the readout keeps falling truthfully between polls instead of freezing and jumping.
-    It floors at "finishing…" rather than counting into the past. The profile test also gained
+    It floors at "finishing…" rather than counting into the past. A **queued** job — waiting on
+    the `coordinator` lock, which on a busy pipeline can be most of an hour — gets none of the
+    three, because all three answer *when does this finish?* and that is exactly what nobody
+    knows: its clock hasn't started, and how long the current holder runs is its own open
+    question. Timing it from `created_at` (the old fallback) charged the wait against work that
+    hadn't begun, so the estimate drained while the job stood still and a long enough queue read
+    "finishing…" for a job that never ran an iteration. So a fourth basis **`queued`** reports
+    the *size of the work* instead — the full time-box, or units × measured unit cost — and the
+    entry carries **`queued: true`** (stated by the adapter, never inferred from the basis, since
+    an unpriceable queued job has no basis to read it off) so the client renders it **standing
+    still** ("20m once it starts", `JobStatus.QueuedEta`) rather than ticking. `started_at` is
+    written at the PENDING → RUNNING transition, so the countdown starts when the job does. The
+    profile test also gained
     real progress — its completed iterations were only ever in the stage sentence, so its bar was
     indeterminate; they're now summed from its chunks (`job_group`), like the manual-run series.
   - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the

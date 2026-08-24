@@ -1281,8 +1281,13 @@ export interface Job {
   // null when the job genuinely can't be estimated — better than a fabricated countdown.
   eta_ms?: number | null;
   // How the estimate was reached: "scheduled" (a time-boxed job's real deadline),
-  // "measured" (units left x measured unit cost), "observed" (this job's own rate so far).
-  eta_basis?: "scheduled" | "measured" | "observed" | null;
+  // "measured" (units left x measured unit cost), "observed" (this job's own rate so far),
+  // "queued" (the job hasn't started — this is how much work it is, not how long is left).
+  eta_basis?: "scheduled" | "measured" | "observed" | "queued" | null;
+  // True while the job is still waiting on the coordination lock. Its clock hasn't started,
+  // so `eta_ms` is a duration of work rather than a remaining time and must NOT be ticked
+  // down — a queued job's finish time moves out for as long as it waits.
+  queued?: boolean;
 }
 
 export interface JobsResponse {

@@ -247,3 +247,106 @@ def test_a_running_profile_test_reports_real_progress_from_its_chunks():
         assert entry["current"] == 3 and entry["total"] == 5
     finally:
         importlib.reload(routes_jobs)
+
+
+# ── Queued jobs: the clock starts when the job does ────────────────────────────────────
+#
+# A job can sit in the feed for an hour before it runs a single iteration, waiting for the
+# coordination lock. Timing it from the moment it was *created* makes the estimate wrong in
+# the one direction that matters — it silently drains while the job is still standing still,
+# and a long enough queue counts a never-started job all the way down to "finishing…".
+
+
+def test_a_queued_job_reports_the_size_of_the_work_not_a_countdown():
+    """It hasn't started, so "when does it finish?" has no answer — nobody knows when the
+    lock frees. "How long is this once it starts?" does, and that's what it reports."""
+    from datetime import datetime, timedelta, timezone
+
+    from pathbrain.api.routes_jobs import _eta_ms
+
+    joined = datetime.now(timezone.utc) - timedelta(minutes=45)
+
+    # A time-boxed job waiting its turn: the full window, undiminished by the wait — the
+    # 20 minutes are counted from when it *starts*, which is exactly what queuing defers.
+    ms, basis = _eta_ms(started_at=None, budget_s=20 * 60, queued=True)
+    assert basis == "queued" and ms == 20 * 60_000
+    # …and the wait itself doesn't eat into it, however long it's been.
+    assert _eta_ms(started_at=joined, budget_s=20 * 60, queued=True) == (20 * 60_000, "queued")
+
+    # A job whose work is priced by the unit: all of it is still ahead.
+    assert _eta_ms(remaining_units=10, per_unit_ms=6_000, queued=True) == (60_000, "queued")
+
+    # Nothing known about the work → say nothing, same as any other unestimatable job.
+    assert _eta_ms(current=0, total=40, queued=True) == (None, None)
+
+
+def test_the_countdown_starts_when_the_job_does():
+    """The moment it takes the lock its clock is real, and the estimate becomes a deadline."""
+    from datetime import datetime, timedelta, timezone
+
+    from pathbrain.api.routes_jobs import _eta_ms
+
+    started = datetime.now(timezone.utc) - timedelta(minutes=5)
+    ms, basis = _eta_ms(started_at=started, budget_s=20 * 60, queued=False)
+    assert basis == "scheduled"
+    assert 14 * 60_000 < ms <= 15 * 60_000
+
+
+def test_a_queued_run_is_not_timed_from_when_it_joined_the_queue():
+    """End to end through the feed: a PENDING run has waited an hour behind the pipeline and
+    still reports its whole cost, flagged so the dropdown shows it standing still."""
+    from datetime import datetime, timedelta, timezone
+
+    from pathbrain.api import routes_jobs
+
+    now = datetime.now(timezone.utc)
+    with session_scope() as s:
+        # One finished run so an iteration has a measured price at all (what the estimate
+        # averages over is whatever history holds, so the assertions read it back rather
+        # than assuming this one is alone).
+        priced = Run(status=RunStatus.COMPLETE, iterations=1, iterations_completed=1,
+                     per_iteration_ms=6_000)
+        fresh = Run(status=RunStatus.PENDING, iterations=10, iterations_completed=0,
+                    created_at=now)
+        stale = Run(status=RunStatus.PENDING, iterations=10, iterations_completed=0,
+                    created_at=now - timedelta(hours=1))
+        s.add_all([priced, fresh, stale])
+        s.flush()
+        ids = (fresh.id, stale.id, priced.id)
+
+    try:
+        with session_scope() as s:
+            entries = {e["id"]: e for e in routes_jobs._active_run_jobs(s)}
+            est = routes_jobs._per_iteration_estimate(s)
+        just_queued, waited_an_hour = entries[f"run-{ids[0]}"], entries[f"run-{ids[1]}"]
+
+        for entry in (just_queued, waited_an_hour):
+            assert entry["queued"] is True
+            assert entry["eta_basis"] == "queued"
+            # All ten iterations are still ahead of it, priced at what an iteration costs.
+            assert entry["eta_ms"] == round(10 * est)
+        # The whole point: an hour in the queue took nothing off the estimate.
+        assert waited_an_hour["eta_ms"] == just_queued["eta_ms"]
+    finally:
+        with session_scope() as s:
+            for rid in ids:
+                row = s.get(Run, rid)
+                if row is not None:
+                    s.delete(row)
+
+
+def test_every_job_entry_says_whether_it_has_started(client):
+    """`queued` is part of the uniform shape, not something an adapter may forget: the
+    client reads it to decide whether the number ticks, and a missing key reads as False."""
+    def work(job):
+        job.set_progress(1, 10, "working")
+        return {}
+
+    jobs.start("unit-queued-shape", "queued shape", work)
+    body = client.get("/api/jobs").json()
+    assert body["jobs"]
+    for entry in body["jobs"]:
+        assert "queued" in entry
+        # An in-process job never queues — it gets its own thread immediately.
+        if entry["queued"]:
+            assert entry["eta_basis"] == "queued"
