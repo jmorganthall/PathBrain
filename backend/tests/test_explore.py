@@ -584,3 +584,132 @@ def test_a_confounded_curve_is_discounted_when_it_drives_a_prediction(monkeypatc
         assert any(ch["key"] in confounded_keys for ch in c["changes"])
     # And a prediction never leaves the Overall's scale, however enthusiastic the curve.
     assert all(0.0 <= c["predicted"] <= 100.0 for c in out["candidates"])
+
+
+# ── A hole in coverage you can actually press ────────────────────────────────────────
+#
+# A gap names a *value* nobody has measured, which is a finding and not something anyone
+# can run: the obvious way to turn one into a profile is what a person does by hand — take
+# the best profile measured and move that one lever. Until it carried that variant the
+# section could say "nothing measured between 1400 and 9000" and offer no way to go and
+# measure it.
+
+
+def test_a_gap_carries_a_runnable_variant_of_the_best_profile(monkeypatch):
+    profiles = [
+        _profile("a", quantum=1000, target=5, overall=60.0),
+        _profile("b", quantum=1200, target=5, overall=62.0),
+        _profile("c", quantum=1400, target=5, overall=64.0),
+        _profile("d", quantum=9000, target=5, overall=66.0),
+    ]
+    out = _landscape(monkeypatch, profiles)
+    gap = next(g for g in out["gaps"] if g["key"] == "Download::quantum" and g["kind"] == "gap")
+    cand = gap["candidate"]
+    # Branched from the best measured profile, with exactly the one untested lever moved.
+    assert cand["parent"]["fingerprint"] == "d"
+    assert [c["key"] for c in cand["changes"]] == ["Download::quantum"]
+    assert cand["changes"][0]["to"] == gap["suggest"] == 5200
+    assert cand["multi_lever"] is False
+    # …and priced like any other candidate, so the page can post it unchanged.
+    assert cand["predicted"] and cand["uncertainty"] and cand["settings"]
+    assert cand["already_measured"] is False
+
+
+def test_an_edge_proposes_going_beyond_the_range_from_the_best_profile(monkeypatch):
+    profiles = [
+        _profile("a", quantum=1000, target=5, overall=60.0),
+        _profile("b", quantum=2000, target=5, overall=70.0),
+        _profile("c", quantum=3000, target=5, overall=80.0),
+        _profile("d", quantum=4000, target=5, overall=90.0),
+    ]
+    out = _landscape(monkeypatch, profiles)
+    edge = next(g for g in out["gaps"] if g["key"] == "Download::quantum" and g["kind"] == "edge")
+    cand = edge["candidate"]
+    assert cand["parent"]["fingerprint"] == "d", "the best profile is the one to extend"
+    assert cand["changes"][0]["to"] > 4000
+    assert "steps past" in cand["changes"][0]["why"]
+
+
+def _gap_parts(monkeypatch, profiles):
+    """The landscape's own pieces, for calling ``attach_gap_candidates`` directly with a
+    chosen "already tried" set — which is the only way to express "the winner has been
+    here", since adding a profile at the suggested value moves the gap somewhere else."""
+    out = _landscape(monkeypatch, profiles)
+    axes = {a["key"]: a for a in out["axes"]}
+    gap = next(g for g in out["gaps"] if g["key"] == "Download::quantum" and g["kind"] == "gap")
+    return out, axes, dict(gap)
+
+
+def _variant_of(point: dict, key: str, value: float) -> tuple:
+    coords = dict(point["coords"])
+    coords[key] = float(value)
+    return tuple(sorted(coords.items()))
+
+
+# A hole between 1400 and 9000 on the download quantum, with the upload quantum varying
+# too — so each profile is a distinct point and "this parent has already been there" is a
+# statement about one profile rather than about the whole field.
+_HOLE = [
+    ("a", 1000, 1514, 60.0),
+    ("b", 1200, 1600, 62.0),
+    ("c", 1400, 1700, 64.0),
+    ("d", 9000, 1800, 66.0),
+]
+
+
+def _hole_profiles():
+    return [
+        _profile(fp, quantum=q, target=5, up_quantum=uq, overall=o)
+        for fp, q, uq, o in _HOLE
+    ]
+
+
+def test_the_gap_variant_falls_to_the_next_best_parent_when_the_winner_has_been_there(monkeypatch):
+    """The winner already having run the suggested value can't answer the question; the
+    runner-up can. Walking down the ranking beats dropping the finding."""
+    profiles = _hole_profiles()
+    out, axes, gap = _gap_parts(monkeypatch, profiles)
+    best = max(out["points"], key=lambda p: p["overall"])
+    gaps = [gap]
+    explore.attach_gap_candidates(
+        gaps, out["points"], axes, out["curves"],
+        already_tried={_variant_of(best, gap["key"], gap["suggest"])},
+    )
+    cand = gaps[0]["candidate"]
+    assert cand["parent"]["fingerprint"] != best["fingerprint"]
+    assert cand["already_measured"] is False
+    assert cand["changes"][0]["to"] == gap["suggest"]
+
+
+def test_a_closed_hole_says_so_rather_than_losing_its_button(monkeypatch):
+    """When every candidate parent has already been to the suggested value the entry is
+    flagged, not dropped — "this hole is closed" is a truthful answer and a silently
+    missing button is not."""
+    profiles = _hole_profiles()
+    out, axes, gap = _gap_parts(monkeypatch, profiles)
+    gaps = [gap]
+    explore.attach_gap_candidates(
+        gaps, out["points"], axes, out["curves"],
+        already_tried={_variant_of(p, gap["key"], gap["suggest"]) for p in out["points"]},
+    )
+    assert gaps[0]["candidate"]["already_measured"] is True
+
+
+def test_a_gap_suggestion_is_the_value_the_firewall_can_actually_hold(monkeypatch):
+    """The number on screen has to be the number that runs. CoDel target is a select keyed
+    by a bare integer, so a midpoint of 6.5ms is a suggestion that cannot exist — the apply
+    quantizes it and the ledger then grades the claim against a profile that isn't it."""
+    profiles = [
+        _profile("a", quantum=1000, target=3, overall=60.0),
+        _profile("b", quantum=1200, target=4, overall=62.0),
+        _profile("c", quantum=1400, target=5, overall=64.0),
+        _profile("d", quantum=1600, target=40, overall=66.0),
+    ]
+    out = _landscape(monkeypatch, profiles)
+    gap = next(
+        (g for g in out["gaps"] if g["field"] == "target" and g["kind"] == "gap"), None
+    )
+    if gap is None:  # the target axis produced no wide hole in this field
+        return
+    assert float(gap["suggest"]) == int(gap["suggest"])
+    assert gap["candidate"]["changes"][0]["to"] == float(gap["suggest"])

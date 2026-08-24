@@ -751,6 +751,97 @@ def full_overrides(parent_settings: list[dict] | None, changes: list[dict] | Non
     return list(by_label.values())
 
 
+def _parent_order(points: list[dict]) -> list[dict]:
+    """The profiles worth branching a new candidate from, best first.
+
+    Settled ground first, ranked by the *pessimistic* end of each profile's own spread —
+    pessimism decides what to build on, optimism decides what to measure, the same split
+    the duel makes between its standings floor and its matchmaking ceiling. A thin
+    profile's measurement belongs in the model (it is the only reading of that point) but a
+    five-iteration Overall is not something to grow a family of new candidates on: the
+    right response to a promising thin profile is to mature it, not to extend it before
+    anyone knows whether its number is real. Thin profiles fill in only when there isn't
+    enough settled ground to branch from at all, since a page with no candidates helps
+    nobody.
+    """
+    def _rank(p: dict) -> tuple:
+        return (-p.get("trusted", p["overall"]), -p["iterations"])
+
+    settled = sorted([p for p in points if p.get("confident")], key=_rank)
+    if len(settled) >= MIN_POINTS:
+        return settled
+    thin = sorted([p for p in points if not p.get("confident")], key=_rank)
+    return settled + thin
+
+
+def _candidate_dict(
+    parent: dict,
+    changes: dict[str, tuple[float, str]],
+    axes: dict[str, dict],
+    points: list[dict],
+    by_key: dict[str, dict],
+    pairs_by_key: dict[str, dict],
+    local_curve: dict[str, dict] | None,
+) -> dict:
+    """One proposed profile: ``parent`` with ``changes`` applied, priced and explained.
+
+    Shared by the ranked candidate list and by the runnable variant attached to each hole
+    in coverage, so a "fill this gap" proposal is priced by exactly the same machinery as a
+    headline candidate — one prediction, one evidence trail, one payload the test button
+    can post.
+    """
+    coords = dict(parent["coords"])
+    coords.update({k: v for k, (v, _) in changes.items()})
+    moves = {k: v for k, (v, _) in changes.items()}
+    predicted, evidence = _predict(parent, moves, by_key, pairs_by_key, local_curve)
+    uncertainty, nearest = _uncertainty(coords, points, axes)
+    # Moving two levers at once is NOT the sum of moving each — that additivity is
+    # exactly what the basin structure disproves, and a candidate assuming it is
+    # guessing harder than a single-lever one. Widen the band rather than pretend.
+    multi = len(moves) > 1
+    base_uncertainty = uncertainty
+    if multi:
+        uncertainty *= MULTI_LEVER_UNCERTAINTY
+    predicted = min(OVERALL_MAX, max(OVERALL_MIN, predicted))
+    # Opportunity is what we haven't measured; model risk is what we might be getting
+    # wrong. Only the first belongs on the upside.
+    upside = predicted + EXPLORATION_WEIGHT * base_uncertainty
+    if multi:
+        upside -= (MULTI_LEVER_UNCERTAINTY - 1.0) * base_uncertainty
+    upside = min(OVERALL_MAX, max(OVERALL_MIN, upside))
+    return {
+        "changes": [
+            {
+                "key": k,
+                "pipe": axes[k]["pipe"],
+                "field": axes[k]["field"],
+                "field_label": axes[k]["field_label"],
+                "unit": axes[k]["unit"],
+                "from": parent["coords"][k],
+                "to": v,
+                "why": why,
+            }
+            for k, (v, why) in changes.items()
+        ],
+        "parent": {
+            "fingerprint": parent["fingerprint"],
+            "name": parent["name"],
+            "label": parent["label"],
+            "overall": round(parent["overall"], 2),
+        },
+        "coords": coords,
+        "predicted": round(predicted, 2),
+        "uncertainty": round(uncertainty, 2),
+        # How the prediction was arrived at, so a number backed by a controlled pair is
+        # never mistaken for one extrapolated off a confounded average.
+        "evidence": evidence,
+        "multi_lever": multi,
+        "upside": round(upside, 2),
+        "nearest_measured": round(nearest, 3),
+        "settings": _settings_for(parent, moves, axes),
+    }
+
+
 def _candidates(
     points: list[dict],
     axes: dict[str, dict],
@@ -796,15 +887,7 @@ def _candidates(
     # standings floor and its matchmaking ceiling. Thin profiles fill in only when there is
     # not enough settled ground to branch from at all, since a page with no candidates helps
     # nobody.
-    def _rank(p: dict) -> tuple:
-        return (-p.get("trusted", p["overall"]), -p["iterations"])
-
-    settled = sorted([p for p in points if p.get("confident")], key=_rank)
-    if len(settled) >= MIN_POINTS:
-        parents = settled[:CANDIDATE_PARENTS]
-    else:
-        thin = sorted([p for p in points if not p.get("confident")], key=_rank)
-        parents = (settled + thin)[:CANDIDATE_PARENTS]
+    parents = _parent_order(points)[:CANDIDATE_PARENTS]
 
     # (axis, value, why) worth trying, computed once per axis rather than per parent.
     moves: list[tuple[str, float, str]] = [
@@ -823,56 +906,15 @@ def _candidates(
         if sig in seen or sig in measured_coords:
             return
         seen.add(sig)
-        moves = {k: v for k, (v, _) in changes.items()}
-        predicted, evidence = _predict(
-            parent, moves, by_key, pairs_by_key, local_curves.get(parent["fingerprint"])
-        )
-        uncertainty, nearest = _uncertainty(coords, points, axes)
-        # Moving two levers at once is NOT the sum of moving each — that additivity is
-        # exactly what the basin structure disproves, and a candidate assuming it is
-        # guessing harder than a single-lever one. Widen the band rather than pretend.
-        multi = len(moves) > 1
-        base_uncertainty = uncertainty
-        if multi:
-            uncertainty *= MULTI_LEVER_UNCERTAINTY
-        predicted = min(OVERALL_MAX, max(OVERALL_MIN, predicted))
-        # Opportunity is what we haven't measured; model risk is what we might be getting
-        # wrong. Only the first belongs on the upside.
-        upside = predicted + EXPLORATION_WEIGHT * base_uncertainty
-        if multi:
-            upside -= (MULTI_LEVER_UNCERTAINTY - 1.0) * base_uncertainty
-        upside = min(OVERALL_MAX, max(OVERALL_MIN, upside))
-        out.append({
-            "changes": [
-                {
-                    "key": k,
-                    "pipe": axes[k]["pipe"],
-                    "field": axes[k]["field"],
-                    "field_label": axes[k]["field_label"],
-                    "unit": axes[k]["unit"],
-                    "from": parent["coords"][k],
-                    "to": v,
-                    "why": why,
-                }
-                for k, (v, why) in changes.items()
-            ],
-            "parent": {
-                "fingerprint": parent["fingerprint"],
-                "name": parent["name"],
-                "label": parent["label"],
-                "overall": round(parent["overall"], 2),
-            },
-            "coords": coords,
-            "predicted": round(predicted, 2),
-            "uncertainty": round(uncertainty, 2),
-            # How the prediction was arrived at, so a number backed by a controlled pair is
-            # never mistaken for one extrapolated off a confounded average.
-            "evidence": evidence,
-            "multi_lever": multi,
-            "upside": round(upside, 2),
-            "nearest_measured": round(nearest, 3),
-            "settings": _settings_for(parent, {k: v for k, (v, _) in changes.items()}, axes),
-        })
+        out.append(_candidate_dict(
+            parent,
+            changes,
+            axes,
+            points,
+            by_key,
+            pairs_by_key,
+            local_curves.get(parent["fingerprint"]),
+        ))
 
     # Each parent's own neighbourhood, so a prediction about moving THIS profile is made
     # from profiles that resemble it rather than from an average over the whole field.
@@ -921,6 +963,95 @@ def _candidate_summary(candidate: dict, best_measured: float) -> str:
     )
 
 
+
+def attach_gap_candidates(
+    gaps: list[dict],
+    points: list[dict],
+    axes: dict[str, dict],
+    curves: list[dict],
+    pairs: list[dict] | None = None,
+    already_tried: set | None = None,
+    best_measured: float | None = None,
+) -> None:
+    """Give every hole in coverage a profile that would actually fill it, in place.
+
+    A gap or an edge names a *value* nobody has measured, which is a finding and not yet
+    something anyone can run: a value isn't a profile, and the obvious way to turn one into
+    a profile is the one a person does by hand — take the best profile measured and set
+    that one lever to the untested value, leaving everything else where the winner has it.
+    That is the same "this profile with a lever moved" move the ranked candidates make, so
+    it is priced by the same machinery (``_candidate_dict``) and posts the same payload.
+
+    Why it needs to exist at all: the holes *are* already among the moves the candidate
+    list is generated from, but that list is ranked by upper confidence bound and cut to a
+    handful, so a gap whose predicted score is unremarkable never surfaces as something you
+    can press — even though "one run settles it" is exactly the argument for pressing it.
+    Coverage and promise are different reasons to measure something, and the page shows
+    both; only one of them had a button.
+
+    The parent is the best profile whose variant is *untested*, walking down the ranking
+    until one is: the winner already running the suggested value (or having run it before)
+    means the winner cannot answer this question, and the runner-up can. When every
+    candidate parent has already been there the entry is flagged ``already_measured``
+    rather than dropped, because "this hole is closed" is a truthful answer and a silently
+    missing button is not.
+    """
+    if not gaps or not points or not axes:
+        return
+    by_key = {c["key"]: c for c in curves}
+    pairs_by_key = {m["key"]: m for m in (pairs or [])}
+    tried = already_tried if already_tried is not None else {
+        tuple(sorted(p["coords"].items())) for p in points
+    }
+    best = _best_established(points) if best_measured is None else best_measured
+    parents = _parent_order(points)[:CANDIDATE_PARENTS]
+    local_curves: dict[str, dict] = {}
+
+    def _local(parent: dict) -> dict:
+        fp = parent["fingerprint"]
+        if fp not in local_curves:
+            local_curves[fp] = {c["key"]: c for c in conditioned_curves(points, axes, parent)}
+        return local_curves[fp]
+
+    for gap in gaps:
+        key = gap["key"]
+        axis = axes.get(key)
+        if not axis:
+            continue
+        value = coerce_value(axis["field"], gap["suggest"])
+        if not isinstance(value, (int, float)):
+            continue
+        value = float(value)
+        why = (
+            f"steps past {gap['to']:g}, the end of the tested range"
+            if gap["kind"] == "edge"
+            else f"fills the untested gap {gap['from']:g}–{gap['to']:g}"
+        )
+        usable = [p for p in parents if key in p["coords"] and p["coords"][key] != value]
+        chosen = None
+        exhausted = False
+        for parent in usable:
+            coords = dict(parent["coords"])
+            coords[key] = value
+            if tuple(sorted(coords.items())) in tried:
+                continue
+            chosen = parent
+            break
+        if chosen is None:
+            if not usable:
+                continue
+            chosen, exhausted = usable[0], True
+        candidate = _candidate_dict(
+            chosen, {key: (value, why)}, axes, points, by_key, pairs_by_key, _local(chosen)
+        )
+        candidate["beats_best_by"] = round(candidate["upside"] - best, 2)
+        candidate["summary"] = _candidate_summary(candidate, best)
+        candidate["already_measured"] = exhausted
+        # The coerced value is what will really run, so the finding says it too — a lever is
+        # only as fine-grained as the firewall's own control, and a suggestion the apply
+        # would quantize is a suggestion graded against a profile that isn't it.
+        gap["suggest"] = value if value != int(value) else int(value)
+        gap["candidate"] = candidate
 
 # ── Confounding: what the marginal curve cannot tell you ─────────────────────────────
 #
@@ -1351,6 +1482,11 @@ def landscape(
     # De-confounding. The marginal curves above answer "how do profiles with this value
     # score?"; these answer "what happens if I change this value", which is the question
     # anyone tuning a shaper is actually asking.
+    # A hole in coverage names a value, not a profile. Attach the profile that would fill
+    # it — the best measured one with that single lever moved — so "one run settles it" is
+    # something the page can actually offer rather than an observation.
+    attach_gap_candidates(gaps, points, axes, curves, pairs, already_tried=tried)
+
     by_fp = {p["fingerprint"]: p for p in points}
     ref = by_fp.get(reference or "") or max(points, key=lambda p: p["overall"])
     imbalance = _imbalance(points, axes)

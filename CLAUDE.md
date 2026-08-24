@@ -719,7 +719,19 @@ LLM-based. See `README.md` for the product overview.
     that as "lower is better" would send you to the low end the curve says is worse
     (`test_an_interior_peak_beats_a_strong_correlation`). **(3) Gaps** — a **`gap`** is a blank
     between two tested values (bracketed, one run settles it); an **`edge`** is the best value
-    being the end of the range (not bracketed at all — the optimum may lie beyond). **(4)
+    being the end of the range (not bracketed at all — the optimum may lie beyond). **Each hole
+    carries a runnable variant** (`attach_gap_candidates`): a value is a finding, not a profile, so
+    the hole is materialized the way a person would do it by hand — the **best measured profile
+    with that one lever moved** to the (coerced) untested value — priced by the same
+    `_candidate_dict` the ranked candidates use, so the row posts the identical
+    `POST /explore/test` payload and the claim lands in the same ledger. It's needed because the
+    holes are already *among* the moves candidates are generated from, but that list is UCB-ranked
+    and cut to a handful, so a gap with an unremarkable prediction never surfaced as something you
+    could press — and "one run settles it" is exactly the argument for pressing it. Coverage and
+    promise are different reasons to measure, and only one of them had a button. The parent walks
+    down `_parent_order` until a variant is untested (the winner already running that value can't
+    answer the question, the runner-up can); when every parent has been there the row is flagged
+    `already_measured` rather than dropped. **(4)
     Interactions** — per axis pair, split each at its median and read the 2×2 contrast
     `(HH−LH)−(HL−LL)`: does the better half of one lever depend on which half of the other you're
     in? That's the "does the best download quantum depend on the upload quantum?" question, which
