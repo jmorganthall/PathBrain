@@ -102,6 +102,30 @@ function QueuedEta({ etaMs }: { etaMs: number }) {
   );
 }
 
+/**
+ * A job that holds the pipeline and has shown no sign of progress.
+ *
+ * This replaces the countdown rather than sitting beside it, because the countdown is
+ * exactly what stops being true here: a time-boxed job past its deadline floors at
+ * "finishing…", so a duel wedged at 23:00 in a browser call that never returned read
+ * "finishing…" all night while nothing whatsoever happened. Silence is the one thing that
+ * can be stated for certain, and how long it has lasted is what decides whether to look.
+ */
+function Stalled({ ms }: { ms: number }) {
+  return (
+    <Tooltip
+      title={
+        "This job holds the benchmark pipeline and hasn't reported progress. If it stays " +
+        "quiet it is handed on automatically; /api/health/pipeline shows what call it is in."
+      }
+    >
+      <Typography component="span" variant="caption" color="warning.main">
+        {`no progress for ${fmtCountdown(ms)}`}
+      </Typography>
+    </Tooltip>
+  );
+}
+
 function StatusIcon({ status }: { status: Job["status"] }) {
   if (status === "running") return <CircularProgress size={16} />;
   if (status === "succeeded") return <CheckCircleIcon color="success" fontSize="small" />;
@@ -178,7 +202,12 @@ function JobRow({
           </Typography>
           {job.status === "running" && !job.error && (
             <Typography component="span" variant="caption" color="text.secondary">
-              {job.eta_ms == null ? (
+              {job.stalled_ms != null ? (
+                <>
+                  {"· "}
+                  <Stalled ms={job.stalled_ms} />
+                </>
+              ) : job.eta_ms == null ? (
                 // Say so rather than showing nothing: "no estimate yet" is information
                 // ("it hasn't finished a unit"), an empty space is ambiguous. A job that
                 // hasn't started says the more specific thing.

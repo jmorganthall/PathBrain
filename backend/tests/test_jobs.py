@@ -401,3 +401,31 @@ def test_a_profile_with_no_call_sign_falls_back_to_its_label():
         assert "leader q1514 t5ms" in entry["message"]
     finally:
         importlib.reload(routes_jobs)
+
+
+# ── "it says it's finishing, and nothing is happening" ─────────────────────────────────
+
+
+def test_a_silent_holder_is_reported_as_stalled_rather_than_finishing():
+    """A time-boxed job past its deadline floors at "finishing…" — which is what a duel
+    wedged in an unanswered browser call read as, all night, while nothing happened. When
+    the job holding the pipeline has shown no progress, the feed says so instead."""
+    from pathbrain import coordinator
+    from pathbrain.api import routes_jobs
+
+    assert routes_jobs._stalled_ms("duel#7") is None, "nobody holds it"
+    with coordinator.hold("duel#7") as lease:
+        assert routes_jobs._stalled_ms("duel#7") is None, "a live holder is not stalled"
+        assert routes_jobs._stalled_ms("run#3") is None, "…and it is only about the holder"
+        lease.last_beat -= routes_jobs.STALL_REPORT_S + 60
+        stalled = routes_jobs._stalled_ms("duel#7")
+        assert stalled is not None and stalled >= routes_jobs.STALL_REPORT_S * 1000
+
+
+def test_the_feed_reports_the_state_of_the_pipeline_itself(client):
+    """Eight rows saying "waiting to start" describe the queue; only this describes what
+    they are queued on."""
+    body = client.get("/api/jobs").json()
+    assert "pipeline" in body
+    assert set(body["pipeline"]) >= {"busy", "owner", "stalled_for_s", "waiting"}
+    assert body["pipeline"]["busy"] is False

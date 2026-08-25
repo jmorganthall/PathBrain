@@ -3131,6 +3131,42 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
 
     cfg = get_config(session).get("crown_follow", {}) or {}
     rematch_days = int((get_config(session).get("duel", {}) or {}).get("rematch_days", 7) or 7)
+
+    champion = duel_mod.latest_champion(session, max_age_days=rematch_days)
+    follow_status = crown_follower.status()
+    churn = crown_follower.stats(session)
+    events = crown_follower.recent_events(session, limit=20)
+
+    # Call signs, resolved by fingerprint in one query for everything the popover shows.
+    # The stored ``label`` on a crown event is a full settings summary — *"Download:
+    # 880Mbit q7313 t7 i45 ecn | Upload: 880Mbit q450 t3 i60 ecn"* — so a ledger of crown
+    # changes read as two of those with an arrow between them, in a 340px popover, on a
+    # phone. It says what changed and never says **who**, which is exactly what call signs
+    # exist for and what every other view already leads with. Resolved by fingerprint (not
+    # frozen into the row) so a rename lands everywhere at once, and best-effort: naming
+    # can never be why the popover fails.
+    _named = _crown_follow_names(
+        session,
+        [
+            (follow_status.get("last_result") or {}).get("crown_fingerprint"),
+            (follow_status.get("last_result") or {}).get("governing_fingerprint"),
+            churn.get("current_crown_fingerprint"),
+            (champion or {}).get("fingerprint"),
+            *[e.get("fingerprint") for e in events],
+            *[e.get("previous_fingerprint") for e in events],
+        ],
+    )
+    last_result = follow_status.get("last_result")
+    if isinstance(last_result, dict):
+        last_result["crown_name"] = _named.get(last_result.get("crown_fingerprint"))
+        last_result["governing_name"] = _named.get(last_result.get("governing_fingerprint"))
+    churn["current_crown_name"] = _named.get(churn.get("current_crown_fingerprint"))
+    if champion:
+        champion["name"] = _named.get(champion.get("fingerprint")) or champion.get("label")
+    for e in events:
+        e["name"] = _named.get(e.get("fingerprint"))
+        e["previous_name"] = _named.get(e.get("previous_fingerprint"))
+
     return {
         "config": {
             "enabled": bool(cfg.get("enabled", False)),
@@ -3141,11 +3177,23 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
         "policies": list(crowning.POLICIES),
         # The duel ladder's latest fresh champion (or null) — shown beside the pooled
         # crown so the popover can display both verdicts whatever the policy.
-        "duel_champion": duel_mod.latest_champion(session, max_age_days=rematch_days),
-        "status": crown_follower.status(),
-        "stats": crown_follower.stats(session),
-        "events": crown_follower.recent_events(session, limit=20),
+        "duel_champion": champion,
+        "status": follow_status,
+        "stats": churn,
+        "events": events,
     }
+
+
+def _crown_follow_names(session: Session, fingerprints: list[str | None]) -> dict[str, str]:
+    """Call signs for a mixed bag of (possibly None, possibly repeated) fingerprints."""
+    wanted = sorted({fp for fp in fingerprints if fp})
+    if not wanted:
+        return {}
+    try:
+        return profile_names.names_for(session, wanted)
+    except Exception:  # noqa: BLE001 — a cosmetic lookup can't break the status read
+        log.debug("Crown-follow status: could not resolve call signs", exc_info=True)
+        return {}
 
 
 @router.post("/settings/crown-follow")

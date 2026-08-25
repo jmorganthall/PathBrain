@@ -324,6 +324,18 @@ class BrowserBenchmark(BenchmarkPlugin):
         """Close the reused Chromium at the end of a run (never raises)."""
         self._close_browser()
 
+    def abandon(self) -> None:
+        """Drop the Chromium handles without touching them (never raises, never blocks).
+
+        Called when a probe blew its deadline and its thread was abandoned mid-call. The
+        browser and the Playwright connection belong to that thread and may be exactly
+        what is wedged, so ``close()`` here would hang the *next* thread too. Letting go
+        of the references instead leaves the old process leaked — deliberately, since the
+        alternative is a stalled pipeline — and lets the next probe launch a fresh one.
+        """
+        self._browser = None
+        self._pw = None
+
     def run(self, config: dict) -> PluginResult:
         urls: list[str] = config.get("urls", [])
         if not urls:

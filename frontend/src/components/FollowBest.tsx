@@ -244,7 +244,12 @@ export default function FollowBest() {
             </Stack>
             {info?.duel_champion ? (
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-                Duel champion: <b>{info.duel_champion.label || info.duel_champion.fingerprint}</b>
+                Duel champion:{" "}
+                <b>
+                  {info.duel_champion.name ||
+                    info.duel_champion.label ||
+                    info.duel_champion.fingerprint}
+                </b>
                 {info.duel_champion.decisive ? "" : " (by draws only)"} · duel #
                 {info.duel_champion.duel_id}
                 {policy === "duel" && !info.duel_champion.decisive
@@ -266,25 +271,45 @@ export default function FollowBest() {
               Crown
             </Typography>
             {last?.crown_fingerprint ? (
-              <Typography variant="body2">
-                <Link
-                  component={RouterLink}
-                  to={`/profiles/${encodeURIComponent(last.crown_fingerprint)}`}
-                  onClick={() => setAnchor(null)}
-                  underline="hover"
-                >
-                  {last.crown_label || last.crown_fingerprint}
-                </Link>{" "}
-                {last.on_crown === true && (
-                  <Chip size="small" label="firewall on crown" color="success" variant="outlined" />
+              <>
+                <Typography variant="body2">
+                  <Link
+                    component={RouterLink}
+                    to={`/profiles/${encodeURIComponent(last.crown_fingerprint)}`}
+                    onClick={() => setAnchor(null)}
+                    underline="hover"
+                  >
+                    {last.crown_name || last.crown_label || last.crown_fingerprint}
+                  </Link>{" "}
+                  {last.on_crown === true && (
+                    <Chip size="small" label="firewall on crown" color="success" variant="outlined" />
+                  )}
+                  {last.on_crown === false && (
+                    <Chip size="small" label="firewall elsewhere" color="warning" variant="outlined" />
+                  )}
+                </Typography>
+                {/* The settings that name stands for — kept, demoted, clamped. A summary is
+                    what you read once you already know which profile you are looking at. */}
+                {last.crown_name && last.crown_label && (
+                  <Typography
+                    variant="caption"
+                    color="text.disabled"
+                    title={last.crown_label}
+                    sx={{
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {last.crown_label}
+                  </Typography>
                 )}
-                {last.on_crown === false && (
-                  <Chip size="small" label="firewall elsewhere" color="warning" variant="outlined" />
-                )}
-              </Typography>
+              </>
             ) : (
               <Typography variant="body2" color="text.secondary">
-                {stats?.current_crown_label ||
+                {stats?.current_crown_name ||
+                  stats?.current_crown_label ||
                   stats?.current_crown_fingerprint ||
                   "No confident crown yet"}
               </Typography>
@@ -332,8 +357,10 @@ export default function FollowBest() {
                   <Typography key={e.id} variant="caption" sx={{ display: "block" }}>
                     {fmtTimeShort(e.created_at)} ·{" "}
                     {e.previous_fingerprint
-                      ? `${e.previous_label || e.previous_fingerprint} → ${e.label || e.fingerprint}`
-                      : `tracking started (${e.label || e.fingerprint})`}
+                      ? `${e.previous_name || e.previous_label || e.previous_fingerprint} → ${
+                          e.name || e.label || e.fingerprint
+                        }`
+                      : `tracking started (${e.name || e.label || e.fingerprint})`}
                     {e.applied && (
                       <Chip
                         size="small"

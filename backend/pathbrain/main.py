@@ -102,6 +102,45 @@ def health() -> dict:
     return {"status": "ok", "version": __version__}
 
 
+@app.get("/api/health/pipeline")
+def pipeline_health() -> dict:
+    """What the benchmark pipeline is doing, and — if it is doing nothing — where it stopped.
+
+    "It seems stuck" is unfalsifiable from the outside: the jobs feed shows a running job
+    because a row says RUNNING, and a wedged thread looks exactly like a busy one. This is
+    the read that settles it, in one request and without touching the database: who holds
+    the coordination lock, how long since they last showed progress, how many sessions are
+    queued behind them, the probe worker's health (including any thread abandoned mid-call)
+    — and the **stack of every thread**, which is the only thing that says *what call* is
+    not returning.
+
+    Read-only and cheap: ``sys._current_frames()`` is a snapshot, not an interruption.
+    """
+    import sys
+    import threading
+    import traceback
+
+    from . import coordinator, probes
+
+    by_id = {t.ident: t for t in threading.enumerate()}
+    stacks = []
+    for ident, frame in sys._current_frames().items():
+        thread = by_id.get(ident)
+        name = thread.name if thread is not None else f"thread-{ident}"
+        # Only the frames that matter: a full stack is mostly framework, and the tail is
+        # where the blocked call is.
+        stacks.append({
+            "thread": name,
+            "daemon": bool(thread.daemon) if thread is not None else None,
+            "stack": [line.rstrip() for line in traceback.format_stack(frame)[-12:]],
+        })
+    return {
+        "coordinator": coordinator.status(),
+        "probes": probes.stats(),
+        "threads": sorted(stacks, key=lambda s: s["thread"]),
+    }
+
+
 @app.get("/api/version")
 def version() -> dict:
     """Build identity + a cached, best-effort check for a newer build to pull."""
