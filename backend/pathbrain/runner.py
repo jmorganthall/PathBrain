@@ -16,6 +16,7 @@ from time import perf_counter
 
 from sqlalchemy import select
 
+from . import coordinator, probes
 from .config import get_settings
 from .config_store import get_config
 from .database import session_scope
@@ -40,6 +41,26 @@ MAX_ITERATIONS = 500
 # persists every completed chunk instead of losing the whole thing. Runs of
 # ``CHUNK_ITERATIONS`` or fewer execute as a single run (the historical behaviour).
 CHUNK_ITERATIONS = 5
+
+#: Fallback probe deadline when the config carries none (see ``probes``).
+DEFAULT_PROBE_TIMEOUT_MINUTES = 10.0
+
+
+def _probe_timeout_s(config: dict) -> float:
+    """How long one plugin call may take before it is abandoned.
+
+    Kept comfortably under the coordinator's stall threshold: a probe hitting its
+    deadline must recover *before* the pipeline concludes its holder is dead, so the
+    ordinary case is one failed measurement rather than an evicted session.
+    """
+    raw = (config.get("monitoring", {}) or {}).get(
+        "probe_timeout_minutes", DEFAULT_PROBE_TIMEOUT_MINUTES
+    )
+    try:
+        minutes = float(raw)
+    except (TypeError, ValueError):
+        minutes = DEFAULT_PROBE_TIMEOUT_MINUTES
+    return max(minutes, 0.5) * 60.0
 
 
 def create_run(
@@ -122,10 +143,12 @@ def teardown_plugins() -> None:
     instances the runs used. Never raises.
     """
     for plugin in iter_plugins():
-        try:
-            plugin.teardown()
-        except Exception:  # noqa: BLE001 — teardown must never break the caller
-            log.warning("Plugin '%s' teardown failed", plugin.name, exc_info=True)
+        # Routed through the probe worker, not called here: Playwright's sync objects
+        # belong to the thread that created them, and since the plugin *ran* on the
+        # worker, closing Chromium from this thread would silently fail and leak a
+        # browser process per run. A wedged close gets the same deadline a wedged probe
+        # does (see ``probes``).
+        probes.teardown(plugin)
 
 
 def _metric_stats(values: list[float]) -> dict:
@@ -817,6 +840,7 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                     return iterations
 
             plugin_counts = {p.name: _plugin_count(p.name) for p in plugins}
+            probe_timeout_s = _probe_timeout_s(config)
             artifact_base = os.path.abspath(get_settings().artifact_dir)
             iteration_durations: list[float] = []
             weights = config.get("weights", {})
@@ -845,8 +869,17 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                         ran_full_suite = False  # this plugin opted out of this round
                         continue
                     section = config.get(plugin.name, {})
-                    result = plugin.run(section)
+                    # A probe is the one call that hands control to something we do not
+                    # own; bounded so a wedged socket or browser can never park the
+                    # pipeline (``probes``). A timeout comes back as an ordinary failed
+                    # measurement, so nothing downstream needs to know.
+                    result = probes.run_plugin(plugin, section, timeout_s=probe_timeout_s)
                     per_plugin[plugin.name].append(result)
+                    # The coordination lock's holder is alive and making progress. Said
+                    # here rather than once per run because a run is the long thing: the
+                    # stall watchdog reads the gap between beats, so it has to be stamped
+                    # at the granularity work actually happens at.
+                    coordinator.beat()
                     if result.success:
                         # Interpret raw → scoreable metrics (the cache); raw is kept
                         # as the source of truth so this can be re-derived later.

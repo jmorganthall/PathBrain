@@ -187,6 +187,18 @@ def _loop(stop: threading.Event) -> None:
                 )
             fail_stale_runs(timeout_min)
 
+            # …and the other half of that watchdog. Failing the *row* of a hung run was
+            # only ever bookkeeping: the thread that hung is still holding the pipeline,
+            # so every session queued behind it waits on a thread that is never coming
+            # back (observed: a duel wedged at 23:00 still owned the lock at 07:30, with
+            # this watchdog marking its run failed every 15 seconds and nothing changing).
+            # Evicting a holder that has stopped showing progress is what turns the
+            # observation into a recovery — the wedged thread is disowned rather than
+            # killed, which Python cannot do (see ``coordinator``).
+            from . import coordinator as _coordinator
+
+            _coordinator.evict_if_stalled()
+
             # Another firewall/benchmark session (sweep, profile test, manual run)
             # owns the pipeline while it holds the coordination lock. Yield so
             # monitoring and experiments never overlap its measurements.

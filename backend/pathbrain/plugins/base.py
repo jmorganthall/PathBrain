@@ -59,6 +59,19 @@ class BenchmarkPlugin(ABC):
         it here. Must never raise.
         """
 
+    def abandon(self) -> None:
+        """Let go of resources whose owning thread is wedged (default: nothing).
+
+        The counterpart to :meth:`teardown` for the case where teardown itself cannot be
+        trusted. When a probe blows its deadline (see ``pathbrain.probes``) the thread it
+        was running on is abandoned mid-call, so anything that thread created — a
+        Playwright connection, a Chromium — can no longer be *closed*: closing it means
+        calling into the same wedged resource from a thread that doesn't own it, which is
+        the original hang one frame further out. A plugin implements this to **drop the
+        handles without touching them**, so its next call rebuilds from scratch. Must
+        never raise, and must never block.
+        """
+
     # -- helpers -----------------------------------------------------------
     def timed(self, fn: Callable[[], dict]) -> PluginResult:
         """Run ``fn`` returning ``{"raw": ..., "details": ...}`` and wrap with timing.

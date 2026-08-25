@@ -2291,3 +2291,51 @@ def test_duel_profile_endpoint_serves_the_record(client):
     assert body["record"]["losses"] == 1
     assert body["bouts"][0]["margin"] == -4.0
     assert body["bouts"][0]["opponent_name"]  # call signs resolved by fingerprint
+
+
+def test_an_evicted_ladder_stops_instead_of_applying_over_the_top(monkeypatch):
+    """A ladder that goes quiet long enough to lose the pipeline must not carry on.
+
+    The stall this guards against parks the duel inside an unanswered probe; the
+    coordinator eventually hands the pipeline to whoever is queued (see
+    ``coordinator.evict_if_stalled``). If the wedged thread then wakes up mid-session it
+    would apply profiles on top of a live session — the one thing the lock exists to
+    prevent — so the ladder checks its lease at each seam and stops there.
+    """
+    import pathbrain.api.routes_settings as rs
+    from pathbrain import coordinator
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+    applied: list[str] = []
+
+    fake_field = {
+        "best_fingerprint": "inc0000000x",
+        "profiles": [
+            {"fingerprint": "inc0000000x", "label": "incumbent", "settings": [{"label": "wan", "quantum": 1514}]},
+            {"fingerprint": "cha0000000x", "label": "challenger", "settings": [{"label": "wan", "quantum": 300}]},
+        ],
+    }
+    monkeypatch.setattr(rs, "compute_profiles", lambda session: fake_field)
+    monkeypatch.setattr(
+        rs, "_compute_heirs", lambda result, session, live=None: {"items": [{"fingerprint": "cha0000000x"}]}
+    )
+
+    def apply_then_lose_the_pipeline(provider, settings, fp):
+        applied.append(fp)
+        if len(applied) == 2:  # the watchdog gives up on us mid-pair
+            coordinator.evict_if_stalled(threshold_s=-1)
+
+    monkeypatch.setattr(challenger_mod, "_apply_profile", apply_then_lose_the_pipeline)
+
+    _no_settle()
+    _score_by_profile(monkeypatch, applied, {"inc0000000x": 60.0, "cha0000000x": 66.0})
+
+    duel_id = duel_mod.start(duration_minutes=10)
+    d = _wait_finish(duel_id)
+
+    assert d.status == DuelStatus.FAILED
+    assert "revoked" in (d.error or "").lower()
+    assert len(applied) == 2, "it stopped at the next seam rather than applying again"
+    assert not duel_mod.active()
+    assert not coordinator.busy(), "the evicted session must not release a lock it lost"

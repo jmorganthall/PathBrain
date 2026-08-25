@@ -1298,11 +1298,33 @@ export interface Job {
   // so `eta_ms` is a duration of work rather than a remaining time and must NOT be ticked
   // down — a queued job's finish time moves out for as long as it waits.
   queued?: boolean;
+  // How long this job has held the benchmark pipeline without reporting progress (null =
+  // it is progressing, or isn't the holder). It replaces the countdown when set: a
+  // time-boxed job past its deadline floors at "finishing…", which is precisely the
+  // reading a wedged job gives for as long as it stays wedged.
+  stalled_ms?: number | null;
+}
+
+// The gate every benchmark session queues on. A feed of "waiting" rows says everyone is
+// waiting; this says what they are waiting on, and whether it is still alive.
+export interface PipelineStatus {
+  busy: boolean;
+  owner: string | null;
+  held_for_s: number | null;
+  // Seconds since the holder last showed progress. Not the same question as held_for_s —
+  // a duel window is meant to run for hours, so age proves nothing and silence is what
+  // distinguishes a session from a wedge.
+  stalled_for_s: number | null;
+  stale_after_s: number;
+  waiting: number;
+  evictions: number;
+  last_eviction: { owner: string; quiet_s: number; held_s: number; at: number } | null;
 }
 
 export interface JobsResponse {
   jobs: Job[];
   running: number;
+  pipeline?: PipelineStatus;
 }
 
 // Consolidated raw export (GET /history/dump). The shape is intentionally loose —
@@ -1510,11 +1532,16 @@ export interface CrownCheckResult {
   enabled: boolean;
   crown_fingerprint: string | null;
   crown_label: string | null;
+  // The profile's call sign ("Speedy Sloth"), resolved by fingerprint at read time so a
+  // rename lands here too. The label beside it is the technical settings summary — every
+  // view leads with the name and keeps the summary as the detail.
+  crown_name?: string | null;
   crown_changed: boolean;
   // The crowning-policy resolution this check acted on.
   policy?: "pooled" | "duel";
   governing_fingerprint?: string | null;
   governing_label?: string | null;
+  governing_name?: string | null;
   governing_source?: "pooled" | "duel";
   governing_detail?: string;
   duel_champion?: DuelChampion | null;
@@ -1537,6 +1564,7 @@ export interface CrownFollowStats {
   last_change_at: string | null;
   current_crown_fingerprint: string | null;
   current_crown_label: string | null;
+  current_crown_name?: string | null;
   current_reign_hours: number | null;
   mean_reign_hours: number | null;
   median_reign_hours: number | null;
@@ -1551,6 +1579,9 @@ export interface CrownEventOut {
   previous_fingerprint: string | null;
   label: string | null;
   previous_label: string | null;
+  // Call signs for the same two fingerprints (see CrownCheckResult.crown_name).
+  name?: string | null;
+  previous_name?: string | null;
   overall: number | null;
   applied: boolean;
   error: string | null;

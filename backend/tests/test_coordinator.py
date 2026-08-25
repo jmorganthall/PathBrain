@@ -139,3 +139,124 @@ def test_yielding_with_an_empty_lane_is_a_no_op():
     with coordinator.hold("ladder"):
         assert coordinator.yield_if_waiting("ladder") == 0.0
         assert coordinator.busy() and coordinator.owner() == "ladder"
+
+
+# ── the lease ──────────────────────────────────────────────────────────────────────────
+#
+# Holding the lock for hours is normal — a duel window is a night — so age proves nothing
+# and only silence distinguishes a session from a wedge. The case these pin: a duel that
+# went into an unanswered browser call at 23:00 still owned the pipeline at 07:30, so
+# everything started overnight queued behind a thread that was never coming back.
+
+
+def test_a_long_holder_that_keeps_beating_is_left_alone():
+    """The first thing eviction must not do is interrupt work that is going fine."""
+    with coordinator.hold("duel#1") as lease:
+        lease.acquired_at -= 10_000  # held for hours…
+        coordinator.beat()           # …but alive right now
+        assert coordinator.evict_if_stalled(threshold_s=60) is False
+        assert lease.alive
+        assert coordinator.held_for() > 9_000
+        assert coordinator.stalled_for() < 5
+
+
+def test_a_holder_that_stops_beating_is_evicted_and_the_pipeline_is_free_again():
+    with coordinator.hold("duel#1") as lease:
+        lease.last_beat -= 10_000
+        assert coordinator.evict_if_stalled(threshold_s=60) is True
+        assert not lease.alive
+        # The lock is genuinely free — someone else can run.
+        with coordinator.try_hold("monitoring"):
+            assert coordinator.owner() == "monitoring"
+    assert not coordinator.busy()
+
+
+def test_an_evicted_session_stops_at_its_next_seam():
+    """It cannot be killed, so it is disowned: it finds out at the seam it was going to
+    write the firewall from, and unwinds instead of applying settings over the top of
+    whoever holds the pipeline now."""
+    with coordinator.hold("duel#1") as lease:
+        lease.check()  # fine while it holds
+        lease.last_beat -= 10_000
+        coordinator.evict_if_stalled(threshold_s=60)
+        with pytest.raises(coordinator.LeaseRevoked):
+            lease.check()
+
+
+def test_an_evicted_session_does_not_release_a_lock_someone_else_now_holds():
+    """The dangerous version of coming back from the dead: a stale release would hand a
+    live session's lock away and let two firewall writers run at once."""
+    evicted_done = threading.Event()
+    proceed = threading.Event()
+
+    gone_quiet = threading.Event()
+
+    def wedged():
+        with coordinator.hold("duel#1") as lease:
+            lease.last_beat -= 10_000
+            gone_quiet.set()
+            proceed.wait(5)  # stands in for the unanswered call
+        evicted_done.set()
+
+    t = threading.Thread(target=wedged, daemon=True)
+    t.start()
+    assert gone_quiet.wait(5)
+    assert coordinator.evict_if_stalled(threshold_s=60) is True
+
+    with coordinator.hold("monitoring", timeout=5) as live:
+        proceed.set()                      # the wedged thread finally returns…
+        assert evicted_done.wait(5)
+        assert coordinator.busy()          # …and did not release our lock
+        assert coordinator.owner() == "monitoring"
+        assert live.alive
+    t.join(timeout=5)
+
+
+def test_a_waiter_is_freed_by_the_eviction_rather_than_queueing_forever():
+    """The user-visible harm was never the stalled duel — it was everything else waiting
+    on it. A queued session must get the pipeline once the holder is declared dead."""
+    ran = threading.Event()
+    proceed = threading.Event()
+
+    gone_quiet = threading.Event()
+
+    def wedged():
+        with coordinator.hold("duel#1") as lease:
+            lease.last_beat -= 10_000
+            gone_quiet.set()
+            proceed.wait(5)
+
+    t = threading.Thread(target=wedged, daemon=True)
+    t.start()
+    assert gone_quiet.wait(5)
+
+    def queued():
+        with coordinator.hold("test-now", timeout=5):
+            ran.set()
+
+    w = threading.Thread(target=queued, daemon=True)
+    w.start()
+    for _ in range(200):
+        if coordinator.waiting() > 0:
+            break
+        time.sleep(0.005)
+    assert not ran.is_set(), "it is waiting on a holder that will never finish"
+
+    coordinator.evict_if_stalled(threshold_s=60)  # what the scheduler watchdog does
+    assert ran.wait(5), "the queued session must get the pipeline"
+    proceed.set()
+    t.join(timeout=5)
+    w.join(timeout=5)
+
+
+def test_status_reports_who_holds_it_and_how_long_they_have_been_quiet():
+    """'It seems stuck' has to become answerable in one read: the jobs feed and the
+    pipeline-health endpoint both render this."""
+    assert coordinator.status()["owner"] is None
+    with coordinator.hold("duel#1") as lease:
+        lease.last_beat -= 600
+        st = coordinator.status()
+        assert st["owner"] == "duel#1"
+        assert st["busy"] is True
+        assert st["stalled_for_s"] >= 600
+        assert st["stale_after_s"] == coordinator.STALE_HOLDER_S
