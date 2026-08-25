@@ -27,6 +27,10 @@ interface Point {
   x: number;
   y: number;
   zRaw: number | null; // the third field's value → drives dot opacity (+ tooltip)
+  // `name` is the profile's call sign ("Speedy Sloth"), `label` the technical settings
+  // summary. The tooltip leads with the name — a wall of near-identical "880Mbit q7313 t3
+  // i60 ecn" strings doesn't identify which dot you're hovering.
+  name?: string;
   label: string;
   fingerprint: string;
   iterations: number;
@@ -59,13 +63,32 @@ function QuadrantTooltip({
   if (!active || !payload || !payload.length) return null;
   const p = payload[0].payload;
   return (
-    <Box sx={{ bgcolor: "background.paper", border: 1, borderColor: "divider", borderRadius: 1, p: 1 }}>
-      <Typography variant="caption" sx={{ display: "block", fontWeight: 700, wordBreak: "break-word" }}>
-        {p.label}
+    <Box
+      sx={{
+        bgcolor: "background.paper",
+        border: 1,
+        borderColor: "divider",
+        borderRadius: 1,
+        p: 1,
+        // Bounded so a long settings summary can't run off the side of a phone screen.
+        maxWidth: 300,
+      }}
+    >
+      <Typography variant="caption" sx={{ display: "block", fontWeight: 700, overflowWrap: "anywhere" }}>
+        {p.name || p.label}
         {p.isBest ? " · best" : ""}
         {p.isActive ? " · active" : ""}
         {p.isBaseline ? " · baseline (SQM off)" : ""}
       </Typography>
+      {p.name && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ display: "block", overflowWrap: "anywhere", opacity: 0.8 }}
+        >
+          {p.label}
+        </Typography>
+      )}
       <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
         {yField.label} {fmtFieldValue(p.y, yField.unit)} · {xField.label} {fmtFieldValue(p.x, xField.unit)}
       </Typography>
@@ -132,6 +155,7 @@ export default function ProfileQuadrant({
       x,
       y,
       zRaw: shadeOn ? shadeField!.get(p) ?? null : null,
+      name: p.name,
       label: p.label,
       fingerprint: p.fingerprint,
       iterations: p.iterations,
