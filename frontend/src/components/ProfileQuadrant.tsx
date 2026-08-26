@@ -36,6 +36,7 @@ interface Point {
   iterations: number;
   confident: boolean;
   isBest: boolean;
+  isCoLeader: boolean; // statistically tied with the crown → dashed ring
   isActive: boolean; // currently live on the firewall → drawn as a triangle
   isBaseline: boolean; // the SQM-off baseline → drawn in fuchsia
 }
@@ -77,6 +78,7 @@ function QuadrantTooltip({
       <Typography variant="caption" sx={{ display: "block", fontWeight: 700, overflowWrap: "anywhere" }}>
         {p.name || p.label}
         {p.isBest ? " · best" : ""}
+        {p.isCoLeader && !p.isBest ? " · tied with best" : ""}
         {p.isActive ? " · active" : ""}
         {p.isBaseline ? " · baseline (SQM off)" : ""}
       </Typography>
@@ -126,6 +128,7 @@ export default function ProfileQuadrant({
   shadeField,
   bestFingerprint,
   currentFingerprint,
+  coLeaders,
   thresholds,
   onSelect,
 }: {
@@ -135,6 +138,10 @@ export default function ProfileQuadrant({
   shadeField?: FieldDef | null;
   bestFingerprint: string | null;
   currentFingerprint?: string | null;
+  // Profiles statistically tied with the crown (the response's co_leaders): drawn with a
+  // dashed ring so the tie reads as a GROUP — one anointed dot over a field the noise
+  // can't actually separate misleads about how settled the verdict is.
+  coLeaders?: string[];
   // Per-metric effective scoring thresholds (keyed by metric key), for the saturated-axis
   // warning. Omitted → no warning shown.
   thresholds?: Record<string, MetricThreshold>;
@@ -148,6 +155,7 @@ export default function ProfileQuadrant({
   // restate an axis). Opacity reads with any number of points, unlike bubble size.
   const shadeOn =
     shadeField != null && shadeField.key !== xField.key && shadeField.key !== yField.key;
+  const coLeaderSet = new Set(coLeaders ?? []);
   const points: Point[] = profiles
     .map((p) => ({ p, x: xField.get(p), y: yField.get(p) }))
     .filter((r): r is { p: SettingsProfile; x: number; y: number } => r.x != null && r.y != null)
@@ -161,6 +169,7 @@ export default function ProfileQuadrant({
       iterations: p.iterations,
       confident: p.confident,
       isBest: p.fingerprint === bestFingerprint,
+      isCoLeader: coLeaderSet.has(p.fingerprint),
       isActive: currentFingerprint != null && p.fingerprint === currentFingerprint,
       isBaseline: !!p.is_sqm_off,
     }));
@@ -317,8 +326,17 @@ export default function ProfileQuadrant({
                   key={p.fingerprint}
                   fill={cellColor(p)}
                   fillOpacity={opacityOf(p)}
-                  stroke={p.isBest ? theme.palette.warning.light : p.isBaseline ? baselineColor : undefined}
-                  strokeWidth={p.isBest || p.isBaseline ? 3 : 0}
+                  stroke={
+                    p.isBest
+                      ? theme.palette.warning.light
+                      : p.isBaseline
+                        ? baselineColor
+                        : p.isCoLeader
+                          ? theme.palette.warning.light
+                          : undefined
+                  }
+                  strokeWidth={p.isBest || p.isBaseline ? 3 : p.isCoLeader ? 2 : 0}
+                  strokeDasharray={p.isCoLeader && !p.isBest && !p.isBaseline ? "3 3" : undefined}
                 />
               ))}
             </Scatter>
@@ -353,16 +371,23 @@ export default function ProfileQuadrant({
         {bothHigher ? (
           <>
             Top-right is best: <b>high {xField.label} and high {yField.label}</b>. The{" "}
-            <b style={{ color: bestColor }}>ringed</b> dot is the crowned profile (closest to the
-            ideal corner); grey dots don’t yet have enough iterations to trust.
+            <b style={{ color: bestColor }}>ringed</b> dot is the crowned profile — the
+            highest Overall under the current methodology; grey dots don’t yet have enough
+            iterations to trust.
           </>
         ) : (
           <>
             Each axis is labelled with its “better” direction. The{" "}
-            <b style={{ color: bestColor }}>ringed</b> dot is the crowned profile (best on
-            Speed × Smoothness); grey dots are limited-data profiles.
+            <b style={{ color: bestColor }}>ringed</b> dot is the crowned profile — the
+            highest Overall under the current methodology; grey dots are limited-data profiles.
           </>
         )}
+        {points.some((p) => p.isCoLeader && !p.isBest) ? (
+          <>
+            {" "}Dots with a <b style={{ color: bestColor }}>dashed ring</b> are statistically
+            tied with the crown — the lead is inside run-to-run noise.
+          </>
+        ) : null}
         {shadeOn ? <> Opacity = <b>{shadeField!.label}</b> (brighter = better; faded = worse).</> : null}
         {active.length > 0 ? <> The <b>▲ triangle</b> is the profile live on the firewall now.</> : null}
         {points.some((p) => p.isBaseline) ? (

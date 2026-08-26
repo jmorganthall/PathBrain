@@ -54,10 +54,26 @@ def landscape(
     behind it, so a lucky Overall on two runs informs a curve without carrying it; passing
     false counts every profile equally.
     """
+    # The firewall's own select option lists, so every proposed target/interval is a value
+    # the firewall can hold. Best-effort: the landscape must render with an unreachable
+    # firewall, and no options simply means no snapping.
+    allowed: dict | None = None
+    try:
+        from ..providers import get_provider
+
+        provider = get_provider()
+        allowed = provider.field_options() or None
+        if allowed is None:
+            provider.discover()
+            allowed = provider.field_options() or None
+    except Exception:  # noqa: BLE001
+        log.debug("Explore landscape: could not read provider field options", exc_info=True)
+
     return explore_mod.landscape(
         session,
         suggestions=suggestions,
         confident_only=confident_only,
+        allowed_values=allowed,
         reference=reference,
     )
 
@@ -128,6 +144,10 @@ def test_candidate(payload: ExploreTest, session: Session = Depends(get_session)
             methodology_version=methodology.version,
             iterations_requested=started["iterations"],
             baseline_iterations=started.get("existing_iterations", 0),
+            # Fields were dropped/reverted, so the benchmark will measure the closest
+            # reachable profile rather than this claim — its ledger row must say so
+            # instead of being graded as a modelling miss.
+            unreachable=bool(dropped),
             profile_test_id=started["id"],
             note=note,
         )

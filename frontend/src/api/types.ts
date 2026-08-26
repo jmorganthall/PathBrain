@@ -2144,6 +2144,15 @@ export interface ExploreCandidate {
   coords: Record<string, number>;
   predicted: number;
   uncertainty: number;
+  // What the parent's Overall was worth as a starting point after the winner's-curse
+  // shrink (best-of-many-noisy-medians is biased high; the anchor slides toward the
+  // settled field's median by what the parent's own error bar can't rule out). A
+  // prediction below the parent's headline number is this correction, not a typo.
+  anchor?: number;
+  anchor_se?: number;
+  // predicted - best_overall > the field's noise floor: this candidate proposes a
+  // difference the field can actually express. Absent when no floor is computable.
+  beats_noise?: boolean;
   // predicted + exploration_weight * uncertainty — "how good could this be?", which is the
   // question worth spending a night on, not "how good do we expect it to be?".
   upside: number;
@@ -2217,7 +2226,12 @@ export type ExploreVerdict =
   | "unscored"
   | "on_target"
   | "better"
-  | "worse";
+  | "worse"
+  // The firewall never held the full proposal (a field it can't write, or a value its
+  // selects don't offer, was dropped before benchmarking) — the benchmark measured the
+  // closest reachable profile, not the claim, so grading it would charge a plumbing
+  // failure to the model's evidence class. Excluded from calibration.
+  | "unreachable";
 
 export interface ExploreRecommendation {
   id: number;
@@ -2273,6 +2287,9 @@ export interface ExploreCalibration {
   graded: number;
   pending: number;
   incomparable: number;
+  // Claims whose test never measured the proposal (see the "unreachable" verdict) —
+  // reported so they're visible, never counted in the calibration.
+  unreachable?: number;
   on_target: number;
   better: number;
   worse: number;
@@ -2317,5 +2334,13 @@ export interface ExploreLandscape {
   profiles_modelled: number;
   confident_only: boolean;
   exploration_weight?: number;
+  // The Overall gap two settled profiles need before they're distinguishable at all
+  // (2σ × pooled SE of two medians — the same machinery as the crown-tie check). Null
+  // when the field carries no spread information.
+  noise_floor?: number | null;
+  // False when candidates exist but none of them predicts an edge over the best measured
+  // profile bigger than the noise floor — the honest state of a packed field, where the
+  // right next measurement is the coverage gaps, not a refinement.
+  candidates_clear_noise?: boolean | null;
   reason: string | null;
 }

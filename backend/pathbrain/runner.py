@@ -22,7 +22,7 @@ from .config_store import get_config
 from .database import session_scope
 from .interpret import DERIVATION_VERSION, derive
 from .logging_config import get_logger
-from .models import BenchmarkResult, Run, RunStatus, ScoreResult
+from .models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
 from .plugins import BenchmarkPlugin, PluginResult, iter_plugins
 from .raw_access import browser_url_observations, stored_iterations
 from .scoring import (
@@ -70,6 +70,7 @@ def create_run(
     *,
     job_group: str | None = None,
     job_group_total: int | None = None,
+    config_overrides: dict | None = None,
 ) -> int:
     """Create a pending run row and return its id.
 
@@ -80,6 +81,17 @@ def create_run(
     """
     with session_scope() as session:
         config = get_config(session)
+        if config_overrides:
+            # Per-run tweaks over the DB config, section-merged and baked into the run's
+            # ``config_used`` snapshot — so ``execute_run`` needs no extra channel and the
+            # override is on the record like any other config the run ran under. Used by
+            # the profile test to lift the browser's per-plugin iteration cap.
+            config = dict(config)
+            for key, value in config_overrides.items():
+                if isinstance(value, dict):
+                    config[key] = {**(config.get(key) or {}), **value}
+                else:
+                    config[key] = value
         iters = iterations if iterations else int(config.get("iterations", 1) or 1)
         iters = max(1, min(iters, MAX_ITERATIONS))
         run = Run(
@@ -104,6 +116,7 @@ def run_chunk(
     teardown: bool = True,
     job_group: str | None = None,
     job_group_total: int | None = None,
+    config_overrides: dict | None = None,
 ) -> tuple[int, bool, int]:
     """Create one run of ``iterations`` and execute it (blocking). Returns
     ``(run_id, ok, iterations_completed)`` where ``ok`` is True iff the run finished
@@ -125,6 +138,7 @@ def run_chunk(
         iterations=iterations,
         job_group=job_group,
         job_group_total=job_group_total,
+        config_overrides=config_overrides,
     )
     execute_run(run_id, teardown=teardown)
     with session_scope() as session:
@@ -1055,3 +1069,100 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                     log.warning(
                         "Run %s: plugin '%s' teardown failed", run_id, plugin.name, exc_info=True
                     )
+
+
+def apply_warmup_report(session) -> dict:
+    """Read-only diagnostic: do the first chunks after a firewall apply read low?
+
+    Every explore quick test is 5 iterations measured immediately after a ``setPipe`` +
+    reconfigure, compared against profiles whose pooled medians were mostly collected while
+    they sat live and warm. If a freshly-applied profile's first chunk carries a penalty,
+    that asymmetry contaminates every quick verdict and the recommendation ledger's whole
+    calibration table — and it is a measurement bug, not a modelling one. The duel already
+    guards against it (``duel.settle_seconds`` + interleaving); the profile test does not.
+
+    Method: group profile-test chunks by ``job_group``, order each group's chunks by run id
+    (creation order), center every chunk's persisted Overall (``Score.axis_scores['overall']``
+    under the current methodology) on its OWN group's median — removing profile identity —
+    and aggregate the centered deltas by chunk position. ``current_test`` chunks, which
+    never write the firewall, get the same treatment as the CONTROL: their first-chunk
+    effect is session-start cost (browser cold start and the like), so
+    ``apply_effect = profile_test chunk-1 delta − current_test chunk-1 delta`` isolates
+    what the apply itself costs. Diagnosis only — no score is changed.
+    """
+    from .config_store import get_config
+    from .methodology import ensure_current_methodology
+
+    methodology = ensure_current_methodology(session, get_config(session))
+    rows = session.execute(
+        select(Run.job_group, Run.id, Score.axis_scores, Score.comparability)
+        .join(Score, Score.run_id == Run.id)
+        .where(
+            Run.status == RunStatus.COMPLETE,
+            Run.job_group.isnot(None),
+            Score.methodology_version == methodology.version,
+        )
+        .order_by(Run.id)
+    ).all()
+
+    groups: dict[str, list[float]] = {}
+    for job_group, _run_id, axis_scores, comparability in rows:
+        if comparability == "incomparable":
+            continue
+        overall = (axis_scores or {}).get("overall")
+        if overall is None:
+            continue
+        if job_group.startswith(("profile_test-", "current_test-")):
+            groups.setdefault(job_group, []).append(float(overall))
+
+    def _series(prefix: str) -> dict:
+        by_index: dict[int, list[float]] = {}
+        used = 0
+        for job_group, overalls in groups.items():
+            # One-chunk groups carry no within-group contrast — centering them yields 0 by
+            # construction and would dilute every bucket toward "no effect".
+            if not job_group.startswith(prefix) or len(overalls) < 2:
+                continue
+            used += 1
+            center = median(overalls)
+            for idx, overall in enumerate(overalls, start=1):
+                by_index.setdefault(idx, []).append(overall - center)
+        chunks = [
+            {
+                "chunk": idx,
+                "groups": len(deltas),
+                "median_delta": round(median(deltas), 2),
+                "mean_delta": round(mean(deltas), 2),
+            }
+            for idx, deltas in sorted(by_index.items())
+        ]
+        first = [d for idx, ds in by_index.items() if idx == 1 for d in ds]
+        later = [d for idx, ds in by_index.items() if idx >= 2 for d in ds]
+        return {
+            "groups": used,
+            "chunks": chunks,
+            "first_chunk_delta": round(median(first), 2) if first else None,
+            "later_chunks_delta": round(median(later), 2) if later else None,
+        }
+
+    tested = _series("profile_test-")
+    control = _series("current_test-")
+    apply_effect = None
+    if tested["first_chunk_delta"] is not None and control["first_chunk_delta"] is not None:
+        apply_effect = round(tested["first_chunk_delta"] - control["first_chunk_delta"], 2)
+    return {
+        "methodology_version": methodology.version,
+        # Chunks measured right after a firewall apply (profile tests)…
+        "after_apply": tested,
+        # …vs chunks with no apply at all (current tests) — the control.
+        "no_apply_control": control,
+        # First-chunk penalty net of session-start cost. Negative = the apply itself
+        # depresses the first chunk; near zero = no settle problem, the noise is elsewhere.
+        "apply_effect": apply_effect,
+        "note": (
+            "Deltas are each chunk's Overall minus its own test's median, aggregated by "
+            "chunk position — a persistent negative first chunk after applies (and not in "
+            "the control) means freshly-applied profiles measure low and quick tests are "
+            "biased against every candidate."
+        ),
+    }
