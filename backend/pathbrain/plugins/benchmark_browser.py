@@ -272,6 +272,31 @@ def _start_screencast(context, page, frames: list, run_dir: str, stamp: str, slu
     return cdp
 
 
+def _clear_stale_asyncio_loop() -> None:
+    """Clear a stale asyncio running-loop marker left on this thread by a dead Playwright.
+
+    Playwright's sync API parks a running event loop on its creating thread (inside a
+    greenlet) for as long as the started playwright lives; ``stop()`` is what clears the
+    thread-local marker. A playwright that dies without ``stop()`` leaves the marker set
+    on a thread that outlives it — and the probe worker deliberately outlives everything.
+    Called ONLY when the caller holds no live Playwright on this thread, so anything the
+    marker points at is unreachable garbage; clearing it un-poisons the thread. Uses the
+    stable-internal ``asyncio.events`` accessors (the same ones event loops themselves
+    use); best-effort, never raises.
+    """
+    try:
+        import asyncio
+
+        if asyncio.events._get_running_loop() is not None:
+            log.warning(
+                "Probe thread carried a stale asyncio loop marker (a sync Playwright died "
+                "without stop()) — cleared so browser measurements can continue"
+            )
+            asyncio.events._set_running_loop(None)
+    except Exception:  # noqa: BLE001 — the guard must never be the reason a probe fails
+        pass
+
+
 @register
 class BrowserBenchmark(BenchmarkPlugin):
     name = "browser"
@@ -300,10 +325,34 @@ class BrowserBenchmark(BenchmarkPlugin):
             self._close_browser()
         from playwright.sync_api import sync_playwright
 
-        self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(
-            headless=bool(config.get("headless", True)), args=build_chromium_args(config)
-        )
+        # The probe worker thread is LONG-LIVED (probes.py), and a sync Playwright that
+        # died without ``stop()`` — a launch that raised, a ``stop()`` that failed, handles
+        # dropped by ``abandon()`` on this same thread — leaves asyncio's thread-local
+        # running-loop marker set. Every later ``sync_playwright().start()`` on the thread
+        # then refuses with "Sync API inside the asyncio loop", so ONE bad browser session
+        # used to poison every subsequent run until the process restarted (the "all runs
+        # stopped reporting" incident: every run scored incomparable/legacy). At this point
+        # we provably hold no live Playwright, so any marker on the thread is that stale
+        # garbage — clear it instead of dying on it.
+        _clear_stale_asyncio_loop()
+
+        pw = sync_playwright().start()
+        try:
+            browser = pw.chromium.launch(
+                headless=bool(config.get("headless", True)), args=build_chromium_args(config)
+            )
+        except BaseException:
+            # The launch failed but the playwright STARTED — stopping it is what keeps
+            # this thread's asyncio marker clean for the next attempt. Without this, the
+            # first Chromium hiccup (an OOM, a missing dep, a crash) breaks every
+            # browser measurement that follows it.
+            try:
+                pw.stop()
+            except Exception:  # noqa: BLE001 — best-effort; the marker guard above heals the rest
+                pass
+            raise
+        self._pw = pw
+        self._browser = browser
         return self._browser
 
     def _close_browser(self) -> None:
