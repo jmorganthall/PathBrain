@@ -1611,6 +1611,10 @@ export interface PooledCrown {
   overall: number | null;
   since: string | null;
   reign_hours: number | null;
+  // The crown's LIVE pooled Overall — the ledger `overall` above was recorded at
+  // crowning time and can be days stale; this one shares a vintage with the duel side.
+  overall_now?: number | null;
+  overall_iterations?: number;
 }
 
 export interface DuelCrown {
@@ -1629,12 +1633,19 @@ export interface DuelCrown {
   draws: number;
   matchups: number;
   beaten: string[];
+  // The champion's LIVE pooled Overall (same scale and vintage as the pooled side's
+  // overall_now) — the number that lets the two crowns be compared at all.
+  overall_now?: number | null;
+  overall_iterations?: number;
 }
 
 export interface CrownsOut {
   policy: "pooled" | "duel";
   pooled: PooledCrown | null;
   duel: DuelCrown | null;
+  // Champion's live pooled Overall minus the crown's — how far apart the two verdicts
+  // sit on the one scale they share. Null until both have a live Overall.
+  overall_delta?: number | null;
   governing: { source: "pooled" | "duel"; fingerprint: string | null; detail: string };
   agree: boolean;
   follow_enabled: boolean;

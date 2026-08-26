@@ -3098,6 +3098,35 @@ def crowns(session: Session = Depends(get_session)) -> dict:
             "beaten": (record or {}).get("beaten", []),
         }
 
+    # Both verdicts on ONE scale, same vintage: the ledger's ``overall`` on the pooled side
+    # was recorded at crowning time (possibly days ago), and the duel side had no Overall at
+    # all — so the card couldn't compare the two profiles on the number that actually
+    # crowns. ``profile_overalls`` reads each profile's LIVE pooled Overall in one batched
+    # indexed query (no ``compute_profiles`` pass, keeping this endpoint cheap), and the
+    # delta is signed from the champion's side: positive = the duel champion also measures
+    # higher on the pooled record.
+    overall_delta = None
+    both = [fp for fp in ((pooled or {}).get("fingerprint"), (duel_out or {}).get("fingerprint")) if fp]
+    if both:
+        try:
+            methodology = ensure_current_methodology(session, get_config(session))
+            crown_metrics, crown_required = overall_metrics(methodology.definition or {})
+            weights = overall_weights(methodology.definition or {})
+            live = crown_follower.profile_overalls(
+                session, both, methodology.version, crown_metrics, crown_required, weights
+            )
+            for side in (pooled, duel_out):
+                if side and side.get("fingerprint") in live:
+                    overall_now, iters = live[side["fingerprint"]]
+                    side["overall_now"] = None if overall_now is None else round(overall_now, 2)
+                    side["overall_iterations"] = iters
+            p_now = (pooled or {}).get("overall_now")
+            d_now = (duel_out or {}).get("overall_now")
+            if p_now is not None and d_now is not None:
+                overall_delta = round(d_now - p_now, 2)
+        except Exception:  # noqa: BLE001 — a scoring hiccup must not blank the card
+            log.debug("Two-crowns: could not compute live Overalls", exc_info=True)
+
     # Both verdicts are read by name — the whole point of the card is telling two
     # profiles apart at a glance, which "q1514 t5ms" vs "q1514 t10ms" defeats.
     call_signs = profile_names.names_for(
@@ -3120,6 +3149,9 @@ def crowns(session: Session = Depends(get_session)) -> dict:
             "fingerprint": resolution["fingerprint"],
             "detail": resolution["detail"],
         },
+        # Champion's live pooled Overall minus the crown's — how far apart the two
+        # verdicts sit on the one scale they share. None until both have a live Overall.
+        "overall_delta": overall_delta,
         # True when both verdicts name the same profile — the strongest signal available:
         # the observational field and the head-to-head trial agree.
         "agree": bool(
