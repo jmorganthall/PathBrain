@@ -141,3 +141,89 @@ def test_a_wedged_teardown_is_abandoned_too():
     assert time.monotonic() - started < 5
     assert plugin.abandoned is True
     plugin.release.set()
+
+
+# ── One bad browser session must not poison every later one ──────────────────────────
+#
+# Playwright's sync API parks a running asyncio loop on its creating thread for as long
+# as the started playwright lives; the probe worker deliberately lives forever. A
+# playwright that died without stop() (a launch that raised, an abandon) therefore left
+# the thread-local running-loop marker set, and every later sync_playwright().start() on
+# the worker refused with "Sync API inside the asyncio loop" — the "all runs stopped
+# reporting" incident: one Chromium hiccup and every subsequent run scored
+# incomparable/legacy until the process restarted.
+
+
+class _LoopLeaker(BenchmarkPlugin):
+    """A probe that dies the way a failed sync Playwright start dies: leaving the
+    thread's running-loop marker set behind it."""
+
+    name = "leaker"
+
+    def run(self, config: dict) -> PluginResult:  # noqa: ARG002
+        import asyncio
+
+        asyncio.events._set_running_loop(asyncio.new_event_loop())
+        return PluginResult(self.name, success=True)
+
+
+class _NextProbe(BenchmarkPlugin):
+    """The probe after the leak: reports whether the thread is clean after running the
+    browser plugin's guard — i.e. whether a fresh sync_playwright().start() would work."""
+
+    name = "next"
+
+    def run(self, config: dict) -> PluginResult:  # noqa: ARG002
+        import asyncio
+
+        from pathbrain.plugins.benchmark_browser import _clear_stale_asyncio_loop
+
+        _clear_stale_asyncio_loop()
+        try:
+            asyncio.get_running_loop()
+            clean = False  # a running loop would make sync Playwright refuse to start
+        except RuntimeError:
+            clean = True
+        return PluginResult(self.name, success=clean)
+
+
+def test_a_leaked_asyncio_loop_on_the_worker_is_cleared_not_fatal():
+    """The marker genuinely persists across jobs on the long-lived worker (that's the
+    poison), and the browser plugin's guard clears it (that's the antidote)."""
+    probes.run_plugin(_LoopLeaker(), {}, timeout_s=5)
+    result = probes.run_plugin(_NextProbe(), {}, timeout_s=5)
+    assert result.success, "the guard must leave the worker thread startable again"
+
+
+def test_a_failed_chromium_launch_stops_the_playwright_it_started(monkeypatch):
+    """The root cause: start() succeeded, launch() raised, and the started playwright —
+    whose stop() is what clears the thread's loop marker — was simply forgotten."""
+    import sys
+    import types
+
+    from pathbrain.plugins.benchmark_browser import BrowserBenchmark
+
+    stopped: list[bool] = []
+
+    class _FakePw:
+        class chromium:  # noqa: N801 — mirrors playwright's attribute
+            @staticmethod
+            def launch(**kwargs):  # noqa: ARG004
+                raise RuntimeError("chromium exploded")
+
+        def stop(self):
+            stopped.append(True)
+
+    class _FakeCtx:
+        def start(self):
+            return _FakePw()
+
+    fake = types.ModuleType("playwright.sync_api")
+    fake.sync_playwright = lambda: _FakeCtx()
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake)
+
+    plugin = BrowserBenchmark()
+    with pytest.raises(RuntimeError, match="chromium exploded"):
+        plugin._ensure_browser({})
+    assert stopped == [True], "the started playwright must be stopped on the failure path"
+    assert plugin._pw is None and plugin._browser is None
