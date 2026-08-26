@@ -2339,3 +2339,56 @@ def test_an_evicted_ladder_stops_instead_of_applying_over_the_top(monkeypatch):
     assert len(applied) == 2, "it stopped at the next seam rather than applying again"
     assert not duel_mod.active()
     assert not coordinator.busy(), "the evicted session must not release a lock it lost"
+
+
+def test_crowns_endpoint_puts_both_verdicts_on_one_scale(client):
+    """The card shows two profiles crowned by two different logics; without each one's LIVE
+    pooled Overall (same vintage, same scale) and the delta between them, "they disagree"
+    is a shrug instead of a measurement."""
+    from datetime import datetime, timedelta, timezone
+
+    from pathbrain.models import CrownEvent
+
+    from .test_settings import _crown_metrics, _seed_run
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for fp, overall in (("pooledwinner", 87.0), ("duelwinner", 84.0)):
+        _seed_run(
+            fp, overall, now - timedelta(hours=1), iterations=20,
+            crown_subscores={m: overall for m in _crown_metrics()},
+        )
+    with session_scope() as s:
+        s.add(
+            CrownEvent(
+                kind="change",
+                fingerprint="pooledwinner",
+                previous_fingerprint=None,
+                label="pooled winner",
+                overall=87.5,  # crowning-time number — the live one may differ
+                created_at=now - timedelta(hours=5),
+            )
+        )
+        _finished_duel(
+            s,
+            matchups=[_mu("duelwinner", "someoneelse", "incumbent", wins_inc=9, wins_cha=1, delta=-4.0)],
+            champion="duelwinner",
+            when=now - timedelta(hours=2),
+        )
+    try:
+        out = client.get("/api/settings/crowns").json()
+        assert out["pooled"]["overall_now"] == 87.0
+        assert out["duel"]["overall_now"] == 84.0
+        # Signed from the champion's side: negative = the champion measures lower on the
+        # pooled record than the crown it beat head to head.
+        assert out["overall_delta"] == -3.0
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+            s.query(CrownEvent).delete()
+            from pathbrain.models import Run, Score
+
+            for fp in ("pooledwinner", "duelwinner"):
+                for run in s.query(Run).filter(Run.settings_fingerprint == fp).all():
+                    for score in s.query(Score).filter(Score.run_id == run.id).all():
+                        s.delete(score)
+                    s.delete(run)
