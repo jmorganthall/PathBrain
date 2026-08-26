@@ -39,7 +39,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .methodology import ensure_current_methodology, overall_metrics, overall_weights
-from .models import ExploreRecommendation, ProfileTest, Run, RunStatus
+from .models import ExploreRecommendation, ProfileTest, Run, RunStatus, Score
 from .profile_names import names_for
 
 log = get_logger("explore_tracker")
@@ -112,6 +112,7 @@ def record(
     baseline_iterations: int = 0,
     profile_test_id: int | None = None,
     note: str | None = None,
+    unreachable: bool = False,
 ) -> int:
     """Write down a claim before it is measured. Returns the recommendation id.
 
@@ -139,6 +140,7 @@ def record(
             baseline_iterations=int(baseline_iterations or 0),
             profile_test_id=profile_test_id,
             note=note,
+            unreachable=bool(unreachable),
         )
         session.add(rec)
         session.flush()
@@ -167,7 +169,17 @@ def _verdict(
     stale = bool(rec.methodology_version and rec.methodology_version != current_version)
     error = None if (actual is None or rec.predicted is None) else round(actual - rec.predicted, 2)
 
-    if actual is None or iterations <= rec.baseline_iterations:
+    if getattr(rec, "unreachable", False):
+        # The firewall never held the full proposal — the benchmark measured the closest
+        # reachable profile, not this claim. Grading it would charge a plumbing failure to
+        # the model's evidence class, which is how the -5.9 "matched pair miss" that was
+        # actually an unappliable CoDel interval poisoned the calibration table.
+        verdict = "unreachable"
+    elif actual is None or iterations <= 0:
+        # ``iterations`` now counts only runs made at/after the claim, so "anything at
+        # all" is the gate — the old ``baseline_iterations`` subtraction existed to skim
+        # pre-claim history off a pooled count, and went stale whenever a reconcile
+        # re-pointed the fingerprint.
         verdict = "pending"
     elif stale:
         verdict = "incomparable"
@@ -186,7 +198,10 @@ def _verdict(
         "error": error,
         # Provisional while the profile is still short of the confidence bar: the number is
         # real, it just rests on too few iterations to argue with.
-        "provisional": verdict not in ("pending", "incomparable") and iterations < min_iterations,
+        "provisional": (
+            verdict not in ("pending", "incomparable", "unreachable")
+            and iterations < min_iterations
+        ),
         "stale_methodology": stale,
     }
 
@@ -204,6 +219,14 @@ def _why(rec: ExploreRecommendation, kind: str, graded: dict, actual: float | No
     # profile rather than the proposed parent), so it belongs on every verdict — most of
     # all on the ones that would otherwise read as a clean answer.
     note = f" Note: {rec.note}" if rec.note else ""
+    if verdict == "unreachable":
+        return (
+            "The firewall could not hold the full proposal — a field it cannot write, or a "
+            "value its own controls don't offer, was dropped before benchmarking — so what "
+            "was measured is the closest reachable profile, not this claim. Kept out of the "
+            "calibration summary: a plumbing failure says nothing about the evidence the "
+            "prediction was priced from." + note
+        )
     if verdict == "pending":
         return (
             "No comparable runs on this profile yet — the test may still be queued, running, "
@@ -368,6 +391,7 @@ def _summarize(rows: list[dict]) -> dict:
         "graded": len(graded),
         "pending": sum(1 for r in rows if r["verdict"] == "pending"),
         "incomparable": sum(1 for r in rows if r["verdict"] == "incomparable"),
+        "unreachable": sum(1 for r in rows if r["verdict"] == "unreachable"),
         "on_target": sum(1 for r in graded if r["verdict"] == "on_target"),
         "better": sum(1 for r in graded if r["verdict"] == "better"),
         "worse": sum(1 for r in graded if r["verdict"] == "worse"),
@@ -550,7 +574,7 @@ def recommendations(session, limit: int = 50) -> dict:
     profile's Overall (``crown_follower.profile_overalls``) — deliberately not a
     ``compute_profiles`` pass, so the page can load this without the landscape's cost.
     """
-    from .crown_follower import profile_overalls
+    from .crown_follower import _collect, _grade_samples, profile_overalls
 
     rows = session.scalars(
         select(ExploreRecommendation).order_by(ExploreRecommendation.id.desc()).limit(max(1, limit))
@@ -570,18 +594,52 @@ def recommendations(session, limit: int = 50) -> dict:
 
     fps = [r.fingerprint for r in rows] + [r.parent_fingerprint for r in rows if r.parent_fingerprint]
     measured: dict = {}
+    claim_rows: dict[str, list] = {}
     if fps:
         try:
+            # Parents grade on their whole pooled record (the parent IS an existing
+            # profile). The claim itself does NOT: it is graded only against runs made
+            # at/after it was recorded. A proposal the firewall collapses onto an existing
+            # profile otherwise inherits that profile's months of history — the measured
+            # ledger's rows that "landed in the band" over 61 or 95 iterations were
+            # dominated by runs that predate the claim, which is not a test of the claim.
             measured = profile_overalls(
                 session, fps, methodology.version, crown_metrics, crown_required, weights
             )
+            dated = session.execute(
+                select(Run.settings_fingerprint, Run.created_at, Run.iterations,
+                       Score.subscores, Score.comparability)
+                .join(Score, Score.run_id == Run.id)
+                .where(
+                    Run.status == RunStatus.COMPLETE,
+                    Run.settings_fingerprint.in_(list({r.fingerprint for r in rows})),
+                    Score.methodology_version == methodology.version,
+                )
+            ).all()
+            for fp, created_at, iterations, subscores, comparability in dated:
+                claim_rows.setdefault(fp, []).append(
+                    (created_at, iterations, subscores, comparability)
+                )
         except Exception:  # noqa: BLE001 — a scoring hiccup must not empty the ledger
             log.debug("Recommendation ledger: could not compute Overalls", exc_info=True)
+
+    def _measured_since_claim(rec) -> tuple[float | None, int]:
+        rows_for = claim_rows.get(rec.fingerprint)
+        if rows_for is None:
+            return None, 0
+        since = rec.created_at
+        eligible = [
+            (iterations, subscores, comparability)
+            for created_at, iterations, subscores, comparability in rows_for
+            if since is None or created_at is None or created_at >= since
+        ]
+        samples, iters = _collect(eligible, crown_metrics)
+        return _grade_samples(samples, iters, crown_metrics, crown_required, weights)
     names = names_for(session, [fp for fp in fps if fp]) if fps else {}
 
     out: list[dict] = []
     for rec in rows:
-        actual, iterations = measured.get(rec.fingerprint, (None, 0))
+        actual, iterations = _measured_since_claim(rec)
         kind = evidence_kind(rec.evidence)
         graded = _verdict(rec, actual, iterations, min_iterations, methodology.version)
         parent_actual, _ = measured.get(rec.parent_fingerprint or "", (None, 0))

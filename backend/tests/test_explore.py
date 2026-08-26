@@ -565,7 +565,10 @@ def test_a_proven_value_is_transplanted_onto_a_profile_that_has_never_run_it(mon
     ]
     assert transplants, "a value that works elsewhere must be offered to profiles missing it"
     # And where a controlled comparison for that exact move exists, it prices it.
-    priced = [c for c in transplants if "measured directly on a matched pair" in c["evidence"]]
+    priced = [
+        c for c in transplants
+        if any("measured directly on a matched pair" in n for n in c["evidence"])
+    ]
     assert priced, "a transplant whose move is a matched pair is priced from that pair"
 
 
@@ -713,3 +716,119 @@ def test_a_gap_suggestion_is_the_value_the_firewall_can_actually_hold(monkeypatc
         return
     assert float(gap["suggest"]) == int(gap["suggest"])
     assert gap["candidate"]["changes"][0]["to"] == float(gap["suggest"])
+
+
+def _spread(p: dict, *, iqr: float, runs: int) -> dict:
+    """Give a fixture profile the spread/sample fields the anchor shrinkage reads."""
+    p["overall_p25"] = p["overall"] - iqr / 2
+    p["overall_p75"] = p["overall"] + iqr / 2
+    p["count"] = runs
+    return p
+
+
+def test_the_anchor_is_shrunk_on_a_packed_field_and_left_alone_on_a_spread_one(monkeypatch):
+    """The winner's-curse correction the recommendation ledger demanded.
+
+    On a packed field (profiles a fraction of a run's noise apart) the top Overall is the
+    max of many noisy medians — biased high by construction, and anchoring predictions on
+    it produced the ledger's measured -2 to -3 bias. On a genuinely spread field the same
+    machinery must be a no-op: a 20-point gap is not sampling noise, and shrinking it away
+    would just re-import the global-regression flaw the anchor exists to avoid.
+    """
+    # Packed: six settled profiles inside ~1 point, per-run IQR 2.5 over 25 runs each —
+    # the observed spread is entirely explainable as sampling noise.
+    packed = [
+        _spread(_pair(f"p{i}", dl_q=1000 + i * 1000, dl_t=3 + (i % 3), ul_q=500,
+                      overall=79.7 + 0.1 * i), iqr=2.5, runs=25)
+        for i in range(6)
+    ]
+    packed.append(_spread(_pair("top", dl_q=7313, dl_t=5, ul_q=500, overall=81.0),
+                          iqr=2.5, runs=25))
+    out = _landscape(monkeypatch, packed, suggestions=30)
+    assert out["candidates"], "a packed field still proposes candidates"
+    for c in out["candidates"]:
+        assert c["anchor"] < 81.0 - 0.3, (
+            "on a packed field no anchor takes the top profile's raw Overall at face value"
+        )
+
+    # Spread: the same shapes 10+ points apart — the anchor must stay put.
+    spread = [
+        _spread(_pair(f"s{i}", dl_q=1000 + i * 1000, dl_t=3 + (i % 3), ul_q=500,
+                      overall=20.0 + 12.0 * i), iqr=2.5, runs=25)
+        for i in range(6)
+    ]
+    out = _landscape(monkeypatch, spread, suggestions=30)
+    best = max(p["overall"] for p in spread)
+    from_best = [c for c in out["candidates"] if c["parent"]["overall"] == best]
+    assert from_best, "candidates still branch from the best profile"
+    for c in from_best:
+        assert abs(c["anchor"] - best) < 1.0, (
+            "a real 12-point-per-step spread is not shrunk away"
+        )
+
+
+def test_a_single_matched_pair_is_not_believed_whole(monkeypatch):
+    """A one-pair delta is the difference of two noisy medians; the ledger measured the
+    class at 0%% in band with the miss growing in the claimed magnitude. Half of one
+    pair's claim, not all of it."""
+    profiles = [
+        _pair("a4", dl_q=7313, dl_t=4, ul_q=500, overall=81.0),
+        _pair("a5", dl_q=7313, dl_t=5, ul_q=500, overall=85.0),  # the pair claims +4
+        _pair("b4", dl_q=1257, dl_t=4, ul_q=500, overall=60.0),
+        _pair("c4", dl_q=3000, dl_t=4, ul_q=500, overall=61.0),
+    ]
+    out = _landscape(monkeypatch, profiles, suggestions=16)
+    priced = [
+        c for c in out["candidates"]
+        if c["parent"]["fingerprint"] == "b4"
+        and len(c["changes"]) == 1
+        and c["changes"][0]["key"] == "Download::target"
+        and c["changes"][0]["to"] == 5
+    ]
+    assert priced, "the transplant of the proven value is offered to b4"
+    c = priced[0]
+    # Anchor is untouched here (no spread info in the fixture), so predicted - parent
+    # is exactly the shrunk pair delta: +4 x 1/(1+1) = +2.
+    assert abs(c["predicted"] - (60.0 + 2.0)) < 0.25, c["predicted"]
+
+
+def test_the_noise_floor_says_when_no_candidate_is_distinguishable(monkeypatch):
+    """On a field whose profiles differ by less than run-to-run noise, ranking candidates
+    by predicted score is theatre — the honest output is 'nothing here clears the floor,
+    measure the coverage gaps'. The payload must say which situation the reader is in."""
+    packed = [
+        _spread(_pair(f"n{i}", dl_q=1000 + i * 1000, dl_t=3 + (i % 3), ul_q=500,
+                      overall=79.7 + 0.05 * i), iqr=2.5, runs=25)
+        for i in range(7)
+    ]
+    out = _landscape(monkeypatch, packed, suggestions=8)
+    assert out["noise_floor"] is not None and out["noise_floor"] > 0
+    assert out["candidates_clear_noise"] is False, (
+        "a packed field must not report any candidate as clearing the noise floor"
+    )
+    for c in out["candidates"]:
+        assert c.get("beats_noise") is False
+
+
+def test_proposed_values_snap_to_the_firewalls_own_option_list(monkeypatch):
+    """A CoDel target/interval is a select with a fixed option list; a value off it is
+    silently not written and the benchmark measures a profile nobody proposed (three of
+    the four 'not fully reachable' ledger rows proposed exactly that). With the provider's
+    option list attached, every proposed value for that lever is on it."""
+    profiles = [
+        _pair(f"snap{i}", dl_q=7313, dl_t=t, ul_q=500, overall=70.0 + t)
+        for i, t in enumerate((2, 5, 9, 12))
+    ]
+    monkeypatch.setattr(rs, "compute_profiles", lambda session: {"profiles": profiles})
+    out = explore.landscape(
+        None, suggestions=20, allowed_values={"target": [2, 5, 9, 12, 15]}
+    )
+    for c in out["candidates"]:
+        for ch in c["changes"]:
+            if ch["field"] == "target":
+                assert ch["to"] in (2, 5, 9, 12, 15), ch
+    for g in out["gaps"]:
+        if g["field"] == "target" and g.get("candidate"):
+            for ch in g["candidate"]["changes"]:
+                if ch["field"] == "target":
+                    assert ch["to"] in (2, 5, 9, 12, 15), ch

@@ -76,6 +76,32 @@ def _pick(pipe: dict, *keys: str) -> object:
     return None
 
 
+# Select-backed shaper fields whose OPNsense option keys are the complete set of values
+# the firewall can hold: normalized field key -> the pipe payload key carrying the select.
+_OPTION_FIELDS = {"target": "codel_target", "interval": "codel_interval"}
+
+
+def _numeric_option_keys(field: object) -> list[float]:
+    """Every option key of an OPNsense select field, as sorted numbers.
+
+    The discover payload already carries the full option list (``{key: {value, selected}}``)
+    — this stops throwing it away, because those keys ARE the values the firewall can be
+    driven to, and proposing anything else (an interpolated interval the select doesn't
+    offer, a fractional target) produces the silent didn't-take apply the recommendation
+    ledger kept mis-grading as a modelling failure."""
+    if not isinstance(field, dict):
+        return []
+    out: set[float] = set()
+    for key, opt in field.items():
+        if not isinstance(opt, dict):
+            continue
+        try:
+            out.add(float(key))
+        except (TypeError, ValueError):
+            continue
+    return sorted(out)
+
+
 def _pipe_to_config(uuid: str, pipe: dict) -> FqCodelConfig:
     """Parse one OPNsense dnpipe into a normalized FqCodelConfig.
 
@@ -121,6 +147,8 @@ class OPNsenseProvider(ConfigProvider):
         self.api_secret = api_secret
         self.verify_tls = verify_tls
         self.timeout = timeout
+        # Last-seen select option keys per normalized field, harvested on every discover.
+        self._field_options: dict[str, list[float]] = {}
 
     # -- HTTP --------------------------------------------------------------
     def _client(self) -> httpx.Client:
@@ -151,9 +179,19 @@ class OPNsenseProvider(ConfigProvider):
             for uuid, pipe in pipes.items()
             if isinstance(pipe, dict)
         ]
+        for pipe in pipes.values():
+            if not isinstance(pipe, dict):
+                continue
+            for fkey, raw_key in _OPTION_FIELDS.items():
+                opts = _numeric_option_keys(pipe.get(raw_key))
+                if opts:
+                    self._field_options[fkey] = opts
         if not configs:
             log.warning("OPNsense discover() found no shaper pipes")
         return configs
+
+    def field_options(self) -> dict[str, list[float]]:
+        return dict(self._field_options)
 
     def snapshot(self) -> dict:
         data = self._get(_SETTINGS_GET)

@@ -98,6 +98,13 @@ CONFOUNDED_SHRINK = 0.5
 THIN_WEIGHT_FLOOR = 0.15
 # Parents to branch candidates from, and how many candidates to return by default.
 CANDIDATE_PARENTS = 5
+# The significance multiplier behind the landscape's NOISE FLOOR — deliberately the same
+# shape as ``correlation.crown_tie_sigma`` (2 x the pooled standard error of two medians):
+# the gap two settled profiles need before their Overalls are distinguishable at all. A
+# candidate whose predicted edge over the best measured profile is inside this floor is
+# proposing a difference the field cannot express, and the page should say so instead of
+# ranking indistinguishable numbers.
+NOISE_SIGMA = 2.0
 DEFAULT_SUGGESTIONS = 3
 
 
@@ -487,6 +494,24 @@ def _step_for(axis: dict) -> float:
     return max((axis["max"] - axis["min"]) / 5.0, 1.0)
 
 
+def _snap_allowed(axis: dict, value: float) -> float:
+    """Snap a proposed value to the nearest value the firewall's own control offers.
+
+    ``coerce_value`` fixes the value's FORM (bare int, no unit); this fixes its
+    EXISTENCE. CoDel target/interval are selects with a fixed option list, and a value
+    off that list is silently not written — the apply reports success, the firewall
+    keeps its old profile, and the ledger then grades a claim about a profile that
+    never ran (three of the four 'not fully reachable' rows in the measured ledger
+    proposed an interval the select doesn't offer). ``axis['allowed']`` is the
+    provider's own option list, attached by ``landscape``; absent, this is a no-op —
+    no constraint information is never treated as "everything is allowed" by inventing
+    a list, it simply leaves the value alone."""
+    allowed = axis.get("allowed")
+    if not allowed:
+        return value
+    return min(allowed, key=lambda a: (abs(a - value), a))
+
+
 def _uncertainty(coords: dict[str, float], points: list[dict], axes: dict[str, dict]) -> tuple[float, float]:
     """``(uncertainty, distance to the nearest measured profile)`` for an untested point.
 
@@ -536,19 +561,85 @@ def _curve_at(curve: dict | None, value: float) -> float | None:
     return None
 
 
-def _matched_delta(pairs_by_key: dict[str, dict], key: str, before: float, after: float) -> float | None:
+def _overall_se(point: dict) -> float | None:
+    """Standard error of a profile's median Overall (IQR/sqrt(runs)) — or None.
+
+    None, never a guess: a test fixture (or a thin profile) without spread information gets
+    no fabricated error bar, and everything downstream treats "no SE" as "nothing to shrink
+    on". Mirrors ``settings_profile._overall_se``, which the crown-tie machinery ranks with.
+    """
+    iqr = point.get("overall_iqr")
+    runs = int(point.get("runs") or 0)
+    if iqr is None or runs < 1:
+        return None
+    return float(iqr) / math.sqrt(runs)
+
+
+def _field_prior(points: list[dict]) -> tuple[float, float]:
+    """``(median, tau)`` of the settled field's Overalls — what every anchor shrinks toward.
+
+    ``tau`` is the field's TRUE between-profile spread: the observed spread of profile
+    Overalls minus the sampling noise baked into each one (median SE**2). On a genuinely
+    spread field (profiles 20 points apart) tau is large and shrinkage is a no-op; on a
+    packed field — 50 profiles inside 1.3 points with per-run IQRs of 2.5, the measured
+    state of a fast link — most of the visible spread IS sampling noise, tau collapses,
+    and the anchor slides toward the field median. That packed case is exactly where the
+    recommendation ledger measured a -2 to -3 bias: predictions were anchored on parents
+    selected for being the max of 185 noisy medians (winner's curse), and the shrinkage is
+    the standard correction for it.
+    """
+    settled = [p for p in points if p.get("confident")] or points
+    overalls = [float(p["overall"]) for p in settled]
+    med = _median(overalls)
+    spread = _stdev(overalls)
+    ses = [se for p in settled if (se := _overall_se(p)) is not None]
+    noise = _median([se * se for se in ses]) if ses else 0.0
+    tau = math.sqrt(max(spread * spread - noise, 0.0))
+    return med, tau
+
+
+def _shrunk_anchor(parent: dict, points: list[dict]) -> tuple[float, float]:
+    """``(anchor, anchor_se)``: what the parent's Overall is honestly worth as a baseline.
+
+    The parent is chosen for scoring well, and "the best of N noisy medians" is biased
+    high by construction — the ledger caught this as a persistent miss-low. The classic
+    empirical-Bayes weight ``tau**2 / (tau**2 + se**2)`` keeps a well-measured Overall in a
+    spread field untouched and pulls a thin Overall in a packed field toward the median;
+    ``anchor_se`` (the posterior sd, ``se * sqrt(w)``) is what the anchor still doesn't
+    know, and belongs in the candidate's stated band.
+    """
+    overall = float(parent["overall"])
+    se = _overall_se(parent)
+    if se is None:
+        return overall, 0.0
+    med, tau = _field_prior(points)
+    if tau <= 0.0:
+        # The field's spread is entirely explainable as sampling noise: no profile's
+        # Overall is distinguishable from the median, the parent's included.
+        return med, 0.0
+    w = (tau * tau) / (tau * tau + se * se)
+    return med + (overall - med) * w, se * math.sqrt(w)
+
+
+def _matched_delta(pairs_by_key: dict[str, dict], key: str, before: float, after: float) -> tuple[float, int, bool] | None:
     """What the *controlled* record says this exact move did, if it has ever been made.
 
     A matched pair is the same profile with one lever changed, so its delta is that move's
     effect with nothing else mixed in. When the record contains one it beats any curve: the
     curve is an average over profiles that differ in other ways too, which is the whole
     problem. Only the exact transition counts — an adjacent one is a different move.
+
+    Returns ``(delta, pairs, consistent)`` so the caller can weigh the claim by what
+    actually stands behind it: a single pair's delta is the difference of two noisy medians
+    — the ledger measured the class at 0% in-band, sign wrong six times out of six, with
+    the miss growing monotonically in the claimed magnitude, which is the signature of an
+    unshrunk noisy estimator applied whole.
     """
     for t in (pairs_by_key.get(key) or {}).get("transitions", []):
         if (t["from"], t["to"]) == (before, after):
-            return t["median_delta"]
+            return t["median_delta"], int(t.get("pairs") or 1), bool(t.get("consistent"))
         if (t["from"], t["to"]) == (after, before):
-            return -t["median_delta"]
+            return -t["median_delta"], int(t.get("pairs") or 1), bool(t.get("consistent"))
     return None
 
 
@@ -558,6 +649,7 @@ def _predict(
     by_key: dict[str, dict],
     pairs_by_key: dict[str, dict] | None = None,
     local_by_key: dict[str, dict] | None = None,
+    anchor: float | None = None,
 ) -> tuple[float, list[str]]:
     """``(predicted Overall, evidence notes)`` for a candidate, anchored on its parent.
 
@@ -579,13 +671,26 @@ def _predict(
        another lever, so its delta is **shrunk** rather than taken at face value: believing
        it whole is how a confounded average becomes a confident prediction.
     """
-    predicted = parent["overall"]
+    predicted = parent["overall"] if anchor is None else anchor
     notes: list[str] = []
     for key, value in changes.items():
         matched = _matched_delta(pairs_by_key or {}, key, parent["coords"][key], value)
         if matched is not None:
-            predicted += matched
-            notes.append("measured directly on a matched pair")
+            delta, n_pairs, consistent = matched
+            # A matched pair is controlled but not free of noise: its delta is the
+            # difference of two medians, and a single pair applied whole is an anecdote
+            # wearing a lab coat (the ledger's worst evidence class, 0% in band). Shrink
+            # by how many pairs agree — 1 pair keeps half its claim, 3 keep three
+            # quarters — and halve again when the pairs disagree among themselves.
+            shrink = n_pairs / (n_pairs + 1.0)
+            if not consistent:
+                shrink *= 0.5
+            predicted += delta * shrink
+            notes.append(
+                f"measured directly on a matched pair ({n_pairs} pair"
+                f"{'' if n_pairs == 1 else 's'}"
+                f"{'' if consistent else ', disagreeing'}; claim shrunk accordingly)"
+            )
             continue
         local = (local_by_key or {}).get(key)
         before = _curve_at(local, parent["coords"][key]) if local else None
@@ -681,6 +786,7 @@ def _candidate_values(axis: dict, curve: dict | None) -> list[tuple[float, str]]
     for v, why in out:
         coerced = coerce_value(axis["field"], v)
         val = float(coerced) if isinstance(coerced, (int, float)) else float(v)
+        val = _snap_allowed(axis, val)
         if val <= 0 or val in seen or (val in set(vals) and val not in proven):
             continue
         seen.add(val)
@@ -793,13 +899,25 @@ def _candidate_dict(
     coords = dict(parent["coords"])
     coords.update({k: v for k, (v, _) in changes.items()})
     moves = {k: v for k, (v, _) in changes.items()}
-    predicted, evidence = _predict(parent, moves, by_key, pairs_by_key, local_curve)
-    uncertainty, nearest = _uncertainty(coords, points, axes)
+    # The anchor is NOT the parent's raw Overall. Parents are chosen for scoring well, and
+    # the max of many noisy medians is biased high by construction — the recommendation
+    # ledger measured that bias at -2 to -3 points on a packed field. Shrink the anchor
+    # toward the settled field's median by what its own error bar can't rule out, and
+    # carry the residual (anchor_se) into the stated band rather than pretending the
+    # starting point is exact.
+    anchor, anchor_se = _shrunk_anchor(parent, points)
+    predicted, evidence = _predict(parent, moves, by_key, pairs_by_key, local_curve, anchor=anchor)
+    open_space, nearest = _uncertainty(coords, points, axes)
     # Moving two levers at once is NOT the sum of moving each — that additivity is
     # exactly what the basin structure disproves, and a candidate assuming it is
     # guessing harder than a single-lever one. Widen the band rather than pretend.
     multi = len(moves) > 1
-    base_uncertainty = uncertainty
+    base_uncertainty = open_space
+    # The stated band is what the claim may honestly be wrong by: the open-space term
+    # (nobody has measured there) composed with what the anchor itself still doesn't know.
+    # The ledger graded every claim at a +/-1.0 floor while the typical miss was 2.4 — a
+    # band that never varies isn't calibration, it's a constant.
+    uncertainty = math.sqrt(open_space * open_space + anchor_se * anchor_se)
     if multi:
         uncertainty *= MULTI_LEVER_UNCERTAINTY
     predicted = min(OVERALL_MAX, max(OVERALL_MIN, predicted))
@@ -832,6 +950,11 @@ def _candidate_dict(
         "coords": coords,
         "predicted": round(predicted, 2),
         "uncertainty": round(uncertainty, 2),
+        # What the parent's Overall was actually worth as a starting point, after the
+        # winner's-curse shrink — shown so a prediction below the parent's headline number
+        # reads as the correction it is, not a typo.
+        "anchor": round(anchor, 2),
+        "anchor_se": round(anchor_se, 2),
         # How the prediction was arrived at, so a number backed by a controlled pair is
         # never mistaken for one extrapolated off a confounded average.
         "evidence": evidence,
@@ -955,9 +1078,15 @@ def _candidate_summary(candidate: dict, best_measured: float) -> str:
         for c in candidate["changes"]
     )
     why = "; ".join(dict.fromkeys(c["why"] for c in candidate["changes"]))
+    anchor = candidate.get("anchor")
+    anchored = (
+        f", anchored at {anchor:g} for sample size"
+        if anchor is not None and abs(anchor - candidate["parent"]["overall"]) >= 0.05
+        else ""
+    )
     return (
         f"{candidate['parent']['name'] or candidate['parent']['label']} "
-        f"(Overall {candidate['parent']['overall']:g}) with {moves} — {why}. "
+        f"(Overall {candidate['parent']['overall']:g}{anchored}) with {moves} — {why}. "
         f"Predicted {candidate['predicted']:g} ± {candidate['uncertainty']:g}; "
         f"upside {candidate['upside']:g} against the best measured {best_measured:.2f}."
     )
@@ -1021,7 +1150,7 @@ def attach_gap_candidates(
         value = coerce_value(axis["field"], gap["suggest"])
         if not isinstance(value, (int, float)):
             continue
-        value = float(value)
+        value = _snap_allowed(axis, float(value))
         why = (
             f"steps past {gap['to']:g}, the end of the tested range"
             if gap["kind"] == "edge"
@@ -1371,6 +1500,7 @@ def landscape(
     suggestions: int = DEFAULT_SUGGESTIONS,
     confident_only: bool = True,
     reference: str | None = None,
+    allowed_values: dict[str, list[float]] | None = None,
 ) -> dict:
     """The whole exploration picture: axes, response curves, interactions, gaps, candidates.
 
@@ -1413,6 +1543,13 @@ def landscape(
     fell_back = False
 
     axes = _numeric_axes(pool)
+    # The firewall's own option lists (provider ``field_options``), so every value this
+    # engine proposes is one the firewall can actually be driven to. Attached per axis;
+    # axes without one are unconstrained numeric fields (quantum) and pass through.
+    for axis in axes.values():
+        allowed = (allowed_values or {}).get(axis["field"])
+        if allowed:
+            axis["allowed"] = sorted(float(v) for v in allowed)
     points = []
     for p in pool:
         coords = _coords(p, axes)
@@ -1434,6 +1571,15 @@ def landscape(
             # (matchmaking) and its floor (standings).
             "trusted": float(
                 p["overall_p25"] if p.get("overall_p25") is not None else p["overall"]
+            ),
+            # Spread + sample count, for the anchor shrinkage and the noise floor. Absent
+            # (a fixture, a profile with no scored spread) they stay None/0 and the
+            # shrinkage machinery treats that as "nothing to shrink on" — never a guess.
+            "runs": int(p.get("count") or 0),
+            "overall_iqr": (
+                float(p["overall_p75"]) - float(p["overall_p25"])
+                if p.get("overall_p75") is not None and p.get("overall_p25") is not None
+                else None
             ),
             "coords": coords,
         })
@@ -1496,6 +1642,26 @@ def landscape(
         c["imbalance"] = imbalance.get(c["key"], [])
         c["confounded"] = bool(c["imbalance"])
 
+    # The noise floor: the Overall gap two settled profiles need before they are
+    # distinguishable at all (NOISE_SIGMA x the pooled SE of two medians — the same
+    # machinery the crown-tie check runs). A candidate whose predicted edge over the best
+    # measured profile sits inside it is proposing a difference the field cannot express;
+    # the page states that outright instead of ranking indistinguishable numbers, because
+    # on a packed field the honest recommendation is the coverage gaps, not a refinement.
+    settled_ses = [
+        se for pt in points if pt.get("confident") and (se := _overall_se(pt)) is not None
+    ]
+    noise_floor = (
+        round(NOISE_SIGMA * math.sqrt(2.0) * _median(settled_ses), 2) if settled_ses else None
+    )
+    candidates = _candidates(
+        points, axes, curves, gaps, max(1, int(suggestions)), pairs, already_tried=tried
+    )
+    best_established = _best_established(points)
+    if noise_floor is not None:
+        for c in candidates:
+            c["beats_noise"] = (c["predicted"] - best_established) > noise_floor
+
     return {
         "axes": sorted(axes.values(), key=lambda a: (a["pipe"], a["field"])),
         "points": points,
@@ -1512,10 +1678,12 @@ def landscape(
         "condition_max_other_changes": CONDITION_MAX_OTHER_CHANGES,
         "interactions": _interactions(points, axes),
         "gaps": gaps,
-        "candidates": _candidates(
-            points, axes, curves, gaps, max(1, int(suggestions)), pairs, already_tried=tried
+        "candidates": candidates,
+        "noise_floor": noise_floor,
+        "candidates_clear_noise": (
+            None if noise_floor is None else any(c.get("beats_noise") for c in candidates)
         ),
-        "best_overall": round(_best_established(points), 2),
+        "best_overall": round(best_established, 2),
         "profiles_modelled": len(points),
         "confident_only": confident_only and not fell_back,
         "exploration_weight": EXPLORATION_WEIGHT,

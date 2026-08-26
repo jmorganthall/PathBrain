@@ -108,6 +108,9 @@ def _migrate() -> None:
             "stage": "VARCHAR(255)",
             "reached_fingerprint": "VARCHAR(40)",
         },
+        "explore_recommendations": {
+            "unreachable": "BOOLEAN DEFAULT 0",
+        },
         "score_results": {
             "sops_stdev": "FLOAT",
             "sops_min": "FLOAT",

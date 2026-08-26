@@ -474,6 +474,23 @@ def _completed_runs_with_scores(session: Session):
     return [(run, score, metrics_by_run.get(run.id, {})) for run, score in rows]
 
 
+@router.get("/settings/apply-warmup")
+def apply_warmup(session: Session = Depends(get_session)) -> dict:
+    """Read-only diagnostic: do the first chunks after a firewall apply measure low?
+
+    Groups profile-test chunks (measured immediately after an apply) and current-test
+    chunks (no firewall write — the control) by their parent job, centers each chunk's
+    Overall on its own test's median, and aggregates by chunk position. A persistent
+    negative first chunk after applies that the control doesn't show means a
+    freshly-applied profile is penalized before it settles — which biases every quick
+    test and the explore recommendation ledger against every candidate. Diagnosis only;
+    no score changes.
+    """
+    from ..runner import apply_warmup_report
+
+    return apply_warmup_report(session)
+
+
 @router.get("/settings/profiles/{fingerprint}/verify-derivation")
 def verify_profile_derivation(
     fingerprint: str,
