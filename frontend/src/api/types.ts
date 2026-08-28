@@ -1298,11 +1298,33 @@ export interface Job {
   // so `eta_ms` is a duration of work rather than a remaining time and must NOT be ticked
   // down — a queued job's finish time moves out for as long as it waits.
   queued?: boolean;
+  // How long this job has held the benchmark pipeline without reporting progress (null =
+  // it is progressing, or isn't the holder). It replaces the countdown when set: a
+  // time-boxed job past its deadline floors at "finishing…", which is precisely the
+  // reading a wedged job gives for as long as it stays wedged.
+  stalled_ms?: number | null;
+}
+
+// The gate every benchmark session queues on. A feed of "waiting" rows says everyone is
+// waiting; this says what they are waiting on, and whether it is still alive.
+export interface PipelineStatus {
+  busy: boolean;
+  owner: string | null;
+  held_for_s: number | null;
+  // Seconds since the holder last showed progress. Not the same question as held_for_s —
+  // a duel window is meant to run for hours, so age proves nothing and silence is what
+  // distinguishes a session from a wedge.
+  stalled_for_s: number | null;
+  stale_after_s: number;
+  waiting: number;
+  evictions: number;
+  last_eviction: { owner: string; quiet_s: number; held_s: number; at: number } | null;
 }
 
 export interface JobsResponse {
   jobs: Job[];
   running: number;
+  pipeline?: PipelineStatus;
 }
 
 // Consolidated raw export (GET /history/dump). The shape is intentionally loose —
@@ -1510,11 +1532,16 @@ export interface CrownCheckResult {
   enabled: boolean;
   crown_fingerprint: string | null;
   crown_label: string | null;
+  // The profile's call sign ("Speedy Sloth"), resolved by fingerprint at read time so a
+  // rename lands here too. The label beside it is the technical settings summary — every
+  // view leads with the name and keeps the summary as the detail.
+  crown_name?: string | null;
   crown_changed: boolean;
   // The crowning-policy resolution this check acted on.
   policy?: "pooled" | "duel";
   governing_fingerprint?: string | null;
   governing_label?: string | null;
+  governing_name?: string | null;
   governing_source?: "pooled" | "duel";
   governing_detail?: string;
   duel_champion?: DuelChampion | null;
@@ -1537,6 +1564,7 @@ export interface CrownFollowStats {
   last_change_at: string | null;
   current_crown_fingerprint: string | null;
   current_crown_label: string | null;
+  current_crown_name?: string | null;
   current_reign_hours: number | null;
   mean_reign_hours: number | null;
   median_reign_hours: number | null;
@@ -1551,6 +1579,9 @@ export interface CrownEventOut {
   previous_fingerprint: string | null;
   label: string | null;
   previous_label: string | null;
+  // Call signs for the same two fingerprints (see CrownCheckResult.crown_name).
+  name?: string | null;
+  previous_name?: string | null;
   overall: number | null;
   applied: boolean;
   error: string | null;
@@ -1580,6 +1611,10 @@ export interface PooledCrown {
   overall: number | null;
   since: string | null;
   reign_hours: number | null;
+  // The crown's LIVE pooled Overall — the ledger `overall` above was recorded at
+  // crowning time and can be days stale; this one shares a vintage with the duel side.
+  overall_now?: number | null;
+  overall_iterations?: number;
 }
 
 export interface DuelCrown {
@@ -1598,12 +1633,19 @@ export interface DuelCrown {
   draws: number;
   matchups: number;
   beaten: string[];
+  // The champion's LIVE pooled Overall (same scale and vintage as the pooled side's
+  // overall_now) — the number that lets the two crowns be compared at all.
+  overall_now?: number | null;
+  overall_iterations?: number;
 }
 
 export interface CrownsOut {
   policy: "pooled" | "duel";
   pooled: PooledCrown | null;
   duel: DuelCrown | null;
+  // Champion's live pooled Overall minus the crown's — how far apart the two verdicts
+  // sit on the one scale they share. Null until both have a live Overall.
+  overall_delta?: number | null;
   governing: { source: "pooled" | "duel"; fingerprint: string | null; detail: string };
   agree: boolean;
   follow_enabled: boolean;
@@ -2134,6 +2176,15 @@ export interface ExploreCandidate {
   coords: Record<string, number>;
   predicted: number;
   uncertainty: number;
+  // What the parent's Overall was worth as a starting point after the winner's-curse
+  // shrink (best-of-many-noisy-medians is biased high; the anchor slides toward the
+  // settled field's median by what the parent's own error bar can't rule out). A
+  // prediction below the parent's headline number is this correction, not a typo.
+  anchor?: number;
+  anchor_se?: number;
+  // predicted - best_overall > the field's noise floor: this candidate proposes a
+  // difference the field can actually express. Absent when no floor is computable.
+  beats_noise?: boolean;
   // predicted + exploration_weight * uncertainty — "how good could this be?", which is the
   // question worth spending a night on, not "how good do we expect it to be?".
   upside: number;
@@ -2207,7 +2258,12 @@ export type ExploreVerdict =
   | "unscored"
   | "on_target"
   | "better"
-  | "worse";
+  | "worse"
+  // The firewall never held the full proposal (a field it can't write, or a value its
+  // selects don't offer, was dropped before benchmarking) — the benchmark measured the
+  // closest reachable profile, not the claim, so grading it would charge a plumbing
+  // failure to the model's evidence class. Excluded from calibration.
+  | "unreachable";
 
 export interface ExploreRecommendation {
   id: number;
@@ -2263,6 +2319,9 @@ export interface ExploreCalibration {
   graded: number;
   pending: number;
   incomparable: number;
+  // Claims whose test never measured the proposal (see the "unreachable" verdict) —
+  // reported so they're visible, never counted in the calibration.
+  unreachable?: number;
   on_target: number;
   better: number;
   worse: number;
@@ -2307,5 +2366,13 @@ export interface ExploreLandscape {
   profiles_modelled: number;
   confident_only: boolean;
   exploration_weight?: number;
+  // The Overall gap two settled profiles need before they're distinguishable at all
+  // (2σ × pooled SE of two medians — the same machinery as the crown-tie check). Null
+  // when the field carries no spread information.
+  noise_floor?: number | null;
+  // False when candidates exist but none of them predicts an edge over the best measured
+  // profile bigger than the noise floor — the honest state of a packed field, where the
+  // right next measurement is the coverage gaps, not a refinement.
+  candidates_clear_noise?: boolean | null;
   reason: string | null;
 }

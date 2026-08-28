@@ -400,3 +400,30 @@ def test_api_sync_runs_a_check(client, monkeypatch):
     res = client.post("/api/settings/crown-follow/sync")
     assert res.status_code == 200
     assert res.json()["result"]["crown_fingerprint"] == fingerprint(live)
+
+
+def test_the_follow_best_popover_reads_in_call_signs_not_settings_summaries(client):
+    """A crown ledger printed as stored labels is two settings summaries and an arrow —
+    *"Download: 880Mbit q7313 t7 i45 ecn | Upload: … → Download: 880Mbit q450 …"* — in a
+    340px popover. It says what changed and never says **who**, which is the entire reason
+    call signs exist. Resolved by fingerprint at read time, like the duel tape and the
+    standings, so a rename lands here too.
+    """
+    summary = "Download: 880Mbit q7313 t7 i45 ecn | Upload: 880Mbit q450 t3 i60 ecn"
+    with session_scope() as session:
+        session.add(
+            CrownEvent(
+                kind="change",
+                fingerprint="crownaaaaaaa",
+                previous_fingerprint="crownbbbbbbb",
+                label=summary,
+                previous_label=summary,
+            )
+        )
+
+    body = client.get("/api/settings/crown-follow").json()
+    event = body["events"][0]
+    assert event["name"] and event["name"] != event["label"]
+    assert event["previous_name"] and event["previous_name"] != event["previous_label"]
+    # The technical summary is kept beside the name, not replaced by it.
+    assert event["label"] == summary

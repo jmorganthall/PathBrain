@@ -1403,7 +1403,7 @@ def _drive(duel_id: int) -> None:
     run_ids: list[int] = []
     iterations_run = 0
     try:
-        with coordinator.hold(f"duel#{duel_id}"):
+        with coordinator.hold(f"duel#{duel_id}") as lease:
             _set_stage(duel_id, "Reading current firewall settings")
             baseline = normalize(provider.discover())
             with session_scope() as session:
@@ -1573,6 +1573,14 @@ def _drive(duel_id: int) -> None:
                     # nightly window is a wall-clock agreement about when the ladder may
                     # run, and quietly running past 05:00 to make up for a detour would
                     # break the thing the window is for.
+                    # Two things at the seam, in this order. **Check** that the session
+                    # still owns the pipeline: a ladder that went quiet long enough to be
+                    # evicted must not wake up and start applying profiles over whoever
+                    # holds it now — it stops here instead. Then **beat**, because
+                    # reaching this line is itself the proof of progress a pair-by-pair
+                    # session can offer.
+                    lease.check()
+                    lease.beat()
                     yielded = coordinator.yield_if_waiting(f"duel#{duel_id}")
                     if yielded:
                         log.info(
@@ -1614,6 +1622,7 @@ def _drive(duel_id: int) -> None:
                     )
                     scored: dict[str, float | None] = {}
                     for side_fp, side in order:
+                        lease.check()  # never write the firewall on an evicted lease
                         _apply_profile(provider, side["settings"], side_fp)
                         # Let the link settle after the reconfigure before believing what
                         # we measure (duel.settle_seconds; 0 = measure immediately).
@@ -1779,6 +1788,15 @@ def _drive(duel_id: int) -> None:
                 _apply_all(provider, restore)
             except Exception:  # noqa: BLE001 — never raise out of cleanup
                 log.exception("Duel %s: baseline restore failed", duel_id)
+    except coordinator.LeaseRevoked as exc:
+        # The ladder went quiet long enough for the pipeline to be handed on (a wedged
+        # probe, most likely). It is not a duel failure so much as a duel that was
+        # overtaken — recorded plainly, and deliberately WITHOUT restoring the baseline,
+        # because another session owns the firewall now and writing to it is the one
+        # thing an evicted session must not do.
+        log.error("Duel %s stopped: %s", duel_id, exc)
+        final_status = DuelStatus.FAILED
+        err = f"Stopped: {exc}"
     except Exception as exc:  # noqa: BLE001 — record, never crash the thread
         log.exception("Duel %s failed", duel_id)
         final_status = DuelStatus.FAILED

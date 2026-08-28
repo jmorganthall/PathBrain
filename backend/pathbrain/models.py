@@ -849,6 +849,12 @@ class ExploreRecommendation(Base):
     iterations_requested: Mapped[int] = mapped_column(Integer, default=0)
     baseline_iterations: Mapped[int] = mapped_column(Integer, default=0)
     profile_test_id: Mapped[int | None] = mapped_column(ForeignKey("profile_tests.id"), nullable=True)
+    # The firewall could not hold the full proposal (a field the provider cannot write, or
+    # a value its selects don't offer, was dropped/reverted before benchmarking) — so the
+    # benchmark measured the closest REACHABLE profile, not this claim. Grading such a row
+    # would charge a plumbing failure to the model's evidence class, so the ledger reports
+    # it as its own verdict and keeps it out of the calibration summary.
+    unreachable: Mapped[bool] = mapped_column(Boolean, default=False)
     # Anything that makes the measurement less than a faithful reproduction of the proposal
     # (e.g. the parent's stored settings were unavailable, so the levers were pasted onto the
     # live profile instead). Read it before believing a verdict.

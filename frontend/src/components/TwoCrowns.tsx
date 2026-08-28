@@ -152,6 +152,7 @@ export default function TwoCrowns() {
   if (!data || (!data.pooled && !data.duel)) return null;
 
   const { pooled, duel, governing, agree } = data;
+  const delta = data.overall_delta ?? null;
 
   return (
     <Card sx={{ mb: 2 }}>
@@ -190,7 +191,7 @@ export default function TwoCrowns() {
               kind="Overall crown"
               what="Best profile across ALL measured history — every run in every condition, pooled into one standing. Broad, but it compares profiles measured at different times."
               title={pooled.name || pooled.label || pooled.fingerprint}
-              subtitle={`Overall ${fmtNum(pooled.overall, 1)} · holding for ${fmtReign(
+              subtitle={`Overall ${fmtNum(pooled.overall_now ?? pooled.overall, 1)} · holding for ${fmtReign(
                 pooled.reign_hours
               )}`}
               detail={[pooled.name ? pooled.label : null, pooled.since ? `crowned ${fmtDateTime(pooled.since)}` : null]
@@ -219,7 +220,9 @@ export default function TwoCrowns() {
               kind="Duel champion"
               what="Winner of the head-to-head ladder: interleaved A/B/A/B bouts where both sides met the same weather, decided by a sequential test. Narrower than the overall crown, but free of the timing confound."
               title={duel.name || duel.label || duel.fingerprint}
-              subtitle={`${duel.wins}–${duel.losses}–${duel.draws} in the ring · ${
+              subtitle={`${
+                duel.overall_now != null ? `Overall ${fmtNum(duel.overall_now, 1)} · ` : ""
+              }${duel.wins}–${duel.losses}–${duel.draws} in the ring · ${
                 duel.consecutive_sessions
               } session${duel.consecutive_sessions === 1 ? "" : "s"} as champion`}
               detail={
@@ -252,8 +255,15 @@ export default function TwoCrowns() {
         {!agree && pooled && duel && (
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
             The two disagree — normal, and worth a look: the overall crown wins on the whole
-            record, the champion won its bouts under matched conditions. More duels (or more
-            runs) will resolve it.
+            record, the champion won its bouts under matched conditions.
+            {delta != null && (
+              <>
+                {" "}On the pooled record the champion measures{" "}
+                <b>{delta > 0 ? `${fmtNum(delta, 1)} ahead of` : delta < 0 ? `${fmtNum(Math.abs(delta), 1)} behind` : "level with"}</b>{" "}
+                the overall crown{delta < 0 ? " — its head-to-head wins came under matched conditions the pooled average doesn't see" : delta > 0 ? " as well — the pooled record may simply be lagging the ring" : ""}.
+              </>
+            )}{" "}
+            More duels (or more runs) will resolve it.
           </Typography>
         )}
       </CardContent>

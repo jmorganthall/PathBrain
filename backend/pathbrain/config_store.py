@@ -126,6 +126,12 @@ DEFAULT_CONFIG: dict = {
         "interval_minutes": 15,
         # Watchdog: fail any run still in progress after this many minutes.
         "run_timeout_minutes": 30,
+        # Probe watchdog: abandon a single plugin call that hasn't returned in this many
+        # minutes (see ``probes``). Far above any legitimate probe, far below "all
+        # night" — it is what stops one unanswered browser call from parking the whole
+        # pipeline. Must stay below ``coordinator.STALE_HOLDER_S`` so a stalled probe
+        # recovers as a failed measurement before the session itself is evicted.
+        "probe_timeout_minutes": 10,
     },
     # Settings-vs-responsiveness correlation: flag a settings change as
     # significant when the median SOPS moves by at least this percent.

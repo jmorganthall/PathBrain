@@ -16,12 +16,13 @@ from time import perf_counter
 
 from sqlalchemy import select
 
+from . import coordinator, probes
 from .config import get_settings
 from .config_store import get_config
 from .database import session_scope
 from .interpret import DERIVATION_VERSION, derive
 from .logging_config import get_logger
-from .models import BenchmarkResult, Run, RunStatus, ScoreResult
+from .models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
 from .plugins import BenchmarkPlugin, PluginResult, iter_plugins
 from .raw_access import browser_url_observations, stored_iterations
 from .scoring import (
@@ -41,6 +42,26 @@ MAX_ITERATIONS = 500
 # ``CHUNK_ITERATIONS`` or fewer execute as a single run (the historical behaviour).
 CHUNK_ITERATIONS = 5
 
+#: Fallback probe deadline when the config carries none (see ``probes``).
+DEFAULT_PROBE_TIMEOUT_MINUTES = 10.0
+
+
+def _probe_timeout_s(config: dict) -> float:
+    """How long one plugin call may take before it is abandoned.
+
+    Kept comfortably under the coordinator's stall threshold: a probe hitting its
+    deadline must recover *before* the pipeline concludes its holder is dead, so the
+    ordinary case is one failed measurement rather than an evicted session.
+    """
+    raw = (config.get("monitoring", {}) or {}).get(
+        "probe_timeout_minutes", DEFAULT_PROBE_TIMEOUT_MINUTES
+    )
+    try:
+        minutes = float(raw)
+    except (TypeError, ValueError):
+        minutes = DEFAULT_PROBE_TIMEOUT_MINUTES
+    return max(minutes, 0.5) * 60.0
+
 
 def create_run(
     label: str | None = None,
@@ -49,6 +70,7 @@ def create_run(
     *,
     job_group: str | None = None,
     job_group_total: int | None = None,
+    config_overrides: dict | None = None,
 ) -> int:
     """Create a pending run row and return its id.
 
@@ -59,6 +81,17 @@ def create_run(
     """
     with session_scope() as session:
         config = get_config(session)
+        if config_overrides:
+            # Per-run tweaks over the DB config, section-merged and baked into the run's
+            # ``config_used`` snapshot — so ``execute_run`` needs no extra channel and the
+            # override is on the record like any other config the run ran under. Used by
+            # the profile test to lift the browser's per-plugin iteration cap.
+            config = dict(config)
+            for key, value in config_overrides.items():
+                if isinstance(value, dict):
+                    config[key] = {**(config.get(key) or {}), **value}
+                else:
+                    config[key] = value
         iters = iterations if iterations else int(config.get("iterations", 1) or 1)
         iters = max(1, min(iters, MAX_ITERATIONS))
         run = Run(
@@ -83,6 +116,7 @@ def run_chunk(
     teardown: bool = True,
     job_group: str | None = None,
     job_group_total: int | None = None,
+    config_overrides: dict | None = None,
 ) -> tuple[int, bool, int]:
     """Create one run of ``iterations`` and execute it (blocking). Returns
     ``(run_id, ok, iterations_completed)`` where ``ok`` is True iff the run finished
@@ -104,6 +138,7 @@ def run_chunk(
         iterations=iterations,
         job_group=job_group,
         job_group_total=job_group_total,
+        config_overrides=config_overrides,
     )
     execute_run(run_id, teardown=teardown)
     with session_scope() as session:
@@ -122,10 +157,12 @@ def teardown_plugins() -> None:
     instances the runs used. Never raises.
     """
     for plugin in iter_plugins():
-        try:
-            plugin.teardown()
-        except Exception:  # noqa: BLE001 — teardown must never break the caller
-            log.warning("Plugin '%s' teardown failed", plugin.name, exc_info=True)
+        # Routed through the probe worker, not called here: Playwright's sync objects
+        # belong to the thread that created them, and since the plugin *ran* on the
+        # worker, closing Chromium from this thread would silently fail and leak a
+        # browser process per run. A wedged close gets the same deadline a wedged probe
+        # does (see ``probes``).
+        probes.teardown(plugin)
 
 
 def _metric_stats(values: list[float]) -> dict:
@@ -822,6 +859,7 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                     return iterations
 
             plugin_counts = {p.name: _plugin_count(p.name) for p in plugins}
+            probe_timeout_s = _probe_timeout_s(config)
             artifact_base = os.path.abspath(get_settings().artifact_dir)
             iteration_durations: list[float] = []
             weights = config.get("weights", {})
@@ -850,8 +888,17 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                         ran_full_suite = False  # this plugin opted out of this round
                         continue
                     section = config.get(plugin.name, {})
-                    result = plugin.run(section)
+                    # A probe is the one call that hands control to something we do not
+                    # own; bounded so a wedged socket or browser can never park the
+                    # pipeline (``probes``). A timeout comes back as an ordinary failed
+                    # measurement, so nothing downstream needs to know.
+                    result = probes.run_plugin(plugin, section, timeout_s=probe_timeout_s)
                     per_plugin[plugin.name].append(result)
+                    # The coordination lock's holder is alive and making progress. Said
+                    # here rather than once per run because a run is the long thing: the
+                    # stall watchdog reads the gap between beats, so it has to be stamped
+                    # at the granularity work actually happens at.
+                    coordinator.beat()
                     if result.success:
                         # Interpret raw → scoreable metrics (the cache); raw is kept
                         # as the source of truth so this can be re-derived later.
@@ -1027,3 +1074,100 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                     log.warning(
                         "Run %s: plugin '%s' teardown failed", run_id, plugin.name, exc_info=True
                     )
+
+
+def apply_warmup_report(session) -> dict:
+    """Read-only diagnostic: do the first chunks after a firewall apply read low?
+
+    Every explore quick test is 5 iterations measured immediately after a ``setPipe`` +
+    reconfigure, compared against profiles whose pooled medians were mostly collected while
+    they sat live and warm. If a freshly-applied profile's first chunk carries a penalty,
+    that asymmetry contaminates every quick verdict and the recommendation ledger's whole
+    calibration table — and it is a measurement bug, not a modelling one. The duel already
+    guards against it (``duel.settle_seconds`` + interleaving); the profile test does not.
+
+    Method: group profile-test chunks by ``job_group``, order each group's chunks by run id
+    (creation order), center every chunk's persisted Overall (``Score.axis_scores['overall']``
+    under the current methodology) on its OWN group's median — removing profile identity —
+    and aggregate the centered deltas by chunk position. ``current_test`` chunks, which
+    never write the firewall, get the same treatment as the CONTROL: their first-chunk
+    effect is session-start cost (browser cold start and the like), so
+    ``apply_effect = profile_test chunk-1 delta − current_test chunk-1 delta`` isolates
+    what the apply itself costs. Diagnosis only — no score is changed.
+    """
+    from .config_store import get_config
+    from .methodology import ensure_current_methodology
+
+    methodology = ensure_current_methodology(session, get_config(session))
+    rows = session.execute(
+        select(Run.job_group, Run.id, Score.axis_scores, Score.comparability)
+        .join(Score, Score.run_id == Run.id)
+        .where(
+            Run.status == RunStatus.COMPLETE,
+            Run.job_group.isnot(None),
+            Score.methodology_version == methodology.version,
+        )
+        .order_by(Run.id)
+    ).all()
+
+    groups: dict[str, list[float]] = {}
+    for job_group, _run_id, axis_scores, comparability in rows:
+        if comparability == "incomparable":
+            continue
+        overall = (axis_scores or {}).get("overall")
+        if overall is None:
+            continue
+        if job_group.startswith(("profile_test-", "current_test-")):
+            groups.setdefault(job_group, []).append(float(overall))
+
+    def _series(prefix: str) -> dict:
+        by_index: dict[int, list[float]] = {}
+        used = 0
+        for job_group, overalls in groups.items():
+            # One-chunk groups carry no within-group contrast — centering them yields 0 by
+            # construction and would dilute every bucket toward "no effect".
+            if not job_group.startswith(prefix) or len(overalls) < 2:
+                continue
+            used += 1
+            center = median(overalls)
+            for idx, overall in enumerate(overalls, start=1):
+                by_index.setdefault(idx, []).append(overall - center)
+        chunks = [
+            {
+                "chunk": idx,
+                "groups": len(deltas),
+                "median_delta": round(median(deltas), 2),
+                "mean_delta": round(mean(deltas), 2),
+            }
+            for idx, deltas in sorted(by_index.items())
+        ]
+        first = [d for idx, ds in by_index.items() if idx == 1 for d in ds]
+        later = [d for idx, ds in by_index.items() if idx >= 2 for d in ds]
+        return {
+            "groups": used,
+            "chunks": chunks,
+            "first_chunk_delta": round(median(first), 2) if first else None,
+            "later_chunks_delta": round(median(later), 2) if later else None,
+        }
+
+    tested = _series("profile_test-")
+    control = _series("current_test-")
+    apply_effect = None
+    if tested["first_chunk_delta"] is not None and control["first_chunk_delta"] is not None:
+        apply_effect = round(tested["first_chunk_delta"] - control["first_chunk_delta"], 2)
+    return {
+        "methodology_version": methodology.version,
+        # Chunks measured right after a firewall apply (profile tests)…
+        "after_apply": tested,
+        # …vs chunks with no apply at all (current tests) — the control.
+        "no_apply_control": control,
+        # First-chunk penalty net of session-start cost. Negative = the apply itself
+        # depresses the first chunk; near zero = no settle problem, the noise is elsewhere.
+        "apply_effect": apply_effect,
+        "note": (
+            "Deltas are each chunk's Overall minus its own test's median, aggregated by "
+            "chunk position — a persistent negative first chunk after applies (and not in "
+            "the control) means freshly-applied profiles measure low and quick tests are "
+            "biased against every candidate."
+        ),
+    }

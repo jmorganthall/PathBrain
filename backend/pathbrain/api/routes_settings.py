@@ -476,6 +476,23 @@ def _completed_runs_with_scores(session: Session):
     return [(run, score, metrics_by_run.get(run.id, {})) for run, score in rows]
 
 
+@router.get("/settings/apply-warmup")
+def apply_warmup(session: Session = Depends(get_session)) -> dict:
+    """Read-only diagnostic: do the first chunks after a firewall apply measure low?
+
+    Groups profile-test chunks (measured immediately after an apply) and current-test
+    chunks (no firewall write — the control) by their parent job, centers each chunk's
+    Overall on its own test's median, and aggregates by chunk position. A persistent
+    negative first chunk after applies that the control doesn't show means a
+    freshly-applied profile is penalized before it settles — which biases every quick
+    test and the explore recommendation ledger against every candidate. Diagnosis only;
+    no score changes.
+    """
+    from ..runner import apply_warmup_report
+
+    return apply_warmup_report(session)
+
+
 @router.get("/settings/profiles/{fingerprint}/verify-derivation")
 def verify_profile_derivation(
     fingerprint: str,
@@ -3192,6 +3209,35 @@ def crowns(session: Session = Depends(get_session)) -> dict:
             "beaten": (record or {}).get("beaten", []),
         }
 
+    # Both verdicts on ONE scale, same vintage: the ledger's ``overall`` on the pooled side
+    # was recorded at crowning time (possibly days ago), and the duel side had no Overall at
+    # all — so the card couldn't compare the two profiles on the number that actually
+    # crowns. ``profile_overalls`` reads each profile's LIVE pooled Overall in one batched
+    # indexed query (no ``compute_profiles`` pass, keeping this endpoint cheap), and the
+    # delta is signed from the champion's side: positive = the duel champion also measures
+    # higher on the pooled record.
+    overall_delta = None
+    both = [fp for fp in ((pooled or {}).get("fingerprint"), (duel_out or {}).get("fingerprint")) if fp]
+    if both:
+        try:
+            methodology = ensure_current_methodology(session, get_config(session))
+            crown_metrics, crown_required = overall_metrics(methodology.definition or {})
+            weights = overall_weights(methodology.definition or {})
+            live = crown_follower.profile_overalls(
+                session, both, methodology.version, crown_metrics, crown_required, weights
+            )
+            for side in (pooled, duel_out):
+                if side and side.get("fingerprint") in live:
+                    overall_now, iters = live[side["fingerprint"]]
+                    side["overall_now"] = None if overall_now is None else round(overall_now, 2)
+                    side["overall_iterations"] = iters
+            p_now = (pooled or {}).get("overall_now")
+            d_now = (duel_out or {}).get("overall_now")
+            if p_now is not None and d_now is not None:
+                overall_delta = round(d_now - p_now, 2)
+        except Exception:  # noqa: BLE001 — a scoring hiccup must not blank the card
+            log.debug("Two-crowns: could not compute live Overalls", exc_info=True)
+
     # Both verdicts are read by name — the whole point of the card is telling two
     # profiles apart at a glance, which "q1514 t5ms" vs "q1514 t10ms" defeats.
     call_signs = profile_names.names_for(
@@ -3214,6 +3260,9 @@ def crowns(session: Session = Depends(get_session)) -> dict:
             "fingerprint": resolution["fingerprint"],
             "detail": resolution["detail"],
         },
+        # Champion's live pooled Overall minus the crown's — how far apart the two
+        # verdicts sit on the one scale they share. None until both have a live Overall.
+        "overall_delta": overall_delta,
         # True when both verdicts name the same profile — the strongest signal available:
         # the observational field and the head-to-head trial agree.
         "agree": bool(
@@ -3242,6 +3291,42 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
 
     cfg = get_config(session).get("crown_follow", {}) or {}
     rematch_days = int((get_config(session).get("duel", {}) or {}).get("rematch_days", 7) or 7)
+
+    champion = duel_mod.latest_champion(session, max_age_days=rematch_days)
+    follow_status = crown_follower.status()
+    churn = crown_follower.stats(session)
+    events = crown_follower.recent_events(session, limit=20)
+
+    # Call signs, resolved by fingerprint in one query for everything the popover shows.
+    # The stored ``label`` on a crown event is a full settings summary — *"Download:
+    # 880Mbit q7313 t7 i45 ecn | Upload: 880Mbit q450 t3 i60 ecn"* — so a ledger of crown
+    # changes read as two of those with an arrow between them, in a 340px popover, on a
+    # phone. It says what changed and never says **who**, which is exactly what call signs
+    # exist for and what every other view already leads with. Resolved by fingerprint (not
+    # frozen into the row) so a rename lands everywhere at once, and best-effort: naming
+    # can never be why the popover fails.
+    _named = _crown_follow_names(
+        session,
+        [
+            (follow_status.get("last_result") or {}).get("crown_fingerprint"),
+            (follow_status.get("last_result") or {}).get("governing_fingerprint"),
+            churn.get("current_crown_fingerprint"),
+            (champion or {}).get("fingerprint"),
+            *[e.get("fingerprint") for e in events],
+            *[e.get("previous_fingerprint") for e in events],
+        ],
+    )
+    last_result = follow_status.get("last_result")
+    if isinstance(last_result, dict):
+        last_result["crown_name"] = _named.get(last_result.get("crown_fingerprint"))
+        last_result["governing_name"] = _named.get(last_result.get("governing_fingerprint"))
+    churn["current_crown_name"] = _named.get(churn.get("current_crown_fingerprint"))
+    if champion:
+        champion["name"] = _named.get(champion.get("fingerprint")) or champion.get("label")
+    for e in events:
+        e["name"] = _named.get(e.get("fingerprint"))
+        e["previous_name"] = _named.get(e.get("previous_fingerprint"))
+
     return {
         "config": {
             "enabled": bool(cfg.get("enabled", False)),
@@ -3252,11 +3337,23 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
         "policies": list(crowning.POLICIES),
         # The duel ladder's latest fresh champion (or null) — shown beside the pooled
         # crown so the popover can display both verdicts whatever the policy.
-        "duel_champion": duel_mod.latest_champion(session, max_age_days=rematch_days),
-        "status": crown_follower.status(),
-        "stats": crown_follower.stats(session),
-        "events": crown_follower.recent_events(session, limit=20),
+        "duel_champion": champion,
+        "status": follow_status,
+        "stats": churn,
+        "events": events,
     }
+
+
+def _crown_follow_names(session: Session, fingerprints: list[str | None]) -> dict[str, str]:
+    """Call signs for a mixed bag of (possibly None, possibly repeated) fingerprints."""
+    wanted = sorted({fp for fp in fingerprints if fp})
+    if not wanted:
+        return {}
+    try:
+        return profile_names.names_for(session, wanted)
+    except Exception:  # noqa: BLE001 — a cosmetic lookup can't break the status read
+        log.debug("Crown-follow status: could not resolve call signs", exc_info=True)
+        return {}
 
 
 @router.post("/settings/crown-follow")

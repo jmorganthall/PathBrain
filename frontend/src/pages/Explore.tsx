@@ -420,11 +420,20 @@ function CandidateCard({
           >
             {candidate.parent.name || candidate.parent.label}
           </Link>{" "}
-          (Overall {fmtNum(candidate.parent.overall, 1)})
+          (Overall {fmtNum(candidate.parent.overall, 1)}
+          {candidate.anchor != null &&
+          Math.abs(candidate.anchor - candidate.parent.overall) >= 0.05 ? (
+            <Tooltip title="The best of many noisy medians is biased high, so the parent's headline Overall is shrunk toward the settled field's median by what its own error bar can't rule out — the prediction starts from this corrected number, not the headline.">
+              <Typography component="span" variant="caption" sx={{ cursor: "help" }}>
+                , anchored at {fmtNum(candidate.anchor, 1)} for sample size
+              </Typography>
+            </Tooltip>
+          ) : null}
+          )
         </Typography>
 
         <Stack direction="row" spacing={2} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
-          <Tooltip title="The parent's measured Overall, adjusted by what the response curve says about moving this lever. Beyond the tested range the curve is clamped rather than extrapolated — we don't guess out there, we admit we don't know and let the uncertainty carry it.">
+          <Tooltip title="The parent's Overall — shrunk for winner's curse when the field is packed — adjusted by what the best evidence says about moving this lever (a matched pair's claim is itself shrunk by how many pairs agree). Beyond the tested range the curve is clamped rather than extrapolated — we don't guess out there, we admit we don't know and let the uncertainty carry it.">
             <Box>
               <Typography variant="caption" color="text.secondary">
                 Predicted
@@ -913,6 +922,11 @@ const VERDICTS: Record<
     color: "default",
     tip: "No prediction was recorded with this recommendation, so there is nothing to grade.",
   },
+  unreachable: {
+    label: "firewall couldn't hold it",
+    color: "warning",
+    tip: "Part of the proposal was dropped before benchmarking — a field the firewall cannot write, or a value its own controls don't offer — so the test measured the closest reachable profile, not this claim. Kept out of the calibration: a plumbing failure says nothing about the evidence the prediction was priced from.",
+  },
 };
 
 function RecommendationRow({ rec }: { rec: ExploreRecommendation }) {
@@ -1355,6 +1369,17 @@ export default function Explore() {
                 predicted score plus what we don't know — because the question is where you
                 might <i>beat</i> everything measured, not where you'd score respectably.
               </Typography>
+              {data.candidates.length > 0 && data.candidates_clear_noise === false && (
+                <Alert severity="warning" sx={{ mb: 1.5 }}>
+                  <b>No candidate clears the noise floor.</b> The best prediction here beats
+                  the best measured profile by less than{" "}
+                  <b>{fmtNum(data.noise_floor ?? null, 1)}</b> Overall points — the gap two
+                  settled profiles need before they're distinguishable at all. On a field
+                  this packed, refining another lever is re-ranking noise; the honest next
+                  measurement is the <b>coverage gaps</b> below, where something genuinely
+                  untested could still exist.
+                </Alert>
+              )}
               {data.candidates.length === 0 ? (
                 <Alert severity="info">
                   No untested combination stands out yet — the levers are either well

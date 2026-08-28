@@ -74,8 +74,11 @@ def _seed_profile(fp: str, overall: float, iterations: int = 20, job_group: str 
     ``job_group`` stamps the runs the way a profile test's chunks are stamped, which is how
     the ledger finds the profile a recommendation's benchmark actually ran under."""
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # AFTER any claim recorded in the same test: a claim is graded only against runs made
+    # at/after it (a proposal that collapses onto an existing profile must not inherit that
+    # profile's history), and in reality the test's runs always postdate the claim.
     _seed_run(
-        fp, overall, t0 - timedelta(minutes=5), iterations=iterations,
+        fp, overall, t0 + timedelta(minutes=1), iterations=iterations,
         crown_subscores={m: overall for m in _crown_metrics()},
     )
     if job_group:
@@ -663,3 +666,72 @@ def test_a_changed_duration_field_does_not_read_as_a_different_profile():
     # …while being spelled differently, which is the whole cause of the alarming note.
     assert target[0]["interval"] == 55 and after[0]["interval"] == "55"
     mock_mod._OVERRIDES.clear()
+
+
+def test_an_unreachable_claim_is_its_own_verdict_not_a_modelling_miss(client):
+    """The measured ledger's -5.9 'matched pair miss' was an unappliable CoDel interval:
+    the firewall never held the proposal, the benchmark measured the closest reachable
+    profile, and the failure was charged to the evidence class — poisoning the very table
+    that decides which evidence to trust. A claim flagged unreachable at test start grades
+    as ``unreachable``, stays out of the calibration summary, and says why."""
+    _record("recunreach01", predicted=81.2, uncertainty=1.0, unreachable=True)
+    _seed_profile("recunreach01", 75.3, iterations=5)
+    row = _ledger(client, "recunreach01")
+    assert row["verdict"] == "unreachable"
+    assert "closest reachable profile" in row["why"]
+    summary = client.get("/api/explore/recommendations").json()["summary"]
+    assert summary["graded"] == 0, "an unreachable row never enters calibration"
+    assert summary["unreachable"] >= 1
+    assert all(b["kind"] != "matched_pair" or b["graded"] == 0 for b in summary["by_evidence"])
+
+
+def test_a_claim_is_graded_only_against_runs_made_after_it(client):
+    """A proposal the firewall collapses onto an existing profile must not inherit that
+    profile's history: the ledger's rows that 'landed in the band' over 61+ iterations were
+    dominated by runs that predate the claim — a grade of the archive, not of the claim."""
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Months of pre-existing history at 85 on the profile the proposal lands on…
+    _seed_run(
+        "rechistory01", 85.0, t0 - timedelta(days=10), iterations=60,
+        crown_subscores={m: 85.0 for m in _crown_metrics()},
+    )
+    _record("rechistory01", predicted=85.5, uncertainty=1.0)
+    # …and the test's own runs, after the claim, measuring 75.
+    _seed_run(
+        "rechistory01", 75.0, t0 + timedelta(minutes=1), iterations=5,
+        crown_subscores={m: 75.0 for m in _crown_metrics()},
+    )
+    row = _ledger(client, "rechistory01")
+    assert row["actual"] == 75.0, "only post-claim runs grade the claim"
+    assert row["iterations"] == 5
+    assert row["verdict"] == "worse"
+
+
+def test_the_apply_warmup_diagnostic_reads_the_first_chunk_against_the_control(client):
+    """The warm-up question, answerable from data already collected: chunks right after a
+    firewall apply (profile tests) vs chunks with no apply at all (current tests). Each
+    chunk is centered on its own test's median, so profile identity drops out and what
+    remains is pure position-in-test."""
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    # A profile test whose first chunk reads 2 points low…
+    for i, overall in enumerate((77.0, 79.0, 79.2)):
+        _seed_run(
+            "recwarm01", overall, t0 + timedelta(minutes=i), iterations=5,
+            crown_subscores={m: overall for m in _crown_metrics()},
+        )
+    # …and a current test (no apply) whose chunks are flat.
+    for i, overall in enumerate((80.0, 80.1, 79.9)):
+        _seed_run(
+            "recwarm02", overall, t0 + timedelta(minutes=i), iterations=5,
+            crown_subscores={m: overall for m in _crown_metrics()},
+        )
+    with session_scope() as s:
+        for run in s.query(Run).filter(Run.settings_fingerprint == "recwarm01").all():
+            run.job_group = "profile_test-9101"
+        for run in s.query(Run).filter(Run.settings_fingerprint == "recwarm02").all():
+            run.job_group = "current_test-9102"
+    body = client.get("/api/settings/apply-warmup").json()
+    assert body["after_apply"]["groups"] == 1
+    assert body["after_apply"]["first_chunk_delta"] < -1.5, body["after_apply"]
+    assert abs(body["no_apply_control"]["first_chunk_delta"]) < 0.5
+    assert body["apply_effect"] < -1.0

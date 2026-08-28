@@ -1665,6 +1665,7 @@ export default function Settings() {
               shadeField={fieldByKey(sizeKey) ?? null}
               bestFingerprint={bestFingerprint}
               currentFingerprint={currentFingerprint}
+              coLeaders={[...coLeaders]}
               thresholds={metricThresholds}
               onSelect={setScatterFp}
             />

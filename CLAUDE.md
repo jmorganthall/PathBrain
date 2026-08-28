@@ -217,6 +217,42 @@ LLM-based. See `README.md` for the product overview.
     for the lock to actually be taken before queueing for it again — on CPython the woken
     waiter usually wins anyway, but "usually" is a tendency and this makes it a guarantee. Pairs with the read-before/
     read-after fingerprint check in `runner.execute_run` (FAILs a run on mid-run drift).
+    **The lock is a LEASE, not a promise** (`Lease`/`beat`/`evict_if_stalled`). Holding it for
+    hours is normal — a duel window is a night — so "held a long time" says nothing; a holder
+    that has stopped making *progress* has stopped being a session and become a wedge, and
+    every queued session then waits on a thread that is never coming back. Observed: a duel
+    wedged inside an unanswered browser call at 23:00 still owned the pipeline at 07:30, so
+    every run/test/race started overnight simply queued and the platform read as dead (the
+    "stuck automated duel" report — Settings Impact and Dueling Champions included, since
+    what those pages had to show was work that never ran). Python cannot kill a blocked
+    thread, so the holder **beats** (`coordinator.beat()`, stamped by `runner` around every
+    probe) and a holder silent past `STALE_HOLDER_S` (20 min) is **evicted** — by any waiter,
+    and by the scheduler watchdog, so the pipeline self-heals even with nobody queued. The
+    wedged thread is *disowned*, not killed: its lease is revoked, its own `lease.check()`
+    seams raise (the duel checks before every leg, so it can never wake and apply a profile
+    over a live session), and its eventual release is a **no-op** — a stale release would
+    hand a live session's lock away, the exact thing the lock exists to prevent. Eviction is
+    the backstop; `probes` is the mechanism, and 20 min sits deliberately above the 10-min
+    probe deadline so a stalled probe recovers as one failed measurement first.
+    `coordinator.status()` (owner / held-for / **stalled-for** / waiting / evictions) is what
+    the jobs feed and `GET /api/health/pipeline` render.
+  - `probes.py` — **bounded probe execution: no measurement may park the pipeline.** A plugin
+    call is the one place PathBrain hands control to something it doesn't own, and a few of
+    the browser plugin's calls have **no timeout to set** (`browser.new_context()`,
+    `page.evaluate()`, `context.close()`) — a wedged Chromium blocks the caller forever, and
+    that caller is holding the coordinator lock. So probes run on a **dedicated long-lived
+    worker thread** and the caller waits with a deadline (`monitoring.probe_timeout_minutes`,
+    default 10). On expiry the probe comes back as an ordinary `success=False` result, the
+    worker is **abandoned** (left blocked, daemon, never joined) and the next call gets a
+    fresh one. The worker is *dedicated* rather than pooled for a reason: Playwright's sync
+    API is bound to its creating thread, which is what lets one warm Chromium serve a run's
+    iterations — and it means a fresh worker implies a fresh browser, so the plugin is told
+    to **drop** its handles (`BenchmarkPlugin.abandon()`, the counterpart to `teardown()`)
+    rather than close them, since closing a wedged browser from a thread that doesn't own it
+    is the same hang one frame out. `teardown_plugins` routes through the same worker for
+    the same affinity reason (and on the same fuse). The cost of a stall is one leaked thread
+    and one leaked Chromium — the deliberate trade: a wedged probe becomes one failed
+    measurement instead of a dead platform. Leaks are counted (`probes.stats()`).
   - `jobs.py` — in-process background-job registry (progress/status/recent history).
     The heavy score passes (`/api/score/regrade|rescore|rederive`) run as jobs and
     return `202 {job_id}`; `/api/jobs` (`api/routes_jobs.py`) merges them with read-only
@@ -1520,7 +1556,13 @@ docker compose up --build   # -> http://localhost:8000
 - **Run lifecycle safety:** `reconcile_interrupted_runs()` (startup) + scheduler
   watchdog `fail_stale_runs()` (`monitoring.run_timeout_minutes`, default 30) +
   manual `POST /api/runs/{id}/cancel` resolve orphaned/hung runs. These mark the
-  DB row FAILED; a live benchmark thread can't be force-killed mid-call.
+  DB row FAILED; a live benchmark thread can't be force-killed mid-call — which is why
+  failing the row was only ever bookkeeping, and the watchdog now also
+  `coordinator.evict_if_stalled()`s a holder that has stopped beating (see `probes` +
+  the coordinator lease above). `GET /api/health/pipeline` is the read that turns "it
+  seems stuck" into an answer: lock owner, how long since progress, queue depth, probe
+  worker health, and **every thread's stack** — the only thing that says which call is
+  not returning. Read-only, no DB access.
 - Timestamps are stored UTC (naive in SQLite); the frontend (`parseApiDate`)
   treats them as UTC so they render in the viewer's local zone. Experiment-window
   hours use the container `TZ`.

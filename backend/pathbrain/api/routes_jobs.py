@@ -163,7 +163,38 @@ def _eta_ms(
     return None, None
 
 
-def _with_eta(entry: dict, eta: tuple[float | None, str | None], *, queued: bool = False) -> dict:
+#: A holder quiet for longer than this is *reported* as stalled. Well past any normal gap
+#: between beats (a browser probe over several URLs is seconds, not minutes) and well short
+#: of ``coordinator.STALE_HOLDER_S``, so the feed says "stalled" while there is still time
+#: to look, rather than only after the eviction has already happened.
+STALL_REPORT_S = 300.0
+
+
+def _stalled_ms(owner_label: str) -> float | None:
+    """How long this job has been the *silent* holder of the pipeline, if it is.
+
+    The jobs feed's one job is to answer "what is happening?", and its worst failure is
+    answering confidently when nothing is: a time-boxed job past its deadline reads
+    "finishing…" forever, which is exactly what a wedged duel looked like all night. A
+    holder that has shown no progress is the one thing the feed can say for certain.
+    """
+    from .. import coordinator
+
+    if coordinator.owner() != owner_label:
+        return None
+    quiet = coordinator.stalled_for()
+    if quiet is None or quiet < STALL_REPORT_S:
+        return None
+    return round(quiet * 1000.0)
+
+
+def _with_eta(
+    entry: dict,
+    eta: tuple[float | None, str | None],
+    *,
+    queued: bool = False,
+    stalled_ms: float | None = None,
+) -> dict:
     """Attach the ETA to a job entry.
 
     Deliberately a **number of milliseconds remaining**, not a formatted string and not an
@@ -180,6 +211,9 @@ def _with_eta(entry: dict, eta: tuple[float | None, str | None], *, queued: bool
     # exactly the job whose (absent) countdown would otherwise look like a running one's.
     # It decides whether the client ticks the number or shows it standing still.
     entry["queued"] = queued
+    # Silence, measured. A number rather than a flag, because "stuck for four minutes" and
+    # "stuck since last night" call for different reactions.
+    entry["stalled_ms"] = stalled_ms
     return entry
 
 
@@ -663,7 +697,7 @@ def _active_duel_job() -> list[dict]:
             "cancel_url": "/duel/cancel",
             "started_at": d.get("started_at") or d.get("created_at"),
             "finished_at": None,
-        }, eta, queued=queued)
+        }, eta, queued=queued, stalled_ms=_stalled_ms(f"duel#{d['id']}"))
     ]
 
 
@@ -712,6 +746,7 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
         # The technical settings summary behind a call sign, for the row's tooltip. Present
         # (null where there is none) on every entry for the same reason `eta_ms` is.
         entry.setdefault("detail", None)
+        entry.setdefault("stalled_ms", None)
         if entry["status"] != "running":
             entry["eta_ms"] = entry["eta_basis"] = None
             entry["queued"] = False
@@ -719,4 +754,9 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     # The badge counts distinct top-level running jobs — a nested chunk shouldn't double-count
     # with its parent.
     running = sum(1 for j in feed if j["status"] == "running" and not j.get("parent_id"))
-    return {"jobs": feed, "running": running}
+    # The state of the pipeline gate itself, alongside the jobs queued on it. A feed of
+    # eight "waiting" rows says everyone is waiting; only this says what they are waiting
+    # *on*, and whether that thing is still alive.
+    from .. import coordinator
+
+    return {"jobs": feed, "running": running, "pipeline": coordinator.status()}

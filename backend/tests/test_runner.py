@@ -133,3 +133,22 @@ def test_estimate_endpoint_shape(client):
     assert "per_iteration_ms" in body
     assert "based_on_runs" in body
     assert body["max_iterations"] >= 1
+
+
+def test_config_overrides_are_section_merged_into_the_run_snapshot():
+    """A per-run override (the profile test lifting the browser's iteration cap) is baked
+    into ``config_used`` — the one config ``execute_run`` reads — with the rest of the
+    section preserved, so the run record says exactly what it ran under."""
+    from pathbrain.database import session_scope
+    from pathbrain.models import Run
+    from pathbrain.runner import create_run
+
+    run_id = create_run(iterations=5, config_overrides={"browser": {"iterations": 5}})
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        browser = (run.config_used or {}).get("browser") or {}
+        assert browser.get("iterations") == 5
+        # The rest of the section survives the merge — the override is a tweak, not a
+        # replacement of the browser config.
+        assert "enabled" in browser or len(browser) > 1
+        s.delete(run)

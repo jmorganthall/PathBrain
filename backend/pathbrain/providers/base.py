@@ -57,6 +57,18 @@ class ConfigProvider(ABC):
 
         return list(WRITABLE_FIELDS)
 
+    def field_options(self) -> dict[str, list[float]]:
+        """The firewall's OWN allowed values for option-keyed (select) shaper fields.
+
+        ``{normalized field key: sorted numeric option keys}`` — e.g. CoDel
+        ``target``/``interval`` on OPNsense are ``<select>``s keyed by the bare number, so a
+        proposed value off that list silently doesn't take (the write is accepted, nothing
+        changes, and the benchmark measures a profile nobody proposed). Anything generating
+        values to try (the explore engine above all) snaps to these so the number on screen
+        is a number the firewall can actually hold. Empty when unknown — callers treat that
+        as "no constraint information", never as "everything is allowed."""
+        return {}
+
     def pipe_states(self) -> list[dict]:
         """The per-pipe on/off (SQM enabled) state, for the baseline "SQM off" test.
 
