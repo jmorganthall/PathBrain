@@ -22,6 +22,10 @@ import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
 import Collapse from "@mui/material/Collapse";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogTitle from "@mui/material/DialogTitle";
 import Divider from "@mui/material/Divider";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import LinearProgress from "@mui/material/LinearProgress";
@@ -50,6 +54,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import SportsMmaIcon from "@mui/icons-material/SportsMma";
 
 import { api } from "../api/client";
+import type { Theme } from "@mui/material/styles";
 import type {
   DuelCard,
   DuelConfig,
@@ -79,6 +84,11 @@ const hhmm = (h: number, m: number) =>
 
 // A window is entered as two clock times, so its length is always shown back in plain
 // hours/minutes — "22:15 → 01:45" is easy to set but hard to add up in your head.
+// Offered lengths for a on-demand session. A duel is only useful in whole matches, and a
+// match is a handful of rounds each costing two benchmark runs — so under ~30 minutes the
+// window closes mid-match and the session decides nothing.
+const DUEL_LENGTHS = [30, 60, 120, 240, 480, 720];
+
 const fmtWindow = (minutes: number) => {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
@@ -794,6 +804,9 @@ export default function Duels() {
   // On-demand runs are also set by end time ("duel until 06:00"); the minutes the API
   // wants are derived from the clock at the moment you press the button.
   const [untilClock, setUntilClock] = useState<string | null>(null);
+  const [liveFp, setLiveFp] = useState<string | null>(null);
+  const [askDuration, setAskDuration] = useState(false);
+  const [dialogMinutes, setDialogMinutes] = useState(120);
   const [card, setCard] = useState<DuelCard | null>(null);
   const [cardBusy, setCardBusy] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -873,7 +886,13 @@ export default function Duels() {
     void loadAll();
     api
       .crownFollow()
-      .then((cf) => setPolicy(cf.config.policy))
+      .then((cf) => {
+        setPolicy(cf.config.policy);
+        // Which profile the firewall is actually on right now. The standings are a table
+        // of records; without this there is nothing on the page saying which of them you
+        // are currently running, which is the first thing you want to know.
+        setLiveFp(cf.status.last_result?.live_fingerprint ?? null);
+      })
       .catch(() => undefined);
   }, [loadAll]);
 
@@ -925,12 +944,13 @@ export default function Duels() {
     }
   };
 
-  const startNow = async () => {
+  const startNow = async (minutes: number) => {
     setBusy(true);
     setError(null);
+    setAskDuration(false);
     try {
-      setStatus(await api.duelStart(untilClock ? minutesUntil(untilClock) : undefined));
-      setToast("Duel started");
+      setStatus(await api.duelStart(minutes));
+      setToast(`Duel started · running for ${fmtWindow(minutes)}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1004,26 +1024,23 @@ export default function Duels() {
               Cancel duel
             </Button>
           ) : (
-            <Tooltip
-              title={
-                cfg
-                  ? `Runs until ${untilClock ?? clockIn(cfg.duration_minutes)} (about ${fmtWindow(
-                      minutesUntil(untilClock ?? clockIn(cfg.duration_minutes))
-                    )}), one iteration a side, as many matches as fit. Change the finish time under "Duel now until".`
-                  : "Start a duel now"
-              }
-            >
+            <Tooltip title="Choose how long this session should run.">
               <Button
                 variant="contained"
                 startIcon={<PlayArrowIcon />}
-                onClick={() => void startNow()}
+                onClick={() => {
+                  // Seed with the nightly window's length, but ASK. The button used to
+                  // inherit that length silently and start immediately, so it read as an
+                  // arbitrary "5h 59m" — the nightly window is an agreement about when the
+                  // ladder may run unattended, which is a different decision from how long
+                  // you want it to run right now.
+                  setDialogMinutes(cfg?.duration_minutes ?? 120);
+                  setAskDuration(true);
+                }}
                 disabled={busy}
                 sx={{ whiteSpace: "nowrap", flexShrink: 0 }}
               >
                 Duel now
-                {cfg
-                  ? ` · ${fmtWindow(minutesUntil(untilClock ?? clockIn(cfg.duration_minutes)))}`
-                  : ""}
               </Button>
             </Tooltip>
           )}
@@ -1659,7 +1676,17 @@ export default function Duels() {
                     <TableRow
                       key={r.fingerprint}
                       hover
-                      sx={r.is_champion ? { bgcolor: "action.selected" } : undefined}
+                      sx={{
+                        ...(r.is_champion ? { bgcolor: "action.selected" } : null),
+                        // A gentle marker for the profile the firewall is on — an accent
+                        // rule down the edge rather than a fill, so it reads at a glance
+                        // and still composes with the champion's row highlight.
+                        ...(r.fingerprint === liveFp
+                          ? {
+                              boxShadow: (t: Theme) => `inset 3px 0 0 ${t.palette.info.main}`,
+                            }
+                          : null),
+                      }}
                     >
                       <TableCell>
                         <Stack direction="row" spacing={0.75} alignItems="baseline">
@@ -1683,6 +1710,16 @@ export default function Duels() {
                           >
                             {r.name || r.label}
                           </Link>
+                          {r.fingerprint === liveFp && (
+                            <Chip
+                              size="small"
+                              label="live"
+                              color="info"
+                              variant="outlined"
+                              title="This profile is currently on the firewall."
+                              sx={{ height: 18, "& .MuiChip-label": { px: 0.75, fontSize: 11 } }}
+                            />
+                          )}
                         </Stack>
                         {r.name && (
                           <Typography
@@ -2063,6 +2100,53 @@ export default function Duels() {
           )}
         </CardContent>
       </Card>
+
+      {/* How long should this run? Asked, not assumed. */}
+      <Dialog open={askDuration} onClose={() => setAskDuration(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Run a duel session for how long?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            The champion defends back to back for the whole window, one match at a time, and
+            the session stops at the end of the match in progress. Your settings are restored
+            either way — a duel adjudicates, it never promotes.
+          </Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+            {DUEL_LENGTHS.map((m) => (
+              <Chip
+                key={m}
+                label={fmtWindow(m)}
+                onClick={() => setDialogMinutes(m)}
+                color={dialogMinutes === m ? "primary" : "default"}
+                variant={dialogMinutes === m ? "filled" : "outlined"}
+              />
+            ))}
+          </Stack>
+          <TextField
+            fullWidth
+            size="small"
+            type="number"
+            label="Minutes"
+            value={dialogMinutes}
+            onChange={(e) => setDialogMinutes(Math.max(1, Math.round(Number(e.target.value) || 0)))}
+            helperText={
+              dialogMinutes < 30
+                ? "Short windows often close mid-match, which decides nothing."
+                : `Finishes about ${formatClock(clockIn(dialogMinutes))}.`
+            }
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAskDuration(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            startIcon={<PlayArrowIcon />}
+            disabled={busy || dialogMinutes < 1}
+            onClick={() => void startNow(dialogMinutes)}
+          >
+            Start · {fmtWindow(dialogMinutes)}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Snackbar
         open={!!toast}
