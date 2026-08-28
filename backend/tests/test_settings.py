@@ -1613,3 +1613,80 @@ def test_overall_recent_is_a_drift_lens_while_the_verdict_pools_all_time(client)
     assert p["metrics"][fcp_key] == 100.0
     # The form check still reads the FULL series and flags the fade.
     assert p["form"] and p["form"]["direction"] == "fading"
+
+
+# ── The memoized field ────────────────────────────────────────────────────────────────
+
+
+def test_the_profile_field_is_memoized_and_invalidated_by_new_data():
+    """`compute_profiles` is cached on the identity of what it reads, not on a clock.
+
+    It is the most expensive thing PathBrain does and it is *pure Python*, so it holds the
+    GIL for its whole duration — a background engine computing the field stalls every API
+    request in the process, which is how the Dueling Champions page ended up unable to load
+    a few hundred bytes of config. Caching it is only safe if a hit can never be stale, so
+    this pins both halves: unchanged data reuses the answer, and new data does not.
+    """
+    from pathbrain.api.routes_settings import (
+        compute_profiles,
+        invalidate_profiles_cache,
+        _field_stamp,
+    )
+
+    fp = "cachefp0001"
+    when = datetime(2024, 5, 1, 12, 0, 0)
+    _seed_run(fp, 80.0, when, iterations=20)
+
+    invalidate_profiles_cache()
+    with session_scope() as session:
+        first = compute_profiles(session)
+        stamp_before = _field_stamp(session)
+        # A second ask of unchanged data is served the identical object, not a recompute.
+        assert compute_profiles(session) is first
+
+    # A completed run changes the stamp, so the next call recomputes rather than serving
+    # a field that predates it.
+    _seed_run(fp, 90.0, when + timedelta(minutes=5), iterations=20)
+    with session_scope() as session:
+        assert _field_stamp(session) != stamp_before
+        assert compute_profiles(session) is not first
+
+    # …and the explicit drop works for the in-place mutations no stamp can see (a
+    # refingerprint rewrites `settings_fingerprint` without minting a row).
+    with session_scope() as session:
+        cached = compute_profiles(session)
+        assert compute_profiles(session) is cached
+    invalidate_profiles_cache()
+    with session_scope() as session:
+        assert compute_profiles(session) is not cached
+
+
+def test_skipping_the_weather_pass_changes_only_the_weather_fields():
+    """`include_weather=False` is a pure saving, not a different verdict.
+
+    The cohort-residual pass is ~half of `compute_profiles` and feeds exactly two
+    display-only fields; the four engines that call it for the *field* (duel, challenger
+    race, crown follower, explore) read neither. This pins that skipping it leaves the
+    crown, the ranking and every profile row identical — otherwise the saving would be
+    buying a quietly different answer.
+    """
+    from pathbrain.api.routes_settings import compute_profiles, invalidate_profiles_cache
+
+    when = datetime(2024, 6, 1, 12, 0, 0)
+    for i, fp in enumerate(("weatherfp01", "weatherfp02")):
+        for j in range(20):
+            _seed_run(fp, 70.0 + i, when + timedelta(minutes=j), iterations=1)
+
+    invalidate_profiles_cache()
+    with session_scope() as session:
+        rich = compute_profiles(session, include_weather=True)
+        lean = compute_profiles(session, include_weather=False)
+
+    assert lean["best_fingerprint"] == rich["best_fingerprint"]
+    assert [p["fingerprint"] for p in lean["profiles"]] == [
+        p["fingerprint"] for p in rich["profiles"]
+    ]
+    weather_only = {"weather_relative", "weather_severity"}
+    for lean_p, rich_p in zip(lean["profiles"], rich["profiles"]):
+        differing = {k for k in rich_p if lean_p.get(k) != rich_p.get(k)}
+        assert differing <= weather_only, differing

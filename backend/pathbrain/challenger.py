@@ -115,7 +115,7 @@ def _field(session) -> dict:
     from .api.routes_settings import compute_profiles
     from .refresh import list_profiles
 
-    field = compute_profiles(session, complete_only=True)
+    field = compute_profiles(session, complete_only=True, include_weather=False)
     comparable_fps = {p["fingerprint"] for p in field["profiles"]}
     no_data = [
         {

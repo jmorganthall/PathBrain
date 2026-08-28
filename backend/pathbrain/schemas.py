@@ -59,6 +59,11 @@ class DuelScheduleUpdate(BaseModel):
     end_hour: int | None = None
     end_minute: int | None = None
     rematch_days: int | None = None
+    # Which rule names the champion: "lineal" (you take the belt by beating its holder,
+    # provided your whole shared record then favours you on both matches and rounds) or
+    # "rating_floor" (the ring's #1 by proven rating). The standings rank on the floor
+    # either way — this only decides who wears the belt.
+    crown_rule: str | None = None
     # Seconds to let the link settle after writing a profile before measuring it — each
     # leg is preceded by a setPipe + reconfigure that rebuilds the queues. 0 = measure
     # immediately (the old behaviour).

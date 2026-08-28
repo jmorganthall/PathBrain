@@ -75,6 +75,10 @@ def _schedule_payload(cfg: dict) -> dict:
         "streak_wins": int(d.get("streak_wins", 0) or 0),
         "continuous": bool(d.get("continuous", False)),
         "continuous_gap_minutes": float(d.get("continuous_gap_minutes", 5) or 0),
+        # Which rule names the champion. The STANDINGS always rank on the proven rating
+        # floor; this only decides who wears the belt.
+        "crown_rule": duel.crown_rule(d),
+        "crown_rules": list(duel.CROWN_RULES),
         "contenders": str(d.get("contenders", "ring") or "ring"),
         "contender_modes": ["ring", "leaders", "heirs"],
         "contender_top_n": int(d.get("contender_top_n", 8) or 8),
@@ -192,6 +196,13 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
         if float(payload.continuous_gap_minutes) < 0:
             raise HTTPException(status_code=422, detail="the gap cannot be negative")
         updates["continuous_gap_minutes"] = float(payload.continuous_gap_minutes)
+    if payload.crown_rule is not None:
+        if payload.crown_rule not in duel.CROWN_RULES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"crown_rule must be one of {', '.join(duel.CROWN_RULES)}",
+            )
+        updates["crown_rule"] = payload.crown_rule
     if payload.contenders is not None:
         if payload.contenders not in ("ring", "leaders", "heirs"):
             raise HTTPException(
@@ -301,6 +312,16 @@ def duel_profile(fingerprint: str, sessions: int = 50) -> dict:
 
 
 @router.get("/duel/history")
-def duel_history(limit: int = 10) -> dict:
-    """Recent duel sessions, newest first — the head-to-head ledger."""
-    return {"duels": duel.history(limit=max(1, min(limit, 50)))}
+def duel_history(limit: int = 10, matchups: int = 25) -> dict:
+    """Recent duel sessions, newest first — the head-to-head ledger.
+
+    ``matchups`` caps how many of each session's matches come back (the most recent ones);
+    each session reports its true ``matchups_total``. Without a cap a continuous ladder's
+    twenty most recent sessions is thousands of matches, which is a payload the page
+    cannot load rather than a list nobody reads.
+    """
+    return {
+        "duels": duel.history(
+            limit=max(1, min(limit, 50)), matchup_limit=max(1, min(matchups, 500))
+        )
+    }

@@ -1771,6 +1771,12 @@ export interface DuelConfig {
   // Who the champion fights: the profiles nearest the crown, or the exploring heirs order.
   contenders: "ring" | "leaders" | "heirs";
   contender_top_n: number;
+  // Which rule names the champion. "lineal" — you take the belt by beating its holder,
+  // provided your whole shared record then favours you on BOTH matches and rounds.
+  // "rating_floor" — the ring's #1 by proven rating. The standings rank on the floor
+  // either way; this only decides who wears the belt.
+  crown_rule: "lineal" | "rating_floor";
+  crown_rules: string[];
   presets: DuelPreset[];
   decision: DuelDecisionCost;
 }
@@ -1857,9 +1863,11 @@ export interface DuelHeadToHeadCell {
   median_margin: number | null;
 }
 
-// The reigning champion IS row 1 of the standings — derived from the same Bradley-Terry
-// fit over the whole ledger, not from a stored per-session value. That is what stops the
-// badge and the table naming different profiles.
+// The champion is NOT row 1, and under the lineal rule it is not meant to be. The table
+// ranks on `rating_floor` — what a record has demonstrated across the whole network —
+// while the belt records who beat whom. A champion sitting at row 4 is the two verdicts
+// disagreeing, which is the reason for running both. Derived by replaying the ledger, not
+// read from a stored per-session value.
 export interface DuelChampionStanding {
   fingerprint: string;
   label: string | null;
@@ -1874,6 +1882,17 @@ export interface DuelChampionStanding {
   decisive: boolean;
   // Its rating still rests on too few pairs / too few opponents to be established.
   provisional?: boolean;
+  // Where it sits on the OTHER verdict — the standings' proven-rating order.
+  rank?: number | null;
+  // Which rule named it: "lineal" (beat the holder) or "rating_floor" (the ring's #1).
+  rule?: string | null;
+  // Successful title defences since it took the belt, and how many times the belt has
+  // changed hands over the whole ledger.
+  defences?: number | null;
+  title_changes?: number | null;
+  title_bouts?: number | null;
+  // The profile it took the title from.
+  took_it_from?: string | null;
 }
 
 export interface DuelStandings {
@@ -1997,6 +2016,8 @@ export interface DuelSession {
   run_ids: number[];
   champion_fingerprint: string | null;
   champion_label: string | null;
+  // `matchups` is capped by the API to the most recent few; this is the true count.
+  matchups_total?: number;
   error: string | null;
   created_at: string | null;
   started_at: string | null;
