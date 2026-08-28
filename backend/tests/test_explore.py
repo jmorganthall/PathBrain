@@ -31,7 +31,7 @@ def _profile(fp: str, *, quantum: int, target: int, overall: float, up_quantum: 
 
 
 def _landscape(monkeypatch, profiles, **kw):
-    monkeypatch.setattr(rs, "compute_profiles", lambda session: {"profiles": profiles})
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: {"profiles": profiles})
     return explore.landscape(None, **kw)
 
 
@@ -249,7 +249,7 @@ def test_endpoint_serves_the_landscape(client, monkeypatch):
         _profile("c", quantum=3000, target=5, overall=80.0),
         _profile("d", quantum=9000, target=5, overall=65.0),
     ]
-    monkeypatch.setattr(rs, "compute_profiles", lambda session: {"profiles": profiles})
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: {"profiles": profiles})
     body = client.get("/api/explore/landscape?suggestions=2").json()
     assert body["profiles_modelled"] == 4
     assert 1 <= len(body["candidates"]) <= 2

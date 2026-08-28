@@ -253,6 +253,27 @@ DEFAULT_CONFIG: dict = {
         "min_margin": 0.0,
         # A decided matchup isn't re-dueled for this many days (the ladder moves on).
         "rematch_days": 7,
+        # Which rule names the champion.
+        #
+        # "lineal" (default) — a LINEAL TITLE: you take the belt by beating the profile
+        #   that holds it, provided your whole shared record with it then favours you on
+        #   BOTH counts (more matches won and more rounds won). The champion defends every
+        #   bout, so the title can actually change hands. Note the aggregate gate is
+        #   vacuous on a first meeting — there is no history to appeal to — so what decides
+        #   whether the belt churns is `min_margin`: at 0 a win by 0.01 Overall points is a
+        #   win, and on a field separated by less than the run-to-run noise that is a coin
+        #   flip wearing a belt. Raise it if the title changes hands on nothing.
+        #
+        # "rating_floor" — the previous behaviour: the champion is the ring's #1 by the
+        #   conservative fitted rating (`rating - RANK_SIGMA*se`), the same number the
+        #   standings rank on. Honest about evidence, but it made the title unwinnable in
+        #   practice: the holder defends every bout, so no challenger ever accumulates the
+        #   second opponent its error bar needs to shrink enough to overtake.
+        #
+        # Either way the STANDINGS still rank on `rating_floor` — "who has demonstrated
+        # the most strength" and "who holds the title" are different questions and are
+        # shown as two answers rather than forced into one.
+        "crown_rule": "lineal",
         # Seconds to wait after writing a profile to the firewall before measuring it.
         # Each run is preceded by a setPipe + reconfigure, which rebuilds the queues; the
         # baseline test has always waited for the link to settle before believing a

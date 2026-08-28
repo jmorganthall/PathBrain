@@ -701,7 +701,12 @@ def score_history_under_current(session, progress=None) -> dict:
     # follower for a fresh full check (covers regrade, re-anchor, and set-current jobs).
     try:
         from . import crown_follower
+        from .api.routes_settings import invalidate_profiles_cache
 
+        # A re-grade that rewrote existing Score rows in place leaves the row counts and
+        # max ids untouched, so say so explicitly rather than trusting the cache stamp to
+        # notice a mutation that changed no identity.
+        invalidate_profiles_cache()
         crown_follower.poke()
     except Exception:  # noqa: BLE001 — a nudge must never fail the re-grade
         log.debug("Crown follower poke failed", exc_info=True)

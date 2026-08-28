@@ -479,7 +479,7 @@ def test_restating_a_field_in_another_notation_does_not_invent_a_profile(client,
 
 
 def _field(monkeypatch, profiles):
-    monkeypatch.setattr(rs, "compute_profiles", lambda session: {"profiles": profiles})
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: {"profiles": profiles})
 
 
 def _spread_field():

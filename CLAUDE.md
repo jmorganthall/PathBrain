@@ -596,30 +596,47 @@ LLM-based. See `README.md` for the product overview.
     about whether anything beats the leader.
     Now the ledger is refit before every bout (`ledger_ratings`; `_ledger_sessions` reads the
     **running** duel, so a challenger that just won is re-rated before the next matchup is
-    picked), the defender is the ring's **#1 by `rating_floor`** — deliberately the same
-    number the standings rank on, so the belt and the top row can never name different
-    profiles — and the challenger is whoever `contender_order` puts first *against that
-    defender's* rating. `select_incumbent` falls back to the pooled crown only when the ring
+    picked), the defender is **the champion** (`belt_holder` → `ring_leader`), and the
+    challenger is whoever `contender_order` puts first *against that defender's* rating. `select_incumbent` falls back to the pooled crown only when the ring
     has nothing to say (empty ledger, or no rated profile the live environment can be set
     to), and says which in `incumbent.why`; `fight_card` calls the same helper, so the
     preview can't name a different defender than the one who walks out.
-    A consequence worth stating plainly: **the winner does not automatically stay on.**
-    Beating the leader promotes you when it lifts your floor above its — the same bar the
-    standings apply — so a thin challenger that wins one bout keeps a wide error bar and the
-    leader defends again, against the next-best threat; the winner's rating rose, so it comes
-    back around quickly and a second win usually settles it. `Duel.champion_fingerprint` is
-    written **every bout** (the belt changes hands mid-session, and on a continuous ladder a
-    badge that waits for session end reads hours stale) and at session end it is the ring's
-    #1 **unfiltered by reachability** — the champion is a statement about the ledger, and the
-    standings it must agree with aren't filtered either; an unreachable champion simply never
-    defends, and the crown follower already refuses to apply one. Still display only:
+    **The title is LINEAL** (`lineal_belt` / `belt_holder`, `duel.crown_rule`, the default):
+    you take the belt by beating the profile that holds it, provided your whole shared record
+    with it then favours you on **both** counts — more matches won *and* more rounds won.
+    The champion defends every bout, which is what makes the title winnable at all.
+    This replaced ranking the belt on `rating_floor`, the same conservative number the
+    standings order on. That was honest about *evidence* and wrong about *championship*, and
+    it deadlocked: the holder defends every bout, so no challenger ever accumulates a second
+    opponent, so no challenger's error bar ever shrinks enough to overtake the incumbent's
+    floor, so the belt never moved. Four profiles beating the crown 3-0 and all sitting below
+    it on Proven was the ladder working exactly as specified and saying nothing.
+    Two questions, now answered separately and allowed to disagree: **the standings still
+    rank on `rating_floor`** ("what has this record demonstrated across the network?") while
+    **the belt records who beat whom** — a champion at row 4 is the two verdicts disagreeing,
+    which is the point of running both, so the champion card states its own `rank` outright.
+    The aggregate gate is deliberately **vacuous on a first meeting** — there is no shared
+    history to appeal to, so a clean win transfers the belt and the new holder defends
+    immediately, which takes a fluke straight back off it. What actually decides whether the
+    belt churns is **`min_margin`**: at 0 a win by 0.01 Overall points is a win, and on a
+    field separated by less than the run-to-run noise that is a coin flip wearing a belt.
+    The belt is **replayed, never stored**: it is path-dependent (the *order* of results moves
+    it), but the ledger has a canonical order (session id, then bout index), so replaying it
+    is deterministic and re-derives from the record like every other verdict here.
+    `crown_rule = "rating_floor"` keeps the former behaviour for comparison.
+    `Duel.champion_fingerprint` is written **every bout** (the belt changes hands mid-session,
+    and on a continuous ladder a badge that waits for session end reads hours stale) and is
+    the title holder **unfiltered by reachability** — an unreachable champion simply never
+    defends (`ring_leader` stands in the ring's best reachable profile and says so), and the
+    crown follower already refuses to apply one. Still display only:
     `latest_champion` filters to COMPLETE sessions, so the crowning policy never acts on a
     provisional holder (and can't, mid-duel: the duel owns the firewall while its window is
     open). Two exclusions, deliberately different strengths: a pair already fought **in this
     session** is a hard skip — with one exception: **unfinished business gets its rematch.**
-    A challenger that *won* its bout but didn't take the belt (its floor hasn't cleared the
-    leader's) has raised the most informative question on the ledger — its record says it is
-    the better profile and the standings still say the other one is — so that pair is
+    A challenger that *won* its bout but didn't take the belt (their shared record doesn't
+    favour it yet — it beat the champion once, the champion beat it once) has raised the most
+    informative question on the ledger, and it is now exactly computable rather than a proxy
+    — so that pair is
     re-opened, **once** per session, and its freshly-raised rating puts it near the top of
     the order on its own. Without it the profile with the single strongest claim to the belt
     was set aside for the rest of the session while the leader defended against fresher,
@@ -692,18 +709,19 @@ LLM-based. See `README.md` for the product overview.
     significance gate: two well-measured profiles a hair apart both have narrow bars, so the
     better one still ranks first ("best by a statistically insignificant fraction is still
     best"); the floor only overturns an order that rests on a bar wider than the gap.
-    **The reigning champion IS row 1** (`ledger_leader`). The badge used to read a stored
-    `Duel.champion_fingerprint` written at session end — the profile that *survived that
-    session* — while the standings are fitted live over the whole ledger, so the two were
-    computed by different logic and inevitably disagreed: every row written before the belt
-    became the ring's #1 recorded a survivor, and a bout in a **running** session moved the
-    table without touching any stored row. Both `standings()["champion"]` and
-    `latest_champion` now derive from the same fit (`ledger_leader` = highest `rating_floor`),
-    so "reigning champion", "row 1", and "who defends" cannot name different profiles.
+    **The champion is NOT row 1, and is not meant to be.** The badge and the ranking answer
+    different questions (results vs. demonstrated evidence — see the lineal-title note
+    above), so they are computed separately and shown side by side; the champion carries its
+    own `rank` so the page states the disagreement instead of leaving the reader to spot it.
+    What they must never do is come from *different logic*: `standings()["champion"]`,
+    `latest_champion`, the stored `Duel.champion_fingerprint` and the choice of defender all
+    run the one `belt_holder` replay, so those four can't name different profiles.
+    (The badge previously read a stored `champion_fingerprint` written at session end — the
+    profile that *survived that session* — which a running ladder left hours stale.)
     `latest_champion` — which the crowning policy acts on — keeps its guards, translated onto
     the ledger: `decisive` (a record of nothing but draws demonstrates nothing) and a
     freshness window over the champion's own **most recent completed** bout, so it either
-    agrees with row 1 or returns None (fall back to pooled) — never a third answer. A
+    names the belt holder or returns None (fall back to pooled) — never a third answer. A
     mid-session leader is therefore shown immediately but is not yet actionable.
     `duel.standings` (`GET /api/duel/standings`) aggregates the ledger into the **head-to-head
     league table** that page ranks on — per profile the **rating** (+ `rating_se` /
@@ -996,6 +1014,27 @@ LLM-based. See `README.md` for the product overview.
     `rank_by` version, defaulting to the most-recent non-current methodology) — so the profiles
     that were winning get fresh data before an arbitrary sweep of everything. `/api/settings/refresh`
     (+ `/refresh/preview`, `/refresh/cancel`).
+  - **`compute_profiles` is memoized** (`api/routes_settings.py`: `_field_stamp` /
+    `invalidate_profiles_cache`). It is the most expensive thing PathBrain does — it walks
+    every completed run, decodes each one's stored scalars, re-normalizes the crown against
+    the whole field and resolves a time-of-day baseline per profile — and **seven callers**
+    were each recomputing it from scratch. The consequence was not a slow endpoint but a
+    stalled process: it is a *pure Python* pass, so it holds the GIL for its whole duration
+    (~30s over a 100k-run table, measured), and while the duel ladder — which calls it at
+    every session start, continuously — or the crown follower was computing the field, every
+    request in the process queued behind it. That is why the Dueling Champions page could not
+    load its own config, a payload of a few hundred bytes, and reported *"couldn't reach the
+    server"*. It is a pure function of the runs, the scores and the methodology, which is
+    what makes it cacheable: `_field_stamp` is the cheap identity of that input (two indexed
+    aggregates, ~20ms) so a hit can never be stale, and the compute happens **outside** the
+    lock — two callers racing a cold cache both compute, which is wasteful once and far
+    better than one blocking the other for half a minute. `invalidate_profiles_cache()` is
+    called on the two paths that mutate rows *in place* and so change no identity the stamp
+    can see: refingerprint and re-grade. The four engines that want only the field
+    (duel, challenger race, crown follower, explore) also pass **`include_weather=False`** —
+    the `weather.cohort_residuals` pass is ~half the function and feeds two display-only
+    fields none of them read (32s → 15s cold, measured; `test_skipping_the_weather_pass_…`
+    pins that it changes nothing else).
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
     settings-vs-responsiveness correlation (`/api/settings/*`). Profile confidence is
     gated on **total iterations** (`correlation.min_iterations`, default 15).

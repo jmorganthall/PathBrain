@@ -121,7 +121,7 @@ def _compute_field(session) -> dict:
     """The full Settings-Impact standings (lazy import — routes_settings imports widely)."""
     from .api.routes_settings import compute_profiles
 
-    return compute_profiles(session, complete_only=True)
+    return compute_profiles(session, complete_only=True, include_weather=False)
 
 
 def _last_change(session) -> tuple[str | None, str | None]:

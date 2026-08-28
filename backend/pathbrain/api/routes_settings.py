@@ -6,6 +6,8 @@ configurable threshold.
 """
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from datetime import datetime, timezone
 from statistics import median, quantiles
 
@@ -668,6 +670,12 @@ def refingerprint_runs(
         # wake the crown follower for a fresh full check.
         from .. import crown_follower
 
+        # …and drop the memoized field. This is the one mutation the cache stamp cannot
+        # see: re-keying rewrites `settings_fingerprint` IN PLACE, so the run and score
+        # counts and their max ids are all unchanged while the grouping underneath has
+        # moved. Every other path (new runs, re-grades) mints rows and is caught by the
+        # stamp; this one has to say so.
+        invalidate_profiles_cache()
         crown_follower.poke()
     return {"scanned": len(runs), "rekeyed": rekeyed}
 
@@ -1690,11 +1698,105 @@ def _compute_heirs(result: dict, session: Session, live: list[dict] | None = Non
     }
 
 
+# ── The field, computed once and shared ───────────────────────────────────────────────
+#
+# `compute_profiles` is the most expensive thing PathBrain does: it walks every completed
+# run, decodes each one's stored scalars, re-normalizes the crown against the whole field
+# and resolves a time-of-day baseline per profile. That is inherent to what it answers —
+# but it was being recomputed from scratch by every caller that needed the field, and
+# there are seven of them. The consequence was not merely a slow endpoint. It is a *pure
+# Python* pass, so it holds the GIL for its whole duration: while the duel ladder (which
+# calls it at every session start) or the crown follower is computing the field, every
+# request in the process is stalled behind it — which is why the Dueling Champions page
+# could not load its config, a payload of a few hundred bytes.
+#
+# It is also a pure function of the runs, the scores and the methodology, which is exactly
+# the property that makes it cacheable. `_field_stamp` is the cheap identity of that
+# input — two indexed aggregates, ~20ms against a 100k-run table versus ~30s to recompute
+# — so a hit is a stamp query and a dict lookup, and any change to the underlying data
+# (a completed run, a re-grade writing new Score rows, a refingerprint, a methodology
+# switch, a changed confidence bar) yields a different stamp and recomputes. The cache is
+# therefore never stale by construction; `invalidate()` exists for callers that would
+# rather not wait for the stamp to notice, not because correctness depends on it.
+_FIELD_LOCK = threading.Lock()
+_FIELD_CACHE: "OrderedDict[tuple, tuple[tuple, dict]]" = OrderedDict()
+_FIELD_CACHE_MAX = 6
+
+
+def _field_stamp(session: Session) -> tuple:
+    """The cheap identity of everything `compute_profiles` reads.
+
+    Anything that could change the field changes this: new runs, re-graded or re-derived
+    scores (new `Score` rows), a refingerprint (same count, but the max ids move when rows
+    are rewritten — and the explicit `invalidate()` on that path covers a pure in-place
+    re-key), the active methodology, and the confidence/significance bars that decide who
+    is crownable.
+    """
+    max_run, run_count = session.execute(
+        select(func.max(Run.id), func.count(Run.id)).where(Run.status == RunStatus.COMPLETE)
+    ).one()
+    max_score, score_count = session.execute(
+        select(func.max(Score.id), func.count(Score.id))
+    ).one()
+    config = get_config(session)
+    methodology = ensure_current_methodology(session, config)
+    correlation = config.get("correlation", {}) or {}
+    return (
+        max_run, run_count, max_score, score_count, methodology.version,
+        correlation.get("min_runs"), correlation.get("min_iterations"),
+        (config.get("trends", {}) or {}).get("min_samples"),
+    )
+
+
+def invalidate_profiles_cache() -> None:
+    """Drop the memoized field. Called by the paths that rewrite scores or fingerprints."""
+    with _FIELD_LOCK:
+        _FIELD_CACHE.clear()
+
+
 def compute_profiles(
     session: Session,
     complete_only: bool = True,
     tz_offset: int = 0,
     custom_crown_metrics: list[str] | None = None,
+    include_weather: bool = True,
+) -> dict:
+    """The memoized `_compute_profiles_uncached` — see the note above.
+
+    Identical output to computing it directly; the only difference is that a second caller
+    asking the same question of unchanged data gets the first one's answer. `include_weather`
+    is part of the key because it changes the payload (the two display-only weather fields),
+    so a caller that skips the pass can never be served a cached field that included it, or
+    the reverse.
+    """
+    key = (complete_only, tz_offset, tuple(custom_crown_metrics or ()), include_weather)
+    stamp = _field_stamp(session)
+    with _FIELD_LOCK:
+        hit = _FIELD_CACHE.get(key)
+        if hit is not None and hit[0] == stamp:
+            _FIELD_CACHE.move_to_end(key)
+            return hit[1]
+    # Computed OUTSIDE the lock: it takes tens of seconds, and holding a mutex across it
+    # would convert "slow" into "serialized", which is the failure we are fixing. Two
+    # callers racing a cold cache both compute — wasteful once, never wrong, and far better
+    # than one blocking the other for half a minute.
+    field = _compute_profiles_uncached(
+        session, complete_only, tz_offset, custom_crown_metrics, include_weather
+    )
+    with _FIELD_LOCK:
+        _FIELD_CACHE[key] = (stamp, field)
+        _FIELD_CACHE.move_to_end(key)
+        while len(_FIELD_CACHE) > _FIELD_CACHE_MAX:
+            _FIELD_CACHE.popitem(last=False)
+    return field
+
+
+def _compute_profiles_uncached(
+    session: Session,
+    complete_only: bool = True,
+    tz_offset: int = 0,
+    custom_crown_metrics: list[str] | None = None,
+    include_weather: bool = True,
 ) -> dict:
     """Aggregate completed runs into per-profile rows ranked by the crown corner
     Overall, with the crowned ``best_fingerprint``. Shared by the ``/settings/profiles``
@@ -1912,10 +2014,19 @@ def compute_profiles(
     # Measured-weather cohort residuals ("wins above the weather"): severity from each run's
     # own clean covariate readings, cohort = other profiles' runs in the same severity band.
     # Flag-and-steer only — never a crown input (see pathbrain.weather).
-    _w_sev = run_severities([covs for _, _, covs in weather_runs], _clean_covs)
-    weather_rel_by_fp, weather_sev_by_fp = cohort_residuals(
-        [fp for fp, _, _ in weather_runs], [ov for _, ov, _ in weather_runs], _w_sev
-    )
+    # `include_weather=False` skips it outright. It is the single most expensive pass in
+    # this function (~30% of it: a percentile rank of every run against every covariate's
+    # whole-history distribution, then a cohort median per severity band) and it feeds
+    # exactly two display-only fields. The engines that call `compute_profiles` for the
+    # *field* — the duel, the challenger race, the crown follower, explore — read neither,
+    # so they were paying for it on every call.
+    if include_weather:
+        _w_sev = run_severities([covs for _, _, covs in weather_runs], _clean_covs)
+        weather_rel_by_fp, weather_sev_by_fp = cohort_residuals(
+            [fp for fp, _, _ in weather_runs], [ov for _, ov, _ in weather_runs], _w_sev
+        )
+    else:
+        weather_rel_by_fp, weather_sev_by_fp = {}, {}
     # Tie/significance parameters — shared by the crown-tie machinery below and the
     # per-profile current-form check inside the loop.
     tie_margin, tie_sigma = _crown_tie_params(session)

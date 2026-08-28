@@ -25,6 +25,7 @@ import Collapse from "@mui/material/Collapse";
 import Divider from "@mui/material/Divider";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import LinearProgress from "@mui/material/LinearProgress";
+import MenuItem from "@mui/material/MenuItem";
 import Link from "@mui/material/Link";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
@@ -131,6 +132,10 @@ const describeUntil = (clock: string): string => {
 };
 
 // Does the nightly window run past midnight into the next morning?
+// How many matches of a session to render before asking. Enough to see the shape of the
+// night (who has been defending, whether the belt moved) without printing the whole ledger.
+const BOUTS_PER_SESSION = 8;
+
 const crossesMidnight = (cfg: DuelConfig): boolean =>
   cfg.end_hour * 60 + cfg.end_minute <= cfg.hour * 60 + cfg.minute;
 
@@ -803,6 +808,13 @@ export default function Duels() {
   const [rowsPerPage, setRowsPerPage] = useState(25);
   // How many sessions of the match tape to render — the rest are a click away.
   const [tapeShown, setTapeShown] = useState(5);
+  // A session is a *night* of matches, and on a continuous ladder that is dozens of them.
+  // Paging the tape by session was only half the job: five sessions rendered whole is
+  // still hundreds of rows, which is the same as not being able to read any of them. Each
+  // session shows its most recent matches and expands on request.
+  const [expandedTape, setExpandedTape] = useState<Set<number>>(new Set());
+  // Same for the session in progress, which grows all night.
+  const [liveShown, setLiveShown] = useState(BOUTS_PER_SESSION);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -1033,6 +1045,15 @@ export default function Duels() {
           {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"}, one at a time;
           a match ends after {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of
           margins, then the next challenger steps up. As many matches as fit in the window.
+          {cfg.crown_rule !== "rating_floor" && (
+            <>
+              {" "}
+              <b>The title is lineal</b>: you take the belt by beating the profile that holds
+              it — provided your whole shared record with it then favours you on both matches
+              and rounds, so one good night against a profile that has beaten you before is a
+              win rather than a title.
+            </>
+          )}
         </Typography>
       )}
 
@@ -1250,6 +1271,22 @@ export default function Duels() {
                 onCommit={(v) => void patch({ alpha: Math.min(0.49, Math.max(0.001, v)) })}
                 helper="How often you'll accept a wrong verdict (0.05 = 1 in 20)."
               />
+              <TextField
+                select
+                size="small"
+                label="How the champion is decided"
+                value={cfg?.crown_rule ?? "lineal"}
+                disabled={!cfg || busy}
+                onChange={(e) => void patch({ crown_rule: e.target.value as DuelConfig["crown_rule"] })}
+                helperText={
+                  (cfg?.crown_rule ?? "lineal") === "rating_floor"
+                    ? "The ring's #1 by proven rating. Honest about evidence, but the title rarely changes hands: the holder defends every match, so a challenger struggles to build the second opponent its error bar needs."
+                    : "Beat the holder and lead its whole shared record on both matches and rounds. The standings still rank on Proven — this only decides who wears the belt."
+                }
+              >
+                <MenuItem value="lineal">Lineal title (beat the holder)</MenuItem>
+                <MenuItem value="rating_floor">Ring's #1 (proven rating)</MenuItem>
+              </TextField>
               <NumField
                 label="Contenders to race"
                 value={cfg?.contender_top_n ?? 8}
@@ -1374,17 +1411,40 @@ export default function Duels() {
                       </Link>
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
-                      Top of the ladder{" "}
+                      {/* Under the lineal rule the belt is a record of results, so say how
+                          it was won and how often it has been kept — a champion that has
+                          defended eleven times and one that took the title in its first
+                          match are both "champion", and that difference is the whole
+                          story. */}
+                      {champion.rule === "rating_floor"
+                        ? "Top of the ladder"
+                        : (champion.defences ?? 0) > 0
+                          ? `Held the title through ${champion.defences} defence${
+                              champion.defences === 1 ? "" : "s"
+                            }`
+                          : "Took the title in its most recent match"}
                       {champion.consecutive_sessions > 0
-                        ? `for ${champion.consecutive_sessions} consecutive session${
+                        ? ` · ${champion.consecutive_sessions} consecutive session${
                             champion.consecutive_sessions === 1 ? "" : "s"
                           }`
-                        : "as of the latest match"}
+                        : ""}
                       {champion.duel_id != null ? ` · duel #${champion.duel_id}` : ""}
                       {champion.finished_at ? ` · ${fmtDateTime(champion.finished_at)}` : ""}
                       {champion.decisive ? "" : " · draws only, nothing proven"}
                       {champion.provisional ? " · provisional record" : ""}
                     </Typography>
+                    {/* The two verdicts, one line apart. The belt says who beat whom; the
+                        ranking says what a record has demonstrated. They are allowed to
+                        disagree, and when they do that IS the finding — so the card states
+                        the disagreement rather than leaving the reader to spot it. */}
+                    {champion.rule !== "rating_floor" && champion.rank != null && (
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        {champion.rank === 1
+                          ? "Also #1 on proven rating — both verdicts agree."
+                          : `Ranked #${champion.rank} on proven rating: it beat the holder, but ` +
+                            `other records have demonstrated more across the field.`}
+                      </Typography>
+                    )}
                   </>
                 ) : loadingStandings ? (
                   <Typography variant="body2" color="text.secondary">
@@ -1463,13 +1523,28 @@ export default function Duels() {
                   <Typography variant="caption" color="text.secondary">
                     This session so far:
                   </Typography>
-                  {status.matchups.map((m, i) => {
-                    // Winning a match is NOT the same as taking the belt: the belt goes to
-                    // the ring's #1, so beating the leader only takes it once your Proven
-                    // score clears theirs. Saying "takes the belt" on every challenger win
-                    // is how the tape ended up contradicting the standings. Read the actual
-                    // belt from who defends the NEXT match (or, for the newest match, from
-                    // the session's current holder).
+                  {status.matchups.length > liveShown && (
+                    <Button
+                      size="small"
+                      sx={{ display: "block", mb: 0.5 }}
+                      onClick={() => setLiveShown((n) => n + 20)}
+                    >
+                      Show earlier matches ({status.matchups.length - liveShown} more)
+                    </Button>
+                  )}
+                  {status.matchups.slice(-liveShown).map((m, sliceIdx) => {
+                    // The list is windowed to the most recent matches, so the lookahead
+                    // below has to index the FULL array — reading `sliceIdx + 1` would look
+                    // up the wrong match (and read the belt off it) as soon as anything was
+                    // hidden.
+                    const i = status.matchups!.length - Math.min(liveShown, status.matchups!.length) + sliceIdx;
+                    // Winning a match is NOT the same as taking the belt: under the lineal
+                    // rule the belt moves only when the winner leads the holder on their
+                    // whole shared record, so beating the champion once when it has beaten
+                    // you once leaves the title where it is. Saying "takes the belt" on
+                    // every challenger win is how the tape ended up contradicting the
+                    // standings. Read the actual belt from who defends the NEXT match (or,
+                    // for the newest match, from the session's current holder).
                     const next = status.matchups?.[i + 1];
                     const beltAfter = next ? next.incumbent : status.champion_fingerprint;
                     const beltAfterName = next
@@ -1483,16 +1558,18 @@ export default function Duels() {
                           : null;
                     // Three outcomes, not two. Asking only "did the old holder keep it?"
                     // credits the belt to whoever won this match whenever the defender
-                    // changes — but the belt is the ring's #1 by Proven score, re-fitted
-                    // after every match, so it can pass to a profile that wasn't in this
-                    // match at all. That reads as random unless it's said out loud.
+                    // changes — but the defender is re-read before every match, so it can
+                    // pass to a profile that wasn't in this match at all (an unreachable
+                    // champion, for one, is stood in for). That reads as random unless it
+                    // is said out loud.
                     let beltNote = "";
                     if (beltAfter && beltAfter === m.challenger) {
                       beltNote = " · and takes the belt";
                     } else if (beltAfter && beltAfter !== m.incumbent && beltAfterName) {
-                      beltNote = ` · belt passed to ${beltAfterName} (the ring's new #1)`;
+                      beltNote = ` · ${beltAfterName} defends next`;
                     } else if (beltAfter && m.verdict === "challenger") {
-                      beltNote = " · belt stays — one win didn't lift its Proven above the leader's";
+                      beltNote =
+                        " · belt stays — it doesn't lead the champion on their whole record yet";
                     }
                     return (
                       <Typography
@@ -1940,9 +2017,41 @@ export default function Duels() {
                     </Typography>
                   )}
                   <Divider sx={{ my: 0.5 }} />
-                  {(d.matchups ?? []).map((m, i) => (
-                    <BoutRow key={i} m={m} />
-                  ))}
+                  {(() => {
+                    const all = d.matchups ?? [];
+                    const open = expandedTape.has(d.id);
+                    const hidden = open ? 0 : Math.max(0, all.length - BOUTS_PER_SESSION);
+                    // The most RECENT matches, not the first: a session's latest bouts are
+                    // the ones that decided where the belt ended up.
+                    const shown = open ? all : all.slice(hidden);
+                    return (
+                      <>
+                        {hidden > 0 && (
+                          <Button
+                            size="small"
+                            sx={{ mb: 0.5 }}
+                            onClick={() =>
+                              setExpandedTape((prev) => new Set(prev).add(d.id))
+                            }
+                          >
+                            Show {hidden} earlier match{hidden === 1 ? "" : "es"} in this session
+                          </Button>
+                        )}
+                        {/* The API caps how many matches it sends per session, so say when
+                            there are more than the tape can reach — otherwise a session
+                            that ran forty matches silently reads as if it ran twenty-five. */}
+                        {open && (d.matchups_total ?? all.length) > all.length && (
+                          <Typography variant="caption" color="text.secondary" display="block">
+                            Showing the {all.length} most recent of{" "}
+                            {d.matchups_total} matches in this session.
+                          </Typography>
+                        )}
+                        {shown.map((m, i) => (
+                          <BoutRow key={hidden + i} m={m} />
+                        ))}
+                      </>
+                    );
+                  })()}
                 </Box>
               ))}
             </Stack>

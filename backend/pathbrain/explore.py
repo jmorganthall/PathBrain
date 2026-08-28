@@ -1386,7 +1386,7 @@ def landscape(
     """
     from .api.routes_settings import compute_profiles
 
-    field = compute_profiles(session)
+    field = compute_profiles(session, include_weather=False)
     scored = [
         p for p in field.get("profiles", [])
         if isinstance(p.get("overall"), (int, float))

@@ -128,7 +128,7 @@ def test_duel_ladder_crowns_a_challenger_and_restores(monkeypatch):
             {"fingerprint": "cha0000000x", "label": "challenger", "settings": [{"label": "wan", "quantum": 300}]},
         ],
     }
-    monkeypatch.setattr(rs, "compute_profiles", lambda session: fake_field)
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
     monkeypatch.setattr(
         rs, "_compute_heirs", lambda result, session, live=None: {"items": [{"fingerprint": "cha0000000x"}]}
     )
@@ -179,7 +179,7 @@ def test_pairs_alternate_which_profile_runs_first(monkeypatch):
             {"fingerprint": "cha0000000x", "label": "challenger", "settings": [{"label": "wan", "quantum": 300}]},
         ],
     }
-    monkeypatch.setattr(rs, "compute_profiles", lambda session: fake_field)
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
     monkeypatch.setattr(
         rs, "_compute_heirs", lambda result, session, live=None: {"items": [{"fingerprint": "cha0000000x"}]}
     )
@@ -221,7 +221,7 @@ def test_duel_margin_floor_records_a_draw(monkeypatch):
             {"fingerprint": "cha0000000x", "label": "challenger", "settings": [{"label": "wan", "quantum": 300}]},
         ],
     }
-    monkeypatch.setattr(rs, "compute_profiles", lambda session: fake_field)
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
     monkeypatch.setattr(
         rs, "_compute_heirs", lambda result, session, live=None: {"items": [{"fingerprint": "cha0000000x"}]}
     )
@@ -1135,7 +1135,7 @@ def test_fight_card_lists_the_actual_queue(monkeypatch):
             {"fingerprint": "new000000001", "label": "new", "name": "New", "overall": None, "iterations": 2},
         ],
     }
-    monkeypatch.setattr(rs, "compute_profiles", lambda session: field)
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: field)
     monkeypatch.setattr(
         rs,
         "_compute_heirs",
@@ -1337,8 +1337,8 @@ def test_the_ring_number_one_defends_not_last_sessions_survivor():
     with session_scope() as s:
         ratings = duel_mod.ledger_ratings(s)
         fp, why = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
-    assert fp == "strong", "the ring's #1 defends, not whoever survived the last session"
-    assert "the ring's #1 defends" in why
+    assert fp == "strong", "the champion defends, not whoever survived the last session"
+    assert "the champion defends" in why
     # The belt is exactly the standings' own ordering — not a second, parallel ranking.
     assert ratings["strong"]["rating_floor"] > ratings["survivor"]["rating_floor"]
 
@@ -1354,12 +1354,16 @@ def test_the_ring_number_one_defends_not_last_sessions_survivor():
 
 
 def test_the_defender_is_re_read_from_the_ledger_between_bouts():
-    """A challenger that beats the leader takes the belt *when its floor clears* — the same
-    bar the standings apply — and then defends. That is what "constantly test the best
-    profile" means operationally: no static queue, no winner-stays-on rule, just the ring's
-    current #1 re-read before every bout.
+    """The champion is re-read from the ledger before every bout, so the belt changing
+    hands mid-session changes who defends next. No static queue, no winner-stays-on rule.
+
+    This also pins the lineal transfer rule at both ends. Beating the champion once when it
+    has beaten you once leaves the shared record level, so the belt does NOT move — you
+    have not, on the whole record, been the better profile. Winning again puts you ahead
+    on both matches and rounds, and the title changes hands.
     """
     field = _field(("leader", 80.0), ("climber", 70.0), ("filler", 60.0), best="filler")
+    yesterday = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
     with session_scope() as s:
         s.query(Duel).delete()
         _finished_duel(
@@ -1369,13 +1373,14 @@ def test_the_defender_is_re_read_from_the_ledger_between_bouts():
                 _mu("leader", "climber", "incumbent", wins_inc=9, wins_cha=7, delta=-1.0),
             ],
             champion="leader",
-            when=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1),
+            when=yesterday,
         )
     with session_scope() as s:
         before, _ = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
     assert before == "leader"
 
-    # The climber comes back and wins the rematch decisively.
+    # The climber comes back and wins decisively — but that only levels the match record
+    # at 1-1, so the champion retains. "One good night" is not a title.
     with session_scope() as s:
         _finished_duel(
             s,
@@ -1384,13 +1389,27 @@ def test_the_defender_is_re_read_from_the_ledger_between_bouts():
                 _mu("climber", "filler", "incumbent", wins_inc=15, wins_cha=2, delta=-4.0),
             ],
             champion="climber",
+            when=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2),
+        )
+    with session_scope() as s:
+        level, _ = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
+    assert level == "leader", "a level head-to-head record does not take the belt"
+
+    # It wins the rematch too. Now it leads on both counts, and the title moves.
+    with session_scope() as s:
+        _finished_duel(
+            s,
+            matchups=[
+                _mu("leader", "climber", "challenger", wins_inc=3, wins_cha=12, delta=4.0),
+            ],
+            champion="climber",
             when=datetime.now(timezone.utc).replace(tzinfo=None),
         )
     with session_scope() as s:
         after, why = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
         s.query(Duel).delete()
-    assert after == "climber", "beating the leader on the ledger takes the belt"
-    assert "the ring's #1 defends" in why
+    assert after == "climber", "leading the champion on the whole record takes the belt"
+    assert "the champion defends" in why
 
 
 def test_a_ring_leader_the_environment_cant_reach_does_not_defend():
@@ -1624,7 +1643,7 @@ def test_every_bout_defends_the_current_leader_not_a_queue_decided_in_advance(mo
              "confident": True, "settings": []},
         ],
     }
-    monkeypatch.setattr(rs, "compute_profiles", lambda session: fake_field)
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
     monkeypatch.setattr(
         rs,
         "_compute_heirs",
@@ -1721,7 +1740,7 @@ def test_a_challenger_that_wins_without_taking_the_belt_gets_its_rematch(monkeyp
             for i in range(6)
         ],
     }
-    monkeypatch.setattr(rs, "compute_profiles", lambda session: fake_field)
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
     monkeypatch.setattr(rs, "_compute_heirs", lambda result, session, live=None: {"items": []})
     monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
     _no_settle()
@@ -2291,3 +2310,126 @@ def test_duel_profile_endpoint_serves_the_record(client):
     assert body["record"]["losses"] == 1
     assert body["bouts"][0]["margin"] == -4.0
     assert body["bouts"][0]["opponent_name"]  # call signs resolved by fingerprint
+
+
+# ── The lineal title ──────────────────────────────────────────────────────────────────
+
+
+def _ledger(*matchups):
+    """A one-session ledger in `_ledger_sessions` shape, newest-first like the real thing."""
+    return [{"id": 1, "status": "complete", "matchups": list(matchups),
+             "champion_fingerprint": None, "finished_at": "2026-01-01T00:00:00"}]
+
+
+def test_the_belt_is_seeded_by_the_first_decided_match():
+    """Before anything is decided there is no title to hold, so there is no champion."""
+    assert duel_mod.lineal_belt(_ledger()) is None
+    assert duel_mod.lineal_belt(
+        _ledger(_mu("a", "b", "draw", wins_inc=4, wins_cha=4, delta=0.0))
+    ) is None
+    belt = duel_mod.lineal_belt(
+        _ledger(_mu("a", "b", "incumbent", wins_inc=5, wins_cha=1, delta=-2.0))
+    )
+    assert belt["fingerprint"] == "a" and belt["changes"] == 1
+
+
+def test_a_first_meeting_win_takes_the_belt():
+    """With no shared history there is nothing for the aggregate gate to weigh, so a clean
+    win transfers the title. This is the rule working, not a hole in it — the new holder
+    defends immediately, so a fluke is taken straight back off it."""
+    belt = duel_mod.lineal_belt(_ledger(
+        _mu("champ", "filler", "incumbent", wins_inc=9, wins_cha=2, delta=-3.0),
+        _mu("champ", "rookie", "challenger", wins_inc=0, wins_cha=3, delta=2.0),
+    ))
+    assert belt["fingerprint"] == "rookie"
+    assert belt["took_it_from"] == "champ"
+    assert belt["changes"] == 2
+
+
+def test_the_belt_needs_a_lead_on_both_matches_and_rounds():
+    """Both counts must favour the challenger — a lead on one alone is not enough."""
+    # Rounds favour the challenger overwhelmingly (25-11) but matches are level at 1-1.
+    level = duel_mod.lineal_belt(_ledger(
+        _mu("champ", "rival", "incumbent", wins_inc=9, wins_cha=7, delta=-1.0),
+        _mu("champ", "rival", "challenger", wins_inc=2, wins_cha=18, delta=5.0),
+    ))
+    assert level["fingerprint"] == "champ", "a level match record retains the title"
+
+    # Matches favour the challenger 2-1, and now rounds do too.
+    moved = duel_mod.lineal_belt(_ledger(
+        _mu("champ", "rival", "incumbent", wins_inc=9, wins_cha=7, delta=-1.0),
+        _mu("champ", "rival", "challenger", wins_inc=2, wins_cha=18, delta=5.0),
+        _mu("champ", "rival", "challenger", wins_inc=3, wins_cha=12, delta=4.0),
+    ))
+    assert moved["fingerprint"] == "rival"
+
+    # Matches favour the challenger but ROUNDS still don't: two narrow wins against one
+    # thrashing. The belt stays.
+    rounds_short = duel_mod.lineal_belt(_ledger(
+        _mu("champ", "rival", "incumbent", wins_inc=20, wins_cha=1, delta=-6.0),
+        _mu("champ", "rival", "challenger", wins_inc=3, wins_cha=4, delta=1.0),
+        _mu("champ", "rival", "challenger", wins_inc=3, wins_cha=4, delta=1.0),
+    ))
+    assert rounds_short["fingerprint"] == "champ", "a lead on matches alone is not enough"
+
+
+def test_a_match_the_champion_is_not_in_cannot_move_the_belt():
+    """The title is only ever on the line when its holder is in the ring."""
+    belt = duel_mod.lineal_belt(_ledger(
+        _mu("champ", "a", "incumbent", wins_inc=9, wins_cha=2, delta=-3.0),
+        _mu("a", "b", "challenger", wins_inc=1, wins_cha=9, delta=4.0),
+        _mu("b", "a", "incumbent", wins_inc=9, wins_cha=1, delta=-4.0),
+    ))
+    assert belt["fingerprint"] == "champ"
+    assert belt["defences"] == 0, "bouts it wasn't in are not defences either"
+
+
+def test_the_belt_replay_is_deterministic_and_order_defined():
+    """The title is path-dependent, so it is replayed from the ledger's canonical order
+    (session id, then bout index) rather than stored. Same record in, same champion out."""
+    bouts = [
+        _mu("a", "b", "incumbent", wins_inc=6, wins_cha=2, delta=-2.0),
+        _mu("a", "c", "challenger", wins_inc=1, wins_cha=6, delta=3.0),
+        _mu("c", "b", "incumbent", wins_inc=7, wins_cha=3, delta=-2.0),
+    ]
+    first = duel_mod.lineal_belt(_ledger(*bouts))
+    assert duel_mod.lineal_belt(_ledger(*bouts)) == first
+    assert first["fingerprint"] == "c" and first["defences"] == 1
+
+
+def test_the_standings_still_rank_on_proven_while_the_belt_is_lineal():
+    """The two verdicts are computed separately and are allowed to disagree.
+
+    Ranking asks what a record has *demonstrated* (`rating_floor`, which is conservative
+    about a thin record); the belt asks who beat whom. Forcing them to agree — by defining
+    the champion AS row 1 — is what made the title unwinnable: the holder defends every
+    bout, so no challenger accumulates the second opponent its error bar needs.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[
+                _mu("veteran", "b", "incumbent", wins_inc=26, wins_cha=4, delta=-3.0),
+                _mu("veteran", "c", "incumbent", wins_inc=24, wins_cha=5, delta=-3.0),
+                _mu("veteran", "d", "incumbent", wins_inc=25, wins_cha=6, delta=-3.0),
+                _mu("b", "c", "incumbent", wins_inc=8, wins_cha=7, delta=-0.5),
+                _mu("c", "d", "incumbent", wins_inc=9, wins_cha=8, delta=-0.5),
+                # …then loses its first meeting with a newcomer, which takes the title.
+                _mu("veteran", "newcomer", "challenger", wins_inc=0, wins_cha=3, delta=3.0),
+            ],
+            champion="newcomer",
+            when=now,
+        )
+    table = duel_mod.standings()
+    with session_scope() as s:
+        s.query(Duel).delete()
+
+    assert table["champion"]["fingerprint"] == "newcomer"
+    assert table["ranked_by"] == "rating_floor"
+    # The newcomer holds the belt on 3 rounds against one opponent (rating 1722 ± 148, so
+    # a floor of 1574); the veteran's 75-15 against three is what the table ranks first
+    # (1635 ± 44 → 1591). Both statements are true at once, which is the whole point.
+    assert table["standings"][0]["fingerprint"] == "veteran"
+    assert table["champion"]["rank"] > 1
