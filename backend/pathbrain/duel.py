@@ -2430,20 +2430,78 @@ def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
     rows = table.get("standings") or []
     record = next((r for r in rows if r.get("fingerprint") == fp), None)
 
-    # Per-opponent aggregate, read off the same head-to-head matrix the grid renders.
+    # Per-opponent aggregate, read off the same head-to-head matrix the grid renders —
+    # and joined to each opponent's POOLED Overall, which `standings` has already computed
+    # for every row. That join is what makes the card answer the question it exists to
+    # raise: this profile is #1 in the ring and #113 on Overall, so *who* did it beat, and
+    # does the pooled verdict rate them above or below it? A per-opponent W-L-D on its own
+    # cannot say — the reader would have to open 184 other profiles to find out.
+    by_fp = {r.get("fingerprint"): r for r in rows}
+    my_overall = (record or {}).get("overall")
     cells = (table.get("head_to_head") or {}).get(fp) or {}
-    opponents = [
-        {
-            "fingerprint": opp,
-            "wins": cell.get("wins", 0),
-            "losses": cell.get("losses", 0),
-            "draws": cell.get("draws", 0),
-            "pairs": cell.get("pairs", 0),
-            "median_margin": cell.get("median_margin"),
-        }
-        for opp, cell in cells.items()
-    ]
-    opponents.sort(key=lambda o: (o["wins"] + o["losses"] + o["draws"], o["pairs"]), reverse=True)
+    opponents = []
+    for opp, cell in cells.items():
+        opp_row = by_fp.get(opp) or {}
+        opp_overall = opp_row.get("overall")
+        wins, losses = cell.get("wins", 0), cell.get("losses", 0)
+        opponents.append(
+            {
+                "fingerprint": opp,
+                "name": opp_row.get("name"),
+                "label": opp_row.get("label"),
+                "wins": wins,
+                "losses": losses,
+                "draws": cell.get("draws", 0),
+                "pairs": cell.get("pairs", 0),
+                "median_margin": cell.get("median_margin"),
+                # The other verdict on this opponent.
+                "overall": opp_overall,
+                "duel_rank": opp_row.get("rank"),
+                # Signed from THIS profile's side, like every other number here: positive
+                # means this profile scores higher on the pooled Overall.
+                "overall_delta": (
+                    round(my_overall - opp_overall, 2)
+                    if my_overall is not None and opp_overall is not None
+                    else None
+                ),
+                # Did the ring actually decide anything here? Most pairings are draws — on
+                # a continuous ladder many are sessions that closed mid-match — and a list
+                # sorted without regard to that buries every real result among them.
+                "decisive": bool(wins or losses),
+            }
+        )
+    # Decided pairings first, then the ones where the pooled verdict most disagrees with
+    # the ring result: beating a profile Overall rates ABOVE you is the most informative
+    # row on the card, so it sorts to the top rather than being hunted for.
+    def _disagreement(o: dict) -> float:
+        delta = o.get("overall_delta")
+        if delta is None or not o["decisive"]:
+            return -1e9
+        # A win against a higher-Overall profile (delta < 0) scores high; so does a loss
+        # against a lower-Overall one. Agreement scores low.
+        direction = 1 if o["wins"] > o["losses"] else -1 if o["losses"] > o["wins"] else 0
+        return -direction * delta
+    opponents.sort(
+        key=lambda o: (o["decisive"], _disagreement(o), o["pairs"]), reverse=True
+    )
+
+    # The headline the card leads with: does this profile's ring record disagree with the
+    # pooled ranking, and in which direction? Counted only over DECIDED pairings where both
+    # sides have a pooled Overall — a draw and an unscored opponent say nothing either way.
+    beat_better = sum(
+        1 for o in opponents if o["wins"] > o["losses"] and (o["overall_delta"] or 0) < 0
+    )
+    lost_to_worse = sum(
+        1 for o in opponents if o["losses"] > o["wins"] and (o["overall_delta"] or 0) > 0
+    )
+    decided = [o for o in opponents if o["decisive"]]
+    versus_overall = {
+        "beat_higher_overall": beat_better,
+        "lost_to_lower_overall": lost_to_worse,
+        "decided_opponents": len(decided),
+        "undecided_opponents": len(opponents) - len(decided),
+        "overall": my_overall,
+    }
 
     # The bout tape, matchup by matchup. `standings` aggregates the ledger and can't answer
     # "which bouts, against whom, when" — that detail only exists on the matchup records.
@@ -2496,7 +2554,7 @@ def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
     for b in bouts:
         b["opponent_name"] = call_signs.get(b["opponent"]) or b["opponent_name"] or b["opponent_label"]
     for o in opponents:
-        o["name"] = call_signs.get(o["fingerprint"])
+        o["name"] = call_signs.get(o["fingerprint"]) or o.get("name") or o.get("label")
 
     champion = table.get("champion")
     return {
@@ -2510,6 +2568,8 @@ def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
         "champion": champion,
         "is_champion": bool(champion and champion.get("fingerprint") == fp),
         "opponents": opponents,
+        # How the ring record stands against the pooled ranking — the card's headline.
+        "versus_overall": versus_overall,
         "bouts": bouts,
         "sessions_analyzed": table.get("sessions_analyzed", 0),
         "matchups_analyzed": table.get("matchups_analyzed", 0),

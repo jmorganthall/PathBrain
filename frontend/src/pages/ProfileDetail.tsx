@@ -33,6 +33,8 @@ import BoltIcon from "@mui/icons-material/Bolt";
 import EditIcon from "@mui/icons-material/Edit";
 import SaveIcon from "@mui/icons-material/Save";
 import IconButton from "@mui/material/IconButton";
+import FormControlLabel from "@mui/material/FormControlLabel";
+import Switch from "@mui/material/Switch";
 import Link from "@mui/material/Link";
 import TextField from "@mui/material/TextField";
 
@@ -130,6 +132,19 @@ export default function ProfileDetail() {
   // beside the page rather than blocking it: the ladder is a second opinion, not a
   // prerequisite for reading what the profile measured.
   const [ring, setRing] = useState<DuelProfileLedger | null>(null);
+  // Most pairings on a continuous ladder end undecided, so the decided ones lead and the
+  // rest are behind a toggle — a list where four in five rows say "0-0-2" is a list nobody
+  // reads to the end.
+  const [showUndecided, setShowUndecided] = useState(false);
+  const [opponentsShown, setOpponentsShown] = useState(40);
+  const shownOpponents = useMemo(
+    () => (ring?.opponents ?? []).filter((o) => showUndecided || o.decisive),
+    [ring, showUndecided]
+  );
+  const visibleOpponents = useMemo(
+    () => shownOpponents.slice(0, opponentsShown),
+    [shownOpponents, opponentsShown]
+  );
   const [boutsShown, setBoutsShown] = useState(8);
 
   // "Test this profile": apply it, benchmark it, restore the previous settings.
@@ -754,34 +769,137 @@ export default function ProfileDetail() {
                   )}
                 </Stack>
 
-                {/* Per-opponent: the record against each profile it has actually faced. A
-                    rating is comparable across the field, but "who did it beat?" is the
-                    question a page about one profile is really being asked. */}
+                {/* Per-opponent: the record against each profile it has faced, WITH what
+                    the pooled verdict thinks of that profile.
+
+                    This was a wall of 184 W-L-D chips, most of them "0-0-2" — pairings the
+                    ring never decided. That buries the ~40 real results among the noise,
+                    and it still couldn't answer the question a #1-in-the-ring /
+                    #113-on-Overall profile actually raises: did it beat profiles Overall
+                    rates ABOVE it? Answering that meant opening each opponent's page one at
+                    a time. The Overall and the signed gap are on every row now, decided
+                    pairings lead, and the ones where the two verdicts disagree lead those. */}
                 {ring.opponents.length > 0 && (
                   <Box sx={{ mb: 2 }}>
-                    <Typography variant="subtitle2" gutterBottom>
-                      Against each opponent
-                    </Typography>
-                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                      {ring.opponents.map((o) => (
-                        <Tooltip
-                          key={o.fingerprint}
-                          title={`${o.pairs} round${o.pairs === 1 ? "" : "s"}${
-                            o.median_margin != null
-                              ? ` · median margin ${o.median_margin >= 0 ? "+" : ""}${o.median_margin.toFixed(2)} Overall points from this profile's side`
-                              : ""
-                          }`}
-                        >
-                          <Chip
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      alignItems={{ xs: "flex-start", sm: "baseline" }}
+                      justifyContent="space-between"
+                      sx={{ mb: 1 }}
+                    >
+                      <Typography variant="subtitle2">Against each opponent</Typography>
+                      <FormControlLabel
+                        control={
+                          <Switch
                             size="small"
-                            variant="outlined"
-                            color={o.wins > o.losses ? "success" : o.losses > o.wins ? "error" : "default"}
-                            onClick={() => navigate(`/profiles/${encodeURIComponent(o.fingerprint)}`)}
-                            label={`${o.name ?? o.fingerprint.slice(0, 8)} · ${o.wins}-${o.losses}-${o.draws}`}
+                            checked={showUndecided}
+                            onChange={(e) => setShowUndecided(e.target.checked)}
                           />
-                        </Tooltip>
+                        }
+                        label={
+                          <Typography variant="caption" color="text.secondary">
+                            Show undecided ({ring.versus_overall?.undecided_opponents ?? 0})
+                          </Typography>
+                        }
+                      />
+                    </Stack>
+
+                    {/* The headline. "Beat 12 profiles Overall ranks above it" is the whole
+                        finding; without it the reader has to derive it from the rows. */}
+                    {ring.versus_overall && (
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                        Of {ring.versus_overall.decided_opponents} decided pairing
+                        {ring.versus_overall.decided_opponents === 1 ? "" : "s"}, it{" "}
+                        <b>beat {ring.versus_overall.beat_higher_overall}</b> profile
+                        {ring.versus_overall.beat_higher_overall === 1 ? "" : "s"} that score
+                        higher on Overall, and <b>lost to {ring.versus_overall.lost_to_lower_overall}</b>{" "}
+                        that score lower. That disagreement is what running two verdicts is
+                        for — the ring measures profiles against each other under shared
+                        weather, Overall pools everything each has ever measured.
+                      </Typography>
+                    )}
+
+                    <Stack spacing={0.5}>
+                      {visibleOpponents.map((o) => (
+                        <Stack
+                          key={o.fingerprint}
+                          direction="row"
+                          spacing={1}
+                          alignItems="center"
+                          sx={{
+                            py: 0.5,
+                            borderBottom: 1,
+                            borderColor: "divider",
+                            opacity: o.decisive ? 1 : 0.55,
+                          }}
+                        >
+                          <Link
+                            component="button"
+                            underline="hover"
+                            onClick={() =>
+                              navigate(`/profiles/${encodeURIComponent(o.fingerprint)}`)
+                            }
+                            sx={{ font: "inherit", textAlign: "left", flex: 1, minWidth: 0 }}
+                          >
+                            <Typography variant="body2" noWrap>
+                              {o.name ?? o.fingerprint.slice(0, 8)}
+                            </Typography>
+                          </Link>
+                          <Tooltip
+                            title={`${o.pairs} round${o.pairs === 1 ? "" : "s"}${
+                              o.median_margin != null
+                                ? ` · median margin ${o.median_margin >= 0 ? "+" : ""}${o.median_margin.toFixed(2)} Overall points from this profile's side`
+                                : ""
+                            }`}
+                          >
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              color={
+                                o.wins > o.losses
+                                  ? "success"
+                                  : o.losses > o.wins
+                                    ? "error"
+                                    : "default"
+                              }
+                              label={`${o.wins}-${o.losses}-${o.draws}`}
+                              sx={{ minWidth: 68 }}
+                            />
+                          </Tooltip>
+                          {/* Their Overall, and the gap from this profile's side. A win
+                              against a red gap is a profile beating one that outscores it. */}
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{ width: 52, textAlign: "right" }}
+                          >
+                            {o.overall != null ? o.overall.toFixed(1) : "—"}
+                          </Typography>
+                          <Typography
+                            variant="caption"
+                            sx={{ width: 56, textAlign: "right" }}
+                            color={
+                              o.overall_delta == null
+                                ? "text.disabled"
+                                : o.overall_delta > 0
+                                  ? "success.main"
+                                  : "error.main"
+                            }
+                            title="This profile's Overall minus theirs"
+                          >
+                            {o.overall_delta == null
+                              ? "—"
+                              : `${o.overall_delta > 0 ? "+" : ""}${o.overall_delta.toFixed(1)}`}
+                          </Typography>
+                        </Stack>
                       ))}
                     </Stack>
+                    {visibleOpponents.length < shownOpponents.length && (
+                      <Button size="small" sx={{ mt: 1 }} onClick={() => setOpponentsShown((n) => n + 40)}>
+                        Show more ({shownOpponents.length - visibleOpponents.length} left)
+                      </Button>
+                    )}
                   </Box>
                 )}
 

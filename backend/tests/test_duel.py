@@ -2532,3 +2532,58 @@ def test_the_standings_still_rank_on_proven_while_the_belt_is_lineal():
     # (1635 ± 44 → 1591). Both statements are true at once, which is the whole point.
     assert table["standings"][0]["fingerprint"] == "veteran"
     assert table["champion"]["rank"] > 1
+
+
+def test_the_ring_card_says_who_it_beat_and_what_overall_thinks_of_them():
+    """The card's whole job is the disagreement between the two verdicts.
+
+    A profile can be #1 in the ring and #113 on Overall, and a per-opponent W-L-D alone
+    cannot explain that: it says *who* was beaten but nothing about how the pooled verdict
+    rates them, so answering "did I beat profiles Overall ranks above me?" meant opening
+    every opponent's page one at a time. Each opponent now carries its pooled Overall and
+    the signed gap, and the pairings where the two verdicts disagree sort to the top.
+    """
+    from .test_settings import _crown_metrics, _seed_run
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    fps = {n: f"ringcard{n}" for n in ("mine", "better", "worse", "drawn")}
+    # Pooled Overalls: "better" outscores us, "worse" doesn't. The ring says otherwise.
+    for name, overall in (("mine", 79.0), ("better", 85.0), ("worse", 70.0), ("drawn", 75.0)):
+        _seed_run(
+            fps[name], overall, now - timedelta(hours=1), iterations=20,
+            crown_subscores={m: overall for m in _crown_metrics()},
+        )
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[
+                # Beat a profile the pooled verdict rates ABOVE us — the informative row.
+                _mu(fps["mine"], fps["better"], "incumbent", wins_inc=9, wins_cha=3, delta=-2.0),
+                # Lost to one it rates below us — informative the other way.
+                _mu(fps["mine"], fps["worse"], "challenger", wins_inc=2, wins_cha=8, delta=2.0),
+                # …and a draw, which says nothing either way.
+                _mu(fps["mine"], fps["drawn"], "draw", wins_inc=5, wins_cha=5, delta=0.0),
+            ],
+            champion=fps["mine"],
+            when=now,
+        )
+    card = duel_mod.profile_ledger(fps["mine"])
+    with session_scope() as s:
+        s.query(Duel).delete()
+
+    opps = {o["fingerprint"]: o for o in card["opponents"]}
+    assert opps[fps["better"]]["overall_delta"] < 0, "we score lower than the one we beat"
+    assert opps[fps["worse"]]["overall_delta"] > 0, "we score higher than the one that beat us"
+    assert opps[fps["drawn"]]["decisive"] is False
+
+    summary = card["versus_overall"]
+    assert summary["beat_higher_overall"] == 1
+    assert summary["lost_to_lower_overall"] == 1
+    assert summary["decided_opponents"] == 2
+    assert summary["undecided_opponents"] == 1
+
+    # Decided pairings lead, and the draw is last — a list that buries real results among
+    # undecided ones is the same as not reporting them.
+    assert [o["fingerprint"] for o in card["opponents"]][-1] == fps["drawn"]
+    assert all(o["name"] for o in card["opponents"]), "opponents are named, not hashes"

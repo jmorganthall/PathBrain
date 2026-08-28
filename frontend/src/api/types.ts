@@ -1946,6 +1946,13 @@ export interface DuelProfileOpponent {
   draws: number;
   pairs: number;
   median_margin: number | null;
+  label?: string | null;
+  /** The opponent's pooled Overall, and this profile's Overall minus theirs. */
+  overall?: number | null;
+  overall_delta?: number | null;
+  duel_rank?: number | null;
+  /** Did the ring decide anything here, or is the record all draws? */
+  decisive: boolean;
 }
 
 /**
@@ -1965,6 +1972,14 @@ export interface DuelProfileLedger {
   champion: DuelChampion | null;
   is_champion: boolean;
   opponents: DuelProfileOpponent[];
+  /** How this profile's ring record stands against the pooled Overall ranking. */
+  versus_overall?: {
+    beat_higher_overall: number;
+    lost_to_lower_overall: number;
+    decided_opponents: number;
+    undecided_opponents: number;
+    overall: number | null;
+  };
   bouts: DuelProfileBout[];
   sessions_analyzed: number;
   matchups_analyzed: number;
