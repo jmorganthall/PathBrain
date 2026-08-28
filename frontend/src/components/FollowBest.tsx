@@ -128,6 +128,18 @@ export default function FollowBest() {
 
   const stats = info?.stats;
   const last = info?.status.last_result;
+  // The profile the follower actually writes, per the crowning policy. Falls back to the
+  // pooled crown for a check that predates the policy fields.
+  const followedFp = last?.governing_fingerprint ?? last?.crown_fingerprint ?? null;
+  const followedName =
+    last?.governing_name || last?.governing_label || last?.crown_name || followedFp;
+  const followedLabel = last?.governing_label ?? last?.crown_label ?? null;
+  const followedSource = last?.governing_source ?? "pooled";
+  const pooledDiffers = !!(
+    last?.crown_fingerprint &&
+    followedFp &&
+    last.crown_fingerprint !== followedFp
+  );
   const changes = (info?.events ?? []).filter((e) => e.kind === "change").slice(0, 5);
 
   return (
@@ -265,36 +277,48 @@ export default function FollowBest() {
 
           <Divider />
 
-          {/* Current crown + firewall state from the last check */}
+          {/* What the follower actually WRITES is the governing crown — the one the crowning
+              policy resolved. This block used to render the pooled crown under the heading
+              "Crown", with the on-crown chip beside it, while `policy = "duel"` was applying
+              the duel champion: the popover named one profile and the firewall was on
+              another, and the chip belonged to neither line. The pooled crown is still
+              shown, demoted, because it is the tracked statistic the churn stats count. */}
           <Box>
             <Typography variant="caption" color="text.secondary">
-              Crown
+              {followedSource === "duel"
+                ? "Following · duel champion"
+                : policy === "duel"
+                  ? "Following · pooled crown (no fresh duel verdict)"
+                  : "Following · pooled crown"}
             </Typography>
-            {last?.crown_fingerprint ? (
+            {followedFp ? (
               <>
                 <Typography variant="body2">
                   <Link
                     component={RouterLink}
-                    to={`/profiles/${encodeURIComponent(last.crown_fingerprint)}`}
+                    to={`/profiles/${encodeURIComponent(followedFp)}`}
                     onClick={() => setAnchor(null)}
                     underline="hover"
                   >
-                    {last.crown_name || last.crown_label || last.crown_fingerprint}
+                    {followedName}
                   </Link>{" "}
-                  {last.on_crown === true && (
-                    <Chip size="small" label="firewall on crown" color="success" variant="outlined" />
+                  {/* The chip belongs to the FOLLOWED profile — `on_crown` is computed
+                      against the governing target, so pinning it to the pooled crown (as
+                      it was) described a profile it wasn't measuring. */}
+                  {last?.on_crown === true && (
+                    <Chip size="small" label="on the firewall" color="success" variant="outlined" />
                   )}
-                  {last.on_crown === false && (
+                  {last?.on_crown === false && (
                     <Chip size="small" label="firewall elsewhere" color="warning" variant="outlined" />
                   )}
                 </Typography>
                 {/* The settings that name stands for — kept, demoted, clamped. A summary is
                     what you read once you already know which profile you are looking at. */}
-                {last.crown_name && last.crown_label && (
+                {followedName !== followedLabel && followedLabel && (
                   <Typography
                     variant="caption"
                     color="text.disabled"
-                    title={last.crown_label}
+                    title={followedLabel}
                     sx={{
                       display: "-webkit-box",
                       WebkitLineClamp: 2,
@@ -302,7 +326,17 @@ export default function FollowBest() {
                       overflow: "hidden",
                     }}
                   >
-                    {last.crown_label}
+                    {followedLabel}
+                  </Typography>
+                )}
+                {/* The other verdict, when it names someone else. Saying it outright is the
+                    point: the churn stats and the change list below are all about THIS
+                    profile, which is not the one on the firewall. */}
+                {pooledDiffers && (
+                  <Typography variant="caption" color="warning.main" display="block">
+                    Pooled crown is{" "}
+                    {last?.crown_name || last?.crown_label || last?.crown_fingerprint} — tracked
+                    below, not followed.
                   </Typography>
                 )}
               </>

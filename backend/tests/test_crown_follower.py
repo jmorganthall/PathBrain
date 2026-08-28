@@ -427,3 +427,195 @@ def test_the_follow_best_popover_reads_in_call_signs_not_settings_summaries(clie
     assert event["previous_name"] and event["previous_name"] != event["previous_label"]
     # The technical summary is kept beside the name, not replaced by it.
     assert event["label"] == summary
+
+
+# ── The crowning policy: which verdict the follower actually writes ──────────────────
+
+
+def _duel_champion_policy(monkeypatch, champion_fp: str | None, *, decisive: bool = True):
+    """Arm `crown_follow.policy = "duel"` with a stubbed ladder champion."""
+    from pathbrain import duel as duel_mod
+
+    with session_scope() as session:
+        save_config(session, {"crown_follow": {"policy": "duel"}})
+    monkeypatch.setattr(
+        duel_mod,
+        "latest_champion",
+        lambda session, max_age_days: (
+            None
+            if champion_fp is None
+            else {
+                "fingerprint": champion_fp,
+                "label": "champ",
+                "duel_id": 41,
+                "finished_at": "2026-08-27T05:01:00",
+                "decisive": decisive,
+                "consecutive_sessions": 1,
+                "provisional": False,
+            }
+        ),
+    )
+
+
+def test_under_the_duel_policy_the_follower_writes_the_CHAMPION_not_the_pooled_crown(
+    monkeypatch,
+):
+    """The policy selects, the follower applies — so "duel" must write the champion.
+
+    This is the contract the whole crowning module exists for and nothing pinned it. The
+    pooled crown stays the tracked statistic (it is what the churn ledger counts), which
+    is exactly why it is easy to write the wrong one.
+    """
+    live = _live_norm()
+    champion = _off_crown_target(2000)          # reachable, and NOT where the firewall is
+    pooled = _off_crown_target(3000)            # a different profile entirely
+    champion_fp, pooled_fp = fingerprint(champion), fingerprint(pooled)
+    monkeypatch.setattr(
+        crown_follower,
+        "_compute_field",
+        lambda s: _field_for(
+            _profile(pooled, overall=95.0), _profile(champion, overall=80.0), best=pooled_fp
+        ),
+    )
+    _duel_champion_policy(monkeypatch, champion_fp)
+    _enable()
+
+    result = crown_follower.check()
+
+    assert result["policy"] == "duel"
+    assert result["governing_source"] == "duel"
+    assert result["governing_fingerprint"] == champion_fp
+    # The pooled crown is still tracked and reported — it is just not what was written.
+    assert result["crown_fingerprint"] == pooled_fp
+    assert result["applied"] is True
+    assert result["live_fingerprint"] == champion_fp, "the CHAMPION is on the firewall"
+    assert fingerprint(_live_norm()) != pooled_fp
+
+
+def test_the_duel_policy_falls_back_to_pooled_and_says_so(monkeypatch):
+    """No fresh decisive champion → the pooled crown governs, and `governing_source`
+    reports "pooled" rather than claiming a duel verdict it doesn't have."""
+    pooled = _off_crown_target(3000)
+    pooled_fp = fingerprint(pooled)
+    monkeypatch.setattr(
+        crown_follower, "_compute_field", lambda s: _field_for(_profile(pooled), best=pooled_fp)
+    )
+    _duel_champion_policy(monkeypatch, None)
+    _enable()
+
+    result = crown_follower.check()
+    assert result["policy"] == "duel"
+    assert result["governing_source"] == "pooled"
+    assert result["governing_fingerprint"] == pooled_fp
+    assert result["applied"] is True
+
+
+def test_a_champion_missing_from_the_field_falls_back_HONESTLY(monkeypatch):
+    """The champion has no row in the field (thin, or quarantined by a methodology change),
+    so the follower falls back to the pooled crown — and must SAY pooled.
+
+    It used to keep `governing_source: "duel"` while writing the pooled profile, which is
+    the worst of both: the firewall goes somewhere the policy didn't choose and the status
+    reports the choice it didn't make.
+    """
+    pooled = _off_crown_target(3000)
+    pooled_fp = fingerprint(pooled)
+    monkeypatch.setattr(
+        crown_follower, "_compute_field", lambda s: _field_for(_profile(pooled), best=pooled_fp)
+    )
+    _duel_champion_policy(monkeypatch, "achampionnotinthefield")
+    _enable()
+
+    result = crown_follower.check()
+    assert result["governing_fingerprint"] == pooled_fp
+    assert result["governing_source"] == "pooled"
+    assert "not in the measured field" in (result["governing_detail"] or "")
+
+
+def test_a_crown_change_row_is_only_marked_applied_when_THAT_crown_was_written(
+    monkeypatch,
+):
+    """The `applied` flag on a crown-change row must mean "this profile was written".
+
+    Under the duel policy the change row records the POOLED crown while the follower
+    writes the champion, so copying `applied` onto it made the popover read
+    "Voyaging Echo → Eternal Emu · applied" for a profile that never touched the firewall.
+    """
+    live = _live_norm()
+    champion = _off_crown_target(2000)
+    pooled_a, pooled_b = _off_crown_target(3000), _off_crown_target(4000)
+    champion_fp = fingerprint(champion)
+    monkeypatch.setattr(
+        crown_follower,
+        "_compute_field",
+        lambda s: _field_for(
+            _profile(pooled_a), _profile(champion), best=fingerprint(pooled_a)
+        ),
+    )
+    _duel_champion_policy(monkeypatch, champion_fp)
+    _enable()
+    crown_follower.check()  # first observation: marks tracking start
+
+    # The pooled crown changes. The follower is already on the champion, so it writes
+    # nothing — and the change row must not claim otherwise.
+    monkeypatch.setattr(
+        crown_follower,
+        "_compute_field",
+        lambda s: _field_for(
+            _profile(pooled_b), _profile(champion), best=fingerprint(pooled_b)
+        ),
+    )
+    result = crown_follower.check()
+    assert result["crown_changed"] is True
+    assert result["applied"] is False, "already on the champion — nothing to write"
+    change = _events("change")[-1]
+    assert change.fingerprint == fingerprint(pooled_b)
+    assert change.applied is False
+
+
+def test_a_pooled_crown_change_is_not_marked_applied_when_the_champion_was_written(
+    monkeypatch,
+):
+    """The reported symptom, end to end.
+
+    Under `policy="duel"` the popover's crown-change list read *"Voyaging Echo → Eternal
+    Emu · applied"* while the profile actually on the firewall was the duel champion. The
+    pooled crown changed (tracking is always on) and the follower wrote the champion in the
+    same check, so the `applied` flag landed on a row naming a profile it never wrote.
+    """
+    _enable()
+    champion = _off_crown_target(2000)
+    pooled_a, pooled_b = _off_crown_target(3000), _off_crown_target(4000)
+    champion_fp = fingerprint(champion)
+    _duel_champion_policy(monkeypatch, champion_fp)
+
+    monkeypatch.setattr(
+        crown_follower,
+        "_compute_field",
+        lambda s: _field_for(_profile(pooled_a), _profile(champion), best=fingerprint(pooled_a)),
+    )
+    crown_follower.check()  # tracking starts; the champion is written
+
+    # The firewall drifts off the champion (a duel session restoring its own baseline, a
+    # profile test, a sweep) AND the pooled crown moves — the two together are what put the
+    # flag on the wrong row.
+    _OVERRIDES["quantum"] = "9999"
+    monkeypatch.setattr(
+        crown_follower,
+        "_compute_field",
+        lambda s: _field_for(_profile(pooled_b), _profile(champion), best=fingerprint(pooled_b)),
+    )
+    result = crown_follower.check()
+
+    assert result["crown_changed"] is True
+    assert result["applied"] is True
+    assert result["governing_fingerprint"] == champion_fp
+    assert int(_OVERRIDES["quantum"]) == 2000, "the CHAMPION is what reached the firewall"
+
+    change = _events("change")[-1]
+    assert change.fingerprint == fingerprint(pooled_b)
+    assert change.applied is False, "the pooled crown was not what got written"
+    assert "followed the duel crown instead" in (change.detail or "")
+    # …and the write is recorded on its own row, naming what actually landed.
+    apply_row = _events("apply")[-1]
+    assert apply_row.fingerprint == champion_fp and apply_row.applied is True

@@ -409,6 +409,19 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
         (p for p in field.get("profiles", []) if p.get("fingerprint") == target_fp), None
     )
     if target_profile is None:
+        # The governing verdict names a profile the measured field has no row for — thin,
+        # or quarantined by a methodology change — so there are no stored settings to
+        # apply. Fall back to the pooled crown, and **say pooled**: reporting a duel
+        # verdict while writing a profile the duel did not pick is the worst of both, and
+        # it is invisible precisely when it matters (the status still reads "duel").
+        governing = {
+            **governing,
+            "source": "pooled",
+            "detail": (
+                f"the {governing['source']} crown is not in the measured field "
+                "(no comparable runs) — falling back to the pooled crown"
+            ),
+        }
         target_fp, target_profile = best_fp, best
     result["policy"] = governing["policy"]
     result["governing_fingerprint"] = target_fp
@@ -510,6 +523,19 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
     # the firewall had drifted off-crown).
     overall = best.get("overall")
     detail = skip if not applied else f"{len(pending)} change(s) written"
+    # `applied` on a CHANGE row means "**this** crown was written to the firewall", because
+    # that is how anyone reading the ledger will take it. Under a policy whose governing
+    # target isn't the pooled crown, the write went somewhere else entirely, so copying the
+    # flag across made the popover report *"Voyaging Echo → Eternal Emu · applied"* for a
+    # profile that never touched the firewall — the pooled crown changed, and the duel
+    # champion was applied. The actual write gets its own row below.
+    crown_applied = applied and target_fp == best_fp
+    recorded_by_change = changed and crown_applied
+    crown_detail = (
+        f"followed the {governing['source']} crown instead ({len(pending)} change(s) written)"
+        if applied and not crown_applied
+        else detail
+    )
     try:
         with session_scope() as session:
             if changed:
@@ -521,12 +547,12 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
                         label=(best.get("label") or "")[:255] or None,
                         previous_label=prev_label,
                         overall=float(overall) if overall is not None else None,
-                        applied=applied,
+                        applied=crown_applied,
                         error=apply_error,
-                        detail=detail,
+                        detail=crown_detail,
                     )
                 )
-            elif applied or apply_error:
+            if (applied or apply_error) and not recorded_by_change:
                 session.add(
                     CrownEvent(
                         kind="apply",
