@@ -58,6 +58,7 @@ import type { Theme } from "@mui/material/styles";
 import type {
   DuelCard,
   DuelConfig,
+  DuelHealth,
   DuelLive,
   DuelMatchup,
   DuelSession,
@@ -479,16 +480,41 @@ function NumField({
 // side — and for a draw, from the challenger's, since neither side is "the winner".
 function marginPhrase(m: DuelMatchup): string {
   if (m.median_delta == null) return "no usable margin";
-  if (m.verdict === "draw") return `challenger Δ ${fmtNum(m.median_delta, 2)}`;
+  if (matchOutcome(m) !== "incumbent" && matchOutcome(m) !== "challenger")
+    return `challenger Δ ${fmtNum(m.median_delta, 2)}`;
   return `won by ${fmtNum(Math.abs(m.median_delta), 2)} Overall pts`;
+}
+
+/**
+ * A draw is a verdict — the ring fought this and says the two are equal. An ABORT is the
+ * ladder failing to measure anything: the window closed, or the rounds came back with no
+ * Overall to compare. They were the same word, so a ledger full of failures read as a
+ * field of evenly matched profiles. Derived from the recorded reason so matches written
+ * before the distinction existed still read correctly.
+ */
+function matchOutcome(m: DuelMatchup): "incumbent" | "challenger" | "draw" | "aborted" {
+  if (m.verdict === "aborted") return "aborted";
+  if (m.verdict === "draw") {
+    const reason = (m.reason ?? "").trim().toLowerCase();
+    if (reason.startsWith("aborted:") || reason.startsWith("window closed")) return "aborted";
+    return "draw";
+  }
+  return m.verdict as "incumbent" | "challenger";
 }
 
 // The verdict of one match, phrased as a result rather than a raw enum.
 function VerdictChip({ m }: { m: DuelMatchup }) {
-  if (m.verdict === "draw")
+  const result = matchOutcome(m);
+  if (result === "aborted")
+    return (
+      <Tooltip title="No result — the ladder couldn't measure this match. It does not count as a draw, and the pair is not on rematch cooldown.">
+        <Chip size="small" label="no result" variant="outlined" color="warning" />
+      </Tooltip>
+    );
+  if (result === "draw")
     return <Chip size="small" label="draw" variant="outlined" color="default" />;
   const winner =
-    m.verdict === "challenger"
+    result === "challenger"
       ? m.challenger_name || m.challenger_label
       : m.incumbent_name || m.incumbent_label;
   return (
@@ -805,6 +831,7 @@ export default function Duels() {
   // wants are derived from the clock at the moment you press the button.
   const [untilClock, setUntilClock] = useState<string | null>(null);
   const [liveFp, setLiveFp] = useState<string | null>(null);
+  const [health, setHealth] = useState<DuelHealth | null>(null);
   const [askDuration, setAskDuration] = useState(false);
   const [dialogMinutes, setDialogMinutes] = useState(120);
   const [card, setCard] = useState<DuelCard | null>(null);
@@ -871,6 +898,11 @@ export default function Duels() {
       .then(setTable)
       .catch(report)
       .finally(() => setLoadingStandings(false));
+
+    void api
+      .duelHealth()
+      .then(setHealth)
+      .catch(() => undefined); // a diagnostic must never be why the page fails
 
     setLoadingLedger(true);
     void api
@@ -1050,6 +1082,42 @@ export default function Duels() {
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
           {error}
+        </Alert>
+      )}
+
+      {/* Is the ladder actually measuring anything? A duel spends two benchmark runs per
+          round, and a round with no Overall on either side is discarded — three in a row
+          abort the match. That used to be recorded as a draw, so a ladder burning its
+          nights on unusable rounds was indistinguishable from a field of evenly matched
+          profiles. Shown only when it is actually happening. */}
+      {health && health.aborted > 0 && (health.aborted_share ?? 0) >= 0.1 && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <b>
+            {Math.round((health.aborted_share ?? 0) * 100)}% of matches produced no result
+          </b>{" "}
+          ({health.aborted} of {health.matches} across {health.sessions_analyzed} sessions
+          {health.unusable_rounds > 0
+            ? `, ${health.unusable_rounds} round${health.unusable_rounds === 1 ? "" : "s"} discarded`
+            : ""}
+          ). These are not draws — the ladder could not measure them, so nothing was
+          adjudicated and the pairs stay eligible to race again.
+          {health.reasons.length > 0 && (
+            <Box component="ul" sx={{ m: 0, mt: 1, pl: 2.5 }}>
+              {health.reasons.slice(0, 4).map((r) => (
+                <li key={r.reason}>
+                  <Typography variant="caption">
+                    {r.reason} — {r.legs} run{r.legs === 1 ? "" : "s"}
+                  </Typography>
+                </li>
+              ))}
+            </Box>
+          )}
+          {health.reasons.length === 0 && (
+            <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
+              No causes recorded yet — matches fought before the diagnosis existed count
+              here but can't explain themselves. The next session will say why.
+            </Typography>
+          )}
         </Alert>
       )}
 

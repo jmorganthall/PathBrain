@@ -2587,3 +2587,94 @@ def test_the_ring_card_says_who_it_beat_and_what_overall_thinks_of_them():
     # undecided ones is the same as not reporting them.
     assert [o["fingerprint"] for o in card["opponents"]][-1] == fps["drawn"]
     assert all(o["name"] for o in card["opponents"]), "opponents are named, not hashes"
+
+
+# ── Aborted is not a draw ─────────────────────────────────────────────────────────────
+
+
+def test_an_aborted_match_is_not_a_draw():
+    """A draw is a verdict; an abort is the ladder failing to measure anything.
+
+    Both were filed as `verdict: "draw"`, so a record of 29-18-379 read as a field of
+    near-identical profiles when the truth was that 379 matches never produced a result.
+    Legacy rows are re-read from their own recorded reason rather than migrated.
+    """
+    decided = _mu("a", "b", "draw", wins_inc=6, wins_cha=6, delta=0.0)
+    decided["reason"] = "mutual futility (no consistent margin either way)"
+    assert duel_mod.outcome(decided) == "draw"
+
+    for legacy_reason in (
+        "aborted: repeated unusable rounds",
+        "window closed mid-matchup (undecided)",
+    ):
+        row = _mu("a", "b", "draw", wins_inc=0, wins_cha=0, delta=0.0)
+        row["reason"] = legacy_reason
+        assert duel_mod.outcome(row) == duel_mod.ABORTED, legacy_reason
+
+    won = _mu("a", "b", "incumbent", wins_inc=8, wins_cha=2, delta=-2.0)
+    assert duel_mod.outcome(won) == "incumbent"
+
+
+def test_an_aborted_match_never_counts_as_a_decisive_record():
+    """`latest_champion` gates automation on a decisive record. An all-aborted record
+    demonstrates nothing, and the old `verdict != "draw"` test waved it straight through."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    aborted = _mu("solo", "other", "draw", wins_inc=0, wins_cha=0, delta=0.0)
+    aborted["reason"] = "aborted: repeated unusable rounds"
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(s, matchups=[aborted], champion="solo", when=now)
+    with session_scope() as s:
+        champ = duel_mod.latest_champion(s, max_age_days=7)
+        s.query(Duel).delete()
+    assert champ is None or champ["decisive"] is False
+
+
+def test_failing_to_measure_a_pair_does_not_lock_it_out_of_the_ring():
+    """**The bias this fixes.** The rematch cooldown checked only whether a pair had met,
+    never whether anything was decided — so a match that aborted at 0-0 put that pairing on
+    a `rematch_days` cooldown. Fail to measure a pair and the ladder stops trying, which is
+    exactly backwards, and self-reinforcing: matchmaking races the crown and the leaders
+    first, so those are the first pairs to hit a bad patch and the first locked out.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    aborted = _mu("x", "y", "draw", wins_inc=0, wins_cha=0, delta=0.0)
+    aborted["reason"] = "aborted: repeated unusable rounds"
+    real_draw = _mu("p", "q", "draw", wins_inc=6, wins_cha=6, delta=0.0)
+    real_draw["reason"] = "mutual futility (no consistent margin either way)"
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(s, matchups=[aborted, real_draw], champion="x", when=now)
+    with session_scope() as s:
+        aborted_blocked = duel_mod._recently_decided(s, "x", "y", 7)
+        drawn_blocked = duel_mod._recently_decided(s, "p", "q", 7)
+        s.query(Duel).delete()
+
+    assert aborted_blocked is False, "an abort settles nothing — race the pair again"
+    assert drawn_blocked is True, "a draw IS an adjudication and still cools down"
+
+
+def test_the_standings_count_aborts_apart_from_draws():
+    """W-L-D describes adjudications. Matches that produced no result get their own column,
+    so a record reads as 'raced a lot, measured nothing' rather than 'all square'."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    aborted = _mu("sa", "sb", "draw", wins_inc=0, wins_cha=0, delta=0.0)
+    aborted["reason"] = "aborted: repeated unusable rounds"
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[
+                _mu("sa", "sb", "incumbent", wins_inc=8, wins_cha=2, delta=-2.0),
+                aborted,
+            ],
+            champion="sa",
+            when=now,
+        )
+    table = duel_mod.standings()
+    with session_scope() as s:
+        s.query(Duel).delete()
+    row = next(r for r in table["standings"] if r["fingerprint"] == "sa")
+    assert (row["wins"], row["losses"], row["draws"]) == (1, 0, 0)
+    assert row["aborted"] == 1
+    assert row["points"] == 3, "an abort earns nothing, unlike the draw point it used to"
