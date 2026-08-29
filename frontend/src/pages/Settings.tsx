@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import Alert from "@mui/material/Alert";
@@ -365,6 +365,10 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.completion?.median ?? null;
     case "last_seen":
       return p.last_seen;
+    case "primary":
+      // The field's primary ordering, resolved server-side (ring first, pooled seeding the
+      // unrated). 1 = best, unlike every other column here — see the default sort direction.
+      return p.primary_rank ?? null;
   }
   // Dynamic keys: overall, axis scores, run stats, and any metric.
   return profileValue(p, key);
@@ -912,10 +916,15 @@ export default function Settings() {
   const [weatherLens, setWeatherLens] = useState(
     () => localStorage.getItem("settingsWeatherLens") === "1"
   );
+  // Default to the PRIMARY ordering — the ring where it has measured, pooled where it
+  // hasn't — rather than to raw pooled Overall. Ascending, because `primary_rank` is
+  // 1 = best while every other column is higher-is-better.
   const [orderBy, setOrderBy] = useState<SortKey>(() =>
-    localStorage.getItem("settingsWeatherLens") === "1" ? "weather_relative" : "overall"
+    localStorage.getItem("settingsWeatherLens") === "1" ? "weather_relative" : "primary"
   );
-  const [order, setOrder] = useState<SortDir>("desc");
+  const [order, setOrder] = useState<SortDir>(() =>
+    localStorage.getItem("settingsWeatherLens") === "1" ? "desc" : "asc"
+  );
 
   const metricMeta = useMetricMeta();
   const allFields = useMemo(
@@ -1977,6 +1986,17 @@ export default function Settings() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
+                    {/* The primary order needs its own column, or it becomes unreachable
+                        the moment you sort by anything else — a default you can't get back
+                        to is a default that quietly stops being one. */}
+                    <SortHeader
+                      id="primary"
+                      label="#"
+                      orderBy={orderBy}
+                      order={order}
+                      onSort={handleSort}
+                      tip="The field's primary order: the duel ladder places every profile it has measured head to head, and the pooled Overall orders only the ones it hasn't — seeding which of the unraced to race next. A paired comparison under shared weather beats an average over conditions that were never held equal. The dot says which verdict placed each row."
+                    />
                     <SortHeader id="label" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} tip={COLUMN_TIPS.label} />
                     <SortHeader
                       id="count"
@@ -2101,12 +2121,32 @@ export default function Settings() {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {(pagedProfiles ?? []).map((p) => {
+                  {(pagedProfiles ?? []).map((p, idx) => {
                     const isActive = p.fingerprint === currentFingerprint;
                     const isBaseline = p.is_sqm_off;
+                    // Where the ring stops having an opinion and pooled takes over. Shown
+                    // only under the primary order, because under any other sort the two
+                    // groups are interleaved and a divider would be a lie.
+                    const prev = idx > 0 ? (pagedProfiles ?? [])[idx - 1] : undefined;
+                    const crossesInto =
+                      orderBy === "primary" &&
+                      p.verdict_source &&
+                      p.verdict_source !== "ring" &&
+                      (idx === 0 ? page > 0 && ringRated > 0 : prev?.verdict_source === "ring");
                     return (
+                    <Fragment key={`grp-${p.fingerprint}`}>
+                    {crossesInto && (
+                      <TableRow>
+                        <TableCell colSpan={99} sx={{ py: 0.5, borderBottom: 0 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            — below here the ring has no rounds on record, so these are
+                            ordered by pooled Overall: the seeding order for what to race
+                            next, not a head-to-head result —
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    )}
                     <TableRow
-                      key={p.fingerprint}
                       selected={isActive}
                       sx={{
                         ...(isActive ? { "& td": { bgcolor: "action.selected" } } : {}),
@@ -2116,6 +2156,37 @@ export default function Settings() {
                           : {}),
                       }}
                     >
+                      <TableCell sx={{ whiteSpace: "nowrap" }}>
+                        <Tooltip
+                          title={
+                            p.verdict_source === "ring"
+                              ? `Placed by the duel ladder — ${p.ring_rounds ?? 0} round${p.ring_rounds === 1 ? "" : "s"} of head-to-head evidence`
+                              : p.verdict_source === "pooled"
+                                ? "No rounds on record — seeded by its pooled Overall, which is the order to race them in"
+                                : "Not measured"
+                          }
+                        >
+                          <Stack direction="row" spacing={0.75} alignItems="center">
+                            <Box
+                              sx={{
+                                width: 6,
+                                height: 6,
+                                borderRadius: "50%",
+                                flexShrink: 0,
+                                bgcolor:
+                                  p.verdict_source === "ring"
+                                    ? "success.main"
+                                    : p.verdict_source === "pooled"
+                                      ? "info.main"
+                                      : "text.disabled",
+                              }}
+                            />
+                            <Typography variant="body2" color="text.secondary">
+                              {p.primary_rank ?? "—"}
+                            </Typography>
+                          </Stack>
+                        </Tooltip>
+                      </TableCell>
                       <TableCell sx={{ maxWidth: 360 }}>
                         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
                           <Box sx={{ minWidth: 0 }}>
@@ -2368,6 +2439,7 @@ export default function Settings() {
                         </Stack>
                       </TableCell>
                     </TableRow>
+                    </Fragment>
                     );
                   })}
                 </TableBody>
