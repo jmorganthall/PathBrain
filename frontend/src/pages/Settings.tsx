@@ -868,6 +868,9 @@ export default function Settings() {
   // "Ghost crown": the crown's current form significantly trails its own prior record, so
   // the bar challengers race against may be propped by history it no longer delivers.
   const [crownFading, setCrownFading] = useState<SettingsProfilesResponse["crown_fading"]>(null);
+  const [ranking, setRanking] = useState<"ring" | "pooled">("pooled");
+  const [ringRated, setRingRated] = useState(0);
+  const [seeded, setSeeded] = useState(0);
   // The recent-evidence window sizing the "Overall (recent)" drift-lens column.
   const [crownWindow, setCrownWindow] = useState(100);
   // Dynamic quadrant axes — X/Y/Shade default to the current methodology's crown metric set
@@ -1033,6 +1036,9 @@ export default function Settings() {
       setWeatherSuspect(p.weather_crown_suspect ?? null);
       setCrownFading(p.crown_fading ?? null);
       setCrownWindow(p.crown_window_iterations ?? 0);
+      setRanking(p.ranking ?? "pooled");
+      setRingRated(p.ring_rated_count ?? 0);
+      setSeeded(p.seeded_count ?? 0);
       setImpact(i);
       setDiag(d);
       setError(null);
@@ -1535,6 +1541,20 @@ export default function Settings() {
               ))}
           </Box>
         </Alert>
+      )}
+
+      {/* Which verdict is placing which profiles. The endpoint now returns the field in the
+          primary order — the ring where it has real head-to-head evidence, pooled where it
+          hasn't — and saying so is the difference between a ranking and an unexplained list.
+          The table below is user-sortable, so this describes the data, not the current sort. */}
+      {ranking === "ring" && (ringRated > 0 || seeded > 0) && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+          <b>Ordered by the ring first.</b> {ringRated} profile{ringRated === 1 ? "" : "s"} have
+          been measured head to head under shared weather, so the duel ladder places{" "}
+          {ringRated === 1 ? "it" : "them"}; the remaining {seeded} have no rounds on record and
+          are seeded by their pooled Overall — which is what decides who gets raced next. A
+          paired comparison beats an average over conditions that were never held equal.
+        </Typography>
       )}
 
       {crownFading && (

@@ -197,6 +197,19 @@ DEFAULT_CONFIG: dict = {
         # only selects which verdict automation acts on. One policy, one follower, one write
         # path — engines (race/duel) only measure and adjudicate.
         "policy": "pooled",
+        # Which verdict ORDERS the field: "ring" (default) or "pooled" (the old behaviour).
+        #
+        # A duel round is a paired, interleaved comparison under shared weather — a
+        # controlled experiment. The pooled Overall averages runs taken at different times
+        # under conditions never held equal. On the same question the controlled comparison
+        # wins, so where the ring has real head-to-head evidence for a profile it orders it,
+        # and pooled orders only the profiles the ring has never produced a round for —
+        # seeding which of the unraced to race first, which is what a macro map is good at.
+        #
+        # This is display + standings ordering. It deliberately does NOT feed the duel's own
+        # matchmaking (that would make the ladder circular) or Explore (whose model is
+        # fitted in pooled-Overall space) — see `crowning.rank_field`.
+        "ranking": "ring",
     },
     # Interleaved head-to-head duel ladder (the adjudication engine): strict A/B/A/B
     # alternation, paired verdicts via a sequential test that stops the moment a matchup is

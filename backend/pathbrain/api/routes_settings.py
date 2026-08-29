@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, defer, selectinload
 
 from .. import challenger as challenger_mod
+from .. import crowning
 from .. import profile_test as profile_test_mod
 from .. import refresh as refresh_mod
 from ..config_store import get_config, save_config
@@ -751,6 +752,30 @@ def settings_profiles(
     result["heirs"] = _compute_heirs(result, session, live)
     result["metric_thresholds"] = _metric_thresholds(definition)
     result["saturation"] = _saturation_report(result["profiles"], definition)
+
+    # ── The primary ordering: the ring where it has measured, pooled where it hasn't ────
+    # Applied HERE, at the one seam every reader of this endpoint shares, rather than in
+    # each surface — five surfaces blending two scales privately is how the verdicts drift
+    # apart. `best_fingerprint` stays the POOLED crown on purpose: the duel's own
+    # matchmaking reads it as the independent opinion, and re-pointing it at the ring would
+    # make the ladder choose who gets checked against the ladder.
+    ranked = crowning.rank_field(session, result)
+    by_fp = ranked["by_fingerprint"]
+    for profile in result["profiles"]:
+        entry = by_fp.get(profile["fingerprint"]) or {}
+        profile["verdict_source"] = entry.get("source")
+        profile["primary_rank"] = entry.get("position")
+        profile["ring_rating"] = entry.get("ring_rating")
+        profile["ring_rounds"] = entry.get("ring_rounds")
+    order = {fp: i for i, fp in enumerate(ranked["order"])}
+    result["profiles"].sort(key=lambda p: order.get(p["fingerprint"], len(order)))
+    result["ranking"] = ranked["ranking"]
+    # The field's best profile under the primary ordering, kept BESIDE the pooled crown
+    # rather than overwriting it, so a caller always knows which verdict it is reading.
+    result["primary_best_fingerprint"] = ranked["best_fingerprint"]
+    result["primary_best_source"] = ranked["best_source"]
+    result["ring_rated_count"] = ranked["ring_rated"]
+    result["seeded_count"] = ranked["seeded"]
     return result
 
 

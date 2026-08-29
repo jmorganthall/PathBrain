@@ -1036,6 +1036,32 @@ LLM-based. See `README.md` for the product overview.
     control is the top-bar **Follow best popover** ("Crowning policy" chips + both verdicts
     side by side); the API surface rides `GET/POST /settings/crown-follow` (`policy`,
     `policies`, `duel_champion`).
+  - **The field's primary ordering: the ring first, pooled as the seed**
+    (`crowning.rank_field`, `crown_follow.ranking`, default `"ring"`). A duel round is a
+    **paired, interleaved, counterbalanced comparison under shared weather** — a controlled
+    experiment. The pooled Overall averages runs taken at different times under conditions
+    that were never held equal — an observational statistic. On the same question the
+    controlled comparison wins, so where the ring has real head-to-head evidence for a
+    profile it orders it, and pooled orders only the profiles the ring has never produced a
+    round for. That is pooled's one job here and it is a real one: **seeding the unrated**,
+    deciding which of the unraced to race first, which is exactly what a macro map of the
+    field is good at. **Ring-rated** means the ledger holds at least one *round* — real
+    paired evidence — deliberately not "non-provisional" (a bar so high the ring would
+    almost never govern) and deliberately excluding profiles whose only appearances were
+    **aborted** matches, which produced no rounds and demonstrated nothing. The three
+    states (`ring`/`pooled`/`unmeasured`) partition the field: every profile lands in
+    exactly one, each group is ordered by *its own* verdict, and the two scales are never
+    compared against each other — a partition, not a blend. Applied at the single
+    `/settings/profiles` seam every reader shares, because five surfaces blending two
+    scales privately is precisely how the verdicts drift apart. **Two deliberate
+    exclusions**, both load-bearing: the **duel's own matchmaking keeps reading the pooled
+    crown** (`best_fingerprint` is never re-pointed) — the ladder exists to be the
+    independent check on the pooled verdict, so letting this ordering choose who gets
+    checked would make it circular, the exact failure `contender_order` was written to
+    escape; and **Explore keeps branching from the pooled best**, because its response
+    curves, predictions and uncertainties are all fitted in pooled-Overall space and
+    picking a parent by ring rating would price it against a scale it was never calibrated
+    to. `ranking = "pooled"` restores the former behaviour for comparison.
   - `refresh.py` — **Re-run profiles**: the batch sibling of `profile_test`. For
     each stored profile it applies the settings, benchmarks a **caller-chosen** number of
     iterations, then moves on — **restoring the baseline at the end** (persisted to a

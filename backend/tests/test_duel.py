@@ -2713,3 +2713,135 @@ def test_the_standings_count_aborts_apart_from_draws():
     assert (row["wins"], row["losses"], row["draws"]) == (1, 0, 0)
     assert row["aborted"] == 1
     assert row["points"] == 3, "an abort earns nothing, unlike the draw point it used to"
+
+
+# ── The ring is the primary verdict; pooled seeds the unrated ────────────────────────
+
+
+def _ranked(field):
+    with session_scope() as s:
+        return crowning.rank_field(s, field)
+
+
+def test_the_ring_orders_what_it_has_measured_and_pooled_seeds_the_rest():
+    """A duel round is a paired comparison under shared weather — a controlled experiment.
+    The pooled Overall averages runs taken at different times under conditions never held
+    equal. On the same question the controlled comparison wins, so the ring orders every
+    profile it has real rounds for, and pooled orders only the ones it hasn't.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[_mu("raced_lo", "raced_hi", "challenger", wins_inc=2, wins_cha=9, delta=3.0)],
+            champion="raced_hi",
+            when=now,
+        )
+    field = {
+        "profiles": [
+            # The ring says raced_hi beat raced_lo. Pooled says the opposite.
+            {"fingerprint": "raced_lo", "overall": 90.0, "iterations": 400, "confident": True},
+            {"fingerprint": "raced_hi", "overall": 70.0, "iterations": 40, "confident": True},
+            # Never in the ring: pooled seeds these, ordered among themselves.
+            {"fingerprint": "unraced_hi", "overall": 88.0, "iterations": 30, "confident": True},
+            {"fingerprint": "unraced_lo", "overall": 60.0, "iterations": 30, "confident": True},
+            # No score at all.
+            {"fingerprint": "nothing", "overall": None, "iterations": 0, "confident": False},
+        ],
+        "best_fingerprint": "raced_lo",
+    }
+    out = _ranked(field)
+    with session_scope() as s:
+        s.query(Duel).delete()
+
+    assert out["ranking"] == "ring"
+    # The head-to-head result stands, even though pooled rates the loser 20 points higher.
+    assert out["order"][:2] == ["raced_hi", "raced_lo"]
+    # …then the unrated, ordered by pooled — that IS the seeding job.
+    assert out["order"][2:4] == ["unraced_hi", "unraced_lo"]
+    # …and the unmeasured last.
+    assert out["order"][-1] == "nothing"
+
+    by_fp = out["by_fingerprint"]
+    assert by_fp["raced_hi"]["source"] == crowning.RING_SOURCE
+    assert by_fp["unraced_hi"]["source"] == crowning.POOLED_SOURCE
+    assert by_fp["nothing"]["source"] == crowning.UNMEASURED_SOURCE
+    assert (out["ring_rated"], out["seeded"], out["unmeasured"]) == (2, 2, 1)
+    # Every profile lands in exactly one state — no blend, no fourth case.
+    assert len(out["entries"]) == len(field["profiles"])
+
+
+def test_a_profile_whose_only_matches_aborted_is_not_ring_rated():
+    """Ring-rated means real paired evidence — at least one round. A profile that has been
+    in the ring but never produced a round demonstrated nothing, so pooled seeds it like
+    any other unraced profile. Without this the abort work would have quietly promoted
+    empty records above genuinely measured ones."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    aborted = _mu("ghost", "other", "draw", wins_inc=0, wins_cha=0, delta=0.0)
+    aborted["reason"] = "aborted: repeated unusable rounds"
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(s, matchups=[aborted], champion="ghost", when=now)
+    field = {
+        "profiles": [
+            {"fingerprint": "ghost", "overall": 95.0, "iterations": 50, "confident": True},
+        ],
+        "best_fingerprint": "ghost",
+    }
+    out = _ranked(field)
+    with session_scope() as s:
+        s.query(Duel).delete()
+    assert out["by_fingerprint"]["ghost"]["source"] == crowning.POOLED_SOURCE
+    assert out["ring_rated"] == 0
+
+
+def test_the_primary_ordering_never_feeds_the_duels_own_matchmaking():
+    """**The circularity guard.** The duel exists to be the independent check on the pooled
+    verdict, so its matchmaking must keep reading the POOLED crown. If `best_fingerprint`
+    became the ring's own #1, the ladder would choose who gets checked against the ladder —
+    the exact failure `contender_order` was written to escape.
+    """
+    field = {
+        "profiles": [
+            {"fingerprint": "pooled_top", "overall": 95.0, "iterations": 100, "confident": True},
+            {"fingerprint": "ring_top", "overall": 60.0, "iterations": 100, "confident": True},
+        ],
+        "best_fingerprint": "pooled_top",
+    }
+    out = _ranked(field)
+    # rank_field reports its own answer and leaves the field's pooled crown untouched, so a
+    # caller can always tell the two apart.
+    assert field["best_fingerprint"] == "pooled_top"
+    assert "best_fingerprint" in out and out["best_fingerprint"] is not None
+
+
+def test_pooled_ranking_mode_restores_the_old_order():
+    """`crown_follow.ranking = "pooled"` is the previous behaviour, kept so the two verdicts
+    can be compared on the same data rather than argued about."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[_mu("lo", "hi", "challenger", wins_inc=1, wins_cha=9, delta=3.0)],
+            champion="hi",
+            when=now,
+        )
+        save_config(s, {"crown_follow": {"ranking": "pooled"}})
+    field = {
+        "profiles": [
+            {"fingerprint": "lo", "overall": 90.0, "iterations": 100, "confident": True},
+            {"fingerprint": "hi", "overall": 70.0, "iterations": 100, "confident": True},
+        ],
+        "best_fingerprint": "lo",
+    }
+    try:
+        out = _ranked(field)
+        assert out["ranking"] == "pooled"
+        assert out["order"] == ["lo", "hi"], "pooled mode ignores the head-to-head result"
+        assert out["by_fingerprint"]["hi"]["source"] == crowning.POOLED_SOURCE
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+            save_config(s, {"crown_follow": {"ranking": "ring"}})
