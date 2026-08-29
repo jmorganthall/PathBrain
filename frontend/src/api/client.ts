@@ -36,6 +36,7 @@ import type {
   DuelSession,
   DuelCard,
   DuelProfileLedger,
+  DuelHealth,
   DuelStandings,
   CrownsOut,
   AiConfig,
@@ -201,6 +202,7 @@ export const api = {
     request<{ cancelled: boolean; status: string | null }>("/duel/cancel", { method: "POST" }),
   duelHistory: (limit = 10) => request<{ duels: DuelSession[] }>(`/duel/history?limit=${limit}`),
   duelCard: (limit = 12) => request<DuelCard>(`/duel/card?limit=${limit}`),
+  duelHealth: (sessions = 50) => request<DuelHealth>(`/duel/health?sessions=${sessions}`),
   duelStandings: (sessions = 50) =>
     request<DuelStandings>(`/duel/standings?sessions=${sessions}`),
   // One profile's head-to-head record — its standings row, opponents and bout tape, all

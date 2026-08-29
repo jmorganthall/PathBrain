@@ -311,6 +311,12 @@ def duel_profile(fingerprint: str, sessions: int = 50) -> dict:
     return duel.profile_ledger(fingerprint, limit_sessions=max(1, min(sessions, 200)))
 
 
+@router.get("/duel/health")
+def duel_health(sessions: int = 50) -> dict:
+    """Is the ladder measuring anything? Aborted matches, discarded rounds, and why."""
+    return duel.round_health(limit_sessions=max(1, min(sessions, 200)))
+
+
 @router.get("/duel/history")
 def duel_history(limit: int = 10, matchups: int = 25) -> dict:
     """Recent duel sessions, newest first — the head-to-head ledger.

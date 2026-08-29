@@ -598,8 +598,66 @@ def _run_overall(run_id: int, methodology_version: str) -> float | None:
         return float(val) if isinstance(val, (int, float)) else None
 
 
+def _round_reading(
+    run_id: int | None, methodology_version: str, ok: bool = True
+) -> tuple[float | None, str | None]:
+    """``(Overall, why it is missing)`` for one leg of a round.
+
+    A round is unusable when either leg has no Overall, and three unusable rounds abort the
+    match. That was recorded as a bare *"aborted: repeated unusable rounds"* — which says
+    the ladder gave up but not what went wrong, so the single most common outcome on a busy
+    ledger was also the least diagnosable. There are four distinct causes and they call for
+    completely different fixes:
+
+    * the benchmark **failed** — a plugin error, a probe timeout, mid-run settings drift;
+    * the run was never **scored** under the methodology the duel is adjudicating on;
+    * it scored **incomparable** — its raw could not supply a required metric, which since
+      derive-v14 is what happens to a browser run with no LoAF provenance (it cannot
+      compute ``network_stall_all``, a crown metric, and must not fabricate one);
+    * it scored but carries no Overall at all.
+
+    The third is the one worth naming precisely, so the reason carries the missing metrics:
+    "these rounds are being thrown away because the browser isn't emitting LoAF" is a
+    fixable statement, and "unusable" is not.
+    """
+    if not ok:
+        return None, "the benchmark run failed"
+    if run_id is None:
+        return None, "no run was recorded"
+    # Read the Overall through the ordinary accessor, then diagnose only when it is
+    # missing: the reading is the hot path, the diagnosis is the rare one.
+    value = _run_overall(run_id, methodology_version)
+    if value is not None:
+        return value, None
+    with session_scope() as session:
+        score = session.scalars(
+            select(Score).where(
+                Score.run_id == run_id, Score.methodology_version == methodology_version
+            )
+        ).first()
+        if score is None:
+            return None, f"not scored under {methodology_version}"
+        if score.comparability == "incomparable":
+            missing = ", ".join(score.missing_metrics or []) or "a required metric"
+            return None, f"incomparable: missing {missing}"
+        return None, "scored, but carries no Overall"
+
+
 def _recently_decided(session, a_fp: str, b_fp: str, rematch_days: int) -> bool:
-    """Was this matchup already adjudicated within the rematch cooldown?"""
+    """Was this matchup actually **adjudicated** within the rematch cooldown?
+
+    The cooldown exists so the ladder moves on from a settled question. An ABORTED match
+    settles nothing — the window closed, or the rounds came back with no Overall to compare
+    — so counting it here punished a pair for the ladder's own failure to measure it: fail
+    to produce a result, and you are locked out of the ring for `rematch_days`.
+
+    That bias was self-reinforcing in the worst possible direction. Matchmaking runs the
+    crown and the leaders first, so those are the first pairs to hit a bad patch, and
+    therefore the first to be set aside for a week — the ladder quietly stops racing exactly
+    the profiles it exists to separate, and the ones it does race are the ones nothing has
+    gone wrong with yet. A genuine draw still counts: "these two are equal" IS an
+    adjudication, and re-asking it immediately is what the cooldown is for.
+    """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=rematch_days)
     # Query by TIME, not "the last 20 sessions": a continuous ladder finishes several
     # sessions a day, so a fixed row cap covered barely three days of a seven-day
@@ -615,8 +673,11 @@ def _recently_decided(session, a_fp: str, b_fp: str, rematch_days: int) -> bool:
         if finished is not None and finished < cutoff:
             continue
         for m in row.matchups or []:
-            if {m.get("incumbent"), m.get("challenger")} == pair:
-                return True
+            if {m.get("incumbent"), m.get("challenger")} != pair:
+                continue
+            if outcome(m) == ABORTED:
+                continue  # nothing was decided — this pair is still an open question
+            return True
     return False
 
 
@@ -669,15 +730,57 @@ def crown_rule(cfg: dict | None) -> str:
     return rule if rule in CROWN_RULES else DEFAULT_CROWN_RULE
 
 
+# ── Aborted is not a draw ─────────────────────────────────────────────────────────────
+#
+# A **draw** is a verdict: the ring fought the match and says these two profiles are
+# equal. An **abort** is the ladder failing to measure anything — the window closed
+# mid-match, or three rounds in a row came back with no Overall to compare. Both used to
+# be filed as `verdict: "draw"`, so they were counted as draws, displayed as draws, and
+# fed the "decisive record" gate the crowning policy depends on. On a continuous ladder
+# that is most of the ledger: a 29-18-379 record read as a field of near-identical
+# profiles when the truth was that 379 matches never produced a result.
+#
+# The outcome is DERIVED rather than migrated, like every other verdict here: rows written
+# before this distinction existed carry a reason that already says which they were, so
+# `outcome()` re-reads history correctly with no migration and no lost rows.
+ABORTED = "aborted"
+_ABORTED_REASON_PREFIXES = ("aborted:", "window closed")
+
+
+def outcome(m: dict) -> str:
+    """``"incumbent"`` | ``"challenger"`` | ``"draw"`` | ``"aborted"`` for one matchup.
+
+    The single accessor every consumer reads, so the standings, the ratings, the champion's
+    decisiveness gate and the tape can never disagree about what a match was.
+    """
+    verdict = str((m or {}).get("verdict") or "")
+    if verdict == ABORTED:
+        return ABORTED
+    if verdict == "draw":
+        reason = str((m or {}).get("reason") or "").strip().lower()
+        if reason.startswith(_ABORTED_REASON_PREFIXES):
+            return ABORTED
+    return verdict
+
+
+def _dominant_reason(why: dict[str, int]) -> str | None:
+    """The most common reason rounds were unusable, for the match's recorded reason."""
+    if not why:
+        return None
+    reason, count = max(why.items(), key=lambda kv: kv[1])
+    total = sum(why.values())
+    return f"{reason} ({count} of {total} unusable legs)"
+
+
 def _decided(m: dict) -> tuple[str, str] | None:
     """``(winner, loser)`` for a decided matchup, or None for a draw/undecided one."""
-    verdict = m.get("verdict")
+    result = outcome(m)
     inc, cha = str(m.get("incumbent") or ""), str(m.get("challenger") or "")
     if not inc or not cha:
         return None
-    if verdict == "challenger":
+    if result == "challenger":
         return cha, inc
-    if verdict == "incumbent":
+    if result == "incumbent":
         return inc, cha
     return None
 
@@ -1547,6 +1650,9 @@ def _drive(duel_id: int) -> None:
                 inc = settings_by_fp[incumbent_fp]
                 cha = settings_by_fp[challenger_fp]
                 sprt = SprtState(p1, alpha)
+                # Why this match's rounds were thrown away, if any were.
+                unusable_rounds = 0
+                unusable_why: dict[str, int] = {}
                 # Magnitude-aware adjudicator. The SPRT walk still runs alongside it: the
                 # sign test is a poor winner-detector but a fine FUTILITY detector, and
                 # its "pair wins are ~50/50" exit is what stops a settled tie from eating
@@ -1637,7 +1743,12 @@ def _drive(duel_id: int) -> None:
                         )
                         run_ids.append(run_id)
                         iterations_run += completed
-                        scored[side_fp] = _run_overall(run_id, meth_version) if ok else None
+                        value, why_missing = _round_reading(run_id, meth_version, ok)
+                        scored[side_fp] = value
+                        if why_missing:
+                            # Count WHY, not just how many. Three of these in a row abort
+                            # the match, and until now the record said only "unusable".
+                            unusable_why[why_missing] = unusable_why.get(why_missing, 0) + 1
                     pair_overalls = [scored[incumbent_fp], scored[challenger_fp]]
                     with session_scope() as session:
                         d = session.get(Duel, duel_id)
@@ -1647,8 +1758,18 @@ def _drive(duel_id: int) -> None:
                     inc_val, cha_val = pair_overalls
                     if inc_val is None or cha_val is None:
                         bad_streak += 1
+                        unusable_rounds += 1
                         if bad_streak >= MAX_CONSECUTIVE_BAD_PAIRS:
-                            verdict, reason = "draw", "aborted: repeated unusable rounds"
+                            # NOT a draw. A draw is a verdict — "these two are equal, and
+                            # the ring says so" — and it is counted, rated and displayed as
+                            # one. This is the ladder failing to measure anything, which is
+                            # the opposite claim, and filing the two under one word is why
+                            # a record of 29-18-379 read as a field of near-identical
+                            # profiles rather than a data-collection problem.
+                            verdict = ABORTED
+                            reason = "aborted: " + (
+                                _dominant_reason(unusable_why) or "repeated unusable rounds"
+                            )
                         continue
                     bad_streak = 0
                     delta = cha_val - inc_val
@@ -1740,6 +1861,12 @@ def _drive(duel_id: int) -> None:
                     "alpha_used": round(paired.nominal_alpha, 5),
                     "verdict": verdict,
                     "reason": reason,
+                    # How much of this match was thrown away, and why. Recorded on every
+                    # match rather than only aborted ones: a match that was decided after
+                    # discarding four rounds is still telling you something is wrong with
+                    # the measurement, and that signal was previously invisible.
+                    "unusable_rounds": unusable_rounds,
+                    "unusable_why": dict(unusable_why) or None,
                 }
                 matchups.append(record)
                 # Persist the bout, which is also what the next loop's rating refit reads:
@@ -2013,7 +2140,9 @@ def latest_champion(session, max_age_days: int) -> dict | None:
             if fp not in (m.get("incumbent"), m.get("challenger")):
                 continue
             involved = True
-            if (m or {}).get("verdict") != "draw":
+            if outcome(m) in ("incumbent", "challenger"):
+                # A record of nothing but draws demonstrates nothing — and neither does one
+                # of nothing but aborts, which is the case this gate used to wave through.
                 decisive = True
             if label is None:
                 label = (
@@ -2078,13 +2207,22 @@ def _matchup_sides(m: dict) -> list[tuple[str, str, str, float | None, int, int]
     ``median_delta`` is stored challenger-minus-incumbent, so each side's margin is signed from
     its own point of view (positive = it was the better profile in that ring).
     """
-    verdict = m.get("verdict")
+    verdict = outcome(m)
     delta = m.get("median_delta")
     delta = float(delta) if isinstance(delta, (int, float)) else None
     inc_wins = int(m.get("wins_incumbent") or 0)
     cha_wins = int(m.get("wins_challenger") or 0)
-    inc_result = "draw" if verdict == "draw" else ("win" if verdict == "incumbent" else "loss")
-    cha_result = "draw" if verdict == "draw" else ("win" if verdict == "challenger" else "loss")
+
+    def _side(winner: str) -> str:
+        # "aborted" is its own result for both sides: neither profile drew, because no
+        # match was completed to draw.
+        if verdict == ABORTED:
+            return ABORTED
+        if verdict == "draw":
+            return "draw"
+        return "win" if verdict == winner else "loss"
+
+    inc_result, cha_result = _side("incumbent"), _side("challenger")
     return [
         (
             str(m.get("incumbent")),
@@ -2178,6 +2316,7 @@ def standings(limit_sessions: int = 50) -> dict:
     pair_wins: dict[tuple[str, str], int] = {}
     matchups_analyzed = 0
     decisive = 0
+    aborted = 0
 
     # Oldest → newest so "last seen" / label freshness resolve to the most recent sighting.
     for sess in reversed(sessions_data):
@@ -2185,7 +2324,10 @@ def standings(limit_sessions: int = 50) -> dict:
             if not m or not m.get("incumbent") or not m.get("challenger"):
                 continue
             matchups_analyzed += 1
-            if m.get("verdict") != "draw":
+            result = outcome(m)
+            if result == ABORTED:
+                aborted += 1
+            elif result != "draw":
                 decisive += 1
             sides = _matchup_sides(m)
             inc_fp, cha_fp = str(m.get("incumbent")), str(m.get("challenger"))
@@ -2206,6 +2348,9 @@ def standings(limit_sessions: int = 50) -> dict:
                         "wins": 0,
                         "losses": 0,
                         "draws": 0,
+                        # Matches that produced no result at all — kept apart from draws,
+                        # which are a verdict. See `outcome()`.
+                        "aborted": 0,
                         "pair_wins": 0,
                         "pair_losses": 0,
                         "margins": [],
@@ -2219,7 +2364,9 @@ def standings(limit_sessions: int = 50) -> dict:
                 )
                 rec["label"] = label
                 rec["matchups"] += 1
-                rec[{"win": "wins", "loss": "losses", "draw": "draws"}[result]] += 1
+                rec[
+                    {"win": "wins", "loss": "losses", "draw": "draws", ABORTED: "aborted"}[result]
+                ] += 1
                 rec["pair_wins"] += side_pair_wins
                 rec["pair_losses"] += pair_losses
                 rec["opponents"].add(opp_fp)
@@ -2234,9 +2381,11 @@ def standings(limit_sessions: int = 50) -> dict:
 
                 cell = h2h.setdefault(fp, {}).setdefault(
                     opp_fp,
-                    {"wins": 0, "losses": 0, "draws": 0, "pairs": 0, "margins": []},
+                    {"wins": 0, "losses": 0, "draws": 0, "aborted": 0, "pairs": 0, "margins": []},
                 )
-                cell[{"win": "wins", "loss": "losses", "draw": "draws"}[result]] += 1
+                cell[
+                    {"win": "wins", "loss": "losses", "draw": "draws", ABORTED: "aborted"}[result]
+                ] += 1
                 cell["pairs"] += side_pair_wins + pair_losses
                 if margin is not None:
                     cell["margins"].append(margin)
@@ -2259,6 +2408,10 @@ def standings(limit_sessions: int = 50) -> dict:
                 "wins": rec["wins"],
                 "losses": rec["losses"],
                 "draws": rec["draws"],
+                # Matches that never produced a result. Reported so a thin-looking record
+                # can be read as "barely raced" vs "raced a lot, measured nothing" — and
+                # excluded from `matchups`-derived rates, which describe adjudications.
+                "aborted": rec["aborted"],
                 "points": rec["wins"] * 3 + rec["draws"],
                 "win_rate": round(rec["wins"] / decided, 3) if decided else None,
                 "pair_wins": rec["pair_wins"],
@@ -2406,6 +2559,61 @@ def standings(limit_sessions: int = 50) -> dict:
     }
 
 
+def round_health(limit_sessions: int = 50) -> dict:
+    """**Is the ladder actually measuring anything?** — the ledger's data-collection health.
+
+    A duel spends two benchmark runs per round, and a round with no Overall on either side
+    is thrown away: three in a row abort the match. That failure was silent — recorded as a
+    draw, counted as a draw, indistinguishable from a verdict — so a ladder burning most of
+    its night on unusable rounds looked exactly like a field of evenly matched profiles.
+
+    This is the readout that tells the two apart: how many matches were aborted, how many
+    rounds were discarded, and **why** — the causes come straight off each match's recorded
+    `unusable_why`, so "the browser isn't emitting LoAF, so every run scores incomparable
+    and nothing can be compared" is a sentence the page can say instead of "unusable".
+
+    Matches recorded before the diagnosis existed contribute to the counts but not to the
+    reasons; `diagnosed_matches` says how many could be explained.
+    """
+    with session_scope() as session:
+        sessions_data = _ledger_sessions(session, limit_sessions)
+
+    matches = aborted = unusable = diagnosed = 0
+    decided = drawn = 0
+    why: dict[str, int] = {}
+    for m in chronological_matchups(sessions_data):
+        matches += 1
+        result = outcome(m)
+        if result == ABORTED:
+            aborted += 1
+        elif result == "draw":
+            drawn += 1
+        else:
+            decided += 1
+        unusable += int(m.get("unusable_rounds") or 0)
+        reasons = m.get("unusable_why") or {}
+        if reasons:
+            diagnosed += 1
+            for reason, count in reasons.items():
+                why[str(reason)] = why.get(str(reason), 0) + int(count or 0)
+
+    return {
+        "matches": matches,
+        "decided": decided,
+        "drawn": drawn,
+        "aborted": aborted,
+        "aborted_share": round(aborted / matches, 3) if matches else None,
+        "unusable_rounds": unusable,
+        "diagnosed_matches": diagnosed,
+        # Biggest cause first — the one worth fixing.
+        "reasons": [
+            {"reason": r, "legs": n}
+            for r, n in sorted(why.items(), key=lambda kv: kv[1], reverse=True)
+        ],
+        "sessions_analyzed": len(sessions_data),
+    }
+
+
 def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
     """**One profile's record in the ring** — its standings row, its opponents, its bouts.
 
@@ -2430,20 +2638,78 @@ def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
     rows = table.get("standings") or []
     record = next((r for r in rows if r.get("fingerprint") == fp), None)
 
-    # Per-opponent aggregate, read off the same head-to-head matrix the grid renders.
+    # Per-opponent aggregate, read off the same head-to-head matrix the grid renders —
+    # and joined to each opponent's POOLED Overall, which `standings` has already computed
+    # for every row. That join is what makes the card answer the question it exists to
+    # raise: this profile is #1 in the ring and #113 on Overall, so *who* did it beat, and
+    # does the pooled verdict rate them above or below it? A per-opponent W-L-D on its own
+    # cannot say — the reader would have to open 184 other profiles to find out.
+    by_fp = {r.get("fingerprint"): r for r in rows}
+    my_overall = (record or {}).get("overall")
     cells = (table.get("head_to_head") or {}).get(fp) or {}
-    opponents = [
-        {
-            "fingerprint": opp,
-            "wins": cell.get("wins", 0),
-            "losses": cell.get("losses", 0),
-            "draws": cell.get("draws", 0),
-            "pairs": cell.get("pairs", 0),
-            "median_margin": cell.get("median_margin"),
-        }
-        for opp, cell in cells.items()
-    ]
-    opponents.sort(key=lambda o: (o["wins"] + o["losses"] + o["draws"], o["pairs"]), reverse=True)
+    opponents = []
+    for opp, cell in cells.items():
+        opp_row = by_fp.get(opp) or {}
+        opp_overall = opp_row.get("overall")
+        wins, losses = cell.get("wins", 0), cell.get("losses", 0)
+        opponents.append(
+            {
+                "fingerprint": opp,
+                "name": opp_row.get("name"),
+                "label": opp_row.get("label"),
+                "wins": wins,
+                "losses": losses,
+                "draws": cell.get("draws", 0),
+                "pairs": cell.get("pairs", 0),
+                "median_margin": cell.get("median_margin"),
+                # The other verdict on this opponent.
+                "overall": opp_overall,
+                "duel_rank": opp_row.get("rank"),
+                # Signed from THIS profile's side, like every other number here: positive
+                # means this profile scores higher on the pooled Overall.
+                "overall_delta": (
+                    round(my_overall - opp_overall, 2)
+                    if my_overall is not None and opp_overall is not None
+                    else None
+                ),
+                # Did the ring actually decide anything here? Most pairings are draws — on
+                # a continuous ladder many are sessions that closed mid-match — and a list
+                # sorted without regard to that buries every real result among them.
+                "decisive": bool(wins or losses),
+            }
+        )
+    # Decided pairings first, then the ones where the pooled verdict most disagrees with
+    # the ring result: beating a profile Overall rates ABOVE you is the most informative
+    # row on the card, so it sorts to the top rather than being hunted for.
+    def _disagreement(o: dict) -> float:
+        delta = o.get("overall_delta")
+        if delta is None or not o["decisive"]:
+            return -1e9
+        # A win against a higher-Overall profile (delta < 0) scores high; so does a loss
+        # against a lower-Overall one. Agreement scores low.
+        direction = 1 if o["wins"] > o["losses"] else -1 if o["losses"] > o["wins"] else 0
+        return -direction * delta
+    opponents.sort(
+        key=lambda o: (o["decisive"], _disagreement(o), o["pairs"]), reverse=True
+    )
+
+    # The headline the card leads with: does this profile's ring record disagree with the
+    # pooled ranking, and in which direction? Counted only over DECIDED pairings where both
+    # sides have a pooled Overall — a draw and an unscored opponent say nothing either way.
+    beat_better = sum(
+        1 for o in opponents if o["wins"] > o["losses"] and (o["overall_delta"] or 0) < 0
+    )
+    lost_to_worse = sum(
+        1 for o in opponents if o["losses"] > o["wins"] and (o["overall_delta"] or 0) > 0
+    )
+    decided = [o for o in opponents if o["decisive"]]
+    versus_overall = {
+        "beat_higher_overall": beat_better,
+        "lost_to_lower_overall": lost_to_worse,
+        "decided_opponents": len(decided),
+        "undecided_opponents": len(opponents) - len(decided),
+        "overall": my_overall,
+    }
 
     # The bout tape, matchup by matchup. `standings` aggregates the ledger and can't answer
     # "which bouts, against whom, when" — that detail only exists on the matchup records.
@@ -2496,7 +2762,7 @@ def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
     for b in bouts:
         b["opponent_name"] = call_signs.get(b["opponent"]) or b["opponent_name"] or b["opponent_label"]
     for o in opponents:
-        o["name"] = call_signs.get(o["fingerprint"])
+        o["name"] = call_signs.get(o["fingerprint"]) or o.get("name") or o.get("label")
 
     champion = table.get("champion")
     return {
@@ -2510,6 +2776,8 @@ def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
         "champion": champion,
         "is_champion": bool(champion and champion.get("fingerprint") == fp),
         "opponents": opponents,
+        # How the ring record stands against the pooled ranking — the card's headline.
+        "versus_overall": versus_overall,
         "bouts": bouts,
         "sessions_analyzed": table.get("sessions_analyzed", 0),
         "matchups_analyzed": table.get("matchups_analyzed", 0),

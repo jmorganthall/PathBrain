@@ -1798,8 +1798,29 @@ export interface DuelMatchup {
   median_delta: number | null;
   llr_incumbent: number;
   llr_challenger: number;
-  verdict: "incumbent" | "challenger" | "draw";
+  /**
+   * "aborted" means no result — the ladder could not measure this match. It is NOT a draw
+   * (a verdict), and matches written before the distinction carry `verdict: "draw"` with an
+   * aborted reason; read it through `matchOutcome`, never off this field directly.
+   */
+  verdict: "incumbent" | "challenger" | "draw" | "aborted";
   reason: string;
+  /** How many rounds were discarded for having no Overall, and the causes. */
+  unusable_rounds?: number;
+  unusable_why?: Record<string, number> | null;
+}
+
+/** GET /duel/health — is the ladder measuring anything? */
+export interface DuelHealth {
+  matches: number;
+  decided: number;
+  drawn: number;
+  aborted: number;
+  aborted_share: number | null;
+  unusable_rounds: number;
+  diagnosed_matches: number;
+  reasons: { reason: string; legs: number }[];
+  sessions_analyzed: number;
 }
 
 // ── The head-to-head league table (GET /duel/standings) ──────────────────────────────
@@ -1946,6 +1967,13 @@ export interface DuelProfileOpponent {
   draws: number;
   pairs: number;
   median_margin: number | null;
+  label?: string | null;
+  /** The opponent's pooled Overall, and this profile's Overall minus theirs. */
+  overall?: number | null;
+  overall_delta?: number | null;
+  duel_rank?: number | null;
+  /** Did the ring decide anything here, or is the record all draws? */
+  decisive: boolean;
 }
 
 /**
@@ -1965,6 +1993,14 @@ export interface DuelProfileLedger {
   champion: DuelChampion | null;
   is_champion: boolean;
   opponents: DuelProfileOpponent[];
+  /** How this profile's ring record stands against the pooled Overall ranking. */
+  versus_overall?: {
+    beat_higher_overall: number;
+    lost_to_lower_overall: number;
+    decided_opponents: number;
+    undecided_opponents: number;
+    overall: number | null;
+  };
   bouts: DuelProfileBout[];
   sessions_analyzed: number;
   matchups_analyzed: number;
