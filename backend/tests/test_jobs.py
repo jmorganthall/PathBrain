@@ -162,12 +162,14 @@ def test_a_time_boxed_job_reports_its_deadline_not_an_estimate():
     from pathbrain.api.routes_jobs import _eta_ms
 
     started = datetime.now(timezone.utc) - timedelta(minutes=5)
-    ms, basis = _eta_ms(started_at=started, budget_s=20 * 60)
+    ms, basis, unit_ms = _eta_ms(started_at=started, budget_s=20 * 60)
     assert basis == "scheduled"
+    # A window burns clock, not units — there is no step for a bar to advance through.
+    assert unit_ms is None
     assert 14 * 60_000 < ms <= 15 * 60_000          # ~15 minutes of the window left
 
     # …and it wins over the other two even when both are available.
-    ms2, basis2 = _eta_ms(
+    ms2, basis2, _ = _eta_ms(
         started_at=started, budget_s=20 * 60,
         remaining_units=100, per_unit_ms=60_000, current=1, total=500,
     )
@@ -182,10 +184,12 @@ def test_a_measured_unit_cost_beats_extrapolating_this_jobs_own_rate():
     from pathbrain.api.routes_jobs import _eta_ms
 
     started = datetime.now(timezone.utc) - timedelta(seconds=30)
-    ms, basis = _eta_ms(
+    ms, basis, unit_ms = _eta_ms(
         started_at=started, remaining_units=4, per_unit_ms=15_000, current=1, total=5
     )
     assert basis == "measured" and ms == 60_000
+    # The same number the bar steps through: one iteration is 15s of the 60s left.
+    assert unit_ms == 15_000
 
 
 def test_a_job_with_no_deadline_and_no_unit_cost_extrapolates_its_own_rate():
@@ -196,8 +200,10 @@ def test_a_job_with_no_deadline_and_no_unit_cost_extrapolates_its_own_rate():
     from pathbrain.api.routes_jobs import _eta_ms
 
     started = datetime.now(timezone.utc) - timedelta(seconds=10)
-    ms, basis = _eta_ms(started_at=started, current=100, total=400)
+    ms, basis, unit_ms = _eta_ms(started_at=started, current=100, total=400)
     assert basis == "observed"
+    # 10s / 100 rows = 100ms a row, which is also how fast the bar may creep.
+    assert 95 < unit_ms < 105
     assert 29_000 < ms < 31_000        # 10s bought 100 of 400 → ~30s for the remaining 300
 
 
@@ -205,10 +211,10 @@ def test_an_unestimatable_job_says_nothing_rather_than_guessing():
     """A fabricated countdown is worse than none: it's the one number a user plans around."""
     from pathbrain.api.routes_jobs import _eta_ms
 
-    assert _eta_ms() == (None, None)
+    assert _eta_ms() == (None, None, None)
     # Progress that hasn't completed a single unit can't imply a rate.
     from datetime import datetime, timezone
-    assert _eta_ms(started_at=datetime.now(timezone.utc), current=0, total=40) == (None, None)
+    assert _eta_ms(started_at=datetime.now(timezone.utc), current=0, total=40) == (None, None, None)
 
 
 def test_every_job_entry_carries_the_eta_fields(client):
@@ -225,6 +231,14 @@ def test_every_job_entry_carries_the_eta_fields(client):
     for entry in body["jobs"]:
         assert "eta_ms" in entry and "eta_basis" in entry
         assert entry["eta_ms"] is None or entry["eta_ms"] >= 0
+        # The bar reads `unit_ms` on every row for the same reason the countdown reads
+        # `eta_ms` on every row: a missing key and a null one look identical until
+        # something tries to divide by it.
+        assert "unit_ms" in entry
+        assert entry["unit_ms"] is None or entry["unit_ms"] > 0
+        # A finished job has neither — there is nothing left to count down or step through.
+        if entry["status"] != "running":
+            assert entry["eta_ms"] is None and entry["unit_ms"] is None
 
 
 def test_a_running_profile_test_reports_real_progress_from_its_chunks():
@@ -268,16 +282,17 @@ def test_a_queued_job_reports_the_size_of_the_work_not_a_countdown():
 
     # A time-boxed job waiting its turn: the full window, undiminished by the wait — the
     # 20 minutes are counted from when it *starts*, which is exactly what queuing defers.
-    ms, basis = _eta_ms(started_at=None, budget_s=20 * 60, queued=True)
+    ms, basis, _ = _eta_ms(started_at=None, budget_s=20 * 60, queued=True)
     assert basis == "queued" and ms == 20 * 60_000
     # …and the wait itself doesn't eat into it, however long it's been.
-    assert _eta_ms(started_at=joined, budget_s=20 * 60, queued=True) == (20 * 60_000, "queued")
+    assert _eta_ms(started_at=joined, budget_s=20 * 60, queued=True) == (20 * 60_000, "queued", None)
 
     # A job whose work is priced by the unit: all of it is still ahead.
-    assert _eta_ms(remaining_units=10, per_unit_ms=6_000, queued=True) == (60_000, "queued")
+    # No unit cost while queued: nothing is running, so the bar must not creep either.
+    assert _eta_ms(remaining_units=10, per_unit_ms=6_000, queued=True) == (60_000, "queued", None)
 
     # Nothing known about the work → say nothing, same as any other unestimatable job.
-    assert _eta_ms(current=0, total=40, queued=True) == (None, None)
+    assert _eta_ms(current=0, total=40, queued=True) == (None, None, None)
 
 
 def test_the_countdown_starts_when_the_job_does():
@@ -287,7 +302,7 @@ def test_the_countdown_starts_when_the_job_does():
     from pathbrain.api.routes_jobs import _eta_ms
 
     started = datetime.now(timezone.utc) - timedelta(minutes=5)
-    ms, basis = _eta_ms(started_at=started, budget_s=20 * 60, queued=False)
+    ms, basis, _ = _eta_ms(started_at=started, budget_s=20 * 60, queued=False)
     assert basis == "scheduled"
     assert 14 * 60_000 < ms <= 15 * 60_000
 
@@ -327,6 +342,49 @@ def test_a_queued_run_is_not_timed_from_when_it_joined_the_queue():
             assert entry["eta_ms"] == round(10 * est)
         # The whole point: an hour in the queue took nothing off the estimate.
         assert waited_an_hour["eta_ms"] == just_queued["eta_ms"]
+    finally:
+        with session_scope() as s:
+            for rid in ids:
+                row = s.get(Run, rid)
+                if row is not None:
+                    s.delete(row)
+
+
+def test_a_running_run_prices_one_iteration_so_the_bar_can_cross_it():
+    """The bar's whole complaint in one entry: `current`/`total` moves once an iteration, so
+    between ticks it stands still and then jumps — on a benchmark run, tens of seconds of a
+    bar that reads as hung. `unit_ms` is what the client crosses that gap with, so a running
+    run has to carry the price of the iteration it is *in*, not just the count of the ones
+    behind it. A queued run carries none: nothing is running, so nothing may creep."""
+    from datetime import datetime, timezone
+
+    from pathbrain.api import routes_jobs
+
+    with session_scope() as s:
+        priced = Run(status=RunStatus.COMPLETE, iterations=1, iterations_completed=1,
+                     per_iteration_ms=6_000)
+        live = Run(status=RunStatus.RUNNING, iterations=10, iterations_completed=3,
+                   started_at=datetime.now(timezone.utc))
+        waiting = Run(status=RunStatus.PENDING, iterations=10, iterations_completed=0)
+        s.add_all([priced, live, waiting])
+        s.flush()
+        ids = (live.id, waiting.id, priced.id)
+
+    try:
+        with session_scope() as s:
+            entries = {e["id"]: e for e in routes_jobs._active_run_jobs(s)}
+            est = routes_jobs._per_iteration_estimate(s)
+        running, queued = entries[f"run-{ids[0]}"], entries[f"run-{ids[1]}"]
+
+        assert running["eta_basis"] == "measured"
+        # One iteration, priced by what an iteration has actually been costing — the same
+        # number the countdown multiplies out, never a second estimate of its own.
+        assert running["unit_ms"] == round(est)
+        assert running["eta_ms"] == round(7 * est)
+        # Three of ten done: the bar starts the unit at 30% and may cross to 40%, no further.
+        assert (running["current"], running["total"]) == (3, 10)
+
+        assert queued["queued"] is True and queued["unit_ms"] is None
     finally:
         with session_scope() as s:
             for rid in ids:

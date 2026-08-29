@@ -14,6 +14,7 @@ The adapters don't change those subsystems; they just read state they already ex
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
@@ -98,6 +99,25 @@ def _as_dt(value) -> datetime | None:
     return dt
 
 
+class Eta(NamedTuple):
+    """What is known about how long a job has left, and how long one step of it takes.
+
+    ``unit_ms`` rides along with the countdown rather than being computed separately
+    because it is *already* the number the countdown is built from — the measured
+    per-iteration cost, or the job's own observed rate. Deriving it twice is how the bar
+    and the countdown would come to disagree about the same job, each insisting on its own
+    idea of how fast the work is going.
+    """
+
+    ms: float | None
+    basis: str | None
+    #: Expected duration of ONE unit of this job's work (an iteration, a variant, a
+    #: profile), or None when the job has no units to speak of (a time-boxed window) or
+    #: none has finished yet. This is what lets the progress bar advance *within* a unit
+    #: instead of standing still until the counter ticks.
+    unit_ms: float | None = None
+
+
 def _eta_ms(
     *,
     started_at=None,
@@ -108,7 +128,11 @@ def _eta_ms(
     total: float | None = None,
     queued: bool = False,
 ) -> tuple[float | None, str | None]:
-    """``(milliseconds remaining, how we know)`` for any job — one rule for every kind.
+    """``(milliseconds remaining, how we know, what one unit costs)`` for any job.
+
+    One rule for every kind, and one rule for both readings: the countdown and the progress
+    bar are two views of the same estimate, so they are decided here together rather than
+    each working out privately how fast the job is going.
 
     "How long until this finishes?" is the question a progress bar is standing in for and
     usually can't answer: 3/40 tells you nothing about whether to wait or walk away. Three
@@ -142,25 +166,31 @@ def _eta_ms(
 
     if queued:
         # Not started: report the size of the work, never a countdown (see the docstring).
+        # No unit cost is reported while queued: nothing is running, so there is no unit
+        # in progress for the bar to advance through. It creeps once the job starts.
         if budget_s:
-            return max(0.0, float(budget_s) * 1000.0), "queued"
+            return Eta(max(0.0, float(budget_s) * 1000.0), "queued")
         if remaining_units is not None and per_unit_ms:
-            return max(0.0, float(remaining_units) * float(per_unit_ms)), "queued"
-        return None, None
+            return Eta(max(0.0, float(remaining_units) * float(per_unit_ms)), "queued")
+        return Eta(None, None)
 
     if budget_s and start is not None:
         left = (start + timedelta(seconds=float(budget_s)) - now).total_seconds() * 1000.0
-        return max(0.0, left), "scheduled"
+        # A time-boxed job burns a window, not units — there is nothing to step through.
+        return Eta(max(0.0, left), "scheduled")
 
     if remaining_units is not None and per_unit_ms:
-        return max(0.0, float(remaining_units) * float(per_unit_ms)), "measured"
+        return Eta(
+            max(0.0, float(remaining_units) * float(per_unit_ms)), "measured", float(per_unit_ms)
+        )
 
     if start is not None and current and total and total > current:
         elapsed_ms = (now - start).total_seconds() * 1000.0
         if elapsed_ms > 0:
-            return elapsed_ms / float(current) * (float(total) - float(current)), "observed"
+            unit_ms = elapsed_ms / float(current)
+            return Eta(unit_ms * (float(total) - float(current)), "observed", unit_ms)
 
-    return None, None
+    return Eta(None, None)
 
 
 #: A holder quiet for longer than this is *reported* as stalled. Well past any normal gap
@@ -203,9 +233,16 @@ def _with_eta(
     number. A duration is skew-free: the client anchors it to its own clock the moment it
     arrives and ticks from there, and the next poll re-anchors it.
     """
-    ms, basis = eta
+    ms, basis, unit_ms = eta
     entry["eta_ms"] = None if ms is None else round(ms)
     entry["eta_basis"] = basis
+    # How long one unit of this job takes. The client needs it because `current`/`total`
+    # alone can only move the bar at unit boundaries: on a job whose unit is a benchmark
+    # iteration that is a bar sitting dead still for half a minute and then jumping, which
+    # reads as a hang. With the unit cost it can advance *through* the unit in progress and
+    # hold at its edge until the counter confirms it — progress that is always moving and
+    # still never claims a step the job hasn't taken.
+    entry["unit_ms"] = None if unit_ms is None else round(unit_ms)
     # Whether the job has started is stated by the caller, never inferred from the basis: a
     # queued job whose work can't be priced at all has no basis to read it off, and that is
     # exactly the job whose (absent) countdown would otherwise look like a running one's.
@@ -584,7 +621,7 @@ def _active_experiment_job(session: Session) -> list[dict]:
         close_ms = _experiment_window_close_ms(session)
     except Exception:  # noqa: BLE001 — a config read must not break the jobs feed
         close_ms = None
-    eta = (close_ms, "scheduled") if close_ms is not None else (None, None)
+    eta = Eta(close_ms, "scheduled") if close_ms is not None else Eta(None, None)
     return [
         _with_eta({
             "id": f"experiment-{exp.id}",
@@ -729,7 +766,7 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
         eta = (
             _eta_ms(started_at=j.get("started_at"), current=j.get("current"), total=j.get("total"))
             if j.get("status") == "running"
-            else (None, None)
+            else Eta(None, None)
         )
         inproc.append(_with_eta(entry, eta))
     feed = adapters + inproc
@@ -742,13 +779,14 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     for entry in feed:
         entry.setdefault("eta_ms", None)
         entry.setdefault("eta_basis", None)
+        entry.setdefault("unit_ms", None)
         entry.setdefault("queued", False)
         # The technical settings summary behind a call sign, for the row's tooltip. Present
         # (null where there is none) on every entry for the same reason `eta_ms` is.
         entry.setdefault("detail", None)
         entry.setdefault("stalled_ms", None)
         if entry["status"] != "running":
-            entry["eta_ms"] = entry["eta_basis"] = None
+            entry["eta_ms"] = entry["eta_basis"] = entry["unit_ms"] = None
             entry["queued"] = False
 
     # The badge counts distinct top-level running jobs — a nested chunk shouldn't double-count

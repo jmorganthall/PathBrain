@@ -296,6 +296,26 @@ LLM-based. See `README.md` for the product overview.
     profile test also gained
     real progress — its completed iterations were only ever in the stage sentence, so its bar was
     indeterminate; they're now summed from its chunks (`job_group`), like the manual-run series.
+    **The bar moves between counter ticks, not only on them** (`Eta.unit_ms` →
+    `JobStatus.useSmoothProgress`). `current`/`total` counts *finished* units, so a bar drawn
+    straight from it stands dead still for the whole of a unit and then lurches — and on a
+    benchmark run a unit is a full iteration, so that is tens of seconds of a bar indistinguishable
+    from a hang. The fix is the unit's **expected cost**, which `_eta_ms` already computes on the
+    way to the countdown (the measured per-iteration price, or the job's own observed rate) and now
+    returns as a third field rather than leaving the client to form a second opinion about how fast
+    the job is going. The client crosses the unit in progress at that rate and **never crosses its
+    boundary**: interpolation is a claim about a step the job hasn't finished, so a late iteration
+    parks the bar at the edge — all that is actually known is that the step is overdue — and it
+    moves again the instant the counter ticks; a unit that finishes early simply jumps to its
+    boundary. So the bar is always either moving or waiting on a genuinely late step, and can never
+    be ahead of the work. Two deliberate limits: a **queued** job reports no unit cost at all
+    (nothing is running, so nothing may creep — the same reason its countdown stands still), and an
+    interpolated bar caps at 99% (100% is the one reading that means *finished*, and this is being
+    drawn on a job that is still running). The boundary is anchored **client-side**, on the poll
+    where the counter is seen to move, because the server keeps no per-unit timestamps — deriving
+    one would mean assuming every unit so far took exactly the estimate, which is precisely the
+    assumption that fails on the slow job this exists to keep alive; the cost is an anchor lagging
+    by up to one poll, i.e. a second or two parked early, never a bar ahead of the work.
   - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
     iterations still needed to reach `correlation.min_iterations`, then **restore the
     baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
