@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, defer, selectinload
 
 from .. import challenger as challenger_mod
+from .. import crowning
 from .. import profile_test as profile_test_mod
 from .. import refresh as refresh_mod
 from ..config_store import get_config, save_config
@@ -751,6 +752,30 @@ def settings_profiles(
     result["heirs"] = _compute_heirs(result, session, live)
     result["metric_thresholds"] = _metric_thresholds(definition)
     result["saturation"] = _saturation_report(result["profiles"], definition)
+
+    # ── The primary ordering: the ring where it has measured, pooled where it hasn't ────
+    # Applied HERE, at the one seam every reader of this endpoint shares, rather than in
+    # each surface — five surfaces blending two scales privately is how the verdicts drift
+    # apart. `best_fingerprint` stays the POOLED crown on purpose: the duel's own
+    # matchmaking reads it as the independent opinion, and re-pointing it at the ring would
+    # make the ladder choose who gets checked against the ladder.
+    ranked = crowning.rank_field(session, result)
+    by_fp = ranked["by_fingerprint"]
+    for profile in result["profiles"]:
+        entry = by_fp.get(profile["fingerprint"]) or {}
+        profile["verdict_source"] = entry.get("source")
+        profile["primary_rank"] = entry.get("position")
+        profile["ring_rating"] = entry.get("ring_rating")
+        profile["ring_rounds"] = entry.get("ring_rounds")
+    order = {fp: i for i, fp in enumerate(ranked["order"])}
+    result["profiles"].sort(key=lambda p: order.get(p["fingerprint"], len(order)))
+    result["ranking"] = ranked["ranking"]
+    # The field's best profile under the primary ordering, kept BESIDE the pooled crown
+    # rather than overwriting it, so a caller always knows which verdict it is reading.
+    result["primary_best_fingerprint"] = ranked["best_fingerprint"]
+    result["primary_best_source"] = ranked["best_source"]
+    result["ring_rated_count"] = ranked["ring_rated"]
+    result["seeded_count"] = ranked["seeded"]
     return result
 
 
@@ -3182,7 +3207,7 @@ def crowns(session: Session = Depends(get_session)) -> dict:
     from .. import crown_follower, crowning
     from .. import duel as duel_mod
 
-    rematch_days = int((get_config(session).get("duel", {}) or {}).get("rematch_days", 7) or 7)
+    freshness = duel_mod.champion_freshness_days(get_config(session).get("duel", {}) or {})
     pooled = crown_follower.current_crown(session)
     resolution = crowning.resolve(session, pooled_best_fp=(pooled or {}).get("fingerprint"))
 
@@ -3191,7 +3216,7 @@ def crowns(session: Session = Depends(get_session)) -> dict:
     # still shown — labelled expired — rather than silently vanishing from the dashboard.
     table = duel_mod.standings()
     champion = table.get("champion")
-    fresh = duel_mod.latest_champion(session, max_age_days=rematch_days)
+    fresh = duel_mod.latest_champion(session, max_age_days=freshness)
     duel_out = None
     if champion:
         record = next(
@@ -3201,7 +3226,7 @@ def crowns(session: Session = Depends(get_session)) -> dict:
         duel_out = {
             **champion,
             "fresh": fresh is not None,
-            "freshness_days": rematch_days,
+            "freshness_days": freshness,
             "wins": (record or {}).get("wins", 0),
             "losses": (record or {}).get("losses", 0),
             "draws": (record or {}).get("draws", 0),
@@ -3290,9 +3315,9 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
     from .. import duel as duel_mod
 
     cfg = get_config(session).get("crown_follow", {}) or {}
-    rematch_days = int((get_config(session).get("duel", {}) or {}).get("rematch_days", 7) or 7)
+    freshness = duel_mod.champion_freshness_days(get_config(session).get("duel", {}) or {})
 
-    champion = duel_mod.latest_champion(session, max_age_days=rematch_days)
+    champion = duel_mod.latest_champion(session, max_age_days=freshness)
     follow_status = crown_follower.status()
     churn = crown_follower.stats(session)
     events = crown_follower.recent_events(session, limit=20)

@@ -198,6 +198,13 @@ export interface SettingsProfile {
   // Median of every numeric metric we collect (logical key → value), for the
   // dynamic chart axes + the table column selector.
   metrics: Record<string, number>;
+  /** Which verdict placed this profile: the ring measured it, or pooled seeded it. */
+  verdict_source?: "ring" | "pooled" | "unmeasured";
+  /** Position under the primary ordering (1 = best). */
+  primary_rank?: number | null;
+  /** The ring's fitted strength and how many rounds stand behind it (null if unraced). */
+  ring_rating?: number | null;
+  ring_rounds?: number | null;
 }
 
 // A selectable non-metric numeric field (axis scores + run stats) the /api/metrics
@@ -372,9 +379,19 @@ export interface SettingsProfilesResponse {
   // The "SQM off" baseline Overall that "% vs SQM off" is measured against (best Overall
   // among measured SQM-off profiles). Null until a baseline test has run.
   sqm_off_overall: number | null;
-  // The crowned profile: confident and closest to the top-right (fastest+smoothest)
-  // corner. Null until a confident profile with both axes exists.
+  // The POOLED crown: confident and highest all-time Overall. Kept as its own field and
+  // deliberately NOT re-pointed at the ring — the duel's matchmaking reads it as the
+  // independent opinion, and pointing it at the ring would make the ladder choose who gets
+  // checked against the ladder.
   best_fingerprint: string | null;
+  // The field's primary ordering — the ring where it has real head-to-head evidence,
+  // pooled where it doesn't. `profiles` arrives sorted by it.
+  ranking?: "ring" | "pooled";
+  primary_best_fingerprint?: string | null;
+  primary_best_source?: "ring" | "pooled" | "unmeasured";
+  // How many profiles each verdict is placing.
+  ring_rated_count?: number;
+  seeded_count?: number;
   // The current methodology's crown metric set — the metrics the Overall corners over
   // (fcp/lcp/stall_time under v8). The table pins these as its standings columns so the
   // displayed columns are the ones that actually compute Overall.
@@ -1695,7 +1712,10 @@ export interface DuelCard {
   total?: number;
   contenders: "ring" | "leaders" | "heirs";
   top_n: number;
-  rematch_days?: number;
+  rematch_hours?: number;
+  champion_freshness_days?: number;
+  rating_prior_pairs?: number;
+  rank_sigma?: number;
   // The belt-holder's own ring rating — the bar every ceiling is measured against.
   incumbent_rating?: number | null;
   contender_modes?: string[];
@@ -1749,7 +1769,10 @@ export interface DuelConfig {
   min_pairs: number;
   max_pairs: number;
   min_margin: number;
-  rematch_days: number;
+  rematch_hours: number;
+  champion_freshness_days: number;
+  rank_sigma?: number;
+  rating_prior_pairs?: number;
   // Seconds to let the link settle after writing a profile before measuring it. Applied
   // to both sides of every pair, so it never favours a side.
   settle_seconds: number;

@@ -58,7 +58,15 @@ class DuelScheduleUpdate(BaseModel):
     # duration the engine runs on is derived from the pair (wrapping past midnight).
     end_hour: int | None = None
     end_minute: int | None = None
-    rematch_days: int | None = None
+    # Hours a decided matchup rests before it can be fought again.
+    rematch_hours: float | None = None
+    # How stale the duel champion may be before the crowning policy falls back to pooled.
+    # A separate question from the cooldown, which it used to share a field with.
+    champion_freshness_days: float | None = None
+    # Standard errors subtracted from the rating when ordering the standings (0 = rank on
+    # the rating itself), and the virtual pairs added to every record before fitting.
+    rank_sigma: float | None = None
+    rating_prior_pairs: float | None = None
     # Which rule names the champion: "lineal" (you take the belt by beating its holder,
     # provided your whole shared record then favours you on both matches and rounds) or
     # "rating_floor" (the ring's #1 by proven rating). The standings rank on the floor

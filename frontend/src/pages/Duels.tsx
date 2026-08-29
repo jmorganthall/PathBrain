@@ -241,7 +241,7 @@ const pooledRanking = (rows: DuelStanding[]): Map<string, number> => {
 // on the Elo scale. The error bar is not decoration — a rating built on eight rounds and
 // one built on eight hundred are different claims, and a table that prints them
 // identically invites the reader to act on the wrong one. It is the headline number but
-// NOT the sort: the table orders on the conservative floor beside it (see `Proven`).
+// The table orders on this — the ring's own finding about who beat whom.
 function RatingCell({ row }: { row: DuelStanding }) {
   if (row.rating == null) return <>—</>;
   const se = row.rating_se;
@@ -265,8 +265,8 @@ function RatingCell({ row }: { row: DuelStanding }) {
           (row.expected_pair_wins != null
             ? ` · won ${row.pair_wins} where the fit expected ${row.expected_pair_wins}`
             : "") +
-          (row.rating_floor != null
-            ? ` · ranked on ${Math.round(row.rating_floor)} (rating − 1 error bar)`
+          (row.rating != null
+            ? ` · ranked on ${Math.round(row.rating)} (the fitted rating)`
             : "")
         }
       >
@@ -1366,7 +1366,7 @@ export default function Duels() {
                 helperText={
                   (cfg?.crown_rule ?? "lineal") === "rating_floor"
                     ? "The ring's #1 by proven rating. Honest about evidence, but the title rarely changes hands: the holder defends every match, so a challenger struggles to build the second opponent its error bar needs."
-                    : "Beat the holder and lead its whole shared record on both matches and rounds. The standings still rank on Proven — this only decides who wears the belt."
+                    : "Beat the holder and lead its whole shared record on both matches and rounds. This decides who wears the belt; the standings order separately, on the fitted rating."
                 }
               >
                 <MenuItem value="lineal">Lineal title (beat the holder)</MenuItem>
@@ -1403,11 +1403,25 @@ export default function Duels() {
                 helper="Overall points; 0 = a consistent win counts however small (matching the crown). Raise it to record hair-thin wins as draws instead."
               />
               <NumField
-                label="Rematch after"
-                value={cfg?.rematch_days ?? 7}
+                label="Rematch after (hours)"
+                value={cfg?.rematch_hours ?? 6}
                 disabled={!cfg || busy}
-                onCommit={(v) => void patch({ rematch_days: Math.round(v) })}
-                helper="Days before the same two profiles can fight again. It orders the queue — a cooled contender is raced last among its equals, never skipped in favour of an untested profile."
+                onCommit={(v) => void patch({ rematch_hours: v })}
+                helper="Hours before the same two profiles can fight again. Short on purpose: the cooldown exists so a settled question doesn't eat the window, not to retire a pairing — and the leaders are fought first, so a long one empties the ring of exactly the profiles you care about. A match that produced no result never counts. It orders the queue rather than skipping: a cooled contender is raced last among its equals."
+              />
+              <NumField
+                label="Champion goes stale after (days)"
+                value={cfg?.champion_freshness_days ?? 7}
+                disabled={!cfg || busy}
+                onCommit={(v) => void patch({ champion_freshness_days: v })}
+                helper="How old the duel champion may get before the crowning policy stops acting on it and falls back to the pooled crown. A separate question from the rematch cooldown, which it used to share a setting with."
+              />
+              <NumField
+                label="Rating prior (virtual rounds)"
+                value={cfg?.rating_prior_pairs ?? 4}
+                disabled={!cfg || busy}
+                onCommit={(v) => void patch({ rating_prior_pairs: v })}
+                helper="Virtual rounds against an average opponent, added to every record before fitting. This is the lever for thin records topping the table: raising it pulls a one-match record toward the field instead of letting an error bar overturn a result. Measured against a 3-0 snap vs a deep winning record — 4: snap rates 1696 vs 1581; 16: 1569 vs 1584."
               />
               <NumField
                 label="Settle before measuring"
@@ -1692,15 +1706,18 @@ export default function Duels() {
             beat is what moves you — beating the profile at the top is worth far more than
             beating the one at the bottom, and losing to the best costs little. 1500 is the
             middle of the field and ± is the error bar.{" "}
-            <b>Duel rank</b> is the ring standing and the default order here, and it sorts on{" "}
-            <b>Proven</b> — the rating minus one error bar, i.e. what the record has{" "}
-            <i>demonstrated</i> rather than what it suggests. That distinction is the point: a
-            4–1 record against one opponent can fit a higher rating than a 29–15 record against
-            seven, but on an error bar twice the gap between them, so ordering them by the
-            fitted number presents noise as a standing. A thin record keeps its high rating and
-            an amber tag (<i>1 opponent</i>, <i>8 rounds</i>) — it just has to be measured before
-            it leads. Two well-measured profiles a hair apart both have narrow bars, so the
-            better one still ranks first.
+            <b>Duel rank</b> is the ring standing and the default order here, and it sorts on
+            the <b>Rating</b>: whoever wins the duel wins the duel. It used to sort on{" "}
+            <b>Proven</b> instead, which could rank a profile <i>below one it had beaten</i> —
+            a challenger on 1687 ±146 (proven 1541) sat under the leader it beat on 1563 ±17
+            (proven 1546), five points of floor across error bars eight times wider than the
+            gap. A ladder built to adjudicate head to head should not rank the loser above the
+            winner.
+            The cost is that a thin record can lead: it keeps its amber tag (<i>1 opponent</i>,{" "}
+            <i>8 rounds</i>) so you can see it, and the lever for it is the rating prior in the
+            advanced settings, which pulls a thin record toward the field rather than letting an
+            error bar overturn a result. <b>Proven</b> stays as its own sortable column for the
+            other question — what a record has <i>demonstrated</i> rather than what it won.
             Points and win rate are the plain ledger, kept beside it. <b>Overall</b> and{" "}
             <b>Overall rank</b> are the pooled all-history score for the same profile, so the
             two verdicts sit side by side — the ▲▼ next to a rank is how far they disagree.
@@ -1723,10 +1740,10 @@ export default function Duels() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <StandingHeader id="rank" label="Duel rank" orderBy={orderBy} order={order} onSort={handleSort} tip="Standing in the ring — the page's default order, by the Proven column (rating minus one error bar). Nothing pooled goes into it." />
+                    <StandingHeader id="rank" label="Duel rank" orderBy={orderBy} order={order} onSort={handleSort} tip="Standing in the ring — the page's default order, by the fitted Rating: whoever wins the duel wins the duel. It used to order on Proven (rating minus an error bar), which could rank a profile below one it had beaten. Nothing pooled goes into it." />
                     <StandingHeader id="name" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} />
                     <StandingHeader id="rating" label="Rating" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Strength fitted to every round this profile has ever fought (Bradley–Terry, on the Elo scale — 1500 is the middle of the field, +400 means winning 10 rounds for every 1 lost against an average opponent). Beating a strong profile moves it a lot and beating a weak one barely at all, so who you beat is what changes your standing. ± is the error bar; a thin record is marked provisional. This is the headline number, not the sort — see Proven." />
-                    <StandingHeader id="rating_floor" label="Proven" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Rating minus one error bar — what the record has demonstrated rather than what it suggests, and what Duel rank orders on. A thin record fits a wide bar, so it has to be measured before it can lead; two well-measured profiles a hair apart both have narrow bars, so the better one still ranks first." />
+                    <StandingHeader id="rating_floor" label="Proven" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Rating minus one error bar — what the record has DEMONSTRATED rather than what it suggests. A different question from the ranking, kept as its own sortable column: a thin record fits a wide bar and scores low here even when it won its match. Sort by this to ask 'who has proved it?' rather than 'who won?'" />
                     <StandingHeader id="wins" label="W–L–D" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match record across every duel session: wins–losses–draws. Sorts by wins." />
                     <StandingHeader id="points" label="Pts" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match points: 3 for a win, 1 for a draw." />
                     <StandingHeader id="win_rate" label="Win rate" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Share of DECIDED matchups won (draws excluded)." />
@@ -2046,7 +2063,7 @@ export default function Duels() {
                                 — the pooled label is the fallback for the older modes. */}
                             {c.ring_why || CARD_REASON[c.reason] || c.reason}
                             {c.on_cooldown
-                              ? ` · re-raced (settled within ${card.rematch_days ?? 7} days, so it goes last among its equals)`
+                              ? ` · re-raced (settled within the last ${card.rematch_hours ?? 6}h, so it goes last among its equals)`
                               : ""}
                           </Typography>
                         </TableCell>

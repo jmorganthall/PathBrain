@@ -19,7 +19,7 @@ a settled question (Wald's SPRT on the pair-win rate, H0 p=0.5 vs H1 p=`duel.p1`
 
 Ladder: the incumbent starts as the pooled crown; challengers queue in the heirs
 priority order (reachability-filtered), skipping matchups decided within
-`duel.rematch_days`. The winner stays on as the new incumbent; the next challenger
+`duel.rematch_hours`. The winner stays on as the new incumbent; the next challenger
 steps up until the window closes.
 
 Two-ledger discipline: duel *runs* flow into the pooled record like any runs; duel
@@ -643,13 +643,13 @@ def _round_reading(
         return None, "scored, but carries no Overall"
 
 
-def _recently_decided(session, a_fp: str, b_fp: str, rematch_days: int) -> bool:
+def _recently_decided(session, a_fp: str, b_fp: str, cooldown_hours: float) -> bool:
     """Was this matchup actually **adjudicated** within the rematch cooldown?
 
     The cooldown exists so the ladder moves on from a settled question. An ABORTED match
     settles nothing — the window closed, or the rounds came back with no Overall to compare
     — so counting it here punished a pair for the ladder's own failure to measure it: fail
-    to produce a result, and you are locked out of the ring for `rematch_days`.
+    to produce a result, and you are locked out of the ring for the whole cooldown.
 
     That bias was self-reinforcing in the worst possible direction. Matchmaking runs the
     crown and the leaders first, so those are the first pairs to hit a bad patch, and
@@ -658,7 +658,7 @@ def _recently_decided(session, a_fp: str, b_fp: str, rematch_days: int) -> bool:
     gone wrong with yet. A genuine draw still counts: "these two are equal" IS an
     adjudication, and re-asking it immediately is what the cooldown is for.
     """
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=rematch_days)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=cooldown_hours)
     # Query by TIME, not "the last 20 sessions": a continuous ladder finishes several
     # sessions a day, so a fixed row cap covered barely three days of a seven-day
     # cooldown and matchups quietly became re-fightable early.
@@ -721,6 +721,69 @@ LINEAL_RULE = "lineal"
 FLOOR_RULE = "rating_floor"
 CROWN_RULES = (LINEAL_RULE, FLOOR_RULE)
 DEFAULT_CROWN_RULE = LINEAL_RULE
+
+
+def rank_sigma(cfg: dict | None) -> float:
+    """Standard errors subtracted from the rating when ORDERING the standings.
+
+    0 (the default) ranks on the ring's own finding: who beat whom. It was 1.0 — a
+    conservative floor — and on a real ledger that overturned head-to-head results, putting
+    a challenger that won its match (1687 ±146 → floor 1541) below the leader it beat
+    (1563 ±17 → floor 1546). Five points of floor decided it, on error bars eight times
+    wider than the gap. The floor remains as the sortable "Proven" column, because "what
+    has this record demonstrated?" is still a real question — it is just not the one the
+    default order should answer.
+    """
+    try:
+        return max(0.0, float((cfg or {}).get("rank_sigma", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def rating_prior(cfg: dict | None) -> float:
+    """Virtual pairs added to every record before fitting — the lever for thin records.
+
+    This, not the rank floor, is the principled guard against a single 3-0 topping the
+    table: it shrinks a thin record toward the field mean rather than letting an error bar
+    overturn a result that actually happened.
+    """
+    from .rating import DEFAULT_PRIOR_PAIRS
+
+    try:
+        value = float((cfg or {}).get("rating_prior_pairs", DEFAULT_PRIOR_PAIRS))
+    except (TypeError, ValueError):
+        return DEFAULT_PRIOR_PAIRS
+    return value if value > 0 else DEFAULT_PRIOR_PAIRS
+
+
+def rematch_hours(cfg: dict | None) -> float:
+    """How long a DECIDED matchup rests before it can be fought again.
+
+    Hours, and short by default. The cooldown's job is to stop one settled question eating
+    a window, not to retire a pairing: on a continuous ladder the leaders are fought first
+    and therefore cooled first, so a long cooldown empties the ring of exactly the profiles
+    it exists to separate. Legacy configs carry `rematch_days`, which governed this AND the
+    champion freshness window; it is read here only when no `rematch_hours` is set.
+    """
+    cfg = cfg or {}
+    hours = cfg.get("rematch_hours")
+    if hours is None and cfg.get("rematch_days") is not None:
+        return max(0.0, float(cfg["rematch_days"]) * 24)
+    return max(0.0, float(hours if hours is not None else 6))
+
+
+def champion_freshness_days(cfg: dict | None) -> float:
+    """How stale the duel champion may be before the crowning policy falls back to pooled.
+
+    Separate from the cooldown, which it used to share a field with. They answer different
+    questions — "has this pairing been settled recently?" versus "is this verdict still
+    current enough to write to a firewall?" — and they want very different lengths.
+    """
+    cfg = cfg or {}
+    days = cfg.get("champion_freshness_days")
+    if days is None:
+        days = cfg.get("rematch_days", 7)
+    return max(0.0, float(days if days is not None else 7))
 
 
 def crown_rule(cfg: dict | None) -> str:
@@ -1250,7 +1313,7 @@ def next_challenger(
     *,
     heirs: dict,
     baseline: list[dict] | None = None,
-    rematch_days: int = 7,
+    cooldown_hours: float = 6.0,
     mode: str = "ring",
     top_n: int = 8,
     fought: set[frozenset[str]] | None = None,
@@ -1288,10 +1351,10 @@ def next_challenger(
     best = min(c["tier"] for c in order)
     tier = [c for c in order if c["tier"] == best]
     for c in tier:
-        if not _recently_decided(session, defender_fp, c["fingerprint"], rematch_days):
+        if not _recently_decided(session, defender_fp, c["fingerprint"], cooldown_hours):
             return c["fingerprint"], c["why"]
     c = tier[0]
-    return c["fingerprint"], f"{c['why']} — re-raced (last decided within {rematch_days}d)"
+    return c["fingerprint"], f"{c['why']} — re-raced (decided within the last {cooldown_hours:g}h)"
 
 
 
@@ -1524,7 +1587,7 @@ def _drive(duel_id: int) -> None:
             min_pairs = int(cfg.get("min_pairs", 10) or 10)
             max_pairs = int(cfg.get("max_pairs", 40) or 40)
             min_margin = float(cfg.get("min_margin", 1.0) or 0.0)
-            rematch_days = int(cfg.get("rematch_days", 7) or 7)
+            cooldown_hours = rematch_hours(cfg)
             settle_s = max(0, int(cfg.get("settle_seconds", 3) or 0))
 
             # Matchmaking, re-decided BEFORE EVERY BOUT rather than once a session: the
@@ -1607,7 +1670,7 @@ def _drive(duel_id: int) -> None:
                         defender_fp,
                         heirs=heirs,
                         baseline=baseline,
-                        rematch_days=rematch_days,
+                        cooldown_hours=cooldown_hours,
                         mode=mode,
                         top_n=top_n,
                         fought=fought,
@@ -2030,7 +2093,7 @@ def fight_card(session, limit: int = 12) -> dict:
             "top_n": int(cfg.get("contender_top_n", 8) or 8),
             "reason": _no_contenders_reason(field, heirs, incumbent_fp, live),
         }
-    rematch_days = int(cfg.get("rematch_days", 7) or 7)
+    cooldown_hours = rematch_hours(cfg)
 
     tiers = contender_tiers(field, order, ratings if mode == "ring" else None, incumbent_fp)
 
@@ -2063,7 +2126,7 @@ def fight_card(session, limit: int = 12) -> dict:
             # Fought inside the rematch window. It is NOT skipped for that any more — the
             # cooldown only decides the order among equals, so this bout still runs (last
             # within its tier) rather than handing the ring to an unmeasured profile.
-            "on_cooldown": _recently_decided(session, incumbent_fp, fp, rematch_days),
+            "on_cooldown": _recently_decided(session, incumbent_fp, fp, cooldown_hours),
         }
 
     inc = profiles[incumbent_fp]
@@ -2084,7 +2147,7 @@ def fight_card(session, limit: int = 12) -> dict:
         "total": len(order),
         "contenders": mode,
         "top_n": int(cfg.get("contender_top_n", 8) or 8),
-        "rematch_days": rematch_days,
+        "rematch_hours": cooldown_hours,
         # The belt-holder's own ring rating — the bar every ceiling above is measured against.
         "incumbent_rating": (ratings.get(incumbent_fp) or {}).get("rating"),
         "reason": None,
@@ -2454,7 +2517,7 @@ def standings(limit_sessions: int = 50) -> dict:
     # three, the belt-holder farmed points simply by defending (the winner stays on, so it
     # fights more than anyone), and two profiles that never met could not be compared at
     # all. The Bradley-Terry fit answers all three from the same ledger — see rating.py.
-    ratings = fit_bradley_terry(pair_wins)
+    ratings = fit_bradley_terry(pair_wins, prior_pairs=rating_prior(cfg))
     for row in table:
         r = ratings.get(row["fingerprint"]) or {}
         row["rating"] = r.get("rating")
@@ -2467,17 +2530,37 @@ def standings(limit_sessions: int = 50) -> dict:
         # it actually faced — "beating your schedule" in one number.
         row["expected_pair_wins"] = r.get("expected_wins")
 
-    # Ranked on the CONSERVATIVE floor, not the fitted rating. The four best profiles in a
-    # real field sat within 55 points of each other with error bars of 50-120: ordering them
-    # by the point estimate put a five-pair record on top of a forty-four-pair one on a
-    # difference smaller than either bar, which is presenting noise as a standing. The floor
-    # asks what a record has *demonstrated*, so evidence has to be earned rather than
-    # borrowed from one lucky bout. The fitted rating stays the headline number and stays
-    # sortable — this changes which claim the default order is making.
+    # **Whoever wins the duel wins the duel.** Ranked on the fitted rating — the ring's own
+    # finding about who beat whom — with `duel.rank_sigma` standard errors subtracted, 0 by
+    # default.
+    #
+    # It used to subtract one, ranking on a conservative floor. That reads well as a
+    # statement about evidence and badly as a standing, because it overturns results that
+    # actually happened: on a real ledger a challenger that beat the leader (1687 ±146 →
+    # floor 1541) ranked BELOW it (1563 ±17 → floor 1546) on five points of floor, across
+    # error bars eight times wider than the gap. A ladder whose entire purpose is
+    # head-to-head adjudication must not then rank the loser above the winner.
+    #
+    # The trade is real and is named rather than hidden: at sigma 0 a single lucky 3-0 can
+    # outrate a deep winning record (measured: 1696 vs 1581). The lever for that is
+    # `duel.rating_prior_pairs`, which shrinks a thin record toward the field — at 16 the
+    # same snap rates 1569 against the leader's 1584 — rather than letting an error bar
+    # overturn a match. The floor stays as the sortable "Proven" column for anyone asking
+    # what a record has demonstrated.
+    sigma = rank_sigma(cfg)
+
+    def _rank_score(r: dict) -> float:
+        rating = r.get("rating")
+        if rating is None:
+            return -1e9
+        return float(rating) - sigma * float(r.get("rating_se") or 0.0)
+
+    for row in table:
+        row["rank_score"] = round(_rank_score(row), 1) if row.get("rating") is not None else None
     table.sort(
         key=lambda r: (
-            r["rating_floor"] if r["rating_floor"] is not None else -1e9,
-            r["rating_pairs"] or 0,  # more evidence first among equal floors
+            _rank_score(r),
+            r["rating_pairs"] or 0,  # more evidence first among equal scores
             r["points"],
         ),
         reverse=True,
@@ -2552,9 +2635,9 @@ def standings(limit_sessions: int = 50) -> dict:
         "decisive_matchups": decisive,
         "generated_from": limit_sessions,
         # What the ranking means, so the page can explain it rather than assert it.
-        "ranked_by": "rating_floor",
+        "ranked_by": "rating" if sigma == 0 else "rating_floor",
         "provisional_pairs": PROVISIONAL_PAIRS,
-        "rank_sigma": RANK_SIGMA,
+        "rank_sigma": sigma,
         "rating_pairs_total": sum(pair_wins.values()),
     }
 

@@ -63,7 +63,11 @@ def _schedule_payload(cfg: dict) -> dict:
         "min_pairs": int(d.get("min_pairs", 10) or 10),
         "max_pairs": int(d.get("max_pairs", 40) or 40),
         "min_margin": float(d.get("min_margin", 1.0) or 0.0),
-        "rematch_days": int(d.get("rematch_days", 7) or 7),
+        # Hours, and a separate field from the champion-freshness window they used to share.
+        "rematch_hours": duel.rematch_hours(d),
+        "champion_freshness_days": duel.champion_freshness_days(d),
+        "rank_sigma": duel.rank_sigma(d),
+        "rating_prior_pairs": duel.rating_prior(d),
         # Post-apply settle: each leg writes the profile to the firewall and reconfigures
         # the queues before it measures anything, so this is how long to let the link
         # settle first. Symmetric across both sides — it never biased a verdict, it just
@@ -164,10 +168,26 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
                 status_code=422, detail="the end time must differ from the start time"
             )
         updates["duration_minutes"] = minutes
-    if payload.rematch_days is not None:
-        if int(payload.rematch_days) < 0:
-            raise HTTPException(status_code=422, detail="rematch_days cannot be negative")
-        updates["rematch_days"] = int(payload.rematch_days)
+    if payload.rematch_hours is not None:
+        if float(payload.rematch_hours) < 0:
+            raise HTTPException(status_code=422, detail="rematch_hours cannot be negative")
+        updates["rematch_hours"] = float(payload.rematch_hours)
+    if payload.rank_sigma is not None:
+        if not 0 <= float(payload.rank_sigma) <= 3:
+            raise HTTPException(status_code=422, detail="rank_sigma must be between 0 and 3")
+        updates["rank_sigma"] = float(payload.rank_sigma)
+    if payload.rating_prior_pairs is not None:
+        if float(payload.rating_prior_pairs) <= 0:
+            raise HTTPException(
+                status_code=422, detail="rating_prior_pairs must be positive"
+            )
+        updates["rating_prior_pairs"] = float(payload.rating_prior_pairs)
+    if payload.champion_freshness_days is not None:
+        if float(payload.champion_freshness_days) <= 0:
+            raise HTTPException(
+                status_code=422, detail="champion_freshness_days must be positive"
+            )
+        updates["champion_freshness_days"] = float(payload.champion_freshness_days)
     if payload.settle_seconds is not None:
         if not 0 <= int(payload.settle_seconds) <= 120:
             raise HTTPException(
