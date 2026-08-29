@@ -3182,7 +3182,7 @@ def crowns(session: Session = Depends(get_session)) -> dict:
     from .. import crown_follower, crowning
     from .. import duel as duel_mod
 
-    rematch_days = int((get_config(session).get("duel", {}) or {}).get("rematch_days", 7) or 7)
+    freshness = duel_mod.champion_freshness_days(get_config(session).get("duel", {}) or {})
     pooled = crown_follower.current_crown(session)
     resolution = crowning.resolve(session, pooled_best_fp=(pooled or {}).get("fingerprint"))
 
@@ -3191,7 +3191,7 @@ def crowns(session: Session = Depends(get_session)) -> dict:
     # still shown — labelled expired — rather than silently vanishing from the dashboard.
     table = duel_mod.standings()
     champion = table.get("champion")
-    fresh = duel_mod.latest_champion(session, max_age_days=rematch_days)
+    fresh = duel_mod.latest_champion(session, max_age_days=freshness)
     duel_out = None
     if champion:
         record = next(
@@ -3201,7 +3201,7 @@ def crowns(session: Session = Depends(get_session)) -> dict:
         duel_out = {
             **champion,
             "fresh": fresh is not None,
-            "freshness_days": rematch_days,
+            "freshness_days": freshness,
             "wins": (record or {}).get("wins", 0),
             "losses": (record or {}).get("losses", 0),
             "draws": (record or {}).get("draws", 0),
@@ -3290,9 +3290,9 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
     from .. import duel as duel_mod
 
     cfg = get_config(session).get("crown_follow", {}) or {}
-    rematch_days = int((get_config(session).get("duel", {}) or {}).get("rematch_days", 7) or 7)
+    freshness = duel_mod.champion_freshness_days(get_config(session).get("duel", {}) or {})
 
-    champion = duel_mod.latest_champion(session, max_age_days=rematch_days)
+    champion = duel_mod.latest_champion(session, max_age_days=freshness)
     follow_status = crown_follower.status()
     churn = crown_follower.stats(session)
     events = crown_follower.recent_events(session, limit=20)

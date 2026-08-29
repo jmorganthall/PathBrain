@@ -46,10 +46,11 @@ def resolve(session, pooled_best_fp: str | None) -> dict:
     from . import duel as duel_mod
 
     policy = active_policy(session)
-    rematch_days = int(
-        (get_config(session).get("duel", {}) or {}).get("rematch_days", 7) or 7
-    )
-    champion = duel_mod.latest_champion(session, max_age_days=rematch_days)
+    # Champion freshness, NOT the rematch cooldown — they used to share a field, and the
+    # cooldown is now measured in hours. Automation must not abandon the champion just
+    # because the ladder paused for an afternoon.
+    freshness = duel_mod.champion_freshness_days(get_config(session).get("duel", {}) or {})
+    champion = duel_mod.latest_champion(session, max_age_days=freshness)
 
     if policy == "duel":
         if champion and champion.get("decisive"):

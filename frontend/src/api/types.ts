@@ -1695,7 +1695,10 @@ export interface DuelCard {
   total?: number;
   contenders: "ring" | "leaders" | "heirs";
   top_n: number;
-  rematch_days?: number;
+  rematch_hours?: number;
+  champion_freshness_days?: number;
+  rating_prior_pairs?: number;
+  rank_sigma?: number;
   // The belt-holder's own ring rating — the bar every ceiling is measured against.
   incumbent_rating?: number | null;
   contender_modes?: string[];
@@ -1749,7 +1752,10 @@ export interface DuelConfig {
   min_pairs: number;
   max_pairs: number;
   min_margin: number;
-  rematch_days: number;
+  rematch_hours: number;
+  champion_freshness_days: number;
+  rank_sigma?: number;
+  rating_prior_pairs?: number;
   // Seconds to let the link settle after writing a profile before measuring it. Applied
   // to both sides of every pair, so it never favours a side.
   settle_seconds: number;

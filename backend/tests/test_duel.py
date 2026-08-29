@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathbrain import challenger as challenger_mod
 from pathbrain import crowning
 from pathbrain import duel as duel_mod
-from pathbrain.config_store import get_config
+from pathbrain.config_store import get_config, save_config
 from pathbrain.database import session_scope
 from pathbrain.duel import SprtState
 from pathbrain.models import Duel, DuelStatus
@@ -381,11 +381,23 @@ def _mu(inc, cha, verdict, *, wins_inc=6, wins_cha=4, delta=-2.0):
     }
 
 
-def test_a_one_opponent_record_does_not_top_the_ladder():
-    """The reported defect, end to end: "why is the top profile ranked #1 with only one
-    opponent?" — it was, because the table sorted on the fitted rating alone and a five-pair
-    record can fit high. The standings rank on the conservative floor instead, so the thin
-    record keeps its rating (and its row) but has to be measured before it can lead."""
+def test_a_thin_winning_record_can_top_the_ladder_and_the_prior_is_the_lever():
+    """**Whoever wins the duel wins the duel.** The order is the fitted rating, so a
+    profile that won its match ranks above the one it beat — including when its record is
+    thin.
+
+    This reverses an earlier decision, and the reversal is deliberate rather than a
+    regression. Ranking on `rating - 1*SE` reads well as a statement about evidence and
+    badly as a standing: on a real ledger it put a challenger that BEAT the leader (1687
+    ±146 → floor 1541) below it (1563 ±17 → floor 1546), on five points of floor across
+    error bars eight times wider than the gap. A ladder built for head-to-head
+    adjudication cannot rank the loser above the winner.
+
+    The cost is named here rather than hidden: a thin record really can lead. The lever for
+    that is `rating_prior_pairs`, which shrinks a thin record toward the field instead of
+    letting an error bar overturn a result — asserted below, so the trade-off stays
+    measured rather than remembered.
+    """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     with session_scope() as s:
         s.query(Duel).delete()
@@ -412,11 +424,27 @@ def test_a_one_opponent_record_does_not_top_the_ladder():
     out = duel_mod.standings()
     by_fp = {r["fingerprint"]: r for r in out["standings"]}
     assert by_fp["newcomer"]["opponents"] == 1
+    # Still flagged as thin, and the floor still says so — it is just not the sort key.
     assert by_fp["newcomer"]["rating_provisional"] is True
-    # The fit is free to like it; the ladder is not free to crown it on that alone.
     assert by_fp["newcomer"]["rating_se"] > by_fp["veteran"]["rating_se"]
-    assert out["standings"][0]["fingerprint"] == "veteran"
     assert by_fp["veteran"]["rating_floor"] > by_fp["newcomer"]["rating_floor"]
+    assert out["ranked_by"] == "rating"
+    assert out["standings"][0]["fingerprint"] == "newcomer", "it beat the veteran's opponent"
+
+    # The prior is the honest lever for thin records: shrink them toward the field, rather
+    # than letting a wide error bar overturn a match that actually happened.
+    with session_scope() as s:
+        save_config(s, {"duel": {"rating_prior_pairs": 24.0}})
+    try:
+        heavy = duel_mod.standings()
+        heavy_by_fp = {r["fingerprint"]: r for r in heavy["standings"]}
+        assert heavy_by_fp["newcomer"]["rating"] < by_fp["newcomer"]["rating"], (
+            "a heavier prior pulls a thin record toward the field"
+        )
+        assert heavy["standings"][0]["fingerprint"] == "veteran"
+    finally:
+        with session_scope() as s:
+            save_config(s, {"duel": {"rating_prior_pairs": 4.0}})
 
 
 def test_standings_rank_by_head_to_head_record():
@@ -451,8 +479,8 @@ def test_standings_rank_by_head_to_head_record():
     # C beat A, and A beat B — so C rates above A above B, and the ledger columns still
     # read as before (C: 1 win + 1 draw = 4 points).
     assert [r["fingerprint"] for r in out["standings"]] == ["ccc", "aaa", "bbb"]
-    assert out["ranked_by"] == "rating_floor"
-    assert out["rank_sigma"] == RANK_SIGMA
+    assert out["ranked_by"] == "rating"
+    assert out["rank_sigma"] == 0.0
     assert by_fp["ccc"]["rating"] > by_fp["aaa"]["rating"] > by_fp["bbb"]["rating"]
     assert (
         by_fp["ccc"]["rating_floor"]
@@ -1348,7 +1376,7 @@ def test_the_ring_number_one_defends_not_last_sessions_survivor():
     heirs = {"items": [{"fingerprint": "survivor", "reason": "stale"}]}
     with session_scope() as s:
         cha, why_cha = duel_mod.next_challenger(
-            s, field, ratings, "strong", heirs=heirs, rematch_days=0
+            s, field, ratings, "strong", heirs=heirs, cooldown_hours=0
         )
     assert cha == "pooled" and "pooled crown" in why_cha
 
@@ -1609,8 +1637,11 @@ def test_rematch_cooldown_uses_time_not_a_row_cap():
             )
 
     with session_scope() as s:
-        assert duel_mod._recently_decided(s, "alpha", "beta", 7) is True, "4d < 7d cooldown"
-        assert duel_mod._recently_decided(s, "alpha", "beta", 2) is False, "4d > 2d cooldown"
+        # The cooldown is measured in HOURS now — short enough that the leaders can be
+        # re-examined the same night rather than retired for a week.
+        assert duel_mod._recently_decided(s, "alpha", "beta", 7 * 24) is True, "4d < 7d"
+        assert duel_mod._recently_decided(s, "alpha", "beta", 2 * 24) is False, "4d > 2d"
+        assert duel_mod._recently_decided(s, "alpha", "beta", 6) is False, "4d > 6h"
         s.query(Duel).delete()
 
 
@@ -1824,7 +1855,7 @@ def test_the_cooldown_reorders_contenders_it_does_not_hand_the_ring_to_filler():
         with session_scope() as s:
             for _ in range(3):
                 fp, why = duel_mod.next_challenger(
-                    s, field, {}, "belt", heirs={"items": []}, rematch_days=7,
+                    s, field, {}, "belt", heirs={"items": []}, cooldown_hours=168,
                     mode="leaders", fought=fought,
                 )
                 if fp is None:
@@ -1866,13 +1897,13 @@ def test_a_fresh_matchup_still_beats_a_re_race_within_the_same_tier():
     try:
         with session_scope() as s:
             first, why = duel_mod.next_challenger(
-                s, field, {}, "belt", heirs={"items": []}, rematch_days=7, mode="leaders"
+                s, field, {}, "belt", heirs={"items": []}, cooldown_hours=168, mode="leaders"
             )
             # Same tier, so the cooldown decides: the unasked question goes first.
             assert first == "unfought" and "re-rac" not in why
             # The cooled contender is still raced, just after — never dropped.
             second, why2 = duel_mod.next_challenger(
-                s, field, {}, "belt", heirs={"items": []}, rematch_days=7, mode="leaders",
+                s, field, {}, "belt", heirs={"items": []}, cooldown_hours=168, mode="leaders",
                 fought={frozenset(("belt", "unfought"))},
             )
         assert second == "fought" and "re-rac" in why2
@@ -2496,13 +2527,14 @@ def test_the_belt_replay_is_deterministic_and_order_defined():
     assert first["fingerprint"] == "c" and first["defences"] == 1
 
 
-def test_the_standings_still_rank_on_proven_while_the_belt_is_lineal():
-    """The two verdicts are computed separately and are allowed to disagree.
+def test_the_belt_and_the_ranking_are_allowed_to_disagree():
+    """The two verdicts are computed separately and may name different profiles.
 
-    Ranking asks what a record has *demonstrated* (`rating_floor`, which is conservative
-    about a thin record); the belt asks who beat whom. Forcing them to agree — by defining
-    the champion AS row 1 — is what made the title unwinnable: the holder defends every
-    bout, so no challenger accumulates the second opponent its error bar needs.
+    The belt is lineal — you take it by beating its holder. The ranking is the fitted
+    strength over the whole ledger, which knows about opponents the belt-holder never
+    faced. So a profile can hold the title while another rates higher, and that
+    disagreement is information rather than a bug. Forcing them to agree — by defining the
+    champion AS row 1 — is what made the title unwinnable in the first place.
     """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     with session_scope() as s:
@@ -2510,12 +2542,16 @@ def test_the_standings_still_rank_on_proven_while_the_belt_is_lineal():
         _finished_duel(
             s,
             matchups=[
+                # The belt starts with the veteran, which defends against the field.
                 _mu("veteran", "b", "incumbent", wins_inc=26, wins_cha=4, delta=-3.0),
                 _mu("veteran", "c", "incumbent", wins_inc=24, wins_cha=5, delta=-3.0),
-                _mu("veteran", "d", "incumbent", wins_inc=25, wins_cha=6, delta=-3.0),
-                _mu("b", "c", "incumbent", wins_inc=8, wins_cha=7, delta=-0.5),
-                _mu("c", "d", "incumbent", wins_inc=9, wins_cha=8, delta=-0.5),
-                # …then loses its first meeting with a newcomer, which takes the title.
+                # Meanwhile a sweeper builds the strongest record in the ring — including
+                # thrashing the newcomer — without ever meeting the belt-holder.
+                _mu("sweeper", "newcomer", "incumbent", wins_inc=18, wins_cha=1, delta=-4.0),
+                _mu("sweeper", "c", "incumbent", wins_inc=17, wins_cha=2, delta=-4.0),
+                _mu("sweeper", "b", "incumbent", wins_inc=16, wins_cha=2, delta=-4.0),
+                # …and then the newcomer beats the holder, so the TITLE goes to it even
+                # though the ring rates the sweeper higher.
                 _mu("veteran", "newcomer", "challenger", wins_inc=0, wins_cha=3, delta=3.0),
             ],
             champion="newcomer",
@@ -2525,12 +2561,11 @@ def test_the_standings_still_rank_on_proven_while_the_belt_is_lineal():
     with session_scope() as s:
         s.query(Duel).delete()
 
-    assert table["champion"]["fingerprint"] == "newcomer"
-    assert table["ranked_by"] == "rating_floor"
-    # The newcomer holds the belt on 3 rounds against one opponent (rating 1722 ± 148, so
-    # a floor of 1574); the veteran's 75-15 against three is what the table ranks first
-    # (1635 ± 44 → 1591). Both statements are true at once, which is the whole point.
-    assert table["standings"][0]["fingerprint"] == "veteran"
+    assert table["champion"]["fingerprint"] == "newcomer", "it beat the belt-holder"
+    assert table["ranked_by"] == "rating"
+    # …while the profile the ring rates highest is the one that swept the strongest
+    # opponents. Champion and row 1 are different profiles, and both statements are true.
+    assert table["standings"][0]["fingerprint"] != "newcomer"
     assert table["champion"]["rank"] > 1
 
 

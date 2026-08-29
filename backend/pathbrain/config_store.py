@@ -257,8 +257,45 @@ DEFAULT_CONFIG: dict = {
         # likewise has no margin floor ("the profile that wins wins"). Raise it only to
         # ignore differences too small to care about.
         "min_margin": 0.0,
-        # A decided matchup isn't re-dueled for this many days (the ladder moves on).
-        "rematch_days": 7,
+        # A decided matchup isn't re-fought for this many HOURS (the ladder moves on).
+        #
+        # Hours, not days, and short: the cooldown exists so a settled question doesn't eat
+        # the window, not to retire a pairing. A week is most of a continuous ladder's
+        # useful life — the leaders are the first pairs fought, so they are the first
+        # cooled, and the ring is left to profiles nobody has raced. Six hours lets the
+        # top of the table be re-examined the same night while still moving on within a
+        # session. (Legacy configs storing `rematch_days` are read for CHAMPION FRESHNESS
+        # below, which is what that field also governed — see `rematch_hours`.)
+        "rematch_hours": 6,
+        # How stale the duel champion may be before the crowning policy stops acting on it
+        # and falls back to the pooled crown. A SEPARATE question from the cooldown, and it
+        # used to share `rematch_days` with it: dropping the cooldown to hours would
+        # otherwise have made automation abandon the champion every time the ladder paused
+        # for an afternoon.
+        "champion_freshness_days": 7,
+        # How many standard errors to subtract from the fitted rating when ORDERING the
+        # standings. 0 (default) ranks on the rating itself — the ring's own finding about
+        # who beat whom. Raise it to rank on a conservative floor instead, which demands a
+        # record be *measured* before it can lead.
+        #
+        # It was 1.0, and on a real ledger that overturned head-to-head results: a
+        # challenger with rating 1687 ±146 (floor 1541) ranked below a leader on 1563 ±17
+        # (floor 1546) — five points of floor, on a bar eight times wider than the gap,
+        # putting the profile that won the match underneath the one that lost it. Whoever
+        # wins the duel wins the duel; the floor stays as the sortable "Proven" column for
+        # anyone asking the other question.
+        #
+        # The trade is real and worth stating: at 0 a single lucky 3-0 outranks a deep
+        # winning record (measured: 1696 vs 1581). The lever for THAT is the rating prior
+        # below, which shrinks a thin record toward the field instead of letting an error
+        # bar overturn a result.
+        "rank_sigma": 0.0,
+        # Virtual pairs against a phantom average opponent, added to every profile's record
+        # before fitting. Keeps unbeaten records finite and shrinks thin ones toward the
+        # field. Measured against a 3-0 snap versus a deep winning record: 4 → the snap
+        # rates 1696 vs 1581; 8 → 1621 vs 1583; 16 → 1569 vs 1584 (the snap finally ranks
+        # below). Raise it if single-match records keep topping the table.
+        "rating_prior_pairs": 4.0,
         # Which rule names the champion.
         #
         # "lineal" (default) — a LINEAL TITLE: you take the belt by beating the profile
