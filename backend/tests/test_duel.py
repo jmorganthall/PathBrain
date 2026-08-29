@@ -2901,3 +2901,99 @@ def test_iterations_per_round_is_bounded_and_survives_a_bad_value():
     assert duel_mod.iterations_per_round({"iterations_per_round": "seven"}) == 3
     assert duel_mod.iterations_per_round({"iterations_per_round": 9}) == 9
     assert duel_mod.iterations_per_round({"iterations_per_round": 999}) == 25
+
+
+# ── The ring's #1 challenges the belt — once per cooldown ────────────────────────────
+
+
+def _two_verdict_ledger(champ: str, ring_top: str, when):
+    """A ledger where `ring_top` rates highest but `champ` holds the belt: the ring leader
+    sweeps third parties the champion never faced, while the champion holds its own chain."""
+    return [
+        _mu(champ, "midfield", "incumbent", wins_inc=9, wins_cha=2, delta=-2.0),
+        _mu(ring_top, "midfield", "incumbent", wins_inc=18, wins_cha=1, delta=-4.0),
+        _mu(ring_top, "backmarker", "incumbent", wins_inc=17, wins_cha=1, delta=-4.0),
+    ]
+
+
+def test_the_rings_number_one_challenges_the_belt_when_it_isnt_the_champion():
+    """Two ring-derived verdicts disagreeing is the most informative match on the card —
+    more so than the pooled one, because both sides are controlled evidence and the
+    disagreement is purely scope vs path: the rating is global strength across everyone,
+    the belt is a chain of custody. One match collapses it."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s, matchups=_two_verdict_ledger("champ", "ringtop", now),
+            champion="champ", when=now - timedelta(days=30),  # well outside the cooldown
+        )
+    field = _field(("champ", 80.0), ("ringtop", 70.0), ("midfield", 60.0),
+                   ("backmarker", 50.0), best="midfield")
+    with session_scope() as s:
+        ratings = duel_mod.ledger_ratings(s)
+        assert duel_mod.ledger_leader(ratings) == "ringtop", "fixture: ringtop rates highest"
+        fp, why = duel_mod.next_challenger(
+            s, field, ratings, "champ", heirs={"items": []}, cooldown_hours=6
+        )
+        s.query(Duel).delete()
+    assert fp == "ringtop"
+    assert "the ring's #1 isn't the champion" in why
+
+
+def test_the_ring_leader_promotion_is_gated_on_the_cooldown():
+    """**The guard against racing two profiles all night.** This tier holds exactly ONE
+    profile by construction, so an ungated promotion would open every session with the same
+    match forever. The cooldown is what makes it "resolve it promptly", not "resolve it
+    twelve times a night" — and note the cooldown ORDERS everywhere else, so this is the one
+    place it is allowed to withhold a promotion.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s, matchups=_two_verdict_ledger("champ", "ringtop", now),
+            champion="champ", when=now - timedelta(days=30),
+        )
+        # …and they met an hour ago: inside a 6h cooldown.
+        _finished_duel(
+            s, matchups=[_mu("champ", "ringtop", "draw", wins_inc=5, wins_cha=5, delta=0.0)],
+            champion="champ", when=now - timedelta(hours=1),
+        )
+    field = _field(("champ", 80.0), ("ringtop", 70.0), ("midfield", 60.0),
+                   ("backmarker", 50.0), best="midfield")
+    with session_scope() as s:
+        ratings = duel_mod.ledger_ratings(s)
+        cooled, _ = duel_mod.next_challenger(
+            s, field, ratings, "champ", heirs={"items": []}, cooldown_hours=6
+        )
+        lapsed, why = duel_mod.next_challenger(
+            s, field, ratings, "champ", heirs={"items": []}, cooldown_hours=0.25
+        )
+        s.query(Duel).delete()
+
+    assert cooled != "ringtop", "inside the cooldown the ladder must move on to someone else"
+    assert lapsed == "ringtop", "once it lapses, the disagreement is worth resolving again"
+    assert "the ring's #1 isn't the champion" in why
+
+
+def test_a_pair_already_fought_this_session_is_never_re_promoted():
+    """`fought` is a hard skip and outranks the promotion — re-running the match just run
+    adds nothing, however informative the pairing is in principle."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s, matchups=_two_verdict_ledger("champ", "ringtop", now),
+            champion="champ", when=now - timedelta(days=30),
+        )
+    field = _field(("champ", 80.0), ("ringtop", 70.0), ("midfield", 60.0),
+                   ("backmarker", 50.0), best="midfield")
+    with session_scope() as s:
+        ratings = duel_mod.ledger_ratings(s)
+        fp, _ = duel_mod.next_challenger(
+            s, field, ratings, "champ", heirs={"items": []}, cooldown_hours=6,
+            fought={frozenset(("champ", "ringtop"))},
+        )
+        s.query(Duel).delete()
+    assert fp != "ringtop"

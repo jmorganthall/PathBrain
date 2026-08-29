@@ -1230,7 +1230,20 @@ def build_queue(
 # Priority tiers. The ladder must never spend the ring on a lower tier while a higher one
 # still has someone waiting — that single rule is what keeps a perpetual ladder pointed at
 # the matchups that can change the answer.
-CROWN_TIER = 0  # the pooled crown: the two verdicts disagreeing is the most informative bout
+# **The ring's own #1, when it is not the one holding the belt.** Two ring-derived verdicts
+# disagreeing is the most informative match on the card — more so than the pooled crown
+# below it, because BOTH sides are controlled head-to-head evidence, so the disagreement is
+# purely about scope and path: the rating is global strength across everyone (including
+# opponents the champion never faced), the belt is a chain of custody (who beat whom, in
+# order). One match collapses it.
+#
+# It is gated on the rematch cooldown, and that gate is load-bearing rather than tidy. This
+# tier contains exactly ONE profile by construction, so an ungated promotion would open
+# every session with the same match forever — the ladder would spend the night racing two
+# profiles, which is the failure the tiering exists to prevent. Gated, the disagreement is
+# resolved promptly and then normal matchmaking resumes until the cooldown lapses.
+RING_LEADER_TIER = 0
+CROWN_TIER = 1  # the pooled crown: the two verdicts disagreeing is the most informative bout
 # A profile the ring has never rated whose **pooled ceiling clears the crown** — on the
 # record it could already be the best thing measured, and nobody has checked. It runs before
 # the rated contenders, deliberately: those have been examined and their ceiling is a
@@ -1238,10 +1251,10 @@ CROWN_TIER = 0  # the pooled crown: the two verdicts disagreeing is the most inf
 # itself. Racing it answers that claim head-to-head AND matures it — a bout's paired runs go
 # into the pooled record like any others, so the same hour buys the verdict and the evidence.
 # Waiting is what costs: the claim is only interesting while it is unresolved.
-LIVE_THREAT_TIER = 1
-CONTENDER_TIER = 2  # rated; on the ring's own record, could plausibly take the belt
-UNTESTED_TIER = 3  # no ring record, and its own runs don't reach the crown even optimistically
-OUTCLASSED_TIER = 4  # the ring already says they can't reach the belt: raced last, not never
+LIVE_THREAT_TIER = 2
+CONTENDER_TIER = 3  # rated; on the ring's own record, could plausibly take the belt
+UNTESTED_TIER = 4  # no ring record, and its own runs don't reach the crown even optimistically
+OUTCLASSED_TIER = 5  # the ring already says they can't reach the belt: raced last, not never
 UNPROMISING_TIER = UNTESTED_TIER  # the same thing named for what it is
 FILLER_TIER = UNTESTED_TIER  # legacy alias for the pre-ring-ranking modes
 
@@ -1284,6 +1297,7 @@ def contender_tiers(
 
 
 TIER_NAMES = {
+    RING_LEADER_TIER: "ring's #1",
     CROWN_TIER: "pooled crown",
     LIVE_THREAT_TIER: "live threat",
     CONTENDER_TIER: "contender",
@@ -1301,6 +1315,7 @@ def _challenger_order(
     heirs: dict,
     baseline: list[dict] | None,
     top_n: int,
+    ring_leader_fp: str | None = None,
 ) -> list[dict]:
     """The candidates to face ``defender_fp``, best first, as ``[{fingerprint, tier, why}]``.
 
@@ -1310,7 +1325,10 @@ def _challenger_order(
     onto the same shape so the engine has one loop rather than one per mode.
     """
     if mode == "ring":
-        return contender_order(field, ratings, defender_fp, baseline=baseline, heirs=heirs)
+        return contender_order(
+            field, ratings, defender_fp, baseline=baseline, heirs=heirs,
+            ring_leader_fp=ring_leader_fp,
+        )
     fps = build_queue(
         field, heirs, defender_fp, contenders=mode, top_n=top_n, baseline=baseline, ratings=ratings
     )
@@ -1358,10 +1376,24 @@ def next_challenger(
     reachable in the session, which ends it — the next session refits and starts again.
     """
     fought = fought or set()
+    # **The ring's #1 gets first billing when it isn't the one defending — but only once per
+    # cooldown.** The promotion resolves a real disagreement (global strength vs chain of
+    # custody), and it is gated precisely because that tier holds exactly one profile: an
+    # ungated promotion would open every session with the same match, which is the ladder
+    # spending the night on two profiles — the failure the tiering exists to prevent. One
+    # extra indexed query, and only for the leader, since nothing else can be promoted.
+    ring_leader_fp = ledger_leader(ratings)
+    if ring_leader_fp is not None and (
+        ring_leader_fp == defender_fp
+        or frozenset((defender_fp, ring_leader_fp)) in fought
+        or _recently_decided(session, defender_fp, ring_leader_fp, cooldown_hours)
+    ):
+        ring_leader_fp = None
     order = [
         c
         for c in _challenger_order(
-            field, ratings, defender_fp, mode=mode, heirs=heirs, baseline=baseline, top_n=top_n
+            field, ratings, defender_fp, mode=mode, heirs=heirs, baseline=baseline,
+            top_n=top_n, ring_leader_fp=ring_leader_fp,
         )
         if c["fingerprint"] != defender_fp
         and frozenset((defender_fp, c["fingerprint"])) not in fought
@@ -1457,12 +1489,19 @@ def contender_order(
     *,
     baseline: list[dict] | None = None,
     heirs: dict | None = None,
+    ring_leader_fp: str | None = None,
 ) -> list[dict]:
     """Who should challenge the belt-holder, best chance of unseating it first.
 
     Returns ``[{fingerprint, tier, ceiling, rating, why}, …]`` in running order. The tiers
     exist so the ring is never handed to a lower one while a higher still has someone:
 
+    * ``RING_LEADER_TIER`` — the ring's own #1, when it isn't the one holding the belt.
+      Two ring-derived verdicts disagreeing beats the pooled one below it, because both
+      sides are controlled evidence. Supplied by the caller (``ring_leader_fp``) rather
+      than derived here, because the promotion is gated on the rematch cooldown and only
+      the caller has the session to check it — without that gate this tier holds exactly
+      one profile forever and the ladder races the same pair every session.
     * ``CROWN_TIER`` — the pooled crown. The two verdicts disagreeing is the single most
       informative bout in the system, so it goes first whenever it isn't already defending.
     * ``CONTENDER_TIER`` — rated profiles whose **ceiling clears the champion's rating**:
@@ -1508,6 +1547,21 @@ def contender_order(
     out: list[dict] = []
     for fp, p in profiles.items():
         if fp == incumbent_fp:
+            continue
+        if fp == ring_leader_fp:
+            # The ring rates this profile above the one wearing the belt. Resolve it.
+            out.append({
+                "fingerprint": fp,
+                "tier": RING_LEADER_TIER,
+                "rating": round(ratings[fp]["rating"], 1) if ratings.get(fp) else None,
+                "ceiling": None,
+                "pooled_overall": p.get("overall"),
+                "pooled_ceiling": p.get("optimistic"),
+                "why": (
+                    "the ring's #1 isn't the champion — two head-to-head verdicts "
+                    "disagreeing, which one match can settle"
+                ),
+            })
             continue
         # A profile with no pooled score is still raceable — it's simply unknown twice over
         # (no ring record and no measured standing), which makes it a legitimate unknown to
