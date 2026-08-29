@@ -588,6 +588,20 @@ LLM-based. See `README.md` for the product overview.
     and the ring then spends its time maturing whatever could displace the best profile found so
     far, which is also why it isn't racing #432 against #567. It changes **matchmaking only**:
     duel verdicts still never enter the pooled score, and the crown is untouched.
+    **The ring's #1 challenges the belt when it isn't wearing it — once per cooldown**
+    (`RING_LEADER_TIER`, above `CROWN_TIER`). Since the standings rank on the fitted rating
+    and the belt is lineal, the two can disagree honestly: the rating is *global strength*
+    across everyone, including opponents the champion never faced; the belt is a *chain of
+    custody*, blind to third parties. Two ring-derived verdicts disagreeing is more
+    informative than the pooled one below it — both sides are controlled head-to-head
+    evidence, so the disagreement is purely scope vs path, and one match collapses it.
+    The promotion is **gated on the rematch cooldown**, and that gate is load-bearing
+    rather than tidy: this tier holds exactly **one** profile by construction, so an
+    ungated promotion would open every session with the same match forever — the ladder
+    spending the night racing two profiles, which is the failure the tiering exists to
+    prevent. `fought` (a hard skip within a session) outranks it too. Note this is the one
+    place the cooldown is allowed to *withhold* rather than merely order, precisely because
+    a single-occupant tier has no lower-priority sibling to fall through to.
     **The rematch cooldown ORDERS, it never excludes** (`contender_tiers` / `next_matchup`).
     Queued profiles carry a priority **tier** — `CROWN_TIER` (the pooled crown) <
     `CONTENDER_TIER` (confident, scored) < `FILLER_TIER` (thin/untested) — and the ring is
