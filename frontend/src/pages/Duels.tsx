@@ -832,6 +832,7 @@ export default function Duels() {
   const [untilClock, setUntilClock] = useState<string | null>(null);
   const [liveFp, setLiveFp] = useState<string | null>(null);
   const [health, setHealth] = useState<DuelHealth | null>(null);
+  const [standingsError, setStandingsError] = useState<string | null>(null);
   const [askDuration, setAskDuration] = useState(false);
   const [dialogMinutes, setDialogMinutes] = useState(120);
   const [card, setCard] = useState<DuelCard | null>(null);
@@ -893,10 +894,19 @@ export default function Duels() {
       .catch(() => undefined); // status is a nice-to-have; never block the page on it
 
     setLoadingStandings(true);
+    setStandingsError(null);
     void api
       .duelStandings()
-      .then(setTable)
-      .catch(report)
+      .then((t) => {
+        setTable(t);
+        setStandingsError(null);
+      })
+      .catch((e) => {
+        // Kept separate from the page-level error so the card can say "couldn't load"
+        // instead of "nothing here" — see the empty state below.
+        setStandingsError(e instanceof Error ? e.message : String(e));
+        report(e);
+      })
       .finally(() => setLoadingStandings(false));
 
     void api
@@ -1044,7 +1054,7 @@ export default function Duels() {
             Head-to-head adjudication, with one job: <b>keep attacking the best profile we
             have</b>. The ring's current #1 defends every match, against whichever profile the
             ledger says is most likely to beat <i>it</i> — re-decided before each match, so a
-            profile that wins takes the belt and defends next. Both sides trade one-iteration
+            profile that wins takes the belt and defends next. Both sides trade equal-length
             runs A/B/B/A, so they meet the same weather, and a sequential test ends each match
             the moment it's decided. Ranked by what a profile <b>beat</b> — not by what it
             averaged.
@@ -1125,8 +1135,8 @@ export default function Duels() {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           <b>Press "Duel now"</b> and it runs until{" "}
           {formatClock(untilClock ?? clockIn(cfg.duration_minutes))} (about{" "}
-          {fmtWindow(minutesUntil(untilClock ?? clockIn(cfg.duration_minutes)))}), trading one
-          iteration a side. The champion defends against the top {cfg.contender_top_n}{" "}
+          {fmtWindow(minutesUntil(untilClock ?? clockIn(cfg.duration_minutes)))}), trading
+          {cfg.iterations_per_round ?? 3} iteration(s) a side. The champion defends against the top {cfg.contender_top_n}{" "}
           {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"}, one at a time;
           a match ends after {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of
           margins, then the next challenger steps up. As many matches as fit in the window.
@@ -1417,6 +1427,14 @@ export default function Duels() {
                 helper="How old the duel champion may get before the crowning policy stops acting on it and falls back to the pooled crown. A separate question from the rematch cooldown, which it used to share a setting with."
               />
               <NumField
+                label="Iterations per leg of a round"
+                value={cfg?.iterations_per_round ?? 3}
+                disabled={!cfg || busy}
+                min={1}
+                onCommit={(v) => void patch({ iterations_per_round: Math.round(v) })}
+                helper="The ring's resolving power, and the only setting here that changes what a duel can SEE. A round compares two single measurements, so it carries the noise of both — measured on a real link, ~2.3 points per run becomes ~3.3 per round, against true edges between top profiles of 0.17-0.30 points. Medianing k iterations divides that by √k: at a 0.3-point edge, rounds needed for a confident call fall from 468 (k=1) to 156 (k=3) to 94 (k=5). A round costs k times as long, so this is roughly break-even on wall clock and a large win on verdicts actually reached."
+              />
+              <NumField
                 label="Rating prior (virtual rounds)"
                 value={cfg?.rating_prior_pairs ?? 4}
                 disabled={!cfg || busy}
@@ -1548,6 +1566,10 @@ export default function Duels() {
                 ) : loadingStandings ? (
                   <Typography variant="body2" color="text.secondary">
                     Loading the ladder…
+                  </Typography>
+                ) : standingsError ? (
+                  <Typography variant="body2" color="error.main">
+                    Couldn't load the ladder — see the standings below.
                   </Typography>
                 ) : (
                   <Typography variant="body2" color="text.secondary">
@@ -1730,6 +1752,24 @@ export default function Duels() {
                 Reading the ledger…
               </Typography>
             </Box>
+          ) : standingsError ? (
+            // "Nothing here" and "we couldn't load it" are different facts, and this card
+            // used to print the first for both: `table` stays null when the request fails,
+            // so a failed load rendered as an empty ledger. That sends you looking for a
+            // missing duel when what you have is a broken request — which is exactly what
+            // happened, with a full match tape visible directly underneath.
+            <Alert
+              severity="error"
+              sx={{ mt: 1.5 }}
+              action={
+                <Button size="small" onClick={() => void loadAll()}>
+                  Retry
+                </Button>
+              }
+            >
+              Couldn't load the ladder standings — the match tape below may still be fine, so
+              this is the request failing rather than an empty ledger. {standingsError}
+            </Alert>
           ) : standings.length === 0 ? (
             <Alert severity="info" sx={{ mt: 1.5 }}>
               No matches on the ledger yet. A duel needs a confident pooled crown to defend and

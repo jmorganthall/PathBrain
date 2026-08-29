@@ -86,7 +86,7 @@ def _score_by_profile(monkeypatch, applied: list[str], scores: dict[str, float])
     by_run: dict[int, str] = {}
     seq = {"n": 0}
 
-    def fake_chunk(label, notes, iterations, teardown=True, job_group=None, job_group_total=None):
+    def fake_chunk(label, notes, iterations, teardown=True, job_group=None, job_group_total=None, **_):
         seq["n"] += 1
         run_id = 9000 + seq["n"]
         by_run[run_id] = applied[-1] if applied else ""
@@ -2845,3 +2845,59 @@ def test_pooled_ranking_mode_restores_the_old_order():
         with session_scope() as s:
             s.query(Duel).delete()
             save_config(s, {"crown_follow": {"ranking": "ring"}})
+
+
+def test_a_round_medians_several_iterations_and_lifts_the_browser_cap(monkeypatch):
+    """**The ring's resolving power.** A round compares two single measurements, so it
+    carries the noise of both: ~2.3 points per run becomes ~3.3 per round, against true
+    edges between top profiles of 0.17-0.30. No stopping rule fixes a ruler coarser than
+    the thing it measures — which is why the practical-margin floor can't separate real
+    wins from lucky ones. Medianing k iterations divides the noise by sqrt(k).
+
+    The trap this pins: every crown metric (fcp / lcp / network_stall_all) is
+    BROWSER-derived, and the browser has its own per-plugin iteration cap (default 2).
+    Raising the round without raising that cap would median the cheap network probes over
+    k samples and the metrics that actually decide the round over 2 — paying for k and
+    buying sqrt(2).
+    """
+    seen: list[dict] = []
+
+    def fake_chunk(label, notes, iterations, teardown=True, job_group=None,
+                   job_group_total=None, config_overrides=None, **_):
+        seen.append({"iterations": iterations, "overrides": config_overrides})
+        return (9000 + len(seen), True, iterations)
+
+    field = _field(("aaa", 80.0), ("bbb", 70.0), best="aaa")
+    monkeypatch.setattr(duel_mod, "run_chunk", fake_chunk)
+    monkeypatch.setattr(duel_mod, "_run_overall", lambda run_id, ver: 80.0)
+    import pathbrain.api.routes_settings as rs
+
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: field)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        save_config(s, {"duel": {"iterations_per_round": 4, "settle_seconds": 0}})
+    try:
+        duel_mod.start(duration_minutes=0.02, trigger="manual")
+        for _ in range(200):
+            if not duel_mod.active():
+                break
+            time.sleep(0.05)
+        assert seen, "the ladder ran no legs"
+        assert all(leg["iterations"] == 4 for leg in seen), "each leg medians 4 iterations"
+        assert all(
+            (leg["overrides"] or {}).get("browser", {}).get("iterations") == 4
+            for leg in seen
+        ), "the browser cap must be lifted to match, or the crown metrics stay at 2 samples"
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+            save_config(s, {"duel": {"iterations_per_round": 3, "settle_seconds": 3}})
+
+
+def test_iterations_per_round_is_bounded_and_survives_a_bad_value():
+    """A stored nonsense value must never stop the ladder measuring."""
+    assert duel_mod.iterations_per_round({}) == 3
+    assert duel_mod.iterations_per_round({"iterations_per_round": 0}) == 3
+    assert duel_mod.iterations_per_round({"iterations_per_round": "seven"}) == 3
+    assert duel_mod.iterations_per_round({"iterations_per_round": 9}) == 9
+    assert duel_mod.iterations_per_round({"iterations_per_round": 999}) == 25

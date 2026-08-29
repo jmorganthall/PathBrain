@@ -1716,6 +1716,7 @@ export interface DuelCard {
   champion_freshness_days?: number;
   rating_prior_pairs?: number;
   rank_sigma?: number;
+  iterations_per_round?: number;
   // The belt-holder's own ring rating — the bar every ceiling is measured against.
   incumbent_rating?: number | null;
   contender_modes?: string[];
@@ -1800,6 +1801,8 @@ export interface DuelConfig {
   // either way; this only decides who wears the belt.
   crown_rule: "lineal" | "rating_floor";
   crown_rules: string[];
+  /** Benchmark iterations per leg of a round — divides the round's noise by sqrt(k). */
+  iterations_per_round?: number;
   presets: DuelPreset[];
   decision: DuelDecisionCost;
 }

@@ -723,6 +723,26 @@ CROWN_RULES = (LINEAL_RULE, FLOOR_RULE)
 DEFAULT_CROWN_RULE = LINEAL_RULE
 
 
+def iterations_per_round(cfg: dict | None) -> int:
+    """Benchmark iterations per LEG of a round — the ring's resolving power.
+
+    A round compares two single measurements, so its margin carries the noise of *both*:
+    measured on a real link, ~2.3 points per run becomes ~3.3 points per round, against
+    true edges between top profiles of 0.17-0.30 points. No stopping rule fixes a ruler
+    coarser than the thing it measures — the recorded margin of a 3-round match is ~1.3
+    whether the true edge is 0.3 or exactly zero, which is why the practical-margin floor
+    cannot separate real wins from lucky ones and why raising it only deletes matches.
+
+    Taking the median of k iterations divides the noise by sqrt(k). It is the only lever
+    here that changes what the ring is *able* to see.
+    """
+    try:
+        value = int((cfg or {}).get("iterations_per_round", 3) or 3)
+    except (TypeError, ValueError):
+        return 3
+    return max(1, min(value, 25))
+
+
 def rank_sigma(cfg: dict | None) -> float:
     """Standard errors subtracted from the rating when ORDERING the standings.
 
@@ -1588,6 +1608,7 @@ def _drive(duel_id: int) -> None:
             max_pairs = int(cfg.get("max_pairs", 40) or 40)
             min_margin = float(cfg.get("min_margin", 1.0) or 0.0)
             cooldown_hours = rematch_hours(cfg)
+            leg_iterations = iterations_per_round(cfg)
             settle_s = max(0, int(cfg.get("settle_seconds", 3) or 0))
 
             # Matchmaking, re-decided BEFORE EVERY BOUT rather than once a session: the
@@ -1800,9 +1821,16 @@ def _drive(duel_id: int) -> None:
                         run_id, ok, completed = run_chunk(
                             label=f"duel · {side.get('name') or side['label']}",
                             notes=f"Duel #{duel_id}: {inc['label']} vs {cha['label']}",
-                            iterations=1,
+                            iterations=leg_iterations,
                             teardown=False,  # keep Chromium warm across the whole ladder
                             job_group=f"duel-{duel_id}",
+                            # Lift the browser's per-plugin cap to match. Every crown metric
+                            # (fcp / lcp / network_stall_all) is browser-derived, so leaving
+                            # `browser.iterations` at its default would median the network
+                            # probes over k samples and the metrics that actually decide the
+                            # round over 2 — buying sqrt(2) of noise reduction while paying
+                            # for k. The profile test lifts it for the same reason.
+                            config_overrides={"browser": {"iterations": leg_iterations}},
                         )
                         run_ids.append(run_id)
                         iterations_run += completed
