@@ -202,9 +202,16 @@ export const api = {
     request<{ cancelled: boolean; status: string | null }>("/duel/cancel", { method: "POST" }),
   duelHistory: (limit = 10) => request<{ duels: DuelSession[] }>(`/duel/history?limit=${limit}`),
   duelCard: (limit = 12) => request<DuelCard>(`/duel/card?limit=${limit}`),
-  duelHealth: (sessions = 50) => request<DuelHealth>(`/duel/health?sessions=${sessions}`),
+  duelHealth: (sessions = 50) =>
+    request<DuelHealth>(`/duel/health?sessions=${sessions}`, undefined, { timeoutMs: 30_000 }),
+  // A bounded wait, because the alternative is worse than a slow page: with no timeout the
+  // Duels card spins on "Loading the ladder…" forever when a request is lost, and the
+  // failure is indistinguishable from an empty ledger. Measured at ~0.4s on a real-sized
+  // ledger, so 30s is a long way past "slow" and firmly into "not coming back".
   duelStandings: (sessions = 50) =>
-    request<DuelStandings>(`/duel/standings?sessions=${sessions}`),
+    request<DuelStandings>(`/duel/standings?sessions=${sessions}`, undefined, {
+      timeoutMs: 30_000,
+    }),
   // One profile's head-to-head record — its standings row, opponents and bout tape, all
   // signed from that profile's own side (for the Profile Detail page's ring card).
   duelProfile: (fingerprint: string, sessions = 50) =>

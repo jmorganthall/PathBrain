@@ -832,6 +832,7 @@ export default function Duels() {
   const [untilClock, setUntilClock] = useState<string | null>(null);
   const [liveFp, setLiveFp] = useState<string | null>(null);
   const [health, setHealth] = useState<DuelHealth | null>(null);
+  const [standingsError, setStandingsError] = useState<string | null>(null);
   const [askDuration, setAskDuration] = useState(false);
   const [dialogMinutes, setDialogMinutes] = useState(120);
   const [card, setCard] = useState<DuelCard | null>(null);
@@ -893,10 +894,19 @@ export default function Duels() {
       .catch(() => undefined); // status is a nice-to-have; never block the page on it
 
     setLoadingStandings(true);
+    setStandingsError(null);
     void api
       .duelStandings()
-      .then(setTable)
-      .catch(report)
+      .then((t) => {
+        setTable(t);
+        setStandingsError(null);
+      })
+      .catch((e) => {
+        // Kept separate from the page-level error so the card can say "couldn't load"
+        // instead of "nothing here" — see the empty state below.
+        setStandingsError(e instanceof Error ? e.message : String(e));
+        report(e);
+      })
       .finally(() => setLoadingStandings(false));
 
     void api
@@ -1557,6 +1567,10 @@ export default function Duels() {
                   <Typography variant="body2" color="text.secondary">
                     Loading the ladder…
                   </Typography>
+                ) : standingsError ? (
+                  <Typography variant="body2" color="error.main">
+                    Couldn't load the ladder — see the standings below.
+                  </Typography>
                 ) : (
                   <Typography variant="body2" color="text.secondary">
                     No duel has crowned one yet — run a duel to start the ladder.
@@ -1738,6 +1752,24 @@ export default function Duels() {
                 Reading the ledger…
               </Typography>
             </Box>
+          ) : standingsError ? (
+            // "Nothing here" and "we couldn't load it" are different facts, and this card
+            // used to print the first for both: `table` stays null when the request fails,
+            // so a failed load rendered as an empty ledger. That sends you looking for a
+            // missing duel when what you have is a broken request — which is exactly what
+            // happened, with a full match tape visible directly underneath.
+            <Alert
+              severity="error"
+              sx={{ mt: 1.5 }}
+              action={
+                <Button size="small" onClick={() => void loadAll()}>
+                  Retry
+                </Button>
+              }
+            >
+              Couldn't load the ladder standings — the match tape below may still be fine, so
+              this is the request failing rather than an empty ledger. {standingsError}
+            </Alert>
           ) : standings.length === 0 ? (
             <Alert severity="info" sx={{ mt: 1.5 }}>
               No matches on the ledger yet. A duel needs a confident pooled crown to defend and
