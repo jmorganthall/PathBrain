@@ -506,6 +506,23 @@ LLM-based. See `README.md` for the product overview.
     `_recently_decided` likewise scans duels **by `finished_at` within the cooldown**, not
     "the last 20 sessions" (a continuous ladder finishes several a day, so a row cap covered
     ~3 days of a 7-day cooldown).
+    **A round medians `duel.iterations_per_round` iterations a side (default 3) — the
+    ring's resolving power.** A round compares two measurements, so its margin carries the
+    noise of both: measured on a real link, ~2.3 Overall points per run becomes ~3.3 per
+    round, against observed long-run edges between top profiles of **0.17–0.30 points**. At
+    one iteration a leg that is a 3.3-point ruler measuring 0.3-point differences, and no
+    stopping rule rescues it — the recorded margin of a 3-round match is ~1.3 whether the
+    true edge is 0.3 or **exactly zero**, which is why `min_margin` cannot separate real
+    wins from lucky ones (raising it deletes matches at random, and actually selects *for*
+    short noisy bouts: it rejects a well-measured 0.3 and passes a 3-round 3.3). Medianing
+    k iterations divides the noise by √k and cuts rounds-to-verdict in proportion: at a
+    0.3-point edge, **468 rounds at k=1, 156 at k=3, 94 at k=5**. A round costs k times as
+    long, so it is roughly break-even on wall clock and a large win on *verdicts reached* —
+    a match that never resolves is time spent for nothing. The round also **lifts the
+    browser's per-plugin iteration cap** to match (`config_overrides`, as the profile test
+    does): every crown metric is browser-derived, so leaving `browser.iterations` at its
+    default would median the cheap network probes over k and the metrics that actually
+    decide the round over 2 — paying for k and buying √2.
     **Counterbalancing + settle, so a pair measures the profiles and not the schedule.** The
     incumbent used to run first in *every* pair, which makes "went first" and "is the incumbent"
     the same variable: any position-in-pair effect (state the previous run left behind, a

@@ -1044,7 +1044,7 @@ export default function Duels() {
             Head-to-head adjudication, with one job: <b>keep attacking the best profile we
             have</b>. The ring's current #1 defends every match, against whichever profile the
             ledger says is most likely to beat <i>it</i> — re-decided before each match, so a
-            profile that wins takes the belt and defends next. Both sides trade one-iteration
+            profile that wins takes the belt and defends next. Both sides trade equal-length
             runs A/B/B/A, so they meet the same weather, and a sequential test ends each match
             the moment it's decided. Ranked by what a profile <b>beat</b> — not by what it
             averaged.
@@ -1125,8 +1125,8 @@ export default function Duels() {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           <b>Press "Duel now"</b> and it runs until{" "}
           {formatClock(untilClock ?? clockIn(cfg.duration_minutes))} (about{" "}
-          {fmtWindow(minutesUntil(untilClock ?? clockIn(cfg.duration_minutes)))}), trading one
-          iteration a side. The champion defends against the top {cfg.contender_top_n}{" "}
+          {fmtWindow(minutesUntil(untilClock ?? clockIn(cfg.duration_minutes)))}), trading
+          {cfg.iterations_per_round ?? 3} iteration(s) a side. The champion defends against the top {cfg.contender_top_n}{" "}
           {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"}, one at a time;
           a match ends after {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of
           margins, then the next challenger steps up. As many matches as fit in the window.
@@ -1415,6 +1415,14 @@ export default function Duels() {
                 disabled={!cfg || busy}
                 onCommit={(v) => void patch({ champion_freshness_days: v })}
                 helper="How old the duel champion may get before the crowning policy stops acting on it and falls back to the pooled crown. A separate question from the rematch cooldown, which it used to share a setting with."
+              />
+              <NumField
+                label="Iterations per leg of a round"
+                value={cfg?.iterations_per_round ?? 3}
+                disabled={!cfg || busy}
+                min={1}
+                onCommit={(v) => void patch({ iterations_per_round: Math.round(v) })}
+                helper="The ring's resolving power, and the only setting here that changes what a duel can SEE. A round compares two single measurements, so it carries the noise of both — measured on a real link, ~2.3 points per run becomes ~3.3 per round, against true edges between top profiles of 0.17-0.30 points. Medianing k iterations divides that by √k: at a 0.3-point edge, rounds needed for a confident call fall from 468 (k=1) to 156 (k=3) to 94 (k=5). A round costs k times as long, so this is roughly break-even on wall clock and a large win on verdicts actually reached."
               />
               <NumField
                 label="Rating prior (virtual rounds)"

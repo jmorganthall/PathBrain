@@ -337,6 +337,23 @@ DEFAULT_CONFIG: dict = {
         # biased a verdict — it just put reconfiguration noise into every pair, and noise
         # costs pairs. 0 restores the old measure-immediately behaviour.
         "settle_seconds": 3,
+        # Benchmark iterations per LEG of a round — one profile's side of one head-to-head
+        # comparison. This is the lever that decides whether the ring can resolve your
+        # field at all, and it is not a preference: it is set by the measurement noise.
+        #
+        # Measured on a real link: per-run Overall noise is ~2.3 points, so a round's margin
+        # (a difference of two runs) carries ~3.3 points of noise — while the observed
+        # long-run edges between top profiles are 0.17-0.30 points. At one iteration a leg
+        # that is a 3.3-point ruler measuring 0.3-point differences, and no stopping rule
+        # can rescue it; the recorded margin of a 3-round match is ~1.3 whether the true
+        # edge is 0.3 or exactly zero.
+        #
+        # Taking the median of k iterations divides that noise by sqrt(k), and rounds needed
+        # for a confident call fall in proportion: at a 0.3-point edge, 468 rounds at 1
+        # iteration, 156 at 3, 94 at 5. A round costs k times as long, so this is roughly
+        # break-even on wall clock and a large win on *verdicts reached* — a match that
+        # never resolves is time spent for nothing.
+        "iterations_per_round": 3,
     },
     # Historical trends: baseline a metric over this many days of history, judge a
     # run against the median over the last `window_hours`, and require at least

@@ -67,6 +67,8 @@ class DuelScheduleUpdate(BaseModel):
     # the rating itself), and the virtual pairs added to every record before fitting.
     rank_sigma: float | None = None
     rating_prior_pairs: float | None = None
+    # Benchmark iterations per leg of a round — the ring's resolving power.
+    iterations_per_round: int | None = None
     # Which rule names the champion: "lineal" (you take the belt by beating its holder,
     # provided your whole shared record then favours you on both matches and rounds) or
     # "rating_floor" (the ring's #1 by proven rating). The standings rank on the floor
