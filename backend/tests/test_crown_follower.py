@@ -619,3 +619,105 @@ def test_a_pooled_crown_change_is_not_marked_applied_when_the_champion_was_writt
     # …and the write is recorded on its own row, naming what actually landed.
     apply_row = _events("apply")[-1]
     assert apply_row.fingerprint == champion_fp and apply_row.applied is True
+
+
+def test_the_pool_has_room_for_every_thread_that_can_ask_for_a_connection():
+    """The "Duels page takes minutes and then times out" bug, pinned.
+
+    SQLAlchemy's default pool is 5 connections + 10 overflow with a **30-second** wait
+    before the 16th caller fails. That is sized for sessions on a networked database; a
+    SQLite connection is a file handle, WAL lets any number of readers work at once, and
+    there is no server to protect. Meanwhile this process runs every sync endpoint on
+    Starlette's 40-thread pool plus a scheduler, a duel, a probe worker and whichever
+    engine is mid-session — so 15 was not a margin, it was a queue, and a page that fans
+    out a few requests during a duel waited half a minute for permission to run a query
+    that takes a second.
+    """
+    from pathbrain.database import engine, pool_status
+
+    status = pool_status()
+    # Starlette's default threadpool (40) plus the engine threads that hold a session
+    # while they work — scheduler, duel, challenger, sweep, refresh, the tests, the probe
+    # worker. Capacity has to clear that, or the surplus threads queue.
+    assert status["capacity"] >= 55, status
+    # And a caller still waiting after this long is not busy, it is leaking a session:
+    # fail loudly in seconds rather than stalling for the default half-minute.
+    assert engine.pool._timeout <= 15, "a long pool wait reads as 'the server is broken'"
+
+
+def test_crown_grades_are_identical_whether_the_json_is_read_in_sql_or_in_python():
+    """The crown reads three numbers out of each run's ``subscores``. It used to fetch the
+    whole JSON blob and decode one document per run in the entire history — 84% of the duel
+    standings' response, growing with every night measured, all while holding a pooled
+    connection. Extracting the values in SQL is the same arithmetic over the same rows, so
+    this pins that it is also the same *answer*: the median is still taken in Python, over
+    values that must match the decoded ones exactly.
+    """
+    from sqlalchemy import select
+
+    from pathbrain.crown_follower import (
+        _collect,
+        _grade_samples,
+        _profile_overall,
+        profile_overalls,
+    )
+    from pathbrain.database import session_scope
+    from pathbrain.models import Run, RunStatus, Score
+
+    version, metrics = "id-test-v1", ["fcp", "lcp"]
+    weights = {"fcp": 1.0, "lcp": 0.5}
+    fps = ["idfp-a", "idfp-b", "idfp-c"]
+    made: list[int] = []
+    with session_scope() as s:
+        for i, (fp, fcp, lcp, comp) in enumerate([
+            ("idfp-a", 80.0, 60.0, "exact"),
+            ("idfp-a", 90.0, 70.0, "exact"),
+            ("idfp-a", 10.0, 10.0, "incomparable"),   # must be excluded by BOTH paths
+            ("idfp-b", 55.5, 44.25, "partial"),       # an even count → median averages two
+            ("idfp-b", 65.5, 54.25, "exact"),
+            ("idfp-c", 70.0, None, "exact"),          # a missing metric is omitted, not 0
+        ]):
+            run = Run(status=RunStatus.COMPLETE, iterations=3, settings_fingerprint=fp)
+            s.add(run)
+            s.flush()
+            sub = {"fcp": fcp, "other": 1.0}
+            if lcp is not None:
+                sub["lcp"] = lcp
+            s.add(Score(run_id=run.id, methodology_version=version, is_at_measure=False,
+                        comparability=comp, subscores=sub, axis_scores={}, weights_used={},
+                        metric_values={}))
+            made.append(run.id)
+
+    try:
+        with session_scope() as s:
+            # The path as it was: fetch the blob, decode it, filter in Python.
+            rows = s.execute(
+                select(Run.settings_fingerprint, Run.iterations, Score.subscores,
+                       Score.comparability)
+                .join(Score, Score.run_id == Run.id)
+                .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint.in_(fps),
+                       Score.methodology_version == version)
+            ).all()
+            by_fp: dict[str, list] = {fp: [] for fp in fps}
+            for fp, iters, sub, comp in rows:
+                by_fp[fp].append((iters, sub, comp))
+            decoded = {
+                fp: _grade_samples(*_collect(by_fp[fp], metrics), metrics, metrics, weights)
+                for fp in fps
+            }
+            extracted = profile_overalls(s, fps, version, metrics, metrics, weights)
+
+            assert extracted == decoded, (extracted, decoded)
+            # The incomparable run scored 10/10; had it leaked in, a's median would drop.
+            assert decoded["idfp-a"][1] == 6, "only the two comparable runs' iterations"
+            # A run that never measured lcp can't supply a required metric → no Overall.
+            assert extracted["idfp-c"][0] is None
+            # The single-profile accessor grades the same runs the same way.
+            for fp in fps:
+                assert _profile_overall(s, fp, version, metrics, metrics, weights) == decoded[fp]
+    finally:
+        with session_scope() as s:
+            for rid in made:
+                row = s.get(Run, rid)
+                if row is not None:
+                    s.delete(row)

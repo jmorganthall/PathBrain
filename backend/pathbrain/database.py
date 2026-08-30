@@ -20,19 +20,78 @@ class Base(DeclarativeBase):
     pass
 
 
+#: Connections kept warm for SQLite, and the burst allowed past them.
+#:
+#: SQLAlchemy's default pool — 5 connections plus 10 overflow, and a **30-second** wait
+#: before the 16th caller gives up — is sized for sessions on a networked database, where
+#: connections are a scarce server-side resource worth rationing. A SQLite connection is a
+#: file handle: WAL lets any number of readers work at once and there is no server to
+#: protect. Against a process that runs every sync endpoint on Starlette's 40-thread pool,
+#: *plus* a scheduler, a duel, a probe worker and whichever engine is mid-session, 15 is
+#: not a safety margin. It is a queue, and a page that fans out a handful of requests while
+#: a duel runs walks straight into it: the 16th caller waits half a minute and then fails
+#: with ``QueuePool limit of size 5 overflow 10 reached``. That is the "the Duels page takes
+#: minutes and then times out" report — a request whose own query takes a second or two,
+#: spending thirty seconds waiting for permission to make it.
+#:
+#: So capacity is set past the number of threads that can possibly ask, and the wait is
+#: cut: a caller still queuing after ``_SQLITE_POOL_TIMEOUT`` is not busy, it is leaking a
+#: session somewhere, and a loud failure names that in seconds where a 30-second stall
+#: reads as "the server is broken". Raising the ceiling does not raise write pressure —
+#: the same threads do the same work, they simply stop waiting in line for a file handle —
+#: so ``busy_timeout`` is unchanged.
+_SQLITE_POOL_SIZE = 30
+_SQLITE_MAX_OVERFLOW = 70
+_SQLITE_POOL_TIMEOUT = 10.0
+
+
 def _make_engine(database_url: str):
     connect_args = {}
+    kwargs: dict = {}
     if database_url.startswith("sqlite"):
         # Allow use across FastAPI's threadpool / background tasks.
         connect_args["check_same_thread"] = False
+        kwargs.update(
+            pool_size=_SQLITE_POOL_SIZE,
+            max_overflow=_SQLITE_MAX_OVERFLOW,
+            pool_timeout=_SQLITE_POOL_TIMEOUT,
+        )
         # Ensure the parent directory exists for file-based SQLite.
         path = database_url.split("sqlite:///", 1)[-1]
         if path and path not in (":memory:",):
             os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-    eng = create_engine(database_url, connect_args=connect_args, future=True)
+    eng = create_engine(database_url, connect_args=connect_args, future=True, **kwargs)
     if database_url.startswith("sqlite"):
         _install_sqlite_pragmas(eng)
     return eng
+
+
+def pool_status() -> dict:
+    """What the connection pool is doing right now — for ``/api/health/pipeline``.
+
+    Exhaustion is invisible from the outside: every request simply takes thirty seconds
+    and then fails, which reads as "the server is broken" rather than "the sixteenth
+    caller is queuing for a file handle". ``checked_out`` against ``capacity`` says it
+    outright, and is the one number that distinguishes a slow query from a starved one.
+    """
+    pool = engine.pool
+    try:
+        size = int(pool.size())                      # type: ignore[attr-defined]
+        overflow = int(pool.overflow())              # type: ignore[attr-defined]
+        checked_out = int(pool.checkedout())         # type: ignore[attr-defined]
+        capacity = size + int(getattr(pool, "_max_overflow", 0) or 0)
+    except Exception:  # noqa: BLE001 — a pool without these (NullPool) still reports a shape
+        return {"kind": type(pool).__name__, "capacity": None, "checked_out": None}
+    return {
+        "kind": type(pool).__name__,
+        "capacity": capacity,
+        "checked_out": checked_out,
+        # Connections handed out beyond the kept-warm set: a steady non-zero overflow is
+        # the early warning that capacity is being approached.
+        "overflow": overflow,
+        "size": size,
+        "timeout_s": getattr(pool, "_timeout", None),
+    }
 
 
 def _install_sqlite_pragmas(eng) -> None:

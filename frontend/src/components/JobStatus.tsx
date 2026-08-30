@@ -27,6 +27,11 @@ const IDLE_POLL_MS = 10000;
 // the question it is standing in for anyway — 3/40 doesn't tell you whether to wait or walk
 // away. One second is the coarsest tick that still looks alive.
 const TICK_MS = 1000;
+// The progress bar has to look continuous, not merely alive, so it redraws faster than the
+// countdown's one-second beat — at a second a step a 20s iteration advances in 5% jerks.
+const PROGRESS_TICK_MS = 250;
+// The ceiling for an *interpolated* bar on a running job (see `useSmoothProgress`).
+const RUNNING_MAX_PCT = 99;
 
 /** "1m 04s" / "42s" — the countdown itself, no "~" and no "left" (the label says that). */
 function fmtCountdown(ms: number): string {
@@ -126,6 +131,54 @@ function Stalled({ ms }: { ms: number }) {
   );
 }
 
+/**
+ * The progress bar advances *between* counter ticks, not only on them.
+ *
+ * A job's `current`/`total` counts finished units, so a bar drawn straight from it is
+ * motionless for the whole of a unit and then jumps. On a benchmark run a unit is a full
+ * iteration — tens of seconds of a bar that looks hung, followed by a lurch. What fills
+ * the gap is the unit's *expected* cost (`unit_ms`, the same number the countdown beside
+ * it is built from, so the two can't disagree about how fast the job is going): the bar
+ * crosses the unit in progress at the rate that unit is expected to take.
+ *
+ * It never crosses the boundary. Interpolation is a claim about a step the job has not
+ * finished, so it is capped at the edge of the current unit: an iteration running long
+ * leaves the bar parked there — the one honest thing to show, since all that is actually
+ * known is that the step is overdue — and it moves again the instant the counter ticks. A
+ * unit that finishes early simply jumps to its boundary. So the bar is always either
+ * moving or waiting on a genuinely late step, and can never be ahead of the work.
+ */
+function useSmoothProgress(job: Job): { determinate: boolean; pct: number } {
+  const total = job.total ?? 0;
+  const current = job.current ?? 0;
+  const determinate = job.total != null && total > 0 && job.current != null;
+  const smoothing =
+    determinate && job.status === "running" && !job.queued && !!job.unit_ms && current < total;
+
+  // When the counter last moved, on the browser's clock. Observed here rather than sent by
+  // the server because the server keeps no per-unit timestamps — it would have to assume
+  // every unit so far took exactly the estimate, which is precisely the assumption that
+  // fails on the slow job this exists to keep alive. The cost is an anchor lagging by up
+  // to one poll, which parks a second or two of a long unit at the boundary; the bar is
+  // never ahead of the work, only occasionally early to wait.
+  const anchor = useRef({ current, at: Date.now() });
+  if (anchor.current.current !== current) anchor.current = { current, at: Date.now() };
+
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!smoothing) return;
+    const id = setInterval(() => tick((t) => t + 1), PROGRESS_TICK_MS);
+    return () => clearInterval(id);
+  }, [smoothing]);
+
+  if (!determinate) return { determinate: false, pct: 0 };
+  const within = smoothing ? Math.min(1, (Date.now() - anchor.current.at) / job.unit_ms!) : 0;
+  const pct = ((current + within) / total) * 100;
+  // Interpolation may reach a unit boundary but never a full bar: 100% is the one reading
+  // that means finished, and this is being drawn on a job that is still running.
+  return { determinate: true, pct: smoothing ? Math.min(RUNNING_MAX_PCT, pct) : Math.min(100, pct) };
+}
+
 function StatusIcon({ status }: { status: Job["status"] }) {
   if (status === "running") return <CircularProgress size={16} />;
   if (status === "succeeded") return <CheckCircleIcon color="success" fontSize="small" />;
@@ -141,8 +194,7 @@ function JobRow({
   indent?: boolean;
   onCancel?: (job: Job) => void;
 }) {
-  const determinate = job.total != null && job.total > 0 && job.current != null;
-  const pct = determinate ? Math.min(100, Math.round((job.current! / job.total!) * 100)) : 0;
+  const { determinate, pct } = useSmoothProgress(job);
   const canCancel = job.status === "running" && !!job.cancel_url;
   return (
     <Box
@@ -198,7 +250,7 @@ function JobRow({
         <Stack direction="row" spacing={0.75} alignItems="baseline" flexWrap="wrap" useFlexGap>
           <Typography variant="caption" color={job.error ? "error.main" : "text.secondary"}>
             {job.error ?? job.message}
-            {determinate && job.status === "running" ? ` · ${pct}%` : ""}
+            {determinate && job.status === "running" ? ` · ${Math.round(pct)}%` : ""}
           </Typography>
           {job.status === "running" && !job.error && (
             <Typography component="span" variant="caption" color="text.secondary">

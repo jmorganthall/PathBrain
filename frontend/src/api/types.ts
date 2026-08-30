@@ -1315,6 +1315,12 @@ export interface Job {
   // so `eta_ms` is a duration of work rather than a remaining time and must NOT be ticked
   // down — a queued job's finish time moves out for as long as it waits.
   queued?: boolean;
+  // Expected duration of ONE unit of this job's work — an iteration, a sweep variant, a
+  // profile. The same number the ETA is built from, so the bar and the countdown can't
+  // form separate opinions about how fast the job is going. It lets the bar advance
+  // *within* the unit in progress instead of standing still until the counter ticks;
+  // null when the job has no units (a time-boxed window) or none has finished yet.
+  unit_ms?: number | null;
   // How long this job has held the benchmark pipeline without reporting progress (null =
   // it is progressing, or isn't the holder). It replaces the countdown when set: a
   // time-boxed job past its deadline floors at "finishing…", which is precisely the

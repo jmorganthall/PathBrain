@@ -296,6 +296,26 @@ LLM-based. See `README.md` for the product overview.
     profile test also gained
     real progress — its completed iterations were only ever in the stage sentence, so its bar was
     indeterminate; they're now summed from its chunks (`job_group`), like the manual-run series.
+    **The bar moves between counter ticks, not only on them** (`Eta.unit_ms` →
+    `JobStatus.useSmoothProgress`). `current`/`total` counts *finished* units, so a bar drawn
+    straight from it stands dead still for the whole of a unit and then lurches — and on a
+    benchmark run a unit is a full iteration, so that is tens of seconds of a bar indistinguishable
+    from a hang. The fix is the unit's **expected cost**, which `_eta_ms` already computes on the
+    way to the countdown (the measured per-iteration price, or the job's own observed rate) and now
+    returns as a third field rather than leaving the client to form a second opinion about how fast
+    the job is going. The client crosses the unit in progress at that rate and **never crosses its
+    boundary**: interpolation is a claim about a step the job hasn't finished, so a late iteration
+    parks the bar at the edge — all that is actually known is that the step is overdue — and it
+    moves again the instant the counter ticks; a unit that finishes early simply jumps to its
+    boundary. So the bar is always either moving or waiting on a genuinely late step, and can never
+    be ahead of the work. Two deliberate limits: a **queued** job reports no unit cost at all
+    (nothing is running, so nothing may creep — the same reason its countdown stands still), and an
+    interpolated bar caps at 99% (100% is the one reading that means *finished*, and this is being
+    drawn on a job that is still running). The boundary is anchored **client-side**, on the poll
+    where the counter is seen to move, because the server keeps no per-unit timestamps — deriving
+    one would mean assuming every unit so far took exactly the estimate, which is precisely the
+    assumption that fails on the slow job this exists to keep alive; the cost is an anchor lagging
+    by up to one poll, i.e. a second or two parked early, never a bar ahead of the work.
   - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
     iterations still needed to reach `correlation.min_iterations`, then **restore the
     baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
@@ -390,6 +410,21 @@ LLM-based. See `README.md` for the product overview.
     the `coordinator` lock (so the scheduler defers via `coordinator.busy()`); persisted to
     a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on startup.
     `/api/settings/race` (+ `/race/cancel`).
+  - **Crown grades read three numbers per run, so they read three numbers per run**
+    (`crown_follower._crown_columns`). `Score.subscores` is a JSON blob of every metric a
+    run scored; grading a profile needs only the crown metrics' values and the iteration
+    count. Fetching the blob meant decoding one JSON document per run in the **whole of
+    history** — 120k documents, 2.2s of pure Python, **84% of the duel standings' entire
+    response** (measured), growing with every night measured and holding a pooled connection
+    throughout. `Score.subscores[m].as_float()` extracts the values in SQL (`json_extract`),
+    and the `incomparable` filter moved into the `WHERE` with them, so the same arithmetic
+    runs over the same rows in C: `profile_overalls` 2.46s → 0.64s and `duel.standings()`
+    4.09s → 0.90s at 120k runs. The median is still taken in Python over the same values, so
+    the answer is identical by construction — pinned by
+    `test_crown_grades_are_identical_whether_the_json_is_read_in_sql_or_in_python`, which
+    grades both ways and diffs them. `_collect_values` is the SQL-shaped sibling of
+    `_collect`, which stays for the explore ledger (it filters each run by `created_at`
+    before grading, so it needs the rows themselves).
   - `crown_follower.py` — **Follow best**: keep the firewall's SQM settings on the crowned
     best profile (`compute_profiles` → `best_fingerprint`) as the crown changes.
     **Event-driven, not polled**: the runner queues `notify_run_complete` as each run finishes
@@ -1255,7 +1290,25 @@ LLM-based. See `README.md` for the product overview.
     database and the fallback is a safety net rather than the usual path. `routes_baseline`,
     `routes_duel`, and `scheduler` all go through it.
   - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
-    columns; `create_all` for new tables).
+    columns; `create_all` for new tables). **The connection pool is sized for this
+    server's real concurrency, not SQLAlchemy's networked-database default.** That default
+    — 5 connections + 10 overflow, and a **30-second** wait before the 16th caller fails
+    with `QueuePool limit of size 5 overflow 10 reached` — rations connections because on a
+    remote database they are a scarce server-side resource. A SQLite connection is a file
+    handle: WAL lets any number of readers work at once and there is no server to protect.
+    Meanwhile the process runs *every* sync endpoint on Starlette's 40-thread pool, plus a
+    scheduler, a duel, a probe worker and whichever engine is mid-session — so 15 was never
+    a safety margin, it was a queue. That is the *"Dueling page takes minutes to load and
+    often times out"* report, and why it survived the `compute_profiles` memoization: the
+    endpoint's own work is ~1s, and the other 30 were spent waiting for permission to run
+    it, then erroring. `_SQLITE_POOL_SIZE`/`_SQLITE_MAX_OVERFLOW` put capacity (100) past
+    the number of threads that can possibly ask, and `_SQLITE_POOL_TIMEOUT` cuts the wait
+    to 10s — a caller still queuing then is not busy, it is leaking a session, and a loud
+    failure names that where a 30-second stall reads as "the server is broken". Raising the
+    ceiling does **not** raise write pressure (the same threads do the same work; they just
+    stop queuing for a file handle), so `busy_timeout` is unchanged. `pool_status()` reports
+    `checked_out`/`capacity` on `GET /api/health/pipeline` — exhaustion is otherwise
+    invisible, since a starved request and a slow one look identical from outside.
   - `api/` — REST routers mounted at `/api`.
 - `frontend/` — React + TS + Vite + MUI dashboard (dark mode). **Every route is code-split**
   (`App.tsx`: `lazy` + `Suspense`): the app was one 1.2 MB chunk, so opening any page first
