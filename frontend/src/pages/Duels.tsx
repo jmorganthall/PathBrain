@@ -620,6 +620,36 @@ function DecisionCost({ cfg }: { cfg: DuelConfig }) {
   );
 }
 
+// ── One color per corner, everywhere ──────────────────────────────────────────────────
+//
+// Color answers exactly one question in the duel view: WHICH profile. The belt holder is
+// blue, the challenger green — in the score, the split bar, the streak, the margin and
+// the round-by-round strip, bound to the names by dots. It used to answer two: the live
+// scoreboard painted whichever side was LEADING in the theme's primary blue, which is
+// also the holder's side color — so a challenger ahead 6–3 showed a blue 6 above a green
+// bar, the winner's tally in the other fighter's color. (The bout tape's bar used a third
+// scheme again, green/orange.) The lead is carried by weight, dimming and the summary
+// sentence, never by switching hues.
+const HOLDER_COLOR = "primary.main";
+const CHALLENGER_COLOR = "success.main";
+
+function SideDot({ color, right = false }: { color: string; right?: boolean }) {
+  return (
+    <Box
+      component="span"
+      sx={{
+        display: "inline-block",
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        bgcolor: color,
+        verticalAlign: "middle",
+        ...(right ? { ml: 0.75 } : { mr: 0.75 }),
+      }}
+    />
+  );
+}
+
 // One match on the tape: the two corners, the round scoreline, and how the sequential
 // test ended it. The round bar is the actual evidence — each segment is one interleaved
 // A/B round that one side won.
@@ -671,8 +701,8 @@ function BoutRow({ m }: { m: DuelMatchup }) {
             bgcolor: "action.hover",
           }}
         >
-          <Box sx={{ width: `${incShare}%`, bgcolor: "success.main" }} />
-          <Box sx={{ width: `${100 - incShare}%`, bgcolor: "warning.main" }} />
+          <Box sx={{ width: `${incShare}%`, bgcolor: HOLDER_COLOR }} />
+          <Box sx={{ width: `${100 - incShare}%`, bgcolor: CHALLENGER_COLOR }} />
         </Box>
       </Tooltip>
       <Typography variant="caption" color="text.secondary">
@@ -686,10 +716,12 @@ function BoutRow({ m }: { m: DuelMatchup }) {
 // ── The match in progress ───────────────────────────────────────────────────────────────
 //
 // "round 4 (2-1)" told you a match was happening and almost nothing else: not whose wins
-// those were, not by how much, not how close a verdict was. All three are the question.
-// So: both names with their own tally, a bar whose fill is the split, the median margin
-// signed from the challenger's side (which is what the verdict is actually decided on),
-// and how far the match has to go before it can end.
+// those were, not by how much, not how close a verdict was. All three are the question —
+// and a card of correct numbers can still fail to answer it, which is what the first
+// scoreboard did: unlabeled fractions ("9 / 3 min · 12 cap", "1/3") and a leader
+// highlight in the wrong fighter's color. So now: corner colors bound to the names by
+// dots and used for nothing else, a one-sentence answer to "who is winning, by how much?"
+// in words, and every tile's numbers labeled with what they are counting toward.
 function MatchScoreboard({ live }: { live: DuelLive }) {
   // `pairs` is the wire name (an API key, unchanged); `rounds` is what a person reads.
   const { incumbent, challenger, leader, pairs: rounds } = live;
@@ -701,18 +733,48 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
   const chaName = challenger.name || challenger.label || "challenger";
   const margin = live.median_margin;
 
-  const side = (name: string, wins: number, ahead: boolean, align: "left" | "right") => (
+  // The headline, in words. The tiles below carry the mechanics; this is the answer to
+  // the only question a live scoreboard is asked, stated so it needs no decoding.
+  const summary = (() => {
+    if (decided === 0) return "Nothing decided yet — the first rounds are still being measured.";
+    const lead =
+      leader === "level"
+        ? `Dead level at ${incumbent.wins}–${challenger.wins} on rounds`
+        : leader === "challenger"
+          ? `${chaName} leads ${challenger.wins}–${incumbent.wins} on rounds`
+          : `${incName} leads ${incumbent.wins}–${challenger.wins} on rounds`;
+    const by =
+      margin == null || margin === 0
+        ? ""
+        : `; a typical round goes to ${margin > 0 ? chaName : incName} by ${fmtNum(
+            Math.abs(margin),
+            2
+          )} Overall points`;
+    return `${lead}${by}.`;
+  })();
+
+  // A corner: its dot, its name, its tally — always in its OWN color. The trailing side
+  // is dimmed and lighter; the hue never moves, because color says who, not who's ahead.
+  const side = (name: string, wins: number, color: string, dim: boolean, align: "left" | "right") => (
     <Box sx={{ textAlign: align, minWidth: 0, flex: 1 }}>
       <Typography
         variant="body2"
         noWrap
-        sx={{ fontWeight: ahead ? 700 : 500, color: ahead ? "text.primary" : "text.secondary" }}
+        sx={{ fontWeight: dim ? 500 : 700, color: dim ? "text.secondary" : "text.primary" }}
       >
+        {align === "left" && <SideDot color={color} />}
         {name}
+        {align === "right" && <SideDot color={color} right />}
       </Typography>
       <Typography
         variant="h4"
-        sx={{ lineHeight: 1.1, color: ahead ? "primary.main" : "text.secondary", fontVariantNumeric: "tabular-nums" }}
+        sx={{
+          lineHeight: 1.1,
+          color,
+          opacity: dim ? 0.5 : 1,
+          fontWeight: dim ? 400 : 700,
+          fontVariantNumeric: "tabular-nums",
+        }}
       >
         {wins}
       </Typography>
@@ -724,7 +786,7 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
         <Chip size="small" label={`Match ${live.bout}`} />
         <Typography variant="caption" color="text.secondary" sx={{ flexGrow: 1 }}>
-          round {rounds + 1} · {rounds} decided
+          round {rounds + 1} in progress
         </Typography>
         <Tooltip title="Why this profile is in the ring at all.">
           <Typography variant="caption" color="text.secondary" noWrap sx={{ maxWidth: "50%" }}>
@@ -734,72 +796,92 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
       </Stack>
 
       <Stack direction="row" spacing={2} alignItems="flex-end">
-        {side(`${incName} (belt)`, incumbent.wins, leader === "incumbent", "left")}
+        {side(`${incName} (belt)`, incumbent.wins, HOLDER_COLOR, leader === "challenger", "left")}
         <Typography variant="caption" color="text.secondary" sx={{ pb: 1 }}>
           vs
         </Typography>
-        {side(chaName, challenger.wins, leader === "challenger", "right")}
+        {side(chaName, challenger.wins, CHALLENGER_COLOR, leader === "incumbent", "right")}
       </Stack>
 
-      {/* The split, as one bar: left is the belt, right is the challenger. */}
+      {/* The split of round wins, in the corners' own colors: left the holder, right the
+          challenger — the widths are the lead, so the hues never need to move. */}
       <Box
         sx={{
           mt: 1, height: 8, borderRadius: 4, overflow: "hidden", display: "flex",
           bgcolor: "action.hover",
         }}
       >
-        <Box sx={{ width: `${100 - share}%`, bgcolor: leader === "incumbent" ? "primary.main" : "text.disabled" }} />
-        <Box sx={{ width: `${share}%`, bgcolor: leader === "challenger" ? "success.main" : "text.disabled" }} />
+        <Box sx={{ width: `${100 - share}%`, bgcolor: HOLDER_COLOR }} />
+        <Box sx={{ width: `${share}%`, bgcolor: CHALLENGER_COLOR }} />
       </Box>
 
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+        {summary}
+      </Typography>
+
       <Stack direction="row" spacing={2} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
-        <Tooltip title="The median Overall-point gap across the rounds so far, signed from the challenger's side: positive means the challenger is ahead. This — not the round count — is what the verdict is decided on, because it keeps the size of each win instead of throwing it away.">
+        <Tooltip title="The median Overall-point gap across the rounds so far. This — not the round count — is what the verdict is decided on, because it keeps the size of each win instead of throwing it away.">
           <Box>
             <Typography variant="caption" color="text.secondary">
-              Median margin
+              Typical round margin
             </Typography>
             <Typography
               variant="body1"
               sx={{
                 lineHeight: 1.3,
-                color: margin == null ? "text.secondary" : margin > 0 ? "success.main" : margin < 0 ? "primary.main" : "text.primary",
+                color:
+                  margin == null || margin === 0
+                    ? "text.primary"
+                    : margin > 0
+                      ? CHALLENGER_COLOR
+                      : HOLDER_COLOR,
               }}
             >
-              {margin == null ? "—" : `${margin > 0 ? "+" : ""}${fmtNum(margin, 2)}`}
+              {margin == null ? "—" : `${fmtNum(Math.abs(margin), 2)} pts`}
               {margin != null && (
                 <Typography component="span" variant="caption" color="text.secondary">
                   {" "}
-                  {margin > 0 ? chaName : margin < 0 ? incName : "level"}
+                  {margin > 0 ? `to ${chaName}` : margin < 0 ? `to ${incName}` : "· level"}
                 </Typography>
               )}
             </Typography>
           </Box>
         </Tooltip>
 
-        <Tooltip title={`A match can't be called before ${live.min_pairs} rounds, and is a draw if it reaches ${live.max_pairs} undecided.`}>
+        <Tooltip
+          title={`A match can't be called before ${live.min_pairs} rounds; if it reaches ${live.max_pairs} still undecided it's recorded a draw.`}
+        >
           <Box>
             <Typography variant="caption" color="text.secondary">
               Rounds
             </Typography>
             <Typography variant="body1" sx={{ lineHeight: 1.3 }}>
-              {rounds}
+              {rounds} of {live.max_pairs}
               <Typography component="span" variant="caption" color="text.secondary">
                 {" "}
-                / {live.min_pairs} min · {live.max_pairs} cap
+                · a call needs {live.min_pairs}+
               </Typography>
             </Typography>
           </Box>
         </Tooltip>
 
-        <Tooltip title="An unbroken run of round wins ends the match on its own — a clean run is worth more than a long scrappy one, and this is how close either side is to it.">
+        <Tooltip
+          title={`${live.streak.needed} round wins in a row end the match on the spot, whatever the score — a clean run is worth more than a long scrappy one. This is the current run.`}
+        >
           <Box>
             <Typography variant="caption" color="text.secondary">
-              Streak
+              Win streak
             </Typography>
             <Typography variant="body1" sx={{ lineHeight: 1.3 }}>
-              {live.streak.length}/{live.streak.needed}
+              {live.streak.length} of {live.streak.needed}
               {live.streak.side && (
-                <Typography component="span" variant="caption" color="text.secondary">
+                <Typography
+                  component="span"
+                  variant="caption"
+                  sx={{
+                    color: live.streak.side === "challenger" ? CHALLENGER_COLOR : HOLDER_COLOR,
+                  }}
+                >
                   {" "}
                   {live.streak.side === "challenger" ? chaName : incName}
                 </Typography>
@@ -809,19 +891,22 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
         </Tooltip>
 
         {live.p_value != null && (
-          <Tooltip title={`How unlikely this run of margins would be if the two profiles were actually equal. The match is called when it drops below ${live.alpha} (already corrected for checking after every round).`}>
+          <Tooltip
+            title={`How unlikely this run of margins would be if the two profiles were actually equal — smaller is stronger. The match is called the moment it drops to ${live.alpha} or below (already corrected for checking after every round).`}
+          >
             <Box>
               <Typography variant="caption" color="text.secondary">
-                Evidence
+                Proof so far
               </Typography>
               <Typography
                 variant="body1"
-                sx={{ lineHeight: 1.3, color: live.p_value <= live.alpha ? "success.main" : "text.primary" }}
+                sx={{ lineHeight: 1.3, fontWeight: live.p_value <= live.alpha ? 700 : 400 }}
               >
                 p {fmtNum(live.p_value, 3)}
                 <Typography component="span" variant="caption" color="text.secondary">
                   {" "}
-                  / {fmtNum(live.alpha, 3)} needed
+                  · needs ≤ {fmtNum(live.alpha, 3)}
+                  {live.p_value <= live.alpha ? " — reached" : ""}
                 </Typography>
               </Typography>
             </Box>
@@ -829,24 +914,45 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
         )}
       </Stack>
 
-      {/* Every round so far, in order — a steady lead and one lucky round look nothing alike,
-          and the median alone can't tell them apart. */}
+      {/* Every round so far, in order, mirrored around a centre line — a steady lead and
+          one lucky round look nothing alike, and the median alone can't tell them apart. */}
       {live.margins.length > 1 && (
-        <Box sx={{ display: "flex", alignItems: "center", gap: "2px", height: 26, mt: 1 }}>
-          {live.margins.map((m, i) => (
-            <Tooltip key={i} title={`round ${rounds - live.margins.length + i + 1}: ${m > 0 ? "+" : ""}${fmtNum(m, 2)} ${m > 0 ? chaName : incName}`}>
-              <Box
-                sx={{
-                  flex: 1, minWidth: 3, height: `${Math.min(100, 20 + Math.abs(m) * 30)}%`,
-                  alignSelf: m > 0 ? "flex-start" : "flex-end",
-                  borderRadius: 0.5,
-                  bgcolor: m > 0 ? "success.main" : "primary.main",
-                  opacity: 0.85,
-                }}
-              />
-            </Tooltip>
-          ))}
-        </Box>
+        <>
+          <Box sx={{ position: "relative", height: 30, mt: 1, display: "flex", gap: "2px" }}>
+            <Box
+              sx={{
+                position: "absolute", left: 0, right: 0, top: "50%",
+                borderTop: "1px dashed", borderColor: "divider", pointerEvents: "none",
+              }}
+            />
+            {live.margins.map((m, i) => (
+              <Tooltip
+                key={i}
+                title={`round ${rounds - live.margins.length + i + 1}: ${
+                  m === 0
+                    ? "dead level"
+                    : `${m > 0 ? chaName : incName} won by ${fmtNum(Math.abs(m), 2)}`
+                }`}
+              >
+                <Box sx={{ flex: 1, minWidth: 3, position: "relative" }}>
+                  <Box
+                    sx={{
+                      position: "absolute", left: 0, right: 0, borderRadius: 0.5,
+                      bgcolor: m > 0 ? CHALLENGER_COLOR : HOLDER_COLOR, opacity: 0.9,
+                      height: `${Math.min(50, 14 + Math.abs(m) * 16)}%`,
+                      ...(m > 0 ? { bottom: "50%" } : { top: "50%" }),
+                    }}
+                  />
+                </Box>
+              </Tooltip>
+            ))}
+          </Box>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.25 }}>
+            Round by round: <SideDot color={CHALLENGER_COLOR} />
+            {chaName} up · <SideDot color={HOLDER_COLOR} />
+            {incName} down — taller = won by more.
+          </Typography>
+        </>
       )}
     </Box>
   );
