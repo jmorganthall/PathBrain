@@ -315,3 +315,30 @@ def test_reading_thousands_of_profiles_does_not_overrun_the_sql_parameter_limit(
         # None of them have runs, so every one is the empty answer — the point is that it
         # answered at all.
         assert all(v == {"metrics": {}, "iterations": 0, "run_count": 0} for v in out.values())
+
+
+def test_a_freshly_written_rollup_is_immediately_a_hit():
+    """The stored stamp is derived from the very rows the metrics were aggregated from, not
+    from the earlier ``stamps()`` read. Those are two queries with a gap between them, and a
+    run landing in that gap would store a stamp describing a different set of rows than the
+    metrics beside it — self-correcting on the next read, but it means a row written under
+    load could never be a hit. Reading a rollup back must find it valid immediately."""
+    ids = [_add_run("agg-selfdesc", fcp=42.0, lcp=42.0),
+           _add_run("agg-selfdesc", fcp=44.0, lcp=44.0)]
+    try:
+        profile_aggregates.invalidate(version=VERSION)
+        with session_scope() as s:
+            profile_aggregates.aggregates(s, VERSION, ["agg-selfdesc"])
+        with session_scope() as s:
+            fresh = profile_aggregates.stamps(s, VERSION, ["agg-selfdesc"])["agg-selfdesc"]
+            row = s.scalars(
+                select(ProfileAggregate).where(
+                    ProfileAggregate.methodology_version == VERSION,
+                    ProfileAggregate.settings_fingerprint == "agg-selfdesc",
+                )
+            ).one()
+            assert profile_aggregates._stored_stamp(row) == fresh, (
+                "a rollup must describe exactly the rows it was built from"
+            )
+    finally:
+        _cleanup(ids)

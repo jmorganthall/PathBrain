@@ -149,7 +149,8 @@ def _recompute(session, version: str, fingerprints: list[str]) -> dict[str, dict
         row
         for chunk in _chunks(fingerprints)
         for row in session.execute(
-            select(Run.settings_fingerprint, Run.iterations, Run.id, Score.subscores)
+            select(Run.settings_fingerprint, Run.iterations, Run.id,
+                   Score.computed_at, Score.subscores)
             .join(Score, Score.run_id == Run.id)
             .where(*_comparable_runs(version), Run.settings_fingerprint.in_(chunk))
         )
@@ -157,12 +158,16 @@ def _recompute(session, version: str, fingerprints: list[str]) -> dict[str, dict
 
     samples: dict[str, dict[str, list[float]]] = {}
     totals: dict[str, dict] = {}
-    for fp, iterations, run_id, subscores in rows:
-        agg = totals.setdefault(fp, {"iterations": 0, "runs": 0, "max_run_id": None})
+    for fp, iterations, run_id, scored_at, subscores in rows:
+        agg = totals.setdefault(
+            fp, {"iterations": 0, "runs": 0, "max_run_id": None, "scored_at": None}
+        )
         agg["iterations"] += int(iterations or 1)
         agg["runs"] += 1
         if agg["max_run_id"] is None or run_id > agg["max_run_id"]:
             agg["max_run_id"] = run_id
+        if scored_at is not None and (agg["scored_at"] is None or scored_at > agg["scored_at"]):
+            agg["scored_at"] = scored_at
         by_metric = samples.setdefault(fp, {})
         for metric, value in (subscores or {}).items():
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -172,23 +177,31 @@ def _recompute(session, version: str, fingerprints: list[str]) -> dict[str, dict
     out: dict[str, dict] = {}
     for fp in fingerprints:
         by_metric = samples.get(fp) or {}
-        agg = totals.get(fp) or {"iterations": 0, "runs": 0, "max_run_id": None}
+        agg = totals.get(fp) or {"iterations": 0, "runs": 0, "max_run_id": None, "scored_at": None}
         metrics = {}
         for metric, values in by_metric.items():
             if not values:
                 continue
             p25, p75 = _quartiles(values)
+            # The spread is stored alongside the median because it comes free in this pass
+            # and is the next consumer's input (`optimistic_overall` corners over each crown
+            # metric's good-side quartile). Adding it later would mean rebuilding every row.
             metrics[metric] = {"n": len(values), "median": median(values), "p25": p25, "p75": p75}
         out[fp] = {
             "metrics": metrics,
             "iterations": agg["iterations"],
             "run_count": agg["runs"],
-            "max_run_id": agg["max_run_id"],
+            # The stamp this rollup describes, derived from the very rows it aggregated —
+            # never from the earlier `stamps()` read. Those are two queries with a gap
+            # between them, and a run landing in that gap would store a stamp that describes
+            # a different set of rows than the metrics beside it. Self-describing is the only
+            # version of this that is true by construction rather than true if nothing raced.
+            "stamp": (agg["max_run_id"], agg["runs"], agg["iterations"], agg["scored_at"]),
         }
     return out
 
 
-def _persist(version: str, computed: dict[str, dict], fresh_stamps: dict[str, Stamp]) -> None:
+def _persist(version: str, computed: dict[str, dict]) -> None:
     """Write the recomputed rollups back, in their **own** transaction.
 
     Deliberately a separate ``session_scope``: request sessions come from the read-only
@@ -214,13 +227,13 @@ def _persist(version: str, computed: dict[str, dict], fresh_stamps: dict[str, St
             }
             now = datetime.now(timezone.utc)
             for fp, agg in computed.items():
-                max_run_id, run_count, iterations, scored_at = fresh_stamps.get(fp, _EMPTY)
+                max_run_id, run_count, iterations, scored_at = agg["stamp"]
                 row = existing.get(fp)
                 if row is None:
                     row = ProfileAggregate(settings_fingerprint=fp, methodology_version=version)
                     session.add(row)
                 row.metrics = agg["metrics"]
-                row.iterations = agg["iterations"]
+                row.iterations = iterations
                 row.run_count = agg["run_count"]
                 row.source_max_run_id = max_run_id
                 row.source_run_count = run_count
@@ -285,7 +298,7 @@ def aggregates(
                 "run_count": agg["run_count"],
             }
         if persist:
-            _persist(version, computed, fresh)
+            _persist(version, computed)
     return out
 
 
