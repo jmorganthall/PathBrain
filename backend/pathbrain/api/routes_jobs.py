@@ -99,6 +99,14 @@ def _as_dt(value) -> datetime | None:
     return dt
 
 
+def _elapsed_ms(started_at) -> float | None:
+    """How long ago a job started, in milliseconds — or None if it hasn't, or can't say."""
+    start = _as_dt(started_at)
+    if start is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - start).total_seconds() * 1000.0)
+
+
 class Eta(NamedTuple):
     """What is known about how long a job has left, and how long one step of it takes.
 
@@ -116,6 +124,21 @@ class Eta(NamedTuple):
     #: none has finished yet. This is what lets the progress bar advance *within* a unit
     #: instead of standing still until the counter ticks.
     unit_ms: float | None = None
+    #: The full length of a **time-boxed** job's window, or None for a job made of units.
+    #:
+    #: A duel session, a challenger race and "test current for 20 minutes" have no unit
+    #: count to burn down — they run until their window closes — so they reported
+    #: ``total: None`` and the client had nothing to draw but an indeterminate bar, the one
+    #: that sweeps side to side forever saying only "something is happening". That is the
+    #: least informative thing on screen for the job that runs the longest: a duel window
+    #: is a *night*, and the reader's question is how much of it is left.
+    #:
+    #: The window answers it exactly, and it is the same fact the ``scheduled`` countdown
+    #: is built from — the deadline — so the bar and the countdown are again two views of
+    #: one number rather than two opinions. ``ms`` is what remains; this is what it remains
+    #: *of*, and the fraction between them is real measured progress: not an estimate of
+    #: work done, but the share of the agreed window already spent.
+    window_ms: float | None = None
 
 
 def _eta_ms(
@@ -127,8 +150,8 @@ def _eta_ms(
     current: float | None = None,
     total: float | None = None,
     queued: bool = False,
-) -> tuple[float | None, str | None]:
-    """``(milliseconds remaining, how we know, what one unit costs)`` for any job.
+) -> Eta:
+    """``(milliseconds remaining, how we know, what one unit costs, how long the window is)``.
 
     One rule for every kind, and one rule for both readings: the countdown and the progress
     bar are two views of the same estimate, so they are decided here together rather than
@@ -141,6 +164,10 @@ def _eta_ms(
 
     * ``scheduled`` — the job is **time-boxed** (a duel window, a challenger race, "test
       current for 20 minutes"). Its finish time isn't estimated at all, it's a deadline.
+      This kind reports its ``window_ms`` too, because a job with no units still has
+      progress — the share of its window already spent — and without the window's length
+      the client can only draw the indeterminate bar, which says the same thing at minute
+      one of a duel as at minute three hundred.
     * ``measured`` — units of known cost remain: iterations left × the per-iteration time
       measured over recent completed runs. The unit is the same one the work is made of.
     * ``observed`` — nothing is known up front, so extrapolate this job's own rate:
@@ -175,9 +202,14 @@ def _eta_ms(
         return Eta(None, None)
 
     if budget_s and start is not None:
+        window_ms = float(budget_s) * 1000.0
         left = (start + timedelta(seconds=float(budget_s)) - now).total_seconds() * 1000.0
-        # A time-boxed job burns a window, not units — there is nothing to step through.
-        return Eta(max(0.0, left), "scheduled")
+        # A time-boxed job burns a window, not units — there is nothing to step through,
+        # so no `unit_ms`. But the window itself is progress, and precisely measured: the
+        # share of it already spent is a fact, not an extrapolation. Reporting the window
+        # alongside the remainder is what lets the bar say so instead of falling back to
+        # the indeterminate sweep it used to show for every job of this kind.
+        return Eta(max(0.0, left), "scheduled", None, window_ms)
 
     if remaining_units is not None and per_unit_ms:
         return Eta(
@@ -220,7 +252,7 @@ def _stalled_ms(owner_label: str) -> float | None:
 
 def _with_eta(
     entry: dict,
-    eta: tuple[float | None, str | None],
+    eta: Eta,
     *,
     queued: bool = False,
     stalled_ms: float | None = None,
@@ -233,7 +265,7 @@ def _with_eta(
     number. A duration is skew-free: the client anchors it to its own clock the moment it
     arrives and ticks from there, and the next poll re-anchors it.
     """
-    ms, basis, unit_ms = eta
+    ms, basis, unit_ms, window_ms = eta
     entry["eta_ms"] = None if ms is None else round(ms)
     entry["eta_basis"] = basis
     # How long one unit of this job takes. The client needs it because `current`/`total`
@@ -243,6 +275,13 @@ def _with_eta(
     # hold at its edge until the counter confirms it — progress that is always moving and
     # still never claims a step the job hasn't taken.
     entry["unit_ms"] = None if unit_ms is None else round(unit_ms)
+    # How long this job's window is, for the time-boxed kinds that have no units at all.
+    # Without it those jobs — the duel ladder above all, which runs longest and so is
+    # looked at most — could only ever draw the indeterminate bar, which reports the same
+    # thing whether the session is five minutes or five hours from its deadline. With it
+    # the bar is the window: elapsed over agreed, ticking on the client's own clock beside
+    # the countdown it shares a deadline with.
+    entry["window_ms"] = None if window_ms is None else round(window_ms)
     # Whether the job has started is stated by the caller, never inferred from the basis: a
     # queued job whose work can't be priced at all has no basis to read it off, and that is
     # exactly the job whose (absent) countdown would otherwise look like a running one's.
@@ -621,7 +660,19 @@ def _active_experiment_job(session: Session) -> list[dict]:
         close_ms = _experiment_window_close_ms(session)
     except Exception:  # noqa: BLE001 — a config read must not break the jobs feed
         close_ms = None
-    eta = Eta(close_ms, "scheduled") if close_ms is not None else Eta(None, None)
+    # The experiment's window is stated as a closing *hour*, not a duration, so its length
+    # is reconstructed: what is left, plus what has already been spent since it started.
+    # Same reading as every other time-boxed job — the share of the window burned — from
+    # the only two facts this engine records.
+    eta = Eta(None, None)
+    if close_ms is not None:
+        elapsed_ms = _elapsed_ms(exp.created_at)
+        eta = Eta(
+            close_ms,
+            "scheduled",
+            None,
+            None if elapsed_ms is None else close_ms + elapsed_ms,
+        )
     return [
         _with_eta({
             "id": f"experiment-{exp.id}",
@@ -709,13 +760,31 @@ def _active_refresh_job(session: Session) -> list[dict]:
     ]
 
 
+def _duel_message(d: dict) -> str:
+    """What a duel session has actually got through, not just which bout it is in.
+
+    The stage sentence names the two profiles in the ring and the round they are on, which
+    is the right headline and says nothing about the *session*: a ladder five hours into a
+    six-hour window looked exactly like one five minutes in. The two facts that separate
+    them are how many matches have been decided and how many iterations have been measured,
+    both of which the engine already records after every round — they were simply never
+    put where the feed could read them.
+    """
+    stage = (d.get("stage") or "").strip()
+    decided = len(d.get("matchups") or [])
+    iters = d.get("iterations_run") or 0
+    progress = (
+        f"{decided} match{'es' if decided != 1 else ''} decided · {iters} iteration(s)"
+    )
+    return f"{stage} · {progress}" if stage else progress
+
+
 def _active_duel_job() -> list[dict]:
     if not duel.active():
         return []
     d = duel.current()
     if not d or d.get("status") not in ("running", "pending"):
         return []
-    n_verdicts = len(d.get("matchups") or [])
     queued = d.get("status") == "pending"
     eta = _eta_ms(started_at=d.get("started_at"), budget_s=d.get("duration_s"), queued=queued)
     return [
@@ -726,8 +795,12 @@ def _active_duel_job() -> list[dict]:
             "label": "Duel ladder",
             "status": "running",
             "current": d.get("iterations_run") or 0,
+            # No unit total: a duel does not run a known number of anything — it runs until
+            # its window closes, and how many rounds that buys depends on how quickly each
+            # match settles. The bar is the window (`window_ms` on the ETA), which is the
+            # honest denominator; `current` stays as the count of what has been measured.
             "total": None,
-            "message": d.get("stage") or f"{n_verdicts} verdict(s) so far",
+            "message": _duel_message(d),
             "error": None,
             "href": "/settings",
             "parent_id": None,
@@ -780,6 +853,7 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
         entry.setdefault("eta_ms", None)
         entry.setdefault("eta_basis", None)
         entry.setdefault("unit_ms", None)
+        entry.setdefault("window_ms", None)
         entry.setdefault("queued", False)
         # The technical settings summary behind a call sign, for the row's tooltip. Present
         # (null where there is none) on every entry for the same reason `eta_ms` is.

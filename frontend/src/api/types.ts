@@ -1321,6 +1321,14 @@ export interface Job {
   // *within* the unit in progress instead of standing still until the counter ticks;
   // null when the job has no units (a time-boxed window) or none has finished yet.
   unit_ms?: number | null;
+  // The full length of a TIME-BOXED job's window (a duel session, a challenger race, "test
+  // current for 20 minutes"), null for a job made of countable units. Those jobs have no
+  // unit total at all, so the bar had nothing to draw but the indeterminate sweep — which
+  // reads the same at minute one of a six-hour duel as at minute three hundred. With the
+  // window, `eta_ms` (what's left) over this (what it's left of) is real, exact progress:
+  // the share of the agreed window already spent, from the same deadline the countdown
+  // beside it is anchored on.
+  window_ms?: number | null;
   // How long this job has held the benchmark pipeline without reporting progress (null =
   // it is progressing, or isn't the holder). It replaces the countdown when set: a
   // time-boxed job past its deadline floors at "finishing…", which is precisely the
