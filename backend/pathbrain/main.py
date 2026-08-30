@@ -115,12 +115,19 @@ def pipeline_health() -> dict:
     not returning.
 
     Read-only and cheap: ``sys._current_frames()`` is a snapshot, not an interruption.
+
+    ``database`` is here because a starved connection pool is invisible from every other
+    angle: each request simply takes ``pool_timeout`` seconds and then fails, which reads
+    as "the server is broken" rather than "the sixteenth caller is queuing for a file
+    handle". ``checked_out`` against ``capacity`` is the one number that tells a slow query
+    from a starved one.
     """
     import sys
     import threading
     import traceback
 
     from . import coordinator, probes
+    from .database import pool_status
 
     by_id = {t.ident: t for t in threading.enumerate()}
     stacks = []
@@ -137,6 +144,7 @@ def pipeline_health() -> dict:
     return {
         "coordinator": coordinator.status(),
         "probes": probes.stats(),
+        "database": pool_status(),
         "threads": sorted(stacks, key=lambda s: s["thread"]),
     }
 
