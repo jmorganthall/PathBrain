@@ -162,18 +162,23 @@ def test_a_time_boxed_job_reports_its_deadline_not_an_estimate():
     from pathbrain.api.routes_jobs import _eta_ms
 
     started = datetime.now(timezone.utc) - timedelta(minutes=5)
-    ms, basis, unit_ms = _eta_ms(started_at=started, budget_s=20 * 60)
-    assert basis == "scheduled"
+    eta = _eta_ms(started_at=started, budget_s=20 * 60)
+    assert eta.basis == "scheduled"
     # A window burns clock, not units — there is no step for a bar to advance through.
-    assert unit_ms is None
-    assert 14 * 60_000 < ms <= 15 * 60_000          # ~15 minutes of the window left
+    assert eta.unit_ms is None
+    assert 14 * 60_000 < eta.ms <= 15 * 60_000      # ~15 minutes of the window left
+    # …but the window's own length IS reported, because it is the bar's denominator. This
+    # is the whole of what a time-boxed job could not previously say: with no unit total
+    # the client had only the indeterminate sweep, identical at minute one of a six-hour
+    # duel and at minute three hundred.
+    assert eta.window_ms == 20 * 60_000
 
     # …and it wins over the other two even when both are available.
-    ms2, basis2, _ = _eta_ms(
+    eta2 = _eta_ms(
         started_at=started, budget_s=20 * 60,
         remaining_units=100, per_unit_ms=60_000, current=1, total=500,
     )
-    assert basis2 == "scheduled" and abs(ms2 - ms) < 1_000
+    assert eta2.basis == "scheduled" and abs(eta2.ms - eta.ms) < 1_000
 
 
 def test_a_measured_unit_cost_beats_extrapolating_this_jobs_own_rate():
@@ -184,12 +189,14 @@ def test_a_measured_unit_cost_beats_extrapolating_this_jobs_own_rate():
     from pathbrain.api.routes_jobs import _eta_ms
 
     started = datetime.now(timezone.utc) - timedelta(seconds=30)
-    ms, basis, unit_ms = _eta_ms(
+    eta = _eta_ms(
         started_at=started, remaining_units=4, per_unit_ms=15_000, current=1, total=5
     )
-    assert basis == "measured" and ms == 60_000
+    assert eta.basis == "measured" and eta.ms == 60_000
     # The same number the bar steps through: one iteration is 15s of the 60s left.
-    assert unit_ms == 15_000
+    assert eta.unit_ms == 15_000
+    # A job made of units has no window; its bar counts them, not the clock.
+    assert eta.window_ms is None
 
 
 def test_a_job_with_no_deadline_and_no_unit_cost_extrapolates_its_own_rate():
@@ -200,21 +207,24 @@ def test_a_job_with_no_deadline_and_no_unit_cost_extrapolates_its_own_rate():
     from pathbrain.api.routes_jobs import _eta_ms
 
     started = datetime.now(timezone.utc) - timedelta(seconds=10)
-    ms, basis, unit_ms = _eta_ms(started_at=started, current=100, total=400)
-    assert basis == "observed"
+    eta = _eta_ms(started_at=started, current=100, total=400)
+    assert eta.basis == "observed"
     # 10s / 100 rows = 100ms a row, which is also how fast the bar may creep.
-    assert 95 < unit_ms < 105
-    assert 29_000 < ms < 31_000        # 10s bought 100 of 400 → ~30s for the remaining 300
+    assert 95 < eta.unit_ms < 105
+    assert 29_000 < eta.ms < 31_000    # 10s bought 100 of 400 → ~30s for the remaining 300
+    assert eta.window_ms is None
 
 
 def test_an_unestimatable_job_says_nothing_rather_than_guessing():
     """A fabricated countdown is worse than none: it's the one number a user plans around."""
     from pathbrain.api.routes_jobs import _eta_ms
 
-    assert _eta_ms() == (None, None, None)
+    assert _eta_ms() == (None, None, None, None)
     # Progress that hasn't completed a single unit can't imply a rate.
     from datetime import datetime, timezone
-    assert _eta_ms(started_at=datetime.now(timezone.utc), current=0, total=40) == (None, None, None)
+    assert _eta_ms(started_at=datetime.now(timezone.utc), current=0, total=40) == (
+        None, None, None, None
+    )
 
 
 def test_every_job_entry_carries_the_eta_fields(client):
@@ -282,17 +292,24 @@ def test_a_queued_job_reports_the_size_of_the_work_not_a_countdown():
 
     # A time-boxed job waiting its turn: the full window, undiminished by the wait — the
     # 20 minutes are counted from when it *starts*, which is exactly what queuing defers.
-    ms, basis, _ = _eta_ms(started_at=None, budget_s=20 * 60, queued=True)
+    ms, basis = _eta_ms(started_at=None, budget_s=20 * 60, queued=True)[:2]
     assert basis == "queued" and ms == 20 * 60_000
-    # …and the wait itself doesn't eat into it, however long it's been.
-    assert _eta_ms(started_at=joined, budget_s=20 * 60, queued=True) == (20 * 60_000, "queued", None)
+    # …and the wait itself doesn't eat into it, however long it's been; the queued reading
+    # carries no window either: a bar drawn from one would start
+    # creeping across a window whose clock has not begun, which is the same lie the
+    # countdown refuses to tell.
+    assert _eta_ms(started_at=joined, budget_s=20 * 60, queued=True) == (
+        20 * 60_000, "queued", None, None
+    )
 
     # A job whose work is priced by the unit: all of it is still ahead.
     # No unit cost while queued: nothing is running, so the bar must not creep either.
-    assert _eta_ms(remaining_units=10, per_unit_ms=6_000, queued=True) == (60_000, "queued", None)
+    assert _eta_ms(remaining_units=10, per_unit_ms=6_000, queued=True) == (
+        60_000, "queued", None, None
+    )
 
     # Nothing known about the work → say nothing, same as any other unestimatable job.
-    assert _eta_ms(current=0, total=40, queued=True) == (None, None, None)
+    assert _eta_ms(current=0, total=40, queued=True) == (None, None, None, None)
 
 
 def test_the_countdown_starts_when_the_job_does():
@@ -302,7 +319,7 @@ def test_the_countdown_starts_when_the_job_does():
     from pathbrain.api.routes_jobs import _eta_ms
 
     started = datetime.now(timezone.utc) - timedelta(minutes=5)
-    ms, basis, _ = _eta_ms(started_at=started, budget_s=20 * 60, queued=False)
+    ms, basis = _eta_ms(started_at=started, budget_s=20 * 60, queued=False)[:2]
     assert basis == "scheduled"
     assert 14 * 60_000 < ms <= 15 * 60_000
 
@@ -487,3 +504,93 @@ def test_the_feed_reports_the_state_of_the_pipeline_itself(client):
     assert "pipeline" in body
     assert set(body["pipeline"]) >= {"busy", "owner", "stalled_for_s", "waiting"}
     assert body["pipeline"]["busy"] is False
+
+
+# ── Time-boxed jobs: the bar is the window ─────────────────────────────────────────────
+#
+# The duel ladder runs longer than anything else PathBrain does — a nightly window is a
+# night — and it was the one job whose bar could say nothing at all. It has no unit total
+# (how many rounds a window buys depends on how fast each match settles), so `total` was
+# None and the client fell back to the indeterminate sweep: an animation that reads exactly
+# the same at minute one and at minute three hundred.
+
+
+def test_a_time_boxed_job_carries_the_window_its_bar_is_drawn_against():
+    """`eta_ms` alone is a countdown and nothing else. The bar needs the denominator too —
+    what the remainder is a remainder *of* — and it has to be the same window the countdown
+    is anchored on, or the two readings start disagreeing about one deadline."""
+    from datetime import datetime, timedelta, timezone
+
+    from pathbrain.api.routes_jobs import Eta, _eta_ms, _with_eta
+
+    started = datetime.now(timezone.utc) - timedelta(minutes=90)
+    entry = _with_eta({}, _eta_ms(started_at=started, budget_s=6 * 3600))
+    assert entry["eta_basis"] == "scheduled"
+    assert entry["window_ms"] == 6 * 3600 * 1000
+    # 90 minutes of a six-hour window: the client draws a quarter of a bar, not a sweep.
+    spent = entry["window_ms"] - entry["eta_ms"]
+    assert 0.24 < spent / entry["window_ms"] < 0.26
+    # A window is not a unit — there is no step to interpolate across.
+    assert entry["unit_ms"] is None
+
+    # And the shape stays uniform where there is no window at all.
+    assert _with_eta({}, Eta(None, None))["window_ms"] is None
+
+
+def test_every_job_entry_carries_the_window_field(client):
+    """Same rule as `eta_ms` and `unit_ms`: present on every row, null where it doesn't
+    apply. A missing key and a null one look identical until something divides by it."""
+    def work(job):
+        job.set_progress(1, 10, "working")
+        time.sleep(0.05)
+
+    jobs.start("unit-window", "window job", work)
+    body = client.get("/api/jobs").json()
+    assert body["jobs"]
+    for entry in body["jobs"]:
+        assert "window_ms" in entry
+        assert entry["window_ms"] is None or entry["window_ms"] > 0
+
+
+def test_the_duel_row_says_how_much_of_the_session_is_done(monkeypatch):
+    """The two facts a duel row was missing, and the two the engine already records after
+    every round: how many matches have been decided, and how many iterations measured. The
+    stage sentence names the bout in the ring — which is right, and says nothing about the
+    session, so five hours in looked identical to five minutes in."""
+    from datetime import datetime, timedelta, timezone
+
+    from pathbrain.api import routes_jobs
+
+    started = datetime.now(timezone.utc) - timedelta(hours=2)
+    session = {
+        "id": 7,
+        "status": "running",
+        "stage": "Match 4 · Speedy Sloth (belt) defends vs Tall Garland (contender) — round 3 (1-1)",
+        "duration_s": 6 * 3600,
+        "matchups": [{}, {}, {}],
+        "iterations_run": 96,
+        "started_at": started.isoformat(),
+        "created_at": started.isoformat(),
+    }
+    monkeypatch.setattr(routes_jobs.duel, "active", lambda: True)
+    monkeypatch.setattr(routes_jobs.duel, "current", lambda: session)
+
+    (entry,) = routes_jobs._active_duel_job()
+    assert "Match 4" in entry["message"], "the bout in the ring still leads"
+    assert "3 matches decided" in entry["message"]
+    assert "96 iteration(s)" in entry["message"]
+    # …and the bar has a real denominator, so it is determinate for the first time.
+    assert entry["eta_basis"] == "scheduled"
+    assert entry["window_ms"] == 6 * 3600 * 1000
+    assert 3.9 * 3600_000 < entry["eta_ms"] < 4.1 * 3600_000
+
+
+def test_a_duel_that_has_not_started_a_match_still_reports_a_session():
+    """Nothing decided, nothing measured, no stage yet — the row still says so rather than
+    rendering an empty message beside a sweeping bar."""
+    from pathbrain.api.routes_jobs import _duel_message
+
+    assert _duel_message({}) == "0 matches decided · 0 iteration(s)"
+    assert _duel_message({"matchups": [{}], "iterations_run": 6}) == (
+        "1 match decided · 6 iteration(s)"
+    )

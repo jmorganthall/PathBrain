@@ -132,28 +132,51 @@ function Stalled({ ms }: { ms: number }) {
 }
 
 /**
- * The progress bar advances *between* counter ticks, not only on them.
+ * The progress bar advances *between* counter ticks, not only on them — and for a job made
+ * of no counters at all, it draws the window instead of giving up.
  *
- * A job's `current`/`total` counts finished units, so a bar drawn straight from it is
- * motionless for the whole of a unit and then jumps. On a benchmark run a unit is a full
- * iteration — tens of seconds of a bar that looks hung, followed by a lurch. What fills
- * the gap is the unit's *expected* cost (`unit_ms`, the same number the countdown beside
- * it is built from, so the two can't disagree about how fast the job is going): the bar
- * crosses the unit in progress at the rate that unit is expected to take.
+ * Two kinds of job, two denominators, one rule: **the bar and the countdown are two views
+ * of the same estimate**, so whichever fact the countdown was built from is the one the bar
+ * measures against.
  *
- * It never crosses the boundary. Interpolation is a claim about a step the job has not
- * finished, so it is capped at the edge of the current unit: an iteration running long
- * leaves the bar parked there — the one honest thing to show, since all that is actually
- * known is that the step is overdue — and it moves again the instant the counter ticks. A
- * unit that finishes early simply jumps to its boundary. So the bar is always either
- * moving or waiting on a genuinely late step, and can never be ahead of the work.
+ * **Time-boxed** (`window_ms`) — a duel session, a challenger race, "test current for 20
+ * minutes". These run until their window closes, not until a count is exhausted, so they
+ * report no `total` and the bar had nothing to draw but the indeterminate sweep: the same
+ * animation at minute one of a six-hour duel as at minute three hundred, saying only that
+ * something, somewhere, is happening. That is the least informative thing on screen for the
+ * job that runs the longest. The window fixes it exactly: `eta_ms` is what remains,
+ * `window_ms` is what it remains of, and the share between them is measured progress rather
+ * than an estimate of it. It is anchored on the browser's clock the moment it arrives —
+ * exactly as `Countdown` anchors the same deadline, and for the same reason — so it advances
+ * smoothly between polls instead of stepping once every two seconds.
+ *
+ * **Unit-counted** (`current`/`total`) — the counter records *finished* units, so a bar
+ * drawn straight from it is motionless for the whole of a unit and then jumps. On a
+ * benchmark run a unit is a full iteration: tens of seconds of a bar that looks hung,
+ * followed by a lurch. What fills the gap is the unit's expected cost (`unit_ms`, again the
+ * number the countdown beside it is built from), crossed at the rate the unit is expected
+ * to take.
+ *
+ * Neither reading ever runs ahead of the work. Interpolation is a claim about a step the
+ * job has not finished, so it is capped at the edge of the current unit — an iteration
+ * running long parks the bar there, which is the one honest thing to show, since all that is
+ * actually known is that the step is overdue — and both are capped below a full bar, because
+ * 100% is the single reading that means *finished* and this is being drawn on a job that is
+ * still running.
  */
 function useSmoothProgress(job: Job): { determinate: boolean; pct: number } {
   const total = job.total ?? 0;
   const current = job.current ?? 0;
-  const determinate = job.total != null && total > 0 && job.current != null;
-  const smoothing =
-    determinate && job.status === "running" && !job.queued && !!job.unit_ms && current < total;
+  const running = job.status === "running" && !job.queued;
+  const counted = job.total != null && total > 0 && job.current != null;
+
+  // A window outranks a unit count for the same reason it outranks every other estimate on
+  // the server: it is a deadline, not an extrapolation, and it is what actually ends the
+  // job. (Nothing reports both today; stating the precedence is what keeps the bar and the
+  // countdown from ever disagreeing if something does.)
+  const windowMs = job.window_ms ?? 0;
+  const timeBoxed = running && windowMs > 0 && job.eta_ms != null;
+  const smoothing = !timeBoxed && counted && running && !!job.unit_ms && current < total;
 
   // When the counter last moved, on the browser's clock. Observed here rather than sent by
   // the server because the server keeps no per-unit timestamps — it would have to assume
@@ -164,14 +187,27 @@ function useSmoothProgress(job: Job): { determinate: boolean; pct: number } {
   const anchor = useRef({ current, at: Date.now() });
   if (anchor.current.current !== current) anchor.current = { current, at: Date.now() };
 
+  // The window's deadline, likewise on the browser's clock, re-anchored by each poll's
+  // fresh remainder. Same treatment as `Countdown`: a duration is skew-free where an
+  // absolute server timestamp would fold the two machines' clock difference into the bar.
+  const etaMs = job.eta_ms ?? null;
+  const deadline = useRef({ etaMs, at: Date.now() });
+  if (deadline.current.etaMs !== etaMs) deadline.current = { etaMs, at: Date.now() };
+
+  const ticking = timeBoxed || smoothing;
   const [, tick] = useState(0);
   useEffect(() => {
-    if (!smoothing) return;
+    if (!ticking) return;
     const id = setInterval(() => tick((t) => t + 1), PROGRESS_TICK_MS);
     return () => clearInterval(id);
-  }, [smoothing]);
+  }, [ticking]);
 
-  if (!determinate) return { determinate: false, pct: 0 };
+  if (timeBoxed) {
+    const left = Math.max(0, (deadline.current.etaMs ?? 0) - (Date.now() - deadline.current.at));
+    const pct = ((windowMs - left) / windowMs) * 100;
+    return { determinate: true, pct: Math.min(RUNNING_MAX_PCT, Math.max(0, pct)) };
+  }
+  if (!counted) return { determinate: false, pct: 0 };
   const within = smoothing ? Math.min(1, (Date.now() - anchor.current.at) / job.unit_ms!) : 0;
   const pct = ((current + within) / total) * 100;
   // Interpolation may reach a unit boundary but never a full bar: 100% is the one reading

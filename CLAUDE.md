@@ -316,6 +316,24 @@ LLM-based. See `README.md` for the product overview.
     one would mean assuming every unit so far took exactly the estimate, which is precisely the
     assumption that fails on the slow job this exists to keep alive; the cost is an anchor lagging
     by up to one poll, i.e. a second or two parked early, never a bar ahead of the work.
+    **A time-boxed job's bar is its WINDOW** (`Eta.window_ms` → `JobStatus.useSmoothProgress`).
+    A duel session, a challenger race and "test current for X" run until their window closes,
+    not until a count is exhausted, so they report no `total` at all — and a bar with no
+    denominator can only be the indeterminate sweep, which reads exactly the same at minute
+    one of a six-hour duel as at minute three hundred. That was the longest-running job in
+    the system rendering the least informative thing on screen. The `scheduled` basis already
+    knows the deadline; it now reports the window's **length** beside the remainder, so the
+    share already spent is a measured fraction rather than an estimate of one, and the bar
+    and the countdown are again two views of one deadline instead of two opinions. The client
+    anchors it on its own clock exactly as `Countdown` does (skew-free, re-anchored each
+    poll), so it advances continuously rather than stepping once per poll. Same two limits as
+    the interpolated bar: **queued** jobs report no window (a bar creeping across a window
+    whose clock hasn't started is the same lie the standing-still countdown refuses to tell),
+    and it caps at 99% because 100% is the one reading that means *finished*. The duel row's
+    **message** gained the two session-level facts the stage sentence never carried — matches
+    decided and iterations measured (`_duel_message`), both already recorded after every
+    round: the stage names the bout in the ring, which is right and says nothing about how
+    far through the night the ladder is.
   - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
     iterations still needed to reach `correlation.min_iterations`, then **restore the
     baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
