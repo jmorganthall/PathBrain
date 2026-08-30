@@ -67,6 +67,7 @@ def _schedule_payload(cfg: dict) -> dict:
         "rematch_hours": duel.rematch_hours(d),
         "champion_freshness_days": duel.champion_freshness_days(d),
         "rank_sigma": duel.rank_sigma(d),
+        "tie_sigma": duel.tie_sigma(d),
         "rating_prior_pairs": duel.rating_prior(d),
         "iterations_per_round": duel.iterations_per_round(d),
         # Post-apply settle: each leg writes the profile to the firewall and reconfigures
@@ -177,6 +178,10 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
         if not 0 <= float(payload.rank_sigma) <= 3:
             raise HTTPException(status_code=422, detail="rank_sigma must be between 0 and 3")
         updates["rank_sigma"] = float(payload.rank_sigma)
+    if payload.tie_sigma is not None:
+        if not 0 <= float(payload.tie_sigma) <= 5:
+            raise HTTPException(status_code=422, detail="tie_sigma must be between 0 and 5")
+        updates["tie_sigma"] = float(payload.tie_sigma)
     if payload.iterations_per_round is not None:
         if not 1 <= int(payload.iterations_per_round) <= 25:
             raise HTTPException(

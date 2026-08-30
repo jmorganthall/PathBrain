@@ -309,6 +309,38 @@ function RatingCell({ row }: { row: DuelStanding }) {
 
 // The gap between the two rankings, shown where the eye already is (next to the rank).
 // Up = the ring rates it higher than its all-history score does.
+/**
+ * "≈#1" — this row's rating is inside the ring's own noise of the leader's.
+ *
+ * Deliberately a mark on a strict rank rather than a shared rank number. Sharing one would
+ * assert two profiles are equal when one of them beat the other head to head, which is the
+ * rule the ladder exists to enforce; and statistical ties are non-transitive, so any
+ * banding would put two indistinguishable profiles in different bands, with which band
+ * depending on the order the grouping happened to walk. So: the order stands, and the
+ * reader is told where it stops meaning anything. `pairs_to_separate` is the useful half —
+ * "these are tied" invites a shrug, "four more rounds settles it" is something to act on.
+ */
+function TieMark({ pairs }: { pairs?: number | null }) {
+  return (
+    <Tooltip
+      title={
+        "Within the ring's own noise of #1 — the gap between the two fitted ratings is " +
+        "smaller than the error on that gap, so the order between them is not evidence. " +
+        (pairs
+          ? `About ${pairs} more round${pairs === 1 ? "" : "s"} head to head would settle it.`
+          : "More racing would settle it, but not within a few sessions.")
+      }
+    >
+      <Typography
+        variant="caption"
+        sx={{ color: "text.disabled", whiteSpace: "nowrap", fontWeight: 600 }}
+      >
+        ≈#1
+      </Typography>
+    </Tooltip>
+  );
+}
+
 function RankGap({ ringRank, pooledRank }: { ringRank: number; pooledRank?: number }) {
   if (!pooledRank || pooledRank === ringRank) return null;
   const up = ringRank < pooledRank;
@@ -1743,6 +1775,15 @@ export default function Duels() {
             Points and win rate are the plain ledger, kept beside it. <b>Overall</b> and{" "}
             <b>Overall rank</b> are the pooled all-history score for the same profile, so the
             two verdicts sit side by side — the ▲▼ next to a rank is how far they disagree.
+            A rank marked <b>≈#1</b> is inside the ring&rsquo;s own noise of the leader: the gap
+            between the two fitted ratings is smaller than the error on that gap, so the order
+            between them is not evidence. It is a <i>mark on the order, not a shared rank</i> —
+            sharing one would call two profiles equal when one of them beat the other, and
+            statistical ties are non-transitive, so the table cannot honestly be cut into bands.
+            Expect a lot of them: an error bar is set mostly by how many rounds a profile has
+            fought, so nine rounds carries about ±100 points against a field a couple of hundred
+            wide. That is the state of the evidence, not a flaw in the test — which is why the
+            mark says how many more rounds head to head would settle it.
             Click any column to re-sort.
           </Typography>
           {loadingStandings && standings.length === 0 ? (
@@ -1816,6 +1857,7 @@ export default function Duels() {
                       <TableCell>
                         <Stack direction="row" spacing={0.75} alignItems="baseline">
                           <Typography variant="body2">{r.rank}</Typography>
+                          {r.tied_with_leader && <TieMark pairs={r.pairs_to_separate} />}
                           <RankGap ringRank={r.rank} pooledRank={pooledRank.get(r.fingerprint)} />
                         </Stack>
                       </TableCell>

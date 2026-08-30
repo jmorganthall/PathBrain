@@ -1885,6 +1885,16 @@ export interface DuelStanding {
   rating_pairs: number | null;
   // Too few pairs for the fit to say much — mostly the prior talking.
   rating_provisional: boolean;
+  // The leader's rating does not clearly stand above this one: the gap is inside the
+  // ring's own noise (`tie_sigma` x the pooled SE of the two ratings). A flag on a strict
+  // order, never a shared rank — sharing one would say two profiles are equal when one of
+  // them beat the other, and statistical ties are non-transitive so the table cannot
+  // honestly be cut into bands. Same treatment the pooled crown gives `co_leaders`.
+  tied_with_leader?: boolean;
+  // Extra head-to-head pairs before that gap would clear the bar, if the ratings hold.
+  // The actionable half of the flag: "race them N more rounds" beats "these are tied".
+  // null when it is not the leader, not tied, or not reachable in a sane number of rounds.
+  pairs_to_separate?: number | null;
   // Pairs the fit expected this profile to win against the opponents it actually faced.
   expected_pair_wins: number | null;
   // Share of *decided* matchups won (draws excluded); null with no decisive matchup.
@@ -1961,6 +1971,11 @@ export interface DuelStandings {
   ranked_by?: string;
   // How many standard errors the default order subtracts from the fitted rating.
   rank_sigma?: number;
+  // Fingerprints the leader does not clearly stand above. Information about the order,
+  // never a change to it.
+  co_leaders?: string[];
+  // Standard errors of the difference a lead must clear to be called real.
+  tie_sigma?: number;
   provisional_pairs?: number;
   rating_pairs_total?: number;
 }
