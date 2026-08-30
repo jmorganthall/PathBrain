@@ -620,6 +620,66 @@ class CurrentTest(Base):
     run_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
+class ProfileAggregate(Base):
+    """Per-profile rollup of the runs behind it — the layer between the run and the profile.
+
+    Every consumer asks about **profiles** (~150 of them); every row stores a **run**
+    (hundreds of thousands, growing nightly). With nothing in between, answering "what does
+    this profile score?" meant re-reading the whole run table and decoding a JSON document
+    per run — a cost bounded by *time* rather than by the question, which is why the
+    standings, the crown follower and the explore ledger all slowed down as history grew
+    while the question they ask never did.
+
+    This is that missing layer. It holds each profile's medians and quartiles per metric
+    under one methodology, so a read touches one row per profile instead of thousands.
+
+    **It is a cache, and it is never trusted blind.** ``source_*`` records exactly what it
+    was derived from — the newest run, how many runs, and the newest scoring timestamp. A
+    reader re-reads those four numbers for every profile in *one* grouped query (~150 rows,
+    ~80ms against a 120k-run table) and uses the stored row only where they match; anything
+    that doesn't is recomputed from the runs themselves and written back. So the failure
+    mode of a stale row is *slower*, never *wrong* — which matters because the number this
+    feeds decides which profile gets written to the firewall.
+
+    The metrics live in one JSON payload rather than a row per metric because the decode
+    cost that made this necessary was 120k documents, not one: at one document per profile
+    it is free, and it keeps a profile's aggregate a single atomic row.
+    """
+
+    __tablename__ = "profile_aggregates"
+    __table_args__ = (
+        UniqueConstraint(
+            "settings_fingerprint", "methodology_version", name="uq_profile_agg_fp_methodology"
+        ),
+        Index("ix_profile_agg_methodology", "methodology_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    settings_fingerprint: Mapped[str] = mapped_column(String(40))
+    methodology_version: Mapped[str] = mapped_column(String(64))
+
+    # Total iterations and runs behind this rollup (comparable runs only) — `iterations` is
+    # the unit the confidence bar counts, so it is aggregated here rather than re-derived.
+    iterations: Mapped[int] = mapped_column(Integer, default=0)
+    run_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # {metric_key: {"n": int, "median": float, "p25": float|None, "p75": float|None}} over
+    # this profile's comparable runs. Full precision — rounding belongs at grade time, so
+    # there is exactly one place that decides it.
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    # What this was derived from. `source_scored_at` is here because a re-derive can rewrite
+    # a Score **in place**: the run count and newest id would both be unchanged while the
+    # values underneath moved, and a cache that only watched the ids would serve the old
+    # answer forever.
+    source_max_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_run_count: Mapped[int] = mapped_column(Integer, default=0)
+    source_scored_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class CrownEvent(Base):
     """Crown-follower ledger: the history of *who is crowned* and what the follower did.
 

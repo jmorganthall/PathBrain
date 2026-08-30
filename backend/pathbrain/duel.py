@@ -33,6 +33,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from time import perf_counter as _perf
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -2431,6 +2432,13 @@ def standings(limit_sessions: int = 50) -> dict:
     and the champion carries its own, so the page can show both without joining them.
     """
     limit_sessions = max(1, min(int(limit_sessions or 50), 200))
+    # Where the time went, reported with the answer. Every performance report on this page
+    # has been diagnosed by guessing at the production scale and rebuilding it locally to
+    # test the guess; the two halves have very different cost shapes (the ring is bounded by
+    # the ledger, the pooled join by all of history), so saying which one was slow turns the
+    # next report into a reading instead of another round of guesswork.
+    timings: dict[str, int] = {}
+    _t0 = _perf()
     with session_scope() as session:
         rows = session.scalars(
             select(Duel).order_by(Duel.id.desc()).limit(limit_sessions)
@@ -2581,11 +2589,15 @@ def standings(limit_sessions: int = 50) -> dict:
     # ring record and the raw record can be read against each other in one table. That's
     # the interesting comparison: a profile winning its bouts while sitting mid-table on
     # Overall (or the reverse) is exactly what the two-verdict design exists to surface.
-    # Computed per profile via the crown follower's single-profile accessor (one indexed
-    # query each) rather than a full `compute_profiles` pass, keeping the standings cheap.
+    # Read off the per-profile rollup (`profile_aggregates`) rather than a `compute_profiles`
+    # pass or a rescan of every run — this column is the only part of the standings whose
+    # cost is bounded by history rather than by the ledger, so it is the only part that ever
+    # made this page slow, and it is timed separately for exactly that reason.
+    _t = _perf()
     with session_scope() as session:
         call_signs = profile_names.names_for(session, [r["fingerprint"] for r in table])
         overalls = _pooled_overalls(session, [r["fingerprint"] for r in table])
+    timings["pooled_ms"] = int((_perf() - _t) * 1000)
     for row in table:
         row["name"] = call_signs.get(row["fingerprint"]) or row["label"]
         pooled = overalls.get(row["fingerprint"]) or (None, 0)
@@ -2708,10 +2720,15 @@ def standings(limit_sessions: int = 50) -> dict:
         for fp, opponents in h2h.items()
     }
 
+    timings["total_ms"] = int((_perf() - _t0) * 1000)
+    # Whatever the total isn't the pooled join is the ring itself: the ledger read, the
+    # Bradley-Terry fit and the belt replay, all bounded by `limit_sessions`.
+    timings["ring_ms"] = max(0, timings["total_ms"] - timings.get("pooled_ms", 0))
     return {
         "champion": champion,
         "standings": table,
         "head_to_head": matrix,
+        "timings_ms": timings,
         "sessions_analyzed": len(sessions_data),
         "matchups_analyzed": matchups_analyzed,
         "decisive_matchups": decisive,

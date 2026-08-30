@@ -410,21 +410,62 @@ LLM-based. See `README.md` for the product overview.
     the `coordinator` lock (so the scheduler defers via `coordinator.busy()`); persisted to
     a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on startup.
     `/api/settings/race` (+ `/race/cancel`).
-  - **Crown grades read three numbers per run, so they read three numbers per run**
-    (`crown_follower._crown_columns`). `Score.subscores` is a JSON blob of every metric a
-    run scored; grading a profile needs only the crown metrics' values and the iteration
-    count. Fetching the blob meant decoding one JSON document per run in the **whole of
-    history** — 120k documents, 2.2s of pure Python, **84% of the duel standings' entire
-    response** (measured), growing with every night measured and holding a pooled connection
-    throughout. `Score.subscores[m].as_float()` extracts the values in SQL (`json_extract`),
-    and the `incomparable` filter moved into the `WHERE` with them, so the same arithmetic
-    runs over the same rows in C: `profile_overalls` 2.46s → 0.64s and `duel.standings()`
-    4.09s → 0.90s at 120k runs. The median is still taken in Python over the same values, so
-    the answer is identical by construction — pinned by
-    `test_crown_grades_are_identical_whether_the_json_is_read_in_sql_or_in_python`, which
-    grades both ways and diffs them. `_collect_values` is the SQL-shaped sibling of
-    `_collect`, which stays for the explore ledger (it filters each run by `created_at`
-    before grading, so it needs the rows themselves).
+  - `profile_aggregates.py` — **the per-profile rollup: the layer between the run and the
+    profile.** Every consumer asks about *profiles* (~150 of them); every row stores a *run*
+    (hundreds of thousands, growing nightly). With nothing in between, "what does this
+    profile score?" re-read the whole run table and decoded a JSON document per run — a cost
+    bounded by **time** rather than by the question. That is the architectural rule this
+    module exists to state: **derive-on-read is correct when the input is bounded by the
+    question, and wrong when it is bounded only by time.** The duel's verdicts (lineal belt,
+    Bradley–Terry ratings) are bounded by the ledger, so they re-derive on every read and
+    cost milliseconds; a profile's pooled Overall was bounded by all history, so it grew
+    until the client stopped waiting. *Derive, don't store* is right about **provenance** and
+    silent about **latency**, and the two had collapsed into one rule.
+    So the rollup is materialized (`ProfileAggregate`: per profile per methodology,
+    `{metric: {n, median, p25, p75}}` + iterations + run count) and **never trusted blind**.
+    `stamps()` re-reads what each profile's rollup *should* have been built from — newest run
+    id, run count, iteration total, newest `Score.computed_at` — in **one grouped query
+    returning a row per profile** (~80ms/150 rows at 120k runs, against ~1.9s to recompute
+    and ~22s for the full field pass). A stored row is used only where all four match;
+    anything else is recomputed **for that profile alone** and written back. So a stale row
+    makes a read *slower*, never *wrong* — the property that makes this safe under the crown,
+    since the number it feeds decides what gets written to the firewall. Measured:
+    `profile_overalls` 1.55s → **0.13s** warm (12×), `duel.standings()` 4.09s → **0.35s**,
+    and one new run on one profile costs 0.19s — all verified identical to a full rescan.
+    Invalidation is **per profile**, which is the other half of the fix: the field-wide memo
+    (`_field_stamp`) keys on a *global* stamp, so one completed run invalidates the entire
+    field — and during a duel a run lands every minute, so that cache was coldest exactly
+    when the system was busiest. Here a run touches one profile's stamp.
+    `invalidate_profiles_cache()` drops both, on the wholesale-rewrite paths, as a tidy-up
+    rather than a correctness requirement. Every `IN (...)` is chunked (`_CHUNK`) so the size
+    of the field is never a correctness question — SQLite's variable ceiling is a build-time
+    constant (250000 here, 999 on a conservative build), invisible until a field crossed it.
+    **`upsert_score` now stamps `computed_at`** — it refreshes a Score *in place*, so a
+    re-grade under the same methodology moved the subscores while run count and newest id
+    stayed put; the timestamp is the only thing that tells the rollup its inputs changed (and
+    the column was already serialized as "when this was scored", so it was reading wrong on
+    its own terms). Pinned by `test_a_real_regrade_through_upsert_score_moves_the_rollup`,
+    which drives the real writer rather than setting the timestamp by hand.
+    **Not yet on the rollup: `compute_profiles`** — measured at ~22s over 120k runs, of which
+    `_completed_runs_with_scores` is ~107% (it materializes full ORM `Run`+`Score` entities
+    plus ~6 `BenchmarkResult.metrics` blobs per run: ~840k JSON documents). Migrating it needs
+    the rollup to carry axis and raw-metric series too, and its genuinely per-run passes
+    (trends baseline, recent-window, weather cohort) restructured — its own change, with its
+    own equivalence harness. A measured, contained interim: deferring `Run.settings` from that
+    load is 8.0s → 5.0s (120k blobs decoded, ~150 kept).
+  - **Crown grades read three numbers per run, so they read three numbers per run.**
+    `Score.subscores` is a JSON blob of every metric a run scored; grading a profile needs
+    only the crown metrics' medians and the iteration count. Three layers of this have been
+    peeled back and the order is the lesson: `_profile_overall` in a loop (an N+1 — 143 round
+    trips on a 150-profile ledger) → one batched `IN (...)` that still decoded a document per
+    run in all of history (2.2s, **84% of the duel standings' response**) → `json_extract` in
+    SQL (3.8×, but still linear in every run ever taken) → `profile_aggregates`, one row per
+    profile. Each step removed work; only the last changed what the cost is *proportional to*.
+    `_grade_medians` is now the single place the crown grade is formed **and** the single
+    place its rounding is decided, so a grade off a stored rollup and one off a fresh scan are
+    the same arithmetic rather than two implementations that agree until one is edited;
+    `_grade_samples` delegates to it. `_collect` stays for the explore ledger, which filters
+    each run by `created_at` before grading and so needs the rows themselves.
   - `crown_follower.py` — **Follow best**: keep the firewall's SQM settings on the crowned
     best profile (`compute_profiles` → `best_fingerprint`) as the crown changes.
     **Event-driven, not polled**: the runner queues `notify_run_complete` as each run finishes
