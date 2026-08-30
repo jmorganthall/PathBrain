@@ -69,7 +69,7 @@ from .methodology import (
     overall_weights,
     weighted_score,
 )
-from .models import CrownEvent, Run, RunStatus, Score
+from .models import CrownEvent
 from .profile_test import _apply_all
 from .providers import get_provider
 from .settings_profile import (
@@ -139,6 +139,22 @@ def notify_run_complete(fingerprint: str | None) -> None:
         _pending.append(fingerprint)
 
 
+def _grade_medians(
+    med: dict[str, float], iters: int,
+    crown_metrics: list[str], crown_required: list[str], weights: dict,
+) -> tuple[float | None, int]:
+    """The weighted-crown grade from one profile's **median** subscore per metric.
+
+    The single place the crown grade is formed, and the single place its rounding is
+    decided — so a grade taken from a stored rollup and one taken from a fresh scan of the
+    runs are the same arithmetic, not two implementations that agree until one is edited.
+    """
+    med = {m: round(v, 2) for m, v in med.items() if v is not None}
+    if any(med.get(m) is None for m in crown_required):
+        return None, iters
+    return weighted_score([(med.get(m), float(weights.get(m, 1.0))) for m in crown_metrics]), iters
+
+
 def _grade_samples(
     samples: dict[str, list[float]], iters: int,
     crown_metrics: list[str], crown_required: list[str], weights: dict,
@@ -148,48 +164,18 @@ def _grade_samples(
     Shared by the single- and many-profile accessors so the two can never drift into
     grading the same runs differently.
     """
-    med = {m: round(median(vs), 2) for m, vs in samples.items() if vs}
-    if any(med.get(m) is None for m in crown_required):
-        return None, iters
-    return weighted_score([(med.get(m), float(weights.get(m, 1.0))) for m in crown_metrics]), iters
-
-
-def _crown_columns(crown_metrics: list[str]) -> list:
-    """Each crown metric's subscore, pulled out of the JSON **in the database**.
-
-    Grading a profile reads three numbers per run. Fetching ``Score.subscores`` whole meant
-    decoding one JSON document per run in the entire history to get them: at 120k runs that
-    is 2.2s of pure Python and 84% of the duel standings' response — and it grows with every
-    night measured, while holding a pooled connection for the whole of it. Extracting the
-    values in SQL is the same arithmetic over the same rows done in C. The median is still
-    taken here, over the same values, so the answer is identical by construction; only the
-    120k intermediate dicts are gone.
-    """
-    return [Score.subscores[m].as_float() for m in crown_metrics]
-
-
-def _collect_values(rows, crown_metrics: list[str]) -> tuple[dict[str, list[float]], int]:
-    """Accumulate ``(iterations, *crown values)`` rows into samples + iterations.
-
-    The sibling of ``_collect`` for the SQL-extracted shape: incomparable runs are excluded
-    by the query rather than skipped here, which is the same set — ``_collect`` drops them
-    before counting iterations too.
-    """
-    iters = 0
-    samples: dict[str, list[float]] = {}
-    for row in rows:
-        iters += int(row[0] or 1)
-        for metric, value in zip(crown_metrics, row[1:]):
-            if value is not None:
-                samples.setdefault(metric, []).append(float(value))
-    return samples, iters
+    return _grade_medians(
+        {m: median(vs) for m, vs in samples.items() if vs},
+        iters, crown_metrics, crown_required, weights,
+    )
 
 
 def _collect(rows, crown_metrics: list[str]) -> tuple[dict[str, list[float]], int]:
     """Accumulate ``(iterations, subscores, comparability)`` rows into samples + iterations.
 
-    Still the shape the explore ledger reads, which needs each run's own row (it filters by
-    ``created_at`` before grading); the crown accessors use ``_collect_values``.
+    Still the shape the explore ledger reads: it filters each run by ``created_at`` before
+    grading, so it needs the runs themselves rather than a profile-level rollup. The crown
+    accessors read ``profile_aggregates`` instead.
     """
     iters = 0
     samples: dict[str, list[float]] = {}
@@ -209,54 +195,46 @@ def _profile_overall(
     crown_metrics: list[str], crown_required: list[str], weights: dict,
 ) -> tuple[float | None, int]:
     """``(overall, iterations)`` for **one** profile under the current *weighted* crown —
-    the same median-subscore weighted average ``compute_profiles`` grades, computed over
-    just this profile's comparable runs (one indexed query instead of the full field)."""
-    rows = session.execute(
-        select(Run.iterations, *_crown_columns(crown_metrics))
-        .join(Score, Score.run_id == Run.id)
-        .where(
-            Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint == fp,
-            Score.methodology_version == version,
-            Score.comparability != "incomparable",
-        )
-    ).all()
-    samples, iters = _collect_values(rows, crown_metrics)
-    return _grade_samples(samples, iters, crown_metrics, crown_required, weights)
+    the same median-subscore weighted average ``compute_profiles`` grades, over just this
+    profile's comparable runs. Delegates to the batched accessor rather than keeping a
+    second query of its own: this runs on the crown follower's quick filter after *every*
+    completed run, so it is the hottest caller of the rollup and the one that most needs
+    the two paths to be the same path."""
+    if not fp:
+        return None, 0
+    return profile_overalls(
+        session, [fp], version, crown_metrics, crown_required, weights
+    ).get(fp, (None, 0))
 
 
 def profile_overalls(
     session, fingerprints, version: str,
     crown_metrics: list[str], crown_required: list[str], weights: dict,
 ) -> dict[str, tuple[float | None, int]]:
-    """The same grade for **many** profiles in ONE query.
+    """The same grade for **many** profiles, off the per-profile rollup.
 
-    Calling ``_profile_overall`` in a loop is an N+1: on a 150-profile ledger it was 143
-    round trips and ~200ms — 80% of the duel standings' entire response time. One
-    ``IN (...)`` query over the same indexed columns collects every profile's samples in a
-    single pass, and the grading is the shared helper, so the batched answer is identical
-    to the per-profile one by construction.
+    Three layers of this have been peeled back, and the order tells the story. It began as
+    ``_profile_overall`` in a loop — an N+1, 143 round trips on a 150-profile ledger. One
+    batched ``IN (...)`` fixed the round trips but still decoded a JSON document per run in
+    all of history to read three numbers. Extracting those in SQL cut that 3.8x but left the
+    cost proportional to *every run ever taken*, for a question about ~150 profiles that
+    never grew.
+
+    So it now reads ``profile_aggregates``, which answers in one row per profile and
+    verifies each against what it should have been built from. The grade itself is still
+    ``_grade_medians`` over the same medians, so the answer is unchanged — only the number
+    of rows it took to get there.
     """
     wanted = [fp for fp in dict.fromkeys(fingerprints) if fp]
     if not wanted:
         return {}
-    rows = session.execute(
-        select(Run.settings_fingerprint, Run.iterations, *_crown_columns(crown_metrics))
-        .join(Score, Score.run_id == Run.id)
-        .where(
-            Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint.in_(wanted),
-            Score.methodology_version == version,
-            Score.comparability != "incomparable",
-        )
-    ).all()
-    by_fp: dict[str, list] = {fp: [] for fp in wanted}
-    for row in rows:
-        by_fp.setdefault(row[0], []).append(row[1:])
+    from . import profile_aggregates
+
+    rolled = profile_aggregates.medians(session, version, wanted)
     out: dict[str, tuple[float | None, int]] = {}
     for fp in wanted:
-        samples, iters = _collect_values(by_fp.get(fp) or [], crown_metrics)
-        out[fp] = _grade_samples(samples, iters, crown_metrics, crown_required, weights)
+        med, iters = rolled.get(fp, ({}, 0))
+        out[fp] = _grade_medians(med, iters, crown_metrics, crown_required, weights)
     return out
 
 

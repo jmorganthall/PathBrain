@@ -9,6 +9,7 @@ threshold, or metric change is published as a new version, never an edit.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from math import sqrt
 
 from sqlalchemy import select
@@ -1107,6 +1108,13 @@ def upsert_score(session: Session, run_id: int, version: str, *, is_at_measure: 
     row.is_at_measure = is_at_measure
     for k, v in fields.items():
         setattr(row, k, v)
+    # `computed_at` defaults on INSERT only, so an in-place re-grade left it reading as the
+    # moment the run was *first* scored — which is wrong on its own terms (the column is
+    # named for when the score was computed, and it is serialized as exactly that), and is
+    # load-bearing besides: a re-grade under the same methodology rewrites the subscores
+    # while the run count and newest run id both stay put, so this timestamp is the only
+    # thing that tells a per-profile rollup its inputs moved.
+    row.computed_at = datetime.now(timezone.utc)
     return row
 
 

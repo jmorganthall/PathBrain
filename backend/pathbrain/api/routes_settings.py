@@ -1791,9 +1791,19 @@ def _field_stamp(session: Session) -> tuple:
 
 
 def invalidate_profiles_cache() -> None:
-    """Drop the memoized field. Called by the paths that rewrite scores or fingerprints."""
+    """Drop the memoized field **and** the per-profile rollups.
+
+    Called by the paths that rewrite scores or fingerprints wholesale. The rollups verify
+    themselves on every read, so this is never what makes them correct — it is what makes
+    the rebuild happen once, at a known moment, rather than being discovered profile by
+    profile over the following hour. Both caches are dropped together because a caller that
+    knows the field moved should not have to know how many layers cache it.
+    """
+    from .. import profile_aggregates
+
     with _FIELD_LOCK:
         _FIELD_CACHE.clear()
+    profile_aggregates.invalidate()
 
 
 def compute_profiles(
