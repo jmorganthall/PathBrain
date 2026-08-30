@@ -866,9 +866,36 @@ LLM-based. See `README.md` for the product overview.
     freshness window over the champion's own **most recent completed** bout, so it either
     names the belt holder or returns None (fall back to pooled) — never a third answer. A
     mid-session leader is therefore shown immediately but is not yet actionable.
+    **A tie is a MARK on a strict order, never a shared rank** (`tie_sigma`,
+    `_indistinguishable`, `_pairs_to_separate`, `co_leaders`). Two profiles whose fitted
+    ratings differ by less than `duel.tie_sigma` × the pooled SE of that difference
+    (`√(SE_a²+SE_b²)`, default 2.0 — the same bar and the same default as the pooled crown's
+    `crown_tie_sigma`, so the two verdicts mean the same thing by "tied") are not
+    distinguishable by the ring. Every row carries `tied_with_leader` and the response carries
+    `co_leaders`; **nothing moves**. Co-*ranking* (three #1s, then a #4) was considered and
+    rejected on two grounds. It would assert two profiles are equal when one of them **beat the
+    other** head-to-head — the rule the ladder exists to enforce. And statistical ties are
+    **non-transitive**: A within noise of B and B of C says nothing about A and C, so any
+    banding puts two indistinguishable profiles in different bands, with which band depending
+    on the order the grouping walked. The test is therefore a **star against row 1**, exactly as
+    `routes_settings._clearly_better` anchors `co_leaders` on the crown, which has no such
+    freedom. Measured, the star is also far more *informative* than banding: on a simulated
+    ladder of the real shape (one belt-holder defending nearly every bout, everyone else at 1–3
+    matches of ~9 rounds, 20 profiles over ~100 Elo) greedy banding at σ=2 collapsed the field
+    into **3 groups (5/14/1)** — not a leaderboard — while the star test flags **4 of 19**.
+    Expect a lot of marks regardless, and the reason is structural rather than a defect:
+    `SE = ELO_SCALE/√info` and information is dominated by *pairs fought*, so 9 pairs carries
+    **±100 Elo** against a field whose whole spread is 100–200, and separating adjacent profiles
+    at σ=1 would need ~9800 pairs each. That is the state of the evidence — which is why
+    `pairs_to_separate` sits beside the flag: how many more **head-to-head** pairs would clear
+    the bar if the ratings hold (both sides gain information, `p(1−p)` per pair at their current
+    expected split; `None` past `MAX_SEPARATING_PAIRS`). "Race them 4 more rounds and it
+    resolves" is actionable where "tied" invites a shrug — on the reported 1687 ±146 vs 1563 ±17
+    that is **3 pairs at σ=1, 32 at σ=2**.
     `duel.standings` (`GET /api/duel/standings`) aggregates the ledger into the **head-to-head
     league table** that page ranks on — per profile the **rating** (+ `rating_se` /
-    `rating_pairs` / `rating_provisional` / `expected_pair_wins`), W–L–D, match points (win 3 /
+    `rating_pairs` / `rating_provisional` / `expected_pair_wins` / `tied_with_leader` /
+    `pairs_to_separate`), W–L–D, match points (win 3 /
     draw 1),
     decisive-win + pair-win rate, median Overall-point margin *signed from that profile's own
     side*, opponents beaten/lost to, title count — plus the reigning champion (with reign

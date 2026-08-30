@@ -303,6 +303,10 @@ DEFAULT_CONFIG: dict = {
         # below, which shrinks a thin record toward the field instead of letting an error
         # bar overturn a result.
         "rank_sigma": 0.0,
+        # Standard errors of the difference a lead must clear before the standings call
+        # it real. Matches the pooled crown's `correlation.crown_tie_sigma`, so the two
+        # verdicts mean the same thing by "tied". Flags only — it never reorders.
+        "tie_sigma": 2.0,
         # Virtual pairs against a phantom average opponent, added to every profile's record
         # before fitting. Keeps unbeaten records finite and shrinks thin ones toward the
         # field. Measured against a 3-0 snap versus a deep winning record: 4 → the snap

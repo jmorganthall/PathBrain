@@ -2997,3 +2997,91 @@ def test_a_pair_already_fought_this_session_is_never_re_promoted():
         )
         s.query(Duel).delete()
     assert fp != "ringtop"
+
+
+def test_a_tie_is_a_mark_on_a_strict_order_never_a_shared_rank():
+    """The rule this ladder exists to enforce is that whoever wins the duel wins the duel.
+    Co-ranking would break it: two profiles would share a rank while one of them beat the
+    other in the ring. So the ranks stay strict and unique, and the tie rides alongside as a
+    flag — exactly the treatment the pooled crown gives ``co_leaders``."""
+    from pathbrain import duel
+
+    table = [
+        {"fingerprint": "a", "rating": 1700.0, "rating_se": 120.0},
+        {"fingerprint": "b", "rating": 1650.0, "rating_se": 110.0},
+        {"fingerprint": "c", "rating": 1200.0, "rating_se": 15.0},
+    ]
+    leader = table[0]
+    sigma = 2.0
+    flags = [duel._indistinguishable(leader, r, sigma) for r in table[1:]]
+    assert flags == [True, False], "b is inside the noise of a; c is not"
+    # Everything the flag touches is additive: no reordering, no shared numbers.
+    ranks = [1, 2, 3]
+    assert len(set(ranks)) == len(ranks)
+
+
+def test_the_tie_test_is_a_star_against_the_leader_not_a_clustering():
+    """Statistical ties are **not transitive**: A within noise of B and B of C says nothing
+    about A and C. Banding the table would therefore put two indistinguishable profiles in
+    different bands, and which band each landed in would depend on the order the grouping
+    walked. Anchoring every comparison on the leader has no such freedom — this test pins
+    the very configuration that would make a clustering incoherent."""
+    from pathbrain import duel
+
+    a = {"rating": 1600.0, "rating_se": 20.0}
+    b = {"rating": 1560.0, "rating_se": 20.0}
+    c = {"rating": 1520.0, "rating_se": 20.0}
+    sigma = 1.5
+    # Adjacent pairs are each within noise…
+    assert duel._indistinguishable(a, b, sigma)
+    assert duel._indistinguishable(b, c, sigma)
+    # …while the ends are not. A banding would have to lie about one of these three.
+    assert not duel._indistinguishable(a, c, sigma)
+    # The star test only ever asks about the leader, so it never has to.
+
+
+def test_pairs_to_separate_answers_how_much_more_racing_it_would_take():
+    """The actionable half of the flag. Taken from the standings actually reported: a thin
+    challenger at 1687 ±146 against the champion at 1563 ±17. The gap is real-looking and
+    unproven, and the useful output is not "tied" but how few rounds would settle it."""
+    from pathbrain import duel
+
+    leader = {"rating": 1687.0, "rating_se": 146.0}
+    champ = {"rating": 1563.0, "rating_se": 17.0}
+    assert duel._indistinguishable(leader, champ, 2.0)
+    k = duel._pairs_to_separate(leader, champ, 2.0)
+    assert k is not None and 1 <= k <= duel.MAX_SEPARATING_PAIRS
+    # More evidence is demanded at a stricter bar, never less.
+    assert duel._pairs_to_separate(leader, champ, 1.0) <= k
+
+    # Two well-measured profiles a real distance apart are not tied at all, so there is
+    # nothing to separate — the test has to discriminate, or the flag says nothing.
+    sharp_a, sharp_b = {"rating": 1600.0, "rating_se": 12.0}, {"rating": 1560.0, "rating_se": 14.0}
+    assert not duel._indistinguishable(sharp_a, sharp_b, 2.0)
+
+    # Degenerate inputs are answered, not raised on: an unrated profile, a zero error bar,
+    # and a profile compared against itself all have no meaningful answer.
+    assert duel._pairs_to_separate({"rating": None, "rating_se": 10.0}, champ, 2.0) is None
+    assert duel._pairs_to_separate({"rating": 1600.0, "rating_se": 0.0}, champ, 2.0) is None
+    assert duel._pairs_to_separate(champ, champ, 2.0) is None
+    assert duel._indistinguishable({"rating": None}, champ, 2.0) is False
+
+
+def test_standings_flags_ties_without_moving_anyone():
+    """End to end through `standings()`: ranks stay 1..N and unique, the leader is never
+    flagged against itself, and `co_leaders` lists exactly the flagged rows."""
+    from pathbrain import duel
+
+    body = duel.standings()
+    rows = body["standings"]
+    assert body["tie_sigma"] > 0
+    ranks = [r["rank"] for r in rows]
+    assert ranks == list(range(1, len(rows) + 1)), "strict, gapless, unique"
+    if rows:
+        assert rows[0]["tied_with_leader"] is False
+        assert rows[0]["pairs_to_separate"] is None
+    flagged = {r["fingerprint"] for r in rows if r["tied_with_leader"]}
+    assert flagged == set(body["co_leaders"])
+    # A row that isn't tied carries no separation estimate — the number only means
+    # something as "what it would take to break THIS tie".
+    assert all(r["pairs_to_separate"] is None for r in rows if not r["tied_with_leader"])

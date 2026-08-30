@@ -44,7 +44,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .models import Duel, DuelStatus, Score
-from .rating import PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
+from .rating import ELO_SCALE, PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
 from .providers import get_provider
 from .runner import run_chunk, teardown_plugins
 from .settings_profile import fingerprint, normalize, plan_apply
@@ -742,6 +742,90 @@ def iterations_per_round(cfg: dict | None) -> int:
     except (TypeError, ValueError):
         return 3
     return max(1, min(value, 25))
+
+
+#: How many pairs a head-to-head could plausibly add before "how many more rounds?" stops
+#: being a useful answer. Past this the honest reply is "not soon", not a bigger number.
+MAX_SEPARATING_PAIRS = 400
+
+
+def tie_sigma(cfg: dict | None) -> float:
+    """Standard errors of the *difference* a lead must clear to be called real.
+
+    The same test, and the same default, as the pooled crown's ``crown_tie_sigma`` — the
+    two verdicts should not disagree about what the word "tied" means. It is deliberately
+    **separate** from ``rank_sigma``: that one decides the ORDER (0 — whoever wins the duel
+    wins the duel), this one decides whether the order is *meaningful*, which is a
+    different question and answered as a flag rather than by moving anyone.
+    """
+    try:
+        return max(0.0, float((cfg or {}).get("tie_sigma", 2.0) or 0.0))
+    except (TypeError, ValueError):
+        return 2.0
+
+
+def _pooled_se(a: dict, b: dict) -> float:
+    """SE of the difference between two fitted ratings, ``√(SE_a² + SE_b²)``."""
+    return math.hypot(float(a.get("rating_se") or 0.0), float(b.get("rating_se") or 0.0))
+
+
+def _indistinguishable(leader: dict, other: dict, sigma: float) -> bool:
+    """Is ``other``'s rating within the ring's own noise of ``leader``'s?
+
+    A **star test against the leader**, never a clustering — which is the whole reason it
+    is safe. Statistical ties are *not transitive*: A within noise of B and B of C says
+    nothing about A and C, so grouping the table into bands would put two profiles in
+    different bands while they are indistinguishable from each other, and which band each
+    landed in would depend on the order the grouping walked. Anchoring every comparison on
+    one profile has no such freedom. It is exactly what ``routes_settings._clearly_better``
+    does for the pooled crown, for exactly this reason.
+    """
+    lead, val = leader.get("rating"), other.get("rating")
+    if lead is None or val is None:
+        return False
+    return (float(lead) - float(val)) <= sigma * _pooled_se(leader, other)
+
+
+def _pairs_to_separate(leader: dict, other: dict, sigma: float) -> int | None:
+    """Extra head-to-head pairs before the gap between these two would clear the bar.
+
+    More useful than the tie flag on its own: "these two are tied" invites shrugging, while
+    "race them for four more rounds and the question resolves" is something the ladder can
+    act on — and it is the same arithmetic, run forwards.
+
+    Both sides gain pairs, because the way this gets resolved is the two of them in the
+    ring: a pair against an opponent whose win probability is ``p`` adds ``p(1-p)`` to each
+    side's Fisher information (``rating.fit_bradley_terry``), and ``SE = ELO_SCALE/√info``.
+    So the search walks ``k`` upward until the shrinking pooled SE lets the *current* gap
+    through.
+
+    It answers "if the ratings hold, how much more evidence would it take" — not "who will
+    win". The ratings will move as those pairs are fought, which is the point of fighting
+    them. ``None`` when the answer is not within ``MAX_SEPARATING_PAIRS``.
+    """
+    lead, val = leader.get("rating"), other.get("rating")
+    if lead is None or val is None:
+        return None
+    gap = float(lead) - float(val)
+    if gap <= 0:
+        return None
+    se_a, se_b = float(leader.get("rating_se") or 0.0), float(other.get("rating_se") or 0.0)
+    if se_a <= 0 or se_b <= 0:
+        return None
+    # Their expected split at the current ratings, and the information one pair buys each.
+    prob = 1.0 / (1.0 + 10.0 ** (gap / 400.0))
+    per_pair = prob * (1.0 - prob)
+    if per_pair <= 0:
+        return None
+    info_a, info_b = (ELO_SCALE / se_a) ** 2, (ELO_SCALE / se_b) ** 2
+    for k in range(1, MAX_SEPARATING_PAIRS + 1):
+        pooled = math.hypot(
+            ELO_SCALE / math.sqrt(info_a + k * per_pair),
+            ELO_SCALE / math.sqrt(info_b + k * per_pair),
+        )
+        if gap > sigma * pooled:
+            return k
+    return None
 
 
 def rank_sigma(cfg: dict | None) -> float:
@@ -2662,6 +2746,38 @@ def standings(limit_sessions: int = 50) -> dict:
     for i, row in enumerate(table, start=1):
         row["rank"] = i
 
+    # ── Is the order meaningful? ─────────────────────────────────────────────────
+    # Ranks stay strict (1, 2, 3 …) and nobody shares one. Sharing rank numbers would say
+    # two profiles are equal when one of them BEAT the other in the ring, which is the
+    # rule this ladder exists to enforce, and it would need the table cut into bands —
+    # which statistical ties, being non-transitive, cannot honestly be. So the tie is a
+    # **flag on a strict order**, exactly as the pooled crown reports `co_leaders` without
+    # moving anyone: whoever wins the duel still wins the duel, and the reader is told when
+    # the margin is inside the ring's own noise.
+    #
+    # Worth knowing why so much of a real table is flagged: `SE = ELO_SCALE/√info` and a
+    # profile's information is dominated by how many pairs it has fought, so 9 pairs carries
+    # ~±100 Elo against a field whose whole spread is 100-200. That is not a defect in the
+    # test, it is the state of the evidence — which is why `pairs_to_separate` sits beside
+    # the flag: the actionable half is how much more racing would settle it.
+    tie_bar = tie_sigma(cfg)
+    leader = table[0] if table else None
+    co_leaders: list[str] = []
+    for row in table:
+        # `row is not leader` also covers the leader itself, which is never "tied with"
+        # itself — it is what every other row is measured against.
+        tied = (
+            leader is not None
+            and row is not leader
+            and _indistinguishable(leader, row, tie_bar)
+        )
+        row["tied_with_leader"] = bool(tied)
+        row["pairs_to_separate"] = (
+            _pairs_to_separate(leader, row, tie_bar) if tied else None
+        )
+        if tied:
+            co_leaders.append(row["fingerprint"])
+
     # The champion is NOT row 1, and under the lineal rule it is not supposed to be. The
     # table ranks on `rating_floor` — what a record has *demonstrated* across the whole
     # network — while the belt records who beat whom. Those answer different questions, so
@@ -2737,6 +2853,11 @@ def standings(limit_sessions: int = 50) -> dict:
         "ranked_by": "rating" if sigma == 0 else "rating_floor",
         "provisional_pairs": PROVISIONAL_PAIRS,
         "rank_sigma": sigma,
+        # Every profile the leader's rating does not clearly stand above — information
+        # about the *order*, never a change to it (the pooled crown reports its own
+        # `co_leaders` the same way).
+        "co_leaders": co_leaders,
+        "tie_sigma": tie_bar,
         "rating_pairs_total": sum(pair_wins.values()),
     }
 
@@ -2965,6 +3086,7 @@ def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
         "matchups_analyzed": table.get("matchups_analyzed", 0),
         "ranked_by": table.get("ranked_by"),
         "rank_sigma": table.get("rank_sigma"),
+        "tie_sigma": table.get("tie_sigma"),
         "provisional_pairs": table.get("provisional_pairs"),
     }
 

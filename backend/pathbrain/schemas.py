@@ -66,6 +66,7 @@ class DuelScheduleUpdate(BaseModel):
     # Standard errors subtracted from the rating when ordering the standings (0 = rank on
     # the rating itself), and the virtual pairs added to every record before fitting.
     rank_sigma: float | None = None
+    tie_sigma: float | None = None
     rating_prior_pairs: float | None = None
     # Benchmark iterations per leg of a round — the ring's resolving power.
     iterations_per_round: int | None = None
