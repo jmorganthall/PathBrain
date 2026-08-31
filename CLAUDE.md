@@ -179,7 +179,19 @@ LLM-based. See `README.md` for the product overview.
     input** — a suspect triggers a race (contemporaneous head-to-head raw data), never a
     re-rank. Empirically gated by `GET /settings/weather-sensitivity` (per clean-covariate ×
     crown-metric Spearman ρ, pooled + **within-profile**, rendered as the Settings-Impact
-    "Weather sensitivity" card). The metric-based **"Weather-adj"** reading
+    "Weather sensitivity" card). The same response carries the **variance decomposition**
+    (`routes_settings._weather_variance` + `stats.ols_residual_ss`, the "How much of the
+    noise is measurable weather?" block on that card): per crown metric + the per-run
+    Overall, the **adjusted within-profile R²** of the clean covariates jointly — demeaned
+    per profile (pure-arithmetic fixed effect, so a covariate that only differs *between*
+    profiles is the profile in a weather costume and explains exactly nothing —
+    `test_weather_variance_is_strictly_within_profile` pins it), df-charged for both the
+    per-profile means and the covariates, solved by a dependency-free ridge-guarded OLS.
+    Read as a **ceiling, not a promise** (linear, in-sample): it is the most any
+    covariate-based weather adjustment could remove, and its complement — conditions no
+    probe sees plus run noise — is the duel's paired design justified as a measured number.
+    `within_sd`/`residual_sd` translate the share into ± run noise before/after the best
+    linear use of the covariates. Strictly informational; no scores change. The metric-based **"Weather-adj"** reading
     (`weather_adjusted_overall`, setup-stripped fcp/lcp) remains in the API payload but is
     **no longer rendered** — `weather_relative` is the one surfaced "vs weather" reading.
   - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a grid over the
