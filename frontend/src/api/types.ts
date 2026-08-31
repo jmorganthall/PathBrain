@@ -359,6 +359,34 @@ export interface WeatherSensitivityRow {
   weather_sensitive: boolean;
 }
 
+// One outcome's share of within-profile run-to-run variance the clean covariates jointly
+// explain — the ceiling on any covariate-based weather adjustment. `explained_share` null
+// means the decomposition couldn't answer, and `why` says the reason. `within_sd` /
+// `residual_sd` are the ± run noise before and after the best linear use of the covariates
+// (residual can read slightly WORSE when the covariates are useless — the honest
+// out-of-sample price of fitting them).
+export interface WeatherVarianceOutcome {
+  outcome: string;
+  outcome_label: string;
+  unit: string;
+  covariates_used: string[];
+  runs: number;
+  profiles: number;
+  explained_share: number | null;
+  r2: number | null;
+  within_sd: number | null;
+  residual_sd: number | null;
+  why: string | null;
+}
+
+export interface WeatherVariance {
+  min_runs: number;
+  min_runs_per_profile: number;
+  outcomes: WeatherVarianceOutcome[];
+  // One sentence: the explained share of the Overall's noise, or why it can't be said yet.
+  headline: string;
+}
+
 export interface WeatherSensitivity {
   crown_metrics: string[];
   covariates: { key: string; clean: boolean; role: string | null; label: string }[];
@@ -367,6 +395,7 @@ export interface WeatherSensitivity {
   runs_analyzed: number;
   profiles_analyzed: number;
   rows: WeatherSensitivityRow[];
+  variance: WeatherVariance;
 }
 
 export interface SettingsProfilesResponse {

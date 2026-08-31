@@ -1690,3 +1690,131 @@ def test_skipping_the_weather_pass_changes_only_the_weather_fields():
     for lean_p, rich_p in zip(lean["profiles"], rich["profiles"]):
         differing = {k for k in rich_p if lean_p.get(k) != rich_p.get(k)}
         assert differing <= weather_only, differing
+
+
+# --- Weather variance decomposition -----------------------------------------------------
+# "Can we measure the weather?" as a number: how much of the within-profile run-to-run
+# variance the clean covariates jointly explain. The ceiling on any covariate-based
+# adjustment; its complement is the measured justification for the duel's paired design.
+
+
+def test_weather_variance_explains_measured_weather():
+    """An outcome that genuinely tracks a clean covariate within each profile → the
+    decomposition attributes nearly all of the within-profile variance to it, and the
+    residual noise reads far smaller than the raw noise."""
+    from pathbrain.api.routes_settings import _weather_variance
+
+    runs_by_fp = {}
+    for p, base in [("fp-a", 0.0), ("fp-b", 40.0), ("fp-c", 80.0)]:
+        runs = []
+        for i in range(20):
+            lat = 10.0 + i * 3.0
+            wiggle = float((i * 37) % 11) - 5.0  # deterministic ±5 "run noise"
+            runs.append({"latency": lat, "jitter": 5.0, "fcp": 300.0 + base + 4.0 * lat + wiggle})
+        runs_by_fp[p] = runs
+
+    out = _weather_variance(runs_by_fp, ["fcp"], {"fcp": {"label": "FCP", "unit": "ms"}})
+    fcp = next(r for r in out["outcomes"] if r["outcome"] == "fcp")
+    assert fcp["explained_share"] is not None and fcp["explained_share"] >= 0.9
+    assert fcp["covariates_used"] == ["latency", "jitter"]  # absent covariates dropped, present kept
+    assert fcp["residual_sd"] < fcp["within_sd"] * 0.35
+    assert fcp["runs"] == 60 and fcp["profiles"] == 3
+    # No per-run Overall in these fixtures → the Overall row degrades with a reason, and the
+    # headline says so instead of inventing a number.
+    ov = next(r for r in out["outcomes"] if r["outcome"] == "overall")
+    assert ov["explained_share"] is None and ov["why"]
+    assert isinstance(out["headline"], str) and out["headline"]
+
+
+def test_weather_variance_is_strictly_within_profile():
+    """The load-bearing pin: a covariate that differs only BETWEEN profiles is the profile
+    itself wearing a weather costume. Pooled, it correlates almost perfectly with the
+    outcome; within-profile it demeans to zero and must explain nothing — otherwise the
+    card would report profile identity as measurable weather."""
+    from pathbrain.api.routes_settings import _weather_variance
+
+    runs_by_fp = {}
+    for p, lat in [("fp-a", 10.0), ("fp-b", 40.0), ("fp-c", 70.0)]:
+        runs = []
+        for i in range(20):
+            wiggle = float((i * 37) % 11) - 5.0
+            # The outcome's between-profile spread tracks the covariate exactly…
+            runs.append({"latency": lat, "fcp": 300.0 + 4.0 * lat + wiggle})
+        runs_by_fp[p] = runs
+
+    out = _weather_variance(runs_by_fp, ["fcp"], {"fcp": {"label": "FCP", "unit": "ms"}})
+    fcp = next(r for r in out["outcomes"] if r["outcome"] == "fcp")
+    # …and the within-profile decomposition still reads ≈0: nothing of the run-to-run
+    # variance is attributable to a covariate that never moves within a profile.
+    assert fcp["explained_share"] is not None and fcp["explained_share"] <= 0.05
+
+
+def test_weather_variance_says_why_when_it_cannot_answer():
+    from pathbrain.api.routes_settings import WEATHER_R2_MIN_RUNS, _weather_variance
+
+    # Too few runs → a reason, never a number from a coin toss.
+    thin = {"fp-a": [{"latency": 10.0 + i, "fcp": 300.0 + i} for i in range(5)]}
+    out = _weather_variance(thin, ["fcp"], {})
+    fcp = next(r for r in out["outcomes"] if r["outcome"] == "fcp")
+    assert fcp["explained_share"] is None and str(WEATHER_R2_MIN_RUNS) in fcp["why"]
+
+    # No covariates measured at all → says that, not "0% explained".
+    bare = {"fp-a": [{"fcp": 300.0 + i} for i in range(40)]}
+    out2 = _weather_variance(bare, ["fcp"], {})
+    fcp2 = next(r for r in out2["outcomes"] if r["outcome"] == "fcp")
+    assert fcp2["explained_share"] is None and "covariate" in fcp2["why"]
+
+
+def test_weather_variance_block_rides_the_sensitivity_endpoint(client):
+    # The wiring, not the numbers: the test DB is shared across the whole test session, so
+    # this decomposition pools every run other tests have seeded — the numeric behaviour is
+    # pinned by the hermetic `_weather_variance` tests above. Here: the block rides the
+    # endpoint, carries a row per crown metric plus the Overall, and always has a headline
+    # sentence (a number when it can, a reason when it can't).
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    crown = _crown_metrics()
+    for i in range(6):
+        lat = 10.0 + i * 3.0
+        crown_raw = tuple(400.0 if m == "fcp" else (600.0 if m == "lcp" else 300.0) for m in crown)
+        _seed_run(
+            "weathervarA1", 80.0, t0 - timedelta(minutes=200 - i), iterations=2,
+            crown_raw=crown_raw, overall=90.0 - lat / 2.0,
+            result_metrics={"icmp": {"latency_ms": lat, "jitter_ms": 5.0}},
+        )
+
+    body = client.get("/api/settings/weather-sensitivity").json()
+    var = body["variance"]
+    assert isinstance(var["headline"], str) and var["headline"]
+    outcomes = {r["outcome"] for r in var["outcomes"]}
+    assert outcomes == set(crown) | {"overall"}
+    for r in var["outcomes"]:
+        # Every row either carries the full reading or says why it can't — never neither.
+        answered = r["explained_share"] is not None
+        assert answered or r["why"], r
+        if answered:
+            assert 0.0 <= r["explained_share"] <= 1.0
+            assert r["within_sd"] is not None and r["residual_sd"] is not None
+
+
+def test_weather_sensitivity_is_memoized_on_the_field_stamp(client):
+    """The endpoint is a GIL-holding pure-Python pass over every run, so a repeat read must
+    be a cache hit; new data must miss; and the wholesale-rewrite hook must drop it, since
+    an in-place refingerprint moves runs between profiles without moving the stamp."""
+    from pathbrain.api import routes_settings
+
+    first = client.get("/api/settings/weather-sensitivity").json()
+    assert routes_settings._weather_memo is not None
+    assert client.get("/api/settings/weather-sensitivity").json() == first
+
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    crown = _crown_metrics()
+    _seed_run(
+        "weathermemo01", 80.0, t0, iterations=2,
+        crown_raw=tuple(400.0 if m == "fcp" else 500.0 for m in crown),
+        result_metrics={"icmp": {"latency_ms": 12.0}},
+    )
+    after = client.get("/api/settings/weather-sensitivity").json()
+    assert after["runs_analyzed"] == first["runs_analyzed"] + 1
+
+    routes_settings.invalidate_profiles_cache()
+    assert routes_settings._weather_memo is None

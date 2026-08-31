@@ -18,6 +18,7 @@ import DialogTitle from "@mui/material/DialogTitle";
 import FormControl from "@mui/material/FormControl";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import InputLabel from "@mui/material/InputLabel";
+import LinearProgress from "@mui/material/LinearProgress";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListSubheader from "@mui/material/ListSubheader";
 import ListItemText from "@mui/material/ListItemText";
@@ -665,6 +666,66 @@ function WeatherSensitivityCard() {
                 <Alert severity={cleanSensitive.length > 0 ? "warning" : "success"} sx={{ mb: 1.5 }}>
                   {verdict}
                 </Alert>
+
+                {/* The budget question behind the per-pair table below: of the run-to-run
+                    noise a profile shows, how much could the clean covariates jointly
+                    account for AT ALL? That share is the ceiling on any covariate-based
+                    weather adjustment — and its complement is the measured justification
+                    for the duel's paired design, which controls for the weather no probe
+                    sees. */}
+                {data.variance && (
+                  <Box sx={{ mb: 1.5 }}>
+                    <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                      How much of the noise is measurable weather?
+                    </Typography>
+                    <Alert severity="info" icon={false} sx={{ mb: 1, py: 0.5 }}>
+                      <Typography variant="caption">{data.variance.headline}</Typography>
+                    </Alert>
+                    <Stack spacing={0.75}>
+                      {data.variance.outcomes.map((o) => (
+                        <Box key={o.outcome}>
+                          <Stack direction="row" spacing={1} alignItems="baseline" flexWrap="wrap" useFlexGap>
+                            <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 120 }}>
+                              {o.outcome_label}
+                            </Typography>
+                            {o.explained_share != null ? (
+                              <Typography variant="caption" color="text.secondary">
+                                <b>{Math.round(o.explained_share * 100)}%</b> explainable
+                                {o.within_sd != null && o.residual_sd != null && (
+                                  <>
+                                    {" "}· ±{o.within_sd} → ±{o.residual_sd} {o.unit}
+                                  </>
+                                )}
+                                {" "}· {o.runs.toLocaleString()} runs over {o.profiles} profiles
+                              </Typography>
+                            ) : (
+                              <Typography variant="caption" color="text.secondary">
+                                {o.why ?? "not enough data yet"}
+                              </Typography>
+                            )}
+                          </Stack>
+                          {o.explained_share != null && (
+                            <Tooltip
+                              title={
+                                "Adjusted R² of the clean covariates against this outcome, " +
+                                "within-profile (the profile held fixed, so its identity can't " +
+                                "masquerade as weather). Linear and in-sample — read it as the " +
+                                "ceiling on what a weather adjustment could remove, not a promise."
+                              }
+                            >
+                              <LinearProgress
+                                variant="determinate"
+                                value={Math.min(100, o.explained_share * 100)}
+                                sx={{ height: 5, borderRadius: 2, mt: 0.25 }}
+                              />
+                            </Tooltip>
+                          )}
+                        </Box>
+                      ))}
+                    </Stack>
+                  </Box>
+                )}
+
                 <TableContainer sx={{ maxHeight: 380, overflowX: "auto" }}>
                   <Table size="small" stickyHeader>
                     <TableHead>

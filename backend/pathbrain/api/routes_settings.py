@@ -810,7 +810,26 @@ def weather_sensitivity(session: Session = Depends(get_session)) -> dict:
     phases) × each crown metric, the Spearman ρ across per-run points — both pooled and
     **within-profile** (holding the profile fixed, the causal signal). Informational only; no
     scores change. Use it to confirm whether a weather adjustment is worth building and which
-    covariates (the ``clean`` ones) to build it from."""
+    covariates (the ``clean`` ones) to build it from.
+
+    The response also carries ``variance`` — the **variance decomposition** (see
+    ``_weather_variance``): per crown metric + the per-run Overall, how much of the
+    within-profile run-to-run variance the clean covariates jointly explain. The ρ table
+    says which covariate moves which metric; the decomposition answers the budget question
+    ("how much of the noise is measurable weather at all?") whose complement is the
+    measured justification for the duel's paired design.
+
+    **Memoized on the field stamp** for the same reason `compute_profiles` is: this is a
+    pure-Python pass over every comparable run (the rank correlations were already heavy;
+    the decomposition's least-squares adds an O(runs·covariates²) accumulation per
+    outcome), it holds the GIL for its whole duration, and it is a pure function of the
+    runs + scores + methodology — exactly what `_field_stamp` is the cheap identity of. A
+    hit costs two indexed aggregates; a miss computes once per new data."""
+    global _weather_memo
+    stamp = _field_stamp(session)
+    memo = _weather_memo
+    if memo is not None and memo[0] == stamp:
+        return memo[1]
     methodology = ensure_current_methodology(session, get_config(session))
     defn = methodology.definition or {}
     crown_metrics, _ = overall_metrics(defn)
@@ -822,7 +841,15 @@ def weather_sensitivity(session: Session = Depends(get_session)) -> dict:
         }
         for m in defn.get("metrics", []) if m.get("key")
     }
-    return _weather_sensitivity(session, crown_metrics, metric_meta)
+    result = _weather_sensitivity(session, crown_metrics, metric_meta)
+    # Two callers racing a cold cache both compute — wasteful once, and far better than one
+    # blocking the other for the whole pass (the compute_profiles memo makes the same call).
+    _weather_memo = (stamp, result)
+    return result
+
+
+#: ``(field stamp, response)`` of the last weather-sensitivity compute — see the endpoint.
+_weather_memo: tuple[tuple, dict] | None = None
 
 
 # --- Field ↔ outcome sensitivity ------------------------------------------------------
@@ -834,6 +861,7 @@ SENSITIVITY_TREND_RHO = 0.3      # |ρ| below this reads as "no clear relationsh
 
 # Rank-correlation primitives now live in ``pathbrain.stats`` (shared with the
 # campaign-drift check); aliased here so the call sites below stay unchanged.
+from ..stats import ols_residual_ss as _ols_residual_ss  # noqa: E402
 from ..stats import pearson as _pearson  # noqa: E402
 from ..stats import rank as _rank  # noqa: E402
 from ..stats import spearman as _spearman  # noqa: E402
@@ -993,6 +1021,13 @@ def _weather_sensitivity(
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 vals[key] = float(v)
         if vals:
+            # The per-run graded Overall rides along for the variance decomposition: the
+            # crown metrics are what pairing protects, but the Overall is what verdicts
+            # actually read, so "how much of the noise is measurable weather?" has to be
+            # answerable for it too.
+            ov = (score.axis_scores or {}).get("overall")
+            if isinstance(ov, (int, float)) and not isinstance(ov, bool):
+                vals["overall"] = float(ov)
             runs_by_fp.setdefault(run.settings_fingerprint, []).append(vals)
 
     all_runs = [v for runs in runs_by_fp.values() for v in runs]
@@ -1059,6 +1094,154 @@ def _weather_sensitivity(
         "runs_analyzed": len(all_runs),
         "profiles_analyzed": len(runs_by_fp),
         "rows": rows,
+        "variance": _weather_variance(runs_by_fp, crown_metrics, metric_meta),
+    }
+
+
+# --- Weather variance decomposition ----------------------------------------------------
+# The per-pair ρ table above says WHICH covariates move WHICH crown metrics. This answers
+# the budget question that actually decides architecture: of the run-to-run noise a profile
+# shows, how much could the clean covariates jointly account for at all? That number is the
+# ceiling on any covariate-based weather adjustment — and its complement is the measured
+# justification for the duel's paired design, which controls for the weather no probe sees.
+WEATHER_R2_MIN_RUNS = 30        # fewer complete runs than this and an R² is a coin toss
+WEATHER_R2_MIN_PER_PROFILE = 2  # one run demeans to zero — it can't witness within-profile variance
+WEATHER_R2_COV_COVERAGE = 0.8   # a covariate absent from >20% of runs is dropped, not allowed to gut n
+
+
+def _weather_variance(
+    runs_by_fp: dict[str, list[dict[str, float]]],
+    crown_metrics: list[str],
+    metric_meta: dict[str, dict],
+) -> dict:
+    """How much of each outcome's **within-profile** run-to-run variance the clean
+    covariates jointly explain — the empirical answer to "can we measure the weather?".
+
+    Per outcome (each crown metric + the per-run Overall): demean the outcome and every
+    clean covariate within each profile — the pure-arithmetic fixed effect, so a covariate
+    that only differs *between* profiles (i.e. the profile itself wearing a weather
+    costume) explains exactly nothing — then fit one joint least-squares over the pooled
+    demeaned runs and report the adjusted R². Degrees of freedom charge for both the
+    per-profile means and the covariates, so a pile of useless covariates reads ≈0
+    instead of creeping upward with k.
+
+    Read it as a **ceiling, not a promise**: it is linear and in-sample, so it is the
+    most a covariate-based weather adjustment could remove (optimistically, for a linear
+    adjuster; an underestimate only if the true relation is strongly non-monotonic in a
+    way rank-correlation on the card above would also miss). The complement is conditions
+    no instrument sees plus irreducible run noise — the share only a paired back-to-back
+    comparison controls for, which is the duel's whole justification stated as a number.
+
+    ``within_sd`` / ``residual_sd`` translate the share into the unit people actually
+    reason in: the ± noise a profile's runs show before and after the best linear use of
+    the covariates. ``residual_sd`` can read *worse* than ``within_sd`` when the
+    covariates are useless — that's the honest out-of-sample price of fitting them, not a
+    bug. Purely informational; no scores change.
+    """
+    clean = [k for k, is_clean in _weather_covariates() if is_clean]
+    meta = dict(metric_meta)
+    meta.setdefault("overall", {"label": "Overall", "unit": "pts"})
+    outcomes = list(crown_metrics) + ["overall"]
+    # One pass over the runs builds every outcome's pool and its covariate coverage —
+    # this function can be handed six-figure run counts, so nothing below re-scans them.
+    pools: dict[str, list[tuple[str, dict[str, float]]]] = {m: [] for m in outcomes}
+    coverage: dict[str, dict[str, int]] = {m: {c: 0 for c in clean} for m in outcomes}
+    for fp, rs in runs_by_fp.items():
+        for r in rs:
+            present = [c for c in clean if c in r]
+            for m in outcomes:
+                if m in r:
+                    pools[m].append((fp, r))
+                    cov = coverage[m]
+                    for c in present:
+                        cov[c] += 1
+    rows: list[dict] = []
+    for m in outcomes:
+        m_meta = meta.get(m) or {}
+        pool = pools[m]
+        # Complete-case over the covariates that are actually collected: requiring a
+        # covariate most runs never measured would throw away the dataset to keep a
+        # column of blanks.
+        used = [c for c in clean if coverage[m][c] >= WEATHER_R2_COV_COVERAGE * len(pool)] if pool else []
+        by_fp: dict[str, list[dict[str, float]]] = {}
+        for fp, r in pool:
+            if all(c in r for c in used):
+                by_fp.setdefault(fp, []).append(r)
+        by_fp = {fp: rs for fp, rs in by_fp.items() if len(rs) >= WEATHER_R2_MIN_PER_PROFILE}
+        n = sum(len(rs) for rs in by_fp.values())
+        g, k = len(by_fp), len(used)
+        base = {
+            "outcome": m,
+            "outcome_label": m_meta.get("label") or m,
+            "unit": m_meta.get("unit") or ("pts" if m == "overall" else "ms"),
+            "covariates_used": used,
+            "runs": n,
+            "profiles": g,
+            "explained_share": None,
+            "r2": None,
+            "within_sd": None,
+            "residual_sd": None,
+            "why": None,
+        }
+        if not pool:
+            rows.append({**base, "why": "no run has measured this outcome yet"})
+            continue
+        if not used:
+            rows.append({**base, "why": "no clean covariate is measured on enough of these runs"})
+            continue
+        if n < WEATHER_R2_MIN_RUNS or n - g - k < 3:
+            rows.append({**base, "why": (
+                f"needs ≥{WEATHER_R2_MIN_RUNS} complete runs across repeat-measured profiles (have {n})"
+            )})
+            continue
+        ys: list[float] = []
+        xs: list[list[float]] = []
+        for rs in by_fp.values():
+            cnt = len(rs)
+            ym = sum(r[m] for r in rs) / cnt
+            xm = [sum(r[c] for r in rs) / cnt for c in used]
+            for r in rs:
+                ys.append(r[m] - ym)
+                xs.append([r[c] - xm[j] for j, c in enumerate(used)])
+        sst = sum(y * y for y in ys)
+        if sst <= 0:
+            rows.append({**base, "why": "these runs show no within-profile variance to explain"})
+            continue
+        ssr = _ols_residual_ss(xs, ys)
+        if ssr is None:
+            rows.append({**base, "why": "covariate design unsolvable"})
+            continue
+        ssr = min(ssr, sst)  # least squares can't do worse than the mean; anything past it is float dust
+        df_tot, df_res = n - g, n - g - k
+        adj = 1.0 - (ssr / df_res) / (sst / df_tot)
+        rows.append({**base,
+            "explained_share": round(max(0.0, min(1.0, adj)), 3),
+            "r2": round(1.0 - ssr / sst, 3),
+            "within_sd": round((sst / df_tot) ** 0.5, 2),
+            "residual_sd": round((ssr / df_res) ** 0.5, 2),
+        })
+
+    ov = next((r for r in rows if r["outcome"] == "overall"), None)
+    if ov and ov.get("explained_share") is not None:
+        pct = round(ov["explained_share"] * 100)
+        headline = (
+            f"The clean covariates explain {pct}% of the Overall's within-profile run-to-run "
+            f"variance (±{ov['within_sd']} → ±{ov['residual_sd']} pts over {ov['runs']} runs). "
+            f"That's the ceiling on what any covariate-based weather adjustment could remove; "
+            f"the other {100 - pct}% is conditions no probe sees plus run noise — the share only "
+            f"a paired back-to-back comparison (the duel) controls for."
+        )
+    else:
+        headline = (
+            "Not enough repeat-measured runs to decompose the Overall's noise yet — "
+            + ((ov or {}).get("why") or "no per-run Overall on record")
+            + "."
+        )
+    return {
+        "min_runs": WEATHER_R2_MIN_RUNS,
+        "min_runs_per_profile": WEATHER_R2_MIN_PER_PROFILE,
+        "outcomes": rows,
+        "headline": headline,
     }
 
 
@@ -1801,9 +1984,15 @@ def invalidate_profiles_cache() -> None:
     """
     from .. import profile_aggregates
 
+    global _weather_memo
     with _FIELD_LOCK:
         _FIELD_CACHE.clear()
     profile_aggregates.invalidate()
+    # The weather-sensitivity memo keys on the same field stamp, and the stamp is blind to
+    # the same event this hook exists for: an in-place refingerprint moves runs between
+    # profiles without changing any id or count, and the decomposition's within-profile
+    # grouping would silently keep the old world.
+    _weather_memo = None
 
 
 def compute_profiles(
