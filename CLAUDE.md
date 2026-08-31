@@ -647,6 +647,22 @@ LLM-based. See `README.md` for the product overview.
     pairs. Mocked-engine tests set it to 0 and score each leg **by the profile applied**, not by
     its position (`_score_by_profile`) — a fake keyed on run order would bake in exactly the
     confound the alternation removes.
+    **Every round is stamped with its weather, so the shared-weather assumption is
+    VERIFIED, not trusted** (`_WeatherStamper` / `ROUND_WEATHER_SHIFT`, default 25 severity
+    pts). The round's two legs being adjacent is the whole instrument — and an assumption
+    the system leans on this hard deserves a check. At session start a severity yardstick
+    is built from recent history (`WEATHER_SCALE_SAMPLE` runs; `weather.severity_scale`,
+    the same mid-rank-ECDF arithmetic as `run_severities` — one implementation); each leg
+    is then stamped with its 0–100 severity (covariates read plugin-cache-first with the
+    re-graded `Score.metric_values` fallback, via the one `_covariate_readings` extraction,
+    so the duel stamp and the Weather tab can never read a run differently), and the round
+    records the SHIFT between its legs (`weather_shifts`, aligned with the margins;
+    summary `weather_shifted_rounds`/`weather_max_shift` on the matchup, a `weather` block
+    on the live scoreboard, a warning chip on the tape and the live card). Strictly
+    **flag-and-steer**: a shifted round still counts toward the verdict exactly as before
+    — the flag says which margins to trust less; down-weighting or discarding would change
+    adjudication, a separate decision. Best-effort by rule: no yardstick or an unstampable
+    leg degrades to None, never a failed session.
     **The operating model: always be running the bout most likely to unseat the belt**
     (`contender_order`, `ledger_ratings`, `duel.contenders = "ring"`, the default). The queue
     used to be ordered by the **pooled** Overall, which made the ladder circular: the duel

@@ -1877,6 +1877,13 @@ export interface DuelMatchup {
   /** How many rounds were discarded for having no Overall, and the causes. */
   unusable_rounds?: number;
   unusable_why?: Record<string, number> | null;
+  // Per usable round, the weather-severity shift between its two legs (aligned with the
+  // round margins; null = unstampable), plus the count over the threshold. Flag only —
+  // a verdict decided across shifted rounds still stands. Absent on old records.
+  weather_shifts?: (number | null)[];
+  weather_shifted_rounds?: number;
+  weather_max_shift?: number | null;
+  weather_shift_threshold?: number;
 }
 
 /** GET /duel/health — is the ladder measuring anything? */
@@ -2122,6 +2129,16 @@ export interface DuelLive {
   p_value: number | null;
   alpha: number;
   streak: { length: number; side: "incumbent" | "challenger" | null; needed: number };
+  // The shared-weather audit for this bout so far: each round's two legs are stamped with
+  // their measured weather severity, and a round whose legs differ by ≥ threshold was
+  // fought across a weather shift — its margin is less trustworthy. Flag only; the
+  // verdict math never reads it. Absent on sessions recorded before the stamp existed.
+  weather?: {
+    shifted_rounds: number;
+    last_shift: number | null;
+    max_shift: number | null;
+    threshold: number;
+  } | null;
 }
 
 export interface DuelSession {

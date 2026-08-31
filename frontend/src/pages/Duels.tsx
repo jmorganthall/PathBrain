@@ -683,6 +683,23 @@ function BoutRow({ m }: { m: DuelMatchup }) {
             {m.wins_incumbent}–{m.wins_challenger} in {m.pairs} rounds · {marginPhrase(m)}
           </Typography>
           <VerdictChip m={m} />
+          {(m.weather_shifted_rounds ?? 0) > 0 && (
+            <Tooltip
+              title={
+                `${m.weather_shifted_rounds} of this match's rounds were fought across a ` +
+                `measured weather shift (≥${m.weather_shift_threshold ?? 25} severity points ` +
+                "between the two legs), so their margins deserve less trust. An audit of the " +
+                "shared-weather assumption — the verdict math never reads it."
+              }
+            >
+              <Chip
+                size="small"
+                variant="outlined"
+                color="warning"
+                label={`weather ×${m.weather_shifted_rounds}`}
+              />
+            </Tooltip>
+          )}
         </Stack>
       </Stack>
       <Tooltip
@@ -818,6 +835,25 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
         {summary}
       </Typography>
+
+      {/* The shared-weather audit: a round's two legs run back to back precisely so they
+          meet the same conditions, and each leg's measured severity now checks that
+          instead of assuming it. Shown only when a round actually shifted. */}
+      {(live.weather?.shifted_rounds ?? 0) > 0 && (
+        <Tooltip
+          title={
+            "Each leg is stamped with its measured weather severity (0–100 against recent " +
+            "history); a round whose two legs differ by " +
+            `${live.weather?.threshold ?? 25}+ points was fought across changing conditions. ` +
+            "Those rounds still count exactly as before — this flags which margins to trust less."
+          }
+        >
+          <Typography variant="caption" color="warning.main" sx={{ display: "block", mt: 0.25 }}>
+            {live.weather!.shifted_rounds} round{live.weather!.shifted_rounds === 1 ? "" : "s"} fought
+            across a weather shift (max {live.weather!.max_shift ?? "—"} severity pts between legs).
+          </Typography>
+        </Tooltip>
+      )}
 
       <Stack direction="row" spacing={2} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
         <Tooltip title="The median Overall-point gap across the rounds so far. This — not the round count — is what the verdict is decided on, because it keeps the size of each win instead of throwing it away.">

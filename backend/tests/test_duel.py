@@ -3085,3 +3085,128 @@ def test_standings_flags_ties_without_moving_anyone():
     # A row that isn't tied carries no separation estimate — the number only means
     # something as "what it would take to break THIS tie".
     assert all(r["pairs_to_separate"] is None for r in rows if not r["tied_with_leader"])
+
+
+# ── Per-round weather stamps: the shared-weather assumption, verified ──────────────────
+
+
+def test_rounds_are_stamped_with_the_weather_shift_between_their_legs(monkeypatch):
+    """A round's margin rests on its two legs sharing their weather — an assumption held
+    by adjacency until now. Each leg is stamped with its severity and the round records
+    the shift. Here the yardstick is deliberately absent (the degradation path): every
+    stamp reads None, the count reads zero, and the duel completes exactly as before —
+    a weather stamp can never be why a session fails."""
+    import pathbrain.api.routes_settings as rs
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+    applied: list[str] = []
+    fake_field = {
+        "best_fingerprint": "inc0000000x",
+        "profiles": [
+            {"fingerprint": "inc0000000x", "label": "incumbent", "settings": [{"label": "wan", "quantum": 1514}]},
+            {"fingerprint": "cha0000000x", "label": "challenger", "settings": [{"label": "wan", "quantum": 300}]},
+        ],
+    }
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
+    monkeypatch.setattr(
+        rs, "_compute_heirs", lambda result, session, live=None: {"items": [{"fingerprint": "cha0000000x"}]}
+    )
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    # No yardstick — deterministic, rather than trusting the fake run ids (9000+) never to
+    # collide with real rows in the suite's shared DB.
+    monkeypatch.setattr(duel_mod, "_weather_stamper", lambda meth_version: None)
+    _no_settle()
+    _score_by_profile(monkeypatch, applied, {"inc0000000x": 60.0, "cha0000000x": 66.0})
+
+    d = _wait_finish(duel_mod.start(duration_minutes=10))
+    assert d.status == DuelStatus.COMPLETE, d.error
+    m = d.matchups[0]
+    # The audit rides the record, aligned with the margins…
+    assert len(m["weather_shifts"]) == m["pairs"]
+    assert m["weather_shift_threshold"] == duel_mod.ROUND_WEATHER_SHIFT
+    # …and with nothing stampable it says so honestly: no shifts, no flags, no crash.
+    assert all(w is None for w in m["weather_shifts"])
+    assert m["weather_shifted_rounds"] == 0 and m["weather_max_shift"] is None
+
+
+def test_a_real_leg_pair_measures_its_weather_shift():
+    """End-to-end through the DB: two legs whose measured conditions differ wildly read as
+    a large severity shift. The scale is built from THIS test's runs only (the suite
+    shares one DB, so a scale over "recent history" would rank against whatever other
+    tests seeded); the stamper's own extraction — plugin cache + Score fallback — is what
+    is exercised for real."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from pathbrain.models import BenchmarkResult, Run, RunStatus
+    from pathbrain.weather import severity_scale
+
+    sources = duel_mod._covariate_sources()
+
+    def seed(latency, dns, tcp):
+        with session_scope() as s:
+            r = Run(status=RunStatus.COMPLETE,
+                    created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    settings_fingerprint="wxstamp00001", iterations=1)
+            s.add(r)
+            s.flush()
+            s.add(BenchmarkResult(run_id=r.id, plugin="icmp",
+                                  metrics={"latency_ms": latency, "jitter_ms": 1.0}))
+            s.add(BenchmarkResult(run_id=r.id, plugin="dns", metrics={"lookup_ms": dns}))
+            s.add(BenchmarkResult(run_id=r.id, plugin="tcp", metrics={"connect_ms": tcp}))
+            return r.id
+
+    history = [seed(10.0 + i * 5.0, 1.0 + i * 0.5, 5.0 + i * 2.0) for i in range(12)]
+    calm = seed(10.0, 1.0, 5.0)
+    stormy = seed(65.0, 6.5, 27.0)
+
+    def readings(run_id):
+        with session_scope() as s:
+            rows = s.execute(
+                select(BenchmarkResult.plugin, BenchmarkResult.metrics).where(
+                    BenchmarkResult.run_id == run_id
+                )
+            ).all()
+        return duel_mod._covariate_readings(list(rows), None, sources)
+
+    scale = severity_scale([readings(r) for r in history + [calm, stormy]], list(sources))
+    stamper = duel_mod._WeatherStamper(scale, sources, "any-methodology")
+
+    sev_calm = stamper.leg_severity(calm)
+    sev_stormy = stamper.leg_severity(stormy)
+    assert sev_calm is not None and sev_stormy is not None
+    assert sev_stormy - sev_calm >= duel_mod.ROUND_WEATHER_SHIFT
+    # The degradation paths stay quiet failures, never raised ones.
+    assert stamper.leg_severity(None) is None
+
+
+def test_covariate_readings_fall_back_to_the_regraded_score():
+    """A covariate added after a run was captured lives only in the re-graded Score, not
+    the plugin cache — the same fallback the canonical weather reading uses, so the duel
+    stamp and the Weather tab can never read one run differently."""
+    sources = {"latency": ("icmp", "latency_ms"), "nav_dns": ("browser", "nav_dns_ms")}
+    plugin_rows = [("icmp", {"latency_ms": 12.0})]  # no browser row was ever cached
+    out = duel_mod._covariate_readings(plugin_rows, {"nav_dns": 4.5, "latency": 999.0}, sources)
+    # Cache wins where it exists; the Score fills only what the cache never had.
+    assert out == {"latency": 12.0, "nav_dns": 4.5}
+
+
+def test_the_live_scoreboard_carries_the_weather_audit():
+    sprt = duel_mod.SprtState(p1=0.7, alpha=0.05)
+    paired = duel_mod.PairedEvidence(alpha=0.05, min_margin=0.0, min_pairs=6, max_pairs=40)
+    for delta in (1.4, -0.3, 1.1):
+        sprt.add_pair(delta > 0)
+        paired.add(delta)
+    live = duel_mod._live_scoreboard(
+        bout=1, inc={"label": "a"}, cha={"label": "b"}, sprt=sprt, paired=paired,
+        why_challenger="", min_pairs=6, max_pairs=40, min_margin=0.0, streak_needed=8,
+        weather_shifts=[4.0, None, 31.0],
+    )
+    assert live["weather"] == {
+        "shifted_rounds": 1,
+        "last_shift": 31.0,
+        "max_shift": 31.0,
+        "threshold": duel_mod.ROUND_WEATHER_SHIFT,
+    }
