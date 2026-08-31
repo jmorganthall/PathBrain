@@ -18,7 +18,6 @@ import DialogTitle from "@mui/material/DialogTitle";
 import FormControl from "@mui/material/FormControl";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import InputLabel from "@mui/material/InputLabel";
-import LinearProgress from "@mui/material/LinearProgress";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListSubheader from "@mui/material/ListSubheader";
 import ListItemText from "@mui/material/ListItemText";
@@ -47,7 +46,6 @@ import type {
   DuelStandings,
   MetricSaturation,
   SettingsProfilesResponse,
-  WeatherSensitivity,
   MetricThreshold,
   ProfileDiff,
   ProfileFieldChange,
@@ -600,203 +598,36 @@ function HeirsCard({
   );
 }
 
-// Weather sensitivity: does the ambient network weather (probe instruments + the load's own
-// connection-setup phases) actually move the crown metrics? Renders the diagnostic behind
-// GET /settings/weather-sensitivity — the gate for whether a "vs weather" reading is worth
-// building at all. Collapsed + unfetched by default: the endpoint scans every comparable run,
-// so it loads only when explicitly opened.
-function WeatherSensitivityCard() {
-  const [open, setOpen] = useState(false);
-  const [data, setData] = useState<WeatherSensitivity | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const toggle = async () => {
-    const next = !open;
-    setOpen(next);
-    if (next && !data && !loading) {
-      setLoading(true);
-      setError(null);
-      try {
-        setData(await api.weatherSensitivity());
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Could not load weather sensitivity.");
-      } finally {
-        setLoading(false);
-      }
-    }
-  };
-
-  // The verdict reads only CLEAN covariates (profile-orthogonal): a shaped covariate
-  // correlating with the crown is the shaper working, not weather.
-  const cleanSensitive = (data?.rows ?? []).filter((r) => r.clean && r.weather_sensitive);
-  const strongest = cleanSensitive[0]; // server sorts by |within-profile ρ| desc
-  const verdict = !data
-    ? null
-    : cleanSensitive.length > 0
-      ? `Weather moves the crown: ${cleanSensitive.length} clean covariate↔metric pair(s) over ` +
-        `|ρ| ${data.trend_rho} — strongest: ${strongest.covariate_label} → ${strongest.metric_label} ` +
-        `(within-profile ρ ${strongest.within_profile_spearman ?? strongest.pooled_spearman}). ` +
-        "A vs-weather reading would carry real signal."
-      : `Crown looks weather-robust: no clean covariate reaches |ρ| ${data.trend_rho} within-profile ` +
-        `across ${data.runs_analyzed} runs / ${data.profiles_analyzed} profiles. ` +
-        "A weather adjustment would do little here.";
-
+// Weather — a pointer, not a second copy of the analysis. The full measured-conditions
+// view (the "how much of the noise is measurable weather?" variance decomposition and the
+// covariate × crown-metric sensitivity table) lives on the Weather tab; this strip only
+// says what the per-profile columns beside it ("vs weather", severity, weather-beater)
+// are qualified by, and where the field-level answer lives. Deliberately fetch-free: the
+// analysis scans every comparable run, and a pointer must never be why this page is slow.
+function WeatherCard() {
+  const navigate = useNavigate();
   return (
     <Card sx={{ mb: 2 }}>
       <CardContent>
-        <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          justifyContent="space-between"
+          alignItems={{ xs: "flex-start", sm: "center" }}
+          spacing={1}
+        >
           <Box>
-            <Typography variant="h6">Weather sensitivity</Typography>
+            <Typography variant="h6">Weather</Typography>
             <Typography variant="caption" color="text.secondary">
-              Does ambient network weather (DNS/TCP/TLS/latency measured on every run) move the
-              crown metrics? The go/no-go check for any “vs weather” reading.
+              Does ambient network weather (DNS/TCP/TLS/latency measured on every run) move
+              the crown metrics — and how much of the run-to-run noise could it explain at
+              all? The field-level analysis behind the per-profile “vs weather” readings in
+              this table.
             </Typography>
           </Box>
-          <Button size="small" onClick={() => void toggle()}>
-            {open ? "Hide" : loading ? "Loading…" : "Check"}
+          <Button size="small" variant="outlined" onClick={() => navigate("/weather")}>
+            Weather
           </Button>
         </Stack>
-        {open && (
-          <Box sx={{ mt: 1.5 }}>
-            {loading && <CircularProgress size={20} />}
-            {error && <Alert severity="error">{error}</Alert>}
-            {data && (
-              <>
-                <Alert severity={cleanSensitive.length > 0 ? "warning" : "success"} sx={{ mb: 1.5 }}>
-                  {verdict}
-                </Alert>
-
-                {/* The budget question behind the per-pair table below: of the run-to-run
-                    noise a profile shows, how much could the clean covariates jointly
-                    account for AT ALL? That share is the ceiling on any covariate-based
-                    weather adjustment — and its complement is the measured justification
-                    for the duel's paired design, which controls for the weather no probe
-                    sees. */}
-                {data.variance && (
-                  <Box sx={{ mb: 1.5 }}>
-                    <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-                      How much of the noise is measurable weather?
-                    </Typography>
-                    <Alert severity="info" icon={false} sx={{ mb: 1, py: 0.5 }}>
-                      <Typography variant="caption">{data.variance.headline}</Typography>
-                    </Alert>
-                    <Stack spacing={0.75}>
-                      {data.variance.outcomes.map((o) => (
-                        <Box key={o.outcome}>
-                          <Stack direction="row" spacing={1} alignItems="baseline" flexWrap="wrap" useFlexGap>
-                            <Typography variant="body2" sx={{ fontWeight: 600, minWidth: 120 }}>
-                              {o.outcome_label}
-                            </Typography>
-                            {o.explained_share != null ? (
-                              <Typography variant="caption" color="text.secondary">
-                                <b>{Math.round(o.explained_share * 100)}%</b> explainable
-                                {o.within_sd != null && o.residual_sd != null && (
-                                  <>
-                                    {" "}· ±{o.within_sd} → ±{o.residual_sd} {o.unit}
-                                  </>
-                                )}
-                                {" "}· {o.runs.toLocaleString()} runs over {o.profiles} profiles
-                              </Typography>
-                            ) : (
-                              <Typography variant="caption" color="text.secondary">
-                                {o.why ?? "not enough data yet"}
-                              </Typography>
-                            )}
-                          </Stack>
-                          {o.explained_share != null && (
-                            <Tooltip
-                              title={
-                                "Adjusted R² of the clean covariates against this outcome, " +
-                                "within-profile (the profile held fixed, so its identity can't " +
-                                "masquerade as weather). Linear and in-sample — read it as the " +
-                                "ceiling on what a weather adjustment could remove, not a promise."
-                              }
-                            >
-                              <LinearProgress
-                                variant="determinate"
-                                value={Math.min(100, o.explained_share * 100)}
-                                sx={{ height: 5, borderRadius: 2, mt: 0.25 }}
-                              />
-                            </Tooltip>
-                          )}
-                        </Box>
-                      ))}
-                    </Stack>
-                  </Box>
-                )}
-
-                <TableContainer sx={{ maxHeight: 380, overflowX: "auto" }}>
-                  <Table size="small" stickyHeader>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Weather covariate</TableCell>
-                        <TableCell>Crown metric</TableCell>
-                        <TableCell align="right">
-                          <Tooltip title="Spearman ρ computed within each profile (profile held fixed), median across profiles — the causal 'does weather move this metric' signal.">
-                            <span>Within-profile ρ</span>
-                          </Tooltip>
-                        </TableCell>
-                        <TableCell align="right">
-                          <Tooltip title="Spearman ρ over all runs pooled — mixes the weather effect with between-profile differences; context only.">
-                            <span>Pooled ρ</span>
-                          </Tooltip>
-                        </TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {data.rows.slice(0, 20).map((r) => (
-                        <TableRow key={`${r.covariate}-${r.metric}`}>
-                          <TableCell>
-                            <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap">
-                              <span>{r.covariate_label}</span>
-                              {r.clean ? (
-                                <Tooltip title="Profile-orthogonal — safe to use as a weather signal.">
-                                  <Chip size="small" variant="outlined" color="success" label="clean" />
-                                </Tooltip>
-                              ) : (
-                                <Tooltip title="The shaper itself moves this — transparency only; must never adjust with it.">
-                                  <Chip size="small" variant="outlined" color="warning" label="shaped" />
-                                </Tooltip>
-                              )}
-                            </Stack>
-                          </TableCell>
-                          <TableCell>{r.metric_label}</TableCell>
-                          <TableCell align="right">
-                            <Typography
-                              variant="body2"
-                              component="span"
-                              sx={{ fontWeight: r.clean && r.weather_sensitive ? 700 : 400 }}
-                              color={r.clean && r.weather_sensitive ? "warning.main" : "inherit"}
-                            >
-                              {r.within_profile_spearman != null
-                                ? r.within_profile_spearman.toFixed(2)
-                                : "—"}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              {" "}({r.within_profile_profiles}p)
-                            </Typography>
-                          </TableCell>
-                          <TableCell align="right">
-                            {r.pooled_spearman != null ? r.pooled_spearman.toFixed(2) : "—"}
-                            <Typography variant="caption" color="text.secondary">
-                              {" "}({r.pooled_n})
-                            </Typography>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-                  {data.runs_analyzed} runs across {data.profiles_analyzed} profiles · pairs ranked by
-                  |within-profile ρ| · |ρ| ≥ {data.trend_rho} counts as weather-sensitive · a profile
-                  needs ≥ {data.within_profile_min_points} runs to contribute a within-profile ρ.
-                </Typography>
-              </>
-            )}
-          </Box>
-        )}
       </CardContent>
     </Card>
   );
@@ -1690,7 +1521,7 @@ export default function Settings() {
         />
       )}
 
-      <WeatherSensitivityCard />
+      <WeatherCard />
 
       <DuelCard />
 

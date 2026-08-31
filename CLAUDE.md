@@ -178,10 +178,13 @@ LLM-based. See `README.md` for the product overview.
     "crown may be weather-confounded" alert). Strictly **flag-and-steer: never a crown
     input** — a suspect triggers a race (contemporaneous head-to-head raw data), never a
     re-rank. Empirically gated by `GET /settings/weather-sensitivity` (per clean-covariate ×
-    crown-metric Spearman ρ, pooled + **within-profile**, rendered as the Settings-Impact
-    "Weather sensitivity" card). The same response carries the **variance decomposition**
+    crown-metric Spearman ρ, pooled + **within-profile**, rendered on the dedicated
+    **Weather** tab (`Weather.tsx`, `/weather` — auto-loads, since the endpoint is memoized
+    on the field stamp; Settings Impact keeps a fetch-free one-line pointer strip beside the
+    per-profile "vs weather" columns, the same pattern as the Duel ladder pointer). The same
+    response carries the **variance decomposition**
     (`routes_settings._weather_variance` + `stats.ols_residual_ss`, the "How much of the
-    noise is measurable weather?" block on that card): per crown metric + the per-run
+    noise is measurable weather?" card on that tab): per crown metric + the per-run
     Overall, the **adjusted within-profile R²** of the clean covariates jointly — demeaned
     per profile (pure-arithmetic fixed effect, so a covariate that only differs *between*
     profiles is the profile in a weather costume and explains exactly nothing —
@@ -1414,7 +1417,9 @@ LLM-based. See `README.md` for the product overview.
   single request was sent. Now the shell paints immediately, each page is its own small chunk
   (Duels ~40 kB), and the 384 kB chart bundle loads only for the three views that draw charts.
   Keep new pages lazy. Pages: Dashboard,
-  History, Trends, Compare, Settings Impact (**paginated** sortable table — 25/page —
+  History, Trends, **Weather** (the measured-conditions view — the variance decomposition +
+  the covariate × crown-metric sensitivity table; the per-profile weather readings stay on
+  Settings Impact beside the standings they qualify), Compare, Settings Impact (**paginated** sortable table — 25/page —
   with standard **Overall + the crown metrics** columns (the metrics the Overall corners over,
   from the response's `overall_metrics` — fcp/lcp/network_stall_all under v13 — ranked by each metric's
   **field-normalized raw** value via a `crown:<metric>` field key → `crown_norm` (no grading),
