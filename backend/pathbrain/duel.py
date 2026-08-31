@@ -472,6 +472,7 @@ def _live_scoreboard(
     max_pairs: int,
     min_margin: float,
     streak_needed: int,
+    weather_shifts: list[float | None] | None = None,
 ) -> dict:
     """The bout in progress as structured state — who is ahead, by how much, how close.
 
@@ -527,6 +528,17 @@ def _live_scoreboard(
             "length": streak_len,
             "side": ("challenger" if streak_dir > 0 else "incumbent") if streak_len else None,
             "needed": streak_needed,
+        },
+        # The shared-weather audit so far: how many of this bout's rounds were fought
+        # across a measurable weather shift between their two legs. Purely informational —
+        # the verdict math never reads it.
+        "weather": {
+            "shifted_rounds": sum(
+                1 for w in (weather_shifts or []) if w is not None and w >= ROUND_WEATHER_SHIFT
+            ),
+            "last_shift": (weather_shifts[-1] if weather_shifts else None),
+            "max_shift": max((w for w in (weather_shifts or []) if w is not None), default=None),
+            "threshold": ROUND_WEATHER_SHIFT,
         },
     }
 
@@ -597,6 +609,136 @@ def _run_overall(run_id: int, methodology_version: str) -> float | None:
             return None
         val = (score.axis_scores or {}).get("overall")
         return float(val) if isinstance(val, (int, float)) else None
+
+
+# ── Per-round weather stamps ──────────────────────────────────────────────────────────
+#
+# A round's two legs are adjacent BY DESIGN so they share their weather — that adjacency
+# is the whole instrument. But an assumption the system relies on this heavily should be
+# verified, not trusted: every leg already measures its own conditions through the clean
+# covariates (probe DNS/TCP/TLS/latency + nav setup — the signals the shaper can't move),
+# so each leg is stamped with its weather severity and the round records the SHIFT between
+# its two legs. Strictly flag-and-steer, like every weather reading here: a shifted round
+# still counts toward the verdict exactly as before (down-weighting or discarding would
+# change adjudication, which is a separate decision for a separate day) — the flag says
+# which margins to trust less when reading a surprising bout, on the tape and live.
+ROUND_WEATHER_SHIFT = 25.0   #: severity points between a round's legs that read as "the weather moved"
+WEATHER_SCALE_SAMPLE = 5000  #: most recent completed runs the severity scale is built from
+
+
+def _covariate_sources() -> dict:
+    """clean covariate key → (plugin, source_key), from the one shared covariate list."""
+    # Lazy import: the api package imports this module, so the reverse edge stays runtime.
+    from .api.routes_settings import _weather_covariates
+    from .metrics import all_metric_sources
+
+    srcs = all_metric_sources()
+    return {k: srcs.get(k) for k, is_clean in _weather_covariates() if is_clean}
+
+
+def _covariate_readings(
+    plugin_rows: list[tuple[str, dict | None]],
+    metric_values: dict | None,
+    sources: dict,
+) -> dict[str, float]:
+    """One run's clean-covariate values, in the canonical order of trust: the plugin
+    metric cache first, then the re-graded ``Score.metric_values`` — the same fallback
+    ``_weather_sensitivity`` uses, because a re-grade re-derives from raw into the Score
+    without rewriting the plugin cache, so a covariate added after a run was captured
+    (the nav_* phases, say) lives only in the Score. One extraction for both the scale
+    build and the per-leg stamp, so the two can never read a run differently.
+    """
+    out: dict[str, float] = {}
+    for key, src in sources.items():
+        v = None
+        if src:
+            for plugin, metrics in plugin_rows:
+                if plugin == src[0] and metrics:
+                    v = metrics.get(src[1])
+                    break
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            v = (metric_values or {}).get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[key] = float(v)
+    return out
+
+
+class _WeatherStamper:
+    """The session's weather yardstick: a frozen severity scale plus the covariate
+    sources and methodology it was built with, so a leg is stamped by exactly the
+    extraction the scale's own history went through."""
+
+    def __init__(self, scale, sources: dict, meth_version: str):
+        self._scale = scale
+        self._sources = sources
+        self._meth_version = meth_version
+
+    def leg_severity(self, run_id: int | None) -> float | None:
+        """One leg's weather severity, or None on any shortfall — quiet by rule: a
+        weather stamp can never be why a duel session fails."""
+        if run_id is None:
+            return None
+        try:
+            from .models import BenchmarkResult
+
+            with session_scope() as session:
+                rows = session.execute(
+                    select(BenchmarkResult.plugin, BenchmarkResult.metrics).where(
+                        BenchmarkResult.run_id == run_id
+                    )
+                ).all()
+                mv = session.execute(
+                    select(Score.metric_values).where(
+                        Score.run_id == run_id,
+                        Score.methodology_version == self._meth_version,
+                    )
+                ).scalar()
+            covs = _covariate_readings(list(rows), mv, self._sources)
+            return self._scale.severity(covs)
+        except Exception:  # noqa: BLE001
+            log.debug("Could not stamp weather on run %s", run_id, exc_info=True)
+            return None
+
+
+def _weather_stamper(meth_version: str) -> _WeatherStamper | None:
+    """A severity yardstick over recent history, or None. Best-effort by rule — no
+    yardstick simply means unstamped rounds, never a failed session."""
+    from .models import BenchmarkResult, Run, RunStatus
+    from .weather import severity_scale
+
+    try:
+        sources = _covariate_sources()
+        with session_scope() as session:
+            recent = (
+                select(Run.id)
+                .where(Run.status == RunStatus.COMPLETE)
+                .order_by(Run.id.desc())
+                .limit(WEATHER_SCALE_SAMPLE)
+                .subquery()
+            )
+            rows = session.execute(
+                select(BenchmarkResult.run_id, BenchmarkResult.plugin, BenchmarkResult.metrics)
+                .where(BenchmarkResult.run_id.in_(select(recent.c.id)))
+            ).all()
+            mv_rows = session.execute(
+                select(Score.run_id, Score.metric_values).where(
+                    Score.run_id.in_(select(recent.c.id)),
+                    Score.methodology_version == meth_version,
+                )
+            ).all()
+        by_run: dict[int, list[tuple[str, dict | None]]] = {}
+        for run_id, plugin, metrics in rows:
+            by_run.setdefault(run_id, []).append((plugin, metrics))
+        mv_by_run = dict(mv_rows)
+        readings = [
+            _covariate_readings(plugin_rows, mv_by_run.get(run_id), sources)
+            for run_id, plugin_rows in by_run.items()
+        ]
+        scale = severity_scale(readings, list(sources.keys()))
+        return _WeatherStamper(scale, sources, meth_version) if len(scale) else None
+    except Exception:  # noqa: BLE001
+        log.debug("Could not build the weather severity scale", exc_info=True)
+        return None
 
 
 def _round_reading(
@@ -1759,6 +1901,10 @@ def _drive(duel_id: int) -> None:
             with session_scope() as session:
                 field = compute_profiles(session, include_weather=False)
                 heirs = _compute_heirs(field, session, baseline)
+            # The session's weather yardstick, built once: each leg is stamped with its
+            # severity against recent history, so a round can say whether its two legs
+            # actually shared their weather instead of assuming adjacency proved it.
+            weather = _weather_stamper(meth_version)
             settings_by_fp = {p["fingerprint"]: p for p in field.get("profiles", [])}
             mode = str(cfg.get("contenders", "ring") or "ring")
             top_n = int(cfg.get("contender_top_n", 8) or 8)
@@ -1884,6 +2030,9 @@ def _drive(duel_id: int) -> None:
                     alpha, min_margin, min_pairs, max_pairs, streak_wins=streak_wins
                 )
                 deltas: list[float] = []
+                # Per-round severity shift between the two legs, aligned with `deltas`
+                # (unusable rounds record neither). None = one or both legs unstampable.
+                weather_shifts: list[float | None] = []
                 bad_streak = 0
                 verdict: str | None = None
                 reason = ""
@@ -1934,6 +2083,7 @@ def _drive(duel_id: int) -> None:
                         why_challenger=why_challenger, min_pairs=min_pairs,
                         max_pairs=max_pairs, min_margin=min_margin,
                         streak_needed=streak_to_decide(alpha, min_pairs, max_pairs, streak_wins),
+                        weather_shifts=weather_shifts,
                     ))
                     # ABBA, not ABAB. The incumbent used to run first in every single
                     # pair, which makes "goes first" and "is the incumbent" the same
@@ -1950,6 +2100,7 @@ def _drive(duel_id: int) -> None:
                         else ((challenger_fp, cha), (incumbent_fp, inc))
                     )
                     scored: dict[str, float | None] = {}
+                    leg_runs: dict[str, int] = {}
                     for side_fp, side in order:
                         lease.check()  # never write the firewall on an evicted lease
                         _apply_profile(provider, side["settings"], side_fp)
@@ -1972,6 +2123,7 @@ def _drive(duel_id: int) -> None:
                             config_overrides={"browser": {"iterations": leg_iterations}},
                         )
                         run_ids.append(run_id)
+                        leg_runs[side_fp] = run_id
                         iterations_run += completed
                         value, why_missing = _round_reading(run_id, meth_version, ok)
                         scored[side_fp] = value
@@ -2004,6 +2156,16 @@ def _drive(duel_id: int) -> None:
                     bad_streak = 0
                     delta = cha_val - inc_val
                     deltas.append(delta)
+                    # Stamp the round's weather: the severity of each leg, and the shift
+                    # between them — the direct check on the shared-weather assumption
+                    # this margin rests on. Flag only; the verdict math below is untouched.
+                    sev_inc = weather.leg_severity(leg_runs.get(incumbent_fp)) if weather else None
+                    sev_cha = weather.leg_severity(leg_runs.get(challenger_fp)) if weather else None
+                    weather_shifts.append(
+                        round(abs(sev_cha - sev_inc), 1)
+                        if sev_inc is not None and sev_cha is not None
+                        else None
+                    )
                     sprt.add_pair(delta > 0)
                     paired.add(delta)
 
@@ -2097,6 +2259,18 @@ def _drive(duel_id: int) -> None:
                     # the measurement, and that signal was previously invisible.
                     "unusable_rounds": unusable_rounds,
                     "unusable_why": dict(unusable_why) or None,
+                    # The shared-weather audit, aligned with the margins: per usable round,
+                    # the severity shift between its two legs (None = unstampable), plus
+                    # the count over the threshold. A verdict decided across shifted
+                    # rounds still stands — the flag says which margins to trust less.
+                    "weather_shifts": list(weather_shifts),
+                    "weather_shifted_rounds": sum(
+                        1 for w in weather_shifts if w is not None and w >= ROUND_WEATHER_SHIFT
+                    ),
+                    "weather_max_shift": max(
+                        (w for w in weather_shifts if w is not None), default=None
+                    ),
+                    "weather_shift_threshold": ROUND_WEATHER_SHIFT,
                 }
                 matchups.append(record)
                 # Persist the bout, which is also what the next loop's rating refit reads:

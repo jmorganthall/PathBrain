@@ -57,6 +57,47 @@ def _percentile_of(sorted_vals: list[float], v: float) -> float:
     return (below + equal / 2.0) / n * 100.0
 
 
+class SeverityScale:
+    """Frozen covariate distributions — for scoring runs one at a time against a field.
+
+    The batch reading (:func:`run_severities`) ranks a set of runs against themselves;
+    the duel's per-leg weather stamp needs the opposite shape: a scale built once from
+    history, then each new leg scored the moment it lands. Same arithmetic either way
+    (mid-rank ECDF per covariate, median of the run's covariate percentiles), one
+    implementation — the batch reading is now a scale evaluated over its own inputs.
+    """
+
+    def __init__(self, dists: dict[str, list[float]]):
+        # A distribution of one value ranks everything at 50 and says nothing — drop it,
+        # exactly as the batch reading always has.
+        self._dists = {k: v for k, v in dists.items() if len(v) > 1}
+
+    def __len__(self) -> int:
+        return len(self._dists)
+
+    def severity(self, covariate_values: dict[str, float]) -> float | None:
+        """0–100 weather severity of one run's readings, or ``None`` when fewer than
+        ``WEATHER_MIN_COVARIATES`` of the scale's covariates were measured on it."""
+        pcts = [
+            _percentile_of(dist, covariate_values[c])
+            for c, dist in self._dists.items()
+            if c in covariate_values
+        ]
+        return round(median(pcts), 1) if len(pcts) >= WEATHER_MIN_COVARIATES else None
+
+
+def severity_scale(
+    covariate_values: list[dict[str, float]], covariates: list[str]
+) -> SeverityScale:
+    """Build a :class:`SeverityScale` from a set of runs' covariate readings."""
+    dists: dict[str, list[float]] = {}
+    for c in covariates:
+        vals = sorted(cv[c] for cv in covariate_values if c in cv)
+        if vals:
+            dists[c] = vals
+    return SeverityScale(dists)
+
+
 def run_severities(
     covariate_values: list[dict[str, float]], covariates: list[str]
 ) -> list[float | None]:
@@ -69,21 +110,8 @@ def run_severities(
     median of its available covariate percentiles. ``None`` when fewer than
     ``WEATHER_MIN_COVARIATES`` covariates were measured on that run.
     """
-    dists: dict[str, list[float]] = {}
-    for c in covariates:
-        vals = sorted(cv[c] for cv in covariate_values if c in cv)
-        if vals:
-            dists[c] = vals
-
-    out: list[float | None] = []
-    for cv in covariate_values:
-        pcts = [
-            _percentile_of(dists[c], cv[c])
-            for c in covariates
-            if c in cv and c in dists and len(dists[c]) > 1
-        ]
-        out.append(round(median(pcts), 1) if len(pcts) >= WEATHER_MIN_COVARIATES else None)
-    return out
+    scale = severity_scale(covariate_values, covariates)
+    return [scale.severity(cv) for cv in covariate_values]
 
 
 def _quantile_edges(sorted_vals: list[float], bands: int) -> list[float]:

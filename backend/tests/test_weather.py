@@ -101,3 +101,22 @@ def test_profiles_endpoint_carries_weather_fields(client):
         assert "weather_beater" in p
         if p["weather_relative"] is not None:
             assert set(p["weather_relative"]) >= {"delta_median", "p25", "p75", "count", "coverage"}
+
+
+def test_severity_scale_scores_one_run_like_the_batch():
+    """The duel stamps legs one at a time against a scale built from history; the batch
+    reading ranks a set against itself. Same arithmetic, one implementation — a scale
+    over the batch's own inputs must reproduce the batch exactly."""
+    from pathbrain.weather import run_severities, severity_scale
+
+    covs = ["dns", "tcp", "latency"]
+    runs = [
+        {"dns": 1.0 + i * 0.5, "tcp": 5.0 + i, "latency": 10.0 + i * 2.0} for i in range(12)
+    ]
+    scale = severity_scale(runs, covs)
+    assert [scale.severity(r) for r in runs] == run_severities(runs, covs)
+    # A run measured after the scale was frozen still reads sensibly: worse-than-anything
+    # readings rank at the top of every distribution.
+    assert scale.severity({"dns": 99.0, "tcp": 99.0, "latency": 999.0}) > 90.0
+    # Too few covariates measured → no severity, never a guess from one probe.
+    assert scale.severity({"dns": 2.0}) is None
