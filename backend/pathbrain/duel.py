@@ -2327,7 +2327,19 @@ def _drive(duel_id: int) -> None:
         # thing an evicted session must not do.
         log.error("Duel %s stopped: %s", duel_id, exc)
         final_status = DuelStatus.FAILED
-        err = f"Stopped: {exc}"
+        # The stored error is what the page shows a person, so it leads with what
+        # happened and what it means, and keeps the coordinator's line as the
+        # diagnostic tail. "Stopped: Coordination lease for duel#49 was revoked…"
+        # under a "Last duel failed:" heading read as a crash with jargon; this is
+        # the designed self-heal, and the one real consequence — the firewall was
+        # deliberately not restored — went unsaid.
+        err = (
+            "Stood down mid-session: the ladder went quiet (usually one wedged "
+            "measurement) and the pipeline was handed on. Matches already decided are "
+            "kept on the ledger. The firewall was deliberately left as-is — another "
+            "session owned it by then — so it may still be on the last profile the "
+            f"duel applied. Detail: {exc}"
+        )
     except Exception as exc:  # noqa: BLE001 — record, never crash the thread
         log.exception("Duel %s failed", duel_id)
         final_status = DuelStatus.FAILED
