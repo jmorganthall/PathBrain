@@ -64,6 +64,7 @@ import type {
   DuelSession,
   DuelStanding,
   DuelStandings,
+  CrownsOut,
 } from "../api/types";
 import { fmtDateTime, fmtNum } from "../utils/format";
 
@@ -994,11 +995,101 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
   );
 }
 
+// ── The claims to "best", side by side ──────────────────────────────────────────────
+//
+// Three verdicts can name three different profiles at once: the lineal BELT (who beat
+// whom — a chain of custody), the standings' RING #1 (what a record has demonstrated,
+// the conservative rating floor), and the POOLED CROWN (highest all-time Overall — the
+// observational verdict). The ladder already resolves their disagreements pairwise, in
+// priority order — the ring #1 challenges the belt, the pooled crown gets the ring when
+// it disagrees — but the card never said you were watching one edge of a triangle, which
+// read as "we're only racing two profiles". This states all the claims, whether they
+// agree, and which edge the live match is testing.
+function ThreeClaims({
+  table,
+  crowns,
+  live,
+}: {
+  table: DuelStandings | null;
+  crowns: CrownsOut | null;
+  live: DuelLive | null | undefined;
+}) {
+  const nameOf = (x: { name?: string | null; label?: string | null; fingerprint?: string | null } | null) =>
+    x ? x.name || x.label || (x.fingerprint ? x.fingerprint.slice(0, 8) : null) : null;
+  const claims = [
+    {
+      key: "belt",
+      title: "Belt",
+      tip: "The lineal title: it beat the profile that held it. A record of results — blind to third parties.",
+      fp: table?.champion?.fingerprint ?? null,
+      who: nameOf(table?.champion ?? null),
+    },
+    {
+      key: "ring",
+      title: "Ring #1",
+      tip: "Top of the standings on the proven (floor) rating — what a head-to-head record has demonstrated across the whole network of opponents.",
+      fp: table?.standings?.[0]?.fingerprint ?? null,
+      who: nameOf(table?.standings?.[0] ?? null),
+    },
+    {
+      key: "pooled",
+      title: "Pooled crown",
+      tip: "Highest all-time Overall among confident profiles — the observational verdict over every run ever taken.",
+      fp: crowns?.pooled?.fingerprint ?? null,
+      who: nameOf(crowns?.pooled ?? null),
+    },
+  ].filter((c) => c.fp && c.who);
+  if (claims.length < 2) return null;
+
+  const distinct = new Set(claims.map((c) => c.fp));
+  // Which claims each live fighter holds — the edge of the triangle this match resolves.
+  let edge: string | null = null;
+  if (live) {
+    const held = (fp: string | null) => claims.filter((c) => c.fp === fp).map((c) => c.title);
+    const inc = held(live.incumbent.fingerprint);
+    const cha = held(live.challenger.fingerprint);
+    if (inc.length && cha.length && distinct.size > 1) {
+      edge = `the live match is testing ${inc.join(" + ")} ↔ ${cha.join(" + ")}`;
+    }
+  }
+
+  return (
+    <Box sx={{ mt: 1.5 }}>
+      <Typography variant="caption" color="text.secondary" component="div">
+        Claims to best:{" "}
+        {claims.map((c, i) => (
+          <Typography key={c.key} component="span" variant="caption">
+            {i > 0 && " · "}
+            <Tooltip title={c.tip}>
+              <span>
+                {c.title}: <b>{c.who}</b>
+              </span>
+            </Tooltip>
+          </Typography>
+        ))}
+        {" — "}
+        {distinct.size === 1 ? (
+          <Typography component="span" variant="caption" color="success.main">
+            all {claims.length} verdicts agree.
+          </Typography>
+        ) : (
+          <Typography component="span" variant="caption">
+            the verdicts disagree, and resolving that is the ladder's job — one edge at a
+            time{edge ? `; ${edge}` : ""}.
+          </Typography>
+        )}
+      </Typography>
+    </Box>
+  );
+}
+
+
 export default function Duels() {
   const navigate = useNavigate();
   const [cfg, setCfg] = useState<DuelConfig | null>(null);
   const [status, setStatus] = useState<DuelSession | null>(null);
   const [table, setTable] = useState<DuelStandings | null>(null);
+  const [crowns, setCrowns] = useState<CrownsOut | null>(null);
   const [ledger, setLedger] = useState<DuelSession[]>([]);
   const [policy, setPolicy] = useState<"pooled" | "duel" | null>(null);
   // On-demand runs are also set by end time ("duel until 06:00"); the minutes the API
@@ -1087,6 +1178,14 @@ export default function Duels() {
       .duelHealth()
       .then(setHealth)
       .catch(() => undefined); // a diagnostic must never be why the page fails
+
+    // The pooled side of the claims strip. Deliberately the cheap ledger read
+    // (/settings/crowns), never a compute_profiles pass — and never a reason the
+    // page fails.
+    void api
+      .crowns()
+      .then(setCrowns)
+      .catch(() => undefined);
 
     setLoadingLedger(true);
     void api
@@ -1770,13 +1869,15 @@ export default function Duels() {
               </Typography>
               {table && (
                 <Typography variant="caption" color="text.secondary">
-                  {table.matchups_analyzed} match{table.matchups_analyzed === 1 ? "" : "s"} (
+                  {table.matchups_analyzed} match{table.matchups_analyzed === 1 ? "" : "es"} (
                   {table.decisive_matchups} decisive) across {table.sessions_analyzed} session
                   {table.sessions_analyzed === 1 ? "" : "s"}
                 </Typography>
               )}
             </Stack>
           </Stack>
+
+          <ThreeClaims table={table} crowns={crowns} live={status?.live} />
 
           {active && (
             <Box sx={{ mt: 2 }}>
@@ -1887,7 +1988,7 @@ export default function Duels() {
           )}
           {!active && status?.status === "failed" && status.error && (
             <Alert severity="warning" sx={{ mt: 2 }}>
-              Last duel failed: {status.error}
+              <b>Last session didn't finish.</b> {status.error}
             </Alert>
           )}
         </CardContent>

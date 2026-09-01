@@ -2385,6 +2385,11 @@ def test_an_evicted_ladder_stops_instead_of_applying_over_the_top(monkeypatch):
     d = _wait_finish(duel_id)
 
     assert d.status == DuelStatus.FAILED
+    # The stored error is what the page shows a person: it leads with what happened and
+    # the one real consequence (the firewall was deliberately not restored), and keeps
+    # the coordinator's line as the diagnostic tail.
+    assert (d.error or "").startswith("Stood down mid-session")
+    assert "left as-is" in (d.error or "")
     assert "revoked" in (d.error or "").lower()
     assert len(applied) == 2, "it stopped at the next seam rather than applying again"
     assert not duel_mod.active()

@@ -1491,7 +1491,11 @@ LLM-based. See `README.md` for the product overview.
   **Dueling Champions** (the duel ladder's own view — the
   *controlled-trial* counterpart to Settings Impact's observational standings, so it speaks in
   fight-card terms rather than means: the reigning champion + reign length + which crowning
-  policy is live, the **ladder standings** league table (`GET /duel/standings`), the
+  policy is live, the **claims-to-best strip** (the lineal belt, the standings' ring #1,
+  and the pooled crown side by side — three verdicts that may name three profiles; states
+  whether they agree and which edge of that triangle the live match is testing, since the
+  ladder resolves disagreements pairwise and a card showing only two names read as "we
+  only race two profiles"), the **ladder standings** league table (`GET /duel/standings`), the
   **head-to-head grid** over the top of the table, the **bout tape** of every matchup with its
   pair scoreline / margin / what ended it, and **rules of the ring** — the nightly window plus
   the sequential stopping rule (min/max pairs, practical margin, rematch cooldown) editable
