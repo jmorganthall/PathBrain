@@ -21,6 +21,7 @@ import os
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
+from .. import browser_procs
 from ..config import get_settings
 from ..logging_config import get_logger
 from .base import BenchmarkPlugin, PluginResult, register
@@ -310,6 +311,16 @@ class BrowserBenchmark(BenchmarkPlugin):
         # within a single run on a single thread.
         self._pw = None
         self._browser = None
+        # The OS pid of the node driver behind ``self._pw``, recorded at launch. Python
+        # handles are the only thing ``close()``/``stop()``/``abandon()`` touch, and all
+        # three can leave the actual process alive — a cross-thread close raises, a
+        # wedged one never returns, an abandoned one is deliberately not closed. The pid
+        # is what lets us tell "closed" from "believed closed", and reap the difference.
+        self._driver_pid: int | None = None
+        #: Closes that did not actually free the process tree (each one is a leak we
+        #: caught rather than one we shipped). Surfaced via :func:`cleanup_stats`.
+        self._cleanup_failures = 0
+        self._reaped = 0
 
     def _ensure_browser(self, config: dict):
         """Return a live Chromium, reusing the cached one or launching a fresh one.
@@ -336,6 +347,14 @@ class BrowserBenchmark(BenchmarkPlugin):
         # garbage — clear it instead of dying on it.
         _clear_stale_asyncio_loop()
 
+        # We provably hold no browser here (``self._browser`` is None or was just
+        # discarded), so any driver tree still running under this process is garbage —
+        # dropped by ``abandon()`` after a wedged probe, or left behind by a ``stop()``
+        # that could not complete. Nothing in Python can reach it, so nothing but this
+        # will ever free it. Reaping BEFORE launching keeps the steady state at one tree.
+        reaped = browser_procs.reap_orphans()
+        self._reaped += int(reaped.get("reaped") or 0)
+
         pw = sync_playwright().start()
         try:
             browser = pw.chromium.launch(
@@ -353,21 +372,59 @@ class BrowserBenchmark(BenchmarkPlugin):
             raise
         self._pw = pw
         self._browser = browser
+        # Exactly one driver is alive at this point (we reaped the rest above), so the
+        # single remaining pid is this playwright's.
+        pids = browser_procs.driver_pids()
+        self._driver_pid = pids[-1] if pids else None
         return self._browser
 
     def _close_browser(self) -> None:
+        """Close Chromium and stop the driver, then **verify the process actually died**.
+
+        Both calls are best-effort by necessity, and both have a failure mode that leaves
+        a live process behind while looking exactly like success from Python: called from
+        a thread that does not own the objects, Playwright's sync API raises a
+        cross-thread greenlet error, which a bare ``except`` swallows — so the handles are
+        dropped, nothing is closed, and a node driver plus its Chromium tree is orphaned.
+        That is precisely how a host with 32 GiB ended up with 593 MiB free.
+
+        So the outcome is checked against the OS rather than assumed from the absence of
+        an exception: if the driver pid is still alive after ``stop()``, the tree is
+        killed and the failure counted. Never raises.
+        """
+        driver_pid = self._driver_pid
+        failed: list[str] = []
         try:
             if self._browser is not None:
                 self._browser.close()
-        except Exception:  # noqa: BLE001 — best-effort
-            pass
+        except Exception as exc:  # noqa: BLE001 — best-effort; verified below
+            failed.append(f"browser.close: {type(exc).__name__}: {exc}")
         try:
             if self._pw is not None:
                 self._pw.stop()
-        except Exception:  # noqa: BLE001 — best-effort
-            pass
+        except Exception as exc:  # noqa: BLE001 — best-effort; verified below
+            failed.append(f"playwright.stop: {type(exc).__name__}: {exc}")
         self._browser = None
         self._pw = None
+        self._driver_pid = None
+
+        # Verify. A driver that is still running owns a Chromium tree that no Python
+        # reference reaches any more, so killing it is the only remaining option and is
+        # safe by construction — it is our own child and we have just let go of it.
+        leftover = browser_procs.reap_orphans()
+        stranded = int(leftover.get("reaped") or 0)
+        if stranded:
+            self._reaped += stranded
+            self._cleanup_failures += 1
+            log.warning(
+                "Browser close left %s driver tree(s) running (pid %s); killed. %s",
+                stranded, driver_pid, "; ".join(failed) or "close() reported no error",
+            )
+        elif failed:
+            # The process is gone, so nothing leaked — but a close that raised is still
+            # worth a line, since it usually means we were called from the wrong thread.
+            log.info("Browser close reported errors but the process tree is gone: %s",
+                     "; ".join(failed))
 
     def teardown(self) -> None:
         """Close the reused Chromium at the end of a run (never raises)."""
@@ -379,11 +436,34 @@ class BrowserBenchmark(BenchmarkPlugin):
         Called when a probe blew its deadline and its thread was abandoned mid-call. The
         browser and the Playwright connection belong to that thread and may be exactly
         what is wedged, so ``close()`` here would hang the *next* thread too. Letting go
-        of the references instead leaves the old process leaked — deliberately, since the
-        alternative is a stalled pipeline — and lets the next probe launch a fresh one.
+        of the references instead leaves the old process unreachable from Python, and lets
+        the next probe launch a fresh one.
+
+        The *process* is then killed outright — which is not the same thing as closing it,
+        and is the only option left. Playwright's close path is what we cannot use here;
+        SIGKILL needs no cooperation from the wedged browser and no thread affinity. This
+        is what bounds the leak: without it every stall permanently cost a node driver and
+        a Chromium tree, and 224 of them ate a 32 GiB host. Killing it also unblocks the
+        abandoned worker's protocol read, so the thread parks idle instead of blocked.
+        Non-blocking (a ``/proc`` scan and a signal) and never raises, as the contract
+        requires.
         """
         self._browser = None
         self._pw = None
+        self._driver_pid = None
+        try:
+            reaped = browser_procs.reap_orphans()
+            self._reaped += int(reaped.get("reaped") or 0)
+        except Exception:  # noqa: BLE001 — abandon must never raise
+            log.warning("Reaping an abandoned browser tree failed", exc_info=True)
+
+    def cleanup_stats(self) -> dict:
+        """Closes that did not free their process tree, and trees reaped since start."""
+        return {
+            "cleanup_failures": self._cleanup_failures,
+            "reaped": self._reaped,
+            "driver_pid": self._driver_pid,
+        }
 
     def run(self, config: dict) -> PluginResult:
         urls: list[str] = config.get("urls", [])

@@ -121,13 +121,22 @@ def pipeline_health() -> dict:
     as "the server is broken" rather than "the sixteenth caller is queuing for a file
     handle". ``checked_out`` against ``capacity`` is the one number that tells a slow query
     from a starved one.
+
+    ``processes`` is here for the same reason one level down. A dropped Playwright handle
+    raises nothing, logs nothing and moves no number PathBrain reports — the leak's only
+    symptom is the *host's* memory, hours later, as an OOM kill, by which point the app
+    that caused it is one of the casualties. ``drivers`` is the number to read: it is 1
+    while a browser measurement is in flight and 0 between them, so anything else is
+    leaked trees, and ``cleanup_failures`` counts the closes that did not free what they
+    claimed to.
     """
     import sys
     import threading
     import traceback
 
-    from . import coordinator, probes
+    from . import browser_procs, coordinator, jobs, probes, scheduler
     from .database import pool_status
+    from .plugins import get_plugin
 
     by_id = {t.ident: t for t in threading.enumerate()}
     stacks = []
@@ -141,8 +150,24 @@ def pipeline_health() -> dict:
             "daemon": bool(thread.daemon) if thread is not None else None,
             "stack": [line.rstrip() for line in traceback.format_stack(frame)[-12:]],
         })
+    processes = browser_procs.snapshot()
+    browser = get_plugin("browser")
+    if browser is not None and hasattr(browser, "cleanup_stats"):
+        try:
+            processes.update(browser.cleanup_stats())
+        except Exception:  # noqa: BLE001 — a diagnostic must never be the failure
+            pass
+    coord = coordinator.status()
     return {
-        "coordinator": coordinator.status(),
+        "coordinator": coord,
+        "jobs": {
+            "running": jobs.running_count(),
+            # Sessions parked on the coordination lock. Queue depth and active work are
+            # separate numbers: a job can be RUNNING and still be waiting for the lock.
+            "queue_depth": coord.get("waiting"),
+            "scheduler_leader": scheduler.is_leader(),
+        },
+        "processes": processes,
         "probes": probes.stats(),
         "database": pool_status(),
         "threads": sorted(stacks, key=lambda s: s["thread"]),
