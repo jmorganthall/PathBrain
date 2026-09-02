@@ -119,6 +119,18 @@ _worker_lock = threading.Lock()
 _seq = 0
 _abandoned = 0
 _last_abandon: dict | None = None
+#: Cleanups that did not complete: an ``abandon()`` that raised, or a plugin that reported
+#: its own close had failed. Every one of these is a process tree we know we did not close,
+#: so it is a number the health endpoint reports rather than a line in a log nobody reads.
+_cleanup_failures = 0
+_last_cleanup_failure: dict | None = None
+
+
+def _note_cleanup_failure(where: str, detail: str) -> None:
+    global _cleanup_failures, _last_cleanup_failure
+    with _worker_lock:
+        _cleanup_failures += 1
+        _last_cleanup_failure = {"where": where, "detail": detail, "at": time.time()}
 
 
 def _current() -> _Worker:
@@ -144,11 +156,45 @@ def _abandon(worker: _Worker, label: str, timeout_s: float) -> None:
             "timeout_s": timeout_s,
             "at": time.time(),
         }
+    # Queue the exit sentinel behind the wedged job: the thread cannot be killed, but the
+    # moment its blocked call returns — which reaping the browser it is waiting on makes
+    # happen — it must exit rather than park on an orphaned queue forever.
+    worker.retire()
     log.error(
         "Probe worker %s abandoned: %s exceeded %.0fs. The thread is left blocked "
         "(it cannot be killed); the next probe starts a fresh worker. Abandoned so far: %s",
         worker.seq, label, timeout_s, _abandoned,
     )
+
+
+def _abandon_all_plugins(primary: BenchmarkPlugin | None = None) -> None:
+    """Tell **every** registered plugin to drop its thread-affine handles.
+
+    The worker is shared by the whole suite, so when it is abandoned every plugin that
+    ever ran on it is holding objects bound to a thread that is never coming back — not
+    just the one that happened to blow its deadline. Abandoning only the timed-out plugin
+    left the browser plugin still holding a Chromium it could no longer close: the next
+    run's ``is_connected()`` probe raised cross-thread, the swallowed close dropped the
+    handles without closing anything, and the process tree leaked. A cheap network probe
+    timing out must not cost a browser.
+
+    ``primary`` is abandoned first (it is the one we know is wedged); the rest follow.
+    Never raises — a failure here is counted, not propagated.
+    """
+    from .plugins import iter_plugins
+
+    ordered: list[BenchmarkPlugin] = []
+    if primary is not None:
+        ordered.append(primary)
+    for plugin in iter_plugins():
+        if plugin is not primary:
+            ordered.append(plugin)
+    for plugin in ordered:
+        try:
+            plugin.abandon()
+        except Exception as exc:  # noqa: BLE001 — abandoning must never raise
+            _note_cleanup_failure(f"abandon '{plugin.name}'", f"{type(exc).__name__}: {exc}")
+            log.warning("Plugin '%s' abandon() failed", plugin.name, exc_info=True)
 
 
 def run_plugin(
@@ -167,13 +213,11 @@ def run_plugin(
         return worker.submit(lambda: plugin.run(section), timeout_s, label)
     except ProbeTimeout as exc:
         _abandon(worker, label, timeout_s)
-        # The plugin's cached handles belong to a thread that is never coming back. It
-        # must let go of them without touching them — closing a wedged browser from the
-        # wrong thread is the same hang again, one frame further out.
-        try:
-            plugin.abandon()
-        except Exception:  # noqa: BLE001 — abandoning must never raise
-            log.warning("Plugin '%s' abandon() failed", plugin.name, exc_info=True)
+        # The cached handles of every plugin that ran on this worker belong to a thread
+        # that is never coming back. They must be let go of without being touched —
+        # closing a wedged browser from the wrong thread is the same hang again, one
+        # frame further out.
+        _abandon_all_plugins(plugin)
         return PluginResult(plugin.name, success=False, error=str(exc))
 
 
@@ -190,11 +234,9 @@ def teardown(plugin: BenchmarkPlugin, *, timeout_s: float = TEARDOWN_TIMEOUT_S) 
         worker.submit(plugin.teardown, timeout_s, label)
     except ProbeTimeout:
         _abandon(worker, label, timeout_s)
-        try:
-            plugin.abandon()
-        except Exception:  # noqa: BLE001
-            log.warning("Plugin '%s' abandon() failed", plugin.name, exc_info=True)
-    except Exception:  # noqa: BLE001 — teardown must never break the caller
+        _abandon_all_plugins(plugin)
+    except Exception as exc:  # noqa: BLE001 — teardown must never break the caller
+        _note_cleanup_failure(f"teardown '{plugin.name}'", f"{type(exc).__name__}: {exc}")
         log.warning("Plugin '%s' teardown failed", plugin.name, exc_info=True)
 
 
@@ -203,6 +245,7 @@ def stats() -> dict:
     with _worker_lock:
         worker = _worker
         abandoned, last = _abandoned, _last_abandon
+        failures, last_failure = _cleanup_failures, _last_cleanup_failure
     busy_for = None
     if worker is not None and worker.busy_since is not None:
         busy_for = round(time.monotonic() - worker.busy_since, 1)
@@ -212,15 +255,18 @@ def stats() -> dict:
         "running_for_s": busy_for,
         "abandoned": abandoned,
         "last_abandoned": last,
+        "cleanup_failures": failures,
+        "last_cleanup_failure": last_failure,
         "threads": [t.name for t in threading.enumerate() if t.name.startswith("pathbrain-probe")],
     }
 
 
 def _reset_for_tests() -> None:
     """Drop the worker between tests so each starts from a clean thread."""
-    global _worker, _abandoned, _last_abandon
+    global _worker, _abandoned, _last_abandon, _cleanup_failures, _last_cleanup_failure
     with _worker_lock:
         worker, _worker = _worker, None
         _abandoned, _last_abandon = 0, None
+        _cleanup_failures, _last_cleanup_failure = 0, None
     if worker is not None and worker.busy_since is None:
         worker.retire()

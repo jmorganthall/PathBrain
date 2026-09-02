@@ -1066,14 +1066,19 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
         # between runs — unless the caller is running a chunked series and asked to keep
         # them warm across chunks (teardown=False), in which case it calls
         # teardown_plugins() itself once the series ends. Never raises.
+        #
+        # This MUST go through :func:`teardown_plugins`, which routes the close onto the
+        # probe worker. Calling ``plugin.teardown()`` here — on the runner's own thread —
+        # is the bug that ate the host: Playwright's sync objects are bound to the thread
+        # that created them, and the plugin ran on the probe worker, so ``browser.close()``
+        # from this thread raises a cross-thread greenlet error, gets swallowed by the
+        # plugin's best-effort handler, and drops the handles **without closing anything**.
+        # The result was one orphaned node driver + Chromium tree per standalone run —
+        # every scheduled monitoring run, every challenger-race iteration, every refresh
+        # and sweep variant — accumulating until the host OOMed. ``teardown_plugins`` has
+        # always done this correctly; the two paths had simply drifted apart.
         if teardown:
-            for plugin in plugins:
-                try:
-                    plugin.teardown()
-                except Exception:  # noqa: BLE001 — teardown must never break a run
-                    log.warning(
-                        "Run %s: plugin '%s' teardown failed", run_id, plugin.name, exc_info=True
-                    )
+            teardown_plugins()
 
 
 def apply_warmup_report(session) -> dict:

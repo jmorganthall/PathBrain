@@ -210,6 +210,14 @@ LLM-based. See `README.md` for the product overview.
     own thread; the scheduler yields while `sweep.active()`.
   - `scheduler.py` — daemon thread: watchdog → (yield while the coordination lock is
     held) → experiment step → monitoring run (serialized so benchmark runs never overlap).
+    **One leader per deployment** (`is_leader`): everything the scheduler drives assumes it
+    is the only one doing it, and the coordinator lock is a `threading.Lock` — it enforces
+    that within a process and nothing across processes, so `uvicorn --workers 2` would give
+    two schedulers racing to apply profiles and benchmark through each other's firewall
+    writes. An advisory `flock` in `/tmp` (keyed on the database URL, so the scope is
+    *processes sharing this container* rather than a shared data volume) settles it; the
+    kernel releases it if the holder dies, so a crash promotes a survivor with no stale-lock
+    file to reason about. Non-leaders serve the API and run no scheduled work.
   - `experiment.py` — autonomous window-gated single-parameter shaper sweep
     (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline). The
     swept `param` is validated against `shaper_fields.WRITABLE_FIELDS` at start — an
@@ -267,7 +275,50 @@ LLM-based. See `README.md` for the product overview.
     is the same hang one frame out. `teardown_plugins` routes through the same worker for
     the same affinity reason (and on the same fuse). The cost of a stall is one leaked thread
     and one leaked Chromium — the deliberate trade: a wedged probe becomes one failed
-    measurement instead of a dead platform. Leaks are counted (`probes.stats()`).
+    measurement instead of a dead platform. Leaks are counted (`probes.stats()`), and
+    since the worker is shared by the whole suite, abandoning it drops **every** plugin's
+    handles (`_abandon_all_plugins`) — a cheap probe timing out used to strand the
+    browser's Chromium on a dead thread, which the next run then "closed" cross-thread and
+    leaked. `cleanup_failures` counts closes that did not free what they claimed to.
+  - `browser_procs.py` — **process-tree accounting + orphan reaping: the leak that ate the
+    host.** A dropped Playwright handle raises nothing, logs nothing and moves no number
+    PathBrain reports; its only symptom is the *host's* memory hours later, as an OOM kill
+    (observed: 224 node drivers at 13 GiB, 887 Chrome processes, 388 of them zombies,
+    593 MiB free on a 32 GiB NAS, with the kernel killing Chrome and nginx). Two causes,
+    both addressed here. **(1) A leak was invisible**, so the counts are read straight from
+    `/proc` (dependency-free, scoped to descendants of this process) and reported on
+    `GET /api/health/pipeline` as `processes`: `drivers` is 1 during a browser measurement
+    and 0 between them, so anything else is orphaned trees. **(2) The deliberate leak was
+    unbounded** — `probes` abandons a wedged worker rather than parking the pipeline, and an
+    abandoned worker's Chromium *cannot* be closed (closing means calling into the wedged
+    browser from a thread that does not own it). That trade is right and was uncollected:
+    every stall permanently cost a process tree. `reap_orphans` SIGKILLs any driver tree
+    still running at a point where the caller provably holds no browser it intends to use —
+    before launching a fresh one, after a close that could not complete, and on `abandon()`
+    — which needs no cooperation from the wedged browser and no thread affinity. Killing it
+    also unblocks the abandoned worker's protocol read, so that thread parks idle instead of
+    blocked. **The root cause was a thread, not a missing `close()`**: `execute_run`'s
+    `finally` called `plugin.teardown()` directly on the runner's thread, while
+    `teardown_plugins` had always routed the close back onto the probe worker for exactly
+    the reason its docstring gives. From Python the two are indistinguishable — the
+    cross-thread call raises, the plugin's best-effort handler swallows it, the handles are
+    dropped and the browser keeps running — so it leaked one tree per *standalone* run
+    (every scheduled monitoring run, every challenger-race iteration, every refresh and
+    sweep variant; chunked callers were already correct). `execute_run` now calls
+    `teardown_plugins()`. The regression test asserts **which thread** the close happens on,
+    because a counted-handles test alone passes against the bug. **The plugin now enforces
+    ownership itself** (`_owner_thread` / `_owns_handles` / `_drop_foreign_handles`): a handle
+    seen from a thread other than the one that launched it is never called into — not even
+    `is_connected()`, which is a plain attribute read that answers `True` cross-thread — it is
+    dropped, its tree reaped, and the event counted (`cross_thread_calls`) and logged as a
+    caller bug. So a future caller repeating the `execute_run` mistake fails loudly with the
+    process freed, instead of silently leaking. A clean `stop()` gets a short `wait_gone`
+    grace before a surviving driver is declared stranded; `kill_tree` `waitpid`s a killed
+    direct child (init cannot reap a live process's children); and in-container it also
+    kills **stray** headless Chromes that have escaped the subtree (`stray_chrome_pids`,
+    counted everywhere, killed only under `/.dockerenv` so a dev box's real Chrome is safe).
+    `tini` is baked into the image as PID 1 (`Dockerfile`), so zombie reaping never depends
+    on the compose flags.
   - `jobs.py` — in-process background-job registry (progress/status/recent history).
     The heavy score passes (`/api/score/regrade|rescore|rederive`) run as jobs and
     return `202 {job_id}`; `/api/jobs` (`api/routes_jobs.py`) merges them with read-only
@@ -1589,7 +1640,17 @@ LLM-based. See `README.md` for the product overview.
   this profile"), commit applies via `provider.apply()` + kicks a 1-iteration benchmark. Rejects a
   no-op / unreachable change.
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
-  `docker-compose.ghcr.yml` — single-container deploy (API serves UI). CI publishes
+  `docker-compose.ghcr.yml` — single-container deploy (API serves UI). **Resource
+  guardrails**, so PathBrain fails locally rather than taking the NAS with it: `init: true`
+  (uvicorn is PID 1 and PID 1 does not reap — a killed Chromium's re-parented children
+  become permanent zombies, the 388 observed on the host; tini's whole job is to reap
+  them), `mem_limit: 4g` (a runaway tree is OOM-killed *inside* the container instead of
+  the host killing nginx and Docker's inotify as collateral), and `pids_limit: 2048` —
+  tuned up from the 256 that reads naturally from a process count, because the cgroup pids
+  controller limits **tasks, threads included**, and one headless Chromium runs a few
+  hundred. The healthcheck hits `/api/health` (static JSON) and must never touch a path
+  that launches a browser or starts a measurement: Docker re-runs it on a timer forever, so
+  a side effect there becomes a permanent background workload. CI publishes
   `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`,
   stamping the build commit (`--build-arg GIT_SHA=$github.sha` → `PATHBRAIN_GIT_SHA`).
 - **Version awareness** (`updates.py`, `GET /api/version`): a cached, best-effort

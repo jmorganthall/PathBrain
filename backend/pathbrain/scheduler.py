@@ -15,6 +15,7 @@ Design notes:
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -32,6 +33,85 @@ log = get_logger("scheduler")
 _TICK_SECONDS = 15
 
 _state: dict = {"last_run_at": None, "thread": None, "stop": None, "baseline_last_date": None}
+
+#: Held for the lifetime of the process by whichever process won leadership. Kept in module
+#: state rather than closed, because releasing the fd releases the lock.
+_leader_fd = None
+_leader: bool | None = None
+
+
+def _lock_path() -> str:
+    """Where the leadership lock lives.
+
+    ``/tmp`` deliberately, not the data volume: the scope that needs coordinating is
+    *processes sharing this container* (uvicorn workers), and a lock on a shared/NFS data
+    volume would additionally — and wrongly — make two separate deployments fight over one
+    leadership. Keyed on the database URL so two PathBrains in one container (dev + test)
+    do not silence each other.
+    """
+    import hashlib
+    import tempfile
+
+    from .config import get_settings
+
+    key = hashlib.blake2b(get_settings().database_url.encode(), digest_size=8).hexdigest()
+    return os.path.join(tempfile.gettempdir(), f"pathbrain-scheduler-{key}.lock")
+
+
+def is_leader() -> bool:
+    """True in the one process allowed to run the scheduler.
+
+    Everything the scheduler drives — monitoring runs, the duel ladder, the nightly
+    baseline test, the crown follower's firewall writes — assumes it is the only one
+    doing it. The coordinator lock enforces that *within* a process; across processes it
+    enforces nothing, because it is a ``threading.Lock``. So running uvicorn with
+    ``--workers 2`` would give two schedulers racing to apply profiles and benchmark
+    them, each measuring through the other's firewall writes. This container's CMD starts
+    a single worker, which is why that has never happened — but it is a one-flag mistake
+    away, and a duplicated scheduler is invisible except as data that quietly stops
+    meaning anything.
+
+    An advisory ``flock`` settles it: the first process in wins and holds the lock for as
+    long as it lives; the kernel releases it if that process dies, so a crash promotes a
+    survivor with no cleanup and no stale-lock file to reason about. Platforms without
+    ``fcntl`` (Windows dev boxes) assume leadership, since the multi-worker deployment
+    this guards is the container.
+    """
+    global _leader_fd, _leader
+    if _leader is not None:
+        return _leader
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover — non-POSIX dev box
+        _leader = True
+        return _leader
+    path = _lock_path()
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        _leader = False
+        log.warning(
+            "Another PathBrain process holds the scheduler lock (%s: %s) — this process "
+            "will serve the API but run no scheduled work. This is expected with multiple "
+            "uvicorn workers and is what stops two schedulers benchmarking through each "
+            "other's firewall writes.",
+            path, exc,
+        )
+        return _leader
+    _leader_fd = fd
+    _leader = True
+    return _leader
+
+
+def _reset_leadership_for_tests() -> None:
+    global _leader_fd, _leader
+    if _leader_fd is not None:
+        try:
+            os.close(_leader_fd)
+        except OSError:
+            pass
+    _leader_fd, _leader = None, None
 
 
 def _baseline_config() -> dict:
@@ -262,6 +342,8 @@ def _loop(stop: threading.Event) -> None:
 def start_scheduler() -> None:
     if _state["thread"] and _state["thread"].is_alive():
         return
+    if not is_leader():
+        return  # another process owns the scheduled work (see :func:`is_leader`)
     _seed_last_run()
     stop = threading.Event()
     thread = threading.Thread(target=_loop, args=(stop,), name="pathbrain-scheduler", daemon=True)
@@ -288,6 +370,7 @@ def scheduler_status() -> dict:
     return {
         "enabled": enabled,
         "interval_minutes": interval_min,
+        "leader": is_leader(),
         "active": _active_run_exists(),
         "last_run_at": iso(last),
         "next_run_at": iso(next_at),

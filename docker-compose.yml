@@ -10,6 +10,45 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    # --- Resource guardrails -------------------------------------------------
+    # PathBrain must fail locally rather than take the host down with it.
+    #
+    # init: PID 1 in a container does not reap orphans, and uvicorn is PID 1 here. When a
+    # Chromium is killed (by us, or by the host's OOM killer) its surviving children are
+    # re-parented to PID 1, exit, and stay as zombies forever because nothing ever calls
+    # wait() on them — the 388 zombie Chrome processes observed on the host. `init: true`
+    # puts a real init (tini) at PID 1, whose entire job is to reap them.
+    #
+    # mem_limit: a ceiling the kernel enforces on the *container*, so a runaway browser
+    # tree is OOM-killed inside PathBrain instead of the host killing whatever it likes
+    # (nginx and Docker's inotify were the collateral damage last time). 4g fits one
+    # Chromium plus the API comfortably; raise it if legitimate runs get killed, and read
+    # /api/health/pipeline's `processes` block before you do — a climbing `drivers` count
+    # is a leak, not a capacity problem.
+    #
+    # pids_limit: the backstop that makes a leak self-limiting. Tuned UP from the 256 that
+    # reads naturally from a process count, because the cgroup pids controller limits
+    # *tasks* — threads included — not processes. One headless Chromium runs a few hundred
+    # threads across its process tree and uvicorn's own pool adds ~50, so 256 would kill
+    # legitimate measurements on the first page load. 2048 still leaves ~10x headroom for
+    # one browser while capping a runaway long before it can reach the 887-process,
+    # 20 GiB pile-up that took the host down.
+    init: true
+    mem_limit: 4g
+    pids_limit: 2048
+    # Health check hits the static JSON endpoint ONLY. It must never touch a path that
+    # launches a browser or starts a measurement: Docker re-runs this on a timer forever,
+    # so anything with a side effect becomes a permanent background workload — and a leak
+    # in it would be re-created every interval.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).status == 200 else 1)"]
+      # 120s, not 60s: nothing here is latency-critical, and the host already reported an
+      # unexplained once-a-minute container churn — a probe on the same cadence would only
+      # make that harder to tell apart.
+      interval: 120s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     # Allow the ICMP benchmark to send unprivileged ping (SOCK_DGRAM) sockets.
     # Without this, the icmp plugin reports 100% packet loss inside Docker.
     sysctls:
