@@ -250,7 +250,7 @@ def test_kill_tree_reaches_grandchildren_and_leaves_everything_else_alone():
 
 @pytest.mark.skipif(not browser_procs.available(), reason="no /proc on this platform")
 def test_reaping_with_no_drivers_is_a_no_op():
-    assert browser_procs.reap_orphans() == {"reaped": 0, "pids": []}
+    assert browser_procs.reap_orphans() == {"reaped": 0, "pids": [], "strays": 0}
 
 
 # -- the real thing (opt-in) ------------------------------------------------
@@ -289,3 +289,155 @@ def test_real_chromium_soak_returns_process_counts_and_rss_to_baseline():
     assert after["node"] <= base["node"]
     assert after["zombies"] == 0
     assert plugin.cleanup_stats()["cleanup_failures"] == 0
+
+
+# -- the plugin enforces thread ownership itself ----------------------------
+
+
+class _Untouchable:
+    """Stand-ins for Playwright handles: any call is a test failure."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def close(self) -> None:
+        self.calls.append("close")
+        raise AssertionError("Playwright handle touched from a foreign thread")
+
+    def stop(self) -> None:
+        self.calls.append("stop")
+        raise AssertionError("Playwright handle touched from a foreign thread")
+
+    def is_connected(self) -> bool:
+        self.calls.append("is_connected")
+        return True  # the real one is a plain attribute read — it lies cross-thread
+
+
+def _plugin_owned_by_another_thread(monkeypatch):
+    from pathbrain.plugins.benchmark_browser import BrowserBenchmark
+
+    plugin = BrowserBenchmark()
+    browser, pw = _Untouchable(), _Untouchable()
+    plugin._browser, plugin._pw = browser, pw
+    plugin._owner_thread = threading.get_ident() + 1  # provably not this thread
+    plugin._driver_pid = 424242
+    reaps: list[int] = []
+    monkeypatch.setattr(
+        browser_procs, "reap_orphans", lambda keep=(): (reaps.append(1), {"reaped": 1, "pids": [424242], "strays": 0})[1]
+    )
+    return plugin, browser, pw, reaps
+
+
+def test_close_from_a_foreign_thread_never_touches_playwright_and_reaps_instead(monkeypatch):
+    """The structural guarantee: even if a caller repeats the ``execute_run`` mistake,
+    the plugin will not call into handles it does not own — it reaps the process."""
+    plugin, browser, pw, reaps = _plugin_owned_by_another_thread(monkeypatch)
+
+    plugin._close_browser()
+
+    assert browser.calls == [] and pw.calls == []
+    assert reaps == [1]
+    assert plugin._browser is None and plugin._pw is None and plugin._owner_thread is None
+    stats = plugin.cleanup_stats()
+    assert stats["cross_thread_calls"] == 1
+    assert stats["cleanup_failures"] == 1
+    assert stats["reaped"] == 1
+
+
+def test_ensure_browser_from_a_foreign_thread_drops_the_handles_before_checking_them(monkeypatch):
+    """``is_connected()`` lies cross-thread, so ownership must be checked before it."""
+    plugin, browser, pw, reaps = _plugin_owned_by_another_thread(monkeypatch)
+
+    class _Boom:
+        def start(self):
+            raise RuntimeError("no launch in this test")
+
+    import pathbrain.plugins.benchmark_browser as mod
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: _Boom())
+
+    with pytest.raises(RuntimeError):
+        plugin._ensure_browser({})
+
+    assert "is_connected" not in browser.calls
+    assert browser.calls == [] and pw.calls == []
+    assert plugin.cleanup_stats()["cross_thread_calls"] == 1
+    assert reaps  # the foreign tree was reaped before anything new was launched
+
+
+def test_teardown_on_the_owning_thread_closes_normally(monkeypatch):
+    """The guard must not get in the way of the correct path."""
+    from pathbrain.plugins.benchmark_browser import BrowserBenchmark
+
+    plugin = BrowserBenchmark()
+
+    class _Closable:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        def stop(self) -> None:
+            self.closed = True
+
+    browser, pw = _Closable(), _Closable()
+    plugin._browser, plugin._pw = browser, pw
+    plugin._owner_thread = threading.get_ident()
+    monkeypatch.setattr(browser_procs, "reap_orphans", lambda keep=(): {"reaped": 0, "pids": [], "strays": 0})
+
+    plugin.teardown()
+
+    assert browser.closed and pw.closed
+    assert plugin.cleanup_stats() == {
+        "cleanup_failures": 0, "cross_thread_calls": 0, "reaped": 0, "driver_pid": None,
+    }
+
+
+# -- process reaping details -------------------------------------------------
+
+
+@pytest.mark.skipif(not browser_procs.available(), reason="no /proc on this platform")
+def test_kill_tree_reaps_a_direct_child_so_it_is_not_left_a_zombie():
+    proc = subprocess.Popen(["sleep", "30"])
+    try:
+        browser_procs.kill_tree(proc.pid)
+        st = browser_procs._stat(proc.pid)
+        assert st is None, f"killed child lingered as state {st[1]!r} (unreaped zombie)"
+    finally:
+        try:
+            proc.wait(timeout=5)
+        except ChildProcessError:
+            pass
+
+
+@pytest.mark.skipif(not browser_procs.available(), reason="no /proc on this platform")
+def test_wait_gone_distinguishes_live_from_exited():
+    proc = subprocess.Popen(["sleep", "30"])
+    try:
+        assert browser_procs.wait_gone(proc.pid, timeout_s=0.2) is False
+        proc.kill()
+        assert browser_procs.wait_gone(proc.pid, timeout_s=2.0) is True
+    finally:
+        proc.wait(timeout=5)
+
+
+def test_an_abandoned_worker_exits_once_its_blocked_call_returns(monkeypatch):
+    """Reaping the browser unblocks the wedged thread; it must then exit, not park."""
+    wedged = _Wedged()
+    _register(monkeypatch, wedged)
+    probes.run_plugin(wedged, {}, timeout_s=0.2)
+    old = [t for t in threading.enumerate() if t.name.startswith("pathbrain-probe-")]
+    assert old, "the abandoned worker thread should still exist while blocked"
+
+    wedged.release.set()  # the stand-in for the browser dying under it
+    for t in old:
+        t.join(timeout=5)
+    assert not any(t.is_alive() for t in old), "abandoned worker parked instead of exiting"
+
+
+def test_pipeline_health_reports_processes_and_jobs(client):
+    body = client.get("/api/health/pipeline").json()
+    for key in ("drivers", "node", "chrome", "zombies", "stray_chrome", "cleanup_failures", "cross_thread_calls"):
+        assert key in body["processes"], key
+    assert set(body["jobs"]) == {"running", "queue_depth", "scheduler_leader"}
+    assert "cleanup_failures" in body["probes"]

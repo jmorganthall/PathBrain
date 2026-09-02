@@ -156,6 +156,10 @@ def _abandon(worker: _Worker, label: str, timeout_s: float) -> None:
             "timeout_s": timeout_s,
             "at": time.time(),
         }
+    # Queue the exit sentinel behind the wedged job: the thread cannot be killed, but the
+    # moment its blocked call returns — which reaping the browser it is waiting on makes
+    # happen — it must exit rather than park on an orphaned queue forever.
+    worker.retire()
     log.error(
         "Probe worker %s abandoned: %s exceeded %.0fs. The thread is left blocked "
         "(it cannot be killed); the next probe starts a fresh worker. Abandoned so far: %s",

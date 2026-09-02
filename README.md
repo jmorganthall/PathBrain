@@ -271,6 +271,14 @@ volumes:
 > Compose auto-loads it. Publish port `8000` and keep the single `/data` volume.
 > Because PathBrain measures *your* path to the Internet, run it on the network
 > whose responsiveness you want to score.
+>
+> **Resource guardrails.** The compose files set `init: true`, `mem_limit: 4g` and
+> `pids_limit: 2048` so a runaway browser is contained inside PathBrain instead of
+> taking the host with it. If you run the image some other way (an Unraid template,
+> plain `docker run`), pass the equivalents yourself:
+> `--init --memory=4g --pids-limit=2048`. The image ships `tini` as PID 1 regardless,
+> so zombie reaping never depends on the flags. `GET /api/health/pipeline` reports the
+> live process counts (`processes.drivers` should read 0 between measurements).
 
 ---
 

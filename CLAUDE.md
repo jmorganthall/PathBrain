@@ -306,7 +306,19 @@ LLM-based. See `README.md` for the product overview.
     (every scheduled monitoring run, every challenger-race iteration, every refresh and
     sweep variant; chunked callers were already correct). `execute_run` now calls
     `teardown_plugins()`. The regression test asserts **which thread** the close happens on,
-    because a counted-handles test alone passes against the bug.
+    because a counted-handles test alone passes against the bug. **The plugin now enforces
+    ownership itself** (`_owner_thread` / `_owns_handles` / `_drop_foreign_handles`): a handle
+    seen from a thread other than the one that launched it is never called into — not even
+    `is_connected()`, which is a plain attribute read that answers `True` cross-thread — it is
+    dropped, its tree reaped, and the event counted (`cross_thread_calls`) and logged as a
+    caller bug. So a future caller repeating the `execute_run` mistake fails loudly with the
+    process freed, instead of silently leaking. A clean `stop()` gets a short `wait_gone`
+    grace before a surviving driver is declared stranded; `kill_tree` `waitpid`s a killed
+    direct child (init cannot reap a live process's children); and in-container it also
+    kills **stray** headless Chromes that have escaped the subtree (`stray_chrome_pids`,
+    counted everywhere, killed only under `/.dockerenv` so a dev box's real Chrome is safe).
+    `tini` is baked into the image as PID 1 (`Dockerfile`), so zombie reaping never depends
+    on the compose flags.
   - `jobs.py` — in-process background-job registry (progress/status/recent history).
     The heavy score passes (`/api/score/regrade|rescore|rederive`) run as jobs and
     return `202 {job_id}`; `/api/jobs` (`api/routes_jobs.py`) merges them with read-only

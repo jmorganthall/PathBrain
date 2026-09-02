@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import os
+import threading
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -317,10 +318,47 @@ class BrowserBenchmark(BenchmarkPlugin):
         # wedged one never returns, an abandoned one is deliberately not closed. The pid
         # is what lets us tell "closed" from "believed closed", and reap the difference.
         self._driver_pid: int | None = None
+        # The thread that launched the current Playwright. Its sync objects can only be
+        # used from that thread — any other gets a greenlet error (or a hang) — and the
+        # plugin enforces that itself rather than trusting every caller to remember:
+        # a handle seen from the wrong thread is treated as unreachable and its process
+        # reaped, never called into. This is the structural guarantee behind the leak
+        # fix; the ``execute_run`` thread bug cannot recur against it.
+        self._owner_thread: int | None = None
         #: Closes that did not actually free the process tree (each one is a leak we
         #: caught rather than one we shipped). Surfaced via :func:`cleanup_stats`.
         self._cleanup_failures = 0
         self._reaped = 0
+        self._cross_thread = 0
+
+    def _owns_handles(self) -> bool:
+        """True iff the current thread is the one that created the live Playwright."""
+        return self._browser is not None and self._owner_thread == threading.get_ident()
+
+    def _drop_foreign_handles(self, where: str) -> None:
+        """Let go of handles owned by another thread and reap their process.
+
+        Reached only when a caller has broken thread affinity. The Playwright objects
+        are not touched — that is the whole point — so the only lever is the OS: the
+        driver tree is killed and the event counted loudly, because it means some code
+        path is calling this plugin from a thread it should not.
+        """
+        owner = self._owner_thread
+        self._browser = None
+        self._pw = None
+        self._driver_pid = None
+        self._owner_thread = None
+        self._cross_thread += 1
+        self._cleanup_failures += 1
+        reaped = browser_procs.reap_orphans()
+        self._reaped += int(reaped.get("reaped") or 0)
+        log.error(
+            "Browser plugin %s called from thread %s but its Playwright belongs to thread "
+            "%s. The handles cannot be used or closed from here; the process tree was "
+            "reaped instead (%s killed). This is a caller bug — probes must stay on the "
+            "probe worker.",
+            where, threading.current_thread().name, owner, reaped.get("reaped"),
+        )
 
     def _ensure_browser(self, config: dict):
         """Return a live Chromium, reusing the cached one or launching a fresh one.
@@ -328,12 +366,18 @@ class BrowserBenchmark(BenchmarkPlugin):
         Raises if Playwright/Chromium is unavailable (caller turns it into a
         ``success=False`` result, same graceful-degradation as before)."""
         if self._browser is not None:
-            try:
-                if self._browser.is_connected():
-                    return self._browser
-            except Exception:  # noqa: BLE001 — stale/cross-thread handle; relaunch
-                pass
-            self._close_browser()
+            if not self._owns_handles():
+                # ``is_connected()`` is a plain attribute read that never touches the
+                # dispatcher, so from the wrong thread it happily answers True and hands
+                # out a browser this thread cannot use. Check ownership FIRST.
+                self._drop_foreign_handles("_ensure_browser")
+            else:
+                try:
+                    if self._browser.is_connected():
+                        return self._browser
+                except Exception:  # noqa: BLE001 — stale handle; relaunch
+                    pass
+                self._close_browser()
         from playwright.sync_api import sync_playwright
 
         # The probe worker thread is LONG-LIVED (probes.py), and a sync Playwright that
@@ -372,6 +416,7 @@ class BrowserBenchmark(BenchmarkPlugin):
             raise
         self._pw = pw
         self._browser = browser
+        self._owner_thread = threading.get_ident()
         # Exactly one driver is alive at this point (we reaped the rest above), so the
         # single remaining pid is this playwright's.
         pids = browser_procs.driver_pids()
@@ -392,6 +437,13 @@ class BrowserBenchmark(BenchmarkPlugin):
         an exception: if the driver pid is still alive after ``stop()``, the tree is
         killed and the failure counted. Never raises.
         """
+        if self._browser is None and self._pw is None:
+            return
+        if not self._owns_handles():
+            # Calling close()/stop() here would raise (or hang) and free nothing. Do not
+            # try; reap the process and say so.
+            self._drop_foreign_handles("_close_browser")
+            return
         driver_pid = self._driver_pid
         failed: list[str] = []
         try:
@@ -407,10 +459,15 @@ class BrowserBenchmark(BenchmarkPlugin):
         self._browser = None
         self._pw = None
         self._driver_pid = None
+        self._owner_thread = None
 
         # Verify. A driver that is still running owns a Chromium tree that no Python
         # reference reaches any more, so killing it is the only remaining option and is
-        # safe by construction — it is our own child and we have just let go of it.
+        # safe by construction — it is our own child and we have just let go of it. A
+        # clean ``stop()`` returns with the process already gone, but it is given a short
+        # grace so a driver still on its way out is not miscounted as a leak.
+        if driver_pid is not None:
+            browser_procs.wait_gone(driver_pid, timeout_s=2.0)
         leftover = browser_procs.reap_orphans()
         stranded = int(leftover.get("reaped") or 0)
         if stranded:
@@ -451,6 +508,7 @@ class BrowserBenchmark(BenchmarkPlugin):
         self._browser = None
         self._pw = None
         self._driver_pid = None
+        self._owner_thread = None
         try:
             reaped = browser_procs.reap_orphans()
             self._reaped += int(reaped.get("reaped") or 0)
@@ -461,6 +519,7 @@ class BrowserBenchmark(BenchmarkPlugin):
         """Closes that did not free their process tree, and trees reaped since start."""
         return {
             "cleanup_failures": self._cleanup_failures,
+            "cross_thread_calls": self._cross_thread,
             "reaped": self._reaped,
             "driver_pid": self._driver_pid,
         }
@@ -494,7 +553,11 @@ class BrowserBenchmark(BenchmarkPlugin):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         base_dir = os.path.abspath(get_settings().artifact_dir)
         run_dir = os.path.join(base_dir, stamp)
-        os.makedirs(run_dir, exist_ok=True)
+        # Only create the directory when something will be written to it: with
+        # screenshot/HAR/filmstrip all off (the default) this used to leave one empty
+        # directory per run on the data volume, forever.
+        if want_screenshot or want_har or want_filmstrip:
+            os.makedirs(run_dir, exist_ok=True)
 
         def _slug(url: str, idx: int) -> str:
             safe = "".join(c if c.isalnum() else "-" for c in url)[:48].strip("-")

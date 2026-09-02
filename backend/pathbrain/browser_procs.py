@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import signal
+import time
 from typing import Iterable
 
 from .logging_config import get_logger
@@ -168,12 +169,53 @@ def driver_pids() -> list[int]:
     return out
 
 
+def in_container() -> bool:
+    """True inside a Docker container (the deployment this module is written for)."""
+    return os.path.exists("/.dockerenv")
+
+
+def _is_headless_chrome(comm: str, cmdline: str) -> bool:
+    """A Chrome launched by Playwright: headless, driven over the debugging pipe."""
+    lowered = f"{comm} {cmdline}".lower()
+    return (
+        any(m in lowered for m in _CHROME_MARKERS)
+        and "--headless" in lowered
+        and "--remote-debugging-pipe" in lowered
+    )
+
+
+def stray_chrome_pids(index: dict[int, list[int]] | None = None) -> list[int]:
+    """Headless Chromes that are NOT under this process any more.
+
+    A driver that dies before its browser leaves the Chrome tree re-parented to PID 1,
+    outside our subtree — invisible to :func:`snapshot`'s counts and beyond the normal
+    reaper's scope. Inside the container PathBrain is the only thing that launches
+    Chrome, so these are ours by elimination; they are counted everywhere and killed
+    only in-container (a dev box may have a real Chrome we must never touch).
+    """
+    if not available():
+        return []
+    index = index if index is not None else _children_index()
+    ours = set(descendants(os.getpid(), index))
+    out: list[int] = []
+    for pid in _pids():
+        if pid in ours or pid == os.getpid():
+            continue
+        st = _stat(pid)
+        if st is None or st[1] == "Z":
+            continue
+        if _is_headless_chrome(st[0], _cmdline(pid)):
+            out.append(pid)
+    return out
+
+
 def snapshot() -> dict:
     """Counts and resident memory for the browser process trees this process owns.
 
     Reported on ``/api/health/pipeline``. ``drivers`` is the number that matters: it should
     be 0 between runs and 1 during one. Anything else is leaked, and ``drivers`` minus the
-    live one is exactly how many trees are orphaned.
+    live one is exactly how many trees are orphaned. ``stray_chrome`` is Chrome that has
+    escaped our subtree entirely (see :func:`stray_chrome_pids`).
     """
     if not available():
         return {"available": False}
@@ -198,13 +240,50 @@ def snapshot() -> dict:
     return {
         "available": True,
         "pid": me,
+        "in_container": in_container(),
         "self_rss_mb": round(_rss_kb(me) / 1024.0, 1),
         "drivers": len(driver_pids()),
         "node": node,
         "chrome": chrome,
         "zombies": zombies,
+        "stray_chrome": len(stray_chrome_pids(index)),
         "children_rss_mb": round(rss_kb / 1024.0, 1),
     }
+
+
+def wait_gone(pid: int, timeout_s: float = 2.0) -> bool:
+    """Wait briefly for ``pid`` to exit (or become a reaped-pending zombie). True if gone.
+
+    Used after a ``stop()`` that reported success, so a driver still on its way out is
+    not miscounted as a leak. Bounded; never raises.
+    """
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    while True:
+        st = _stat(pid)
+        if st is None or st[1] == "Z":
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _reap_direct_child(pid: int) -> None:
+    """``waitpid`` a direct child we just killed, so it does not linger as our zombie.
+
+    Playwright's asyncio child watcher normally does this from its own thread, and if
+    it already has we get ``ECHILD`` — fine either way. Init (tini) cannot help here:
+    it only reaps what is re-parented to it, and a child of a live process is not.
+    """
+    for _ in range(40):  # up to ~2s: SIGKILL delivery is fast but not instantaneous
+        try:
+            waited, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return  # not our child, or already reaped
+        except OSError:
+            return
+        if waited == pid:
+            return
+        time.sleep(0.05)
 
 
 def kill_tree(pid: int, *, index: dict[int, list[int]] | None = None) -> int:
@@ -212,19 +291,30 @@ def kill_tree(pid: int, *, index: dict[int, list[int]] | None = None) -> int:
 
     Children are killed before the parent so the driver cannot re-parent or respawn on
     its way out, and SIGKILL rather than SIGTERM because the trees this is used on are by
-    definition ones that stopped answering.
+    definition ones that stopped answering. A second pass catches anything spawned
+    between the scan and the signal, and a killed direct child is ``waitpid``-ed so it
+    cannot become a zombie of *this* process.
     """
-    index = index if index is not None else _children_index()
-    targets = descendants(pid, index) + [pid]
+    me = os.getpid()
     killed = 0
-    for target in targets:
-        try:
-            os.kill(target, signal.SIGKILL)
-            killed += 1
-        except ProcessLookupError:
-            pass  # already gone — the normal case for a tree that closed cleanly
-        except PermissionError:
-            log.warning("Not permitted to kill pid %s", target)
+    for attempt in range(2):
+        idx = index if (index is not None and attempt == 0) else _children_index()
+        targets = descendants(pid, idx) + [pid]
+        landed = 0
+        for target in targets:
+            try:
+                os.kill(target, signal.SIGKILL)
+                landed += 1
+            except ProcessLookupError:
+                pass  # already gone — the normal case for a tree that closed cleanly
+            except PermissionError:
+                log.warning("Not permitted to kill pid %s", target)
+        killed += landed
+        if landed == 0:
+            break
+    st = _stat(pid)
+    if st is not None and st[2] == me:
+        _reap_direct_child(pid)
     return killed
 
 
@@ -232,29 +322,37 @@ def reap_orphans(keep: Iterable[int] = ()) -> dict:
     """Kill every Playwright driver tree we own except the ones in ``keep``.
 
     Called where the caller provably holds no browser it still intends to use: before
-    launching a fresh one, and after a close that could not be completed. Any driver still
-    alive at that point was dropped by ``abandon()`` or survived a failed ``stop()`` — it
-    is unreachable from Python and will never be closed by anything, so the only way it
-    goes away is this.
+    launching a fresh one, after a close that could not be completed, and on abandon.
+    Any driver still alive at that point was dropped by ``abandon()`` or survived a
+    failed ``stop()`` — it is unreachable from Python and will never be closed by
+    anything, so the only way it goes away is this. In-container, stray Chromes that have
+    escaped our subtree are killed too (see :func:`stray_chrome_pids`).
 
-    Returns ``{"reaped": n, "pids": [...]}``; never raises.
+    Returns ``{"reaped": n, "pids": [...], "strays": m}``; never raises.
     """
     if not available():
-        return {"reaped": 0, "pids": []}
+        return {"reaped": 0, "pids": [], "strays": 0}
     keep_set = {int(p) for p in keep if p}
+    orphans: list[int] = []
+    strays: list[int] = []
     try:
         index = _children_index()
         orphans = [pid for pid in driver_pids() if pid not in keep_set]
         for pid in orphans:
             kill_tree(pid, index=index)
+        if in_container():
+            strays = stray_chrome_pids()
+            for pid in strays:
+                kill_tree(pid)
     except Exception:  # noqa: BLE001 — reaping must never be why a measurement fails
         log.warning("Orphan reap failed", exc_info=True)
-        return {"reaped": 0, "pids": []}
-    if orphans:
+        return {"reaped": len(orphans), "pids": orphans, "strays": len(strays)}
+    if orphans or strays:
         log.warning(
-            "Reaped %s orphaned Playwright driver tree(s): %s. These were browsers "
-            "abandoned by a wedged probe or left behind by a close that could not "
-            "complete — unreachable from Python, so nothing else would ever free them.",
-            len(orphans), orphans,
+            "Reaped %s orphaned Playwright driver tree(s) %s and %s stray Chrome(s) %s. "
+            "These were browsers abandoned by a wedged probe or left behind by a close "
+            "that could not complete — unreachable from Python, so nothing else would "
+            "ever free them.",
+            len(orphans), orphans, len(strays), strays,
         )
-    return {"reaped": len(orphans), "pids": orphans}
+    return {"reaped": len(orphans), "pids": orphans, "strays": len(strays)}
