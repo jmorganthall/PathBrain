@@ -23,6 +23,7 @@ import PowerOffIcon from "@mui/icons-material/PowerSettingsNew";
 
 import { api } from "../api/client";
 import type { BaselineConfig, BaselineTest } from "../api/types";
+import { Blurb } from "../components/Explain";
 import { fmtDateTime } from "../utils/format";
 
 const isActive = (t: BaselineTest | null) =>
@@ -197,13 +198,19 @@ export default function Baseline() {
           Test baseline behavior
         </Typography>
       </Stack>
-      <Typography color="text.secondary" sx={{ mb: 3, maxWidth: 760 }}>
-        Occasionally measure the link with <strong>SQM turned off</strong> — the honest
-        baseline for what your shaper is actually buying. A baseline test disables FQ-CoDel on
-        every pipe, waits a settle interval for the link to stabilize, benchmarks the unshaped
-        path, then restores each pipe's prior state. Its runs group into their own “SQM off”
-        profile, so they never pollute a shaped profile's scores.
-      </Typography>
+      <Blurb
+        variant="body2"
+        sx={{ mb: 3, maxWidth: 760 }}
+        more={
+          <>
+            A baseline test disables FQ-CoDel on every pipe, waits for the link to settle,
+            benchmarks the unshaped path, then restores each pipe. Its runs group into their own
+            “SQM off” profile, so they never pollute a shaped profile&apos;s scores.
+          </>
+        }
+      >
+        Measure the link with <strong>SQM turned off</strong>: what your shaper is actually buying.
+      </Blurb>
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>

@@ -30,6 +30,7 @@ import type {
   MethodologySummary,
 } from "../api/types";
 import Loading from "../components/Loading";
+import { Blurb, FoldCard } from "../components/Explain";
 import { fmtDateTime } from "../utils/format";
 
 function fmtBound(v: number | null, unit: string): string {
@@ -115,9 +116,9 @@ function VersionRow({ m }: { m: MethodologySummary }) {
         </Typography>
       )}
       {m.notes && (
-        <Typography variant="body2" sx={{ mt: 0.5 }}>
-          {m.notes}
-        </Typography>
+        <Blurb variant="caption" sx={{ mt: 0.25, mb: 0 }} moreLabel="Show" lessLabel="Hide" more={m.notes}>
+          Version notes
+        </Blurb>
       )}
     </Box>
   );
@@ -262,15 +263,7 @@ export default function Methodology() {
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
           <Tooltip
             arrow
-            title={
-              <>
-                <strong>Refresh the measurements (silver layer).</strong> Re-runs interpretation
-                over each run's stored raw, rewriting its cached metric values. Run this after the{" "}
-                <em>derivation</em> changes — a new measurement or a changed formula — so it lands on
-                history without re-collecting. This is what backfills newly-added metrics (e.g. the
-                navigation waterfall, jank fraction) into past runs. Doesn't change the rubric.
-              </>
-            }
+            title="Recompute every run's metrics from its stored raw. Use after a formula changes or a metric is added. Doesn't change the rubric."
           >
             <span>
               <Button
@@ -285,15 +278,7 @@ export default function Methodology() {
           </Tooltip>
           <Tooltip
             arrow
-            title={
-              <>
-                <strong>Re-score under the current methodology (gold layer).</strong> Scores every
-                run from its preserved raw under the current rubric, writing the at-present score;
-                never touches a run's at-measure (capture-time) score. Run this after publishing a
-                new methodology (new weights, thresholds, or crown). Changes the score, not the
-                measurements — re-derive first if you also added a new measurement the rubric needs.
-              </>
-            }
+            title="Re-score every run under the current methodology. Use after publishing new weights, thresholds, or a new crown. Re-derive first if the rubric needs a new measurement."
           >
             <span>
               <Button
@@ -308,12 +293,20 @@ export default function Methodology() {
           </Tooltip>
         </Stack>
       </Stack>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        How raw observations become a score, versioned. Raw data is the instrumented truth; the
-        methodology is the interpretation applied to it. Changing a weight, threshold, or metric
-        publishes a new version — old scores keep the methodology they were measured under, and any
-        run can be re-scored from its preserved raw under the current one (when comparable).
-      </Typography>
+      <Blurb
+        variant="body2"
+        sx={{ mb: 2 }}
+        more={
+          <>
+            Raw data is the instrumented truth; the methodology is the interpretation applied to it.
+            Changing a weight, threshold, or metric publishes a new version. Old scores keep the
+            version they were measured under, and any run can be re-scored from its raw under the
+            current one.
+          </>
+        }
+      >
+        How raw observations become a score, versioned.
+      </Blurb>
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -383,9 +376,7 @@ export default function Methodology() {
               </Stack>
               {stale && (
                 <Typography variant="caption" color="warning.main" sx={{ display: "block", mt: 1 }}>
-                  You’re pinned to an older rubric — none of the newer methodology’s changes (crown,
-                  thresholds, window) are active until you adopt the latest. After switching, re-grade
-                  (and re-derive first if the version changed a formula) to score history under it.
+                  Pinned to an older rubric. Adopt the latest, then re-grade to score history under it.
                 </Typography>
               )}
             </CardContent>
@@ -406,16 +397,13 @@ export default function Methodology() {
               Proposed re-anchor — {proposalMetric.label}
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-              From the saturation check on Settings Impact: <b>{proposalMetric.label}</b> already clears
-              its “best” for most profiles, so it can’t rank them. Tightening “best” publishes a new
-              methodology version (forked from <b>{current?.version}</b> — append-only, nothing edited in
-              place), so the fastest profile scores highest.
+              <b>{proposalMetric.label}</b> scores ~100 for most profiles, so it can&apos;t rank them.
+              Tightening “best” publishes a new version forked from <b>{current?.version}</b>.
               {saturatedCount > 1 && (
                 <>
                   {" "}
-                  <b>{saturatedCount} metrics are saturated</b> — re-grading is deferred so you can
-                  re-anchor them all first, then re-grade once (each re-anchor forks the current
-                  version, so they stack).
+                  <b>{saturatedCount} metrics are saturated</b>: re-anchor them all, then re-grade
+                  once.
                 </>
               )}
             </Typography>
@@ -492,9 +480,9 @@ export default function Methodology() {
               {current.created_at ? ` · recorded ${fmtDateTime(current.created_at)}` : ""}
             </Typography>
             {current.notes && (
-              <Typography variant="body2" sx={{ mt: 0.5 }}>
-                {current.notes}
-              </Typography>
+              <Blurb variant="body2" sx={{ mt: 0.5, mb: 0.5 }} moreLabel="Notes" lessLabel="Hide notes" more={current.notes}>
+                What changed in this version:
+              </Blurb>
             )}
             <MetricTable metrics={current.definition.metrics} />
           </CardContent>
@@ -502,19 +490,14 @@ export default function Methodology() {
       )}
 
       {others.length > 0 && (
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              Other versions ({others.length})
-            </Typography>
+        <FoldCard title={`Other versions (${others.length})`} summary="Earlier rubrics, kept frozen for the scores measured under them.">
             {others.map((m, i) => (
               <Box key={m.version}>
                 {i > 0 && <Box sx={{ borderTop: "1px solid", borderColor: "divider" }} />}
                 <VersionRow m={m} />
               </Box>
             ))}
-          </CardContent>
-        </Card>
+        </FoldCard>
       )}
 
       <Snackbar

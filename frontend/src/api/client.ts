@@ -134,10 +134,14 @@ async function request<T>(
           "The payload may be too large — try fewer profiles or runs per profile.",
       );
     }
+    // No hint about payload size here: most calls that land in this branch are ordinary
+    // reads that the server simply took too long to answer (a field-wide recompute, or a
+    // duel holding the process), and blaming an export knob the page doesn't have sends
+    // the reader looking for a setting that isn't there.
     throw new ApiError(
       0,
-      "Couldn't reach the server (connection dropped or request too large). " +
-        "If you raised the profile / runs-per-profile count, lower it and retry.",
+      "Couldn't reach the server — the connection dropped before it answered. " +
+        "It may be busy with a long computation; try again in a moment.",
     );
   } finally {
     if (timer) clearTimeout(timer);

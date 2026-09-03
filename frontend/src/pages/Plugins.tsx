@@ -237,9 +237,7 @@ function WatchtowerIntegration() {
             </Button>
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
-            Every "Update now" press and whether the build actually changed. A successful update
-            replaces this container along with its log, so each attempt is recorded to the database
-            before the request goes out and judged after the restart.
+            Every &quot;Update now&quot; press, and whether the build actually changed.
             {log?.running_sha ? ` Running build: ${log.running_sha.slice(0, 7)}.` : ""}
           </Typography>
           {log && log.attempts.length > 0 ? (

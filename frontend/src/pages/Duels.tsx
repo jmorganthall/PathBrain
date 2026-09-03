@@ -54,6 +54,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import SportsMmaIcon from "@mui/icons-material/SportsMma";
 
 import { api } from "../api/client";
+import { Blurb, FoldCard, HelpTip } from "../components/Explain";
 import type { Theme } from "@mui/material/styles";
 import type {
   DuelCard,
@@ -575,15 +576,12 @@ function DecisionCost({ cfg }: { cfg: DuelConfig }) {
     return (
       <Alert severity="info" icon={false} sx={{ mt: 2, py: 0.5 }}>
         <Typography variant="caption" component="div">
-          <b>What it takes to win a match.</b> {d.streak_pairs ?? "—"} wins in a row ends it
-          immediately. Short of that, matches are judged on the <b>size</b> of each
-          round's margin, not just who won it — so a profile that wins by a consistent
-          amount is called even when it drops the odd round. The fastest possible verdict is{" "}
-          {d.sweep_pairs ?? "—"} consistently one-sided rounds. Testing after every round
-          would inflate false alarms, so the threshold is tightened to{" "}
-          {d.nominal_alpha?.toFixed(4)} (your {cfg.alpha} error rate ÷ {d.peek_penalty}),
-          which holds real false verdicts near {Math.round(cfg.alpha * 100)}%. There is no
-          cap at which a winner becomes unreachable — more rounds only ever help.
+          <b>What it takes to win a match:</b> {d.streak_pairs ?? "—"} wins in a row, or a
+          consistent margin over at least {d.sweep_pairs ?? "—"} rounds. More rounds only ever
+          help.
+          <HelpTip
+            title={`Matches are judged on the size of each round's margin, not just who won it, so a profile that wins by a steady amount is called even when it drops the odd round. Testing after every round inflates false alarms, so the threshold is tightened to ${d.nominal_alpha?.toFixed(4)} (your ${cfg.alpha} error rate ÷ ${d.peek_penalty}), which holds real false verdicts near ${Math.round(cfg.alpha * 100)}%.`}
+          />
         </Typography>
       </Alert>
     );
@@ -1323,15 +1321,20 @@ export default function Duels() {
       >
         <Box>
           <Typography variant="h5">Dueling Champions</Typography>
-          <Typography variant="body2" color="text.secondary">
-            Head-to-head adjudication, with one job: <b>keep attacking the best profile we
-            have</b>. The ring's current #1 defends every match, against whichever profile the
-            ledger says is most likely to beat <i>it</i> — re-decided before each match, so a
-            profile that wins takes the belt and defends next. Both sides trade equal-length
-            runs A/B/B/A, so they meet the same weather, and a sequential test ends each match
-            the moment it's decided. Ranked by what a profile <b>beat</b> — not by what it
-            averaged.
-          </Typography>
+          <Blurb
+            variant="body2"
+            sx={{ mb: 0 }}
+            more={
+              <>
+                The ring&apos;s #1 defends every match against whichever profile is most likely to
+                beat it, re-decided before each match. Win and you take the belt and defend next.
+                Both sides trade runs A/B/B/A so they meet the same weather, and each match ends
+                the moment it&apos;s decided.
+              </>
+            }
+          >
+            Profiles fight head to head. Ranked by what they <b>beat</b>, not what they averaged.
+          </Blurb>
         </Box>
         <Stack direction="row" spacing={1}>
           {active ? (
@@ -1382,8 +1385,8 @@ export default function Duels() {
           {health.unusable_rounds > 0
             ? `, ${health.unusable_rounds} round${health.unusable_rounds === 1 ? "" : "s"} discarded`
             : ""}
-          ). These are not draws — the ladder could not measure them, so nothing was
-          adjudicated and the pairs stay eligible to race again.
+          ).
+          <HelpTip title="Not draws: the ladder couldn't measure these matches, so nothing was decided and the pairs stay eligible to race again." />
           {health.reasons.length > 0 && (
             <Box component="ul" sx={{ m: 0, mt: 1, pl: 2.5 }}>
               {health.reasons.slice(0, 4).map((r) => (
@@ -1397,32 +1400,37 @@ export default function Duels() {
           )}
           {health.reasons.length === 0 && (
             <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
-              No causes recorded yet — matches fought before the diagnosis existed count
-              here but can't explain themselves. The next session will say why.
+              No causes recorded yet — the next session will say why.
             </Typography>
           )}
         </Alert>
       )}
 
       {cfg && !active && (
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          <b>Press "Duel now"</b> and it runs until{" "}
-          {formatClock(untilClock ?? clockIn(cfg.duration_minutes))} (about{" "}
-          {fmtWindow(minutesUntil(untilClock ?? clockIn(cfg.duration_minutes)))}), trading
-          {cfg.iterations_per_round ?? 3} iteration(s) a side. The champion defends against the top {cfg.contender_top_n}{" "}
-          {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"}, one at a time;
-          a match ends after {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of
-          margins, then the next challenger steps up. As many matches as fit in the window.
-          {cfg.crown_rule !== "rating_floor" && (
+        <Blurb
+          variant="body2"
+          sx={{ mb: 2 }}
+          more={
             <>
-              {" "}
-              <b>The title is lineal</b>: you take the belt by beating the profile that holds
-              it — provided your whole shared record with it then favours you on both matches
-              and rounds, so one good night against a profile that has beaten you before is a
-              win rather than a title.
+              The champion defends against the top {cfg.contender_top_n}{" "}
+              {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"}, one at a
+              time, {cfg.iterations_per_round ?? 3} iteration(s) a side. A match ends after{" "}
+              {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of margins, then
+              the next challenger steps up.
+              {cfg.crown_rule !== "rating_floor" && (
+                <>
+                  {" "}
+                  <b>The title is lineal</b>: beat the holder, and lead your shared record with
+                  it on both matches and rounds, to take the belt.
+                </>
+              )}
             </>
-          )}
-        </Typography>
+          }
+        >
+          <b>Duel now</b> runs until {formatClock(untilClock ?? clockIn(cfg.duration_minutes))}{" "}
+          (about {fmtWindow(minutesUntil(untilClock ?? clockIn(cfg.duration_minutes)))}), as many
+          matches as fit.
+        </Blurb>
       )}
 
       {/* ── Settings, right under the button that uses them ──────────────────────── */}
@@ -1436,15 +1444,7 @@ export default function Duels() {
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <GavelIcon fontSize="small" color="action" />
             <Typography variant="subtitle2">Rules of the ring</Typography>
-            {/* Say the hierarchy outright. "Bout" and "pair" were two words for two nested
-                things and neither said which contained the other; a session holds matches,
-                a match is decided over rounds, and a round is the atomic unit of evidence. */}
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
-              A <b>session</b> is a night of <b>matches</b>. A <b>match</b> is two profiles
-              head to head, decided over <b>rounds</b> — and one round is a single
-              interleaved pair of runs, one on each profile, back to back so they share
-              their conditions.
-            </Typography>
+            <HelpTip title="A session is a night of matches. A match is two profiles head to head, decided over rounds. A round is one pair of runs, one per profile, back to back so they share conditions." />
             {/* The summary states the settings themselves, so the common case — checking
                 what's set — needs no click at all. */}
             <Typography variant="caption" color="text.secondary">
@@ -1465,9 +1465,7 @@ export default function Duels() {
         <AccordionDetails sx={{ pt: 0 }}>
           <Box>
           <Typography variant="caption" color="text.secondary">
-            When duels happen and how a match is called. Every setting here is a judgement
-            about evidence: how long to keep fighting, how much proof to demand, and how
-            big a difference has to be before it counts as a win.
+            When duels happen, and how much proof it takes to call a winner.
           </Typography>
 
           {/* ── When ───────────────────────────────────────────────────────────────── */}
@@ -1564,10 +1562,8 @@ export default function Duels() {
             <Typography variant="subtitle2">How sure before calling a winner</Typography>
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-            One choice. Win enough rounds back to back and the match ends there; win most of
-            them convincingly and it ends too. Shorter streaks decide sooner and get it wrong
-            more often — worth it on a ladder that runs every night, since the next match
-            corrects it and the standings are what you read.
+            Shorter streaks decide sooner but get it wrong more often.
+            <HelpTip title="A match ends when one side wins enough rounds back to back, or wins most of them convincingly. A wrong call costs little on a ladder that runs every night: the next match corrects it, and the standings are what you read." />
           </Typography>
           <Box sx={PRESET_GRID}>
             {(cfg?.presets ?? []).map((preset) => {
@@ -1648,8 +1644,8 @@ export default function Duels() {
                 onChange={(e) => void patch({ crown_rule: e.target.value as DuelConfig["crown_rule"] })}
                 helperText={
                   (cfg?.crown_rule ?? "lineal") === "rating_floor"
-                    ? "The ring's #1 by proven rating. Honest about evidence, but the title rarely changes hands: the holder defends every match, so a challenger struggles to build the second opponent its error bar needs."
-                    : "Beat the holder and lead its whole shared record on both matches and rounds. This decides who wears the belt; the standings order separately, on the fitted rating."
+                    ? "Top of the standings by proven rating. Rarely changes hands."
+                    : "Beat the holder, and lead your shared record with it, to take the belt."
                 }
               >
                 <MenuItem value="lineal">Lineal title (beat the holder)</MenuItem>
@@ -1690,14 +1686,14 @@ export default function Duels() {
                 value={cfg?.rematch_hours ?? 6}
                 disabled={!cfg || busy}
                 onCommit={(v) => void patch({ rematch_hours: v })}
-                helper="Hours before the same two profiles can fight again. Short on purpose: the cooldown exists so a settled question doesn't eat the window, not to retire a pairing — and the leaders are fought first, so a long one empties the ring of exactly the profiles you care about. A match that produced no result never counts. It orders the queue rather than skipping: a cooled contender is raced last among its equals."
+                helper="Hours before the same two profiles fight again. A cooled pair is raced last among its equals, never skipped. Keep it short: the leaders are fought first, so a long cooldown empties the ring of the profiles you care about."
               />
               <NumField
                 label="Champion goes stale after (days)"
                 value={cfg?.champion_freshness_days ?? 7}
                 disabled={!cfg || busy}
                 onCommit={(v) => void patch({ champion_freshness_days: v })}
-                helper="How old the duel champion may get before the crowning policy stops acting on it and falls back to the pooled crown. A separate question from the rematch cooldown, which it used to share a setting with."
+                helper="How old the duel champion may get before Follow best stops acting on it and falls back to the pooled crown."
               />
               <NumField
                 label="Iterations per leg of a round"
@@ -1705,14 +1701,14 @@ export default function Duels() {
                 disabled={!cfg || busy}
                 min={1}
                 onCommit={(v) => void patch({ iterations_per_round: Math.round(v) })}
-                helper="The ring's resolving power, and the only setting here that changes what a duel can SEE. A round compares two single measurements, so it carries the noise of both — measured on a real link, ~2.3 points per run becomes ~3.3 per round, against true edges between top profiles of 0.17-0.30 points. Medianing k iterations divides that by √k: at a 0.3-point edge, rounds needed for a confident call fall from 468 (k=1) to 156 (k=3) to 94 (k=5). A round costs k times as long, so this is roughly break-even on wall clock and a large win on verdicts actually reached."
+                helper="More iterations per leg means less noise per round and fewer rounds to a verdict. Roughly break-even on wall clock, and far more matches actually get decided. Try 3 to 5."
               />
               <NumField
                 label="Rating prior (virtual rounds)"
                 value={cfg?.rating_prior_pairs ?? 4}
                 disabled={!cfg || busy}
                 onCommit={(v) => void patch({ rating_prior_pairs: v })}
-                helper="Virtual rounds against an average opponent, added to every record before fitting. This is the lever for thin records topping the table: raising it pulls a one-match record toward the field instead of letting an error bar overturn a result. Measured against a 3-0 snap vs a deep winning record — 4: snap rates 1696 vs 1581; 16: 1569 vs 1584."
+                helper="Virtual rounds against an average opponent, added to every record. Raise it if thin records keep topping the table: it pulls a one-match record toward the middle of the field."
               />
               <NumField
                 label="Settle before measuring"
@@ -1720,7 +1716,7 @@ export default function Duels() {
                 disabled={!cfg || busy}
                 min={0}
                 onCommit={(v) => void patch({ settle_seconds: Math.round(v) })}
-                helper="Seconds to let the link settle after each profile is written to the firewall, before its run is measured. Both sides wait equally, so this never favours anyone — it keeps queue-rebuild noise out of the rounds. 0 = measure immediately."
+                helper="Seconds to wait after writing a profile to the firewall before measuring it. Both sides wait equally. 0 = measure immediately."
               />
               {cfg?.method === "pair_wins" && (
                 <NumField
@@ -1763,9 +1759,8 @@ export default function Duels() {
           </Collapse>
 
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
-            Duel runs join the pooled record like any other runs; duel <b>verdicts</b> live
-            only here. The engine never writes a winner to the firewall — it always restores
-            your pre-duel settings.
+            A duel never writes a winner to the firewall. Your pre-duel settings are always
+            restored.
           </Typography>
           </Box>
         </AccordionDetails>
@@ -1830,9 +1825,8 @@ export default function Duels() {
                     {champion.rule !== "rating_floor" && champion.rank != null && (
                       <Typography variant="caption" color="text.secondary" display="block">
                         {champion.rank === 1
-                          ? "Also #1 on proven rating — both verdicts agree."
-                          : `Ranked #${champion.rank} on proven rating: it beat the holder, but ` +
-                            `other records have demonstrated more across the field.`}
+                          ? "Also #1 in the standings."
+                          : `#${champion.rank} in the standings: it beat the holder, but others have proved more.`}
                       </Typography>
                     )}
                   </>
@@ -1865,7 +1859,7 @@ export default function Duels() {
               <Typography variant="caption" color="text.secondary">
                 {policy === "duel"
                   ? "Follow best acts on these verdicts."
-                  : "These verdicts are recorded only — switch the policy in the top-bar Follow best popover to act on them."}
+                  : "Recorded only. Switch the policy under Follow best (top bar) to act on them."}
               </Typography>
               {table && (
                 <Typography variant="caption" color="text.secondary">
@@ -1905,8 +1899,7 @@ export default function Duels() {
                   In the ring with the belt: <b>{status.champion_label}</b>
                   <Typography component="span" variant="caption" color="text.secondary">
                     {" "}
-                    — provisional until the session ends; automation still acts only on
-                    finished sessions.
+                    (provisional until the session ends)
                   </Typography>
                 </Typography>
               )}
@@ -1998,37 +1991,29 @@ export default function Duels() {
       <Card sx={{ mb: 2 }}>
         <CardContent>
           <Typography variant="h6">Ladder standings</Typography>
-          <Typography variant="caption" color="text.secondary">
-            <b>Rating</b> is a strength fitted to every round ever fought, so <i>who</i> you
-            beat is what moves you — beating the profile at the top is worth far more than
-            beating the one at the bottom, and losing to the best costs little. 1500 is the
-            middle of the field and ± is the error bar.{" "}
-            <b>Duel rank</b> is the ring standing and the default order here, and it sorts on
-            the <b>Rating</b>: whoever wins the duel wins the duel. It used to sort on{" "}
-            <b>Proven</b> instead, which could rank a profile <i>below one it had beaten</i> —
-            a challenger on 1687 ±146 (proven 1541) sat under the leader it beat on 1563 ±17
-            (proven 1546), five points of floor across error bars eight times wider than the
-            gap. A ladder built to adjudicate head to head should not rank the loser above the
-            winner.
-            The cost is that a thin record can lead: it keeps its amber tag (<i>1 opponent</i>,{" "}
-            <i>8 rounds</i>) so you can see it, and the lever for it is the rating prior in the
-            advanced settings, which pulls a thin record toward the field rather than letting an
-            error bar overturn a result. <b>Proven</b> stays as its own sortable column for the
-            other question — what a record has <i>demonstrated</i> rather than what it won.
-            Points and win rate are the plain ledger, kept beside it. <b>Overall</b> and{" "}
-            <b>Overall rank</b> are the pooled all-history score for the same profile, so the
-            two verdicts sit side by side — the ▲▼ next to a rank is how far they disagree.
-            A rank marked <b>≈#1</b> is inside the ring&rsquo;s own noise of the leader: the gap
-            between the two fitted ratings is smaller than the error on that gap, so the order
-            between them is not evidence. It is a <i>mark on the order, not a shared rank</i> —
-            sharing one would call two profiles equal when one of them beat the other, and
-            statistical ties are non-transitive, so the table cannot honestly be cut into bands.
-            Expect a lot of them: an error bar is set mostly by how many rounds a profile has
-            fought, so nine rounds carries about ±100 points against a field a couple of hundred
-            wide. That is the state of the evidence, not a flaw in the test — which is why the
-            mark says how many more rounds head to head would settle it.
-            Click any column to re-sort.
-          </Typography>
+          <Blurb
+            more={
+              <>
+                <b>Rating</b> is a strength fitted to every round fought. Who you beat is what
+                moves it: beating the top profile is worth far more than beating the bottom one.
+                1500 is the middle of the field, ± is the error bar, and an amber tag marks a thin
+                record.
+                <br />
+                <b>Proven</b> is the rating minus its error bar: what a record has demonstrated,
+                not just what it won.
+                <br />
+                <b>Overall</b> and <b>Overall rank</b> are the pooled all-history score, so the
+                two verdicts sit side by side. The ▲▼ next to a rank is how far they disagree.
+                <br />
+                <b>≈#1</b> marks a profile inside the ring&apos;s own noise of the leader. Expect
+                many: nine rounds carries about ±100 points. Hover it to see how many more rounds
+                would settle it.
+              </>
+            }
+          >
+            Ranked by <b>Rating</b>, a strength fitted to every round fought. Hover a column
+            header for its meaning; click to sort.
+          </Blurb>
           {loadingStandings && standings.length === 0 ? (
             <Box sx={{ mt: 1.5 }}>
               <LinearProgress />
@@ -2051,8 +2036,7 @@ export default function Duels() {
                 </Button>
               }
             >
-              Couldn't load the ladder standings — the match tape below may still be fine, so
-              this is the request failing rather than an empty ledger. {standingsError}
+              Couldn&apos;t load the ladder standings. {standingsError}
             </Alert>
           ) : standings.length === 0 ? (
             <Alert severity="info" sx={{ mt: 1.5 }}>
@@ -2064,17 +2048,17 @@ export default function Duels() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <StandingHeader id="rank" label="Duel rank" orderBy={orderBy} order={order} onSort={handleSort} tip="Standing in the ring — the page's default order, by the fitted Rating: whoever wins the duel wins the duel. It used to order on Proven (rating minus an error bar), which could rank a profile below one it had beaten. Nothing pooled goes into it." />
+                    <StandingHeader id="rank" label="Duel rank" orderBy={orderBy} order={order} onSort={handleSort} tip="Standing in the ring, by fitted Rating. Nothing pooled goes into it." />
                     <StandingHeader id="name" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} />
-                    <StandingHeader id="rating" label="Rating" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Strength fitted to every round this profile has ever fought (Bradley–Terry, on the Elo scale — 1500 is the middle of the field, +400 means winning 10 rounds for every 1 lost against an average opponent). Beating a strong profile moves it a lot and beating a weak one barely at all, so who you beat is what changes your standing. ± is the error bar; a thin record is marked provisional. This is the headline number, not the sort — see Proven." />
-                    <StandingHeader id="rating_floor" label="Proven" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Rating minus one error bar — what the record has DEMONSTRATED rather than what it suggests. A different question from the ranking, kept as its own sortable column: a thin record fits a wide bar and scores low here even when it won its match. Sort by this to ask 'who has proved it?' rather than 'who won?'" />
+                    <StandingHeader id="rating" label="Rating" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Strength fitted to every round fought (Elo scale: 1500 is mid-field, +400 wins 10 rounds per 1 lost against an average opponent). Beating a strong profile moves it a lot; beating a weak one barely at all. ± is the error bar." />
+                    <StandingHeader id="rating_floor" label="Proven" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Rating minus one error bar: what the record has demonstrated, not what it suggests. A thin record scores low here even after a win." />
                     <StandingHeader id="wins" label="W–L–D" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match record across every duel session: wins–losses–draws. Sorts by wins." />
                     <StandingHeader id="points" label="Pts" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match points: 3 for a win, 1 for a draw." />
                     <StandingHeader id="win_rate" label="Win rate" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Share of DECIDED matchups won (draws excluded)." />
                     <StandingHeader id="pair_win_rate" label="Rounds" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Individual interleaved A/B rounds won — the raw evidence under the verdicts. Sorts by round-win rate." />
                     <StandingHeader id="median_margin" label="Margin" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Median Overall-point gap in this profile's own favour, across its matches." />
-                    <StandingHeader id="overall" label="Overall" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="The POOLED all-history score — what this profile measured across every run, not just its matches. Sort by it to see where the ring and the raw record disagree." />
-                    <StandingHeader id="pooled_rank" label="Overall rank" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Where this profile sits on the pooled all-history score, among the profiles that have duelled. Compare with Duel rank: a big gap means the ring and the raw record disagree about it." />
+                    <StandingHeader id="overall" label="Overall" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="The pooled all-history score across every run, not just its matches." />
+                    <StandingHeader id="pooled_rank" label="Overall rank" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Rank on the pooled score among the profiles that have duelled. A big gap from Duel rank means the two verdicts disagree." />
                     <StandingHeader id="opponents" label="Opponents" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Distinct profiles faced." />
                     <StandingHeader id="championships" label="Titles" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Sessions ended holding the belt." />
                     <StandingHeader id="last_dueled_at" label="Last match" align="right" orderBy={orderBy} order={order} onSort={handleSort} />
@@ -2222,15 +2206,11 @@ export default function Duels() {
 
       {/* ── Head-to-head grid ────────────────────────────────────────────────────── */}
       {hasGrid && (
-        <Card sx={{ mb: 2 }}>
-          <CardContent>
-            <Typography variant="h6">Head-to-head</Typography>
-            <Typography variant="caption" color="text.secondary">
-              Each cell is the row profile's record against the column profile (W–L–D).
-              Blank = they've never met — the ladder only rounds the holder with the next
-              heir, so the grid fills in as reigns change.
-            </Typography>
-            <TableContainer sx={{ mt: 1.5 }}>
+        <FoldCard
+          title="Head-to-head"
+          summary={`Top ${gridRows.length} profiles, W–L–D against each other. Blank = never met.`}
+        >
+            <TableContainer>
               <Table size="small">
                 <TableHead>
                   <TableRow>
@@ -2291,8 +2271,7 @@ export default function Duels() {
                 </TableBody>
               </Table>
             </TableContainer>
-          </CardContent>
-        </Card>
+        </FoldCard>
       )}
 
       {/* ── The card: who fights whom, in order ──────────────────────────────────── */}
@@ -2305,11 +2284,10 @@ export default function Duels() {
             spacing={1}
           >
             <Box>
-              <Typography variant="h6">Who's fighting</Typography>
+              <Typography variant="h6">Who&apos;s fighting</Typography>
               <Typography variant="caption" color="text.secondary">
-                The line-up a duel started now would work through, in order — not a random
-                draw. The champion is the current pooled crown; challengers are the profiles
-                nearest it, strongest first.
+                The line-up a duel started now would run, in order.
+                <HelpTip title="A projection, not a schedule: the defender and the next challenger are re-decided from the ledger before every match." />
               </Typography>
             </Box>
             <Button size="small" variant="outlined" onClick={() => void loadCard()} disabled={cardBusy}>
@@ -2331,21 +2309,16 @@ export default function Duels() {
                 {card.incumbent.overall != null
                   ? ` (Overall ${fmtNum(card.incumbent.overall, 1)})`
                   : ""}
-                {" "}as the ring's current #1. Beating it takes the belt, and the next match
-                is re-decided from the ledger — so the order below is what a duel starting
-                now would run <i>if nothing upsets it</i>, not a fixed card.
+                {" "}as the ring&apos;s current #1.
               </Typography>
               {card.contenders === "ring" && (
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                  Challengers are ordered by <b>the ring's own findings</b> — each one's
-                  optimistic ceiling on its head-to-head rating, so the match most likely to
-                  unseat the belt runs first
+                  Challengers ordered by the match most likely to unseat the belt
                   {card.incumbent_rating != null
-                    ? ` (the bar to clear is the belt's ${Math.round(card.incumbent_rating)})`
+                    ? ` (bar to clear: ${Math.round(card.incumbent_rating)})`
                     : ""}
-                  . A profile the ladder has already beaten waits its turn rather than being
-                  struck off. The pooled score decides nothing here except the order among
-                  profiles that have never been in the ring.
+                  .
+                  <HelpTip title="Each challenger is ranked by the optimistic ceiling on its head-to-head rating. A profile the ladder has already beaten waits its turn rather than being struck off. The pooled score only orders profiles that have never been in the ring." />
                 </Typography>
               )}
               {card.incumbent.why && (
@@ -2388,7 +2361,7 @@ export default function Duels() {
                                 — the pooled label is the fallback for the older modes. */}
                             {c.ring_why || CARD_REASON[c.reason] || c.reason}
                             {c.on_cooldown
-                              ? ` · re-raced (settled within the last ${card.rematch_hours ?? 6}h, so it goes last among its equals)`
+                              ? ` · fought within ${card.rematch_hours ?? 6}h, goes last among its equals`
                               : ""}
                           </Typography>
                         </TableCell>
@@ -2412,17 +2385,15 @@ export default function Duels() {
         <CardContent>
           <Typography variant="h6">Match tape</Typography>
           <Typography variant="caption" color="text.secondary">
-            Every matchup, newest session first — the round scoreline, the margin, and what
-            ended it (a boundary crossing, mutual futility, the round cap, or the window
-            closing). In each bar,{" "}
+            Every match, newest session first.{" "}
             <Box component="span" sx={{ color: "success.main" }}>
-              green is the holder's round wins
+              Green
             </Box>{" "}
-            and{" "}
+            = holder&apos;s round wins,{" "}
             <Box component="span" sx={{ color: "warning.main" }}>
-              amber the challenger's
-            </Box>
-            .
+              amber
+            </Box>{" "}
+            = challenger&apos;s.
           </Typography>
           {loadingLedger && ledger.length === 0 ? (
             <Box sx={{ mt: 1.5 }}>
@@ -2516,9 +2487,8 @@ export default function Duels() {
         <DialogTitle>Run a duel session for how long?</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            The champion defends back to back for the whole window, one match at a time, and
-            the session stops at the end of the match in progress. Your settings are restored
-            either way — a duel adjudicates, it never promotes.
+            The session stops at the end of the match in progress. Your settings are restored
+            afterwards.
           </Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
             {DUEL_LENGTHS.map((m) => (

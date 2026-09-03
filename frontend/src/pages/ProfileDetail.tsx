@@ -55,6 +55,7 @@ import Waterfall from "../components/Waterfall";
 import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
+import { FoldCard, HelpTip } from "../components/Explain";
 import { fmtDateTime, fmtScore, fmtTimeShort } from "../utils/format";
 import { profileValue } from "../utils/profileFields";
 import { rankByMetric, rankColor } from "../utils/ranking";
@@ -547,9 +548,8 @@ export default function ProfileDetail() {
               Standings
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-              Where this profile ranks among all {standings[0].total || 0} measured profiles (1 = best),
-              for the Overall and each <b>crown metric</b> the current methodology corners over. When
-              it isn&apos;t #1, the red arrow shows how far behind the crown (#1) it is, as a percent.
+              Rank among all {standings[0].total || 0} measured profiles (1 = best).
+              <HelpTip title="For the Overall and each crown metric the current methodology scores on. The red arrow is how far behind #1 it is, as a percent." />
             </Typography>
             {/* Crown lead vs noise: the measured signal-to-noise behind #1 — is the lead real, or is
                 the top a statistical tie? Numbers, not adjectives. */}
@@ -558,21 +558,20 @@ export default function ProfileDetail() {
                 <Typography variant="caption">
                   {crownConf.clear_lead ? (
                     <>
-                      <b>Crown lead is real.</b> #1 leads the runner-up by{" "}
-                      <b>+{crownConf.gap_to_runner_up.toFixed(2)}</b> Overall — past the{" "}
-                      {crownConf.noise_threshold.toFixed(2)} significance bar ({crownConf.sigma}σ of
-                      run-to-run noise).
+                      <b>Crown lead is real:</b> +{crownConf.gap_to_runner_up.toFixed(2)} over the
+                      runner-up, past the {crownConf.noise_threshold.toFixed(2)} noise bar.
                     </>
                   ) : (
                     <>
-                      <b>Crown is a statistical tie.</b> #1&apos;s{" "}
-                      <b>+{crownConf.gap_to_runner_up.toFixed(2)}</b> lead over the runner-up is within
-                      noise (needs &gt; {crownConf.noise_threshold.toFixed(2)} at {crownConf.sigma}σ);{" "}
-                      {crownConf.co_leader_count} co-leader{crownConf.co_leader_count === 1 ? "" : "s"} within
-                      reach. More runs on the contenders would tighten the bar and could break the tie.
+                      <b>Crown is a statistical tie:</b> +{crownConf.gap_to_runner_up.toFixed(2)} over
+                      the runner-up is within noise (needs &gt; {crownConf.noise_threshold.toFixed(2)}),{" "}
+                      {crownConf.co_leader_count} co-leader{crownConf.co_leader_count === 1 ? "" : "s"}.
+                      More runs could break it.
                     </>
-                  )}{" "}
-                  Crown Overall {crownConf.overall.toFixed(1)} ± {crownConf.overall_se.toFixed(2)} SE.
+                  )}
+                  <HelpTip
+                    title={`Crown Overall ${crownConf.overall.toFixed(1)} ± ${crownConf.overall_se.toFixed(2)} SE. The bar is ${crownConf.sigma}σ of the pooled run-to-run noise, so it tightens as runs accrue.`}
+                  />
                 </Typography>
               </Alert>
             )}
@@ -649,19 +648,22 @@ export default function ProfileDetail() {
                   ? ` — the ladder has run ${ring.sessions_analyzed} session${
                       ring.sessions_analyzed === 1 ? "" : "s"
                     } without matching it.`
-                  : " — no duel sessions on record yet."}{" "}
-                The ladder races the profiles most likely to unseat the leader, so an untested
-                profile gets the ring once its measured ceiling makes it a threat.
+                  : " — no duel sessions on record yet."}
+                <HelpTip title="The ladder races the profiles most likely to unseat the leader, so an untested profile gets the ring once its measured ceiling makes it a threat." />
               </Typography>
             ) : (
               <>
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-                  What this profile has <b>beaten</b>, head to head — not what it averaged. Ranked
-                  on the ring&apos;s fitted strength ({ring.ranked_by === "rating_floor"
-                    ? `rating − ${ring.rank_sigma ?? 1} SE, so a record has to be measured before it can lead`
-                    : ring.ranked_by}), over {ring.matchups_analyzed} match
-                  {ring.matchups_analyzed === 1 ? "" : "es"} across {ring.sessions_analyzed} session
+                  Head-to-head record over {ring.matchups_analyzed} match
+                  {ring.matchups_analyzed === 1 ? "" : "es"} in {ring.sessions_analyzed} session
                   {ring.sessions_analyzed === 1 ? "" : "s"}.
+                  <HelpTip
+                    title={`What this profile has beaten, not what it averaged. Ranked on the ring's fitted strength (${
+                      ring.ranked_by === "rating_floor"
+                        ? `rating − ${ring.rank_sigma ?? 1} SE, so a record has to be measured before it can lead`
+                        : ring.ranked_by
+                    }).`}
+                  />
                 </Typography>
 
                 {ring.record && (
@@ -814,9 +816,8 @@ export default function ProfileDetail() {
                         <b>beat {ring.versus_overall.beat_higher_overall}</b> profile
                         {ring.versus_overall.beat_higher_overall === 1 ? "" : "s"} that score
                         higher on Overall, and <b>lost to {ring.versus_overall.lost_to_lower_overall}</b>{" "}
-                        that score lower. That disagreement is what running two verdicts is
-                        for — the ring measures profiles against each other under shared
-                        weather, Overall pools everything each has ever measured.
+                        that score lower.
+                        <HelpTip title="That disagreement is what running two verdicts is for: the ring measures profiles against each other under shared weather, Overall pools everything each has ever measured." />
                       </Typography>
                     )}
 
@@ -1051,25 +1052,30 @@ export default function ProfileDetail() {
 
       {/* Data-integrity audit: prove old and new runs are like-for-like by re-deriving each from
           its immutable raw and diffing against the stored value. */}
-      <Card sx={{ mb: 2 }}>
-        <CardContent>
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-            <Typography variant="h6" sx={{ flexGrow: 1 }}>
-              Data integrity
+      <FoldCard
+        title="Data integrity"
+        summary={
+          <>
+            Do old and new runs still measure the same thing?
+            <HelpTip title="Re-derives this profile's oldest and newest runs from their stored raw and checks the saved metrics still reproduce. If old runs drift while new ones don't, history was computed under a formula that has since changed and needs a re-derive. Read-only." />
+          </>
+        }
+        actions={
+          <Button size="small" variant="outlined" onClick={runAudit} disabled={auditing}>
+            {auditing ? "Verifying…" : "Verify old vs new"}
+          </Button>
+        }
+        openWhen={auditing || !!audit || !!auditErr}
+      >
+          {!audit && !auditErr && (
+            <Typography variant="body2" color="text.secondary">
+              {auditing ? "Re-deriving the oldest and newest runs from raw…" : (
+                <>
+                  Press <b>Verify old vs new</b> to run the check.
+                </>
+              )}
             </Typography>
-            <Tooltip title="Re-derive this profile's oldest & newest runs from their immutable raw and check the stored metrics still reproduce. Read-only — changes nothing.">
-              <span>
-                <Button size="small" variant="outlined" onClick={runAudit} disabled={auditing}>
-                  {auditing ? "Verifying…" : "Verify old vs new"}
-                </Button>
-              </span>
-            </Tooltip>
-          </Stack>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: audit || auditErr ? 1.5 : 0 }}>
-            Checks whether a metric means the same thing across time — that stored values reproduce
-            exactly from raw under the current derivation. If old runs drift while new ones don&apos;t,
-            history was computed under a formula that has since changed and needs a re-derive.
-          </Typography>
+          )}
           {auditErr && <Alert severity="error">{auditErr}</Alert>}
           {audit && (
             <Box>
@@ -1077,7 +1083,7 @@ export default function ProfileDetail() {
                 {audit.consistent
                   ? `Like-for-like: all sampled runs reproduce exactly from raw (derivation ${audit.current_derivation}).`
                   : audit.stale_history
-                    ? "Stale history: older runs were computed under a formula that has since changed and were never re-derived. Run Re-derive (Methodology page) to bring them onto the current derivation."
+                    ? "Stale history: older runs use an outdated formula. Run Re-derive on the Methodology page."
                     : "Drift detected: some runs don't reproduce from raw under the current derivation."}
               </Alert>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
@@ -1101,8 +1107,8 @@ export default function ProfileDetail() {
                   </Typography>
                   <Alert severity={audit.collection.changed ? "warning" : "success"} sx={{ mb: audit.collection.changed ? 1 : 0 }}>
                     {audit.collection.changed
-                      ? "The raw we collect changed between old and new runs — even with a faithful derivation, these runs aren't measuring the same thing."
-                      : "Same ingredients: old and new runs loaded the same URLs, with the same LoAF coverage and page composition."}
+                      ? "What was collected changed between old and new runs, so they aren't measuring the same thing."
+                      : "Same ingredients: old and new runs loaded the same URLs with the same coverage."}
                   </Alert>
                   {audit.collection.changed && (
                     <Stack spacing={0.25} sx={{ mt: 0.5 }}>
@@ -1136,8 +1142,7 @@ export default function ProfileDetail() {
               </Typography>
             </Box>
           )}
-        </CardContent>
-      </Card>
+      </FoldCard>
 
       <Box sx={{ display: "grid", gap: 2 }}>
         {profile?.metrics && profile.metrics["nav_response"] != null && (
@@ -1147,11 +1152,8 @@ export default function ProfileDetail() {
                 Load waterfall (median)
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-                This profile&apos;s median page load, split into independent phases. Setup up to{" "}
-                <b>first byte</b> (DNS/TCP/TLS/TTFB) is weather-dominated, not shaping. Judge this
-                profile on the amber <b>Delivery</b> phase (first byte → response done) — body
-                delivery through the queue, the one phase your shaper moves. <b>Client render</b> is
-                shaping-immune client CPU and should match across profiles.
+                Judge this profile on the amber <b>Delivery</b> phase: the one your shaper moves.
+                <HelpTip title="Setup up to first byte (DNS/TCP/TLS/TTFB) is weather, not shaping. Delivery (first byte → response done) is body delivery through the queue. Client render is CPU and should match across profiles." />
               </Typography>
               <Waterfall metrics={profile.metrics} />
             </CardContent>
@@ -1159,17 +1161,17 @@ export default function ProfileDetail() {
         )}
 
         {pauses && pauses.urls.length > 0 && (
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Where&apos;s the pause? (median across {pauses.runs} run{pauses.runs === 1 ? "" : "s"})
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-                The longest <b>void</b> in each page load — where nothing finished — rolled up across
-                this profile&apos;s runs: typical duration, where it falls, and whether it&apos;s{" "}
-                <b>network</b> (byte-delivery, the part your shaper moves) or <b>render</b> (main
-                thread, shaping-immune). This is what the crown&apos;s network-stall leg is built on.
-              </Typography>
+          <FoldCard
+            sx={{ mb: 0 }}
+            title="Where's the pause?"
+            summary={
+              <>
+                The longest void per page load, median across {pauses.runs} run
+                {pauses.runs === 1 ? "" : "s"}.
+                <HelpTip title="Where nothing finished loading: how long, where in the load it falls, and whether it's network (the part your shaper moves) or render (main thread, shaping-immune). The crown's network-stall leg is built on this." />
+              </>
+            }
+          >
               <Stack spacing={1}>
                 {pauses.urls.map((d) => {
                   const phaseLabel: Record<string, string> = {
@@ -1219,8 +1221,7 @@ export default function ProfileDetail() {
                   );
                 })}
               </Stack>
-            </CardContent>
-          </Card>
+          </FoldCard>
         )}
 
         <Card>

@@ -370,9 +370,8 @@ export default function Config() {
             }
           />
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-            Total iterations a profile must accumulate before it's treated as <b>confident</b> (mature) — the bar
-            for a "best" crown and for significance calls on Settings Impact. Higher = stricter (more data before
-            trusting a profile); lower = faster to judge, noisier.
+            Iterations a profile needs before it can be crowned. Higher = stricter, lower = faster
+            but noisier.
           </Typography>
         </CardContent>
       </Card>
@@ -886,11 +885,8 @@ export default function Config() {
             </Stack>
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-            Thresholds use a perception-calibrated log curve (Weber–Fechner). After editing weights
-            or thresholds, click <b>Save</b>, then <b>Re-score history</b> to re-grade past runs so the
-            timeline stays comparable. <b>Re-derive history</b> goes further — it recomputes every
-            metric from each run's stored raw observations, so a new metric or a changed formula
-            (e.g. a better Speed Index) applies to past runs without re-collecting.
+            After editing, <b>Save</b>, then <b>Re-score history</b> so past runs stay comparable.{" "}
+            <b>Re-derive history</b> also recomputes every metric from raw.
           </Typography>
           <Typography variant="subtitle2" sx={{ mt: 1 }}>
             Weights

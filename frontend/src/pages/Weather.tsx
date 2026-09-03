@@ -20,6 +20,7 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 
 import { api } from "../api/client";
 import type { WeatherSensitivity } from "../api/types";
+import { FoldCard, HelpTip } from "../components/Explain";
 
 // The Weather tab — the measured-conditions view, spun off the Settings-Impact card once
 // it grew past a card's altitude. Everything here is strictly informational (no scores
@@ -79,10 +80,8 @@ export default function Weather() {
             Weather
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            What the ambient network conditions — measured on every run, never inferred from
-            the clock — do to the numbers we crown on. Per-profile readings ("vs weather",
-            severity, weather-beater flags) stay on Settings Impact next to the standings
-            they qualify.
+            What ambient network conditions do to the numbers we crown on.
+            <HelpTip title="Conditions are measured on every run, never inferred from the clock. Per-profile readings (vs weather, severity, weather-beater flags) stay on Settings Impact next to the standings they qualify." />
           </Typography>
         </Box>
         <Button size="small" startIcon={<RefreshIcon />} onClick={() => void load()} disabled={loading}>
@@ -120,9 +119,8 @@ export default function Weather() {
               <CardContent>
                 <Typography variant="h6">How much of the noise is measurable weather?</Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-                  Adjusted within-profile R² of the clean covariates against each crown metric and
-                  the Overall — the profile is held fixed, so its identity can't masquerade as
-                  weather. Linear and in-sample: a ceiling, not a promise.
+                  The most a weather adjustment could ever remove. A ceiling, not a promise.
+                  <HelpTip title="Adjusted within-profile R² of the clean covariates against each crown metric and the Overall. The profile is held fixed, so its identity can't masquerade as weather. Linear and in-sample." />
                 </Typography>
                 <Alert severity="info" icon={false} sx={{ mb: 1.5, py: 0.5 }}>
                   <Typography variant="caption">{data.variance.headline}</Typography>
@@ -173,14 +171,15 @@ export default function Weather() {
             </Card>
           )}
 
-          <Card sx={{ mb: 2 }}>
-            <CardContent>
-              <Typography variant="h6">Weather sensitivity</Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-                Which covariate moves which crown metric — the go/no-go check for any
-                “vs weather” reading, per pair. Within-profile ρ is the causal signal; pooled
-                mixes in between-profile differences and is context only.
-              </Typography>
+          <FoldCard
+            title="Weather sensitivity"
+            summary={
+              <>
+                Which covariate moves which crown metric, {data.rows.length} pairs.
+                <HelpTip title="Within-profile ρ is the causal signal. Pooled ρ mixes in between-profile differences and is context only." />
+              </>
+            }
+          >
               <TableContainer sx={{ maxHeight: 560, overflowX: "auto" }}>
                 <Table size="small" stickyHeader>
                   <TableHead>
@@ -248,8 +247,7 @@ export default function Weather() {
                 |within-profile ρ| · |ρ| ≥ {data.trend_rho} counts as weather-sensitive · a profile
                 needs ≥ {data.within_profile_min_points} runs to contribute a within-profile ρ.
               </Typography>
-            </CardContent>
-          </Card>
+          </FoldCard>
         </>
       )}
     </Box>

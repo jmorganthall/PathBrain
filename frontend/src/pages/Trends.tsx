@@ -121,11 +121,7 @@ export default function Trends() {
         </TextField>
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3, maxWidth: 720 }}>
-        How each metric typically behaves by day of week and hour of day — the
-        network's "weather". The same baseline covers the headline <b>Overall</b> and
-        the crown measurements we rank on, plus the infra metrics (ping, jitter, speed)
-        that track general internet conditions — so any reading can be judged{" "}
-        <em>relative to what's normal for this time</em>, not just in absolute terms.
+        What&apos;s normal for each metric by day of week and hour of day.
       </Typography>
 
       {error && (

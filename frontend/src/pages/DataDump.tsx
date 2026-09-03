@@ -15,6 +15,7 @@ import DataObjectIcon from "@mui/icons-material/DataObject";
 
 import { api } from "../api/client";
 import type { DataDump as DataDumpPayload, OptimizerExport } from "../api/types";
+import { HelpTip } from "../components/Explain";
 
 // Save any object as a downloaded .json file.
 function saveJson(obj: unknown, filename: string) {
@@ -123,12 +124,8 @@ export default function DataDump() {
         AI optimizer export
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 820 }}>
-        A profile-centric JSON built to feed an AI: every profile's <b>tunable shaper settings</b> (the
-        levers), its <b>runs with the raw scoring metrics</b> (fcp / lcp / stall_time in ms, and every
-        other scored metric), plus the <b>objective</b> (which metrics are the crown, lower-is-better,
-        and the best values achieved so far) and the <b>shaper field model</b> (which params are writable
-        and their sensible ranges). Hand it to a model and ask it to propose new, untested profiles likely
-        to score faster than anything measured.
+        A profile-centric JSON built to feed an AI.
+        <HelpTip title="Every profile's shaper settings, its runs with the raw scoring metrics, the objective (crown metrics, direction, best values so far), and the shaper field model (writable params and ranges). Hand it to a model and ask for untested profiles likely to beat anything measured." />
       </Typography>
 
       <Card sx={{ mb: 3 }}>
@@ -215,10 +212,8 @@ export default function DataDump() {
         Raw run dump
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 760 }}>
-        A single consolidated JSON of the last <b>N</b> runs, including each run's settings,
-        score, and the <b>raw observations</b> captured by every plugin (per iteration) — the immutable
-        source of truth that the per-run view doesn't expose. Use it for offline analysis, debugging, or
-        sharing a reproducible slice of history.
+        One JSON of the last <b>N</b> runs: settings, score, and every plugin&apos;s raw observations.
+        <HelpTip title="The immutable source of truth the per-run view doesn't expose. Use it for offline analysis, debugging, or sharing a reproducible slice of history." />
       </Typography>
 
       <Card sx={{ mb: 2 }}>
