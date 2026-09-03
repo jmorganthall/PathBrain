@@ -47,6 +47,7 @@ import type {
   TopProfileSignature,
 } from "../api/types";
 import ApplyConfirmDialog, { type ApplyConfirm } from "../components/ApplyConfirmDialog";
+import { Blurb, HelpTip } from "../components/Explain";
 
 // The settings→outcome relationship map. Two views: the deterministic per-field/metric Spearman
 // correlations we computed and sent to the model (trustworthy, AI-independent), and the model's
@@ -80,10 +81,8 @@ function RelationshipsCard({
           <Typography variant="h6">Settings ↔ outcome relationships</Typography>
         </Stack>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 820 }}>
-          How each tunable lever moves each crown metric across your tested profiles — the
-          interpretation step, computed deterministically (Spearman rank correlation) and sent to
-          the model. These are <b>marginal</b> correlations (profiles vary several fields at once),
-          so read them as directional evidence, not isolated cause and effect.
+          How each lever moves each crown metric across your tested profiles.
+          <HelpTip title="Spearman rank correlation, computed here and sent to the model. These are marginal correlations (profiles vary several fields at once), so read them as directional evidence, not isolated cause and effect." />
         </Typography>
 
         {rows.length > 0 ? (
@@ -225,9 +224,7 @@ function TopProfilesCard({ signature }: { signature?: TopProfileSignature }) {
         </Stack>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 820 }}>
           The settings the <b>top-Overall profiles</b> have in common, vs the rest of the field.
-          This catches what the correlations can't: a lever can show no monotonic trend yet the
-          winners still cluster on a specific value (a <b>sweet spot</b> both extremes miss) or run
-          it systematically higher/lower.
+          <HelpTip title="Catches what correlations can't: a lever with no monotonic trend where the winners still cluster on one value (a sweet spot both extremes miss), or run it systematically higher or lower." />
           {signature.available === false && signature.reason ? ` (${signature.reason})` : ""}
         </Typography>
 
@@ -600,16 +597,21 @@ export default function AI() {
       <Typography variant="h4" sx={{ mb: 1 }}>
         AI
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 860 }}>
-        Send your measured profiles (full settings + scoring data) to an LLM via <b>OpenRouter</b> and get
-        back proposed shaper profiles that haven't been tested yet — ranked by the model's estimate of the
-        chance each beats your current crown. Configure a key and model, tweak the prompt if you like, then
-        ask for suggestions. Each one has a <b>Test to minimum</b> button (apply → benchmark to the
-        confidence minimum → restore your baseline) and an <b>Apply</b> button that writes it to the
-        firewall <b>permanently</b> — the same confirm-diff dialog as Settings Impact, showing the exact
-        field changes before you commit. Only writable fields are touched, so a suggestion is always
-        reachable, and nothing is applied without your click.
-      </Typography>
+      <Blurb
+        variant="body2"
+        sx={{ mb: 2, maxWidth: 860 }}
+        more={
+          <>
+            Configure an OpenRouter key and model, tweak the prompt if you like, then ask for
+            suggestions. Each suggestion has a <b>Test to minimum</b> button (apply, benchmark,
+            restore) and an <b>Apply</b> button that writes it to the firewall permanently after a
+            confirm-diff. Nothing is applied without your click.
+          </>
+        }
+      >
+        Ask an LLM to propose untested shaper profiles, ranked by how likely each is to beat your
+        crown.
+      </Blurb>
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>

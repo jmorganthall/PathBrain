@@ -74,9 +74,8 @@ export default function Experiments() {
         Experiments
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Autonomous sweeps of one shaper parameter within an experimentation window. Configure under{" "}
-        <RouterLink to="/config">Config → Experiment Engine</RouterLink>. The baseline config is
-        restored when the window closes unless auto-promote is on.
+        Scheduled sweeps of one shaper parameter. Configure under{" "}
+        <RouterLink to="/config">Config → Experiment Engine</RouterLink>.
       </Typography>
 
       {error && (

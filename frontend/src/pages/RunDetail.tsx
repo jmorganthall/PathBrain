@@ -38,6 +38,7 @@ import StatusChip from "../components/StatusChip";
 import JsonViewer from "../components/JsonViewer";
 import Loading from "../components/Loading";
 import MetricDelta from "../components/MetricDelta";
+import { HelpTip } from "../components/Explain";
 import { useMetricMeta, useMetricOrder } from "../utils/metrics";
 import { fmtDateTime, fmtDuration, metricValue, parseApiDate, runRemainingMs } from "../utils/format";
 
@@ -378,12 +379,8 @@ export default function RunDetail() {
                 Load waterfall
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-                This run&apos;s page load as independent, non-overlapping phases (median across
-                iterations). Setup up to <b>first byte</b> is weather-dominated; the amber{" "}
-                <b>Delivery</b> phase (first byte → response done) is the SQM-facing one to judge a
-                profile on; <b>Client render</b> is client CPU that shaping can&apos;t move (it
-                should stay near-constant across profiles — if it doesn&apos;t, suspect the
-                measurement, not the shaper).
+                Median across iterations. Judge a profile on the amber <b>Delivery</b> phase.
+                <HelpTip title="Setup up to first byte is weather. Delivery (first byte → response done) is what SQM moves. Client render is CPU that shaping can't move; if it varies across profiles, suspect the measurement." />
               </Typography>
               <Waterfall metrics={bm} />
             </CardContent>
@@ -398,12 +395,8 @@ export default function RunDetail() {
               Where&apos;s the pause?
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-              The single longest <b>void</b> in each page load — the biggest stretch where nothing
-              finished — with <b>where</b> it falls (before first paint, between first paint and main
-              content, the post-LCP settle, or after load) and <b>what</b> caused it:{" "}
-              <b>render</b> = the main thread was busy (shaping can&apos;t move it),{" "}
-              <b>network</b> = a byte-delivery gap (the tunable part). This locates a felt &ldquo;it
-              starts then hangs&rdquo; pause so we can tell a delivery stall from a render stall.
+              The longest stretch in each page load where nothing finished, and what caused it.
+              <HelpTip title="Render = the main thread was busy (shaping can't move it). Network = a byte-delivery gap (the tunable part). The phase says where in the load it fell." />
             </Typography>
             <Stack spacing={1}>
               {run.pause_diagnostics.map((d, i) => {
@@ -469,10 +462,8 @@ export default function RunDetail() {
               Methodology
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-              The same raw observations, scored under each methodology. <b>At measure</b> is the
-              interpretation in play when this run was collected; <b>at present</b> re-scores from
-              raw under the current methodology — possible only when the run's raw can supply its
-              metrics.
+              <b>At measure</b> = the rubric in play when this run was collected. <b>At present</b> =
+              re-scored under the current one.
             </Typography>
             <TableContainer>
               <Table size="small">

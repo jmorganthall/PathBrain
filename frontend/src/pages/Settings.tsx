@@ -60,6 +60,7 @@ import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
 import ProfileQuadrant from "../components/ProfileQuadrant";
 import ApplyConfirmDialog, { type ApplyConfirm } from "../components/ApplyConfirmDialog";
+import { Blurb, HelpTip } from "../components/Explain";
 import InsightsIcon from "@mui/icons-material/Insights";
 import PublishIcon from "@mui/icons-material/Publish";
 import RestorePageIcon from "@mui/icons-material/Restore";
@@ -443,13 +444,13 @@ const COLUMN_TIPS: Record<string, string> = {
   iterations:
     "Total benchmark iterations across all runs — the unit of confidence. A profile becomes 'confident' once it reaches the minimum iterations; more iterations = more trustworthy.",
   overall_recent:
-    "The same crown grade as Overall, recomputed over ONLY this profile's most recent iterations (the recent window, default 100). The drift lens: a big gap vs Overall means the profile's present differs from its record — but recent windows land in different weather per profile, so compare via 'vs weather', and rank by the all-time Overall. Informational, never a crown input.",
+    "Overall recomputed over only this profile's most recent iterations (default 100). A big gap from Overall means its present differs from its record. Informational only.",
   overall:
-    "The headline score: closeness to the perfect corner over the crown metrics (FCP × LCP × Pregnant pause), scored on each metric's percentile rank within the field. An intersection — one weak metric can't be averaged away. Shown as a standing (1 = best); the highest Overall is crowned.",
+    "The headline score, combining the crown metrics. Shown as a standing (1 = best); the highest Overall among confident profiles is crowned.",
   weather_relative:
-    "Wins above the weather: this profile's Overall vs what OTHER profiles deliver under the same measured conditions (severity from each run's own DNS/TCP/TLS/latency readings — not the clock). Positive = beats the field in like weather. Informational, never a crown input.",
+    "This profile's Overall vs what other profiles deliver under the same measured conditions. Positive = beats the field in like weather. Informational only.",
   weather_severity:
-    "Median measured-weather severity this profile has been sampled under (0–100 percentile of ambient conditions; higher = harsher). A sampling-fairness readout — a profile only ever measured in bad weather deserves a re-measure, not a bad rank.",
+    "Median severity of the conditions this profile was measured under (0–100, higher = harsher). A profile only ever measured in bad weather deserves a re-measure, not a bad rank.",
   pct_vs_sqm_off:
     "How much better this profile's Overall is than the honest unshaped baseline (the best measured 'SQM off' profile). Green = shaping helps; red = worse than turning SQM off. Needs a Baseline (SQM off) test to populate.",
   overall_p25:
@@ -537,8 +538,8 @@ function HeirsCard({
             <Typography variant="h6">Heirs to the crown</Typography>
             <Typography variant="caption" color="text.secondary">
               {heirs.total} profile{heirs.total === 1 ? "" : "s"} could still beat the crown
-              {heirs.crown_overall != null ? ` (Overall ${heirs.crown_overall.toFixed(1)})` : ""} —
-              ranked by how far their best-case ceiling clears it. Run them to find out.
+              {heirs.crown_overall != null ? ` (Overall ${heirs.crown_overall.toFixed(1)})` : ""}.
+              <HelpTip title="Under-sampled or stale profiles whose best-case ceiling clears the crown's Overall, biggest threat first. Racing them settles it." />
             </Typography>
           </Box>
           <Tooltip title="Adaptively measure these limited-data / stale profiles against the crown, one iteration at a time.">
@@ -618,10 +619,8 @@ function WeatherCard() {
           <Box>
             <Typography variant="h6">Weather</Typography>
             <Typography variant="caption" color="text.secondary">
-              Does ambient network weather (DNS/TCP/TLS/latency measured on every run) move
-              the crown metrics — and how much of the run-to-run noise could it explain at
-              all? The field-level analysis behind the per-profile “vs weather” readings in
-              this table.
+              How much ambient network conditions move the scores.
+              <HelpTip title="Every run measures its own DNS/TCP/TLS/latency. The Weather page shows whether those move the crown metrics and how much run-to-run noise they explain. It's the analysis behind the “vs weather” column here." />
             </Typography>
           </Box>
           <Button size="small" variant="outlined" onClick={() => navigate("/weather")}>
@@ -678,9 +677,8 @@ function DuelCard() {
           <Box>
             <Typography variant="h6">Duel ladder</Typography>
             <Typography variant="caption" color="text.secondary">
-              The controlled-trial complement to these pooled standings: the crown and its
-              heirs trade one-iteration runs A/B/A/B, so both sides meet the same weather and
-              a verdict lands in tens of pairs.
+              Head-to-head results, measured back to back under the same conditions.
+              <HelpTip title="The controlled-trial complement to these pooled standings: two profiles trade interleaved runs so both meet the same weather, and a verdict lands in tens of rounds." />
             </Typography>
             <Typography variant="body2" sx={{ mt: 0.75 }}>
               {champion ? (
@@ -1314,7 +1312,7 @@ export default function Settings() {
               </Button>
             </span>
           </Tooltip>
-          <Tooltip title="Recompute every run's profile grouping from its own captured settings. Its effect is to merge all “SQM off” runs into one profile (their fingerprints used to vary with the inert shaper values the firewall echoes while disabled). Existing data is kept — only the grouping key changes; shaped profiles are untouched.">
+          <Tooltip title="Merge every “SQM off” run into one profile. Nothing is deleted; only the grouping changes, and shaped profiles are untouched.">
             <span>
               <Button
                 startIcon={<MergeIcon />}
@@ -1328,13 +1326,20 @@ export default function Settings() {
           </Tooltip>
         </Stack>
       </Stack>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-        How your firewall/SQM configuration profiles correlate with the Seat of Pants Score. Each run
-        is stamped with the settings live when it ran; a new profile appears whenever settings change.
-        A profile needs ≥ {minIterations} total iterations before it's treated as confident — a
-        15-iteration run carries far more signal than a single-iteration one, so iterations (not run
-        count) are the bar.
-      </Typography>
+      <Blurb
+        variant="body2"
+        sx={{ mb: 1 }}
+        more={
+          <>
+            Each run is stamped with the firewall settings live when it ran, and runs with the
+            same settings group into a profile. A profile is <b>confident</b> once it has{" "}
+            {minIterations} total iterations. Iterations, not run count, are the bar: one
+            15-iteration run carries far more signal than fifteen single-iteration runs.
+          </>
+        }
+      >
+        Which firewall settings score best. Every distinct configuration is a profile.
+      </Blurb>
       <FormControlLabel
         sx={{ mb: 2 }}
         control={
@@ -1346,15 +1351,23 @@ export default function Settings() {
         }
         label={
           <Typography variant="body2" color="text.secondary">
-            Only runs with the latest metrics (full paint data)
-            {diag ? ` — ${diag.with_latest_metrics} of ${diag.total_completed} runs qualify` : ""}.
-            Runs not comparable under the current methodology are excluded.
+            Only runs comparable under the current methodology
+            {diag ? ` (${diag.with_latest_metrics} of ${diag.total_completed})` : ""}
           </Typography>
         }
       />
 
       {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+        <Alert
+          severity="error"
+          sx={{ mb: 2 }}
+          onClose={() => setError(null)}
+          action={
+            <Button color="inherit" size="small" onClick={() => void load()}>
+              Retry
+            </Button>
+          }
+        >
           {error}
         </Alert>
       )}
@@ -1401,8 +1414,8 @@ export default function Settings() {
             Methodology check — {saturation.filter((s) => s.flagged).length === 1 ? "a metric is" : "metrics are"} too
             lenient to rank your profiles
           </Typography>
-          These scored metrics already clear their “best” threshold for most profiles, so the score pins at ~100 and
-          can’t separate them — the rubric can’t crown the fastest. Consider re-anchoring “best”:
+          These metrics score ~100 for most profiles, so they can&apos;t tell them apart. Re-anchor
+          “best” to fix it:
           <Box component="ul" sx={{ mt: 0.75, mb: 0, pl: 3 }}>
             {saturation
               .filter((s) => s.flagged)
@@ -1450,11 +1463,9 @@ export default function Settings() {
           The table below is user-sortable, so this describes the data, not the current sort. */}
       {ranking === "ring" && (ringRated > 0 || seeded > 0) && (
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-          <b>Ordered by the ring first.</b> {ringRated} profile{ringRated === 1 ? "" : "s"} have
-          been measured head to head under shared weather, so the duel ladder places{" "}
-          {ringRated === 1 ? "it" : "them"}; the remaining {seeded} have no rounds on record and
-          are seeded by their pooled Overall — which is what decides who gets raced next. A
-          paired comparison beats an average over conditions that were never held equal.
+          <b>Ordered by the ring first:</b> {ringRated} profile{ringRated === 1 ? "" : "s"} placed
+          by duel results, {seeded} by pooled Overall.
+          <HelpTip title="Profiles measured head to head under shared weather are placed by the duel ladder. The rest have no rounds on record and are seeded by their pooled Overall, which also decides who gets raced next. A paired comparison beats an average over conditions that were never held equal." />
         </Typography>
       )}
 
@@ -1476,12 +1487,10 @@ export default function Settings() {
           <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
             The crown&apos;s bar may be a ghost
           </Typography>
-          <b>{crownFading.label}</b> is crowned on its pooled history, but its current form trails its
-          own record: last {crownFading.recent_n} runs median <b>{crownFading.recent}</b> vs{" "}
-          <b>{crownFading.prior}</b> over its prior {crownFading.prior_n} ({crownFading.delta} — beyond
-          the ±{crownFading.threshold} noise threshold). Challengers are racing a bar the crown no
-          longer delivers. Re-measure: race the field head-to-head, or Re-run the top profiles to
-          refresh the record with current data.
+          <b>{crownFading.label}</b> no longer delivers its record: last {crownFading.recent_n} runs
+          median <b>{crownFading.recent}</b> vs <b>{crownFading.prior}</b> before ({crownFading.delta},
+          beyond the ±{crownFading.threshold} noise). Re-measure it: race challengers, or re-run the
+          top profiles.
         </Alert>
       )}
 
@@ -1503,11 +1512,9 @@ export default function Settings() {
           <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
             The crown may be weather-confounded
           </Typography>
-          Judged against the weather each run actually faced, <b>{weatherSuspect.label}</b> outperforms
-          the field (+{weatherSuspect.delta_median} vs same-conditions cohort,{" "}
-          {Math.round(weatherSuspect.coverage * 100)}% coverage) and would top the “vs weather” ranking —
-          but the raw crown belongs to another profile. The fix is measurement, not adjustment: race them
-          head-to-head so they face the same conditions.
+          <b>{weatherSuspect.label}</b> tops the “vs weather” ranking (+{weatherSuspect.delta_median}{" "}
+          vs same-conditions cohort, {Math.round(weatherSuspect.coverage * 100)}% coverage) but not
+          the raw one. Race them head to head so they face the same conditions.
         </Alert>
       )}
 
@@ -1708,7 +1715,7 @@ export default function Settings() {
               <EmptyState
                 icon={<InsightsIcon fontSize="inherit" />}
                 title="No settings profiles yet"
-                description="Once runs capture your firewall settings (OPNsense provider with traffic-shaper access), each distinct configuration appears here with its score distribution. If you have older runs from before capture, use 'Attribute unstamped runs'."
+                description="Each distinct firewall configuration appears here once runs capture it. Older runs from before capture can be stamped with 'Attribute unstamped runs'."
               />
             )}
             {/* Even with no *comparable* profile, "Re-run profiles" is the way out: it re-runs the
@@ -1717,7 +1724,7 @@ export default function Settings() {
                 dead end right after a methodology change quarantines history. */}
             {diag && diag.distinct_profiles > 0 && (
               <Stack direction="row" justifyContent="center" sx={{ mt: 2 }}>
-                <Tooltip title="Apply each stored profile and benchmark it for a chosen number of iterations, then restore your current settings. Limit to the top-N (winner-first) to re-run the best performers first — the fastest way to rebuild comparable data after a methodology change.">
+                <Tooltip title="Benchmark each stored profile again, best performers first, then restore your current settings.">
                   <span>
                     <Button
                       variant="contained"
@@ -1783,7 +1790,7 @@ export default function Settings() {
                     <2 comparable profiles — exactly the state right after a methodology change
                     quarantines history, when re-collecting comparable data matters most. It runs
                     over all stored profiles, so it never needs the scatter's ≥2-comparable gate. */}
-                <Tooltip title="Apply each stored profile and benchmark it for a chosen number of iterations, then restore your current settings. Limit to the top-N (winner-first) to re-run the best performers first. Use after a methodology change to collect fresh, comparable data.">
+                <Tooltip title="Benchmark each stored profile again, best performers first, then restore your current settings.">
                   <span>
                     <Button
                       size="small"
@@ -1798,43 +1805,37 @@ export default function Settings() {
                 </Tooltip>
               </Stack>
             </Stack>
-            <Typography variant="caption" color="text.secondary">
-              The <b>Overall</b> and crown-metric columns show each profile's <b>standing</b> (1 = best)
-              among all profiles, colour-graded <span style={{ color: "hsl(120,70%,55%)" }}>green</span>{" "}
-              (best) → <span style={{ color: "hsl(0,70%,55%)" }}>red</span> (worst); hover a cell for
-              its normalized value and the raw measurement. The three columns after Overall are the
-              crown metrics the <b>current methodology</b> corners the Overall over, scored on their
-              <b> raw measurements</b> — each mapped to its <b>percentile</b> (rank) within the field,
-              no grading. Percentile normalization gives every metric equal spread, so <b>no single
-              metric (e.g. stall) can dominate</b> the corner. Overall is the corner of those three, so
-              it's <b>monotonic in these columns</b> (better on all three ⇒ higher Overall) and — because
-              the scale is the measurements' ranking, not a threshold — <b>re-grading a metric can't move
-              the crown</b>; only re-measuring can.
-              (The headline axes Responsiveness/Smoothness/Speed are a different, graded decomposition and
-              stay available via <b>Columns</b>.) <b>"Best"</b> is the profile with the highest Overall
-              that meets the iteration minimum — the winner wins, by any margin (no stickiness, no
-              steadiness override). The per-run Overall spread doesn't change who's crowned; it only
-              flags a photo finish: profiles within run-to-run noise of the best are shown as
-              <b>tied</b>, purely for information. Finding
-              challengers that could overtake it is a separate job: the <b>Heirs to the crown</b> card
-              and the challenger race rank under-sampled profiles by their <i>optimistic ceiling</i>
-              to decide where to spend iterations.
-              Iterations count every measurement sweep — a 15‑iteration run carries far more signal
-              than a single‑iteration one. <b>vs weather</b> is the "wins above the weather" reading:
-              each run's ambient conditions are scored from its own probe instruments (DNS/TCP/TLS/
-              latency percentiles → a severity), and the profile's Overall is compared to what{" "}
-              <i>other profiles</i> deliver under the same severity — positive means it beats the
-              field in like conditions, however harsh the weather it was sampled in. Informational
-              and never a crown input: a <b>weather‑beater</b> is a cue to race, not a re-rank.
-              Use <b>Columns</b> to add any other metric we collect, then sort by it.
-              {showCompletion && (
+            <Blurb
+              sx={{ mb: 0 }}
+              more={
                 <>
-                  {" "}
-                  <b>Compl.</b> is the secondary Completion score (raw DNS/TCP/TLS/jitter/loss) — a
-                  diagnostic only; it doesn't decide ranking and can move opposite to SOPS.
+                  <b>Overall</b> and the crown-metric columns show each profile&apos;s standing
+                  (1 = best), <span style={{ color: "hsl(120,70%,55%)" }}>green</span> →{" "}
+                  <span style={{ color: "hsl(0,70%,55%)" }}>red</span>. Hover a cell for the raw
+                  measurement. The crown metrics are ranked on raw measurements within the field, so
+                  no single metric can dominate and re-grading can&apos;t move the crown; only
+                  re-measuring can.
+                  <br />
+                  <b>Best</b> is the highest Overall that meets the iteration minimum. The winner
+                  wins by any margin; profiles within run-to-run noise of it are marked{" "}
+                  <b>tied</b>, for information only.
+                  <br />
+                  <b>vs weather</b> compares a profile to what other profiles deliver under the
+                  same measured conditions. Positive means it beats the field in like weather. A
+                  weather-beater is a cue to race it, never a re-rank.
+                  {showCompletion && (
+                    <>
+                      <br />
+                      <b>Compl.</b> is the secondary Completion score (DNS/TCP/TLS/jitter/loss), a
+                      diagnostic that doesn&apos;t affect ranking.
+                    </>
+                  )}
                 </>
-              )}
-            </Typography>
+              }
+            >
+              Standing per column (1 = best), green → red. Hover a header for its meaning; use{" "}
+              <b>Columns</b> to add any metric.
+            </Blurb>
             <FormControlLabel
               sx={{ mt: 0.5 }}
               control={
@@ -1850,13 +1851,13 @@ export default function Settings() {
                   Hide profiles worse than <b>SQM off</b>
                   {hasBaseline
                     ? hideBelowBaseline && hiddenCount > 0
-                      ? ` — hiding ${hiddenCount} profile${hiddenCount === 1 ? "" : "s"} that don't beat the unshaped link`
-                      : " (a shaper profile that can't beat turning SQM off isn't worth keeping)"
-                    : " — run a Baseline (SQM off) test first to enable this"}
+                      ? ` (hiding ${hiddenCount})`
+                      : ""
+                    : " (needs a Baseline test first)"}
                 </Typography>
               }
             />
-            <Tooltip title="Re-point the table sort and the chart at the 'vs weather' reading: chart becomes Overall (X) × vs weather (Y) with weather severity as shade. Top-left = weather-punished gems worth racing; bottom-right = scores possibly flattered by easy conditions. Display only — the crown stays on the raw Overall winner.">
+            <Tooltip title="Sort and chart by 'vs weather' instead of raw Overall. Display only; the crown is unchanged.">
               <FormControlLabel
                 sx={{ mt: 0.5, display: "block" }}
                 control={
@@ -1868,8 +1869,7 @@ export default function Settings() {
                 }
                 label={
                   <Typography variant="body2" color="text.secondary">
-                    <b>Weather lens</b> — rank &amp; chart by <b>vs weather</b> instead of raw Overall
-                    {weatherLens ? " (crown unchanged — it still follows the raw measurements)" : ""}
+                    <b>Weather lens</b>: rank and chart by <b>vs weather</b>
                   </Typography>
                 }
               />
@@ -1887,7 +1887,7 @@ export default function Settings() {
                       orderBy={orderBy}
                       order={order}
                       onSort={handleSort}
-                      tip="The field's primary order: the duel ladder places every profile it has measured head to head, and the pooled Overall orders only the ones it hasn't — seeding which of the unraced to race next. A paired comparison under shared weather beats an average over conditions that were never held equal. The dot says which verdict placed each row."
+                      tip="Primary order: duel results place the profiles that have fought; pooled Overall places the rest. The dot says which verdict placed each row."
                     />
                     <SortHeader id="label" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} tip={COLUMN_TIPS.label} />
                     <SortHeader
@@ -2438,10 +2438,8 @@ export default function Settings() {
           {testConfirm && (
             <>
               <DialogContentText sx={{ mb: 1 }}>
-                This will <b>temporarily</b> apply <b>{testConfirm.label}</b> to the firewall, run a
-                benchmark with the iterations still needed to reach the {minIterations}-iteration
-                minimum, then <b>restore your current settings</b>. The run queues behind any other
-                firewall operation, and its measurement is discarded if the settings change mid-run.
+                Temporarily applies <b>{testConfirm.label}</b>, benchmarks it up to the{" "}
+                {minIterations}-iteration minimum, then <b>restores your current settings</b>.
               </DialogContentText>
               {testConfirm.changes.length === 0 ? (
                 <Alert severity="info" sx={{ mb: 1 }}>
@@ -2505,9 +2503,8 @@ export default function Settings() {
         <DialogTitle>Race challengers</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
-            Adaptively test your limited-data profiles against the current best — one
-            iteration at a time, eliminating any whose best case can't overtake the best.
-            The firewall is applied and benchmarked for real during the race.
+            Tests the heirs against the current best one iteration at a time, dropping any that
+            can&apos;t overtake it. The firewall is written for real during the race.
           </DialogContentText>
           <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
             <Typography variant="body2">Time budget</Typography>
@@ -2545,11 +2542,8 @@ export default function Settings() {
         <DialogTitle>Re-run profiles</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
-            Applies each stored profile to the firewall and benchmarks it for the chosen
-            number of iterations, then restores your current settings at the end. Use this
-            to collect fresh, comparable data after a methodology change. Limit to the top-N
-            profiles to re-run the best performers first (winner-first by their Overall under
-            the prior methodology) instead of blindly sweeping everything.
+            Benchmarks each stored profile for the chosen iterations, best performers first,
+            then restores your current settings. Useful after a methodology change.
           </DialogContentText>
           <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
             <Typography variant="body2">Iterations per profile</Typography>

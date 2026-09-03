@@ -66,6 +66,7 @@ import TerrainIcon from "@mui/icons-material/Terrain";
 import { useTheme } from "@mui/material/styles";
 
 import { api } from "../api/client";
+import { FoldCard, HelpTip } from "../components/Explain";
 import type {
   ExploreBasin,
   ExploreCandidate,
@@ -608,25 +609,21 @@ function MatchedPairsCard({ rows }: { rows: ExploreMatchedPairs[] }) {
   const solid = all.filter((r) => r.consistent && r.pairs > 1).length;
 
   return (
-    <Card sx={{ mb: 2 }}>
-      <CardContent>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <CompareArrowsIcon color="primary" />
-          <Typography variant="h6">What changing one lever actually did</Typography>
-        </Stack>
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-          Every pair of profiles that differs in <b>exactly one lever</b> — everything else
-          identical, so the gap between them is that lever's effect with nothing else mixed
-          in. This is a controlled experiment already sitting in your record, and where it
-          disagrees with a curve above, this is the one to believe. Sorted by{" "}
-          <b>evidence</b> — moves confirmed by several agreeing pairs first, because one pair
-          with a dramatic number is an anecdote.
-        </Typography>
+    <FoldCard
+      icon={<CompareArrowsIcon color="primary" />}
+      title="What changing one lever actually did"
+      summary={
+        <>
+          {all.length} measured move{all.length === 1 ? "" : "s"} between profiles that differ in
+          exactly one lever.
+          <HelpTip title="Everything else identical, so the gap is that lever's effect with nothing mixed in. Where this disagrees with a curve above, believe this. Sorted by evidence: moves confirmed by several agreeing pairs first." />
+        </>
+      }
+    >
         {all.length === 0 ? (
           <Alert severity="info">
-            No two profiles differ in exactly one lever, so the record contains no controlled
-            comparison. Nothing can de-confound that except running one — measure a profile
-            that changes a single setting from one you already have.
+            No two profiles differ in exactly one lever yet. Measure a profile that changes a
+            single setting from one you already have.
           </Alert>
         ) : (
           <>
@@ -714,8 +711,7 @@ function MatchedPairsCard({ rows }: { rows: ExploreMatchedPairs[] }) {
             <Pager count={all.length} page={page} onPage={setPage} />
           </>
         )}
-      </CardContent>
-    </Card>
+    </FoldCard>
   );
 }
 
@@ -745,23 +741,18 @@ function BasinsCard({ basins, maxOther }: { basins: ExploreBasin[]; maxOther?: n
   const shown = sorted.slice(page * ROWS_PER_PAGE, page * ROWS_PER_PAGE + ROWS_PER_PAGE);
 
   return (
-    <Card sx={{ mb: 2 }}>
-      <CardContent>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <TerrainIcon color="primary" />
-          <Typography variant="h6">Local optima</Typography>
-        </Stack>
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-          Profiles that <b>no measured one-lever change improves on</b>. If the surface had a
-          single optimum, the curves above would describe it and moving one setting at a time
-          from anywhere would reach it. Several separated basins mean the levers are{" "}
-          <b>coupled</b> — each optimum is a combination, tuning one setting at a time gets
-          stuck in whichever basin you started in, and a curve that averages across basins
-          describes none of them. Best first; sort by <b>levers from better</b> to see which
-          ones a single change can't escape, or by <b>siblings beaten</b> to see which are
-          actually demonstrated — a profile that beat the one variant it was ever compared
-          to is a data point, not a peak.
-        </Typography>
+    <FoldCard
+      icon={<TerrainIcon color="primary" />}
+      title="Local optima"
+      summary={
+        <>
+          {basins.length} profile{basins.length === 1 ? "" : "s"} that no measured one-lever
+          change improves on
+          {separated > 0 ? `, ${separated} cut off from anything better` : ""}.
+          <HelpTip title="Several separated optima mean the levers are coupled: each optimum is a combination, and tuning one setting at a time gets stuck in whichever basin you started in. Sort by 'levers from better' to see which a single change can't escape, or by 'siblings beaten' to see which are actually demonstrated." />
+        </>
+      }
+    >
         {basins.length === 0 ? (
           <Typography variant="body2" color="text.secondary">
             No profile has a measured one-lever sibling yet, so nothing can be called a peak.
@@ -770,16 +761,14 @@ function BasinsCard({ basins, maxOther }: { basins: ExploreBasin[]; maxOther?: n
           <>
             {separated > 0 ? (
               <Alert severity="warning" sx={{ mb: 1.5 }}>
-                {separated} of the {solid} well-surrounded optima sit two or more levers from
-                a better one — no single change gets you from those to anything better.
-                Marginal curves cannot describe this surface, and one-lever-at-a-time search
-                will not cross between them.
+                {separated} of the {solid} well-surrounded optima sit two or more levers from a
+                better one. One-lever-at-a-time search won&apos;t cross between them.
               </Alert>
             ) : (
               <Alert severity="info" sx={{ mb: 1.5 }}>
                 {solid === 0
-                  ? "No optimum here has been surrounded by more than one measured sibling yet, so none of them is demonstrated. Measure one-lever variants around the leaders and this becomes a real map."
-                  : "No well-surrounded optimum is cut off from a better one — so far a one-lever-at-a-time search could still climb out of every basin that's actually been measured."}
+                  ? "No optimum has more than one measured sibling yet. Measure one-lever variants around the leaders to make this a real map."
+                  : "Every well-surrounded optimum can still be improved by a single change."}
               </Alert>
             )}
             <TableContainer>
@@ -870,8 +859,7 @@ function BasinsCard({ basins, maxOther }: { basins: ExploreBasin[]; maxOther?: n
             )}
           </>
         )}
-      </CardContent>
-    </Card>
+    </FoldCard>
   );
 }
 
@@ -1069,11 +1057,8 @@ function RecommendationLedger({ ledger }: { ledger: ExploreLedger }) {
           <Typography variant="h6">Was the data right?</Typography>
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-          Every recommendation you've tested, with the claim it made recorded <i>before</i> it
-          was measured and graded against what the link actually did. Verdicts are recomputed
-          on every read — a re-grade or fresh runs move them — and a claim made under an older
-          methodology is reported as incomparable rather than scored against a yardstick it
-          never claimed.
+          Every recommendation you&apos;ve tested: what it predicted vs what the link did.
+          <HelpTip title="The claim is recorded before it's measured. Verdicts are recomputed on every read, so a re-grade or fresh runs move them. A claim made under an older methodology is reported as incomparable rather than graded on a different yardstick." />
         </Typography>
 
         {s.graded === 0 ? (
@@ -1364,26 +1349,21 @@ export default function Explore() {
             <CardContent>
               <Typography variant="h6">Next profiles to test</Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-                Each one is an existing profile with a lever moved to a value nobody has
-                tried, chosen for a reason it can state. They're ranked by <b>upside</b> —
-                predicted score plus what we don't know — because the question is where you
-                might <i>beat</i> everything measured, not where you'd score respectably.
+                Existing profiles with one lever moved to an untried value, ranked by{" "}
+                <b>upside</b>.
+                <HelpTip title="Upside = predicted score plus what we don't know. The question is where you might beat everything measured, not where you'd score respectably." />
               </Typography>
               {data.candidates.length > 0 && data.candidates_clear_noise === false && (
                 <Alert severity="warning" sx={{ mb: 1.5 }}>
-                  <b>No candidate clears the noise floor.</b> The best prediction here beats
-                  the best measured profile by less than{" "}
-                  <b>{fmtNum(data.noise_floor ?? null, 1)}</b> Overall points — the gap two
-                  settled profiles need before they're distinguishable at all. On a field
-                  this packed, refining another lever is re-ranking noise; the honest next
-                  measurement is the <b>coverage gaps</b> below, where something genuinely
-                  untested could still exist.
+                  <b>No candidate clears the noise floor</b> of{" "}
+                  <b>{fmtNum(data.noise_floor ?? null, 1)}</b> Overall points. Look at the{" "}
+                  <b>coverage gaps</b> below instead, where something genuinely untested could
+                  still exist.
                 </Alert>
               )}
               {data.candidates.length === 0 ? (
                 <Alert severity="info">
-                  No untested combination stands out yet — the levers are either well
-                  covered or too flat to distinguish. Collect more runs, or widen a sweep.
+                  No untested combination stands out yet. Collect more runs, or widen a sweep.
                 </Alert>
               ) : (
                 <Stack spacing={1.5}>
@@ -1408,18 +1388,15 @@ export default function Explore() {
           {ledger && ledger.recommendations.length > 0 && <RecommendationLedger ledger={ledger} />}
 
           {/* ── What each lever does ───────────────────────────────────────────── */}
-          <Card sx={{ mb: 2 }}>
-            <CardContent>
-              <Typography variant="h6">What each lever does</Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-                Solid: median Overall at each value measured, across <i>all</i> profiles —
-                which marginalizes over whatever the other levers happened to be, and so
-                answers "how do profiles with this value score?". Dashed: the same lever
-                restricted to profiles otherwise like the reference — "what happens if I
-                change <i>this</i> profile", which is usually the question you're asking.
-                Where they disagree, the lever is confounded and the dashed line is the one
-                about your neighbourhood. Download and Upload are kept separate throughout.
-              </Typography>
+          <FoldCard
+            title="What each lever does"
+            summary={
+              <>
+                Response curve per lever per pipe, {data.curves.length} levers.
+                <HelpTip title="Solid: median Overall at each value across all profiles. Dashed: the same lever restricted to profiles like the reference, which is usually the question you're asking. Where they disagree, the lever is confounded and the dashed line is the one to believe." />
+              </>
+            }
+          >
               <Box
                 sx={{
                   display: "grid",
@@ -1443,23 +1420,22 @@ export default function Explore() {
                     : `Show all ${data.curves.length} levers (${data.curves.length - CURVES_SHOWN} flatter ones hidden)`}
                 </Button>
               )}
-            </CardContent>
-          </Card>
+          </FoldCard>
 
           {/* ── De-confounded evidence ─────────────────────────────────────────── */}
           <MatchedPairsCard rows={data.matched_pairs} />
           <BasinsCard basins={data.basins} maxOther={data.condition_max_other_changes} />
 
           {/* ── Holes in coverage ──────────────────────────────────────────────── */}
-          <Card sx={{ mb: 2 }}>
-            <CardContent>
-              <Typography variant="h6">Holes in coverage</Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-                A <b>gap</b> is a blank between two values that were tested — the answer is
-                bracketed, so one run settles it. An <b>edge</b> is the best value being the
-                end of the range, where the optimum isn't bracketed at all and the only way
-                to find out is to go further.
-              </Typography>
+          <FoldCard
+            title="Holes in coverage"
+            summary={
+              <>
+                {data.gaps.length} untested value{data.gaps.length === 1 ? "" : "s"} worth a run.
+                <HelpTip title="A gap is a blank between two tested values: one run settles it. An edge is the best value sitting at the end of the tested range, so the optimum may lie beyond it." />
+              </>
+            }
+          >
               {data.gaps.length === 0 ? (
                 <Typography variant="body2" color="text.secondary">
                   No meaningful holes — every lever is sampled evenly across its range.
@@ -1482,22 +1458,20 @@ export default function Explore() {
                 </Stack>
               )}
               <Pager count={data.gaps.length} page={gapPage} onPage={setGapPage} />
-            </CardContent>
-          </Card>
+          </FoldCard>
 
           {/* ── Levers that have to be chosen together ─────────────────────────── */}
           {data.interactions.length > 0 && (
-            <Card sx={{ mb: 2 }}>
-              <CardContent>
-                <Typography variant="h6">Levers that interact</Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-                  Split each lever at its median and compare the four corners. A large
-                  contrast means the better half of one lever <i>depends</i> on which half of
-                  the other you're in — the question no per-lever view can answer, and the
-                  reason to look at the two pipes side by side. Pairs whose contrast is
-                  small next to the spread between the corners aren't listed: they act
-                  independently, which is the ordinary case and needs no panel.
-                </Typography>
+            <FoldCard
+              title="Levers that interact"
+              summary={
+                <>
+                  {data.interactions.length} pair{data.interactions.length === 1 ? "" : "s"} whose
+                  best value depends on each other.
+                  <HelpTip title="Each lever is split at its median and the four corners compared. A large contrast means the better half of one lever depends on which half of the other you're in. Pairs that act independently aren't listed." />
+                </>
+              }
+            >
                 <Stack spacing={1.5}>
                   {data.interactions.slice(0, 4).map((it) => (
                     <Box key={`${it.a}|${it.b}`}>
@@ -1567,8 +1541,7 @@ export default function Explore() {
                     </Box>
                   ))}
                 </Stack>
-              </CardContent>
-            </Card>
+            </FoldCard>
           )}
         </>
       )}

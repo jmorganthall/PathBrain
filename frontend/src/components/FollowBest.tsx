@@ -217,12 +217,9 @@ export default function FollowBest() {
             />
           </Stack>
           <Typography variant="caption" color="text.secondary">
-            When on, the firewall's SQM settings are re-applied to whichever confident profile
-            holds the crown. The crown is re-checked as each benchmark run completes (a cheap
-            single-profile test; the full standings recompute only when that run could have
-            moved the crown), with a full audit every{" "}
-            {Math.round(((info?.config.interval_minutes ?? 360) / 60) * 10) / 10} h as a
-            backstop. Crown changes are recorded either way.
+            When on, the firewall follows whichever confident profile holds the crown. Re-checked
+            after every run, with a full audit every{" "}
+            {Math.round(((info?.config.interval_minutes ?? 360) / 60) * 10) / 10} h.
           </Typography>
 
           {/* The first-class CROWNING POLICY: which verdict the follower acts on. The pooled

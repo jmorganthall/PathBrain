@@ -38,6 +38,7 @@ import Waterfall from "../components/Waterfall";
 import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
+import { HelpTip } from "../components/Explain";
 import { sopsColor } from "../theme";
 import { fmtDateTime, fmtDuration, parseApiDate, runRemainingMs } from "../utils/format";
 
@@ -631,11 +632,8 @@ export default function Dashboard() {
                     Load waterfall (latest run)
                   </Typography>
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-                    The page load split into independent phases. Cool bars up to <b>first byte</b>
-                    {" "}are network setup (DNS/TCP/TLS/TTFB) — weather-dominated, baked into FCP &amp;
-                    LCP. The amber <b>Delivery</b> phase (first byte → response done) is body delivery
-                    through your queue — the one phase your shaper actually moves. The purple bars
-                    after are client render (parse/paint), which shaping can&apos;t touch.
+                    The amber <b>Delivery</b> phase is the one your shaper moves.
+                    <HelpTip title="Cool bars up to first byte are network setup (DNS/TCP/TLS/TTFB), dominated by weather. Delivery (first byte → response done) is body delivery through your queue. Purple bars after are client render, which shaping can't touch." />
                   </Typography>
                   <Waterfall metrics={bm} />
                 </CardContent>

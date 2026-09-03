@@ -276,10 +276,7 @@ export default function ShotgunSweep() {
         </Stack>
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 760 }}>
-        Run a broad experiment quickly: sweep shaper values across a grid, benchmarking each with the
-        normal suite, then ranked by SOPS and how each did <em>vs. its historical norm</em>. The
-        original config is restored when the sweep ends. Sweep runs appear in History tagged{" "}
-        <code>sweep · …</code>.
+        Benchmark a grid of shaper values in one go. Your settings are restored when it ends.
       </Typography>
 
       {error && (
