@@ -1065,11 +1065,15 @@ export default function ProfileDetail() {
             {auditing ? "Verifying…" : "Verify old vs new"}
           </Button>
         }
-        defaultOpen={!!audit || !!auditErr}
+        openWhen={auditing || !!audit || !!auditErr}
       >
           {!audit && !auditErr && (
             <Typography variant="body2" color="text.secondary">
-              Press <b>Verify old vs new</b> to run the check.
+              {auditing ? "Re-deriving the oldest and newest runs from raw…" : (
+                <>
+                  Press <b>Verify old vs new</b> to run the check.
+                </>
+              )}
             </Typography>
           )}
           {auditErr && <Alert severity="error">{auditErr}</Alert>}

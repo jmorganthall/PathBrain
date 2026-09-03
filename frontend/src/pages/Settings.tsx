@@ -1361,11 +1361,16 @@ export default function Settings() {
         <Alert
           severity="error"
           sx={{ mb: 2 }}
-          onClose={() => setError(null)}
+          // MUI drops the close icon when `action` is set, so both controls live here.
           action={
-            <Button color="inherit" size="small" onClick={() => void load()}>
-              Retry
-            </Button>
+            <Stack direction="row" spacing={0.5}>
+              <Button color="inherit" size="small" onClick={() => void load()}>
+                Retry
+              </Button>
+              <Button color="inherit" size="small" onClick={() => setError(null)}>
+                Dismiss
+              </Button>
+            </Stack>
           }
         >
           {error}
@@ -1724,7 +1729,7 @@ export default function Settings() {
                 dead end right after a methodology change quarantines history. */}
             {diag && diag.distinct_profiles > 0 && (
               <Stack direction="row" justifyContent="center" sx={{ mt: 2 }}>
-                <Tooltip title="Benchmark each stored profile again, best performers first, then restore your current settings.">
+                <Tooltip title="Benchmark every stored profile again, or just the top N best performers, then restore your current settings.">
                   <span>
                     <Button
                       variant="contained"
@@ -1790,7 +1795,7 @@ export default function Settings() {
                     <2 comparable profiles — exactly the state right after a methodology change
                     quarantines history, when re-collecting comparable data matters most. It runs
                     over all stored profiles, so it never needs the scatter's ≥2-comparable gate. */}
-                <Tooltip title="Benchmark each stored profile again, best performers first, then restore your current settings.">
+                <Tooltip title="Benchmark every stored profile again, or just the top N best performers, then restore your current settings.">
                   <span>
                     <Button
                       size="small"
@@ -2542,8 +2547,8 @@ export default function Settings() {
         <DialogTitle>Re-run profiles</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
-            Benchmarks each stored profile for the chosen iterations, best performers first,
-            then restores your current settings. Useful after a methodology change.
+            Benchmarks each stored profile for the chosen iterations, then restores your
+            current settings. Set a top N to re-run only the best performers, winner first.
           </DialogContentText>
           <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 1 }}>
             <Typography variant="body2">Iterations per profile</Typography>
