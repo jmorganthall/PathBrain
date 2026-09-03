@@ -11,6 +11,7 @@ import Popover from "@mui/material/Popover";
 import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
+import type { SxProps, Theme } from "@mui/material/styles";
 import NotificationsIcon from "@mui/icons-material/Notifications";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ErrorIcon from "@mui/icons-material/Error";
@@ -213,6 +214,60 @@ function useSmoothProgress(job: Job): { determinate: boolean; pct: number } {
   // Interpolation may reach a unit boundary but never a full bar: 100% is the one reading
   // that means finished, and this is being drawn on a job that is still running.
   return { determinate: true, pct: smoothing ? Math.min(RUNNING_MAX_PCT, pct) : Math.min(100, pct) };
+}
+
+/**
+ * The bar + "42% · 3h 10m left" line for one running job, for pages that show a job in
+ * place (the duel's own status card) — the same window/unit-based progress and the same
+ * countdown as the jobs dropdown, so the two can never read differently. `job` null =
+ * the feed hasn't reported it yet, which draws the indeterminate sweep.
+ */
+export function JobProgressBar({ job, sx }: { job: Job | null; sx?: SxProps<Theme> }) {
+  const fallback: Job = {
+    id: "",
+    kind: "",
+    label: "",
+    status: "running",
+    current: null,
+    total: null,
+    message: null,
+    error: null,
+    href: null,
+    started_at: "",
+    finished_at: null,
+  };
+  const { determinate, pct } = useSmoothProgress(job ?? fallback);
+  return (
+    <Box sx={sx}>
+      <LinearProgress
+        variant={determinate ? "determinate" : "indeterminate"}
+        value={pct}
+        sx={{ borderRadius: 1 }}
+      />
+      {job && (
+        <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 0.5 }}>
+          {determinate ? `${Math.round(pct)}%` : ""}
+          {job.stalled_ms != null ? (
+            <>
+              {determinate ? " · " : ""}
+              <Stalled ms={job.stalled_ms} />
+            </>
+          ) : job.eta_ms == null ? (
+            `${determinate ? " · " : ""}${job.queued ? "waiting to start" : "no estimate yet"}`
+          ) : (
+            <>
+              {determinate ? " · " : ""}
+              {job.queued ? (
+                <QueuedEta etaMs={job.eta_ms} />
+              ) : (
+                <Countdown etaMs={job.eta_ms} basis={job.eta_basis} />
+              )}
+            </>
+          )}
+        </Typography>
+      )}
+    </Box>
+  );
 }
 
 function StatusIcon({ status }: { status: Job["status"] }) {
