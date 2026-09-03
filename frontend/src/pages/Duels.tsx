@@ -66,7 +66,9 @@ import type {
   DuelStanding,
   DuelStandings,
   CrownsOut,
+  Job,
 } from "../api/types";
+import { JobProgressBar } from "../components/JobStatus";
 import { fmtDateTime, fmtNum } from "../utils/format";
 
 const isRunning = (d: DuelSession | null) =>
@@ -1126,10 +1128,26 @@ export default function Duels() {
 
   const active = isRunning(status);
 
+  // The running session's entry in the jobs feed. The feed already prices every duel as
+  // a time-boxed job — its deadline, the window's length, whether it is queued or
+  // stalled — and the dropdown draws a real bar from that. Reading the same entry here
+  // means the status card's bar is the dropdown's bar, not a second opinion.
+  const [duelJob, setDuelJob] = useState<Job | null>(null);
+
   const loadStatus = useCallback(async () => {
     try {
       const s = await api.duelStatus();
       setStatus(s.status ? s : null);
+      if (s.status && isRunning(s)) {
+        try {
+          const r = await api.jobs();
+          setDuelJob(r.jobs.find((j) => j.id === `duel-${s.id}`) ?? null);
+        } catch {
+          /* keep the last bar; the feed is best-effort */
+        }
+      } else {
+        setDuelJob(null);
+      }
     } catch {
       /* transient */
     }
@@ -1875,7 +1893,11 @@ export default function Duels() {
 
           {active && (
             <Box sx={{ mt: 2 }}>
-              <LinearProgress />
+              {/* The window bar and countdown from the jobs feed: the share of the session's
+                  window already spent, ticking on the browser's clock between polls, and
+                  how long is left — instead of an indeterminate sweep that read the same
+                  at minute one and minute three hundred. */}
+              <JobProgressBar job={duelJob} sx={{ mb: 1 }} />
               {/* The scoreboard when a match is actually under way; the stage sentence is
                   the fallback for the moments between matches (applying a profile, ranking
                   the field, restoring settings) where there is no score to show. */}
@@ -1887,9 +1909,9 @@ export default function Duels() {
                 </Typography>
               )}
               <Typography variant="caption" color="text.secondary">
-                {status?.iterations_run ?? 0} iteration(s) run ·{" "}
-                {status?.matchups?.length ?? 0} verdict(s) so far · your pre-duel settings are
-                restored when the window closes
+                {status?.iterations_run ?? 0} iteration(s) ·{" "}
+                {status?.matchups?.length ?? 0} match{status?.matchups?.length === 1 ? "" : "es"}{" "}
+                decided · settings restored when the window closes
               </Typography>
               {/* The belt changes hands mid-session — it is the ring's #1, re-read from the
                   ledger between matches — so show who holds it right now rather than waiting
