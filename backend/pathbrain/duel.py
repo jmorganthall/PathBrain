@@ -2124,13 +2124,32 @@ def _rematch_candidate(
     return None
 
 
+def _leg_in_flight(fp: str, profile: dict, role: str, seat_index: int | None) -> dict:
+    """The descriptor of the leg the ring is on: WHICH profile the firewall is being set to
+    and measured, in which role, and — once the run exists — which run. ``phase`` walks
+    ``applying`` (profile written, link settling) → ``measuring`` (a run is in flight);
+    the status route attaches that run's live progress so each profile's own bar can move.
+    """
+    return {
+        "fingerprint": fp,
+        "name": profile.get("name"),
+        "label": profile.get("label"),
+        "role": role,
+        "seat": seat_index,
+        "run_id": None,
+        "phase": "applying",
+    }
+
+
 def _ring_live(*, matchups_done: int, inc: dict, seats_list: list[_Seat], current: _Seat | None,
                legs_tape: list[dict], cadence: int, n_seats: int, only_browser: bool,
                min_pairs: int, max_pairs: int, min_margin: float, streak_needed: int,
-               stage: str) -> dict:
+               stage: str, leg: dict | None = None) -> dict:
     """The ring as structured state: every seated match's scoreboard, the recent legs in run
-    order, and the design it is running under. The top level is the seat being measured
-    (or the first), so a reader built for the one-match scoreboard still works."""
+    order, the design it is running under, and the **leg in flight** (``leg``: which
+    profile is on the firewall right now, and the run measuring it). The top level is the
+    seat being measured (or the first), so a reader built for the one-match scoreboard
+    still works."""
     boards = []
     for i, seat in enumerate(seats_list):
         board = _live_scoreboard(
@@ -2160,6 +2179,9 @@ def _ring_live(*, matchups_done: int, inc: dict, seats_list: list[_Seat], curren
             "browser_only": only_browser,
         },
         "stage": stage,
+        # Which profile the ring is measuring at this moment — the belt or a seat — so the
+        # page can light up THAT profile's bar rather than only marking a seat.
+        "leg": dict(leg) if leg else None,
     }
 
 
@@ -2227,14 +2249,33 @@ def _run_ring(
             if d is not None:
                 d.matchups = list(matchups)
 
-    def _live(current: _Seat | None, stage: str) -> None:
+    # The live payload as last published, and the leg it is on: `_run_leg` republishes the
+    # same board with the leg's run id the moment the run exists, so the page can show
+    # which profile is being measured — and how far its run has got — while it runs.
+    last_live: dict = {}
+    leg_state: dict | None = None
+
+    def _live(current: _Seat | None, stage: str, leg: dict | None = None) -> None:
+        nonlocal leg_state
+        leg_state = leg
         _set_stage(duel_id, stage)
-        _set_live(duel_id, _ring_live(
+        last_live.clear()
+        last_live.update(_ring_live(
             matchups_done=len(matchups), inc=inc, seats_list=seated, current=current,
             legs_tape=legs_tape, cadence=cadence, n_seats=n_seats, only_browser=only_browser,
             min_pairs=min_pairs, max_pairs=max_pairs, min_margin=min_margin,
-            streak_needed=streak_needed, stage=stage,
+            streak_needed=streak_needed, stage=stage, leg=leg,
         ))
+        _set_live(duel_id, dict(last_live))
+
+    def _leg_run_created(run_id: int) -> None:
+        # Same board, one fact added: the leg is now measuring, and this is its run.
+        if leg_state is None:
+            return
+        leg_state["run_id"] = run_id
+        leg_state["phase"] = "measuring"
+        last_live["leg"] = dict(leg_state)
+        _set_live(duel_id, dict(last_live))
 
     def _run_leg(fp: str, profile: dict, role: str, position: int, seat: _Seat | None) -> _Leg:
         lease.check()  # never write the firewall on an evicted lease
@@ -2250,6 +2291,7 @@ def _run_ring(
             teardown=False,  # keep Chromium warm across the whole ladder
             job_group=f"duel-{duel_id}",
             config_overrides=overrides,
+            on_created=_leg_run_created,
         )
         run_ids.append(run_id)
         counters["iterations"] += completed
@@ -2401,7 +2443,8 @@ def _run_ring(
         #    measures nothing new. With fewer seats than slots the cycle is simply shorter.
         names = ", ".join(s.profile.get("name") or s.profile["label"] for s in seated)
         if lead is None:
-            _live(None, f"{inc.get('name') or inc['label']} (belt) — reference leg, {names} seated")
+            _live(None, f"{inc.get('name') or inc['label']} (belt) — reference leg, {names} seated",
+                  leg=_leg_in_flight(incumbent_fp, inc, "belt", None))
             lead = _run_leg(incumbent_fp, inc, "belt", 0, None)
             if _stopped():
                 break
@@ -2419,12 +2462,13 @@ def _run_ring(
                 f"{inc.get('name') or inc['label']} (belt) defends vs "
                 f"{seat.profile.get('name') or seat.profile['label']} ({seat.why}) — round "
                 f"{seat.sprt.pairs + 1} ({seat.sprt.wins_incumbent}-{seat.sprt.wins_challenger})"
-            ))
+            ), leg=_leg_in_flight(seat.fp, seat.profile, "challenger", seated.index(seat)))
             pending.append((seat, _run_leg(seat.fp, seat.profile, "challenger", slot + 1, seat)))
         counters["cycles"] += 1
         trail: _Leg | None = None
         if pending and not _stopped():
-            _live(None, f"{inc.get('name') or inc['label']} (belt) — closing reference leg")
+            _live(None, f"{inc.get('name') or inc['label']} (belt) — closing reference leg",
+                  leg=_leg_in_flight(incumbent_fp, inc, "belt", None))
             trail = _run_leg(incumbent_fp, inc, "belt", 0, None)
         for seat, leg in pending:
             _resolve(seat, leg, [f for f in (lead, trail) if f is not None])
@@ -2449,6 +2493,10 @@ def _run_ring(
         #    breaks adjacency, so the next cycle opens with a fresh belt leg.
         lease.check()
         lease.beat()
+        if coordinator.waiting():
+            # Nothing of the ring's is on the firewall while another session runs, so no
+            # profile's bar may claim otherwise: clear the leg before stepping aside.
+            _live(None, "Stepping aside for queued work — the ring resumes after it", leg=None)
         yielded = coordinator.yield_if_waiting(f"duel#{duel_id}")
         if yielded:
             log.info("Duel %s: stepped aside for %.0fs of queued work", duel_id, yielded)

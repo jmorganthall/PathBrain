@@ -706,6 +706,24 @@ LLM-based. See `README.md` for the product overview.
     measured so one-match readers keep working; the page renders the **leg strip** (tall =
     belt, a weather-severity bar under each leg) and one row per seated match (`RingBoard`
     / `LegStrip` / `SeatRow`).
+    **Every participant has its own status bar** (`_leg_in_flight`, `live["leg"]`,
+    `routes_duel._leg_progress`, `ProfileLegBar`). The board used to mark a *seat* as
+    "measuring", which said nothing while the belt's own leg ran (the belt is not a seat)
+    and never moved — with three names on screen a reader could not tell which one the
+    firewall was actually set to, or whether that measurement was ten seconds or two minutes
+    in. The ring now publishes the **leg in flight** with every board: the profile, its role
+    (belt / challenger + seat index) and a `phase` that walks `applying` (written to the
+    firewall, link settling) → `measuring`; `run_chunk` gained an `on_created(run_id)` hook so
+    the board is republished with the run's id the moment the run exists, not when it lands.
+    The run's **progress is attached at poll time** by the status route, through the jobs
+    feed's own chunk adapter (`_run_entry`: counter, measured per-iteration cost, countdown),
+    so the bar under a name on the Duels page and that chunk's line in the jobs dropdown are
+    one estimate and can never disagree; a landed run reads `finished`/`failed` rather than
+    pretending to still run. On the page each name — the belt and every seat — carries a
+    bar: the active one crosses its iteration at the measured unit cost (`useSmoothProgress`,
+    the same smoothing as the jobs feed) with an "iteration 2/3 · 40s left" caption, says
+    "applying" while the profile is being written, and the rest stand idle at zero, which is
+    the honest reading — nothing of theirs is running.
     **A round medians `duel.iterations_per_round` iterations a side (default 3) — the
     ring's resolving power.** A round compares two measurements, so its margin carries the
     noise of both: measured on a real link, ~2.3 Overall points per run becomes ~3.3 per

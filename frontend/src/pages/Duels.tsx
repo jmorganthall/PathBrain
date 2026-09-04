@@ -10,6 +10,7 @@
 //
 // The duel never writes the firewall. Acting on a verdict is the crowning policy's job
 // (top-bar "Follow best" → Crowning policy = Duel champion), surfaced here as a banner.
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Accordion from "@mui/material/Accordion";
@@ -61,6 +62,7 @@ import type {
   DuelConfig,
   DuelHealth,
   DuelLeg,
+  DuelLegInFlight,
   DuelLive,
   DuelMatchup,
   DuelSession,
@@ -70,7 +72,7 @@ import type {
   CrownsOut,
   Job,
 } from "../api/types";
-import { JobProgressBar } from "../components/JobStatus";
+import { Countdown, JobProgressBar, useSmoothProgress } from "../components/JobStatus";
 import { fmtDateTime, fmtNum } from "../utils/format";
 
 const isRunning = (d: DuelSession | null) =>
@@ -1076,7 +1078,94 @@ function LegStrip({
   );
 }
 
-function SeatRow({ board, color, incName }: { board: DuelLive; color: string; incName: string }) {
+// ── Per-profile status: which profile is on the firewall, and how far its leg has got ──
+//
+// The board used to mark a *seat* as "measuring", which said nothing while the belt's own
+// leg ran (the belt is not a seat) and never moved: a reader could not tell which of three
+// names was actually being measured, or whether the measurement was ten seconds or two
+// minutes in. Each participant now carries its own bar. The one whose leg is in flight
+// shows the run's real progress — the same counter, measured per-iteration cost and
+// countdown the jobs feed reports for that chunk, so the two can never disagree — and
+// says "applying" while the profile is still being written to the firewall. The rest
+// stand idle at zero, which is the honest reading: nothing of theirs is running.
+const IDLE_JOB: Job = {
+  id: "", kind: "", label: "", status: "running", current: null, total: null,
+  message: null, error: null, href: null, started_at: "", finished_at: null,
+};
+
+function ProfileLegBar({
+  fingerprint,
+  leg,
+  color,
+}: {
+  fingerprint: string | null | undefined;
+  leg: DuelLegInFlight | null | undefined;
+  color: string;
+}) {
+  const active = !!leg && !!fingerprint && leg.fingerprint === fingerprint;
+  const run = active ? leg?.run ?? null : null;
+  const running = !!run && run.status === "running";
+  const finished = !!run && run.status !== "running";
+  // One hook call whatever the state: a job for the run in flight, or an idle stand-in.
+  const job: Job = running ? { ...IDLE_JOB, ...run, status: "running" } : IDLE_JOB;
+  const { determinate, pct } = useSmoothProgress(job);
+
+  let variant: "determinate" | "indeterminate" = "determinate";
+  let value = 0;
+  let caption: ReactNode = "waiting";
+  if (active && !run) {
+    variant = "indeterminate";
+    caption = leg?.phase === "measuring" ? "starting the run…" : "applying to the firewall…";
+  } else if (running) {
+    variant = determinate ? "determinate" : "indeterminate";
+    value = pct;
+    const total = run!.total ?? 0;
+    const cur = Math.min((run!.current ?? 0) + 1, total || 1);
+    caption = (
+      <>
+        measuring · iteration {cur}/{total || "?"}
+        {run!.eta_ms != null && !run!.queued ? (
+          <>
+            {" · "}
+            <Countdown etaMs={run!.eta_ms} basis={run!.eta_basis} />
+          </>
+        ) : null}
+      </>
+    );
+  } else if (finished) {
+    value = 100;
+    caption = run!.status === "finished" ? "measured · scoring the leg" : "leg failed · re-running";
+  }
+  return (
+    <Box sx={{ mt: 0.5, opacity: active ? 1 : 0.55 }}>
+      <LinearProgress
+        variant={variant}
+        value={value}
+        sx={{
+          height: 5,
+          borderRadius: 1,
+          bgcolor: "action.hover",
+          "& .MuiLinearProgress-bar": { bgcolor: color },
+        }}
+      />
+      <Typography variant="caption" color={active ? "text.primary" : "text.secondary"} component="div">
+        {caption}
+      </Typography>
+    </Box>
+  );
+}
+
+function SeatRow({
+  board,
+  color,
+  incName,
+  leg,
+}: {
+  board: DuelLive;
+  color: string;
+  incName: string;
+  leg?: DuelLegInFlight | null;
+}) {
   const cha = board.challenger;
   const inc = board.incumbent;
   const chaName = cha.name || cha.label || "challenger";
@@ -1089,15 +1178,13 @@ function SeatRow({ board, color, incName }: { board: DuelLive; color: string; in
           {chaName}
         </Typography>
         <Chip size="small" label={`Match ${board.bout}`} sx={{ height: 20 }} />
-        {board.measuring && (
-          <Chip size="small" color="info" variant="outlined" label="measuring" sx={{ height: 20 }} />
-        )}
         <Tooltip title="Why this profile is in the ring at all.">
           <Typography variant="caption" color="text.secondary" noWrap sx={{ flexGrow: 1, minWidth: 0 }}>
             {cha.why}
           </Typography>
         </Tooltip>
       </Stack>
+      <ProfileLegBar fingerprint={cha.fingerprint} leg={leg} color={color} />
       <Stack direction="row" spacing={2} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap alignItems="baseline">
         <Tooltip title={`Rounds won: belt ${inc.wins}, challenger ${cha.wins}. A call needs ${board.min_pairs}+ rounds; ${board.max_pairs} undecided is a draw.`}>
           <Typography variant="body2">
@@ -1184,7 +1271,10 @@ function RingBoard({ live }: { live: DuelLive }) {
     live.reference?.name || live.reference?.label || live.incumbent.name || live.incumbent.label || "belt";
   // A single seat keeps the full one-match scoreboard, with the leg strip above it when
   // the ring reports one. Sessions recorded by the pair engine carry neither.
+  const leg = live.leg ?? null;
   if (seats.length <= 1) {
+    const board = seats[0] ?? live;
+    const chaName = board.challenger.name || board.challenger.label || "challenger";
     return (
       <Box>
         {live.legs && live.legs.length > 0 && (
@@ -1192,7 +1282,25 @@ function RingBoard({ live }: { live: DuelLive }) {
             <LegStrip legs={live.legs} seats={seats} reference={live.reference} />
           </Box>
         )}
-        <MatchScoreboard live={seats[0] ?? live} />
+        {leg && (
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={{ xs: 0.5, sm: 2 }} sx={{ mt: 1 }}>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography variant="caption" sx={{ fontWeight: 700 }} noWrap>
+                <SideDot color={HOLDER_COLOR} />
+                {incName} (belt)
+              </Typography>
+              <ProfileLegBar fingerprint={live.reference?.fingerprint ?? board.incumbent.fingerprint} leg={leg} color={HOLDER_COLOR} />
+            </Box>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography variant="caption" sx={{ fontWeight: 700 }} noWrap>
+                <SideDot color={CHALLENGER_COLOR} />
+                {chaName}
+              </Typography>
+              <ProfileLegBar fingerprint={board.challenger.fingerprint} leg={leg} color={CHALLENGER_COLOR} />
+            </Box>
+          </Stack>
+        )}
+        <MatchScoreboard live={board} />
       </Box>
     );
   }
@@ -1215,10 +1323,13 @@ function RingBoard({ live }: { live: DuelLive }) {
             label={`belt every ${d.belt_every} legs${d.browser_only ? " · browser-only" : ""}`}
           />
         )}
-        <HelpTip title="A cycle is a belt leg, then the seats' legs in turn, then the belt leg that closes it. Each challenger leg becomes one margin against the mean of the belt legs flanking it, so every seat is measured in the same weather window." />
+        <HelpTip title="A cycle is a belt leg, then the seats' legs in turn, then the belt leg that closes it. Each challenger leg becomes one margin against the mean of the belt legs flanking it, so every seat is measured in the same weather window. Each name's bar shows whether that profile is the one on the firewall right now, and how far its run has got." />
       </Stack>
+      <ProfileLegBar fingerprint={live.reference?.fingerprint ?? live.incumbent.fingerprint} leg={leg} color={HOLDER_COLOR} />
       {live.legs && live.legs.length > 0 && (
-        <LegStrip legs={live.legs} seats={seats} reference={live.reference} />
+        <Box sx={{ mt: 1 }}>
+          <LegStrip legs={live.legs} seats={seats} reference={live.reference} />
+        </Box>
       )}
       {seats.map((b, i) => (
         <SeatRow
@@ -1226,6 +1337,7 @@ function RingBoard({ live }: { live: DuelLive }) {
           board={b}
           color={SEAT_COLORS[i % SEAT_COLORS.length]}
           incName={incName}
+          leg={leg}
         />
       ))}
     </Box>

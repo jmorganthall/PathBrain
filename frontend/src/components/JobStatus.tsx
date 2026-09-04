@@ -64,7 +64,7 @@ const ETA_TITLE: Record<string, string> = {
  * which is honest about an estimate that has been overtaken rather than pretending to
  * count into the past.
  */
-function Countdown({ etaMs, basis }: { etaMs: number; basis?: string | null }) {
+export function Countdown({ etaMs, basis }: { etaMs: number; basis?: string | null }) {
   const [deadline, setDeadline] = useState(() => Date.now() + etaMs);
   const [now, setNow] = useState(() => Date.now());
 
@@ -165,7 +165,7 @@ function Stalled({ ms }: { ms: number }) {
  * 100% is the single reading that means *finished* and this is being drawn on a job that is
  * still running.
  */
-function useSmoothProgress(job: Job): { determinate: boolean; pct: number } {
+export function useSmoothProgress(job: Job): { determinate: boolean; pct: number } {
   const total = job.total ?? 0;
   const current = job.current ?? 0;
   const running = job.status === "running" && !job.queued;
