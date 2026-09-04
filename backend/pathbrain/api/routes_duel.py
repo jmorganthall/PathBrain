@@ -70,6 +70,10 @@ def _schedule_payload(cfg: dict) -> dict:
         "tie_sigma": duel.tie_sigma(d),
         "rating_prior_pairs": duel.rating_prior(d),
         "iterations_per_round": duel.iterations_per_round(d),
+        # The ring's shape — see `duel._run_ring`.
+        "belt_every": duel.belt_every(d),
+        "seats": duel.seats(d),
+        "browser_only": duel.browser_only(d),
         # Post-apply settle: each leg writes the profile to the firewall and reconfigures
         # the queues before it measures anything, so this is how long to let the link
         # settle first. Symmetric across both sides — it never biased a verdict, it just
@@ -188,6 +192,16 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
                 status_code=422, detail="iterations_per_round must be between 1 and 25"
             )
         updates["iterations_per_round"] = int(payload.iterations_per_round)
+    if payload.belt_every is not None:
+        if not 2 <= int(payload.belt_every) <= 6:
+            raise HTTPException(status_code=422, detail="belt_every must be between 2 and 6")
+        updates["belt_every"] = int(payload.belt_every)
+    if payload.seats is not None:
+        if not 1 <= int(payload.seats) <= 6:
+            raise HTTPException(status_code=422, detail="seats must be between 1 and 6")
+        updates["seats"] = int(payload.seats)
+    if payload.browser_only is not None:
+        updates["browser_only"] = bool(payload.browser_only)
     if payload.rating_prior_pairs is not None:
         if float(payload.rating_prior_pairs) <= 0:
             raise HTTPException(
@@ -347,6 +361,16 @@ def duel_profile(fingerprint: str, sessions: int = 50) -> dict:
 def duel_health(sessions: int = 50) -> dict:
     """Is the ladder measuring anything? Aborted matches, discarded rounds, and why."""
     return duel.round_health(limit_sessions=max(1, min(sessions, 200)))
+
+
+@router.get("/duel/weather-distance")
+def duel_weather_distance(sessions: int = 10, legs: int = 400) -> dict:
+    """How much the measured weather shifts between legs 1–4 apart, from recent duel
+    sessions' own runs — the number that prices raising `belt_every`. On demand: it stamps
+    every leg against the severity yardstick."""
+    return duel.weather_by_distance(
+        limit_sessions=max(1, min(sessions, 50)), max_legs=max(20, min(legs, 2000))
+    )
 
 
 @router.get("/duel/history")

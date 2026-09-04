@@ -60,11 +60,13 @@ import type {
   DuelCard,
   DuelConfig,
   DuelHealth,
+  DuelLeg,
   DuelLive,
   DuelMatchup,
   DuelSession,
   DuelStanding,
   DuelStandings,
+  DuelWeatherDistance,
   CrownsOut,
   Job,
 } from "../api/types";
@@ -684,6 +686,13 @@ function BoutRow({ m }: { m: DuelMatchup }) {
             {m.wins_incumbent}–{m.wins_challenger} in {m.pairs} rounds · {marginPhrase(m)}
           </Typography>
           <VerdictChip m={m} />
+          {(m.max_leg_distance ?? 1) > 1 && (
+            <Tooltip
+              title={`Fought in the ring with the belt leg every ${m.belt_every} legs, so a challenger leg could be up to ${m.max_leg_distance} legs from the belt leg it was compared against.`}
+            >
+              <Chip size="small" variant="outlined" label={`≤${m.max_leg_distance} legs apart`} />
+            </Tooltip>
+          )}
           {(m.weather_shifted_rounds ?? 0) > 0 && (
             <Tooltip
               title={
@@ -995,6 +1004,234 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
   );
 }
 
+// ── The ring: the belt against several seats at once ────────────────────────────────
+//
+// The session runs as cycles: a belt leg, then `belt_every − 1` challenger legs (the seats
+// taking turns), then the belt leg that closes the cycle and opens the next. Each
+// challenger leg becomes one margin against the mean of the belt legs flanking it. The
+// board shows exactly that: the legs in run order (tall = belt) with each leg's measured
+// weather under it, then one row per seated match — because "who is winning?" is now a
+// question with several answers at once, and each needs its own tally.
+const SEAT_COLORS = [
+  CHALLENGER_COLOR,
+  "secondary.main",
+  "warning.main",
+  "info.main",
+  "error.main",
+  "text.secondary",
+];
+
+function LegStrip({
+  legs,
+  seats,
+  reference,
+}: {
+  legs: DuelLeg[];
+  seats: DuelLive[];
+  reference?: DuelLive["reference"];
+}) {
+  const colorOf = (fp: string) => {
+    const i = seats.findIndex((s) => s.challenger.fingerprint === fp);
+    if (i >= 0) return SEAT_COLORS[i % SEAT_COLORS.length];
+    return fp === reference?.fingerprint ? HOLDER_COLOR : "text.disabled";
+  };
+  return (
+    <Box sx={{ mb: 1 }}>
+      <Box sx={{ display: "flex", gap: "3px", alignItems: "flex-end", height: 34 }}>
+        {legs.map((leg) => (
+          <Tooltip
+            key={leg.index}
+            title={
+              `Leg ${leg.index} · ${leg.name || leg.label || leg.fingerprint.slice(0, 8)}` +
+              `${leg.role === "belt" ? " (belt)" : ""} · Overall ${
+                leg.overall == null ? "unusable" : fmtNum(leg.overall, 1)
+              }${leg.severity != null ? ` · weather ${Math.round(leg.severity)}/100` : ""}`
+            }
+          >
+            <Box sx={{ flex: 1, minWidth: 6, display: "flex", flexDirection: "column", gap: "2px" }}>
+              <Box
+                sx={{
+                  height: leg.role === "belt" ? 22 : 15,
+                  borderRadius: 0.5,
+                  bgcolor: colorOf(leg.fingerprint),
+                  opacity: leg.overall == null ? 0.25 : 0.9,
+                }}
+              />
+              <Box
+                sx={{
+                  height: 4,
+                  borderRadius: 2,
+                  bgcolor: "warning.main",
+                  opacity: leg.severity == null ? 0 : 0.15 + 0.85 * Math.min(1, leg.severity / 100),
+                }}
+              />
+            </Box>
+          </Tooltip>
+        ))}
+      </Box>
+      <Typography variant="caption" color="text.secondary">
+        Legs in run order · tall = belt · the bar under each leg is its measured weather.
+      </Typography>
+    </Box>
+  );
+}
+
+function SeatRow({ board, color, incName }: { board: DuelLive; color: string; incName: string }) {
+  const cha = board.challenger;
+  const inc = board.incumbent;
+  const chaName = cha.name || cha.label || "challenger";
+  const margin = board.median_margin;
+  return (
+    <Box sx={{ pt: 1, mt: 1, borderTop: 1, borderColor: "divider" }}>
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Typography variant="body2" sx={{ fontWeight: 700 }}>
+          <SideDot color={color} />
+          {chaName}
+        </Typography>
+        <Chip size="small" label={`Match ${board.bout}`} sx={{ height: 20 }} />
+        {board.measuring && (
+          <Chip size="small" color="info" variant="outlined" label="measuring" sx={{ height: 20 }} />
+        )}
+        <Tooltip title="Why this profile is in the ring at all.">
+          <Typography variant="caption" color="text.secondary" noWrap sx={{ flexGrow: 1, minWidth: 0 }}>
+            {cha.why}
+          </Typography>
+        </Tooltip>
+      </Stack>
+      <Stack direction="row" spacing={2} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap alignItems="baseline">
+        <Tooltip title={`Rounds won: belt ${inc.wins}, challenger ${cha.wins}. A call needs ${board.min_pairs}+ rounds; ${board.max_pairs} undecided is a draw.`}>
+          <Typography variant="body2">
+            <b>{inc.wins}–{cha.wins}</b>{" "}
+            <Typography component="span" variant="caption" color="text.secondary">
+              belt–challenger · {board.pairs} rounds
+            </Typography>
+          </Typography>
+        </Tooltip>
+        <Tooltip title="Median Overall-point margin so far, signed from the challenger's side. This is what the verdict is decided on.">
+          <Typography
+            variant="body2"
+            sx={{ color: margin == null || margin === 0 ? "text.primary" : margin > 0 ? color : HOLDER_COLOR }}
+          >
+            {margin == null ? "—" : `${margin > 0 ? "+" : ""}${fmtNum(margin, 2)}`}{" "}
+            <Typography component="span" variant="caption" color="text.secondary">
+              typical margin
+            </Typography>
+          </Typography>
+        </Tooltip>
+        <Tooltip title={`${board.streak.needed} wins in a row end the match on the spot.`}>
+          <Typography variant="body2">
+            {board.streak.length} of {board.streak.needed}{" "}
+            <Typography component="span" variant="caption" color="text.secondary">
+              streak{board.streak.side ? ` · ${board.streak.side === "challenger" ? chaName : incName}` : ""}
+            </Typography>
+          </Typography>
+        </Tooltip>
+        {board.p_value != null && (
+          <Tooltip title={`How unlikely this run of margins would be if the two were equal. Called at ${fmtNum(board.alpha, 3)} or below.`}>
+            <Typography variant="body2" sx={{ fontWeight: board.p_value <= board.alpha ? 700 : 400 }}>
+              p {fmtNum(board.p_value, 3)}{" "}
+              <Typography component="span" variant="caption" color="text.secondary">
+                needs ≤ {fmtNum(board.alpha, 3)}
+              </Typography>
+            </Typography>
+          </Tooltip>
+        )}
+        {(board.weather?.shifted_rounds ?? 0) > 0 && (
+          <Tooltip title="Rounds whose challenger leg and belt leg differed by a measurable weather shift. They still count; trust those margins less.">
+            <Chip size="small" variant="outlined" color="warning" label={`weather ×${board.weather!.shifted_rounds}`} sx={{ height: 20 }} />
+          </Tooltip>
+        )}
+      </Stack>
+      {board.margins.length > 0 && (
+        <Box sx={{ position: "relative", height: 22, mt: 0.5, display: "flex", gap: "2px" }}>
+          <Box
+            sx={{
+              position: "absolute", left: 0, right: 0, top: "50%",
+              borderTop: "1px dashed", borderColor: "divider", pointerEvents: "none",
+            }}
+          />
+          {board.margins.map((m, i) => {
+            const dist = board.leg_distances?.[i];
+            return (
+              <Tooltip
+                key={i}
+                title={`round ${board.pairs - board.margins.length + i + 1}: ${
+                  m === 0 ? "dead level" : `${m > 0 ? chaName : incName} by ${fmtNum(Math.abs(m), 2)}`
+                }${dist != null && dist > 1 ? ` · ${dist} legs from the belt` : ""}`}
+              >
+                <Box sx={{ flex: 1, minWidth: 3, position: "relative" }}>
+                  <Box
+                    sx={{
+                      position: "absolute", left: 0, right: 0, borderRadius: 0.5,
+                      bgcolor: m > 0 ? color : HOLDER_COLOR, opacity: 0.9,
+                      height: `${Math.min(50, 14 + Math.abs(m) * 16)}%`,
+                      ...(m > 0 ? { bottom: "50%" } : { top: "50%" }),
+                    }}
+                  />
+                </Box>
+              </Tooltip>
+            );
+          })}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function RingBoard({ live }: { live: DuelLive }) {
+  const seats = live.seats ?? [];
+  const incName =
+    live.reference?.name || live.reference?.label || live.incumbent.name || live.incumbent.label || "belt";
+  // A single seat keeps the full one-match scoreboard, with the leg strip above it when
+  // the ring reports one. Sessions recorded by the pair engine carry neither.
+  if (seats.length <= 1) {
+    return (
+      <Box>
+        {live.legs && live.legs.length > 0 && (
+          <Box sx={{ mt: 1.5 }}>
+            <LegStrip legs={live.legs} seats={seats} reference={live.reference} />
+          </Box>
+        )}
+        <MatchScoreboard live={seats[0] ?? live} />
+      </Box>
+    );
+  }
+  const d = live.design;
+  return (
+    <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 1, border: 1, borderColor: "divider" }}>
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+        <Typography variant="body2" sx={{ fontWeight: 700 }}>
+          <SideDot color={HOLDER_COLOR} />
+          {incName} (belt)
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          defends {seats.length} seats at once
+        </Typography>
+        {d && (
+          <Chip
+            size="small"
+            variant="outlined"
+            sx={{ height: 20 }}
+            label={`belt every ${d.belt_every} legs${d.browser_only ? " · browser-only" : ""}`}
+          />
+        )}
+        <HelpTip title="A cycle is a belt leg, then the seats' legs in turn, then the belt leg that closes it. Each challenger leg becomes one margin against the mean of the belt legs flanking it, so every seat is measured in the same weather window." />
+      </Stack>
+      {live.legs && live.legs.length > 0 && (
+        <LegStrip legs={live.legs} seats={seats} reference={live.reference} />
+      )}
+      {seats.map((b, i) => (
+        <SeatRow
+          key={b.challenger.fingerprint ?? String(i)}
+          board={b}
+          color={SEAT_COLORS[i % SEAT_COLORS.length]}
+          incName={incName}
+        />
+      ))}
+    </Box>
+  );
+}
+
 // ── The claims to "best", side by side ──────────────────────────────────────────────
 //
 // Three verdicts can name three different profiles at once: the lineal BELT (who beat
@@ -1133,6 +1370,20 @@ export default function Duels() {
   // stalled — and the dropdown draws a real bar from that. Reading the same entry here
   // means the status card's bar is the dropdown's bar, not a second opinion.
   const [duelJob, setDuelJob] = useState<Job | null>(null);
+  // Weather shift by leg distance — the number behind the belt-cadence setting. Fetched
+  // on demand: it stamps every recent leg against the severity yardstick.
+  const [distance, setDistance] = useState<DuelWeatherDistance | null>(null);
+  const [distanceBusy, setDistanceBusy] = useState(false);
+  const loadDistance = useCallback(async () => {
+    setDistanceBusy(true);
+    try {
+      setDistance(await api.duelWeatherDistance());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDistanceBusy(false);
+    }
+  }, []);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -1431,8 +1682,9 @@ export default function Duels() {
           more={
             <>
               The champion defends against the top {cfg.contender_top_n}{" "}
-              {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"}, one at a
-              time, {cfg.iterations_per_round ?? 3} iteration(s) a side. A match ends after{" "}
+              {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"},{" "}
+              {cfg.seats ?? 2} at a time with a belt leg every {cfg.belt_every ?? 2} legs,{" "}
+              {cfg.iterations_per_round ?? 3} iteration(s) a leg. A match ends after{" "}
               {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of margins, then
               the next challenger steps up.
               {cfg.crown_rule !== "rating_floor" && (
@@ -1722,6 +1974,39 @@ export default function Duels() {
                 helper="More iterations per leg means less noise per round and fewer rounds to a verdict. Roughly break-even on wall clock, and far more matches actually get decided. Try 3 to 5."
               />
               <NumField
+                label="Belt leg every N legs"
+                value={cfg?.belt_every ?? 2}
+                disabled={!cfg || busy}
+                min={2}
+                onCommit={(v) => void patch({ belt_every: Math.round(v) })}
+                helper="2 = a belt leg between every challenger leg (safest). 3 = two challenger legs per belt leg: a third more challenger measurements per hour, up to two legs from the belt. Measure the weather shift by distance below before raising it."
+              />
+              <NumField
+                label="Seats in the ring"
+                value={cfg?.seats ?? 2}
+                disabled={!cfg || busy}
+                min={1}
+                onCommit={(v) => void patch({ seats: Math.round(v) })}
+                helper="Challengers fighting the belt at once. They share the belt legs and the weather window, and a seat refills the moment its match decides."
+              />
+              <Tooltip title="Every crown metric is browser-derived, and the weather stamp still reads the browser's own DNS/TCP/TLS phases. Skipping the probe plugins cuts each leg's time with no change to the verdict; duel runs then stop contributing Completion metrics to the pooled record.">
+                <FormControlLabel
+                  control={
+                    <Switch
+                      size="small"
+                      checked={cfg?.browser_only ?? false}
+                      disabled={!cfg || busy}
+                      onChange={(e) => void patch({ browser_only: e.target.checked })}
+                    />
+                  }
+                  label={
+                    <Typography variant="body2" color="text.secondary">
+                      Browser-only legs
+                    </Typography>
+                  }
+                />
+              </Tooltip>
+              <NumField
                 label="Rating prior (virtual rounds)"
                 value={cfg?.rating_prior_pairs ?? 4}
                 disabled={!cfg || busy}
@@ -1746,6 +2031,58 @@ export default function Duels() {
                   onCommit={(v) => void patch({ p1: Math.min(0.99, v) })}
                   helper="Round-wins rule only: how lopsided a win to look for (0.7 = wins 70% of rounds)."
                 />
+              )}
+            </Box>
+            {/* The number that prices raising the belt cadence: how much the measured
+                weather actually moves between legs 1–4 apart, from this link's own duel
+                runs. On demand — it stamps every recent leg. */}
+            <Box sx={{ mt: 1.5 }}>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Button size="small" variant="outlined" onClick={() => void loadDistance()} disabled={distanceBusy}>
+                  {distanceBusy ? "Stamping legs…" : "Measure weather shift by distance"}
+                </Button>
+                <Typography variant="caption" color="text.secondary">
+                  Should the belt leg recur less often? This answers it from your own runs.
+                </Typography>
+              </Stack>
+              {distance && !distance.available && (
+                <Typography variant="caption" color="warning.main" sx={{ display: "block", mt: 0.5 }}>
+                  {distance.reason ?? "Not enough stamped legs yet."}
+                </Typography>
+              )}
+              {distance?.available && (
+                <TableContainer sx={{ mt: 1, maxWidth: 560 }}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Legs apart</TableCell>
+                        <TableCell align="right">Pairs</TableCell>
+                        <TableCell align="right">Median shift</TableCell>
+                        <TableCell align="right">p75</TableCell>
+                        <TableCell align="right">≥ {distance.threshold} pts</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {distance.by_distance.map((row) => (
+                        <TableRow key={row.distance}>
+                          <TableCell>{row.distance}</TableCell>
+                          <TableCell align="right">{row.pairs}</TableCell>
+                          <TableCell align="right">{row.median_shift == null ? "—" : fmtNum(row.median_shift, 1)}</TableCell>
+                          <TableCell align="right">{row.p75_shift == null ? "—" : fmtNum(row.p75_shift, 1)}</TableCell>
+                          <TableCell align="right">
+                            {row.shifted_share == null ? "—" : `${Math.round(row.shifted_share * 100)}%`}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                    Severity is 0–100 against recent history; a shift of {distance.threshold}+ points between two
+                    legs is the flag the tape uses. If legs two apart shift no more often than adjacent ones, a belt
+                    leg every 3 costs nothing the current design isn&apos;t already paying. {distance.legs_stamped ?? 0}{" "}
+                    legs over {distance.sessions_analyzed} session{distance.sessions_analyzed === 1 ? "" : "s"}.
+                  </Typography>
+                </TableContainer>
               )}
             </Box>
             <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
@@ -1902,7 +2239,7 @@ export default function Duels() {
                   the fallback for the moments between matches (applying a profile, ranking
                   the field, restoring settings) where there is no score to show. */}
               {status?.live ? (
-                <MatchScoreboard live={status.live} />
+                <RingBoard live={status.live} />
               ) : (
                 <Typography variant="body2" sx={{ mt: 0.5 }}>
                   {status?.stage || "starting…"}

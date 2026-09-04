@@ -1846,8 +1846,35 @@ export interface DuelConfig {
   crown_rules: string[];
   /** Benchmark iterations per leg of a round — divides the round's noise by sqrt(k). */
   iterations_per_round?: number;
+  // The ring's shape. `belt_every`: the belt's reference leg recurs every N legs (2 =
+  // strict alternation B C B D…, every challenger leg flanked by belt legs; 3 = B C D B C D,
+  // a third more challenger legs per hour at up to two legs from the belt). `seats`: how
+  // many challengers fight at once, sharing the belt legs and the weather window.
+  // `browser_only`: duel legs run the browser plugin alone (the crown is browser-derived).
+  belt_every?: number;
+  seats?: number;
+  browser_only?: boolean;
   presets: DuelPreset[];
   decision: DuelDecisionCost;
+}
+
+/** GET /duel/weather-distance — how much the measured weather shifts between legs N apart. */
+export interface DuelWeatherDistance {
+  available: boolean;
+  reason?: string;
+  threshold: number;
+  by_distance: {
+    distance: number;
+    pairs: number;
+    median_shift: number | null;
+    p75_shift: number | null;
+    shifted_share: number | null;
+  }[];
+  sessions_analyzed: number;
+  // Back-to-back stretches of legs the sessions were split into (a long gap — a zipper
+  // yield, a stall — ends a stretch, so legs either side of it are never "adjacent").
+  stretches?: number;
+  legs_stamped?: number;
 }
 
 export interface DuelMatchup {
@@ -1884,6 +1911,14 @@ export interface DuelMatchup {
   weather_shifted_rounds?: number;
   weather_max_shift?: number | null;
   weather_shift_threshold?: number;
+  // The ring's design this match was fought under (absent on pair-engine records). Each
+  // margin's challenger leg sat `leg_distances[i]` legs from the belt leg it was compared
+  // against — 1 under strict alternation.
+  design?: "ring";
+  belt_every?: number;
+  browser_only?: boolean;
+  leg_distances?: number[];
+  max_leg_distance?: number | null;
 }
 
 /** GET /duel/health — is the ladder measuring anything? */
@@ -2139,6 +2174,31 @@ export interface DuelLive {
     max_shift: number | null;
     threshold: number;
   } | null;
+  // ── The ring (absent on sessions recorded by the pair engine) ──
+  // Every seated match's own scoreboard (this same shape, without these ring fields), in
+  // seat order; `measuring` marks the one whose leg is running. The top level mirrors the
+  // seat being measured so one-match readers keep working.
+  seats?: DuelLive[];
+  measuring?: boolean;
+  leg_distances?: number[];
+  // The most recent legs in run order — the strip that shows the cadence.
+  legs?: DuelLeg[];
+  reference?: { fingerprint: string | null; name: string | null; label: string | null };
+  design?: { belt_every: number; seats: number; browser_only: boolean };
+  stage?: string;
+}
+
+/** One leg of the ring, as the live strip shows it. */
+export interface DuelLeg {
+  index: number;
+  fingerprint: string;
+  name?: string | null;
+  label?: string | null;
+  role: "belt" | "challenger";
+  position: number;
+  overall: number | null;
+  severity: number | null;
+  run_id?: number | null;
 }
 
 export interface DuelSession {

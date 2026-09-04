@@ -358,6 +358,21 @@ DEFAULT_CONFIG: dict = {
         # break-even on wall clock and a large win on *verdicts reached* — a match that
         # never resolves is time spent for nothing.
         "iterations_per_round": 3,
+        # The ring's shape (see `duel._run_ring`). `belt_every`: the belt's reference leg
+        # recurs every N legs — 2 is strict alternation (B C B D…, every challenger leg has a
+        # belt leg on both sides, the strongest shared-weather guarantee); 3 is B C D B C D,
+        # a third more challenger legs per hour at up to two legs' distance from the belt.
+        # `weather_by_distance` prices that trade from this link's own history. `seats`:
+        # challengers in the ring at once, sharing the same belt legs and weather window;
+        # a seat refills the moment its match decides.
+        "belt_every": 2,
+        "seats": 2,
+        # Run duel legs with the browser plugin alone. Every crown metric is browser-derived
+        # and the weather stamp still has the browser's own nav_dns/nav_tcp/nav_tls/
+        # nav_request phases to read, so a browser-only leg scores and stamps as before;
+        # what it drops is the probes' share of every leg. Off by default so the duel runs'
+        # pooled contribution keeps carrying the Completion metrics.
+        "browser_only": False,
     },
     # Historical trends: baseline a metric over this many days of history, judge a
     # run against the median over the last `window_hours`, and require at least

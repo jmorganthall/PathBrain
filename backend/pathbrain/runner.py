@@ -850,7 +850,15 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
             # captured sample (skip-missing) so a capped plugin stays unbiased; only the
             # legacy SOPS confidence band is restricted to full-suite rounds (below).
             def _plugin_count(name: str) -> int:
-                cap = (config.get(name, {}) or {}).get("iterations")
+                section = config.get(name, {}) or {}
+                # A run may leave a plugin out entirely (`{"icmp": {"skip": True}}` via
+                # config_overrides): the duel's browser-only legs, where every crown
+                # metric is browser-derived and the probes are a share of each leg spent
+                # measuring nothing the verdict reads. Skipped means no result rows, so
+                # the metrics are simply absent — never fabricated.
+                if section.get("skip"):
+                    return 0
+                cap = section.get("iterations")
                 if cap is None:
                     return iterations
                 try:
@@ -929,6 +937,11 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
             # Store the raw observations per iteration as the immutable source of truth.
             for plugin in plugins:
                 results = per_plugin[plugin.name]
+                if not results and plugin_counts[plugin.name] == 0:
+                    # Skipped for this run (see `_plugin_count`): no row at all, so the
+                    # run's record says the plugin was not measured rather than that it
+                    # failed, and nothing downstream reads an empty result as a value.
+                    continue
                 agg = _aggregate(results)
                 session.add(
                     BenchmarkResult(

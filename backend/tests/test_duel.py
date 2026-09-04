@@ -67,13 +67,18 @@ def test_sprt_cap_forces_a_draw():
 # ── The engine (mocked runs) ─────────────────────────────────────────────────────────
 
 
-def _no_settle():
+def _no_settle(*, seats: int = 1, belt_every: int = 2):
     """Turn off the post-apply settle for the mocked-engine tests — they fake the runs, so
-    the only thing a real sleep would measure is the test suite's patience."""
+    the only thing a real sleep would measure is the test suite's patience.
+
+    Also pins the ring to ONE seat by default: the matchmaking tests below reason about the
+    order of matches, which is sequential only when one challenger is in the ring at a time.
+    The ring's own tests set `seats`/`belt_every` explicitly.
+    """
     from pathbrain.config_store import save_config
 
     with session_scope() as s:
-        save_config(s, {"duel": {"settle_seconds": 0}})
+        save_config(s, {"duel": {"settle_seconds": 0, "seats": seats, "belt_every": belt_every}})
 
 
 def _score_by_profile(monkeypatch, applied: list[str], scores: dict[str, float]):
@@ -190,17 +195,24 @@ def test_pairs_alternate_which_profile_runs_first(monkeypatch):
     d = _wait_finish(duel_mod.start(duration_minutes=10))
     assert d.status == DuelStatus.COMPLETE, d.error
 
-    leads = applied[0::2]  # whoever was applied first in each pair
-    assert len(leads) >= 4
-    assert leads[0] == "inc0000000x" and leads[1] == "cha0000000x", "the lead must alternate"
-    assert all(a != b for a, b in zip(leads, leads[1:])), "no side may lead twice running"
-    # Each pair still ran both profiles, exactly once each.
-    for i in range(0, len(applied) - 1, 2):
-        assert set(applied[i : i + 2]) == {"inc0000000x", "cha0000000x"}
-    # And the verdict is unaffected: the challenger scores better on every pair whichever
-    # side happened to go first.
-    assert d.matchups[0]["verdict"] == "challenger"
-    assert d.matchups[0]["lead_alternated"] is True
+    # Strict alternation: the belt and the challenger take turns, so no profile ever runs
+    # twice in a row and every challenger leg has a belt leg on both sides. (ABBA used to
+    # put the same profile back to back at every round boundary.)
+    assert len(applied) >= 8
+    assert all(a != b for a, b in zip(applied, applied[1:])), "no profile may run twice running"
+    assert applied[0] == "inc0000000x", "a cycle opens with the belt's reference leg"
+    challenger_legs = [i for i, fp in enumerate(applied) if fp == "cha0000000x"]
+    assert all(
+        applied[i - 1] == "inc0000000x" and applied[i + 1] == "inc0000000x"
+        for i in challenger_legs
+    ), "every challenger leg is flanked by belt legs"
+    # And the verdict is unaffected: the challenger scores better on every margin whichever
+    # position it occupied.
+    m = d.matchups[0]
+    assert m["verdict"] == "challenger"
+    assert m["lead_alternated"] is True
+    assert m["design"] == "ring" and m["belt_every"] == 2
+    assert all(dist == 1 for dist in m["leg_distances"]), "adjacent by construction"
 
 
 def test_duel_margin_floor_records_a_draw(monkeypatch):
@@ -3215,3 +3227,322 @@ def test_the_live_scoreboard_carries_the_weather_audit():
         "max_shift": 31.0,
         "threshold": duel_mod.ROUND_WEATHER_SHIFT,
     }
+
+
+# ── The ring: belt cadence + concurrent seats ─────────────────────────────────────────
+
+
+def _ring_field(*profiles):
+    """(fingerprint, overall) pairs → a field where every profile is reachable."""
+    return {
+        "best_fingerprint": profiles[0][0],
+        "profiles": [
+            {"fingerprint": fp, "label": fp[:5], "name": fp[:5].title(), "overall": ov,
+             "confident": True, "settings": []}
+            for fp, ov in profiles
+        ],
+    }
+
+
+def _ring_session(monkeypatch, scores: dict[str, float], *, seats: int, belt_every: int,
+                  field: dict | None = None, extra_cfg: dict | None = None):
+    """Run one mocked session under the given ring shape; returns (duel row, applied)."""
+    import pathbrain.api.routes_settings as rs
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+    applied: list[str] = []
+    fake_field = field or _ring_field(*sorted(scores.items(), key=lambda kv: -kv[1]))
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
+    monkeypatch.setattr(
+        rs, "_compute_heirs",
+        lambda result, session, live=None: {
+            "items": [{"fingerprint": p["fingerprint"]} for p in fake_field["profiles"][1:]]
+        },
+    )
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    monkeypatch.setattr(duel_mod, "_weather_stamper", lambda meth_version: None)
+    _no_settle(seats=seats, belt_every=belt_every)
+    if extra_cfg:
+        with session_scope() as s:
+            save_config(s, {"duel": extra_cfg})
+    _score_by_profile(monkeypatch, applied, scores)
+    d = _wait_finish(duel_mod.start(duration_minutes=10))
+    return d, applied
+
+
+def test_two_seats_share_the_belt_legs_under_strict_alternation(monkeypatch):
+    """**B C B D B C B D.** Two challengers in the ring at once, and the belt's reference leg
+    between every one of their legs — so both matches run in the same weather window, every
+    challenger leg is flanked by belt legs, and no profile ever runs twice in a row."""
+    scores = {"aaa0000000x": 70.0, "bbb0000000x": 62.0, "ccc0000000x": 55.0}
+    d, applied = _ring_session(monkeypatch, scores, seats=2, belt_every=2)
+    assert d.status == DuelStatus.COMPLETE, d.error
+
+    assert all(a != b for a, b in zip(applied, applied[1:])), "no profile runs twice running"
+    assert set(applied[0::2]) == {"aaa0000000x"}, "the belt takes every other leg"
+    challengers = applied[1::2]
+    assert set(challengers[:4]) == {"bbb0000000x", "ccc0000000x"}
+    assert all(a != b for a, b in zip(challengers[:4], challengers[1:4])), (
+        "the two seats take turns in the challenger slot"
+    )
+
+    matches = {m["challenger"]: m for m in d.matchups}
+    assert set(matches) == {"bbb0000000x", "ccc0000000x"}, "both seats reached a verdict"
+    for m in matches.values():
+        assert m["incumbent"] == "aaa0000000x"
+        assert m["verdict"] == "incumbent"
+        assert m["design"] == "ring" and m["belt_every"] == 2 and m["browser_only"] is False
+        assert set(m["leg_distances"]) == {1} and m["max_leg_distance"] == 1
+        assert len(m["leg_distances"]) == m["pairs"] == len(m["weather_shifts"])
+    # Each margin is the challenger minus the mean of its two flanking belt legs.
+    assert matches["bbb0000000x"]["median_delta"] == -8.0
+    assert matches["ccc0000000x"]["median_delta"] == -15.0
+    assert d.champion_fingerprint == "aaa0000000x"
+
+
+def test_belt_every_three_runs_two_challenger_legs_per_reference_leg(monkeypatch):
+    """**B C D B C D.** A third more challenger legs per hour; the price is that a challenger
+    leg can sit two legs from the belt leg it is compared with — and the record says so."""
+    scores = {"aaa0000000x": 70.0, "bbb0000000x": 62.0, "ccc0000000x": 55.0}
+    d, applied = _ring_session(monkeypatch, scores, seats=2, belt_every=3)
+    assert d.status == DuelStatus.COMPLETE, d.error
+
+    assert set(applied[0::3]) == {"aaa0000000x"}, "the belt takes every third leg"
+    assert "aaa0000000x" not in applied[1::3] + applied[2::3]
+    for m in d.matchups:
+        assert m["belt_every"] == 3
+        assert m["max_leg_distance"] == 2
+        assert set(m["leg_distances"]) == {2}, "each challenger leg is two from one flank"
+        # Both flanks were still usable, so the margin is against their mean.
+        assert m["median_delta"] in (-8.0, -15.0)
+    assert d.champion_fingerprint == "aaa0000000x"
+
+
+def test_a_seat_refills_the_moment_its_match_decides(monkeypatch):
+    """Four profiles, two seats: when bravo's and charlie's matches decide, delta takes a
+    seat against the same belt — the ring stays full until the field is exhausted."""
+    scores = {"aaa0000000x": 70.0, "bbb0000000x": 62.0, "ccc0000000x": 55.0, "ddd0000000x": 50.0}
+    d, _applied = _ring_session(monkeypatch, scores, seats=2, belt_every=2)
+    assert d.status == DuelStatus.COMPLETE, d.error
+    assert {m["challenger"] for m in d.matchups} == {"bbb0000000x", "ccc0000000x", "ddd0000000x"}
+    assert all(m["incumbent"] == "aaa0000000x" for m in d.matchups)
+
+
+def test_seated_matches_finish_against_their_reference_when_the_belt_moves(monkeypatch):
+    """The belt changes hands mid-session (bravo beats alpha) while charlie is still seated
+    against alpha. Charlie's match finishes against alpha — a match is never switched
+    mid-way — and only then does bravo start defending."""
+    scores = {"aaa0000000x": 60.0, "bbb0000000x": 68.0, "ccc0000000x": 55.0}
+    # alpha is the POOLED crown (so it opens as the reference); the ring's readings say
+    # bravo is the stronger profile.
+    field = _ring_field(("aaa0000000x", 90.0), ("bbb0000000x", 80.0), ("ccc0000000x", 70.0))
+    d, _applied = _ring_session(monkeypatch, scores, seats=2, belt_every=2, field=field)
+    assert d.status == DuelStatus.COMPLETE, d.error
+    by_challenger = {(m["incumbent"], m["challenger"]): m for m in d.matchups}
+    assert by_challenger[("aaa0000000x", "bbb0000000x")]["verdict"] == "challenger"
+    assert ("aaa0000000x", "ccc0000000x") in by_challenger, (
+        "charlie's seated match was finished against the reference it started with"
+    )
+    # Afterwards the new holder defends — against the one profile it hasn't met.
+    later = [m for m in d.matchups if m["incumbent"] == "bbb0000000x"]
+    assert later and later[0]["challenger"] == "ccc0000000x"
+    assert d.champion_fingerprint == "bbb0000000x"
+
+
+def test_browser_only_legs_skip_every_probe_plugin(monkeypatch):
+    """`duel.browser_only` hands each leg a config that skips every plugin but the browser —
+    the crown is browser-derived and the weather stamp reads the browser's own nav phases,
+    so the probes were a share of every leg spent measuring nothing the verdict reads."""
+    from pathbrain.plugins import iter_plugins
+
+    seen: list[dict] = []
+
+    def fake_chunk(label, notes, iterations, teardown=True, job_group=None,
+                   job_group_total=None, config_overrides=None, **_):
+        seen.append(config_overrides or {})
+        return (9000 + len(seen), True, iterations)
+
+    import pathbrain.api.routes_settings as rs
+
+    field = _ring_field(("aaa0000000x", 80.0), ("bbb0000000x", 70.0))
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: field)
+    monkeypatch.setattr(rs, "_compute_heirs", lambda result, session, live=None: {"items": []})
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: None)
+    monkeypatch.setattr(duel_mod, "run_chunk", fake_chunk)
+    monkeypatch.setattr(duel_mod, "_run_overall", lambda run_id, ver: 80.0)
+    monkeypatch.setattr(duel_mod, "_weather_stamper", lambda meth_version: None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        save_config(s, {"duel": {"browser_only": True, "iterations_per_round": 3,
+                                 "settle_seconds": 0, "seats": 1, "belt_every": 2}})
+    try:
+        _wait_finish(duel_mod.start(duration_minutes=10))
+        assert seen, "the ring ran no legs"
+        others = {p.name for p in iter_plugins()} - {"browser"}
+        assert others, "the registry should hold probe plugins besides the browser"
+        for overrides in seen:
+            assert overrides["browser"] == {"iterations": 3}
+            assert all(overrides.get(name, {}).get("skip") is True for name in others)
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+            save_config(s, {"duel": {"browser_only": False}})
+    # And the default keeps the probes: nothing skipped.
+    assert not any(v.get("skip") for v in duel_mod.leg_overrides(3, False).values())
+
+
+def test_a_cycle_never_seats_the_same_challenger_twice(monkeypatch):
+    """One seat under belt_every=3: the second slot would re-run the only challenger against
+    the same two belt legs — one comparison counted as two, and a needless re-apply. The
+    cycle is shorter instead, so the sequence is strict alternation."""
+    scores = {"aaa0000000x": 70.0, "bbb0000000x": 62.0}
+    d, applied = _ring_session(monkeypatch, scores, seats=1, belt_every=3)
+    assert d.status == DuelStatus.COMPLETE, d.error
+    assert all(a != b for a, b in zip(applied, applied[1:])), "no profile runs twice running"
+    m = d.matchups[0]
+    assert set(m["leg_distances"]) == {1}
+
+
+def test_the_rematch_rule_finds_the_win_even_when_another_seat_closed_after_it():
+    """With several seats, the challenger that beat the belt without taking it is routinely
+    not the newest record. The rule scans, rather than reading only the last match."""
+    matchups = [
+        {"incumbent": "belt", "challenger": "b", "verdict": "challenger"},
+        {"incumbent": "belt", "challenger": "c", "verdict": "incumbent"},
+    ]
+    assert duel_mod._rematch_candidate(matchups, "belt", "belt", set()) == frozenset(("belt", "b"))
+    # Once per pair.
+    assert duel_mod._rematch_candidate(matchups, "belt", "belt", {frozenset(("belt", "b"))}) is None
+    # Not on the pooled fallback (the ledger didn't put this defender in the ring)…
+    assert duel_mod._rematch_candidate(matchups, "belt", "other", set()) is None
+    # …and not for a win over some previous defender.
+    assert duel_mod._rematch_candidate(matchups, "b", "b", set()) is None
+
+
+def test_weather_by_distance_splits_a_session_where_the_ladder_stepped_aside(monkeypatch):
+    """Two legs either side of a long detour (a zipper yield, a stall) are not adjacent. The
+    session's legs are split at gaps far longer than its typical leg, so the detour cannot
+    inflate the adjacent-legs row — the one that decides whether to raise the cadence."""
+    from pathbrain.models import Run, RunStatus
+
+    severity = {}
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    ids: list[int] = []
+    with session_scope() as s:
+        s.query(Duel).delete()
+        # Six legs a minute apart, then a 45-minute detour, then four more.
+        offsets = [0, 1, 2, 3, 4, 5, 50, 51, 52, 53]
+        for k, off in enumerate(offsets):
+            r = Run(label="leg", status=RunStatus.COMPLETE, iterations=1, created_at=now + timedelta(minutes=off))
+            s.add(r)
+            s.flush()
+            ids.append(r.id)
+            severity[r.id] = 10.0 if k < 6 else 90.0   # the weather changed during the detour
+        d = _finished_duel(s, matchups=[], champion="aaa", when=now)
+        d.run_ids = list(ids)
+
+    class _Stamper:
+        def leg_severity(self, run_id):
+            return severity.get(run_id)
+
+    monkeypatch.setattr(duel_mod, "_weather_stamper", lambda meth_version: _Stamper())
+    try:
+        out = duel_mod.weather_by_distance(limit_sessions=5)
+        by = {row["distance"]: row for row in out["by_distance"]}
+        assert out["stretches"] == 2
+        assert by[1]["pairs"] == 5 + 3, "the pair across the detour is not counted"
+        assert by[1]["median_shift"] == 0.0 and by[1]["shifted_share"] == 0.0
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+            for rid in ids:
+                r = s.get(Run, rid)
+                if r is not None:
+                    s.delete(r)
+
+
+def test_the_ring_shape_is_bounded_and_survives_bad_values():
+    assert duel_mod.belt_every({}) == 2
+    assert duel_mod.belt_every({"belt_every": 1}) == 2
+    assert duel_mod.belt_every({"belt_every": "many"}) == 2
+    assert duel_mod.belt_every({"belt_every": 3}) == 3
+    assert duel_mod.belt_every({"belt_every": 99}) == 6
+    assert duel_mod.seats({}) == 2
+    assert duel_mod.seats({"seats": 0}) == 2, "a stored nonsense value falls back to the default"
+    assert duel_mod.seats({"seats": 1}) == 1
+    assert duel_mod.seats({"seats": 4}) == 4
+    assert duel_mod.seats({"seats": 40}) == 6
+    assert duel_mod.browser_only({}) is False
+    assert duel_mod.browser_only({"browser_only": True}) is True
+
+
+def test_the_live_ring_lists_every_seat_and_the_legs_in_order():
+    inc = {"fingerprint": "aaa", "name": "Alpha", "label": "alpha"}
+    seat_kw = dict(p1=0.7, alpha=0.05, min_margin=0.0, min_pairs=4, max_pairs=20, streak_wins=0)
+    b = duel_mod._Seat("bbb", {"fingerprint": "bbb", "name": "Bravo", "label": "bravo"}, "contender", "aaa", **seat_kw)
+    c = duel_mod._Seat("ccc", {"fingerprint": "ccc", "name": "Chuck", "label": "charlie"}, "untested", "aaa", **seat_kw)
+    for delta in (-2.0, -1.0):
+        b.deltas.append(delta); b.sprt.add_pair(delta > 0); b.paired.add(delta)
+        b.leg_distances.append(1); b.weather_shifts.append(3.0)
+    legs = [
+        {"index": 1, "fingerprint": "aaa", "role": "belt", "position": 0, "overall": 70.0, "severity": 40.0},
+        {"index": 2, "fingerprint": "bbb", "role": "challenger", "position": 1, "overall": 68.0, "severity": 42.0},
+    ]
+    live = duel_mod._ring_live(
+        matchups_done=3, inc=inc, seats_list=[b, c], current=c, legs_tape=legs, cadence=2,
+        n_seats=2, only_browser=True, min_pairs=4, max_pairs=20, min_margin=0.0,
+        streak_needed=6, stage="Match 5 · …",
+    )
+    assert [s["challenger"]["fingerprint"] for s in live["seats"]] == ["bbb", "ccc"]
+    assert [s["bout"] for s in live["seats"]] == [4, 5]
+    assert live["seats"][0]["median_margin"] == -1.5 and live["seats"][0]["measuring"] is False
+    assert live["seats"][1]["measuring"] is True
+    # The top level is the seat being measured, so the one-match readers still work.
+    assert live["challenger"]["fingerprint"] == "ccc" and live["incumbent"]["fingerprint"] == "aaa"
+    assert live["reference"]["name"] == "Alpha"
+    assert live["design"] == {"belt_every": 2, "seats": 2, "browser_only": True}
+    assert live["legs"] == legs
+
+
+def test_weather_by_distance_reads_the_ledgers_own_legs(monkeypatch):
+    """Pricing `belt_every` from history: every session's legs are on record in run order,
+    so the severity shift between legs one, two, three and four apart is computable from
+    the runs that already exist."""
+    severity = {101: 10.0, 102: 20.0, 103: 40.0, 104: 10.0, 105: 50.0, 106: 10.0, 107: 20.0, 108: 30.0}
+
+    class _Stamper:
+        def leg_severity(self, run_id):
+            return severity.get(run_id)
+
+    monkeypatch.setattr(duel_mod, "_weather_stamper", lambda meth_version: _Stamper())
+    with session_scope() as s:
+        s.query(Duel).delete()
+        d = _finished_duel(s, matchups=[], champion="aaa", when=datetime.now(timezone.utc))
+        d.run_ids = sorted(severity)
+    try:
+        out = duel_mod.weather_by_distance(limit_sessions=5)
+        assert out["available"] is True and out["sessions_analyzed"] == 1
+        by = {row["distance"]: row for row in out["by_distance"]}
+        assert [by[k]["pairs"] for k in (1, 2, 3, 4)] == [7, 6, 5, 4]
+        assert by[1]["median_shift"] == 20.0      # |10-20|,|20-40|,|40-10|,|10-50|,|50-10|,|10-20|,|20-30|
+        assert by[2]["median_shift"] == 15.0      # 30,10,10,0,30,20
+        assert 0.0 <= by[1]["shifted_share"] <= 1.0
+        assert out["threshold"] == duel_mod.ROUND_WEATHER_SHIFT
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+
+
+def test_ring_shape_round_trips_through_the_config_endpoint(client):
+    cfg = client.get("/api/duel/config").json()
+    assert {"belt_every", "seats", "browser_only"} <= set(cfg)
+    try:
+        out = client.put("/api/duel/config", json={"belt_every": 3, "seats": 3, "browser_only": True}).json()
+        assert (out["belt_every"], out["seats"], out["browser_only"]) == (3, 3, True)
+        assert client.put("/api/duel/config", json={"belt_every": 9}).status_code == 422
+        assert client.put("/api/duel/config", json={"seats": 0}).status_code == 422
+    finally:
+        client.put("/api/duel/config", json={"belt_every": 2, "seats": 2, "browser_only": False})
+    dist = client.get("/api/duel/weather-distance?sessions=2&legs=20").json()
+    assert "by_distance" in dist and "threshold" in dist
