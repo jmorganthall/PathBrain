@@ -1350,6 +1350,35 @@ LLM-based. See `README.md` for the product overview.
     `rank_by` version, defaulting to the most-recent non-current methodology) — so the profiles
     that were winning get fresh data before an arbitrary sweep of everything. `/api/settings/refresh`
     (+ `/refresh/preview`, `/refresh/cancel`).
+  - **The site list is part of the methodology** (`methodology.collection` /
+    `publish_sites` / `apply_collection` / `site_set_from_config`, `POST /api/methodologies/sites`,
+    the **"Sites measured"** card on the Methodology page). Every browser metric is a *mean over
+    the pages loaded* (`_derive_browser`), so adding or swapping a site changes what FCP, LCP and
+    the stall metrics measure — and nothing used to notice: the pooled crown would have averaged
+    old-site runs with new-site runs of the same profile. A version can now carry a
+    `collection` block (`browser_urls` / `http_urls` / `site_set` = a hash of both sorted
+    lists). Publishing a list forks the current version as `<base>+sites-<hash>` (a later
+    change **replaces** the segment, never chains one), pins it, writes the lists to config so
+    the Config page and the plugins agree, and re-grades. Code-shipped versions declare nothing;
+    `ensure_current_methodology` **carries the collection forward** when a new shipped version
+    is adopted, so an upgrade never silently reverts the sites. **The gate is the configured
+    set, not the observed one**: `create_run` overlays the version's lists into `config_used`
+    (`apply_collection` — both lists, always, so the stamp can't disagree with the declaration),
+    and `comparability(..., site_set=site_set_from_config(run.config_used))` quarantines a run
+    whose stamp differs from the version's, or that has no stamp at all, under the single token
+    `site_set` — so a reader can tell "other sites" from "missing instrument". A version with
+    no collection ignores the stamp (the pre-existing behaviour). While the methodology owns
+    the list the Config page's URL editors are read-only and point at the Methodology page.
+    **Seeding from the prior version** (`refresh.prior_field` / `seed_field_from_prior`): right
+    after any publish, nothing has a comparable run, so the pooled crown is empty and the ring,
+    the race and the heirs card would order the field by nothing. The prior version's
+    standings (walking back past forks that scored nothing) seed the **order** — `prior_overall`
+    on every profile, no-data entries for profiles the current version has never scored, and the
+    prior crown standing in as the pooled fallback defender/bar — applied in `duel._seeded_field`
+    (`_drive` + `fight_card`), `challenger._field`, and `routes_settings._seeded_field` (heirs +
+    the `seeded` summary the Settings-Impact banner renders). Strictly an ordering: a field that
+    already has a crown is returned untouched, the seeded copy never enters the memo, nothing
+    seeded is scored, and the ring still decides on its own paired runs.
   - **`compute_profiles` is memoized** (`api/routes_settings.py`: `_field_stamp` /
     `invalidate_profiles_cache`). It is the most expensive thing PathBrain does — it walks
     every completed run, decodes each one's stored scalars, re-normalizes the crown against
@@ -1793,7 +1822,12 @@ docker compose up --build   # -> http://localhost:8000
      Only pre-raw-collection legacy runs (no raw) can't be re-derived — they stay
      quarantined as legacy. There is deliberately no "physically re-run every profile"
      batch; re-grading from raw is the supported way to bring history onto a new rubric.
-  2. **No frontend edit needed.** The Settings-Impact view is fully crown-driven off the
+  2. **Changing the sites is a publish too.** Do it from the Methodology page's "Sites
+     measured" card (`POST /api/methodologies/sites`), never by editing config: the new
+     version owns the list and quarantines runs measured against the old one, and the
+     field is seeded from the prior version's standings until fresh runs arrive (see the
+     "site list is part of the methodology" note above).
+  3. **No frontend edit needed.** The Settings-Impact view is fully crown-driven off the
      profiles response's `overall_metrics` (the methodology's `overall` spec, exposed by the
      API): the pinned **standings columns**, the **quadrant default axes** (X/Y/Shade =
      crown[0]/[1]/[2], until the user manually picks an axis), and the **scatter dot-selection

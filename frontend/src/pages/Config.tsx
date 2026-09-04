@@ -26,11 +26,15 @@ import SaveIcon from "@mui/icons-material/Save";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import TravelExploreIcon from "@mui/icons-material/TravelExplore";
 
+import { Link as RouterLink } from "react-router-dom";
+import Link from "@mui/material/Link";
+
 import { api } from "../api/client";
 import type {
   BenchmarkConfig,
   ConfigSnapshot,
   FqCodelPipe,
+  MethodologyCollection,
   ProviderHealth,
   TestApplyResult,
 } from "../api/types";
@@ -52,6 +56,20 @@ import {
 const WAIT_UNTIL = ["load", "domcontentloaded", "networkidle", "commit"];
 const EXP_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const EXP_PARAMS = ["quantum", "limit", "target", "interval", "flows", "bandwidth"];
+
+// The site list belongs to the methodology once one has been published with it: the sites
+// decide which runs are comparable, so editing them here would silently pool two site sets.
+function SiteListOwnedNotice({ version }: { version: string }) {
+  return (
+    <Alert severity="info" sx={{ mb: 1.5 }}>
+      Sites are set by the current methodology (<b>{version}</b>). Change them on the{" "}
+      <Link component={RouterLink} to="/methodology">
+        Methodology page
+      </Link>
+      , which publishes a new version so old and new measurements are never pooled.
+    </Alert>
+  );
+}
 
 function NumberField(props: {
   label: string;
@@ -157,6 +175,10 @@ export default function Config() {
   const [discovering, setDiscovering] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestApplyResult | null>(null);
+  // When the current methodology owns the site list, the URL editors here are read-only:
+  // changing the sites is a methodology change (it decides which runs are comparable), so
+  // it happens on the Methodology page and is published as a new version.
+  const [siteOwner, setSiteOwner] = useState<{ version: string; collection: MethodologyCollection } | null>(null);
 
   const loadProvider = useCallback(async () => {
     try {
@@ -173,6 +195,12 @@ export default function Config() {
       try {
         setDraft(await api.config());
         await loadProvider();
+        try {
+          const cur = await api.methodologyCurrent();
+          setSiteOwner(cur.collection ? { version: cur.version, collection: cur.collection } : null);
+        } catch {
+          /* best-effort: without it the editors simply stay editable */
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load config");
       } finally {
@@ -738,6 +766,7 @@ export default function Config() {
           <Typography variant="h6" gutterBottom>
             HTTP
           </Typography>
+          {siteOwner && <SiteListOwnedNotice version={siteOwner.version} />}
           <StringListEditor
             label="URLs"
             helperText="TTFB, download duration and transfer speed are measured per URL."
@@ -746,6 +775,7 @@ export default function Config() {
             validate={vHttpUrl}
             placeholder="https://example.com/"
             addLabel="Add URL"
+            disabled={Boolean(siteOwner)}
           />
           <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
             <NumberField
@@ -765,6 +795,7 @@ export default function Config() {
           <Typography variant="h6" gutterBottom>
             Browser (headless Chromium)
           </Typography>
+          {siteOwner && <SiteListOwnedNotice version={siteOwner.version} />}
           <StringListEditor
             label="URLs"
             helperText="Real page-load timing and total render are measured per URL."
@@ -773,6 +804,7 @@ export default function Config() {
             validate={vHttpUrl}
             placeholder="https://example.com/"
             addLabel="Add URL"
+            disabled={Boolean(siteOwner)}
           />
           <Stack direction="row" spacing={2} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap alignItems="center">
             <NumberField

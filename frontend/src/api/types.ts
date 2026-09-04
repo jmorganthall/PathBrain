@@ -300,6 +300,9 @@ export interface CrownHeir {
   iterations: number;
   iterations_to_min: number;
   confident: boolean;
+  // The prior methodology's Overall — present only when the field was seeded from one
+  // (nothing comparable under the current version yet); orders the untested tier.
+  prior_overall?: number | null;
   last_seen: string;
 }
 
@@ -398,6 +401,15 @@ export interface WeatherSensitivity {
   variance: WeatherVariance;
 }
 
+export interface SeededField {
+  version: string;
+  best_fingerprint: string | null;
+  best_name: string | null;
+  best_prior_overall: number | null;
+  profiles_without_data: number;
+  profiles_seeded: number;
+}
+
 export interface SettingsProfilesResponse {
   profiles: SettingsProfile[];
   count: number;
@@ -456,6 +468,9 @@ export interface SettingsProfilesResponse {
   best_diff: ProfileDiff | null;
   // The crown's heirs — limited-data / stale profiles that could still beat it.
   heirs: CrownHeirs;
+  // Set when nothing has a comparable run under the current methodology yet (right after a
+  // publish): the heirs, the race and the ladder are ordered by the prior version's standings.
+  seeded?: SeededField | null;
   // Per-metric effective thresholds (for the saturated-axis warning), keyed by metric key.
   metric_thresholds: Record<string, MetricThreshold>;
   // Methodology health: scored metrics whose 'best' is too lenient to rank profiles
@@ -1237,9 +1252,20 @@ export interface MethodologyMetric {
   order: number;
 }
 
+// The site list a methodology owns. Every browser metric is a mean over the pages loaded,
+// so the list is part of the version's identity: a version that declares one quarantines
+// runs measured against any other set. Absent on code-shipped versions that measure
+// whatever Config says.
+export interface MethodologyCollection {
+  browser_urls: string[];
+  http_urls: string[];
+  site_set: string;
+}
+
 export interface MethodologyDefinition {
   axes: MethodologyAxis[];
   metrics: MethodologyMetric[];
+  collection?: MethodologyCollection | null;
 }
 
 export interface MethodologySummary {
@@ -1253,6 +1279,7 @@ export interface MethodologySummary {
   metric_count: number;
   scored_metric_count: number;
   required_metrics: string[];
+  collection?: MethodologyCollection | null;
 }
 
 export interface MethodologyDetail extends MethodologySummary {

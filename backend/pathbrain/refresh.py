@@ -128,6 +128,98 @@ def _overall_by_profile(session, version: str) -> dict[str, float]:
     return {fp: median(vals) for fp, vals in buckets.items() if vals}
 
 
+def prior_field(session, min_iterations: int | None = None) -> dict | None:
+    """The previous methodology's verdict, as a seed for the current one.
+
+    Right after a publish (a new crown metric, a site change) nothing has a comparable run
+    under the current version: the pooled crown is empty, every profile is "untested", and
+    the ring, the race and the heirs card would order the field by nothing. The prior
+    version's standings are the best available guess at where to look first — a prior for
+    **ordering who gets measured**, never a score under the current version.
+
+    Returns ``{version, overall: {fp: median}, best_fingerprint}`` or ``None`` when there is
+    no prior version or it scored nothing. ``best_fingerprint`` is the top profile with at
+    least ``min_iterations`` under that version (falling back to the top by median)."""
+    # Walk back through the non-current versions, newest first, to the first that scored
+    # anything: a re-anchor fork published and abandoned between two real rubrics holds no
+    # scores, and stopping at it would seed nothing when the version before it could.
+    for version in _prior_methodology_versions(session):
+        seeded = _prior_field_under(session, version, min_iterations)
+        if seeded:
+            return seeded
+    return None
+
+
+def _prior_methodology_versions(session) -> list[str]:
+    return list(session.scalars(
+        select(Methodology.version)
+        .where(Methodology.is_current.is_(False))
+        .order_by(Methodology.created_at.desc())
+    ).all())
+
+
+def _prior_field_under(session, version: str, min_iterations: int | None) -> dict | None:
+    rows = session.execute(
+        select(Run.settings_fingerprint, Run.iterations, Score.axis_scores)
+        .join(Score, Score.run_id == Run.id)
+        .where(
+            Run.status == RunStatus.COMPLETE,
+            Run.settings_fingerprint.is_not(None),
+            Score.methodology_version == version,
+            Score.comparability != "incomparable",
+        )
+    ).all()
+    buckets: dict[str, list[float]] = {}
+    iterations: dict[str, int] = {}
+    for fp, iters, axis_scores in rows:
+        ov = (axis_scores or {}).get("overall")
+        if ov is None:
+            continue
+        buckets.setdefault(fp, []).append(float(ov))
+        iterations[fp] = iterations.get(fp, 0) + int(iters or 1)
+    overall = {fp: round(median(vals), 2) for fp, vals in buckets.items() if vals}
+    if not overall:
+        return None
+    need = int(min_iterations or 0)
+    confident = [fp for fp in overall if iterations.get(fp, 0) >= need] or list(overall)
+    best = max(confident, key=lambda fp: overall[fp])
+    return {"version": version, "overall": overall, "best_fingerprint": best}
+
+
+def seed_field_from_prior(session, field: dict, min_iterations: int | None = None) -> dict:
+    """A field with no pooled crown, seeded from the prior version's standings.
+
+    Returns a **copy** (``compute_profiles`` memoizes its result; the seed must never leak
+    into the cache). Every stored profile is present, each carrying ``prior_overall``;
+    profiles with no current data are added as ``no_data`` entries; ``best_fingerprint``
+    becomes the prior crown when the current field has none, and ``seeded_from`` names
+    the version. A field that already has a crown is returned unchanged (still a copy)."""
+    out = {**field, "profiles": [dict(p) for p in field.get("profiles", [])]}
+    if out.get("best_fingerprint"):
+        return out
+    prior = prior_field(session, min_iterations)
+    if not prior:
+        return out
+    known = {p["fingerprint"] for p in out["profiles"]}
+    for p in out["profiles"]:
+        p["prior_overall"] = prior["overall"].get(p["fingerprint"])
+    for p in list_profiles(session):
+        if p["fingerprint"] in known:
+            continue
+        out["profiles"].append({
+            "fingerprint": p["fingerprint"], "settings": p["settings"], "label": p["label"],
+            "name": p.get("name"), "confident": False, "overall": None, "optimistic": None,
+            "crown_spreads": {}, "last_seen": None, "no_data": True, "iterations": 0,
+            "prior_overall": prior["overall"].get(p["fingerprint"]),
+        })
+    fps = {p["fingerprint"] for p in out["profiles"]}
+    if prior["best_fingerprint"] in fps:
+        out["best_fingerprint"] = prior["best_fingerprint"]
+    out["seeded_from"] = prior["version"]
+    out["seeded_profiles"] = sum(1 for p in out["profiles"] if p.get("prior_overall") is not None)
+    return out
+
+
 def ranked_profiles(session, rank_version: str | None) -> list[dict]:
     """Stored profiles ordered best-first by their median persisted Overall under
     ``rank_version`` (winner-first). Profiles with no comparable score under that version sort

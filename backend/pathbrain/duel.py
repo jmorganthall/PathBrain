@@ -1281,6 +1281,30 @@ def ring_leader(
     )
 
 
+def _seeded_field(session, field: dict) -> dict:
+    """The field the ladder matchmakes over, seeded from the prior methodology when the
+    current one has no crown yet.
+
+    Right after a publish — a new crown metric, a changed site list — every run on record
+    is incomparable under the current version, so ``compute_profiles`` returns a field
+    with no crown and no profiles: nothing to defend, nothing to race, a ladder that
+    stands idle exactly when fresh comparable data is worth the most. The prior version's
+    standings are the best guess anyone has about where to look first, so they seed the
+    order: its crown stands in as the pooled fallback defender and its Overall breaks
+    ties among the profiles the current version knows nothing about. A field that already
+    has a crown comes back unchanged — the seed never outranks a current measurement, and
+    it never enters a verdict: the ring still decides on its own paired runs."""
+    from .refresh import seed_field_from_prior
+
+    if field.get("best_fingerprint"):
+        return field
+    try:
+        return seed_field_from_prior(session, field, field.get("min_iterations"))
+    except Exception:  # noqa: BLE001 — seeding orders the queue; it must never stop the ladder
+        log.warning("Duel: could not seed the field from the prior methodology", exc_info=True)
+        return field
+
+
 def select_incumbent(
     session,
     field: dict,
@@ -1355,6 +1379,12 @@ def _no_contenders_reason(
     if not others:
         return "No other profiles to duel — only one profile has been measured so far."
     scored = [p for p in others if p.get("overall") is not None]
+    if not scored and field.get("seeded_from"):
+        return (
+            f"None of the {len(others)} other profiles has a comparable score under the "
+            f"current methodology, and the seed from {field['seeded_from']} found nothing "
+            "the live environment can be set to — collect fresh runs before duelling."
+        )
     if not scored:
         return (
             f"None of the {len(others)} other profiles has a comparable score under the "
@@ -1784,6 +1814,7 @@ def contender_order(
                 "ceiling": None,
                 "pooled_overall": p.get("overall"),
                 "pooled_ceiling": p.get("optimistic"),
+                "prior_overall": p.get("prior_overall"),
                 "why": (
                     "the ring's #1 isn't the champion — two head-to-head verdicts "
                     "disagreeing, which one match can settle"
@@ -1813,7 +1844,12 @@ def contender_order(
                     f"thin but live — its pooled ceiling ({opt:.0f}) still reaches the crown "
                     f"({crown_overall:.0f}), so a match can change the answer"
                     if (opt is not None and crown_overall is not None)
-                    else "never been in the ring, and nothing rules it out — worth a look"
+                    else (
+                        f"nothing measured under the current methodology yet — seeded from "
+                        f"its {p['prior_overall']:.0f} under the previous one"
+                        if p.get("prior_overall") is not None
+                        else "never been in the ring, and nothing rules it out — worth a look"
+                    )
                 )
             else:
                 tier, why = UNTESTED_TIER, (
@@ -1843,17 +1879,23 @@ def contender_order(
             # no rating for — the biggest *potential* threat first, exactly as the rated tier
             # is ordered by its ring ceiling.
             "pooled_ceiling": p.get("optimistic"),
+            # The prior methodology's Overall, present only on a field seeded after a
+            # publish (`_seeded_field`): the last thing consulted, so it only ever orders
+            # profiles the current version has no number for at all.
+            "prior_overall": p.get("prior_overall"),
             "why": why,
         })
 
     # Within a tier: by ceiling where we have one (best chance of dethroning first), by
-    # pooled Overall where we don't (the only thing that distinguishes two unknowns).
+    # pooled Overall where we don't (the only thing that distinguishes two unknowns), and
+    # by the prior methodology's Overall when even that is missing (a seeded field).
     out.sort(
         key=lambda c: (
             c["tier"],
             -(c["ceiling"] if c["ceiling"] is not None else -1e9),
             -(c["pooled_ceiling"] if c["pooled_ceiling"] is not None else -1e9),
             -(c["pooled_overall"] or -1e9),
+            -(c["prior_overall"] if c["prior_overall"] is not None else -1e9),
         )
     )
     return out
@@ -2553,7 +2595,7 @@ def _drive(duel_id: int) -> None:
             # replaced, walked to the end regardless of what the bouts in between found.
             _set_stage(duel_id, "Ranking the field for matchmaking")
             with session_scope() as session:
-                field = compute_profiles(session, include_weather=False)
+                field = _seeded_field(session, compute_profiles(session, include_weather=False))
                 heirs = _compute_heirs(field, session, baseline)
             # The session's weather yardstick, built once: each leg is stamped with its
             # severity against recent history, so a round can say whether its two legs
@@ -2684,7 +2726,7 @@ def fight_card(session, limit: int = 12) -> dict:
     except Exception:  # noqa: BLE001 — reachability is a filter, not a hard requirement
         log.debug("Fight card: could not read live settings", exc_info=True)
 
-    field = compute_profiles(session, include_weather=False)
+    field = _seeded_field(session, compute_profiles(session, include_weather=False))
     heirs = _compute_heirs(field, session, live)
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
     # Exactly the engine's choice of who defends, so the preview can't promise a different

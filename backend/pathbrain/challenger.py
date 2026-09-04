@@ -113,18 +113,27 @@ def _field(session) -> dict:
 
     Imported lazily to avoid a core↔api import cycle."""
     from .api.routes_settings import compute_profiles
-    from .refresh import list_profiles
+    from .refresh import list_profiles, seed_field_from_prior
 
     field = compute_profiles(session, complete_only=True, include_weather=False)
-    comparable_fps = {p["fingerprint"] for p in field["profiles"]}
+    if not field.get("best_fingerprint"):
+        # Nothing comparable under the current methodology yet (right after a publish):
+        # seed the order from the prior version's standings, so the no-data profiles it
+        # ranked highest are measured first instead of in table order. A copy — the memo
+        # must never carry the seed.
+        try:
+            field = seed_field_from_prior(session, field, field.get("min_iterations"))
+        except Exception:  # noqa: BLE001 — a seed orders the race; it must never stop it
+            log.warning("Race: could not seed the field from the prior methodology", exc_info=True)
+    known = {p["fingerprint"] for p in field["profiles"]}
     no_data = [
         {
             "fingerprint": p["fingerprint"], "settings": p["settings"], "label": p["label"],
-            "confident": False, "overall": None, "crown_spreads": {}, "last_seen": None,
-            "no_data": True,
+            "name": p.get("name"), "confident": False, "overall": None, "crown_spreads": {},
+            "last_seen": None, "no_data": True,
         }
         for p in list_profiles(session)
-        if p["fingerprint"] not in comparable_fps
+        if p["fingerprint"] not in known
     ]
     field["profiles"] = list(field["profiles"]) + no_data
     return field
@@ -190,7 +199,11 @@ def rank_challengers(
             }
             continue
         if p.get("no_data"):
-            scored.append(((2, 0.0), p, None))  # lowest priority — fill in the unknowns last
+            # Lowest priority — fill in the unknowns last. Among them, the prior
+            # methodology's Overall (a seeded field) decides the order: the profile that
+            # won under the last rubric is the first unknown worth a fresh measurement.
+            prior = p.get("prior_overall")
+            scored.append(((2, -prior if prior is not None else 1e9), p, None))
         elif not p["confident"]:
             opt = p.get("optimistic")  # field-normalized ceiling from compute_profiles
             # Provisional (``structural=False``): both tests are field-relative — ``optimistic``

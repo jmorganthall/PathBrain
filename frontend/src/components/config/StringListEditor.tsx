@@ -15,6 +15,8 @@ interface Props {
   validate?: (value: string) => string | null;
   placeholder?: string;
   addLabel?: string;
+  // Read-only: the list is owned elsewhere (e.g. by the current methodology).
+  disabled?: boolean;
 }
 
 /** Edit a list of strings with add/remove rows and per-row validation. */
@@ -26,6 +28,7 @@ export default function StringListEditor({
   validate,
   placeholder,
   addLabel = "Add",
+  disabled = false,
 }: Props) {
   const update = (i: number, value: string) => {
     const next = items.slice();
@@ -56,8 +59,9 @@ export default function StringListEditor({
                 onChange={(e) => update(i, e.target.value)}
                 error={Boolean(err)}
                 helperText={err ?? undefined}
+                disabled={disabled}
               />
-              <IconButton aria-label="remove" onClick={() => remove(i)} sx={{ mt: 0.5 }}>
+              <IconButton aria-label="remove" onClick={() => remove(i)} sx={{ mt: 0.5 }} disabled={disabled}>
                 <DeleteOutlineIcon fontSize="small" />
               </IconButton>
             </Stack>
@@ -69,7 +73,7 @@ export default function StringListEditor({
           </Typography>
         )}
         <Box>
-          <Button size="small" startIcon={<AddIcon />} onClick={add}>
+          <Button size="small" startIcon={<AddIcon />} onClick={add} disabled={disabled}>
             {addLabel}
           </Button>
         </Box>

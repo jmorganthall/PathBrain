@@ -30,8 +30,10 @@ import type {
   MethodologySummary,
 } from "../api/types";
 import Loading from "../components/Loading";
-import { Blurb, FoldCard } from "../components/Explain";
+import { Blurb, FoldCard, HelpTip } from "../components/Explain";
+import StringListEditor from "../components/config/StringListEditor";
 import { fmtDateTime } from "../utils/format";
+import { vHttpUrl } from "../utils/validate";
 
 function fmtBound(v: number | null, unit: string): string {
   if (v == null) return "—";
@@ -148,6 +150,12 @@ export default function Methodology() {
   // show + repair a stale pin (e.g. stuck on v10 after upgrading) without an API poke.
   const [pinState, setPinState] = useState<{ current: string; codeDefault: string; pinned: string | null } | null>(null);
   const [switching, setSwitching] = useState(false);
+  // The site list: what the current version owns, or — for a version that measures whatever
+  // Config says — the lists Config holds, offered here so publishing pins them to a version.
+  const [siteBrowser, setSiteBrowser] = useState<string[]>([]);
+  const [siteHttp, setSiteHttp] = useState<string[]>([]);
+  const [siteRegrade, setSiteRegrade] = useState(true);
+  const [publishingSites, setPublishingSites] = useState(false);
 
   useEffect(() => {
     if (suggestedBest != null) setProposalBest(suggestedBest);
@@ -158,9 +166,15 @@ export default function Methodology() {
 
   const load = useCallback(async () => {
     try {
-      const [cur, list] = await Promise.all([api.methodologyCurrent(), api.methodologies()]);
+      const [cur, list, cfg] = await Promise.all([
+        api.methodologyCurrent(),
+        api.methodologies(),
+        api.config().catch(() => null),
+      ]);
       setCurrent(cur);
       setVersions(list.methodologies);
+      setSiteBrowser(cur.collection?.browser_urls ?? cfg?.browser.urls ?? []);
+      setSiteHttp(cur.collection?.http_urls ?? cfg?.http.urls ?? []);
       setPinState({
         current: list.current_version ?? cur.version,
         codeDefault: list.code_default ?? cur.version,
@@ -245,6 +259,38 @@ export default function Methodology() {
       setPublishing(false);
     }
   }, [proposalMetric, proposalBest, setSearchParams, load]);
+
+  const handlePublishSites = useCallback(async () => {
+    const browser = siteBrowser.map((u) => u.trim()).filter(Boolean);
+    const http = siteHttp.map((u) => u.trim()).filter(Boolean);
+    if (browser.length === 0) {
+      setError("At least one browser URL is required");
+      return;
+    }
+    if ([...browser, ...http].some((u) => vHttpUrl(u))) {
+      setError("Fix the highlighted URLs before publishing");
+      return;
+    }
+    setPublishingSites(true);
+    try {
+      const res = await api.publishSites(browser, http, siteRegrade);
+      if (!res.changed) {
+        setToast(`The site list already matches ${res.version} — nothing to publish.`);
+      } else {
+        const diff = [...res.added.map((u) => `+${u}`), ...res.removed.map((u) => `−${u}`)].join(", ");
+        setToast(
+          siteRegrade
+            ? `Published ${res.version} (${diff || "reordered"}) and started a re-grade — earlier runs are now legacy. Track it in the jobs menu (top right) ↗`
+            : `Published ${res.version} (${diff || "reordered"}). Run “Re-grade history under current” to quarantine earlier runs.`,
+        );
+      }
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not publish the site list");
+    } finally {
+      setPublishingSites(false);
+    }
+  }, [siteBrowser, siteHttp, siteRegrade, load]);
 
   if (loading) return <Loading label="Loading methodology…" />;
 
@@ -487,6 +533,65 @@ export default function Methodology() {
             <MetricTable metrics={current.definition.metrics} />
           </CardContent>
         </Card>
+      )}
+
+      {current && (
+        <FoldCard
+          title="Sites measured"
+          summary={
+            current.collection
+              ? `${current.collection.browser_urls.length} browser page${current.collection.browser_urls.length === 1 ? "" : "s"}, ${current.collection.http_urls.length} HTTP URL${current.collection.http_urls.length === 1 ? "" : "s"} — owned by this version.`
+              : "This version measures whatever Config says. Publish a list here to pin it."
+          }
+        >
+          <Typography variant="body2" sx={{ mb: 1.5 }}>
+            Every browser score is an average over these pages, so the list is part of the
+            methodology.
+            <HelpTip title="Changing a site publishes a new version. Runs measured against the old list keep their scores under the old version and are quarantined as legacy under the new one — never pooled with the new measurements. Until fresh runs arrive, the heirs card, the challenger race and the duel ladder are ordered by the previous version's standings, so its winners get measured first." />
+          </Typography>
+          <Stack spacing={2}>
+            <StringListEditor
+              label="Browser pages"
+              helperText="Real page loads in headless Chromium — the crown metrics come from these."
+              items={siteBrowser}
+              onChange={setSiteBrowser}
+              validate={vHttpUrl}
+              placeholder="https://example.com/"
+              addLabel="Add page"
+            />
+            <StringListEditor
+              label="HTTP URLs"
+              helperText="TTFB and transfer speed probes."
+              items={siteHttp}
+              onChange={setSiteHttp}
+              validate={vHttpUrl}
+              placeholder="https://example.com/"
+              addLabel="Add URL"
+            />
+            <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Tooltip
+                arrow
+                title="A re-grade re-scores all of history under the new version, which is what quarantines runs measured against the old list. Leave it off to publish now and re-grade once later."
+              >
+                <FormControlLabel
+                  control={
+                    <Checkbox size="small" checked={siteRegrade} onChange={(e) => setSiteRegrade(e.target.checked)} />
+                  }
+                  label="Re-grade now"
+                />
+              </Tooltip>
+              <Button
+                variant="contained"
+                color="secondary"
+                onClick={handlePublishSites}
+                disabled={publishingSites}
+                startIcon={publishingSites ? <CircularProgress size={16} /> : undefined}
+              >
+                {publishingSites ? "Publishing…" : "Publish site list as a new version"}
+              </Button>
+            </Stack>
+          </Stack>
+        </FoldCard>
       )}
 
       {others.length > 0 && (

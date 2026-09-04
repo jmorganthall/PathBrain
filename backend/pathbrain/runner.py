@@ -79,8 +79,15 @@ def create_run(
     under one parent; ``job_group_total`` is that operation's total iteration count,
     used for the parent's aggregate progress. Both NULL for a standalone run.
     """
+    from .methodology import apply_collection, ensure_current_methodology
+
     with session_scope() as session:
         config = get_config(session)
+        # The URL lists come from the current methodology when it declares them (a site
+        # publish), so the sites a run measures can never drift from the set comparability
+        # will hold it to. Baked into `config_used` like every other setting the run ran
+        # under, which is also what stamps the run's site set.
+        config = apply_collection(config, ensure_current_methodology(session, config).definition)
         if config_overrides:
             # Per-run tweaks over the DB config, section-merged and baked into the run's
             # ``config_used`` snapshot — so ``execute_run`` needs no extra channel and the
@@ -547,15 +554,19 @@ def _iteration_plugin_metrics_from_raw(run, artifact_base: str | None) -> list[d
     ]
 
 
-def score_metrics_under(session, run_id, run_methodology_version, methodology, iter_metrics):
+def score_metrics_under(
+    session, run_id, run_methodology_version, methodology, iter_metrics, site_set=None
+):
     """Score per-iteration ``{plugin: metrics}`` under a methodology's frozen rubric,
     across every axis it defines, and upsert the (run × methodology) Score.
 
     Generic multi-axis: each axis is scored with ``compute_score`` over its own
     metric sources/weights/thresholds, so Speed/Smoothness/Stability/Completion (or
     any future axes) all fall out of the definition. ``is_at_measure`` is set when the
-    methodology matches the run's capture-time version. Returns the Score, or ``None``
-    when nothing was scorable. Caller commits.
+    methodology matches the run's capture-time version. ``site_set`` is the run's stamp
+    (`methodology.site_set_from_config` over its ``config_used``), which comparability
+    holds against the version's declared sites. Returns the Score, or ``None`` when
+    nothing was scorable. Caller commits.
     """
     from statistics import pstdev as _pstdev
 
@@ -611,7 +622,7 @@ def score_metrics_under(session, run_id, run_methodology_version, methodology, i
     if overall is not None:
         axis_scores["overall"] = overall
 
-    comp_tag, missing = comparability(definition, metric_values)
+    comp_tag, missing = comparability(definition, metric_values, site_set=site_set)
     return upsert_score(
         session,
         run_id,
@@ -679,7 +690,12 @@ def score_run_under(session, run, methodology, artifact_base: str | None = None)
         iter_metrics = _iteration_plugin_metrics_from_raw(run, artifact_base)  # slow fallback
     if not iter_metrics:
         return None  # no metrics to interpret
-    return score_metrics_under(session, run.id, run.methodology_version, methodology, iter_metrics)
+    from .methodology import site_set_from_config
+
+    return score_metrics_under(
+        session, run.id, run.methodology_version, methodology, iter_metrics,
+        site_set=site_set_from_config(run.config_used),
+    )
 
 
 # Commit the re-grade in batches of this many runs (each run is savepoint-isolated), so a
@@ -1012,8 +1028,11 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
 
             methodology = ensure_current_methodology(session, config)
             run.methodology_version = methodology.version
+            from .methodology import site_set_from_config
+
             score_metrics_under(
-                session, run_id, methodology.version, methodology, iteration_plugin_metrics
+                session, run_id, methodology.version, methodology, iteration_plugin_metrics,
+                site_set=site_set_from_config(config),
             )
 
             run.per_iteration_ms = (
