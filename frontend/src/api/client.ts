@@ -37,6 +37,7 @@ import type {
   DuelCard,
   DuelProfileLedger,
   DuelHealth,
+  DuelWeatherDistance,
   DuelStandings,
   CrownsOut,
   AiConfig,
@@ -206,6 +207,14 @@ export const api = {
     request<{ cancelled: boolean; status: string | null }>("/duel/cancel", { method: "POST" }),
   duelHistory: (limit = 10) => request<{ duels: DuelSession[] }>(`/duel/history?limit=${limit}`),
   duelCard: (limit = 12) => request<DuelCard>(`/duel/card?limit=${limit}`),
+  // Prices raising `belt_every`: severity shift between legs 1–4 apart, from recent duel
+  // sessions' own runs. Stamps every leg on demand, so it gets a generous fuse.
+  duelWeatherDistance: (sessions = 10, legs = 400) =>
+    request<DuelWeatherDistance>(
+      `/duel/weather-distance?sessions=${sessions}&legs=${legs}`,
+      undefined,
+      { timeoutMs: 120_000 },
+    ),
   duelHealth: (sessions = 50) =>
     request<DuelHealth>(`/duel/health?sessions=${sessions}`, undefined, { timeoutMs: 30_000 }),
   // A bounded wait, because the alternative is worse than a slow page: with no timeout the

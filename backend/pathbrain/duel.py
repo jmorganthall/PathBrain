@@ -1859,9 +1859,673 @@ def contender_order(
     return out
 
 
+# ── The ring: belt cadence + concurrent seats ─────────────────────────────────────────
+#
+# A session used to be a sequence of two-profile matches, each round a pair of legs
+# (belt, challenger) in ABBA order. That spends half of every session re-measuring the
+# belt — a profile that already has thousands of iterations — and it is the only shape
+# the pair-based accounting could express.
+#
+# The ring generalises it with two settings and no new statistics:
+#
+# * ``duel.belt_every`` — the belt (the *reference* leg) recurs every N legs. N=2 is strict
+#   alternation, ``B C B D B C B D…``: every challenger leg has a belt leg on both sides,
+#   which is the strongest shared-weather guarantee the ladder can offer and the default.
+#   N=3 is ``B C D B C D``: a third more challenger legs per hour, and a challenger leg can
+#   be two legs from its nearest belt leg. Raising it is a measured trade, which is what
+#   ``weather_by_distance`` exists to price.
+# * ``duel.seats`` — how many challengers are in the ring at once. Their matches run
+#   concurrently, sharing the same belt legs and the same weather window, and a seat refills
+#   the moment its match decides, so time flows to the undecided.
+#
+# Each challenger leg yields ONE margin: its Overall minus the mean of the usable belt legs
+# flanking it (the one opening its cycle and the one closing it). ``pairs`` on the record
+# still counts margins, so the stopping rule, the ratings fit, the standings and the tape
+# consume the record unchanged. Two honest notes on the arithmetic, so nobody reads more
+# into this than it gives: consecutive margins share a belt leg, so they are mildly
+# correlated (about 1/6 at equal leg noise — the signed-rank test is slightly optimistic);
+# and the information about an edge is still set by how many legs each profile ran, so the
+# throughput gain comes from ``belt_every``, not from alternation itself.
+
+#: The reference leg opening/closing a cycle, or a challenger's leg within it.
+class _Leg:
+    __slots__ = ("fp", "role", "run_id", "value", "severity", "why_missing", "index", "position")
+
+    def __init__(self, fp: str, role: str, run_id: int | None, value: float | None,
+                 severity: float | None, why_missing: str | None, index: int, position: int):
+        self.fp = fp
+        self.role = role            # "belt" | "challenger"
+        self.run_id = run_id
+        self.value = value          # Overall, or None when the leg is unusable
+        self.severity = severity    # weather stamp, or None
+        self.why_missing = why_missing
+        self.index = index          # leg number within the session (1-based)
+        self.position = position    # slot within its cycle (belt = 0)
+
+
+class _Seat:
+    """One challenger's match in progress against the current reference."""
+
+    def __init__(self, fp: str, profile: dict, why: str, reference_fp: str, *,
+                 p1: float, alpha: float, min_margin: float, min_pairs: int,
+                 max_pairs: int, streak_wins: int):
+        self.fp = fp
+        self.profile = profile
+        self.why = why
+        self.reference_fp = reference_fp
+        self.sprt = SprtState(p1, alpha)
+        self.paired = PairedEvidence(alpha, min_margin, min_pairs, max_pairs, streak_wins=streak_wins)
+        self.deltas: list[float] = []
+        self.weather_shifts: list[float | None] = []
+        self.leg_distances: list[int] = []
+        self.bad_streak = 0
+        self.unusable = 0
+        self.unusable_why: dict[str, int] = {}
+        self.legs = 0
+        self.verdict: str | None = None
+        self.reason = ""
+
+
+def belt_every(cfg: dict | None) -> int:
+    """How often the belt's reference leg recurs (2 = strict alternation). Bounded so a
+    stored nonsense value can never stop the ladder measuring."""
+    try:
+        value = int((cfg or {}).get("belt_every", 2) or 2)
+    except (TypeError, ValueError):
+        return 2
+    return max(2, min(value, 6))
+
+
+def seats(cfg: dict | None) -> int:
+    """Challengers in the ring at once."""
+    try:
+        value = int((cfg or {}).get("seats", 2) or 2)
+    except (TypeError, ValueError):
+        return 2
+    return max(1, min(value, 6))
+
+
+def browser_only(cfg: dict | None) -> bool:
+    """Run duel legs with the browser plugin alone. Every crown metric is browser-derived and
+    the weather stamp's clean covariates include the browser's own nav_dns/nav_tcp/nav_tls/
+    nav_request phases, so a browser-only leg still scores and still gets stamped; what it
+    drops is the probe plugins' share of every leg."""
+    return bool((cfg or {}).get("browser_only", False))
+
+
+def leg_overrides(leg_iterations: int, only_browser: bool) -> dict:
+    """The per-run config for one duel leg: lift the browser's iteration cap to the leg's
+    (every crown metric is browser-derived — see `iterations_per_round`), and under
+    ``browser_only`` skip every other plugin."""
+    from .plugins import iter_plugins
+
+    overrides: dict = {"browser": {"iterations": leg_iterations}}
+    if only_browser:
+        for plugin in iter_plugins():
+            if plugin.name != "browser":
+                overrides[plugin.name] = {"skip": True}
+    return overrides
+
+
+def _adjudicate(seat: _Seat, *, method: str, min_pairs: int, max_pairs: int,
+                min_margin: float) -> tuple[str | None, str]:
+    """The stopping rule over one seat's margins so far — the same rule as before, on
+    per-leg margins instead of per-pair ones."""
+    sprt, paired, deltas = seat.sprt, seat.paired, seat.deltas
+    if method == "pair_wins":
+        # Legacy: adjudicate on which side won each margin, magnitudes ignored.
+        verdict = sprt.decision(min_pairs, max_pairs)
+        if verdict in ("challenger", "incumbent"):
+            if abs(_median(deltas)) < min_margin:
+                return "draw", f"boundary crossed but |median Δ| < {min_margin} — practically equal"
+            return verdict, "SPRT boundary crossed"
+        if verdict == "draw":
+            return "draw", (
+                "mutual futility (round wins ~50/50)"
+                if sprt.pairs < max_pairs
+                else f"no decision in {max_pairs} rounds"
+            )
+        return None, ""
+    verdict = paired.decision()
+    if verdict is not None:
+        return verdict, (
+            f"margins consistently one-sided "
+            f"(p={paired.p_value(1 if verdict == 'challenger' else -1):.4f} "
+            f"≤ {paired.nominal_alpha:.4f}, median Δ {_median(deltas):+.2f})"
+        )
+    # No winner yet. Three ways a match still ends — and the cap is checked HERE rather
+    # than inherited from the sign test, which can sit on a "winner" the margin floor
+    # keeps rejecting and so never terminates.
+    sign_verdict = sprt.decision(min_pairs, max_pairs)
+    if sign_verdict in ("challenger", "incumbent") and abs(_median(deltas)) < min_margin:
+        return "draw", f"one side wins the rounds, but by < {min_margin} Overall pts — practically equal"
+    if sign_verdict == "draw":
+        return "draw", "mutual futility (no consistent margin either way)"
+    if paired.pairs >= max_pairs:
+        return "draw", f"no decision in {max_pairs} rounds"
+    return None, ""
+
+
+def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: str,
+                  cadence: int, only_browser: bool) -> dict:
+    """One decided (or closed) match as the ledger stores it. Same shape the pair engine
+    wrote, plus the ring's design fields."""
+    sprt, paired, deltas = seat.sprt, seat.paired, seat.deltas
+    cha = seat.profile
+    return {
+        "incumbent": seat.reference_fp,
+        "challenger": seat.fp,
+        "incumbent_label": inc["label"],
+        "challenger_label": cha["label"],
+        "incumbent_name": inc.get("name"),
+        "challenger_name": cha.get("name"),
+        "challenger_why": seat.why,
+        # Every challenger leg is flanked by belt legs on both sides (or one at a cycle the
+        # window cut short), so "went first" is balanced by construction rather than by
+        # alternating it.
+        "lead_alternated": True,
+        "design": "ring",
+        "belt_every": cadence,
+        "browser_only": only_browser,
+        "pairs": sprt.pairs,
+        "wins_incumbent": sprt.wins_incumbent,
+        "wins_challenger": sprt.wins_challenger,
+        "median_delta": round(_median(deltas), 2) if deltas else None,
+        "llr_incumbent": round(sprt.llr_incumbent, 2),
+        "llr_challenger": round(sprt.llr_challenger, 2),
+        "method": method,
+        "p_value": round(min(paired.p_value(1), paired.p_value(-1)), 5) if deltas else None,
+        "alpha_used": round(paired.nominal_alpha, 5),
+        "verdict": verdict,
+        "reason": reason,
+        "unusable_rounds": seat.unusable,
+        "unusable_why": dict(seat.unusable_why) or None,
+        # The shared-weather audit, aligned with the margins: per usable margin, the largest
+        # severity shift between the challenger leg and a belt leg it was compared with.
+        "weather_shifts": list(seat.weather_shifts),
+        "weather_shifted_rounds": sum(
+            1 for w in seat.weather_shifts if w is not None and w >= ROUND_WEATHER_SHIFT
+        ),
+        "weather_max_shift": max((w for w in seat.weather_shifts if w is not None), default=None),
+        "weather_shift_threshold": ROUND_WEATHER_SHIFT,
+        # How far (in legs) each margin's challenger leg sat from the belt legs it was
+        # compared against — 1 under strict alternation, up to belt_every-1 otherwise.
+        "leg_distances": list(seat.leg_distances),
+        "max_leg_distance": max(seat.leg_distances, default=None),
+    }
+
+
+def _rematch_candidate(
+    matchups: list[dict], incumbent_fp: str | None, belt_now: str | None,
+    rematched: set[frozenset[str]],
+) -> frozenset[str] | None:
+    """**Unfinished business gets its rematch — once.** The most recent match this session
+    in which a challenger BEAT the current defender without taking the belt (their shared
+    record doesn't favour it yet), so the pair can be re-opened.
+
+    Scans every match rather than only the last one: with several seats deciding in the
+    same pass, the qualifying win is routinely not the newest record, and a rule that only
+    ever looked at ``matchups[-1]`` would silently drop it under the default ring shape.
+    Only when the LEDGER put this profile in the ring (``belt_now == incumbent_fp``): on the
+    pooled fallback "the belt didn't move" says nothing about the head-to-head record.
+    """
+    if incumbent_fp is None or belt_now != incumbent_fp:
+        return None
+    for last in reversed(matchups):
+        pair = frozenset((last["incumbent"], last["challenger"]))
+        if (
+            last.get("verdict") == "challenger"
+            and last.get("incumbent") == incumbent_fp
+            and pair not in rematched
+        ):
+            return pair
+    return None
+
+
+def _ring_live(*, matchups_done: int, inc: dict, seats_list: list[_Seat], current: _Seat | None,
+               legs_tape: list[dict], cadence: int, n_seats: int, only_browser: bool,
+               min_pairs: int, max_pairs: int, min_margin: float, streak_needed: int,
+               stage: str) -> dict:
+    """The ring as structured state: every seated match's scoreboard, the recent legs in run
+    order, and the design it is running under. The top level is the seat being measured
+    (or the first), so a reader built for the one-match scoreboard still works."""
+    boards = []
+    for i, seat in enumerate(seats_list):
+        board = _live_scoreboard(
+            bout=matchups_done + 1 + i, inc=inc, cha=seat.profile, sprt=seat.sprt,
+            paired=seat.paired, why_challenger=seat.why, min_pairs=min_pairs,
+            max_pairs=max_pairs, min_margin=min_margin, streak_needed=streak_needed,
+            weather_shifts=seat.weather_shifts,
+        )
+        board["leg_distances"] = list(seat.leg_distances[-24:])
+        board["measuring"] = seat is current
+        boards.append(board)
+    # Callers only publish the ring while at least one seat is filled (`_run_ring` breaks
+    # before its first `_live` otherwise), so there is always a board to lead with.
+    head = boards[seats_list.index(current)] if current in seats_list else boards[0]
+    return {
+        **head,
+        "seats": boards,
+        "legs": legs_tape[-24:],
+        "reference": {
+            "fingerprint": inc.get("fingerprint"),
+            "name": inc.get("name"),
+            "label": inc.get("label"),
+        },
+        "design": {
+            "belt_every": cadence,
+            "seats": n_seats,
+            "browser_only": only_browser,
+        },
+        "stage": stage,
+    }
+
+
+def _run_ring(
+    *,
+    duel_id: int,
+    lease,
+    provider,
+    cfg: dict,
+    field: dict,
+    heirs: dict,
+    baseline: list[dict],
+    settings_by_fp: dict[str, dict],
+    weather,
+    meth_version: str,
+    deadline: float,
+    run_ids: list[int],
+) -> tuple[list[dict], str | None, int]:
+    """Run the ring until the window closes. Returns ``(matchups, last reference, iterations)``.
+
+    The loop is a cycle scheduler: a belt leg opens the cycle, ``belt_every - 1`` challenger
+    legs follow (seats rotating through the slots so every seat sees every position), and a
+    belt leg closes it — which is also the leg that opens the next one. Margins resolve when
+    the closing belt leg lands. Between cycles the seated matches are adjudicated, decided
+    seats refill from the same matchmaking the pair engine used, and the coordinator seam
+    (lease check, beat, zipper yield) is honoured exactly as before.
+    """
+    from .challenger import _apply_profile
+
+    method = str(cfg.get("method", "margins") or "margins").lower()
+    streak_wins = int(cfg.get("streak_wins", 0) or 0)
+    p1 = float(cfg.get("p1", 0.70) or 0.70)
+    alpha = float(cfg.get("alpha", 0.05) or 0.05)
+    min_pairs = int(cfg.get("min_pairs", 10) or 10)
+    max_pairs = int(cfg.get("max_pairs", 40) or 40)
+    min_margin = float(cfg.get("min_margin", 1.0) or 0.0)
+    cooldown_hours = rematch_hours(cfg)
+    leg_iterations = iterations_per_round(cfg)
+    settle_s = max(0, int(cfg.get("settle_seconds", 3) or 0))
+    cadence = belt_every(cfg)
+    n_seats = seats(cfg)
+    only_browser = browser_only(cfg)
+    overrides = leg_overrides(leg_iterations, only_browser)
+    streak_needed = streak_to_decide(alpha, min_pairs, max_pairs, streak_wins)
+    mode = str(cfg.get("contenders", "ring") or "ring")
+    top_n = int(cfg.get("contender_top_n", 8) or 8)
+
+    matchups: list[dict] = []
+    fought: set[frozenset[str]] = set()
+    rematched: set[frozenset[str]] = set()
+    seated: list[_Seat] = []
+    incumbent_fp: str | None = None
+    inc: dict = {}
+    draining = False
+    lead: _Leg | None = None
+    legs_tape: list[dict] = []
+    counters = {"legs": 0, "iterations": 0, "cycles": 0}
+
+    def _stopped() -> bool:
+        return time.monotonic() >= deadline or bool(_state.get("cancel"))
+
+    def _persist_matchups() -> None:
+        with session_scope() as session:
+            d = session.get(Duel, duel_id)
+            if d is not None:
+                d.matchups = list(matchups)
+
+    def _live(current: _Seat | None, stage: str) -> None:
+        _set_stage(duel_id, stage)
+        _set_live(duel_id, _ring_live(
+            matchups_done=len(matchups), inc=inc, seats_list=seated, current=current,
+            legs_tape=legs_tape, cadence=cadence, n_seats=n_seats, only_browser=only_browser,
+            min_pairs=min_pairs, max_pairs=max_pairs, min_margin=min_margin,
+            streak_needed=streak_needed, stage=stage,
+        ))
+
+    def _run_leg(fp: str, profile: dict, role: str, position: int, seat: _Seat | None) -> _Leg:
+        lease.check()  # never write the firewall on an evicted lease
+        _apply_profile(provider, profile["settings"], fp)
+        # Let the link settle after the reconfigure before believing what we measure.
+        if settle_s > 0:
+            time.sleep(settle_s)
+        opponents = ", ".join(s.profile["label"] for s in seated) or "—"
+        run_id, ok, completed = run_chunk(
+            label=f"duel · {profile.get('name') or profile['label']}",
+            notes=f"Duel #{duel_id}: {inc['label']} (belt) vs {opponents}",
+            iterations=leg_iterations,
+            teardown=False,  # keep Chromium warm across the whole ladder
+            job_group=f"duel-{duel_id}",
+            config_overrides=overrides,
+        )
+        run_ids.append(run_id)
+        counters["iterations"] += completed
+        counters["legs"] += 1
+        value, why_missing = _round_reading(run_id, meth_version, ok)
+        severity = weather.leg_severity(run_id) if weather else None
+        with session_scope() as session:
+            d = session.get(Duel, duel_id)
+            if d is not None:
+                d.run_ids = list(run_ids)
+                d.iterations_run = counters["iterations"]
+        leg = _Leg(fp, role, run_id, value, severity, why_missing, counters["legs"], position)
+        legs_tape.append({
+            "index": leg.index,
+            "fingerprint": fp,
+            "name": profile.get("name"),
+            "label": profile.get("label"),
+            "role": role,
+            "position": position,
+            "overall": round(value, 2) if value is not None else None,
+            "severity": round(severity, 1) if severity is not None else None,
+            "run_id": run_id,
+        })
+        if seat is not None:
+            seat.legs += 1
+        return leg
+
+    def _resolve(seat: _Seat, leg: _Leg, flanks: list[_Leg]) -> None:
+        usable = [f for f in flanks if f.value is not None]
+        if leg.value is None or not usable:
+            seat.bad_streak += 1
+            seat.unusable += 1
+            why = leg.why_missing or next(
+                (f.why_missing for f in flanks if f.why_missing), "the belt leg was unusable"
+            )
+            seat.unusable_why[why] = seat.unusable_why.get(why, 0) + 1
+            if seat.bad_streak >= MAX_CONSECUTIVE_BAD_PAIRS:
+                # NOT a draw: the ladder failing to measure, not a verdict of equality.
+                seat.verdict = ABORTED
+                seat.reason = "aborted: " + (
+                    _dominant_reason(seat.unusable_why) or "repeated unusable rounds"
+                )
+            return
+        seat.bad_streak = 0
+        reference = sum(f.value for f in usable) / len(usable)
+        delta = leg.value - reference
+        seat.deltas.append(delta)
+        seat.leg_distances.append(max(abs(leg.index - f.index) for f in usable))
+        shifts = [
+            abs(leg.severity - f.severity)
+            for f in usable
+            if leg.severity is not None and f.severity is not None
+        ]
+        seat.weather_shifts.append(round(max(shifts), 1) if shifts else None)
+        seat.sprt.add_pair(delta > 0)
+        seat.paired.add(delta)
+
+    def _close(seat: _Seat, verdict: str, reason: str) -> None:
+        record = _match_record(
+            seat, inc, method=method, verdict=verdict, reason=reason,
+            cadence=cadence, only_browser=only_browser,
+        )
+        matchups.append(record)
+        _persist_matchups()
+        log.info(
+            "Duel %s verdict: %s vs %s → %s (%s; pairs=%s Δmed=%s)",
+            duel_id, inc["label"], seat.profile["label"], verdict, reason,
+            seat.sprt.pairs, record["median_delta"],
+        )
+
+    while not _stopped():
+        # 1. Who defends, and who is seated against it. Refit the ledger INCLUDING this
+        #    session's matches, so a challenger that just won is re-rated before the next
+        #    seat is filled.
+        with session_scope() as session:
+            ratings = ledger_ratings(session)
+            defender_fp, defender_why = select_incumbent(session, field, baseline, cfg, ratings)
+            if defender_fp is None or defender_fp not in settings_by_fp:
+                if not matchups and not seated:
+                    raise RuntimeError("No confident profile to defend — nothing to duel.")
+                break
+            if incumbent_fp is not None and defender_fp != incumbent_fp and seated:
+                # The belt moved while matches are still seated against the old holder.
+                # Finish those against the reference they started with — a match is never
+                # switched mid-way — and only then hand the ring to the new holder.
+                if not draining:
+                    log.info("Duel %s: belt moved to %s — draining %d seated match(es)",
+                             duel_id, defender_fp, len(seated))
+                draining = True
+            else:
+                draining = False
+                if defender_fp != incumbent_fp:
+                    log.info("Duel %s: %s (%s)", duel_id, defender_why, defender_fp)
+                    incumbent_fp = defender_fp
+                    inc = settings_by_fp[incumbent_fp]
+                    lead = None  # a new reference opens with a fresh belt leg
+            # The title holder over the ledger this session is extending — one replay per
+            # cycle, reused below for the stored belt (the badge changes hands mid-session,
+            # so it is written every cycle rather than at session end).
+            belt_now, _, _ = belt_holder(_ledger_sessions(session), ratings, crown_rule(cfg))
+            # Unfinished business gets its rematch — once. A challenger that WON its match
+            # without taking the belt (their shared record doesn't favour it yet) has
+            # raised the most informative question on the ledger, so the pair re-opens.
+            rematch_now: frozenset[str] | None = None
+            if matchups and not draining:
+                rematch_now = _rematch_candidate(matchups, incumbent_fp, belt_now, rematched)
+                if rematch_now is not None:
+                    rematched.add(rematch_now)
+                    fought.discard(rematch_now)
+            while not draining and len(seated) < n_seats:
+                challenger_fp, why_challenger = next_challenger(
+                    session, field, ratings, incumbent_fp, heirs=heirs, baseline=baseline,
+                    cooldown_hours=cooldown_hours, mode=mode, top_n=top_n, fought=fought,
+                )
+                if challenger_fp is None or challenger_fp not in settings_by_fp:
+                    break
+                if rematch_now == frozenset((incumbent_fp, challenger_fp)):
+                    why_challenger = (
+                        f"{why_challenger} — rematch: it won the last match without taking the belt"
+                    )
+                fought.add(frozenset((incumbent_fp, challenger_fp)))
+                seated.append(_Seat(
+                    challenger_fp, settings_by_fp[challenger_fp], why_challenger, incumbent_fp,
+                    p1=p1, alpha=alpha, min_margin=min_margin, min_pairs=min_pairs,
+                    max_pairs=max_pairs, streak_wins=streak_wins,
+                ))
+                log.info("Duel %s seat %d: challenger %s (%s)", duel_id, len(seated),
+                         challenger_fp, why_challenger)
+        if not seated:
+            if not matchups:
+                raise RuntimeError(_no_contenders_reason(field, heirs, incumbent_fp, baseline))
+            break
+
+        # The stored belt names the TITLE HOLDER (the replay above), written every cycle
+        # because the title changes hands mid-session and a badge that waits for session
+        # end reads stale.
+        with session_scope() as session:
+            belt_fp = belt_now or incumbent_fp
+            holder = settings_by_fp.get(belt_fp) or {}
+            d = session.get(Duel, duel_id)
+            if d is not None:
+                d.champion_fingerprint = belt_fp
+                d.champion_label = holder.get("name") or holder.get("label")
+
+        # 2. One cycle: belt (if the previous one's closing leg can't serve), then the
+        #    challenger slots, then the closing belt leg that resolves them. A cycle never
+        #    seats the same challenger twice: two legs of one profile against the same two
+        #    belt legs are one comparison counted as two, and a back-to-back re-apply that
+        #    measures nothing new. With fewer seats than slots the cycle is simply shorter.
+        names = ", ".join(s.profile.get("name") or s.profile["label"] for s in seated)
+        if lead is None:
+            _live(None, f"{inc.get('name') or inc['label']} (belt) — reference leg, {names} seated")
+            lead = _run_leg(incumbent_fp, inc, "belt", 0, None)
+            if _stopped():
+                break
+        pending: list[tuple[_Seat, _Leg]] = []
+        cycle = counters["cycles"]
+        slots = min(cadence - 1, len(seated))
+        for slot in range(slots):
+            if _stopped():
+                break
+            # Rotate which seat takes which slot from cycle to cycle, so no seat is always
+            # the one nearest (or furthest from) the opening belt leg.
+            seat = seated[(cycle + slot) % len(seated)]
+            _live(seat, (
+                f"Match {len(matchups) + 1 + seated.index(seat)} · "
+                f"{inc.get('name') or inc['label']} (belt) defends vs "
+                f"{seat.profile.get('name') or seat.profile['label']} ({seat.why}) — round "
+                f"{seat.sprt.pairs + 1} ({seat.sprt.wins_incumbent}-{seat.sprt.wins_challenger})"
+            ))
+            pending.append((seat, _run_leg(seat.fp, seat.profile, "challenger", slot + 1, seat)))
+        counters["cycles"] += 1
+        trail: _Leg | None = None
+        if pending and not _stopped():
+            _live(None, f"{inc.get('name') or inc['label']} (belt) — closing reference leg")
+            trail = _run_leg(incumbent_fp, inc, "belt", 0, None)
+        for seat, leg in pending:
+            _resolve(seat, leg, [f for f in (lead, trail) if f is not None])
+        lead = trail  # the closing leg opens the next cycle (None if the window cut it)
+
+        # 3. Adjudicate every seated match and free the decided seats.
+        for seat in list(seated):
+            if seat.verdict is None:
+                seat.verdict, seat.reason = _adjudicate(
+                    seat, method=method, min_pairs=min_pairs, max_pairs=max_pairs,
+                    min_margin=min_margin,
+                )
+            if seat.verdict is not None:
+                _close(seat, seat.verdict, seat.reason)
+                seated.remove(seat)
+        if _stopped():
+            break
+
+        # 4. The seam. Check the lease (an evicted ladder must not write over whoever holds
+        #    the pipeline now), beat (reaching here is the proof of progress), then let ONE
+        #    queued session through. Yielded time is not added back to the deadline. A yield
+        #    breaks adjacency, so the next cycle opens with a fresh belt leg.
+        lease.check()
+        lease.beat()
+        yielded = coordinator.yield_if_waiting(f"duel#{duel_id}")
+        if yielded:
+            log.info("Duel %s: stepped aside for %.0fs of queued work", duel_id, yielded)
+            lead = None
+
+    # Whatever is still seated when the window closes is recorded undecided, as before.
+    for seat in seated:
+        _close(seat, "draw", "window closed mid-matchup (undecided)")
+    return matchups, incumbent_fp, counters["iterations"]
+
+
+def weather_by_distance(limit_sessions: int = 10, max_legs: int = 400) -> dict:
+    """**How fast does the weather move between legs?** — measured from the ledger's own runs.
+
+    Raising ``belt_every`` puts a challenger leg further from the belt leg it is compared
+    with, and the only honest way to price that is to look at how much the measured
+    severity shifts between legs one, two, three and four apart on THIS link. Every duel
+    session's legs are already on record in run order (``Duel.run_ids``), so the answer
+    comes from history that exists, not from a session that has to be run first.
+
+    Per distance: the number of leg pairs, the median and p75 absolute severity shift, and
+    the share over ``ROUND_WEATHER_SHIFT``. Read the share: if two-apart legs shift no more
+    often than adjacent ones, ``belt_every=3`` costs nothing the adjacent design wasn't
+    already paying.
+    """
+    from .methodology import ensure_current_methodology
+
+    from .models import Run
+
+    with session_scope() as session:
+        meth_version = ensure_current_methodology(session, get_config(session)).version
+        rows = session.scalars(
+            select(Duel).where(Duel.status == DuelStatus.COMPLETE)
+            .order_by(Duel.id.desc()).limit(limit_sessions)
+        ).all()
+        sequences = [list(d.run_ids or []) for d in rows]
+        all_ids = [rid for seq in sequences for rid in seq]
+        started: dict[int, datetime] = {}
+        for chunk_start in range(0, len(all_ids), 500):
+            chunk = all_ids[chunk_start:chunk_start + 500]
+            if chunk:
+                started.update(dict(session.execute(
+                    select(Run.id, Run.created_at).where(Run.id.in_(chunk))
+                ).all()))
+    stamper = _weather_stamper(meth_version)
+    if stamper is None:
+        return {"available": False, "reason": "no weather yardstick could be built from recent runs",
+                "threshold": ROUND_WEATHER_SHIFT, "by_distance": [], "sessions_analyzed": len(sequences)}
+    # "N legs apart" only means anything within a run of back-to-back legs. A session's
+    # run_ids also span the seams where the ladder stepped aside for queued work (the zipper
+    # yield) or stalled, and two legs either side of a forty-minute detour are not adjacent
+    # — scoring them as such would inflate the adjacent row with real weather changes, in
+    # exactly the direction that flatters raising the cadence. So each session's sequence
+    # is split wherever the gap between consecutive legs is far longer than that session's
+    # typical leg.
+    def _split(seq: list[int]) -> list[list[int]]:
+        times = [started.get(rid) for rid in seq]
+        gaps = [
+            (b - a).total_seconds()
+            for a, b in zip(times, times[1:])
+            if a is not None and b is not None
+        ]
+        if len(gaps) < 2:
+            return [seq]
+        typical = _median(sorted(gaps))
+        limit = max(typical * 2.5, typical + 120.0)
+        runs: list[list[int]] = [[seq[0]]]
+        for prev, cur in zip(seq, seq[1:]):
+            a, b = started.get(prev), started.get(cur)
+            if a is not None and b is not None and (b - a).total_seconds() > limit:
+                runs.append([cur])
+            else:
+                runs[-1].append(cur)
+        return runs
+
+    budget = max_legs
+    stamped: list[list[float | None]] = []
+    sessions_used = 0
+    for seq in sequences:
+        if budget <= 0:
+            break
+        seq = seq[-budget:]
+        budget -= len(seq)
+        sessions_used += 1
+        for stretch in _split(seq):
+            stamped.append([stamper.leg_severity(run_id) for run_id in stretch])
+    out = []
+    for distance in (1, 2, 3, 4):
+        shifts = [
+            abs(s[i + distance] - s[i])
+            for s in stamped
+            for i in range(len(s) - distance)
+            if s[i] is not None and s[i + distance] is not None
+        ]
+        if not shifts:
+            out.append({"distance": distance, "pairs": 0, "median_shift": None,
+                        "p75_shift": None, "shifted_share": None})
+            continue
+        ordered = sorted(shifts)
+        out.append({
+            "distance": distance,
+            "pairs": len(shifts),
+            "median_shift": round(_median(ordered), 1),
+            "p75_shift": round(ordered[min(len(ordered) - 1, int(0.75 * len(ordered)))], 1),
+            "shifted_share": round(sum(1 for x in shifts if x >= ROUND_WEATHER_SHIFT) / len(shifts), 3),
+        })
+    return {
+        "available": True,
+        "threshold": ROUND_WEATHER_SHIFT,
+        "by_distance": out,
+        "sessions_analyzed": sessions_used,
+        "stretches": len(stamped),
+        "legs_stamped": sum(1 for s in stamped for x in s if x is not None),
+    }
+
+
 def _drive(duel_id: int) -> None:
     from .api.routes_settings import _compute_heirs, compute_profiles
-    from .challenger import _apply_all, _apply_profile
+    from .challenger import _apply_all
     from .methodology import ensure_current_methodology
 
     provider = get_provider()
@@ -1881,16 +2545,6 @@ def _drive(duel_id: int) -> None:
                 duration_s = d.duration_s
                 cfg = _duel_config(session)
                 meth_version = ensure_current_methodology(session, get_config(session)).version
-            method = str(cfg.get("method", "margins") or "margins").lower()
-            streak_wins = int(cfg.get("streak_wins", 0) or 0)
-            p1 = float(cfg.get("p1", 0.70) or 0.70)
-            alpha = float(cfg.get("alpha", 0.05) or 0.05)
-            min_pairs = int(cfg.get("min_pairs", 10) or 10)
-            max_pairs = int(cfg.get("max_pairs", 40) or 40)
-            min_margin = float(cfg.get("min_margin", 1.0) or 0.0)
-            cooldown_hours = rematch_hours(cfg)
-            leg_iterations = iterations_per_round(cfg)
-            settle_s = max(0, int(cfg.get("settle_seconds", 3) or 0))
 
             # Matchmaking, re-decided BEFORE EVERY BOUT rather than once a session: the
             # ring's current #1 defends, against whichever profile the ledger says is most
@@ -1906,387 +2560,14 @@ def _drive(duel_id: int) -> None:
             # actually shared their weather instead of assuming adjacency proved it.
             weather = _weather_stamper(meth_version)
             settings_by_fp = {p["fingerprint"]: p for p in field.get("profiles", [])}
-            mode = str(cfg.get("contenders", "ring") or "ring")
-            top_n = int(cfg.get("contender_top_n", 8) or 8)
-
             deadline = time.monotonic() + duration_s
-            matchups: list[dict] = []
-            # Pairs already fought in this session — a hard skip, so the ladder moves down
-            # the threat list instead of re-running the bout it just ran.
-            fought: set[frozenset[str]] = set()
-            # …with one exception, tracked here so it can only be taken once per pair.
-            rematched: set[frozenset[str]] = set()
-            rematch_now: frozenset[str] | None = None
-            incumbent_fp: str | None = None
-
-            while time.monotonic() < deadline and not _state.get("cancel"):
-                # Refit the ring's own verdict over the whole ledger INCLUDING this
-                # session's bouts (`_ledger_sessions` reads the running duel), so a
-                # challenger that just won is re-rated before the next matchup is chosen.
-                with session_scope() as session:
-                    ratings = ledger_ratings(session)
-                    defender_fp, defender_why = select_incumbent(
-                        session, field, baseline, cfg, ratings
-                    )
-                    if defender_fp is None or defender_fp not in settings_by_fp:
-                        if not matchups:
-                            raise RuntimeError(
-                                "No confident profile to defend — nothing to duel."
-                            )
-                        break
-                    # **Unfinished business gets its rematch.** A challenger that WON its
-                    # bout but didn't take the belt — its floor hasn't cleared the
-                    # leader's yet — has raised the most informative question on the
-                    # ledger: its record says it is the better profile and the standings
-                    # still say the other one is. Setting that pair aside for the rest of
-                    # the session (as the plain "already fought" skip does) leaves exactly
-                    # the profile most likely to dethrone the leader unable to finish the
-                    # job, which is the "two profiles beat this one but it keeps the belt"
-                    # report. So the pair is re-opened — once, so the ladder can't
-                    # ping-pong on it — and its freshly-raised rating puts it near the top
-                    # of the order on its own.
-                    rematch_now = None
-                    if matchups:
-                        last = matchups[-1]
-                        pair = frozenset((last["incumbent"], last["challenger"]))
-                        # Only when the LEDGER is what put this profile in the ring. On the
-                        # pooled fallback (nothing rated and reachable) "the belt didn't
-                        # move" says nothing about the head-to-head record, so there is no
-                        # unfinished business to re-open. Under the lineal rule the test is
-                        # exact rather than a proxy: the challenger beat the champion and
-                        # the champion still holds the title, which happens when their
-                        # shared record does not yet favour the winner — precisely the
-                        # question worth re-asking.
-                        belt_now, _, _ = belt_holder(
-                            _ledger_sessions(session), ratings, crown_rule(cfg)
-                        )
-                        if (
-                            last["verdict"] == "challenger"
-                            and defender_fp == last["incumbent"]
-                            and defender_fp == belt_now
-                            and pair not in rematched
-                        ):
-                            rematched.add(pair)
-                            fought.discard(pair)
-                            rematch_now = pair
-                    challenger_fp, why_challenger = next_challenger(
-                        session,
-                        field,
-                        ratings,
-                        defender_fp,
-                        heirs=heirs,
-                        baseline=baseline,
-                        cooldown_hours=cooldown_hours,
-                        mode=mode,
-                        top_n=top_n,
-                        fought=fought,
-                    )
-                if challenger_fp is None or challenger_fp not in settings_by_fp:
-                    if not matchups:
-                        raise RuntimeError(
-                            _no_contenders_reason(field, heirs, defender_fp, baseline)
-                        )
-                    break
-                if rematch_now == frozenset((defender_fp, challenger_fp)):
-                    why_challenger = (
-                        f"{why_challenger} — rematch: it won the last match without taking "
-                        f"the belt"
-                    )
-                if defender_fp != incumbent_fp:
-                    log.info("Duel %s: %s (%s)", duel_id, defender_why, defender_fp)
-                incumbent_fp = defender_fp
-                # The stored belt names the TITLE HOLDER, which under the lineal rule is
-                # not the same thing as whoever is standing in the ring: the champion
-                # defends, so the two agree while the champion is reachable and diverge
-                # when a stand-in defends in its place. Written every bout because the
-                # title changes hands mid-session and a badge that waits for session end
-                # reads hours stale on a continuous ladder.
-                with session_scope() as session:
-                    belt_fp, _, _ = belt_holder(
-                        _ledger_sessions(session), ledger_ratings(session), crown_rule(cfg)
-                    )
-                    belt_fp = belt_fp or incumbent_fp
-                    holder = settings_by_fp.get(belt_fp) or {}
-                    d = session.get(Duel, duel_id)
-                    if d is not None:
-                        d.champion_fingerprint = belt_fp
-                        d.champion_label = holder.get("name") or holder.get("label")
-                log.info(
-                    "Duel %s bout %s: challenger %s (%s)",
-                    duel_id, len(matchups) + 1, challenger_fp, why_challenger,
-                )
-                fought.add(frozenset((incumbent_fp, challenger_fp)))
-                inc = settings_by_fp[incumbent_fp]
-                cha = settings_by_fp[challenger_fp]
-                sprt = SprtState(p1, alpha)
-                # Why this match's rounds were thrown away, if any were.
-                unusable_rounds = 0
-                unusable_why: dict[str, int] = {}
-                # Magnitude-aware adjudicator. The SPRT walk still runs alongside it: the
-                # sign test is a poor winner-detector but a fine FUTILITY detector, and
-                # its "pair wins are ~50/50" exit is what stops a settled tie from eating
-                # the rest of the window.
-                paired = PairedEvidence(
-                    alpha, min_margin, min_pairs, max_pairs, streak_wins=streak_wins
-                )
-                deltas: list[float] = []
-                # Per-round severity shift between the two legs, aligned with `deltas`
-                # (unusable rounds record neither). None = one or both legs unstampable.
-                weather_shifts: list[float | None] = []
-                bad_streak = 0
-                verdict: str | None = None
-                reason = ""
-
-                while verdict is None and time.monotonic() < deadline and not _state.get("cancel"):
-                    # Zipper merge. The ladder holds the coordination lock for its whole
-                    # window — hours — so anything a user starts meanwhile (an Explore
-                    # "Test now", a manual run) would otherwise queue behind the entire
-                    # night. Between pairs nothing is in flight, so this is the seam: let
-                    # ONE queued session through, then take the ring back for the next
-                    # pair, then look again. Within-pair adjacency — the thing that makes
-                    # the two legs share their weather — is untouched, because a pair is
-                    # never interrupted once it starts.
-                    #
-                    # The yielded time is deliberately NOT added back to the deadline: a
-                    # nightly window is a wall-clock agreement about when the ladder may
-                    # run, and quietly running past 05:00 to make up for a detour would
-                    # break the thing the window is for.
-                    # Two things at the seam, in this order. **Check** that the session
-                    # still owns the pipeline: a ladder that went quiet long enough to be
-                    # evicted must not wake up and start applying profiles over whoever
-                    # holds it now — it stops here instead. Then **beat**, because
-                    # reaching this line is itself the proof of progress a pair-by-pair
-                    # session can offer.
-                    lease.check()
-                    lease.beat()
-                    yielded = coordinator.yield_if_waiting(f"duel#{duel_id}")
-                    if yielded:
-                        log.info(
-                            "Duel %s: stepped aside for %.0fs of queued work", duel_id, yielded
-                        )
-                        if time.monotonic() >= deadline or _state.get("cancel"):
-                            break
-                    # Name the bout AND why this challenger is in the ring — "who are these
-                    # two and how did they get here?" is the question a live readout has to
-                    # answer, and a bare pair of names doesn't.
-                    _set_stage(
-                        duel_id,
-                        f"Match {len(matchups) + 1} · "
-                        f"{inc.get('name') or inc['label']} (belt) defends vs "
-                        f"{cha.get('name') or cha['label']} ({why_challenger}) — round "
-                        f"{sprt.pairs + 1} ({sprt.wins_incumbent}-{sprt.wins_challenger})",
-                    )
-                    # …and the same bout as structured state, so the page can say who is
-                    # ahead and by how much rather than printing an unattributed scoreline.
-                    _set_live(duel_id, _live_scoreboard(
-                        bout=len(matchups) + 1, inc=inc, cha=cha, sprt=sprt, paired=paired,
-                        why_challenger=why_challenger, min_pairs=min_pairs,
-                        max_pairs=max_pairs, min_margin=min_margin,
-                        streak_needed=streak_to_decide(alpha, min_pairs, max_pairs, streak_wins),
-                        weather_shifts=weather_shifts,
-                    ))
-                    # ABBA, not ABAB. The incumbent used to run first in every single
-                    # pair, which makes "goes first" and "is the incumbent" the same
-                    # variable: any position-in-pair effect — the state the previous run
-                    # left behind, a cache still warm, the shaper freshly reconfigured —
-                    # lands on the same side every time and is indistinguishable from a
-                    # real difference between the profiles. Alternating which side leads
-                    # cancels it instead of hoping it's zero. The margin is always
-                    # challenger − incumbent, so the verdict doesn't care who ran first.
-                    lead_incumbent = sprt.pairs % 2 == 0
-                    order = (
-                        ((incumbent_fp, inc), (challenger_fp, cha))
-                        if lead_incumbent
-                        else ((challenger_fp, cha), (incumbent_fp, inc))
-                    )
-                    scored: dict[str, float | None] = {}
-                    leg_runs: dict[str, int] = {}
-                    for side_fp, side in order:
-                        lease.check()  # never write the firewall on an evicted lease
-                        _apply_profile(provider, side["settings"], side_fp)
-                        # Let the link settle after the reconfigure before believing what
-                        # we measure (duel.settle_seconds; 0 = measure immediately).
-                        if settle_s > 0:
-                            time.sleep(settle_s)
-                        run_id, ok, completed = run_chunk(
-                            label=f"duel · {side.get('name') or side['label']}",
-                            notes=f"Duel #{duel_id}: {inc['label']} vs {cha['label']}",
-                            iterations=leg_iterations,
-                            teardown=False,  # keep Chromium warm across the whole ladder
-                            job_group=f"duel-{duel_id}",
-                            # Lift the browser's per-plugin cap to match. Every crown metric
-                            # (fcp / lcp / network_stall_all) is browser-derived, so leaving
-                            # `browser.iterations` at its default would median the network
-                            # probes over k samples and the metrics that actually decide the
-                            # round over 2 — buying sqrt(2) of noise reduction while paying
-                            # for k. The profile test lifts it for the same reason.
-                            config_overrides={"browser": {"iterations": leg_iterations}},
-                        )
-                        run_ids.append(run_id)
-                        leg_runs[side_fp] = run_id
-                        iterations_run += completed
-                        value, why_missing = _round_reading(run_id, meth_version, ok)
-                        scored[side_fp] = value
-                        if why_missing:
-                            # Count WHY, not just how many. Three of these in a row abort
-                            # the match, and until now the record said only "unusable".
-                            unusable_why[why_missing] = unusable_why.get(why_missing, 0) + 1
-                    pair_overalls = [scored[incumbent_fp], scored[challenger_fp]]
-                    with session_scope() as session:
-                        d = session.get(Duel, duel_id)
-                        if d is not None:
-                            d.run_ids = list(run_ids)
-                            d.iterations_run = iterations_run
-                    inc_val, cha_val = pair_overalls
-                    if inc_val is None or cha_val is None:
-                        bad_streak += 1
-                        unusable_rounds += 1
-                        if bad_streak >= MAX_CONSECUTIVE_BAD_PAIRS:
-                            # NOT a draw. A draw is a verdict — "these two are equal, and
-                            # the ring says so" — and it is counted, rated and displayed as
-                            # one. This is the ladder failing to measure anything, which is
-                            # the opposite claim, and filing the two under one word is why
-                            # a record of 29-18-379 read as a field of near-identical
-                            # profiles rather than a data-collection problem.
-                            verdict = ABORTED
-                            reason = "aborted: " + (
-                                _dominant_reason(unusable_why) or "repeated unusable rounds"
-                            )
-                        continue
-                    bad_streak = 0
-                    delta = cha_val - inc_val
-                    deltas.append(delta)
-                    # Stamp the round's weather: the severity of each leg, and the shift
-                    # between them — the direct check on the shared-weather assumption
-                    # this margin rests on. Flag only; the verdict math below is untouched.
-                    sev_inc = weather.leg_severity(leg_runs.get(incumbent_fp)) if weather else None
-                    sev_cha = weather.leg_severity(leg_runs.get(challenger_fp)) if weather else None
-                    weather_shifts.append(
-                        round(abs(sev_cha - sev_inc), 1)
-                        if sev_inc is not None and sev_cha is not None
-                        else None
-                    )
-                    sprt.add_pair(delta > 0)
-                    paired.add(delta)
-
-                    if method == "pair_wins":
-                        # Legacy: adjudicate on which side won each pair, magnitudes ignored.
-                        verdict = sprt.decision(min_pairs, max_pairs)
-                        if verdict in ("challenger", "incumbent"):
-                            if abs(_median(deltas)) < min_margin:
-                                verdict, reason = "draw", (
-                                    f"boundary crossed but |median Δ| < {min_margin} — practically equal"
-                                )
-                            else:
-                                reason = "SPRT boundary crossed"
-                        elif verdict == "draw":
-                            reason = (
-                                "mutual futility (round wins ~50/50)"
-                                if sprt.pairs < max_pairs
-                                else f"no decision in {max_pairs} rounds"
-                            )
-                    else:
-                        # Default: decide on the paired MARGINS (signed-rank), which is
-                        # where the evidence actually lives; fall back to the sign test's
-                        # futility exit and the pair cap for draws.
-                        verdict = paired.decision()
-                        if verdict is not None:
-                            reason = (
-                                f"margins consistently one-sided "
-                                f"(p={paired.p_value(1 if verdict == 'challenger' else -1):.4f} "
-                                f"≤ {paired.nominal_alpha:.4f}, median Δ "
-                                f"{_median(deltas):+.2f})"
-                            )
-                        else:
-                            # No winner yet. Three ways a bout still ends — and the pair cap
-                            # is checked HERE rather than being inherited from the sign
-                            # test, which can sit on a "winner" verdict the margin floor
-                            # keeps rejecting and so never terminates the loop.
-                            sign_verdict = sprt.decision(min_pairs, max_pairs)
-                            below_floor = (
-                                sign_verdict in ("challenger", "incumbent")
-                                and abs(_median(deltas)) < min_margin
-                            )
-                            if below_floor:
-                                verdict = "draw"
-                                reason = (
-                                    f"one side wins the rounds, but by < {min_margin} "
-                                    f"Overall pts — practically equal"
-                                )
-                            elif sign_verdict == "draw":
-                                verdict = "draw"
-                                reason = "mutual futility (no consistent margin either way)"
-                            elif paired.pairs >= max_pairs:
-                                verdict = "draw"
-                                reason = f"no decision in {max_pairs} rounds"
-
-                if verdict is None:
-                    verdict, reason = "draw", "window closed mid-matchup (undecided)"
-                record = {
-                    "incumbent": incumbent_fp,
-                    "challenger": challenger_fp,
-                    "incumbent_label": inc["label"],
-                    "challenger_label": cha["label"],
-                    # Call signs are what the tape is read in ("Speedy Sloth vs Quantum
-                    # Quasar"); the technical labels stay beside them so a bout still says
-                    # which settings actually fought.
-                    "incumbent_name": inc.get("name"),
-                    "challenger_name": cha.get("name"),
-                    # Why this challenger got the ring — the tape should answer "why these
-                    # two?" without the reader having to reconstruct the matchmaking.
-                    "challenger_why": why_challenger,
-                    # Pairs alternate which profile runs first (ABBA), so "went first" is
-                    # not confounded with "is the incumbent". Recorded so the counterbalance
-                    # is auditable from the ledger rather than taken on trust.
-                    "lead_alternated": True,
-                    "pairs": sprt.pairs,
-                    "wins_incumbent": sprt.wins_incumbent,
-                    "wins_challenger": sprt.wins_challenger,
-                    "median_delta": round(_median(deltas), 2) if deltas else None,
-                    "llr_incumbent": round(sprt.llr_incumbent, 2),
-                    "llr_challenger": round(sprt.llr_challenger, 2),
-                    # How the bout was judged, and the evidence that judged it.
-                    "method": method,
-                    "p_value": (
-                        round(min(paired.p_value(1), paired.p_value(-1)), 5) if deltas else None
-                    ),
-                    "alpha_used": round(paired.nominal_alpha, 5),
-                    "verdict": verdict,
-                    "reason": reason,
-                    # How much of this match was thrown away, and why. Recorded on every
-                    # match rather than only aborted ones: a match that was decided after
-                    # discarding four rounds is still telling you something is wrong with
-                    # the measurement, and that signal was previously invisible.
-                    "unusable_rounds": unusable_rounds,
-                    "unusable_why": dict(unusable_why) or None,
-                    # The shared-weather audit, aligned with the margins: per usable round,
-                    # the severity shift between its two legs (None = unstampable), plus
-                    # the count over the threshold. A verdict decided across shifted
-                    # rounds still stands — the flag says which margins to trust less.
-                    "weather_shifts": list(weather_shifts),
-                    "weather_shifted_rounds": sum(
-                        1 for w in weather_shifts if w is not None and w >= ROUND_WEATHER_SHIFT
-                    ),
-                    "weather_max_shift": max(
-                        (w for w in weather_shifts if w is not None), default=None
-                    ),
-                    "weather_shift_threshold": ROUND_WEATHER_SHIFT,
-                }
-                matchups.append(record)
-                # Persist the bout, which is also what the next loop's rating refit reads:
-                # who defends next is re-derived from the ledger, not carried over. So the
-                # winner does not simply "stay on" — beating the leader promotes you when
-                # it lifts your floor above its, the same bar the standings apply, which is
-                # what keeps the belt and the #1 row from ever naming different profiles.
-                with session_scope() as session:
-                    d = session.get(Duel, duel_id)
-                    if d is not None:
-                        d.matchups = list(matchups)
-                log.info(
-                    "Duel %s verdict: %s vs %s → %s (%s; pairs=%s Δmed=%s)",
-                    duel_id, inc["label"], cha["label"], verdict, reason,
-                    sprt.pairs, record["median_delta"],
-                )
+            matchups, incumbent_fp, iterations_run = _run_ring(
+                duel_id=duel_id, lease=lease, provider=provider, cfg=cfg, field=field,
+                heirs=heirs, baseline=baseline, settings_by_fp=settings_by_fp, weather=weather,
+                meth_version=meth_version, deadline=deadline, run_ids=run_ids,
+            )
+            log.info("Duel %s: ring closed — %d match(es), %d iteration(s)",
+                     duel_id, len(matchups), iterations_run)
 
             # The session's champion is the title holder over the ledger this session just
             # extended — the same replay the standings badge and `latest_champion` run, so

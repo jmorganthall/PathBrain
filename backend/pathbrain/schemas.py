@@ -70,6 +70,12 @@ class DuelScheduleUpdate(BaseModel):
     rating_prior_pairs: float | None = None
     # Benchmark iterations per leg of a round — the ring's resolving power.
     iterations_per_round: int | None = None
+    # The ring's shape: the belt's reference leg recurs every `belt_every` legs (2 = strict
+    # alternation), `seats` challengers fight at once, and `browser_only` legs skip the
+    # probe plugins (the crown is browser-derived; the weather stamp survives on nav_*).
+    belt_every: int | None = None
+    seats: int | None = None
+    browser_only: bool | None = None
     # Which rule names the champion: "lineal" (you take the belt by beating its holder,
     # provided your whole shared record then favours you on both matches and rounds) or
     # "rating_floor" (the ring's #1 by proven rating). The standings rank on the floor

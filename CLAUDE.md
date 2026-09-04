@@ -666,6 +666,46 @@ LLM-based. See `README.md` for the product overview.
     `_recently_decided` likewise scans duels **by `finished_at` within the cooldown**, not
     "the last 20 sessions" (a continuous ladder finishes several a day, so a row cap covered
     ~3 days of a 7-day cooldown).
+    **The ring: belt cadence + concurrent seats** (`duel._run_ring`, `duel.belt_every`,
+    `duel.seats`, `duel.browser_only`). A session used to be a sequence of two-profile
+    matches, each round a (belt, challenger) pair in ABBA order — which put the same profile
+    back to back at every round boundary and spent half of every session re-measuring the
+    belt. The ring generalises it with two settings and no new statistics. `belt_every`
+    (default 2) is how often the belt's *reference* leg recurs: 2 is strict alternation
+    (`B C B D B C B D…` — every challenger leg has a belt leg on both sides, the strongest
+    shared-weather guarantee); 3 is `B C D B C D` — a third more challenger legs per hour, with
+    a challenger leg up to two legs from its nearest belt leg. `seats` (default 2) is how many
+    challengers fight at once, drawn by the same `next_challenger` ordering: they share the
+    belt legs and the weather window, and a seat refills the moment its match decides, so
+    time flows to the undecided. Each challenger leg yields **one margin** = its Overall minus
+    the mean of the usable belt legs flanking it; `pairs` on the record still counts margins,
+    so the SPRT/signed-rank rule, the Bradley–Terry fit, the standings and the tape consume
+    the record unchanged (plus `design`, `belt_every`, `leg_distances`, `max_leg_distance`).
+    When the belt moves mid-session the seated matches **drain** against the reference they
+    started with — a match is never switched mid-way — and only then does the new holder
+    defend. The zipper yield sits at the seam after a closing belt leg, and a yield
+    invalidates the lead so the next cycle opens with a fresh belt leg. Two honest limits,
+    stated so nobody reads more into it: consecutive margins share a belt leg (correlation
+    ≈1/6 at equal leg noise, so the signed-rank test is slightly optimistic), and the
+    information about an edge is still set by how many legs each profile ran — the
+    throughput gain comes from `belt_every`, not from alternation itself. **The trade is
+    priced from history, not assumed** (`weather_by_distance`, `GET /duel/weather-distance`,
+    the *"Measure weather shift by distance"* readout in the rules panel): every session's
+    legs are on record in run order (`Duel.run_ids`), so the severity shift between legs one
+    to four apart is computed from runs that already exist — if two-apart legs shift no more
+    often than adjacent ones, `belt_every=3` costs nothing the adjacent design wasn't paying.
+    `browser_only` (default off) runs duel legs with the browser plugin alone via
+    `config_overrides={plugin: {"skip": True}}` (`runner._plugin_count` returns 0 and no
+    result row is written — absent, never fabricated): every crown metric is browser-derived
+    and the weather stamp's clean covariates include the browser's own `nav_dns`/`nav_tcp`/
+    `nav_tls`/`nav_request` phases (≥ `WEATHER_MIN_COVARIATES`), so a browser-only leg scores
+    and stamps as before and drops only the probes' share of every leg; the cost is that duel
+    runs then stop contributing Completion metrics to the pooled record. The live payload
+    (`_ring_live`) carries `seats` (each seat's own scoreboard), `legs` (the recent legs in
+    run order), `reference` and `design`, with the top level mirroring the seat being
+    measured so one-match readers keep working; the page renders the **leg strip** (tall =
+    belt, a weather-severity bar under each leg) and one row per seated match (`RingBoard`
+    / `LegStrip` / `SeatRow`).
     **A round medians `duel.iterations_per_round` iterations a side (default 3) — the
     ring's resolving power.** A round compares two measurements, so its margin carries the
     noise of both: measured on a real link, ~2.3 Overall points per run becomes ~3.3 per

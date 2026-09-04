@@ -83,3 +83,27 @@ def test_plugin_iteration_cap_and_teardown(monkeypatch):
     with session_scope() as s:
         run = s.get(Run, rid)
         assert run.status == RunStatus.COMPLETE
+
+
+def test_a_skipped_plugin_runs_no_iterations_at_all(monkeypatch):
+    """`{"<plugin>": {"skip": True}}` leaves a plugin out of the run entirely (the duel's
+    browser-only legs). It is still torn down with the rest, and the run completes with
+    that plugin's metrics simply absent — never fabricated."""
+    from pathbrain.models import BenchmarkResult
+
+    probe = _CountingPlugin("probe")
+    browser = _CountingPlugin("browserish")
+    monkeypatch.setattr(runner, "iter_plugins", lambda: [probe, browser])
+    monkeypatch.setattr(settings_profile, "fingerprint", lambda _norm: "stable-fp")
+
+    rid = create_run(label="skip", iterations=2, config_overrides={"probe": {"skip": True}})
+    execute_run(rid)
+
+    assert probe.runs == 0
+    assert browser.runs == 2
+    assert probe.teardowns == 1
+    with session_scope() as s:
+        run = s.get(Run, rid)
+        assert run.status == RunStatus.COMPLETE
+        plugins = {r.plugin for r in s.query(BenchmarkResult).filter_by(run_id=rid).all()}
+        assert "browserish" in plugins and "probe" not in plugins
