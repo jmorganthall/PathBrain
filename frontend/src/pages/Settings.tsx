@@ -52,6 +52,7 @@ import type {
   ProfileRefresh,
   ProfileRefreshPreview,
   ProfileTest,
+  SeededField,
   SettingsDiagnostics,
   SettingsImpact,
   SettingsProfile,
@@ -584,6 +585,9 @@ function HeirsCard({
                 <Typography variant="caption" color="text.secondary">
                   {h.margin != null ? `+${h.margin.toFixed(1)} over crown` : "upside unknown"}
                   {h.overall != null ? ` · now ${h.overall.toFixed(1)}` : ""}
+                  {h.overall == null && h.prior_overall != null
+                    ? ` · ${h.prior_overall.toFixed(1)} under the previous methodology`
+                    : ""}
                 </Typography>
               </Box>
             </Stack>
@@ -765,6 +769,9 @@ export default function Settings() {
   const [ranking, setRanking] = useState<"ring" | "pooled">("pooled");
   const [ringRated, setRingRated] = useState(0);
   const [seeded, setSeeded] = useState(0);
+  // Nothing comparable under the current methodology yet: the field is ordered by the
+  // previous version's standings until fresh runs arrive.
+  const [seedInfo, setSeedInfo] = useState<SeededField | null>(null);
   // The recent-evidence window sizing the "Overall (recent)" drift-lens column.
   const [crownWindow, setCrownWindow] = useState(100);
   // Dynamic quadrant axes — X/Y/Shade default to the current methodology's crown metric set
@@ -938,6 +945,7 @@ export default function Settings() {
       setRanking(p.ranking ?? "pooled");
       setRingRated(p.ring_rated_count ?? 0);
       setSeeded(p.seeded_count ?? 0);
+      setSeedInfo(p.seeded ?? null);
       setImpact(i);
       setDiag(d);
       setError(null);
@@ -1472,6 +1480,27 @@ export default function Settings() {
           by duel results, {seeded} by pooled Overall.
           <HelpTip title="Profiles measured head to head under shared weather are placed by the duel ladder. The rest have no rounds on record and are seeded by their pooled Overall, which also decides who gets raced next. A paired comparison beats an average over conditions that were never held equal." />
         </Typography>
+      )}
+
+      {seedInfo && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
+            No profile has a comparable run under the current methodology yet
+          </Typography>
+          <Typography variant="body2">
+            Until fresh runs arrive, heirs, races and duels are ordered by the standings under{" "}
+            <b>{seedInfo.version}</b>
+            {seedInfo.best_name ? (
+              <>
+                , where <b>{seedInfo.best_name}</b> was the crown
+                {seedInfo.best_prior_overall != null ? ` (Overall ${seedInfo.best_prior_overall.toFixed(1)})` : ""}
+              </>
+            ) : null}
+            . {seedInfo.profiles_without_data} profile{seedInfo.profiles_without_data === 1 ? "" : "s"} await new data — start
+            with “Race these” or a duel.
+            <HelpTip title="A seed only decides the order in which profiles get measured. Nothing from the previous version is scored under this one, and the crown stays empty until a profile reaches the iteration minimum on the current site list." />
+          </Typography>
+        </Alert>
       )}
 
       {crownFading && (

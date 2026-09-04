@@ -749,7 +749,14 @@ def settings_profiles(
     # effective per-metric thresholds (so the quadrant can flag a saturated axis), and the
     # methodology saturation report (metrics whose 'best' is too lenient to rank profiles).
     definition = ensure_current_methodology(session, get_config(session)).definition or {}
-    result["heirs"] = _compute_heirs(result, session, live)
+    # With no crown under the current methodology (right after a publish — a new crown
+    # metric, a changed site list) the heirs are computed over a field SEEDED from the
+    # prior version's standings, so the card says which profiles to measure first rather
+    # than going blank. The seed is a copy: the memoized field never carries it, and the
+    # standings below stay the current version's own (nothing seeded is scored).
+    seeded = _seeded_field(session, result)
+    result["heirs"] = _compute_heirs(seeded, session, live)
+    result["seeded"] = _seed_summary(session, seeded)
     result["metric_thresholds"] = _metric_thresholds(definition)
     result["saturation"] = _saturation_report(result["profiles"], definition)
 
@@ -1812,6 +1819,40 @@ def _saturation_report(profiles: list[dict], definition: dict) -> list[dict]:
     return report
 
 
+def _seeded_field(session: Session, result: dict) -> dict:
+    """The field with the prior methodology's standings folded in, when the current one has
+    no crown yet; otherwise the field itself. See ``refresh.seed_field_from_prior``."""
+    if result.get("best_fingerprint"):
+        return result
+    try:
+        return refresh_mod.seed_field_from_prior(
+            session, result, result.get("min_iterations") or _min_iterations(session)
+        )
+    except Exception:  # noqa: BLE001 — a seed orders the heirs; it must never break the page
+        log.warning("Profiles: could not seed the field from the prior methodology", exc_info=True)
+        return result
+
+
+def _seed_summary(session: Session, seeded: dict) -> dict | None:
+    """What the page says about a seeded field: which version seeded it, the profile that
+    version crowned (the stand-in defender the ladder and race will use), and how many
+    stored profiles have nothing measured under the current version yet."""
+    version = seeded.get("seeded_from")
+    if not version:
+        return None
+    best_fp = seeded.get("best_fingerprint")
+    best = next((p for p in seeded.get("profiles", []) if p["fingerprint"] == best_fp), None)
+    without = [p for p in seeded.get("profiles", []) if p.get("no_data")]
+    return {
+        "version": version,
+        "best_fingerprint": best_fp,
+        "best_name": (best or {}).get("name") or (best or {}).get("label"),
+        "best_prior_overall": (best or {}).get("prior_overall"),
+        "profiles_without_data": len(without),
+        "profiles_seeded": int(seeded.get("seeded_profiles") or 0),
+    }
+
+
 def _compute_heirs(result: dict, session: Session, live: list[dict] | None = None) -> dict:
     """The crown's **heirs**: limited-data or stale-confident profiles whose *optimistic
     ceiling* can still clear the reigning crown's Overall — "run these and one may dethrone
@@ -1897,6 +1938,9 @@ def _compute_heirs(result: dict, session: Session, live: list[dict] | None = Non
                 "iterations_to_min": max(0, min_iterations - int(p.get("iterations") or 0)),
                 "confident": confident,
                 "last_seen": p.get("last_seen"),
+                # The prior methodology's Overall — set only on a seeded field, and only
+                # ever used to order the untested tier (see ``_heir_key``).
+                "prior_overall": p.get("prior_overall"),
             }
         )
 
@@ -1905,14 +1949,16 @@ def _compute_heirs(result: dict, session: Session, live: list[dict] | None = Non
     # so the top heir on the card is the first profile a race would actually run.
     #   tier 0 — limited-data with a known ceiling: highest optimistic ceiling first
     #   tier 1 — stale confident: closest to the crown first (smallest |Overall − crown|)
-    #   tier 2 — untested (no ceiling estimate yet): listed last
+    #   tier 2 — untested (no ceiling estimate yet): listed last, the prior methodology's
+    #            winners first when the field was seeded from one
     def _heir_key(h: dict) -> tuple:
         if h["reason"] == "stale":
             closeness = abs((h.get("overall") or 0.0) - (crown_overall or 0.0))
             return (1, closeness, 0.0)
         if h.get("optimistic") is not None:
             return (0, 0.0, -h["optimistic"])  # biggest threat (highest ceiling) first
-        return (2, 0.0, 0.0)
+        prior = h.get("prior_overall")
+        return (2, 0.0, -prior if prior is not None else 1e9)
 
     heirs.sort(key=_heir_key)
     return {

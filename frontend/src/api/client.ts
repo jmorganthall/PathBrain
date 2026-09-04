@@ -292,6 +292,20 @@ export const api = {
         body: JSON.stringify({ metric_key: metricKey, best, regrade }),
       },
     ),
+  // Change the sites the benchmark measures — published as a new methodology version that
+  // owns the list, so runs against another set are quarantined rather than pooled.
+  publishSites: (browserUrls: string[], httpUrls: string[], regrade = true) =>
+    request<{
+      version: string;
+      changed: boolean;
+      added: string[];
+      removed: string[];
+      job_id: string | null;
+      regrade_deferred?: boolean;
+    }>("/methodologies/sites", {
+      method: "POST",
+      body: JSON.stringify({ browser_urls: browserUrls, http_urls: httpUrls, regrade }),
+    }),
   // Pick which published methodology scores runs "at present" (the config pin). Pass null to clear
   // the pin and follow the shipped latest. Re-grades history under the choice (background job).
   setCurrentMethodology: (version: string | null) =>

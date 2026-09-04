@@ -9,6 +9,9 @@ threshold, or metric change is published as a new version, never an edit.
 """
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 from datetime import datetime, timezone
 from math import sqrt
 
@@ -741,6 +744,149 @@ def build_definition_from_spec(spec: dict) -> dict:
     return definition
 
 
+# ── The collection: which sites a methodology measures ───────────────────────────────
+#
+# A methodology is "how raw becomes a score", and the site list decides what the raw IS:
+# every browser metric is the mean over the URLs loaded, so a run against two sites and a
+# run against three are measurements of different things, however faithful the derivation.
+# That used to be invisible — the URL list lived in config, nothing stamped it on a run,
+# and old and new runs pooled into the same profiles. The site list is therefore part of
+# the methodology: a change is a new version (`publish_sites`), the runner reads the lists
+# from the current version so config can't drift from it, every run is stamped with the
+# site set it was configured with, and `comparability` quarantines a run whose set differs
+# from the version's — kept, shown as legacy, out of the standings — like any run missing a
+# crown metric. Code-shipped versions carry no list (sites are a deployment's choice, not
+# the rubric's); the choice rides in a DB fork and is carried forward when a new code
+# version is adopted, so a deploy never silently reverts it.
+
+COLLECTION_KEY = "collection"
+
+
+def _site_set_hash(browser_urls: list[str], http_urls: list[str]) -> str:
+    payload = json.dumps([sorted(browser_urls), sorted(http_urls)], separators=(",", ":"))
+    return hashlib.sha1(payload.encode()).hexdigest()[:12]
+
+
+def _urls(section: dict | None) -> list[str]:
+    return [str(u).strip() for u in ((section or {}).get("urls") or []) if str(u).strip()]
+
+
+def site_set_from_config(config: dict | None) -> str | None:
+    """The site-set stamp of a run: a hash of the browser + HTTP URL lists it was configured
+    with (`Run.config_used`). ``None`` when the config carries no URL list at all."""
+    if not config:
+        return None
+    browser, http = _urls(config.get("browser")), _urls(config.get("http"))
+    if not browser and not http:
+        return None
+    return _site_set_hash(browser, http)
+
+
+def collection_from_lists(browser_urls: list[str], http_urls: list[str]) -> dict:
+    browser = [u.strip() for u in browser_urls if u and u.strip()]
+    http = [u.strip() for u in http_urls if u and u.strip()]
+    return {
+        "browser_urls": browser,
+        "http_urls": http,
+        "site_set": _site_set_hash(browser, http),
+    }
+
+
+def collection(definition: dict | None) -> dict | None:
+    """The site lists a methodology declares, or ``None`` for a version that measures
+    whatever config says (every code-shipped version before a site publish)."""
+    c = (definition or {}).get(COLLECTION_KEY)
+    return c if isinstance(c, dict) and c.get("site_set") else None
+
+
+def definition_site_set(definition: dict | None) -> str | None:
+    c = collection(definition)
+    return c.get("site_set") if c else None
+
+
+def _strip_sites_suffix(version: str) -> str:
+    """``v15+fcp-best150+sites-abc`` → ``v15+fcp-best150``: a site publish replaces the site
+    segment rather than chaining a new one every time the list changes."""
+    return "+".join(part for part in version.split("+") if not part.startswith("sites-"))
+
+
+def publish_sites(
+    session: Session, browser_urls: list[str], http_urls: list[str] | None = None
+) -> tuple[Methodology, dict]:
+    """Publish the current methodology with a new site list as a **new version**, point the
+    runtime at it, and write the lists into config so every reader agrees.
+
+    Returns ``(row, info)``; ``info["changed"]`` is False when the lists already match the
+    current version (nothing published). Caller commits and kicks the re-grade."""
+    config = get_config(session)
+    base = ensure_current_methodology(session, config)
+    base_def = base.definition or {}
+    if http_urls is None:
+        http_urls = _urls(config.get("http"))
+    new_collection = collection_from_lists(browser_urls, http_urls)
+    if not new_collection["browser_urls"]:
+        raise ValueError("at least one browser URL is required")
+    old = collection(base_def)
+    if old and old.get("site_set") == new_collection["site_set"]:
+        return base, {"changed": False, "version": base.version, "added": [], "removed": []}
+
+    # Diff for the changelog, against the version's own list when it has one, else against
+    # what config was measuring (the implicit list every earlier run used).
+    before = set(old["browser_urls"] + old["http_urls"]) if old else set(_urls(config.get("browser")) + _urls(config.get("http")))
+    after = set(new_collection["browser_urls"] + new_collection["http_urls"])
+    added, removed = sorted(after - before), sorted(before - after)
+
+    new_def = copy.deepcopy(base_def)
+    new_def[COLLECTION_KEY] = new_collection
+    new_version = f"{_strip_sites_suffix(base.version)}+sites-{new_collection['site_set']}"
+    change = ", ".join([f"+{u}" for u in added] + [f"−{u}" for u in removed]) or "reordered"
+    notes = (
+        f"Sites changed ({change}), forked from {base.version}. Runs measured against a "
+        f"different site set are quarantined as incomparable under this version."
+    )
+    row = session.get(Methodology, new_version)
+    if row is None:
+        row = Methodology(
+            version=new_version,
+            rubric_version=base.rubric_version,
+            derivation_version=base.derivation_version,
+            notes=notes,
+            definition=new_def,
+            is_current=True,
+        )
+        session.add(row)
+    else:  # re-issue: the same list published again after something else was current
+        row.definition = new_def
+        row.notes = notes
+        row.is_current = True
+    for other in session.scalars(select(Methodology).where(Methodology.version != new_version)):
+        other.is_current = False
+    # Config carries the same lists, so the Config page, the plugins and the stamp all read
+    # one answer; the runner overlays from the version anyway, as the belt and braces.
+    save_config(session, {
+        "methodology_version": new_version,
+        "browser": {"urls": list(new_collection["browser_urls"])},
+        "http": {"urls": list(new_collection["http_urls"])},
+    })
+    log.info("Published %s (%s)", new_version, notes)
+    return row, {"changed": True, "version": new_version, "added": added, "removed": removed}
+
+
+def apply_collection(config: dict, definition: dict | None) -> dict:
+    """The config a run should measure under: ``config`` with the URL lists overlaid from
+    the methodology's collection, when it declares one. Returns a new dict."""
+    c = collection(definition)
+    if not c:
+        return config
+    out = dict(config)
+    # Both lists, always — the stamp a run gets (`site_set_from_config`) hashes both, so
+    # keeping config's HTTP list where the version declares none would stamp every run
+    # with a set the version never declared and quarantine all of them.
+    out["browser"] = {**(config.get("browser") or {}), "urls": list(c["browser_urls"])}
+    out["http"] = {**(config.get("http") or {}), "urls": list(c.get("http_urls") or [])}
+    return out
+
+
 def overall_from_definition(definition: dict, subscores: dict | None) -> float | None:
     """The methodology's first-class Overall for one run: the corner over its feel-trinity
     metric subscores, per the version's ``overall`` spec. Requires the spec's ``required``
@@ -881,11 +1027,24 @@ def ensure_current_methodology(session: Session, config: dict, notes: str | None
         spec = METHODOLOGY_REGISTRY.get(version)
         definition = build_definition_from_spec(spec) if spec else build_definition(config)
         derivation = spec["derivation_version"] if spec else DERIVATION_VERSION
+        row_notes = spec.get("notes") if spec else notes
+        # Carry the site list forward. A code-shipped version knows nothing about this
+        # deployment's sites; if the version it replaces declared a list, adopting the new
+        # rubric must not silently revert the sites to config defaults (`publish_sites`
+        # writes them to config too, so in practice they match — but the declaration is
+        # what comparability enforces, and it has to be on the new version to enforce it).
+        previous = session.scalar(select(Methodology).where(Methodology.is_current.is_(True)))
+        inherited = collection(previous.definition if previous else None)
+        if inherited and not collection(definition):
+            definition = {**definition, COLLECTION_KEY: copy.deepcopy(inherited)}
+            row_notes = (row_notes or "") + (
+                f" Site list carried forward from {previous.version}."
+            )
         row = Methodology(
             version=version,
             rubric_version=version,
             derivation_version=derivation,
-            notes=spec.get("notes") if spec else notes,
+            notes=row_notes,
             definition=definition,
             is_current=True,
         )
@@ -962,6 +1121,9 @@ def summarize(row: Methodology) -> dict:
         # The canonical required set (crown/Overall ∪ flagged), not just the materialized
         # per-metric flag — so old snapshots still report the crown metrics as required.
         "required_metrics": required_metric_keys(definition),
+        # The site list this version measures (None = whatever config says, the pre-publish
+        # behaviour). Part of the identity: a run against another set is incomparable here.
+        "collection": collection(definition),
     }
 
 
@@ -991,7 +1153,12 @@ def at_measure_comparability(metric_values: dict | None) -> tuple[str, list[str]
     return "incomparable", missing
 
 
-def comparability(definition: dict, metric_values: dict | None) -> tuple[str, list[str]]:
+SITE_SET_MARKER = "site_set"  #: the `missing_metrics` token for "measured against other sites"
+
+
+def comparability(
+    definition: dict, metric_values: dict | None, site_set: str | None = None
+) -> tuple[str, list[str]]:
     """Can a run's raw reproduce this methodology's metrics? (the at-present check)
 
     ``exact`` (every scored metric present), ``partial`` (some optional metrics
@@ -1014,6 +1181,13 @@ def comparability(definition: dict, metric_values: dict | None) -> tuple[str, li
     missing_required = [k for k in required if mv.get(k) is None]
     if missing_required:
         return "incomparable", missing_required
+    # The site set is part of the identity: a version that declares its sites quarantines
+    # a run measured against any other set (or one whose config never recorded a list),
+    # because its browser means are means over different pages. Reported under one token
+    # so a reader can tell "other sites" from "missing instrument".
+    declared = definition_site_set(definition)
+    if declared is not None and site_set != declared:
+        return "incomparable", [SITE_SET_MARKER]
     missing = [k for k in scored if mv.get(k) is None]
     if missing:
         return "partial", missing
