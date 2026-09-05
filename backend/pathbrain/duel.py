@@ -1966,6 +1966,96 @@ class _Seat:
         self.legs = 0
         self.verdict: str | None = None
         self.reason = ""
+        # Every session this match has been seated in. More than one means it was carried
+        # across a window close (or a restart) and resumed with its margins intact.
+        self.sessions: list[int] = []
+
+
+# ── Open matches survive the window ──────────────────────────────────────────────
+#
+# A match's adjudication state — its margins, the SPRT walk, the signed-rank evidence, the
+# streak — used to live only in the running thread. Every run was on disk the moment it
+# landed and every DECIDED match was written at its verdict, but a match still open when
+# the window closed was recorded as "window closed mid-matchup (undecided)" and the next
+# session started that pair again from round zero. On a nightly ladder that is the top
+# pairs, every night: the two best profiles are the first seated and the last to resolve,
+# so the ladder spent its evidence on them and then threw it away. A process restart lost
+# even the record.
+#
+# The fix is that the state is a pure function of the ordered margins: the SPRT and the
+# paired test are both fed one delta at a time, so replaying the deltas rebuilds them
+# exactly. A snapshot per seated match is written to the duel row after every round; the
+# next session moves the snapshots onto its own row and replays each into a seat, provided
+# the match's reference is still the profile defending — a match is never switched to a
+# different opponent, in-session or across sessions.
+
+
+def _seat_snapshot(seat: _Seat, duel_id: int) -> dict:
+    """Everything needed to resume this match in a later session."""
+    return {
+        "challenger": seat.fp,
+        "incumbent": seat.reference_fp,
+        "challenger_label": seat.profile.get("label"),
+        "challenger_name": seat.profile.get("name"),
+        "why": seat.why,
+        "deltas": [round(float(d), 4) for d in seat.deltas],
+        "weather_shifts": list(seat.weather_shifts),
+        "leg_distances": list(seat.leg_distances),
+        "legs": int(seat.legs),
+        "unusable": int(seat.unusable),
+        "unusable_why": dict(seat.unusable_why),
+        "bad_streak": int(seat.bad_streak),
+        "sessions": sorted(set(int(x) for x in seat.sessions) | {int(duel_id)}),
+    }
+
+
+def _seat_from_snapshot(snap: dict, profile: dict, *, p1: float, alpha: float,
+                        min_margin: float, min_pairs: int, max_pairs: int,
+                        streak_wins: int) -> _Seat:
+    """Rebuild a seated match from its snapshot by replaying its margins — the stopping
+    rules are fed one delta at a time, so the replay reproduces their state exactly. The
+    rule parameters are the CURRENT config's: a match resumed under a changed preset is
+    adjudicated by the rules in force now, like every other match in the session."""
+    why = str(snap.get("why") or "resumed")
+    seat = _Seat(
+        str(snap["challenger"]), profile, why, str(snap["incumbent"]),
+        p1=p1, alpha=alpha, min_margin=min_margin, min_pairs=min_pairs,
+        max_pairs=max_pairs, streak_wins=streak_wins,
+    )
+    for raw in snap.get("deltas") or []:
+        delta = float(raw)
+        seat.deltas.append(delta)
+        seat.sprt.add_pair(delta > 0)
+        seat.paired.add(delta)
+    seat.weather_shifts = [None if w is None else float(w) for w in (snap.get("weather_shifts") or [])]
+    seat.leg_distances = [int(x) for x in (snap.get("leg_distances") or [])]
+    seat.legs = int(snap.get("legs") or 0)
+    seat.unusable = int(snap.get("unusable") or 0)
+    seat.unusable_why = {str(k): int(v) for k, v in (snap.get("unusable_why") or {}).items()}
+    seat.bad_streak = int(snap.get("bad_streak") or 0)
+    seat.sessions = [int(x) for x in (snap.get("sessions") or [])]
+    return seat
+
+
+def _carried_open_matches(duel_id: int) -> list[dict]:
+    """The open matches the previous session left behind, MOVED onto this session's row
+    so each is carried exactly once (a crashed session's row still holds them, since
+    they are written after every round — so a restart carries them too)."""
+    with session_scope() as session:
+        rows = session.scalars(
+            select(Duel).where(Duel.id != duel_id).order_by(Duel.id.desc()).limit(25)
+        ).all()
+        for prev in rows:
+            snaps = [dict(x) for x in (prev.open_matches or []) if isinstance(x, dict)]
+            if not snaps:
+                continue
+            prev.open_matches = None
+            d = session.get(Duel, duel_id)
+            if d is not None:
+                d.open_matches = snaps
+            log.info("Duel %s: carrying %d open match(es) from duel %s", duel_id, len(snaps), prev.id)
+            return snaps
+    return []
 
 
 def belt_every(cfg: dict | None) -> int:
@@ -2094,6 +2184,10 @@ def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: 
         # compared against — 1 under strict alternation, up to belt_every-1 otherwise.
         "leg_distances": list(seat.leg_distances),
         "max_leg_distance": max(seat.leg_distances, default=None),
+        # Every session the match was seated in; more than one = resumed across a window
+        # close (or a restart) with its margins intact rather than restarted from zero.
+        "sessions": list(seat.sessions),
+        "carried": len(seat.sessions) > 1,
     }
 
 
@@ -2160,6 +2254,7 @@ def _ring_live(*, matchups_done: int, inc: dict, seats_list: list[_Seat], curren
         )
         board["leg_distances"] = list(seat.leg_distances[-24:])
         board["measuring"] = seat is current
+        board["sessions"] = list(seat.sessions)
         boards.append(board)
     # Callers only publish the ring while at least one seat is filled (`_run_ring` breaks
     # before its first `_live` otherwise), so there is always a board to lead with.
@@ -2239,6 +2334,12 @@ def _run_ring(
     lead: _Leg | None = None
     legs_tape: list[dict] = []
     counters = {"legs": 0, "iterations": 0, "cycles": 0}
+    seat_kw = dict(p1=p1, alpha=alpha, min_margin=min_margin, min_pairs=min_pairs,
+                   max_pairs=max_pairs, streak_wins=streak_wins)
+    # Open matches the previous session (or a crashed one) left behind, moved onto this
+    # row. Each is seated the moment its reference is the profile defending, or closed
+    # with a reason when it can't be — never silently dropped.
+    carried: list[dict] = _carried_open_matches(duel_id)
 
     def _stopped() -> bool:
         return time.monotonic() >= deadline or bool(_state.get("cancel"))
@@ -2248,6 +2349,16 @@ def _run_ring(
             d = session.get(Duel, duel_id)
             if d is not None:
                 d.matchups = list(matchups)
+
+    def _persist_open() -> None:
+        # The open matches' full adjudication state, on the row, after every change — so
+        # nothing about a match in progress exists only in this thread.
+        snaps = [_seat_snapshot(x, duel_id) for x in seated if x.verdict is None]
+        snaps += [dict(c) for c in carried]
+        with session_scope() as session:
+            d = session.get(Duel, duel_id)
+            if d is not None:
+                d.open_matches = snaps or None
 
     # The live payload as last published, and the leg it is on: `_run_leg` republishes the
     # same board with the leg's run id the moment the run exists, so the page can show
@@ -2349,13 +2460,17 @@ def _run_ring(
         seat.sprt.add_pair(delta > 0)
         seat.paired.add(delta)
 
-    def _close(seat: _Seat, verdict: str, reason: str) -> None:
+    def _close(seat: _Seat, verdict: str, reason: str, ref: dict | None = None) -> None:
+        if not seat.sessions or seat.sessions[-1] != duel_id:
+            seat.sessions.append(duel_id)
+        seat.verdict = verdict
         record = _match_record(
-            seat, inc, method=method, verdict=verdict, reason=reason,
+            seat, ref or inc, method=method, verdict=verdict, reason=reason,
             cadence=cadence, only_browser=only_browser,
         )
         matchups.append(record)
         _persist_matchups()
+        _persist_open()
         log.info(
             "Duel %s verdict: %s vs %s → %s (%s; pairs=%s Δmed=%s)",
             duel_id, inc["label"], seat.profile["label"], verdict, reason,
@@ -2401,7 +2516,40 @@ def _run_ring(
                 if rematch_now is not None:
                     rematched.add(rematch_now)
                     fought.discard(rematch_now)
+            # Carried matches that cannot resume are closed with the reason, outside this
+            # read session; the ones that can are seated first, ahead of any new challenger,
+            # because their evidence is already paid for.
+            unresumable: list[tuple[dict, str]] = []
+            if not draining:
+                for snap in list(carried):
+                    cfp = str(snap.get("challenger") or "")
+                    prof = settings_by_fp.get(cfp)
+                    if str(snap.get("incumbent")) != incumbent_fp:
+                        problem = "the belt changed hands before it could resume"
+                    elif prof is None:
+                        problem = "its challenger is no longer in the field"
+                    elif not _reachable(prof.get("settings"), baseline):
+                        problem = "its challenger is unreachable from the live environment"
+                    else:
+                        continue
+                    carried.remove(snap)
+                    unresumable.append((snap, problem))
             while not draining and len(seated) < n_seats:
+                snap = next(
+                    (c for c in carried if str(c.get("incumbent")) == incumbent_fp), None
+                )
+                if snap is not None:
+                    carried.remove(snap)
+                    seat = _seat_from_snapshot(snap, settings_by_fp[str(snap["challenger"])], **seat_kw)
+                    if "resumed" not in seat.why:
+                        seat.why = f"{seat.why} — resumed with {len(seat.deltas)} round(s) carried over"
+                    seat.sessions.append(duel_id)
+                    fought.add(frozenset((incumbent_fp, seat.fp)))
+                    seated.append(seat)
+                    log.info("Duel %s seat %d: resumed %s vs %s with %d round(s) from session(s) %s",
+                             duel_id, len(seated), seat.fp, incumbent_fp, len(seat.deltas),
+                             seat.sessions[:-1])
+                    continue
                 challenger_fp, why_challenger = next_challenger(
                     session, field, ratings, incumbent_fp, heirs=heirs, baseline=baseline,
                     cooldown_hours=cooldown_hours, mode=mode, top_n=top_n, fought=fought,
@@ -2413,13 +2561,26 @@ def _run_ring(
                         f"{why_challenger} — rematch: it won the last match without taking the belt"
                     )
                 fought.add(frozenset((incumbent_fp, challenger_fp)))
-                seated.append(_Seat(
+                fresh = _Seat(
                     challenger_fp, settings_by_fp[challenger_fp], why_challenger, incumbent_fp,
-                    p1=p1, alpha=alpha, min_margin=min_margin, min_pairs=min_pairs,
-                    max_pairs=max_pairs, streak_wins=streak_wins,
-                ))
+                    **seat_kw,
+                )
+                fresh.sessions.append(duel_id)
+                seated.append(fresh)
                 log.info("Duel %s seat %d: challenger %s (%s)", duel_id, len(seated),
                          challenger_fp, why_challenger)
+        for snap, problem in unresumable:
+            cfp = str(snap.get("challenger") or "")
+            prof = settings_by_fp.get(cfp) or {
+                "fingerprint": cfp, "label": snap.get("challenger_label") or cfp,
+                "name": snap.get("challenger_name"), "settings": [],
+            }
+            ref_fp = str(snap.get("incumbent") or "")
+            ref = settings_by_fp.get(ref_fp) or {"fingerprint": ref_fp, "label": ref_fp, "name": None}
+            stale = _seat_from_snapshot(snap, prof, **seat_kw)
+            _close(stale, "draw", f"aborted: carried over, but could not resume — {problem}", ref=ref)
+            log.info("Duel %s: carried match %s vs %s closed — %s", duel_id, cfp, ref_fp, problem)
+        _persist_open()
         if not seated:
             if not matchups:
                 raise RuntimeError(_no_contenders_reason(field, heirs, incumbent_fp, baseline))
@@ -2484,6 +2645,7 @@ def _run_ring(
             if seat.verdict is not None:
                 _close(seat, seat.verdict, seat.reason)
                 seated.remove(seat)
+        _persist_open()
         if _stopped():
             break
 
@@ -2502,9 +2664,14 @@ def _run_ring(
             log.info("Duel %s: stepped aside for %.0fs of queued work", duel_id, yielded)
             lead = None
 
-    # Whatever is still seated when the window closes is recorded undecided, as before.
-    for seat in seated:
-        _close(seat, "draw", "window closed mid-matchup (undecided)")
+    # Whatever is still seated when the window closes is CARRIED, not closed: its snapshot
+    # is on the row (rewritten after every round), so the next session resumes it with
+    # every margin intact instead of recording "window closed (undecided)" and restarting
+    # the pair from round zero — which on a nightly ladder was the top pairs, every night.
+    _persist_open()
+    if seated or carried:
+        log.info("Duel %s: %d open match(es) carried to the next session",
+                 duel_id, len(seated) + len(carried))
     return matchups, incumbent_fp, counters["iterations"]
 
 
@@ -3441,11 +3608,14 @@ def round_health(limit_sessions: int = 50) -> dict:
     matches = aborted = unusable = diagnosed = 0
     decided = drawn = 0
     why: dict[str, int] = {}
+    abort_reasons: dict[str, int] = {}
     for m in chronological_matchups(sessions_data):
         matches += 1
         result = outcome(m)
         if result == ABORTED:
             aborted += 1
+            bucket = _abort_bucket(m.get("reason"))
+            abort_reasons[bucket] = abort_reasons.get(bucket, 0) + 1
         elif result == "draw":
             drawn += 1
         else:
@@ -3470,8 +3640,28 @@ def round_health(limit_sessions: int = 50) -> dict:
             {"reason": r, "legs": n}
             for r, n in sorted(why.items(), key=lambda kv: kv[1], reverse=True)
         ],
+        # WHAT ended each aborted match — the split that says whether the ladder failed to
+        # measure (unusable rounds) or simply ran out of window (matches closed undecided,
+        # which, before open matches were carried across sessions, restarted from zero).
+        "abort_reasons": [
+            {"reason": r, "matches": n}
+            for r, n in sorted(abort_reasons.items(), key=lambda kv: kv[1], reverse=True)
+        ],
         "sessions_analyzed": len(sessions_data),
     }
+
+
+def _abort_bucket(reason) -> str:
+    """One readable bucket per abort cause, so the health card can say which it was."""
+    text = str(reason or "").strip()
+    low = text.lower()
+    if low.startswith("window closed"):
+        return "window closed with the match undecided (restarted from zero next session)"
+    if low.startswith("aborted: carried over"):
+        return "carried over but could not resume"
+    if "unusable" in low or "no overall" in low:
+        return "rounds unusable — no Overall to compare"
+    return text[:80] if text else "no reason recorded"
 
 
 def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
@@ -3691,6 +3881,19 @@ def _serialize(d: Duel, session=None, matchup_limit: int | None = None) -> dict:
         "live": d.live,
         "iterations_run": d.iterations_run,
         "run_ids": d.run_ids or [],
+        # Matches still open on this row: carried to the next session with their rounds.
+        "open_matches": [
+            {
+                "challenger": o.get("challenger"),
+                "incumbent": o.get("incumbent"),
+                "challenger_label": o.get("challenger_label"),
+                "challenger_name": o.get("challenger_name"),
+                "rounds": len(o.get("deltas") or []),
+                "sessions": list(o.get("sessions") or []),
+            }
+            for o in (d.open_matches or [])
+            if isinstance(o, dict)
+        ],
         "champion_fingerprint": d.champion_fingerprint,
         "champion_label": d.champion_label,
         "error": d.error,
@@ -3739,7 +3942,10 @@ def reconcile_interrupted_duels() -> int:
                 except Exception:  # noqa: BLE001
                     log.exception("Duel %s: restore on reconcile failed", d.id)
             d.status = DuelStatus.FAILED
-            d.error = "Interrupted — service restarted mid-duel; baseline restored (best-effort)."
+            d.error = (
+                "Interrupted — service restarted mid-duel; baseline restored (best-effort). "
+                "Any match still open carries over to the next session with its rounds."
+            )
             d.finished_at = datetime.now(timezone.utc)
             restored += 1
     if restored:

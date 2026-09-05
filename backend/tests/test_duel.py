@@ -3686,3 +3686,175 @@ def test_ring_shape_round_trips_through_the_config_endpoint(client):
         client.put("/api/duel/config", json={"belt_every": 2, "seats": 2, "browser_only": False})
     dist = client.get("/api/duel/weather-distance?sessions=2&legs=20").json()
     assert "by_distance" in dist and "threshold" in dist
+
+
+# ── Open matches survive the window ──────────────────────────────────────────────────
+
+
+def _ring_session_keep(monkeypatch, scores: dict[str, float], *, seats: int, belt_every: int,
+                       field: dict | None = None, cancel_after_legs: int | None = None):
+    """Like `_ring_session`, but KEEPS earlier duel rows (so a session can carry from the one
+    before) and can cancel the session after a given number of legs, leaving a match open."""
+    import pathbrain.api.routes_settings as rs
+
+    applied: list[str] = []
+    fake_field = field or _ring_field(*sorted(scores.items(), key=lambda kv: -kv[1]))
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
+    monkeypatch.setattr(
+        rs, "_compute_heirs",
+        lambda result, session, live=None: {
+            "items": [{"fingerprint": p["fingerprint"]} for p in fake_field["profiles"][1:]]
+        },
+    )
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    monkeypatch.setattr(duel_mod, "_weather_stamper", lambda meth_version: None)
+    _no_settle(seats=seats, belt_every=belt_every)
+    by_run = _score_by_profile(monkeypatch, applied, scores)
+    if cancel_after_legs is not None:
+        real_chunk = duel_mod.run_chunk
+
+        def counting_chunk(*a, **k):
+            out = real_chunk(*a, **k)
+            if len(applied) >= cancel_after_legs:
+                duel_mod.cancel()
+            return out
+
+        monkeypatch.setattr(duel_mod, "run_chunk", counting_chunk)
+    d = _wait_finish(duel_mod.start(duration_minutes=10))
+    return d, applied, by_run
+
+
+def test_a_seat_snapshot_replays_to_the_same_adjudication_state():
+    """The stopping rules are a pure function of the ordered margins, so a snapshot replayed
+    into a fresh seat is the same match — same walk, same evidence, same verdict."""
+    kw = dict(p1=0.7, alpha=0.05, min_margin=0.0, min_pairs=4, max_pairs=20, streak_wins=0)
+    seat = duel_mod._Seat("cha", {"fingerprint": "cha", "label": "cha", "name": "Cha"}, "why", "inc", **kw)
+    for delta in (1.4, -0.3, 1.1, 0.9, -0.2, 2.0):
+        seat.deltas.append(delta)
+        seat.sprt.add_pair(delta > 0)
+        seat.paired.add(delta)
+        seat.weather_shifts.append(3.0)
+        seat.leg_distances.append(1)
+    seat.legs = 6
+    seat.unusable = 1
+    seat.unusable_why = {"the belt leg was unusable": 1}
+    seat.sessions = [41]
+
+    snap = duel_mod._seat_snapshot(seat, 42)
+    assert snap["sessions"] == [41, 42] and len(snap["deltas"]) == 6
+    back = duel_mod._seat_from_snapshot(snap, seat.profile, **kw)
+    assert back.deltas == seat.deltas
+    assert (back.sprt.pairs, back.sprt.wins_challenger, back.sprt.wins_incumbent) == (6, 4, 2)
+    assert back.sprt.llr_challenger == seat.sprt.llr_challenger
+    assert back.sprt.llr_incumbent == seat.sprt.llr_incumbent
+    assert back.paired.p_value(1) == seat.paired.p_value(1)
+    assert back.unusable == 1 and back.unusable_why == seat.unusable_why and back.legs == 6
+    assert back.sessions == [41, 42]
+    verdict = duel_mod._adjudicate(back, method="margins", min_pairs=4, max_pairs=20, min_margin=0.0)
+    assert verdict == duel_mod._adjudicate(seat, method="margins", min_pairs=4, max_pairs=20, min_margin=0.0)
+
+
+def test_an_open_match_is_carried_to_the_next_session_and_resumed(monkeypatch):
+    """**Nothing about a match in progress lives only in memory.** A session that ends with a
+    match open writes its snapshot instead of a "window closed" draw; the next session
+    resumes it with every margin intact and the eventual record spans both sessions."""
+    with session_scope() as s:
+        s.query(Duel).delete()
+    scores = {"aaa0000000x": 70.0, "bbb0000000x": 62.0}
+    # Session 1: cancelled after four legs (B C B C) — two margins, far from a verdict.
+    d1, applied1, _ = _ring_session_keep(monkeypatch, scores, seats=1, belt_every=2, cancel_after_legs=4)
+    assert d1.status == DuelStatus.CANCELLED, d1.error
+    assert d1.matchups == [], "an open match is not written as a 'window closed' draw any more"
+    assert d1.open_matches and len(d1.open_matches) == 1
+    snap = d1.open_matches[0]
+    assert snap["challenger"] == "bbb0000000x" and snap["incumbent"] == "aaa0000000x"
+    rounds_before = len(snap["deltas"])
+    assert 1 <= rounds_before <= 2 and snap["sessions"] == [d1.id]
+
+    # Session 2, same defender: the match is seated first, with its rounds, and finishes.
+    d2, applied2, _ = _ring_session_keep(monkeypatch, scores, seats=1, belt_every=2)
+    assert d2.status == DuelStatus.COMPLETE, d2.error
+    with session_scope() as s:
+        assert s.get(Duel, d1.id).open_matches is None, "carried exactly once"
+    record = next(m for m in d2.matchups if m["challenger"] == "bbb0000000x")
+    assert record["carried"] is True and record["sessions"] == [d1.id, d2.id]
+    assert record["pairs"] > rounds_before, "the carried rounds count toward the verdict"
+    assert "resumed" in record["challenger_why"]
+    assert record["verdict"] == "incumbent"
+    assert d2.open_matches is None
+
+
+def test_a_carried_match_is_closed_when_the_belt_changed_hands(monkeypatch):
+    """A match is never switched to a different opponent: if the profile defending is not
+    the reference the carried match was fought against, it is closed with the reason —
+    counted as aborted, never silently dropped and never resumed against someone else."""
+    with session_scope() as s:
+        s.query(Duel).delete()
+    scores = {"aaa0000000x": 70.0, "bbb0000000x": 62.0, "ccc0000000x": 55.0}
+    d1, _, _ = _ring_session_keep(monkeypatch, scores, seats=1, belt_every=2, cancel_after_legs=4)
+    assert d1.open_matches and d1.open_matches[0]["incumbent"] == "aaa0000000x"
+
+    # Session 2 crowns ccc on paper; with no decided ring record the pooled crown defends.
+    field = _ring_field(("ccc0000000x", 80.0), ("aaa0000000x", 70.0), ("bbb0000000x", 62.0))
+    d2, _, _ = _ring_session_keep(monkeypatch, scores, seats=1, belt_every=2, field=field)
+    assert d2.status == DuelStatus.COMPLETE, d2.error
+    closed = [m for m in d2.matchups if str(m.get("reason", "")).startswith("aborted: carried over")]
+    assert len(closed) == 1
+    assert closed[0]["incumbent"] == "aaa0000000x" and closed[0]["challenger"] == "bbb0000000x"
+    assert "belt changed hands" in closed[0]["reason"]
+    # The pair is still free to be fought for real in this session (it was, once aaa took
+    # the belt back off ccc) — the carried record and the real one are separate matches.
+    real = [m for m in d2.matchups if m["challenger"] == "bbb0000000x" and m is not closed[0]]
+    assert all(not str(m.get("reason", "")).startswith("aborted") for m in real)
+    assert duel_mod.outcome(closed[0]) == duel_mod.ABORTED
+    assert closed[0]["sessions"] == [d1.id, d2.id]
+    with session_scope() as s:
+        assert s.get(Duel, d1.id).open_matches is None
+
+
+def test_a_crashed_session_keeps_its_open_matches_for_the_next_one():
+    with session_scope() as s:
+        s.query(Duel).delete()
+        d = Duel(status=DuelStatus.RUNNING, trigger="manual", duration_s=600, matchups=[],
+                 baseline=[], open_matches=[{"challenger": "b", "incumbent": "a", "deltas": [0.5],
+                                            "sessions": [1]}])
+        s.add(d)
+        s.flush()
+        crashed_id = d.id
+    assert duel_mod.reconcile_interrupted_duels() == 1
+    with session_scope() as s:
+        row = s.get(Duel, crashed_id)
+        assert row.status == DuelStatus.FAILED and "carries over" in (row.error or "")
+        assert row.open_matches and row.open_matches[0]["challenger"] == "b"
+        nxt = Duel(status=DuelStatus.PENDING, trigger="manual", duration_s=600, matchups=[])
+        s.add(nxt)
+        s.flush()
+        next_id = nxt.id
+    carried = duel_mod._carried_open_matches(next_id)
+    assert [c["challenger"] for c in carried] == ["b"]
+    with session_scope() as s:
+        assert s.get(Duel, crashed_id).open_matches is None
+        assert s.get(Duel, next_id).open_matches == carried
+    assert duel_mod._carried_open_matches(next_id) == [], "never carried twice"
+
+
+def test_round_health_says_why_matches_produced_no_result():
+    when = datetime.now(timezone.utc).replace(tzinfo=None)
+    rows = [
+        _mu("a", "b", "incumbent", wins_inc=8, wins_cha=2, delta=-2.0),
+        {**_mu("a", "c", "draw", wins_inc=1, wins_cha=1, delta=0.0), "reason": "window closed mid-matchup (undecided)"},
+        {**_mu("a", "d", "draw", wins_inc=0, wins_cha=0, delta=0.0), "reason": "window closed mid-matchup (undecided)"},
+        {**_mu("a", "e", "draw", wins_inc=0, wins_cha=0, delta=0.0), "reason": "aborted: repeated unusable rounds"},
+        {**_mu("a", "f", "draw", wins_inc=2, wins_cha=1, delta=0.0),
+         "reason": "aborted: carried over, but could not resume — the belt changed hands before it could resume"},
+    ]
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(s, matchups=rows, champion="a", when=when)
+    health = duel_mod.round_health()
+    assert health["matches"] == 5 and health["aborted"] == 4 and health["decided"] == 1
+    by_reason = {r["reason"]: r["matches"] for r in health["abort_reasons"]}
+    assert by_reason["window closed with the match undecided (restarted from zero next session)"] == 2
+    assert by_reason["rounds unusable — no Overall to compare"] == 1
+    assert by_reason["carried over but could not resume"] == 1
+    assert health["abort_reasons"][0]["matches"] == 2  # biggest cause first

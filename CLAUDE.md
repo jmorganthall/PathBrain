@@ -724,6 +724,29 @@ LLM-based. See `README.md` for the product overview.
     the same smoothing as the jobs feed) with an "iteration 2/3 · 40s left" caption, says
     "applying" while the profile is being written, and the rest stand idle at zero, which is
     the honest reading — nothing of theirs is running.
+    **Open matches survive the window** (`Duel.open_matches`, `_seat_snapshot` /
+    `_seat_from_snapshot` / `_carried_open_matches`). A match's adjudication state — its
+    margins, the SPRT walk, the signed-rank evidence, the streak — used to live only in the
+    running thread. Every run was on disk the moment it landed and every *decided* match was
+    written at its verdict, but a match still open when the window closed was recorded as
+    "window closed mid-matchup (undecided)" and the next session started that pair from
+    round zero; a restart lost even the record. On a nightly ladder that is the top pairs,
+    every night — the two best profiles are seated first and resolve last, so the ladder
+    spent its evidence on exactly them and then threw it away (the *"54% of matches produced
+    no result"* report). The state is a pure function of the ordered margins (both stopping
+    rules are fed one delta at a time), so a **snapshot per seated match is written to the
+    row after every round** and the next session **moves** the snapshots onto its own row
+    (carried exactly once; a crashed session's row still holds them, so a restart carries
+    them too) and **replays** each into a seat — seated ahead of any new challenger, because
+    its evidence is already paid for, and only while its reference is the profile defending.
+    A match is never switched to a different opponent: a carried match whose belt has
+    changed hands, whose challenger left the field or is unreachable, is closed with the
+    reason (`aborted: carried over, but could not resume — …`, counted as aborted) rather
+    than resumed against someone else or dropped. The record carries `sessions` and
+    `carried`; the seat's `why` reads "resumed with N round(s) carried over" and the board
+    shows a **resumed** chip. The rule parameters are the current config's, like every
+    other match in the session. `round_health` gained `abort_reasons` — window-closed vs
+    unusable vs could-not-resume — so the health card says *why* a match produced no result.
     **A round medians `duel.iterations_per_round` iterations a side (default 3) — the
     ring's resolving power.** A round compares two measurements, so its margin carries the
     noise of both: measured on a real link, ~2.3 Overall points per run becomes ~3.3 per

@@ -1958,6 +1958,10 @@ export interface DuelHealth {
   unusable_rounds: number;
   diagnosed_matches: number;
   reasons: { reason: string; legs: number }[];
+  // What ended each aborted match, biggest cause first: unusable rounds, a window that
+  // closed with the match undecided (pre-carry-over sessions), or a carried match that
+  // could not resume.
+  abort_reasons?: { reason: string; matches: number }[];
   sessions_analyzed: number;
 }
 
@@ -2207,6 +2211,9 @@ export interface DuelLive {
   // seat being measured so one-match readers keep working.
   seats?: DuelLive[];
   measuring?: boolean;
+  // Every session this match has been seated in; more than one = resumed from a previous
+  // session with its rounds carried over.
+  sessions?: number[];
   leg_distances?: number[];
   // The most recent legs in run order — the strip that shows the cadence.
   legs?: DuelLeg[];
@@ -2257,6 +2264,15 @@ export interface DuelLeg {
   run_id?: number | null;
 }
 
+export interface DuelOpenMatch {
+  challenger: string | null;
+  incumbent: string | null;
+  challenger_label?: string | null;
+  challenger_name?: string | null;
+  rounds: number;
+  sessions: number[];
+}
+
 export interface DuelSession {
   id: number;
   status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
@@ -2267,6 +2283,9 @@ export interface DuelSession {
   matchups: DuelMatchup[];
   iterations_run: number;
   run_ids: number[];
+  // Matches still open on this session, carried to the next one with their rounds intact
+  // instead of being recorded as undecided and restarted from zero.
+  open_matches?: DuelOpenMatch[];
   champion_fingerprint: string | null;
   champion_label: string | null;
   // `matchups` is capped by the API to the most recent few; this is the true count.
