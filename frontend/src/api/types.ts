@@ -1030,6 +1030,26 @@ export interface BrowserConfig {
   har: boolean;
   http3: boolean;
   force_quic_origins: string[];
+  // The client every page is loaded as (see BrowserClient) — part of the methodology's
+  // collection once a version declares one, like the URL list.
+  headless_mode: string;
+  hide_automation: boolean;
+  user_agent: string;
+  viewport: { width: number; height: number };
+  locale: string;
+  timezone_id: string;
+}
+
+// The browser client a page load is measured as. A site serves a headless shell, a
+// phone-sized viewport or an automated client a different page than it serves a person,
+// so this is the other half of what a browser metric is a mean over.
+export interface BrowserClient {
+  headless_mode: string;
+  hide_automation: boolean;
+  user_agent: string;
+  viewport: { width: number; height: number } | null;
+  locale: string;
+  timezone_id: string;
 }
 
 export interface BenchmarkConfig {
@@ -1260,6 +1280,10 @@ export interface MethodologyCollection {
   browser_urls: string[];
   http_urls: string[];
   site_set: string;
+  // The declared client, absent on versions published before the client joined the
+  // collection (those ignore the client stamp, as a version with no sites ignores the sites').
+  client?: BrowserClient | null;
+  client_set?: string | null;
 }
 
 export interface MethodologyDefinition {

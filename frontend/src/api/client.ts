@@ -4,6 +4,7 @@ import type {
   BaselineConfig,
   BaselineTest,
   BenchmarkConfig,
+  BrowserClient,
   ConfigSnapshot,
   DiscoverResponse,
   ExperimentDetail,
@@ -294,17 +295,21 @@ export const api = {
     ),
   // Change the sites the benchmark measures — published as a new methodology version that
   // owns the list, so runs against another set are quarantined rather than pooled.
-  publishSites: (browserUrls: string[], httpUrls: string[], regrade = true) =>
+  // `client` is the browser client the pages are loaded as (headless mode, user agent,
+  // viewport, locale, timezone) — the other half of the collection; omitted, the config's
+  // current client is declared.
+  publishSites: (browserUrls: string[], httpUrls: string[], regrade = true, client?: BrowserClient) =>
     request<{
       version: string;
       changed: boolean;
       added: string[];
       removed: string[];
+      client_changes: string[];
       job_id: string | null;
       regrade_deferred?: boolean;
     }>("/methodologies/sites", {
       method: "POST",
-      body: JSON.stringify({ browser_urls: browserUrls, http_urls: httpUrls, regrade }),
+      body: JSON.stringify({ browser_urls: browserUrls, http_urls: httpUrls, regrade, client }),
     }),
   // Pick which published methodology scores runs "at present" (the config pin). Pass null to clear
   // the pin and follow the shipped latest. Re-grades history under the choice (background job).

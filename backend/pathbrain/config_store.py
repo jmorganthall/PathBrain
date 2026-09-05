@@ -96,6 +96,27 @@ DEFAULT_CONFIG: dict = {
         "iterations": 2,
         "wait_until": "load",
         "headless": True,
+        # ── Look like a normal browser ────────────────────────────────────────────
+        # Sites serve headless/automated clients a different page — or a challenge
+        # page — and a measurement of that is a measurement of nothing a person sees.
+        # These are the three cheap, legitimate tells, all recorded in `config_used`
+        # so every run says what client it measured as. Deliberately NOT a stealth
+        # arms race: a site that still challenges after this doesn't want automated
+        # loads, and the right answer is a different site.
+        # "new" = Chromium's new headless mode (the real browser, not the legacy
+        # headless shell — `--headless=new`); "legacy" = the old mode.
+        "headless_mode": "new",
+        # Clears `navigator.webdriver` (`--disable-blink-features=AutomationControlled`).
+        "hide_automation": True,
+        # "auto" = a current desktop-Chrome string matching the bundled Chromium's major
+        # version (the legacy default announces itself as "HeadlessChrome"); "" keeps
+        # Playwright's default; any other string is used verbatim.
+        "user_agent": "auto",
+        # Playwright's default context is 800×600 — a phone-sized desktop nobody has.
+        "viewport": {"width": 1920, "height": 1080},
+        "locale": "en-US",
+        # IANA zone for the page's clock; "" = the container's.
+        "timezone_id": "",
         # Screenshot + HAR feed only the artifacts UI (no scored metric), so they're off by
         # default now — set true to capture them for debugging a specific run.
         "screenshot": False,

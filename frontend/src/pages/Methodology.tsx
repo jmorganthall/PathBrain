@@ -25,6 +25,8 @@ import RestartAltIcon from "@mui/icons-material/RestartAlt";
 
 import { api } from "../api/client";
 import type {
+  BrowserClient,
+  BrowserConfig,
   MethodologyDetail,
   MethodologyMetric,
   MethodologySummary,
@@ -34,6 +36,117 @@ import { Blurb, FoldCard, HelpTip } from "../components/Explain";
 import StringListEditor from "../components/config/StringListEditor";
 import { fmtDateTime } from "../utils/format";
 import { vHttpUrl } from "../utils/validate";
+
+// The client block as the Config page's browser section carries it (the same fields, with
+// a 0×0 viewport standing for "Playwright's default").
+function clientFromBrowser(b: BrowserConfig | undefined): BrowserClient {
+  const w = Number(b?.viewport?.width ?? 0);
+  const h = Number(b?.viewport?.height ?? 0);
+  return {
+    headless_mode: b?.headless_mode === "legacy" ? "legacy" : "new",
+    hide_automation: b?.hide_automation ?? true,
+    user_agent: b?.user_agent ?? "auto",
+    viewport: w > 0 && h > 0 ? { width: w, height: h } : null,
+    locale: b?.locale ?? "en-US",
+    timezone_id: b?.timezone_id ?? "",
+  };
+}
+
+const HEADLESS_MODES = [
+  { value: "new", label: "New headless (the real browser)" },
+  { value: "legacy", label: "Legacy headless shell" },
+];
+
+// The client fields of the "Sites measured" card: what every page is loaded AS. Shown and
+// edited beside the URL lists because a site serves a headless shell, a phone-sized
+// viewport or an automated client a different page than it serves a person — so the
+// client is the other half of what a browser metric is a mean over, and changing it is a
+// publish exactly like changing a site.
+function ClientEditor({ value, onChange }: { value: BrowserClient; onChange: (c: BrowserClient) => void }) {
+  const vp = value.viewport ?? { width: 0, height: 0 };
+  return (
+    <Box>
+      <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+        Loaded as
+        <HelpTip title="The client every page is loaded as. Sites hand a headless shell, a tiny viewport or an automated client a different page (or a challenge page) than they hand a person, so this is part of what the scores measure: changing any of it publishes a new version, like changing a site. Deliberately not a stealth arms race — a site that still challenges after this doesn't want automated loads, and the right answer is a different site." />
+      </Typography>
+      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center">
+        <TextField
+          select
+          size="small"
+          label="Headless mode"
+          value={value.headless_mode}
+          onChange={(e) => onChange({ ...value, headless_mode: e.target.value })}
+          sx={{ width: 250 }}
+        >
+          {HEADLESS_MODES.map((m) => (
+            <MenuItem key={m.value} value={m.value}>
+              {m.label}
+            </MenuItem>
+          ))}
+        </TextField>
+        <TextField
+          size="small"
+          label="User agent"
+          value={value.user_agent}
+          onChange={(e) => onChange({ ...value, user_agent: e.target.value })}
+          helperText="auto = current desktop Chrome matching the bundled Chromium; empty = Playwright's default"
+          sx={{ minWidth: 320, flexGrow: 1 }}
+        />
+      </Stack>
+      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mt: 1.5 }}>
+        <TextField
+          size="small"
+          type="number"
+          label="Viewport width"
+          value={vp.width || ""}
+          onChange={(e) => onChange({ ...value, viewport: { width: parseInt(e.target.value, 10) || 0, height: vp.height } })}
+          sx={{ width: 150 }}
+        />
+        <TextField
+          size="small"
+          type="number"
+          label="Viewport height"
+          value={vp.height || ""}
+          onChange={(e) => onChange({ ...value, viewport: { width: vp.width, height: parseInt(e.target.value, 10) || 0 } })}
+          sx={{ width: 150 }}
+        />
+        <TextField
+          size="small"
+          label="Locale"
+          value={value.locale}
+          onChange={(e) => onChange({ ...value, locale: e.target.value })}
+          sx={{ width: 120 }}
+        />
+        <TextField
+          size="small"
+          label="Timezone (IANA)"
+          value={value.timezone_id}
+          onChange={(e) => onChange({ ...value, timezone_id: e.target.value })}
+          placeholder="container's"
+          sx={{ width: 200 }}
+        />
+        <FormControlLabel
+          control={
+            <Checkbox
+              size="small"
+              checked={value.hide_automation}
+              onChange={(e) => onChange({ ...value, hide_automation: e.target.checked })}
+            />
+          }
+          label="Clear navigator.webdriver"
+        />
+      </Stack>
+    </Box>
+  );
+}
+
+function fmtClient(c: BrowserClient | null | undefined): string {
+  if (!c) return "client: whatever Config says";
+  const vp = c.viewport ? `${c.viewport.width}×${c.viewport.height}` : "default viewport";
+  const ua = c.user_agent === "auto" ? "desktop Chrome UA" : c.user_agent ? "custom UA" : "default UA";
+  return `${c.headless_mode === "legacy" ? "legacy headless" : "new headless"}, ${vp}, ${ua}${c.locale ? `, ${c.locale}` : ""}`;
+}
 
 function fmtBound(v: number | null, unit: string): string {
   if (v == null) return "—";
@@ -154,6 +267,8 @@ export default function Methodology() {
   // Config says — the lists Config holds, offered here so publishing pins them to a version.
   const [siteBrowser, setSiteBrowser] = useState<string[]>([]);
   const [siteHttp, setSiteHttp] = useState<string[]>([]);
+  // The client the pages are loaded as: what the version declares, or what Config holds.
+  const [siteClient, setSiteClient] = useState<BrowserClient>(clientFromBrowser(undefined));
   const [siteRegrade, setSiteRegrade] = useState(true);
   const [publishingSites, setPublishingSites] = useState(false);
 
@@ -175,6 +290,7 @@ export default function Methodology() {
       setVersions(list.methodologies);
       setSiteBrowser(cur.collection?.browser_urls ?? cfg?.browser.urls ?? []);
       setSiteHttp(cur.collection?.http_urls ?? cfg?.http.urls ?? []);
+      setSiteClient(cur.collection?.client ?? clientFromBrowser(cfg?.browser));
       setPinState({
         current: list.current_version ?? cur.version,
         codeDefault: list.code_default ?? cur.version,
@@ -273,11 +389,15 @@ export default function Methodology() {
     }
     setPublishingSites(true);
     try {
-      const res = await api.publishSites(browser, http, siteRegrade);
+      const res = await api.publishSites(browser, http, siteRegrade, siteClient);
       if (!res.changed) {
-        setToast(`The site list already matches ${res.version} — nothing to publish.`);
+        setToast(`The site list and client already match ${res.version} — nothing to publish.`);
       } else {
-        const diff = [...res.added.map((u) => `+${u}`), ...res.removed.map((u) => `−${u}`)].join(", ");
+        const diff = [
+          ...res.added.map((u) => `+${u}`),
+          ...res.removed.map((u) => `−${u}`),
+          ...(res.client_changes ?? []),
+        ].join(", ");
         setToast(
           siteRegrade
             ? `Published ${res.version} (${diff || "reordered"}) and started a re-grade — earlier runs are now legacy. Track it in the jobs menu (top right) ↗`
@@ -290,7 +410,7 @@ export default function Methodology() {
     } finally {
       setPublishingSites(false);
     }
-  }, [siteBrowser, siteHttp, siteRegrade, load]);
+  }, [siteBrowser, siteHttp, siteClient, siteRegrade, load]);
 
   if (loading) return <Loading label="Loading methodology…" />;
 
@@ -540,16 +660,17 @@ export default function Methodology() {
           title="Sites measured"
           summary={
             current.collection
-              ? `${current.collection.browser_urls.length} browser page${current.collection.browser_urls.length === 1 ? "" : "s"}, ${current.collection.http_urls.length} HTTP URL${current.collection.http_urls.length === 1 ? "" : "s"} — owned by this version.`
+              ? `${current.collection.browser_urls.length} browser page${current.collection.browser_urls.length === 1 ? "" : "s"}, ${current.collection.http_urls.length} HTTP URL${current.collection.http_urls.length === 1 ? "" : "s"}; ${fmtClient(current.collection.client)} — owned by this version.`
               : "This version measures whatever Config says. Publish a list here to pin it."
           }
         >
           <Typography variant="body2" sx={{ mb: 1.5 }}>
-            Every browser score is an average over these pages, so the list is part of the
-            methodology.
-            <HelpTip title="Changing a site publishes a new version. Runs measured against the old list keep their scores under the old version and are quarantined as legacy under the new one — never pooled with the new measurements. Until fresh runs arrive, the heirs card, the challenger race and the duel ladder are ordered by the previous version's standings, so its winners get measured first." />
+            Every browser score is an average over these pages, loaded as this client, so both
+            are part of the methodology.
+            <HelpTip title="Changing a site — or the client the pages are loaded as — publishes a new version. Runs measured against the old list or as the old client keep their scores under the old version and are quarantined as legacy under the new one — never pooled with the new measurements. Until fresh runs arrive, the heirs card, the challenger race and the duel ladder are ordered by the previous version's standings, so its winners get measured first; a duel already running when you publish re-seeds itself the same way." />
           </Typography>
           <Stack spacing={2}>
+            <ClientEditor value={siteClient} onChange={setSiteClient} />
             <StringListEditor
               label="Browser pages"
               helperText="Real page loads in headless Chromium — the crown metrics come from these."
@@ -587,7 +708,7 @@ export default function Methodology() {
                 disabled={publishingSites}
                 startIcon={publishingSites ? <CircularProgress size={16} /> : undefined}
               >
-                {publishingSites ? "Publishing…" : "Publish site list as a new version"}
+                {publishingSites ? "Publishing…" : "Publish sites + client as a new version"}
               </Button>
             </Stack>
           </Stack>

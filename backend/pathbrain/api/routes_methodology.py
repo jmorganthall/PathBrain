@@ -185,15 +185,20 @@ def publish_site_list(body: dict = Body(...), session: Session = Depends(get_ses
     the pages loaded), so this forks the current version with the new lists, points the
     runtime at it, writes the lists to config, and re-grades history: runs measured against
     another set are quarantined as incomparable — kept, shown as legacy, out of the
-    standings. Body: ``{"browser_urls": [...], "http_urls": [...]?, "regrade": true?}``.
-    Returns ``{version, changed, added, removed, job_id}`` (202). A list identical to the
-    current version's publishes nothing."""
+    standings. Body: ``{"browser_urls": [...], "http_urls": [...]?, "client": {...}?,
+    "regrade": true?}`` — ``client`` is the browser client block (headless mode, user
+    agent, viewport, locale, timezone: the other half of what a page load measures);
+    omitted, the config's current client is declared. Returns ``{version, changed, added,
+    removed, client_changes, job_id}`` (202). Sites and client both identical to the
+    current version's publish nothing."""
     browser_urls = [str(u) for u in ((body or {}).get("browser_urls") or [])]
     http_urls = (body or {}).get("http_urls")
     http_urls = [str(u) for u in http_urls] if http_urls is not None else None
+    client = (body or {}).get("client")
+    client = dict(client) if isinstance(client, dict) else None
     regrade = bool((body or {}).get("regrade", True))
     try:
-        row, info = publish_sites(session, browser_urls, http_urls)
+        row, info = publish_sites(session, browser_urls, http_urls, client)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     session.commit()

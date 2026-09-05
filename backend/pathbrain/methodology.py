@@ -761,14 +761,52 @@ def build_definition_from_spec(spec: dict) -> dict:
 
 COLLECTION_KEY = "collection"
 
+# The browser-config keys that decide WHAT PAGE a site serves — the client the load is
+# measured as. A site hands a headless shell, a phone-sized viewport or an automated client
+# a different page (or a challenge page) than it hands a person, so two runs of the same
+# URL as different clients are, like two site lists, measurements of different things. The
+# client is therefore the second half of the collection: declared by the version, overlaid
+# onto every run, stamped, and quarantined under its own token when it differs.
+CLIENT_FIELDS = ("headless_mode", "hide_automation", "user_agent", "viewport", "locale", "timezone_id")
+
 
 def _site_set_hash(browser_urls: list[str], http_urls: list[str]) -> str:
     payload = json.dumps([sorted(browser_urls), sorted(http_urls)], separators=(",", ":"))
     return hashlib.sha1(payload.encode()).hexdigest()[:12]
 
 
+def _client_hash(client: dict) -> str:
+    payload = json.dumps(client, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha1(payload.encode()).hexdigest()[:12]
+
+
 def _urls(section: dict | None) -> list[str]:
     return [str(u).strip() for u in ((section or {}).get("urls") or []) if str(u).strip()]
+
+
+def client_from_config(browser: dict | None) -> dict:
+    """The normalized client block of a browser config section — the same shape whether it
+    comes from config, a declaration, or a request body, so the hash is representation-free
+    (``"1920"`` and ``1920`` are one viewport; a stray space in a locale is not a new client).
+    ``user_agent`` ``"auto"`` is kept symbolic: it resolves to the bundled Chromium's major
+    version at run time, which is the image's choice rather than the methodology's."""
+    b = browser or {}
+    mode = str(b.get("headless_mode", "new") or "new").strip().lower()
+    vp = b.get("viewport") or {}
+    try:
+        width, height = int(vp.get("width") or 0), int(vp.get("height") or 0)
+    except (TypeError, ValueError, AttributeError):
+        width = height = 0
+    ua = b.get("user_agent", "auto")
+    ua = "auto" if ua is None else str(ua).strip()
+    return {
+        "headless_mode": "legacy" if mode == "legacy" else "new",
+        "hide_automation": bool(b.get("hide_automation", True)),
+        "user_agent": ua,
+        "viewport": {"width": width, "height": height} if width > 0 and height > 0 else None,
+        "locale": str(b.get("locale") or "").strip(),
+        "timezone_id": str(b.get("timezone_id") or "").strip(),
+    }
 
 
 def site_set_from_config(config: dict | None) -> str | None:
@@ -782,19 +820,42 @@ def site_set_from_config(config: dict | None) -> str | None:
     return _site_set_hash(browser, http)
 
 
-def collection_from_lists(browser_urls: list[str], http_urls: list[str]) -> dict:
+def client_set_from_config(config: dict | None) -> str | None:
+    """The client stamp of a run: a hash of the browser client it was configured as
+    (`Run.config_used`). ``None`` when the config has no browser section at all — a run
+    that never recorded what it measured as, which a declaring version quarantines."""
+    if not config or not isinstance(config.get("browser"), dict):
+        return None
+    return _client_hash(client_from_config(config.get("browser")))
+
+
+def collection_from_lists(
+    browser_urls: list[str], http_urls: list[str], client: dict | None = None
+) -> dict:
     browser = [u.strip() for u in browser_urls if u and u.strip()]
     http = [u.strip() for u in http_urls if u and u.strip()]
-    return {
+    out = {
         "browser_urls": browser,
         "http_urls": http,
         "site_set": _site_set_hash(browser, http),
     }
+    if client is not None:
+        normalized = client_from_config(client)
+        out["client"] = normalized
+        out["client_set"] = _client_hash(normalized)
+    return out
+
+
+def collection_hash(c: dict) -> str:
+    """The identity of a whole collection — sites AND client — for the version name's
+    ``+sites-<hash>`` segment, so a client-only change forks a distinct version too."""
+    parts = [str(c.get("site_set") or ""), str(c.get("client_set") or "")]
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:12]
 
 
 def collection(definition: dict | None) -> dict | None:
-    """The site lists a methodology declares, or ``None`` for a version that measures
-    whatever config says (every code-shipped version before a site publish)."""
+    """The site lists (+ client) a methodology declares, or ``None`` for a version that
+    measures whatever config says (every code-shipped version before a site publish)."""
     c = (definition or {}).get(COLLECTION_KEY)
     return c if isinstance(c, dict) and c.get("site_set") else None
 
@@ -804,45 +865,95 @@ def definition_site_set(definition: dict | None) -> str | None:
     return c.get("site_set") if c else None
 
 
+def definition_client_set(definition: dict | None) -> str | None:
+    """The client a version declares, or ``None`` for a version published before the
+    client became part of the collection (it ignores the client stamp, as a version with
+    no sites ignores the site stamp)."""
+    c = collection(definition)
+    return c.get("client_set") if c and c.get("client_set") else None
+
+
 def _strip_sites_suffix(version: str) -> str:
     """``v15+fcp-best150+sites-abc`` → ``v15+fcp-best150``: a site publish replaces the site
     segment rather than chaining a new one every time the list changes."""
     return "+".join(part for part in version.split("+") if not part.startswith("sites-"))
 
 
-def publish_sites(
-    session: Session, browser_urls: list[str], http_urls: list[str] | None = None
-) -> tuple[Methodology, dict]:
-    """Publish the current methodology with a new site list as a **new version**, point the
-    runtime at it, and write the lists into config so every reader agrees.
+def _client_diff(before: dict | None, after: dict) -> list[str]:
+    """``["viewport: 800×600 → 1920×1080", …]`` — the client fields that changed."""
+    out: list[str] = []
+    for key in CLIENT_FIELDS:
+        a = (before or {}).get(key)
+        b = after.get(key)
+        if a == b:
+            continue
 
-    Returns ``(row, info)``; ``info["changed"]`` is False when the lists already match the
-    current version (nothing published). Caller commits and kicks the re-grade."""
+        def _fmt(v):
+            if isinstance(v, dict):
+                return f"{v.get('width')}×{v.get('height')}"
+            return "—" if v in (None, "") else str(v)
+
+        out.append(f"{key}: {_fmt(a)} → {_fmt(b)}")
+    return out
+
+
+def publish_sites(
+    session: Session,
+    browser_urls: list[str],
+    http_urls: list[str] | None = None,
+    client: dict | None = None,
+) -> tuple[Methodology, dict]:
+    """Publish the current methodology with a new site list — and/or a new browser client —
+    as a **new version**, point the runtime at it, and write both into config so every
+    reader agrees.
+
+    ``client`` is the browser client block (``CLIENT_FIELDS``); omitted, the config's
+    current client is declared, so every version published from here on owns the whole
+    instrument: what was loaded, and as what. Returns ``(row, info)``; ``info["changed"]``
+    is False when sites and client both already match the current version (nothing
+    published). Caller commits and kicks the re-grade."""
     config = get_config(session)
     base = ensure_current_methodology(session, config)
     base_def = base.definition or {}
     if http_urls is None:
         http_urls = _urls(config.get("http"))
-    new_collection = collection_from_lists(browser_urls, http_urls)
+    if client is None:
+        client = client_from_config(config.get("browser"))
+    new_collection = collection_from_lists(browser_urls, http_urls, client)
     if not new_collection["browser_urls"]:
         raise ValueError("at least one browser URL is required")
     old = collection(base_def)
-    if old and old.get("site_set") == new_collection["site_set"]:
-        return base, {"changed": False, "version": base.version, "added": [], "removed": []}
+    if (
+        old
+        and old.get("site_set") == new_collection["site_set"]
+        and old.get("client_set") == new_collection["client_set"]
+    ):
+        return base, {"changed": False, "version": base.version, "added": [], "removed": [],
+                      "client_changes": []}
 
     # Diff for the changelog, against the version's own list when it has one, else against
     # what config was measuring (the implicit list every earlier run used).
     before = set(old["browser_urls"] + old["http_urls"]) if old else set(_urls(config.get("browser")) + _urls(config.get("http")))
     after = set(new_collection["browser_urls"] + new_collection["http_urls"])
     added, removed = sorted(after - before), sorted(before - after)
+    # The client likewise: against the version's declared client when it has one, else the
+    # client config was measuring as (what every earlier run implicitly used).
+    prior_client = (old or {}).get("client") if old and old.get("client") else client_from_config(config.get("browser"))
+    client_changes = _client_diff(prior_client, new_collection["client"])
 
     new_def = copy.deepcopy(base_def)
     new_def[COLLECTION_KEY] = new_collection
-    new_version = f"{_strip_sites_suffix(base.version)}+sites-{new_collection['site_set']}"
-    change = ", ".join([f"+{u}" for u in added] + [f"−{u}" for u in removed]) or "reordered"
+    new_version = f"{_strip_sites_suffix(base.version)}+sites-{collection_hash(new_collection)}"
+    site_change = ", ".join([f"+{u}" for u in added] + [f"−{u}" for u in removed])
+    parts = []
+    if site_change or not old:
+        parts.append(f"Sites changed ({site_change or 'reordered'})")
+    if client_changes:
+        parts.append(f"Client changed ({'; '.join(client_changes)})")
     notes = (
-        f"Sites changed ({change}), forked from {base.version}. Runs measured against a "
-        f"different site set are quarantined as incomparable under this version."
+        f"{'. '.join(parts) or 'Collection re-declared'}, forked from {base.version}. Runs "
+        f"measured against a different site set, or as a different browser client, are "
+        f"quarantined as incomparable under this version."
     )
     row = session.get(Methodology, new_version)
     if row is None:
@@ -865,16 +976,27 @@ def publish_sites(
     # one answer; the runner overlays from the version anyway, as the belt and braces.
     save_config(session, {
         "methodology_version": new_version,
-        "browser": {"urls": list(new_collection["browser_urls"])},
+        "browser": {"urls": list(new_collection["browser_urls"]), **_client_config(new_collection["client"])},
         "http": {"urls": list(new_collection["http_urls"])},
     })
     log.info("Published %s (%s)", new_version, notes)
-    return row, {"changed": True, "version": new_version, "added": added, "removed": removed}
+    return row, {"changed": True, "version": new_version, "added": added, "removed": removed,
+                 "client_changes": client_changes}
+
+
+def _client_config(client: dict) -> dict:
+    """A declared client block as browser-config keys (the config form of the same fields:
+    a viewport of ``None`` is written as 0×0, which the plugin reads as "Playwright's default")."""
+    out = {k: client.get(k) for k in CLIENT_FIELDS}
+    if not isinstance(out.get("viewport"), dict):
+        out["viewport"] = {"width": 0, "height": 0}
+    return out
 
 
 def apply_collection(config: dict, definition: dict | None) -> dict:
-    """The config a run should measure under: ``config`` with the URL lists overlaid from
-    the methodology's collection, when it declares one. Returns a new dict."""
+    """The config a run should measure under: ``config`` with the URL lists — and the
+    browser client, when declared — overlaid from the methodology's collection, when it
+    declares one. Returns a new dict."""
     c = collection(definition)
     if not c:
         return config
@@ -882,7 +1004,12 @@ def apply_collection(config: dict, definition: dict | None) -> dict:
     # Both lists, always — the stamp a run gets (`site_set_from_config`) hashes both, so
     # keeping config's HTTP list where the version declares none would stamp every run
     # with a set the version never declared and quarantine all of them.
-    out["browser"] = {**(config.get("browser") or {}), "urls": list(c["browser_urls"])}
+    browser = {**(config.get("browser") or {}), "urls": list(c["browser_urls"])}
+    if c.get("client"):
+        # Same reasoning for the client: the stamp hashes what the run was configured as,
+        # so it is the version's client that is measured, not whatever config drifted to.
+        browser.update(_client_config(c["client"]))
+    out["browser"] = browser
     out["http"] = {**(config.get("http") or {}), "urls": list(c.get("http_urls") or [])}
     return out
 
@@ -1154,10 +1281,14 @@ def at_measure_comparability(metric_values: dict | None) -> tuple[str, list[str]
 
 
 SITE_SET_MARKER = "site_set"  #: the `missing_metrics` token for "measured against other sites"
+CLIENT_SET_MARKER = "client_set"  #: … and for "measured as a different browser client"
 
 
 def comparability(
-    definition: dict, metric_values: dict | None, site_set: str | None = None
+    definition: dict,
+    metric_values: dict | None,
+    site_set: str | None = None,
+    client_set: str | None = None,
 ) -> tuple[str, list[str]]:
     """Can a run's raw reproduce this methodology's metrics? (the at-present check)
 
@@ -1185,9 +1316,17 @@ def comparability(
     # a run measured against any other set (or one whose config never recorded a list),
     # because its browser means are means over different pages. Reported under one token
     # so a reader can tell "other sites" from "missing instrument".
+    tokens: list[str] = []
     declared = definition_site_set(definition)
     if declared is not None and site_set != declared:
-        return "incomparable", [SITE_SET_MARKER]
+        tokens.append(SITE_SET_MARKER)
+    # The client is the other half of what a browser metric is a mean over: the same URL
+    # loaded as a headless shell at 800×600 and as a person's desktop Chrome is two pages.
+    declared_client = definition_client_set(definition)
+    if declared_client is not None and client_set != declared_client:
+        tokens.append(CLIENT_SET_MARKER)
+    if tokens:
+        return "incomparable", tokens
     missing = [k for k in scored if mv.get(k) is None]
     if missing:
         return "partial", missing
