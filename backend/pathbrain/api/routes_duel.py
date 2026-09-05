@@ -14,8 +14,10 @@ from .. import duel
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
 from ..logging_config import get_logger
+from ..models import Run, RunStatus
 from ..schemas import DuelScheduleUpdate, DuelStart
 from ..timezones import validate_timezone
+from .routes_jobs import _per_iteration_estimate, _run_entry
 
 router = APIRouter()
 log = get_logger("api.duel")
@@ -313,10 +315,52 @@ def start_duel(payload: DuelStart) -> dict:
     return duel.current() or {"id": duel_id, "status": "pending"}
 
 
+def _leg_progress(session: Session, live: dict | None) -> None:
+    """Attach the in-flight leg's run progress to the live payload, in place.
+
+    The ring publishes WHICH profile it is measuring (`live["leg"]`, with the run id once
+    the run exists); how far that run has got is read here, at poll time, off the run row
+    — the same adapter the jobs feed uses for a chunk (`_run_entry`), so the per-profile
+    bar on the Duels page and the chunk line in the jobs dropdown are one estimate: same
+    counter, same measured per-iteration cost, same countdown. Best-effort: a leg whose
+    run can't be read simply carries no progress."""
+    leg = (live or {}).get("leg") if isinstance(live, dict) else None
+    if not leg:
+        return
+    leg["run"] = None
+    run_id = leg.get("run_id")
+    if not run_id:
+        return
+    try:
+        run = session.get(Run, int(run_id))
+    except Exception:  # noqa: BLE001 — status must never fail on a progress read
+        log.debug("Duel status: could not read leg run %r", run_id, exc_info=True)
+        return
+    if run is None:
+        return
+    if run.status in (RunStatus.RUNNING, RunStatus.PENDING):
+        leg["run"] = _run_entry(run, _per_iteration_estimate(session), holder=None, parent_id=None)
+    else:
+        # The run has landed; the ring is scoring it and choosing the next leg.
+        leg["run"] = {
+            "id": f"run-{run.id}",
+            "status": "finished" if run.status == RunStatus.COMPLETE else "failed",
+            "current": int(run.iterations_completed or 0),
+            "total": int(run.iterations or 1),
+        }
+
+
 @router.get("/duel/status")
-def duel_status() -> dict:
-    """The most recent duel session (for status polling), or an empty payload."""
-    return duel.current() or {"status": None}
+def duel_status(session: Session = Depends(get_session)) -> dict:
+    """The most recent duel session (for status polling), or an empty payload.
+
+    A running session's ``live.leg`` is enriched with its run's progress (see
+    ``_leg_progress``) so the page can show which profile is being measured and how far
+    along that measurement is."""
+    payload = duel.current() or {"status": None}
+    if payload.get("status") in ("running", "pending"):
+        _leg_progress(session, payload.get("live"))
+    return payload
 
 
 @router.post("/duel/cancel")

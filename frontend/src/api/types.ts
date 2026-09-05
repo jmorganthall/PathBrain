@@ -2213,6 +2213,35 @@ export interface DuelLive {
   reference?: { fingerprint: string | null; name: string | null; label: string | null };
   design?: { belt_every: number; seats: number; browser_only: boolean };
   stage?: string;
+  // The leg in flight: which profile is on the firewall right now (the belt or a seat),
+  // whether it is still being applied or already measuring, and — from the status route —
+  // that run's live progress in the jobs feed's own shape. Null between legs.
+  leg?: DuelLegInFlight | null;
+}
+
+/** The profile the ring is measuring at this moment, and how far its run has got. */
+export interface DuelLegInFlight {
+  fingerprint: string;
+  name?: string | null;
+  label?: string | null;
+  role: "belt" | "challenger";
+  // Seat index for a challenger leg; null for the belt.
+  seat: number | null;
+  run_id: number | null;
+  // "applying": the profile is being written to the firewall and the link is settling;
+  // "measuring": a benchmark run is in flight (its progress is in `run`).
+  phase: "applying" | "measuring";
+  // The run's progress as the jobs feed reports a chunk (current/total/eta/unit cost) while
+  // it runs; a compact `{status: "finished" | "failed", current, total}` once it has landed;
+  // null when no run exists yet.
+  run?:
+    | (Partial<Omit<Job, "status" | "current" | "total">> & {
+        id: string;
+        status: "running" | "finished" | "failed";
+        current: number | null;
+        total: number | null;
+      })
+    | null;
 }
 
 /** One leg of the ring, as the live strip shows it. */

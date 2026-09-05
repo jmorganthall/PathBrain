@@ -124,10 +124,16 @@ def run_chunk(
     job_group: str | None = None,
     job_group_total: int | None = None,
     config_overrides: dict | None = None,
+    on_created=None,
 ) -> tuple[int, bool, int]:
     """Create one run of ``iterations`` and execute it (blocking). Returns
     ``(run_id, ok, iterations_completed)`` where ``ok`` is True iff the run finished
     COMPLETE.
+
+    ``on_created(run_id)``, when given, is called after the row exists and before it
+    executes — so a caller that publishes live state (the duel ring) can say which run
+    is measuring its current leg while the run is still in flight, rather than only once
+    it has finished. Best-effort: a hook that raises is logged and never fails the run.
 
     The building block for a chunked series (manual large runs, the timed
     "test current" engine): the caller loops this under a held coordinator lock,
@@ -147,6 +153,11 @@ def run_chunk(
         job_group_total=job_group_total,
         config_overrides=config_overrides,
     )
+    if on_created is not None:
+        try:
+            on_created(run_id)
+        except Exception:  # noqa: BLE001 — live-state bookkeeping must never fail a run
+            log.debug("run_chunk: on_created hook failed for run %s", run_id, exc_info=True)
     execute_run(run_id, teardown=teardown)
     with session_scope() as session:
         run = session.get(Run, run_id)

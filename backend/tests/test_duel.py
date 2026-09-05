@@ -3503,6 +3503,146 @@ def test_the_live_ring_lists_every_seat_and_the_legs_in_order():
     assert live["reference"]["name"] == "Alpha"
     assert live["design"] == {"belt_every": 2, "seats": 2, "browser_only": True}
     assert live["legs"] == legs
+    assert live["leg"] is None  # nothing on the firewall yet
+    leg = duel_mod._leg_in_flight("ccc", c.profile, "challenger", 1)
+    live = duel_mod._ring_live(
+        matchups_done=3, inc=inc, seats_list=[b, c], current=c, legs_tape=legs, cadence=2,
+        n_seats=2, only_browser=True, min_pairs=4, max_pairs=20, min_margin=0.0,
+        streak_needed=6, stage="Match 5 · …", leg=leg,
+    )
+    assert live["leg"] == {
+        "fingerprint": "ccc", "name": "Chuck", "label": "charlie", "role": "challenger",
+        "seat": 1, "run_id": None, "phase": "applying",
+    }
+    assert live["leg"] is not leg  # a copy: the engine mutates its own descriptor
+
+
+def test_the_ring_publishes_which_profile_is_on_the_firewall_and_its_run(monkeypatch):
+    """**Per-profile status: the leg in flight is named, and its run is attached the moment
+    it exists.** Before this the live board only marked a *seat* as measuring, which said
+    nothing while the belt's own leg ran and never named the run — so no bar could move for
+    the profile actually being measured."""
+    published: list[dict] = []
+    real_set_live = duel_mod._set_live
+
+    def spy_set_live(duel_id, payload):
+        if payload is not None:
+            published.append(payload)
+        real_set_live(duel_id, payload)
+
+    monkeypatch.setattr(duel_mod, "_set_live", spy_set_live)
+    scores = {"aaa0000000x": 70.0, "bbb0000000x": 62.0, "ccc0000000x": 55.0}
+    d, applied = _ring_session(monkeypatch, scores, seats=2, belt_every=2)
+    assert d.status == DuelStatus.COMPLETE, d.error
+
+    legs = [p["leg"] for p in published if p.get("leg")]
+    assert legs, "every leg publishes which profile it is measuring"
+    # The belt's own legs are named too — the profile a belt leg measures is the belt.
+    belt_legs = [l for l in legs if l["role"] == "belt"]
+    assert belt_legs and {l["fingerprint"] for l in belt_legs} == {"aaa0000000x"}
+    assert all(l["seat"] is None for l in belt_legs)
+    cha_legs = [l for l in legs if l["role"] == "challenger"]
+    assert {l["fingerprint"] for l in cha_legs} == {"bbb0000000x", "ccc0000000x"}
+    assert all(l["seat"] in (0, 1) for l in cha_legs)
+    # The leg named is the profile that was applied for it, in order.
+    assert [l["fingerprint"] for l in legs if l["phase"] == "applying"][: len(applied)] == applied[: len(legs)]
+    # The session ends with the board cleared (no leg lingers after the window).
+    assert d.live is None
+
+
+def test_a_leg_republishes_with_its_run_id_once_the_run_exists(monkeypatch):
+    published: list[dict] = []
+    real_set_live = duel_mod._set_live
+    monkeypatch.setattr(
+        duel_mod, "_set_live",
+        lambda duel_id, payload: (published.append(payload) if payload else None, real_set_live(duel_id, payload)),
+    )
+    # A fake run_chunk that honours the hook, as the real one does.
+    applied: list[str] = []
+    seq = {"n": 0}
+
+    def fake_chunk(label, notes, iterations, teardown=True, job_group=None, job_group_total=None,
+                   on_created=None, **_):
+        seq["n"] += 1
+        run_id = 7000 + seq["n"]
+        if on_created is not None:
+            on_created(run_id)
+        return (run_id, True, iterations)
+
+    scores = {"aaa0000000x": 70.0, "bbb0000000x": 62.0}
+    import pathbrain.api.routes_settings as rs
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+    fake_field = _ring_field(*sorted(scores.items(), key=lambda kv: -kv[1]))
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
+    monkeypatch.setattr(rs, "_compute_heirs", lambda result, session, live=None: {
+        "items": [{"fingerprint": p["fingerprint"]} for p in fake_field["profiles"][1:]]})
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    monkeypatch.setattr(duel_mod, "_weather_stamper", lambda meth_version: None)
+    monkeypatch.setattr(duel_mod, "run_chunk", fake_chunk)
+    monkeypatch.setattr(duel_mod, "_round_reading", lambda run_id, v, ok: (scores[applied[-1]], None))
+    _no_settle(seats=1, belt_every=2)
+    d = _wait_finish(duel_mod.start(duration_minutes=10))
+    assert d.status == DuelStatus.COMPLETE, d.error
+
+    measuring = [p["leg"] for p in published if p.get("leg") and p["leg"]["phase"] == "measuring"]
+    assert measuring, "the board is republished with the run once it exists"
+    assert all(l["run_id"] is not None for l in measuring)
+    # Applying → measuring, for the same profile, in that order.
+    phases = [(p["leg"]["fingerprint"], p["leg"]["phase"]) for p in published if p.get("leg")]
+    first_fp = phases[0][0]
+    assert phases[0] == (first_fp, "applying") and phases[1] == (first_fp, "measuring")
+
+
+def test_duel_status_attaches_the_in_flight_runs_progress(client):
+    from pathbrain.models import Run, RunStatus
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+        run = Run(status=RunStatus.RUNNING, iterations=3, iterations_completed=1,
+                  started_at=datetime.now(timezone.utc), label="duel · Alpha")
+        s.add(run)
+        s.flush()
+        run_id = run.id
+        d = Duel(status=DuelStatus.RUNNING, trigger="manual", duration_s=600,
+                 started_at=datetime.now(timezone.utc), matchups=[], run_ids=[run_id],
+                 live={"bout": 1, "pairs": 0, "seats": [], "legs": [],
+                       "incumbent": {"fingerprint": "aaa", "name": "Alpha", "label": "a", "wins": 0},
+                       "challenger": {"fingerprint": "bbb", "name": "Bravo", "label": "b", "wins": 0, "why": "x"},
+                       "leg": {"fingerprint": "aaa", "name": "Alpha", "label": "a", "role": "belt",
+                               "seat": None, "run_id": run_id, "phase": "measuring"}})
+        s.add(d)
+        s.flush()
+        duel_id = d.id
+    try:
+        body = client.get("/api/duel/status").json()
+        leg = body["live"]["leg"]
+        assert leg["fingerprint"] == "aaa" and leg["phase"] == "measuring"
+        run_entry = leg["run"]
+        assert run_entry["status"] == "running"
+        assert run_entry["current"] == 1 and run_entry["total"] == 3
+        assert run_entry["id"] == f"run-{run_id}"
+        assert "eta_ms" in run_entry and "unit_ms" in run_entry  # the jobs feed's estimate
+        # Once the run has landed the leg says so, instead of pretending it is still running.
+        with session_scope() as s:
+            r = s.get(Run, run_id)
+            r.status = RunStatus.COMPLETE
+            r.iterations_completed = 3
+        body = client.get("/api/duel/status").json()
+        assert body["live"]["leg"]["run"] == {"id": f"run-{run_id}", "status": "finished", "current": 3, "total": 3}
+        # A leg with no run yet carries `run: null` rather than an error.
+        with session_scope() as s:
+            d = s.get(Duel, duel_id)
+            live = dict(d.live)
+            live["leg"] = {**live["leg"], "run_id": None, "phase": "applying"}
+            d.live = live
+        body = client.get("/api/duel/status").json()
+        assert body["live"]["leg"]["run"] is None
+    finally:
+        with session_scope() as s:
+            s.query(Duel).filter(Duel.id == duel_id).delete()
+            s.query(Run).filter(Run.id == run_id).delete()
 
 
 def test_weather_by_distance_reads_the_ledgers_own_legs(monkeypatch):
