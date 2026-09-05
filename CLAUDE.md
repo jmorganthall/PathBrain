@@ -747,6 +747,29 @@ LLM-based. See `README.md` for the product overview.
     shows a **resumed** chip. The rule parameters are the current config's, like every
     other match in the session. `round_health` gained `abort_reasons` — window-closed vs
     unusable vs could-not-resume — so the health card says *why* a match produced no result.
+    **A methodology change never strands the ladder** (`_current_methodology_version` /
+    `_run_ring._reseed`). A leg is scored under whatever version is current when it lands
+    (`execute_run`), while the ring reads every leg under the version it opened with — so
+    after a publish (a new crown metric, a changed site list, a changed browser client) every
+    later round came back "not scored under <old>", every seated match aborted on unusable
+    rounds, and the ladder spent the rest of its window measuring nothing (a publish at 23:00
+    wasting the night). The ring now asks, once per cycle, whether the current version is
+    still the one it is adjudicating on; on a change it closes the seated matches with the
+    reason (`aborted: the methodology changed mid-session (old → new)` — their margins are
+    Overalls on the old scale and can't take a round on the new one), rebuilds the field
+    exactly as a fresh session does — **seeded from the prior version's standings**
+    (`_seeded_field`), so the old rubric's crown defends and its runner-up challenges first —
+    re-selects the defender, rebuilds the weather yardstick, and carries on under the new
+    version. The same rule at the session boundary: open-match snapshots are stamped with
+    their `methodology`, and a carried match from another version is closed as
+    could-not-resume (`it was fought under methodology X, and the current one is Y`) rather
+    than resumed on the wrong scale; every match record carries `methodology` so a tape
+    spanning a publish says which matches were fought on which. The ring's own ledger
+    (ratings, belt) spans versions on purpose — a head-to-head verdict is a prior too — so
+    the ladder's intelligence survives a publish; only the pooled seed is version-scoped.
+    `test_duel_methodology.py` pins all three: the prior crown defends against the prior
+    runner-up after a publish, a mid-session publish re-seeds instead of stranding, and a
+    carried snapshot from another version is closed, not resumed.
     **A round medians `duel.iterations_per_round` iterations a side (default 3) — the
     ring's resolving power.** A round compares two measurements, so its margin carries the
     noise of both: measured on a real link, ~2.3 Overall points per run becomes ~3.3 per
@@ -1410,6 +1433,29 @@ LLM-based. See `README.md` for the product overview.
     `site_set` — so a reader can tell "other sites" from "missing instrument". A version with
     no collection ignores the stamp (the pre-existing behaviour). While the methodology owns
     the list the Config page's URL editors are read-only and point at the Methodology page.
+    **The browser CLIENT is the other half of the collection** (`methodology.CLIENT_FIELDS` /
+    `client_from_config` / `client_set_from_config` / `CLIENT_SET_MARKER`). A site hands a
+    headless shell, an 800×600 viewport or an automated client a different page — or a
+    challenge page — than it hands a person, so the same URL loaded as two clients is two
+    measurements, exactly as two site lists are. The `browser` config's `headless_mode`
+    (`new` = Chromium's real browser via `--headless=new`, the default; `legacy` = the old
+    headless shell), `hide_automation` (`--disable-blink-features=AutomationControlled`, clears
+    `navigator.webdriver`), `user_agent` (`auto` = a current desktop-Chrome string matching the
+    bundled Chromium's major — the legacy default announces itself as `HeadlessChrome`),
+    `viewport` (1920×1080), `locale` and `timezone_id` are the client
+    (`plugins/benchmark_browser.context_options` / `launch_headless` / `build_chromium_args`,
+    reported per run in `details.client`). `publish_sites` declares the config's current client
+    by default (a `client` argument overrides), the version segment `+sites-<hash>` hashes the
+    **whole** collection (`collection_hash`) so a client-only change forks a distinct version,
+    `apply_collection` overlays the declared client onto every run's `config_used`, and
+    `comparability(..., client_set=)` quarantines a run stamped as another client — or with no
+    browser section at all — under its own token `client_set`, beside `site_set`, so a reader
+    can tell "other sites" from "other client" from "missing instrument". Versions published
+    before the client joined the collection declare none and ignore the stamp. Deliberately
+    **not a stealth arms race**: these are the three cheap, legitimate tells; a site that still
+    challenges after them doesn't want automated loads, and the answer is a different site. The
+    Methodology page's "Sites measured" card edits and publishes the client beside the lists;
+    the Config page's client fields go read-only while a version owns the collection.
     **Seeding from the prior version** (`refresh.prior_field` / `seed_field_from_prior`): right
     after any publish, nothing has a comparable run, so the pooled crown is empty and the ring,
     the race and the heirs card would order the field by nothing. The prior version's

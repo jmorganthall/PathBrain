@@ -566,7 +566,8 @@ def _iteration_plugin_metrics_from_raw(run, artifact_base: str | None) -> list[d
 
 
 def score_metrics_under(
-    session, run_id, run_methodology_version, methodology, iter_metrics, site_set=None
+    session, run_id, run_methodology_version, methodology, iter_metrics, site_set=None,
+    client_set=None,
 ):
     """Score per-iteration ``{plugin: metrics}`` under a methodology's frozen rubric,
     across every axis it defines, and upsert the (run × methodology) Score.
@@ -633,7 +634,9 @@ def score_metrics_under(
     if overall is not None:
         axis_scores["overall"] = overall
 
-    comp_tag, missing = comparability(definition, metric_values, site_set=site_set)
+    comp_tag, missing = comparability(
+        definition, metric_values, site_set=site_set, client_set=client_set
+    )
     return upsert_score(
         session,
         run_id,
@@ -701,11 +704,12 @@ def score_run_under(session, run, methodology, artifact_base: str | None = None)
         iter_metrics = _iteration_plugin_metrics_from_raw(run, artifact_base)  # slow fallback
     if not iter_metrics:
         return None  # no metrics to interpret
-    from .methodology import site_set_from_config
+    from .methodology import client_set_from_config, site_set_from_config
 
     return score_metrics_under(
         session, run.id, run.methodology_version, methodology, iter_metrics,
         site_set=site_set_from_config(run.config_used),
+        client_set=client_set_from_config(run.config_used),
     )
 
 
@@ -1039,11 +1043,12 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
 
             methodology = ensure_current_methodology(session, config)
             run.methodology_version = methodology.version
-            from .methodology import site_set_from_config
+            from .methodology import client_set_from_config, site_set_from_config
 
             score_metrics_under(
                 session, run_id, methodology.version, methodology, iteration_plugin_metrics,
                 site_set=site_set_from_config(config),
+                client_set=client_set_from_config(config),
             )
 
             run.per_iteration_ms = (

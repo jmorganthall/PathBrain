@@ -99,7 +99,8 @@ def _origins_from_urls(urls: list[str]) -> list[str]:
 def build_chromium_args(config: dict) -> list[str]:
     """Build Chromium launch flags from browser config.
 
-    By default this is empty (Chromium's normal behavior). When ``http3`` is
+    By default: new headless mode + the automation flag cleared (the "look like a normal
+    browser" defaults — see ``headless_mode``/``launch_headless``). When ``http3`` is
     enabled we turn QUIC on and *force* it onto specific origins so the browser
     skips Alt-Svc discovery. This is required for meaningful HTTP/3 measurement:
     PathBrain uses a fresh context per URL and tears it down after one load, so
@@ -108,15 +109,96 @@ def build_chromium_args(config: dict) -> list[str]:
     otherwise stay on HTTP/2. ``force_quic_origins`` (a list of ``host:port``)
     overrides the origins; when empty they're derived from the configured URLs.
     """
+    args: list[str] = []
+    # ── Look like a normal browser (see the `browser` defaults in config_store) ──
+    # Chromium's NEW headless mode is the real browser binary path; the legacy mode is a
+    # separate "headless shell" that sites can tell apart in several ways beyond the user
+    # agent. Playwright 1.44 adds the legacy `--headless` itself when `headless=True`, so
+    # new headless is driven by passing the flag ourselves and launching with
+    # `headless=False` (`launch_headless`) — the documented recipe for this version.
+    if bool(config.get("headless", True)) and headless_mode(config) == "new":
+        args.append("--headless=new")
+    # `navigator.webdriver` is the cheapest automation tell a page script can read.
+    if bool(config.get("hide_automation", True)):
+        args.append("--disable-blink-features=AutomationControlled")
     if not config.get("http3"):
-        return []
-    args = ["--enable-quic"]
+        return args
+    args.append("--enable-quic")
     origins = config.get("force_quic_origins") or _origins_from_urls(
         config.get("urls", [])
     )
     if origins:
         args.append("--origin-to-force-quic-on=" + ",".join(origins))
     return args
+
+
+def headless_mode(config: dict) -> str:
+    """``"new"`` (default) or ``"legacy"`` — which Chromium headless mode to run."""
+    mode = str(config.get("headless_mode", "new") or "new").strip().lower()
+    return "legacy" if mode == "legacy" else "new"
+
+
+def launch_headless(config: dict) -> bool:
+    """What to hand Playwright's ``headless=``.
+
+    ``False`` whenever the run is headed, and *also* when new headless is requested: the
+    ``--headless=new`` flag from :func:`build_chromium_args` makes Chromium headless on its
+    own, while ``headless=True`` would make Playwright add the legacy ``--headless`` beside
+    it. Only the legacy mode goes through Playwright's own switch."""
+    if not bool(config.get("headless", True)):
+        return False
+    return headless_mode(config) != "new"
+
+
+_UA_TEMPLATE = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/{major}.0.0.0 Safari/537.36"
+)
+_UA_FALLBACK_MAJOR = "125"  # the Chromium the pinned Playwright 1.44 image ships
+
+
+def realistic_user_agent(browser_version: str | None) -> str:
+    """A current desktop-Chrome user agent matching the bundled Chromium's major version.
+
+    Chrome's own string on Linux is *reduced* (``Chrome/<major>.0.0.0``), so this is what a
+    real installation sends rather than a fabricated one. The default headless string
+    announces itself as ``HeadlessChrome``, which is the first thing bot mitigation keys on
+    and what makes some sites serve a lighter page than a person gets."""
+    major = str(browser_version or "").strip().split(".")[0]
+    if not major.isdigit():
+        major = _UA_FALLBACK_MAJOR
+    return _UA_TEMPLATE.format(major=major)
+
+
+def context_options(config: dict, browser_version: str | None = None) -> dict:
+    """Keyword arguments for ``browser.new_context`` that make the page a person's page.
+
+    ``user_agent``: ``"auto"`` (default) → :func:`realistic_user_agent`; ``""`` → Playwright's
+    default; anything else verbatim. ``viewport`` ``{width, height}`` (both positive, else
+    Playwright's default), ``locale`` and ``timezone_id`` (IANA name; empty = the
+    container's). Everything here is recorded in the run's ``config_used``, so a run always
+    says what client it measured as."""
+    opts: dict = {}
+    ua = config.get("user_agent", "auto")
+    ua = "auto" if ua is None else str(ua).strip()
+    if ua == "auto":
+        opts["user_agent"] = realistic_user_agent(browser_version)
+    elif ua:
+        opts["user_agent"] = ua
+    vp = config.get("viewport") or {}
+    try:
+        width, height = int(vp.get("width") or 0), int(vp.get("height") or 0)
+    except (TypeError, ValueError, AttributeError):
+        width = height = 0
+    if width > 0 and height > 0:
+        opts["viewport"] = {"width": width, "height": height}
+    locale = str(config.get("locale") or "").strip()
+    if locale:
+        opts["locale"] = locale
+    tz = str(config.get("timezone_id") or "").strip()
+    if tz:
+        opts["timezone_id"] = tz
+    return opts
 
 
 _NAV_JS = (
@@ -402,7 +484,7 @@ class BrowserBenchmark(BenchmarkPlugin):
         pw = sync_playwright().start()
         try:
             browser = pw.chromium.launch(
-                headless=bool(config.get("headless", True)), args=build_chromium_args(config)
+                headless=launch_headless(config), args=build_chromium_args(config)
             )
         except BaseException:
             # The launch failed but the playwright STARTED — stopping it is what keeps
@@ -569,13 +651,28 @@ class BrowserBenchmark(BenchmarkPlugin):
             urls_raw: dict[str, dict] = {}
             per_url_display: dict[str, dict] = {}
 
+            # The client every page is loaded as — a person's desktop browser, not the
+            # headless shell's defaults. Reported in `details.client` so a run states it.
+            try:
+                version = browser.version
+            except Exception:  # noqa: BLE001 — cosmetic; the fallback major is used
+                version = None
+            ctx_opts = context_options(config, version)
+            client = {
+                "chromium_version": version,
+                "headless": bool(config.get("headless", True)),
+                "headless_mode": headless_mode(config) if config.get("headless", True) else None,
+                "hide_automation": bool(config.get("hide_automation", True)),
+                **ctx_opts,
+            }
+
             # ``browser`` is the run-scoped Chromium (reused across iterations); each URL
             # still gets a fresh context so loads stay isolated. It's closed in teardown().
             for idx, url in enumerate(urls):
                 slug = _slug(url, idx)
                 har_path = os.path.join(run_dir, f"{slug}.har") if want_har else None
                 shot_path = os.path.join(run_dir, f"{slug}.png") if want_screenshot else None
-                context = browser.new_context(record_har_path=har_path)
+                context = browser.new_context(record_har_path=har_path, **ctx_opts)
                 # Buffer paint/LCP/CLS/long-task timing from the very start.
                 context.add_init_script(_PAINT_INIT_JS)
                 page = context.new_page()
@@ -669,7 +766,7 @@ class BrowserBenchmark(BenchmarkPlugin):
 
             return {
                 "raw": {"urls": urls_raw},
-                "details": {"per_url": per_url_display, "artifact_dir": run_dir},
+                "details": {"per_url": per_url_display, "artifact_dir": run_dir, "client": client},
             }
 
         return self.timed(work)

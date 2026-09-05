@@ -1990,11 +1990,16 @@ class _Seat:
 # different opponent, in-session or across sessions.
 
 
-def _seat_snapshot(seat: _Seat, duel_id: int) -> dict:
-    """Everything needed to resume this match in a later session."""
+def _seat_snapshot(seat: _Seat, duel_id: int, methodology: str | None = None) -> dict:
+    """Everything needed to resume this match in a later session.
+
+    Stamped with the methodology its margins were read under: a margin is a difference of
+    two Overalls on ONE rubric's scale, so a match can only resume under the version it
+    started under — the carry-over check closes it otherwise, with the reason."""
     return {
         "challenger": seat.fp,
         "incumbent": seat.reference_fp,
+        "methodology": methodology,
         "challenger_label": seat.profile.get("label"),
         "challenger_name": seat.profile.get("name"),
         "why": seat.why,
@@ -2035,6 +2040,16 @@ def _seat_from_snapshot(snap: dict, profile: dict, *, p1: float, alpha: float,
     seat.bad_streak = int(snap.get("bad_streak") or 0)
     seat.sessions = [int(x) for x in (snap.get("sessions") or [])]
     return seat
+
+
+def _current_methodology_version(session) -> str | None:
+    """The version pinned current right now — one indexed read, cheap enough to ask at
+    every cycle of a running ladder (a cycle is minutes; this is microseconds)."""
+    from .models import Methodology
+
+    return session.scalars(
+        select(Methodology.version).where(Methodology.is_current.is_(True)).limit(1)
+    ).first()
 
 
 def _carried_open_matches(duel_id: int) -> list[dict]:
@@ -2139,7 +2154,7 @@ def _adjudicate(seat: _Seat, *, method: str, min_pairs: int, max_pairs: int,
 
 
 def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: str,
-                  cadence: int, only_browser: bool) -> dict:
+                  cadence: int, only_browser: bool, methodology: str | None = None) -> dict:
     """One decided (or closed) match as the ledger stores it. Same shape the pair engine
     wrote, plus the ring's design fields."""
     sprt, paired, deltas = seat.sprt, seat.paired, seat.deltas
@@ -2147,6 +2162,9 @@ def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: 
     return {
         "incumbent": seat.reference_fp,
         "challenger": seat.fp,
+        # The rubric the margins were read under — so a tape spanning a publish says which
+        # matches were fought on which scale.
+        "methodology": methodology,
         "incumbent_label": inc["label"],
         "challenger_label": cha["label"],
         "incumbent_name": inc.get("name"),
@@ -2333,7 +2351,7 @@ def _run_ring(
     draining = False
     lead: _Leg | None = None
     legs_tape: list[dict] = []
-    counters = {"legs": 0, "iterations": 0, "cycles": 0}
+    counters = {"legs": 0, "iterations": 0, "cycles": 0, "reseeds": 0}
     seat_kw = dict(p1=p1, alpha=alpha, min_margin=min_margin, min_pairs=min_pairs,
                    max_pairs=max_pairs, streak_wins=streak_wins)
     # Open matches the previous session (or a crashed one) left behind, moved onto this
@@ -2353,7 +2371,7 @@ def _run_ring(
     def _persist_open() -> None:
         # The open matches' full adjudication state, on the row, after every change — so
         # nothing about a match in progress exists only in this thread.
-        snaps = [_seat_snapshot(x, duel_id) for x in seated if x.verdict is None]
+        snaps = [_seat_snapshot(x, duel_id, meth_version) for x in seated if x.verdict is None]
         snaps += [dict(c) for c in carried]
         with session_scope() as session:
             d = session.get(Duel, duel_id)
@@ -2466,7 +2484,7 @@ def _run_ring(
         seat.verdict = verdict
         record = _match_record(
             seat, ref or inc, method=method, verdict=verdict, reason=reason,
-            cadence=cadence, only_browser=only_browser,
+            cadence=cadence, only_browser=only_browser, methodology=meth_version,
         )
         matchups.append(record)
         _persist_matchups()
@@ -2477,7 +2495,57 @@ def _run_ring(
             seat.sprt.pairs, record["median_delta"],
         )
 
+    def _reseed(session, new_version: str) -> None:
+        """The methodology changed under a running ladder — re-seed instead of stranding.
+
+        A leg is scored under whatever version is current when it lands (``execute_run``),
+        while the ring reads every leg under the version it opened with: after a publish
+        every later round would come back "not scored under <old>", every seated match
+        would abort on unusable rounds, and the ladder would spend the rest of its window
+        measuring nothing (a site-list publish at 23:00 wasting the night). So the seated
+        matches are closed with the reason — their margins are on the old scale and can't
+        take a round on the new one — and the field is rebuilt exactly as a fresh session
+        builds it: seeded from the prior version's standings (``_seeded_field``), so the
+        old rubric's best profiles are the first ones the new rubric measures.
+        """
+        nonlocal meth_version, field, heirs, lead, incumbent_fp, inc, draining
+        from .api.routes_settings import _compute_heirs, compute_profiles
+
+        old = meth_version
+        log.info("Duel %s: methodology changed %s → %s mid-session — re-seeding the ring",
+                 duel_id, old, new_version)
+        _live(None, f"Methodology changed ({old} → {new_version}) — re-seeding the ring", leg=None)
+        for seat in list(seated):
+            _close(seat, "draw", (
+                f"aborted: the methodology changed mid-session ({old} → {new_version}) — "
+                "rounds under the old rubric can't be compared with the new"
+            ))
+            seated.remove(seat)
+        meth_version = new_version
+        field = _seeded_field(session, compute_profiles(session, include_weather=False))
+        heirs = _compute_heirs(field, session, baseline)
+        # In place: `_drive` names the champion off the same dict after the ring closes.
+        settings_by_fp.clear()
+        settings_by_fp.update({p["fingerprint"]: p for p in field.get("profiles", [])})
+        # Pairs fought under the old rubric don't block a rematch under the new one.
+        fought.clear()
+        rematched.clear()
+        incumbent_fp, inc, draining, lead = None, {}, False, None
+        counters["reseeds"] += 1
+        _persist_open()
+
     while not _stopped():
+        # 0. Is the ring still adjudicating on the current methodology? A publish (a new
+        #    crown metric, a changed site list) mid-session re-seeds rather than strands.
+        with session_scope() as session:
+            now_version = _current_methodology_version(session)
+            reseeded = bool(now_version and now_version != meth_version)
+            if reseeded:
+                _reseed(session, now_version)
+        if reseeded:
+            # The yardstick reads covariates through the version's re-graded scores, so
+            # it is rebuilt for the new one (outside the session above: it opens its own).
+            weather = _weather_stamper(meth_version)
         # 1. Who defends, and who is seated against it. Refit the ledger INCLUDING this
         #    session's matches, so a challenger that just won is re-rated before the next
         #    seat is filled.
@@ -2524,7 +2592,15 @@ def _run_ring(
                 for snap in list(carried):
                     cfp = str(snap.get("challenger") or "")
                     prof = settings_by_fp.get(cfp)
-                    if str(snap.get("incumbent")) != incumbent_fp:
+                    fought_under = snap.get("methodology")
+                    if fought_under and str(fought_under) != meth_version:
+                        # Its margins are Overalls on another rubric's scale; a round read
+                        # under this one cannot be added to them.
+                        problem = (
+                            f"it was fought under methodology {fought_under}, and the "
+                            f"current one is {meth_version}"
+                        )
+                    elif str(snap.get("incumbent")) != incumbent_fp:
                         problem = "the belt changed hands before it could resume"
                     elif prof is None:
                         problem = "its challenger is no longer in the field"

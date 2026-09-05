@@ -875,6 +875,95 @@ export default function Config() {
               label="HTTP/3 (QUIC)"
             />
           </Stack>
+          <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 0.5 }}>
+            Loaded as
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+            The client every page is loaded as. Sites serve a headless shell, a tiny viewport or an
+            automated client a different page than they serve a person, so this is part of what the
+            scores measure
+            {siteOwner ? " — owned by the methodology, like the URL list; change it there." : "."}
+          </Typography>
+          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center">
+            <TextField
+              select
+              size="small"
+              label="Headless mode"
+              value={d.browser.headless_mode ?? "new"}
+              onChange={(e) =>
+                setDraft((p) => (p ? { ...p, browser: { ...p.browser, headless_mode: e.target.value } } : p))
+              }
+              sx={{ width: 250 }}
+              disabled={Boolean(siteOwner)}
+            >
+              <MenuItem value="new">New headless (the real browser)</MenuItem>
+              <MenuItem value="legacy">Legacy headless shell</MenuItem>
+            </TextField>
+            <TextField
+              size="small"
+              label="User agent"
+              value={d.browser.user_agent ?? "auto"}
+              onChange={(e) =>
+                setDraft((p) => (p ? { ...p, browser: { ...p.browser, user_agent: e.target.value } } : p))
+              }
+              helperText="auto = current desktop Chrome matching the bundled Chromium; empty = Playwright's default"
+              sx={{ minWidth: 320, flexGrow: 1 }}
+              disabled={Boolean(siteOwner)}
+            />
+          </Stack>
+          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mt: 1.5 }}>
+            <NumberField
+              label="Viewport width"
+              value={d.browser.viewport?.width ?? 0}
+              min={0}
+              onChange={(v) =>
+                setDraft((p) =>
+                  p ? { ...p, browser: { ...p.browser, viewport: { width: v || 0, height: p.browser.viewport?.height ?? 0 } } } : p,
+                )
+              }
+            />
+            <NumberField
+              label="Viewport height"
+              value={d.browser.viewport?.height ?? 0}
+              min={0}
+              onChange={(v) =>
+                setDraft((p) =>
+                  p ? { ...p, browser: { ...p.browser, viewport: { width: p.browser.viewport?.width ?? 0, height: v || 0 } } } : p,
+                )
+              }
+            />
+            <TextField
+              size="small"
+              label="Locale"
+              value={d.browser.locale ?? ""}
+              onChange={(e) => setDraft((p) => (p ? { ...p, browser: { ...p.browser, locale: e.target.value } } : p))}
+              sx={{ width: 120 }}
+              disabled={Boolean(siteOwner)}
+            />
+            <TextField
+              size="small"
+              label="Timezone (IANA)"
+              value={d.browser.timezone_id ?? ""}
+              onChange={(e) =>
+                setDraft((p) => (p ? { ...p, browser: { ...p.browser, timezone_id: e.target.value } } : p))
+              }
+              placeholder="container's"
+              sx={{ width: 200 }}
+              disabled={Boolean(siteOwner)}
+            />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={d.browser.hide_automation ?? true}
+                  onChange={(e) =>
+                    setDraft((p) => (p ? { ...p, browser: { ...p.browser, hide_automation: e.target.checked } } : p))
+                  }
+                  disabled={Boolean(siteOwner)}
+                />
+              }
+              label="Clear navigator.webdriver"
+            />
+          </Stack>
           {d.browser.http3 && (
             <Box sx={{ mt: 2 }}>
               <StringListEditor

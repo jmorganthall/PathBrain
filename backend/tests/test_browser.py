@@ -11,7 +11,10 @@ from pathbrain.plugins import get_plugin
 from pathbrain.plugins.benchmark_browser import (
     build_chromium_args,
     compute_navigation_metrics,
+    context_options,
     extract_paint_metrics,
+    launch_headless,
+    realistic_user_agent,
 )
 
 _HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
@@ -81,10 +84,61 @@ def test_extract_paint_metrics_empty():
     assert m == {"fcp_ms": None, "lcp_ms": None, "inp_ms": None}
 
 
-def test_build_chromium_args_default_empty():
-    # HTTP/3 off by default -> no special flags, plain Chromium behavior.
-    assert build_chromium_args({"urls": ["https://example.com/"]}) == []
-    assert build_chromium_args({}) == []
+def test_build_chromium_args_default_is_a_normal_browser():
+    # HTTP/3 off by default -> no QUIC flags. The defaults that ARE on are the "look like a
+    # normal browser" ones: Chromium's new headless mode, and navigator.webdriver cleared.
+    args = build_chromium_args({"urls": ["https://example.com/"]})
+    assert args == ["--headless=new", "--disable-blink-features=AutomationControlled"]
+    assert build_chromium_args({}) == args
+    assert not any(a.startswith("--enable-quic") for a in args)
+
+
+def test_headless_mode_legacy_goes_through_playwrights_own_switch():
+    # Legacy mode: no --headless=new of our own; Playwright's headless=True adds the old flag.
+    cfg = {"headless_mode": "legacy"}
+    assert "--headless=new" not in build_chromium_args(cfg)
+    assert launch_headless(cfg) is True
+    # New mode: WE pass the flag, so Playwright must not add the legacy one beside it.
+    assert launch_headless({"headless_mode": "new"}) is False
+    assert launch_headless({}) is False
+    # Headed: no headless flag at all, whatever the mode says.
+    assert "--headless=new" not in build_chromium_args({"headless": False})
+    assert launch_headless({"headless": False}) is False
+
+
+def test_hide_automation_can_be_switched_off():
+    args = build_chromium_args({"hide_automation": False})
+    assert "--disable-blink-features=AutomationControlled" not in args
+
+
+def test_realistic_user_agent_tracks_the_bundled_chromium_major():
+    ua = realistic_user_agent("125.0.6422.26")
+    assert ua.startswith("Mozilla/5.0 (X11; Linux x86_64)")
+    assert "Chrome/125.0.0.0" in ua and "Headless" not in ua
+    # No version to read -> a sane fallback, never a broken string.
+    assert "Chrome/" in realistic_user_agent(None) and "Chrome/." not in realistic_user_agent("")
+
+
+def test_context_options_default_to_a_persons_desktop_browser():
+    opts = context_options({}, "126.0.1")
+    assert opts == {"user_agent": realistic_user_agent("126.0.1")}
+    # The shipped defaults (config_store) add the viewport + locale.
+    from pathbrain.config_store import DEFAULT_CONFIG
+
+    opts = context_options(DEFAULT_CONFIG["browser"], "126.0.1")
+    assert opts["viewport"] == {"width": 1920, "height": 1080}
+    assert opts["locale"] == "en-US"
+    assert "timezone_id" not in opts  # "" = the container's clock
+    assert "Chrome/126.0.0.0" in opts["user_agent"]
+
+
+def test_context_options_respect_explicit_and_empty_values():
+    cfg = {"user_agent": "Custom/1.0", "viewport": {"width": 0, "height": 800},
+           "locale": " ", "timezone_id": "America/Chicago"}
+    opts = context_options(cfg, "126.0.1")
+    assert opts == {"user_agent": "Custom/1.0", "timezone_id": "America/Chicago"}
+    # "" keeps Playwright's default user agent (the HeadlessChrome string).
+    assert "user_agent" not in context_options({"user_agent": ""}, "126.0.1")
 
 
 def test_build_chromium_args_http3_derives_origins():

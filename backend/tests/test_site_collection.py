@@ -15,13 +15,17 @@ from pathbrain.api import routes_settings as rs
 from pathbrain.config_store import get_config, save_config
 from pathbrain.database import session_scope
 from pathbrain.methodology import (
+    CLIENT_SET_MARKER,
     CURRENT_METHODOLOGY,
     METHODOLOGY_REGISTRY,
     SITE_SET_MARKER,
     apply_collection,
     build_definition_from_spec,
+    client_from_config,
+    client_set_from_config,
     collection,
     collection_from_lists,
+    collection_hash,
     comparability,
     ensure_current_methodology,
     publish_sites,
@@ -34,9 +38,14 @@ SITES_A = ["https://a.example/", "https://b.example/"]
 SITES_B = ["https://a.example/", "https://c.example/"]
 
 
-def _definition_with(browser, http=()):
+def _definition_with(browser, http=(), client=None):
     d = build_definition_from_spec(METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY])
-    return {**d, "collection": collection_from_lists(list(browser), list(http))}
+    return {**d, "collection": collection_from_lists(list(browser), list(http), client)}
+
+
+CLIENT_A = {"headless_mode": "new", "hide_automation": True, "user_agent": "auto",
+            "viewport": {"width": 1920, "height": 1080}, "locale": "en-US", "timezone_id": ""}
+CLIENT_B = {**CLIENT_A, "viewport": {"width": 800, "height": 600}}
 
 
 def _complete_metrics(definition) -> dict:
@@ -88,6 +97,88 @@ def test_comparability_gates_on_the_declared_site_set():
     assert tag == "incomparable" and "fcp" in missing and SITE_SET_MARKER not in missing
 
 
+def test_comparability_gates_on_the_declared_client_too():
+    # The client is the other half of what a browser metric is a mean over: the same URL
+    # loaded as a headless shell at 800×600 and as a person's desktop Chrome is two pages.
+    d = _definition_with(SITES_A, client=CLIENT_A)
+    mv = _complete_metrics(d)
+    sites, client = d["collection"]["site_set"], d["collection"]["client_set"]
+    assert comparability(d, mv, site_set=sites, client_set=client) == ("exact", [])
+    other_client = collection_from_lists(SITES_A, [], CLIENT_B)["client_set"]
+    assert comparability(d, mv, site_set=sites, client_set=other_client) == ("incomparable", [CLIENT_SET_MARKER])
+    # A run that never recorded what it measured as is quarantined under the same token.
+    assert comparability(d, mv, site_set=sites, client_set=None) == ("incomparable", [CLIENT_SET_MARKER])
+    # Both wrong → both tokens, so a reader sees exactly what differed.
+    other_sites = collection_from_lists(SITES_B, [])["site_set"]
+    assert comparability(d, mv, site_set=other_sites, client_set=other_client) == (
+        "incomparable", [SITE_SET_MARKER, CLIENT_SET_MARKER]
+    )
+    # A version published before the client joined the collection ignores the client stamp.
+    sites_only = _definition_with(SITES_A)
+    assert comparability(sites_only, mv, site_set=sites, client_set=None) == ("exact", [])
+
+
+def test_client_stamp_is_representation_free():
+    # "1920" and 1920 are one viewport; a stray space in a locale is not a new client; the
+    # config defaults and the same fields spelled by hand hash identically.
+    from pathbrain.config_store import DEFAULT_CONFIG
+
+    a = client_set_from_config({"browser": DEFAULT_CONFIG["browser"]})
+    b = client_set_from_config({"browser": {**CLIENT_A, "viewport": {"width": "1920", "height": "1080"},
+                                            "locale": " en-US ", "urls": SITES_A}})
+    assert a == b == collection_from_lists(SITES_A, [], CLIENT_A)["client_set"]
+    assert client_set_from_config({"browser": CLIENT_B}) != a
+    assert client_set_from_config({}) is None and client_set_from_config(None) is None
+    # A degenerate viewport reads as "Playwright's default", the same as none at all.
+    assert client_from_config({"viewport": {"width": 0, "height": 600}})["viewport"] is None
+    assert client_from_config({})["headless_mode"] == "new" and client_from_config({"headless_mode": "LEGACY"})["headless_mode"] == "legacy"
+
+
+def test_apply_collection_overlays_the_declared_client_so_the_stamp_matches():
+    d = _definition_with(SITES_A, client=CLIENT_B)
+    cfg = {"browser": {"urls": ["https://old.example/"], "timeout_s": 5, **CLIENT_A}, "http": {"urls": []}}
+    out = apply_collection(cfg, d)
+    assert out["browser"]["viewport"] == {"width": 800, "height": 600} and out["browser"]["timeout_s"] == 5
+    assert client_set_from_config(out) == d["collection"]["client_set"]
+    assert cfg["browser"]["viewport"] == CLIENT_A["viewport"]  # input untouched
+    # A sites-only declaration leaves the client as config has it.
+    out2 = apply_collection(cfg, _definition_with(SITES_A))
+    assert out2["browser"]["viewport"] == CLIENT_A["viewport"]
+
+
+def test_publishing_a_client_change_forks_a_distinct_version_and_writes_config():
+    pin, b_urls, h_urls = _snapshot_scoring_state()
+    try:
+        with session_scope() as s:
+            base = ensure_current_methodology(s, get_config(s))
+            row, info = publish_sites(s, SITES_A, [], CLIENT_A)
+            s.commit()
+            assert info["changed"] and collection(row.definition)["client"] == CLIENT_A
+            first = row.version
+            # Same sites, different client → a NEW version (a different +sites- hash), the
+            # config's browser section now carries the declared client, and the changelog
+            # names the field that moved.
+            row2, info2 = publish_sites(s, SITES_A, [], CLIENT_B)
+            s.commit()
+            assert info2["changed"] and row2.version != first and row2.version.count("+sites-") == 1
+            assert row2.version == f"{base.version}+sites-{collection_hash(collection_from_lists(SITES_A, [], CLIENT_B))}"
+            assert info2["added"] == [] and info2["removed"] == []
+            assert any(c.startswith("viewport:") for c in info2["client_changes"]), info2
+            assert "Client changed" in (row2.notes or "")
+            cfg = get_config(s)
+            assert cfg["browser"]["viewport"] == {"width": 800, "height": 600}
+            assert cfg["browser"]["urls"] == SITES_A
+            assert client_set_from_config(cfg) == collection(row2.definition)["client_set"]
+            # Same sites AND client again → nothing published.
+            row3, info3 = publish_sites(s, SITES_A, [], CLIENT_B)
+            assert not info3["changed"] and row3.version == row2.version
+            # Omitting the client declares the config's current one (now CLIENT_B) → no change.
+            row4, info4 = publish_sites(s, SITES_A, [])
+            assert not info4["changed"] and row4.version == row2.version
+    finally:
+        _restore_scoring_state(pin, b_urls, h_urls)
+
+
 def test_site_set_stamp_is_order_free_and_hashes_both_lists():
     assert site_set_from_config({"browser": {"urls": SITES_A}}) == site_set_from_config(
         {"browser": {"urls": list(reversed(SITES_A))}}
@@ -121,7 +212,12 @@ def test_publish_sites_forks_the_current_version_pins_it_and_writes_config():
             base = ensure_current_methodology(s, get_config(s))
             row, info = publish_sites(s, SITES_A, ["https://h.example/"])
             s.commit()
-            expected = f"{base.version}+sites-{collection_from_lists(SITES_A, ['https://h.example/'])['site_set']}"
+            # The version segment hashes the whole collection — sites AND the client the
+            # config was measuring as (declared by default) — so a client-only change forks too.
+            declared = collection_from_lists(
+                SITES_A, ["https://h.example/"], client_from_config(get_config(s)["browser"])
+            )
+            expected = f"{base.version}+sites-{collection_hash(declared)}"
             assert info["changed"] and info["version"] == expected == row.version
             assert row.is_current and not s.get(Methodology, base.version).is_current
             assert collection(row.definition)["browser_urls"] == SITES_A
