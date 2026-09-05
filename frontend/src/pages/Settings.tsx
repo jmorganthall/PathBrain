@@ -1488,10 +1488,14 @@ export default function Settings() {
       {seedInfo && (
         <Alert severity="info" sx={{ mb: 2 }}>
           <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
-            No profile has a comparable run under the current methodology yet
+            {seedInfo.current_crown
+              ? `${seedInfo.profiles_without_data} profile${seedInfo.profiles_without_data === 1 ? "" : "s"} ranked under the previous methodology have no data under this one yet`
+              : "No profile has a comparable run under the current methodology yet"}
           </Typography>
           <Typography variant="body2">
-            Until fresh runs arrive, heirs, races and duels are ordered by the standings under{" "}
+            {seedInfo.current_crown
+              ? "The current crown defends; until they are measured, heirs, races and duels draw the rest of the field from the standings under "
+              : "Until fresh runs arrive, heirs, races and duels are ordered by the standings under "}
             <b>{seedInfo.version}</b>
             {seedInfo.best_name ? (
               <>
@@ -1499,9 +1503,10 @@ export default function Settings() {
                 {seedInfo.best_prior_overall != null ? ` (Overall ${seedInfo.best_prior_overall.toFixed(1)})` : ""}
               </>
             ) : null}
-            . {seedInfo.profiles_without_data} profile{seedInfo.profiles_without_data === 1 ? "" : "s"} await new data — start
-            with “Race these” or a duel.
-            <HelpTip title="A seed only decides the order in which profiles get measured. Nothing from the previous version is scored under this one, and the crown stays empty until a profile reaches the iteration minimum on the current site list." />
+            {seedInfo.current_crown
+              ? " — it is the first profile the ladder challenges with. Start with “Race these”, a duel, or “Re-run profiles” (top N, winner-first)."
+              : `. ${seedInfo.profiles_without_data} profile${seedInfo.profiles_without_data === 1 ? "" : "s"} await new data — start with “Race these” or a duel.`}
+            <HelpTip title="A seed only decides the order in which profiles get measured. Nothing from the previous version is scored under this one; a profile enters the standings only once it reaches the iteration minimum on the current site list, and a crown measured under this version is never displaced by the seed." />
           </Typography>
         </Alert>
       )}
@@ -2604,7 +2609,7 @@ export default function Settings() {
               onChange={(e) => setRefreshTop(Number(e.target.value))}
             >
               <MenuItem value={0}>All profiles</MenuItem>
-              {[3, 5, 10, 20].map((n) => (
+              {[3, 5, 10, 20, 50, 100, 200].map((n) => (
                 <MenuItem key={n} value={n}>
                   Top {n} (winner-first)
                 </MenuItem>

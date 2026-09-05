@@ -1820,10 +1820,9 @@ def _saturation_report(profiles: list[dict], definition: dict) -> list[dict]:
 
 
 def _seeded_field(session: Session, result: dict) -> dict:
-    """The field with the prior methodology's standings folded in, when the current one has
-    no crown yet; otherwise the field itself. See ``refresh.seed_field_from_prior``."""
-    if result.get("best_fingerprint"):
-        return result
+    """The field with the prior methodology's standings folded in for every profile the
+    current one has no data on yet (a current crown is kept). See
+    ``refresh.seed_field_from_prior``."""
     try:
         return refresh_mod.seed_field_from_prior(
             session, result, result.get("min_iterations") or _min_iterations(session)
@@ -1840,7 +1839,9 @@ def _seed_summary(session: Session, seeded: dict) -> dict | None:
     version = seeded.get("seeded_from")
     if not version:
         return None
-    best_fp = seeded.get("best_fingerprint")
+    # The PRIOR's crown, not the field's: with a current crown present the field's best is
+    # a current measurement and the prior crown is just the first profile to challenge it.
+    best_fp = seeded.get("seeded_best_fingerprint") or seeded.get("best_fingerprint")
     best = next((p for p in seeded.get("profiles", []) if p["fingerprint"] == best_fp), None)
     without = [p for p in seeded.get("profiles", []) if p.get("no_data")]
     return {
@@ -1850,6 +1851,9 @@ def _seed_summary(session: Session, seeded: dict) -> dict | None:
         "best_prior_overall": (best or {}).get("prior_overall"),
         "profiles_without_data": len(without),
         "profiles_seeded": int(seeded.get("seeded_profiles") or 0),
+        # Whether the current version already has a crown of its own (the seed then orders
+        # only the unmeasured rest) or the prior crown is standing in for one.
+        "current_crown": bool(seeded.get("seeded_has_current_crown")),
     }
 
 
@@ -1871,10 +1875,15 @@ def _compute_heirs(result: dict, session: Session, live: list[dict] | None = Non
     (scheduler/queues/upload bandwidth) differ from the current config. So this matches the
     race's contender set instead of dangling profiles it would refuse.
 
-    Returns ``{items, total, limit, crown_overall}``: ``total`` is every qualifying heir
-    (drives the "N could beat your crown" badge), ``items`` the top ``limit`` by ceiling-
-    above-crown. Profiles that never produced a comparable run have no ceiling to rank by
-    and aren't here — the Race button's bootstrap path still picks them up."""
+    Returns ``{items, all_items, total, limit, crown_overall}``: ``total`` is every
+    qualifying heir (drives the "N could beat your crown" badge), ``items`` the top
+    ``limit`` by ceiling-above-crown — the CARD's cut — and ``all_items`` every heir in the
+    same order, for the engines: the duel ladder's ``leaders``/``heirs`` contender modes
+    draw their challengers from this list (``duel._engine_heirs``), and a seeded field of
+    two hundred prior-ranked profiles reaching the ring five at a time would be exactly the
+    "racing a random dozen" failure. Profiles that never produced a comparable run under
+    any version have no ceiling to rank by and aren't here — the Race button's bootstrap
+    path still picks them up."""
     from datetime import datetime, timezone
 
     profiles = result.get("profiles", [])
@@ -1963,6 +1972,7 @@ def _compute_heirs(result: dict, session: Session, live: list[dict] | None = Non
     heirs.sort(key=_heir_key)
     return {
         "items": heirs[:limit],
+        "all_items": heirs,
         "total": len(heirs),
         "limit": limit,
         "crown_overall": crown_overall,
