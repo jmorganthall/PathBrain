@@ -1178,6 +1178,11 @@ function SeatRow({
           {chaName}
         </Typography>
         <Chip size="small" label={`Match ${board.bout}`} sx={{ height: 20 }} />
+        {(board.sessions?.length ?? 0) > 1 && (
+          <Tooltip title={`Resumed from session #${board.sessions![board.sessions!.length - 2]} with its rounds carried over.`}>
+            <Chip size="small" variant="outlined" color="info" label="resumed" sx={{ height: 20 }} />
+          </Tooltip>
+        )}
         <Tooltip title="Why this profile is in the ring at all.">
           <Typography variant="caption" color="text.secondary" noWrap sx={{ flexGrow: 1, minWidth: 0 }}>
             {cha.why}
@@ -1767,7 +1772,18 @@ export default function Duels() {
             ? `, ${health.unusable_rounds} round${health.unusable_rounds === 1 ? "" : "s"} discarded`
             : ""}
           ).
-          <HelpTip title="Not draws: the ladder couldn't measure these matches, so nothing was decided and the pairs stay eligible to race again." />
+          <HelpTip title="Not draws: the ladder couldn't measure these matches, so nothing was decided and the pairs stay eligible to race again. A match still open when the window closes is now carried to the next session with its rounds, so 'window closed' aborts only come from sessions before that change." />
+          {(health.abort_reasons?.length ?? 0) > 0 && (
+            <Box component="ul" sx={{ m: 0, mt: 1, pl: 2.5 }}>
+              {health.abort_reasons!.slice(0, 4).map((r) => (
+                <li key={r.reason}>
+                  <Typography variant="caption">
+                    {r.matches} match{r.matches === 1 ? "" : "es"} — {r.reason}
+                  </Typography>
+                </li>
+              ))}
+            </Box>
+          )}
           {health.reasons.length > 0 && (
             <Box component="ul" sx={{ m: 0, mt: 1, pl: 2.5 }}>
               {health.reasons.slice(0, 4).map((r) => (
@@ -1779,7 +1795,7 @@ export default function Duels() {
               ))}
             </Box>
           )}
-          {health.reasons.length === 0 && (
+          {health.reasons.length === 0 && (health.abort_reasons?.length ?? 0) === 0 && (
             <Typography variant="caption" display="block" sx={{ mt: 0.5 }}>
               No causes recorded yet — the next session will say why.
             </Typography>
@@ -2360,7 +2376,15 @@ export default function Duels() {
               <Typography variant="caption" color="text.secondary">
                 {status?.iterations_run ?? 0} iteration(s) ·{" "}
                 {status?.matchups?.length ?? 0} match{status?.matchups?.length === 1 ? "" : "es"}{" "}
-                decided · settings restored when the window closes
+                decided
+                {(status?.open_matches?.length ?? 0) > 0 && (
+                  <>
+                    {" "}· {status!.open_matches!.length} open match
+                    {status!.open_matches!.length === 1 ? "" : "es"} carried to the next session
+                    <HelpTip title="A match still open when the window closes keeps every round it has fought. The next session seats it first, against the same defender, and it resumes where it stopped." />
+                  </>
+                )}
+                {" "}· settings restored when the window closes
               </Typography>
               {/* The belt changes hands mid-session — it is the ring's #1, re-read from the
                   ledger between matches — so show who holds it right now rather than waiting
