@@ -70,9 +70,23 @@ const COMPARABILITY_COLOR: Record<Comparability, "success" | "warning" | "defaul
   incomparable: "default",
 };
 
+// The non-metric quarantine tokens comparability can report beside missing metric keys.
+const QUARANTINE_TOKENS: Record<string, string> = {
+  site_set: "it was measured against a different site list than this version declares",
+  client_set: "it was measured as a different browser client than this version declares",
+  site_coverage:
+    "a configured page failed to load, so its browser means cover a subset of the pages (see the per-URL errors below)",
+};
+
 function comparabilityTip(s: RunScore): string {
-  if (s.comparability === "incomparable")
-    return `Can't be scored under this methodology — its raw never captured: ${s.missing_metrics.join(", ")}.`;
+  if (s.comparability === "incomparable") {
+    const tokens = s.missing_metrics.filter((m) => m in QUARANTINE_TOKENS);
+    const metrics = s.missing_metrics.filter((m) => !(m in QUARANTINE_TOKENS));
+    const parts: string[] = [];
+    if (metrics.length) parts.push(`its raw never captured: ${metrics.join(", ")}`);
+    for (const t of tokens) parts.push(QUARANTINE_TOKENS[t]);
+    return `Can't be pooled under this methodology — ${parts.join("; ")}.`;
+  }
   if (s.comparability === "partial")
     return `Some metrics weren't captured (${s.missing_metrics.join(", ")}); their weight was redistributed.`;
   return "Every metric this methodology scores is reproducible from this run's raw.";

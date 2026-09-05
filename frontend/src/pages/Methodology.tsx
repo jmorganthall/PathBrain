@@ -49,6 +49,7 @@ function clientFromBrowser(b: BrowserConfig | undefined): BrowserClient {
     viewport: w > 0 && h > 0 ? { width: w, height: h } : null,
     locale: b?.locale ?? "en-US",
     timezone_id: b?.timezone_id ?? "",
+    http3: b?.http3 ?? false,
   };
 }
 
@@ -136,6 +137,21 @@ function ClientEditor({ value, onChange }: { value: BrowserClient; onChange: (c:
           }
           label="Clear navigator.webdriver"
         />
+        <Tooltip
+          arrow
+          title="Forces HTTP/3 (QUIC) onto every listed origin. An origin that doesn't offer HTTP/3 then fails to load at all (ERR_QUIC_PROTOCOL_ERROR), and one that does is measured on a path a first visit never takes — a real browser only upgrades to QUIC after an Alt-Svc hint on a repeat visit. Leave off unless you are studying QUIC specifically."
+        >
+          <FormControlLabel
+            control={
+              <Checkbox
+                size="small"
+                checked={value.http3}
+                onChange={(e) => onChange({ ...value, http3: e.target.checked })}
+              />
+            }
+            label="Force HTTP/3 (QUIC)"
+          />
+        </Tooltip>
       </Stack>
     </Box>
   );
@@ -145,7 +161,7 @@ function fmtClient(c: BrowserClient | null | undefined): string {
   if (!c) return "client: whatever Config says";
   const vp = c.viewport ? `${c.viewport.width}×${c.viewport.height}` : "default viewport";
   const ua = c.user_agent === "auto" ? "desktop Chrome UA" : c.user_agent ? "custom UA" : "default UA";
-  return `${c.headless_mode === "legacy" ? "legacy headless" : "new headless"}, ${vp}, ${ua}${c.locale ? `, ${c.locale}` : ""}`;
+  return `${c.headless_mode === "legacy" ? "legacy headless" : "new headless"}, ${vp}, ${ua}${c.locale ? `, ${c.locale}` : ""}${c.http3 ? ", forced HTTP/3" : ""}`;
 }
 
 function fmtBound(v: number | null, unit: string): string {

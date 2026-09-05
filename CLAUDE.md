@@ -1455,7 +1455,19 @@ LLM-based. See `README.md` for the product overview.
     **not a stealth arms race**: these are the three cheap, legitimate tells; a site that still
     challenges after them doesn't want automated loads, and the answer is a different site. The
     Methodology page's "Sites measured" card edits and publishes the client beside the lists;
-    the Config page's client fields go read-only while a version owns the collection.
+    the Config page's client fields go read-only while a version owns the collection. `http3`
+    is a client field too: with it on PathBrain *forces* QUIC onto every listed origin, so an
+    origin without HTTP/3 fails outright (`ERR_QUIC_PROTOCOL_ERROR`) and one with it is
+    measured on a path a first visit never takes — off unless QUIC itself is the study.
+    **A declared page that failed to load quarantines the run** (`runner.missing_pages` →
+    `comparability(..., pages_missing=)` → `SITE_COVERAGE_MARKER`). `_derive_browser` averages
+    over the pages that *loaded*, so a run in which any configured page errored is a mean over
+    a subset — the same measurement of a different thing — and it wore the same site-set
+    stamp, because the stamp hashes the *configured* list. Observed on the first run after a
+    site publish: three of six pages failed on forced QUIC and the run scored as fully
+    comparable on the other three. The gate reads the run's own configured list (declared or
+    not) against the browser raw per iteration, both at capture and on re-grade, and the
+    Run-Detail comparability tip spells the token out.
     **Seeding from the prior version** (`refresh.prior_field` / `seed_field_from_prior`): right
     after any publish, nothing has a comparable run, so the pooled crown is empty and the ring,
     the race and the heirs card would order the field by nothing. The prior version's
