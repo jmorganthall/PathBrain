@@ -275,6 +275,38 @@ def test_a_carried_match_from_another_methodology_is_closed_not_resumed(monkeypa
             s.query(Duel).delete()
 
 
+def test_a_seeded_field_reaches_the_ladder_whole_in_every_contender_mode():
+    """The heirs CARD shows five; the ladder must never be handed those five as its whole
+    challenger pool. With two hundred prior-ranked profiles, the leaders/heirs contender
+    modes read the heirs list as the queue — so it is built uncapped for the engines, and
+    the best prior profile is first in every mode."""
+    import pathbrain.api.routes_settings as rs
+    from pathbrain.config_store import save_config
+
+    seeded = [{"fingerprint": f"seed{i:08d}", "label": f"seed{i}", "settings": _settings(300 + i),
+               "confident": False, "overall": None, "optimistic": None, "crown_spreads": {},
+               "last_seen": None, "no_data": True, "iterations": 0, "prior_overall": 100.0 - i}
+              for i in range(40)]
+    field = {"best_fingerprint": "crownxxxxxxx", "min_iterations": 15, "profiles": [
+        {**_profile("crownxxxxxxx", 1514), "confident": True, "overall": 61.0, "optimistic": 63.0,
+         "iterations": 20, "last_seen": None, "crown_spreads": {}},
+        *seeded,
+    ]}
+    with session_scope() as s:
+        save_config(s, {"challenger": {"heir_count": 5}})
+        card = rs._compute_heirs(field, s, None)
+    whole = duel_mod._engine_heirs(card)
+    assert len(card["items"]) == 5 and card["total"] == 40
+    assert len(whole["items"]) == 40 and [h["fingerprint"] for h in whole["items"]][:3] == [
+        "seed00000000", "seed00000001", "seed00000002"]
+    # A fake heirs dict without the engine list (the mocked-engine tests) passes through.
+    assert duel_mod._engine_heirs({"items": [{"fingerprint": "x"}]})["items"] == [{"fingerprint": "x"}]
+    for mode in ("ring", "leaders", "heirs"):
+        queue = duel_mod.build_queue(field, whole, "crownxxxxxxx", contenders=mode, baseline=None, ratings={})
+        assert len(queue) == 40, (mode, len(queue))
+        assert queue[0] == "seed00000000", (mode, queue[:3])
+
+
 def test_open_match_snapshots_carry_their_methodology():
     seat = duel_mod._Seat("cha", {"label": "cha"}, "why", "inc", p1=0.7, alpha=0.05,
                           min_margin=0.0, min_pairs=3, max_pairs=10, streak_wins=0)

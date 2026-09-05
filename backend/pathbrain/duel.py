@@ -1281,6 +1281,23 @@ def ring_leader(
     )
 
 
+def _engine_heirs(heirs: dict) -> dict:
+    """The heirs list as the ENGINE reads it: every heir, not the card's five.
+
+    ``_compute_heirs`` cuts ``items`` to ``challenger.heir_count`` for the crown card and
+    carries the whole ordered list as ``all_items``. The ladder's ``leaders``/``heirs``
+    contender modes draw their challengers from ``items``, so a seeded field of two hundred
+    prior-ranked profiles would otherwise reach the ring five at a time — the "racing a
+    random dozen" failure. The ring mode reads the field directly and only uses the list as
+    a reachability shortcut, so it was never capped there; this makes every mode agree."""
+    if not isinstance(heirs, dict):
+        return heirs
+    whole = heirs.get("all_items")
+    if whole is None:
+        return heirs
+    return {**heirs, "items": list(whole)}
+
+
 def _seeded_field(session, field: dict) -> dict:
     """The field the ladder matchmakes over, seeded from the prior methodology for every
     profile the current one has no data on yet.
@@ -2525,7 +2542,7 @@ def _run_ring(
             seated.remove(seat)
         meth_version = new_version
         field = _seeded_field(session, compute_profiles(session, include_weather=False))
-        heirs = _compute_heirs(field, session, baseline)
+        heirs = _engine_heirs(_compute_heirs(field, session, baseline))
         # In place: `_drive` names the champion off the same dict after the ring closes.
         settings_by_fp.clear()
         settings_by_fp.update({p["fingerprint"]: p for p in field.get("profiles", [])})
@@ -2889,7 +2906,7 @@ def _drive(duel_id: int) -> None:
             _set_stage(duel_id, "Ranking the field for matchmaking")
             with session_scope() as session:
                 field = _seeded_field(session, compute_profiles(session, include_weather=False))
-                heirs = _compute_heirs(field, session, baseline)
+                heirs = _engine_heirs(_compute_heirs(field, session, baseline))
             # The session's weather yardstick, built once: each leg is stamped with its
             # severity against recent history, so a round can say whether its two legs
             # actually shared their weather instead of assuming adjacency proved it.
@@ -3020,7 +3037,7 @@ def fight_card(session, limit: int = 12) -> dict:
         log.debug("Fight card: could not read live settings", exc_info=True)
 
     field = _seeded_field(session, compute_profiles(session, include_weather=False))
-    heirs = _compute_heirs(field, session, live)
+    heirs = _engine_heirs(_compute_heirs(field, session, live))
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
     # Exactly the engine's choice of who defends, so the preview can't promise a different
     # champion than the one that actually walks out.

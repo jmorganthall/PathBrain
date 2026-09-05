@@ -1875,10 +1875,15 @@ def _compute_heirs(result: dict, session: Session, live: list[dict] | None = Non
     (scheduler/queues/upload bandwidth) differ from the current config. So this matches the
     race's contender set instead of dangling profiles it would refuse.
 
-    Returns ``{items, total, limit, crown_overall}``: ``total`` is every qualifying heir
-    (drives the "N could beat your crown" badge), ``items`` the top ``limit`` by ceiling-
-    above-crown. Profiles that never produced a comparable run have no ceiling to rank by
-    and aren't here — the Race button's bootstrap path still picks them up."""
+    Returns ``{items, all_items, total, limit, crown_overall}``: ``total`` is every
+    qualifying heir (drives the "N could beat your crown" badge), ``items`` the top
+    ``limit`` by ceiling-above-crown — the CARD's cut — and ``all_items`` every heir in the
+    same order, for the engines: the duel ladder's ``leaders``/``heirs`` contender modes
+    draw their challengers from this list (``duel._engine_heirs``), and a seeded field of
+    two hundred prior-ranked profiles reaching the ring five at a time would be exactly the
+    "racing a random dozen" failure. Profiles that never produced a comparable run under
+    any version have no ceiling to rank by and aren't here — the Race button's bootstrap
+    path still picks them up."""
     from datetime import datetime, timezone
 
     profiles = result.get("profiles", [])
@@ -1967,6 +1972,7 @@ def _compute_heirs(result: dict, session: Session, live: list[dict] | None = Non
     heirs.sort(key=_heir_key)
     return {
         "items": heirs[:limit],
+        "all_items": heirs,
         "total": len(heirs),
         "limit": limit,
         "crown_overall": crown_overall,
