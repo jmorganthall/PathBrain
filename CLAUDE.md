@@ -1475,9 +1475,19 @@ LLM-based. See `README.md` for the product overview.
     on every profile, no-data entries for profiles the current version has never scored, and the
     prior crown standing in as the pooled fallback defender/bar — applied in `duel._seeded_field`
     (`_drive` + `fight_card`), `challenger._field`, and `routes_settings._seeded_field` (heirs +
-    the `seeded` summary the Settings-Impact banner renders). Strictly an ordering: a field that
-    already has a crown is returned untouched, the seeded copy never enters the memo, nothing
-    seeded is scored, and the ring still decides on its own paired runs.
+    the `seeded` summary the Settings-Impact banner renders). Strictly an ordering: the seeded
+    copy never enters the memo, nothing seeded is scored, and the ring still decides on its own
+    paired runs. **The seed is not gated on the crown.** It used to switch off the moment the
+    current version had any crown — and after a publish the one profile the firewall sits on
+    reaches confidence within hours from monitoring alone, at which point the field read as
+    one crowned profile and nothing else: the heirs card emptied, the race had nobody to run,
+    the ladder had nobody to challenge with, and the prior version's two hundred ranked
+    profiles sat unmeasured (the *"no evidence dueling pulls profiles from the prior
+    methodology"* report). Now a current crown is **kept** (a current measurement is never
+    displaced by a seed) and the profiles the prior version ranked that the current one has
+    no data on are still folded in as `no_data` entries; with no crown at all every stored
+    profile is seeded, as before. `test_the_seed_still_applies_once_the_firewalls_own_profile_is_crowned`
+    pins it: the current crown defends, the prior's best unmeasured profile challenges first.
   - **`compute_profiles` is memoized** (`api/routes_settings.py`: `_field_stamp` /
     `invalidate_profiles_cache`). It is the most expensive thing PathBrain does — it walks
     every completed run, decodes each one's stored scalars, re-normalizes the crown against

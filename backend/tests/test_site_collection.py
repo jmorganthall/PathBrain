@@ -458,10 +458,21 @@ def test_prior_field_and_seeding_order_the_unknowns_by_the_previous_verdict():
             assert by_fp["seedhi000000"]["settings"]  # runnable — the ladder can apply it
             assert field["profiles"] == [] and field["best_fingerprint"] is None  # a copy
 
-            # A field that already HAS a crown is never touched by the seed.
+            # A field that already HAS a crown keeps it — a current measurement is never
+            # displaced by a seed — but the profiles the prior version ranked and the current
+            # one has no data on are still folded in, so the ladder, the race and the heirs
+            # have somebody to measure. (It used to switch off entirely the moment a crown
+            # appeared, which after a publish is hours: the firewall's own profile.)
             live = {"profiles": [{"fingerprint": "x", "overall": 50.0}], "best_fingerprint": "x"}
-            untouched = refresh.seed_field_from_prior(s, live, 15)
-            assert "seeded_from" not in untouched and untouched["profiles"][0].get("prior_overall") is None
+            crowned = refresh.seed_field_from_prior(s, live, 15)
+            assert crowned["best_fingerprint"] == "x" and crowned["seeded_from"] == version
+            by_fp = {p["fingerprint"]: p for p in crowned["profiles"]}
+            assert by_fp["x"].get("prior_overall") is None  # x was never ranked by the prior
+            assert by_fp["seedhi000000"]["no_data"] and by_fp["seedhi000000"]["prior_overall"] == 90.0
+            assert by_fp["seedlo000000"]["prior_overall"] == 30.0
+            # With a crown present only prior-RANKED profiles are seeded: a stored profile the
+            # prior never scored has no standing to seed with.
+            assert all(p.get("prior_overall") is not None for p in crowned["profiles"] if p.get("no_data"))
     finally:
         with session_scope() as s:
             _clear_prior(s, version, ids)

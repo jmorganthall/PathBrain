@@ -116,15 +116,15 @@ def _field(session) -> dict:
     from .refresh import list_profiles, seed_field_from_prior
 
     field = compute_profiles(session, complete_only=True, include_weather=False)
-    if not field.get("best_fingerprint"):
-        # Nothing comparable under the current methodology yet (right after a publish):
-        # seed the order from the prior version's standings, so the no-data profiles it
-        # ranked highest are measured first instead of in table order. A copy — the memo
-        # must never carry the seed.
-        try:
-            field = seed_field_from_prior(session, field, field.get("min_iterations"))
-        except Exception:  # noqa: BLE001 — a seed orders the race; it must never stop it
-            log.warning("Race: could not seed the field from the prior methodology", exc_info=True)
+    # Seed the order from the prior version's standings for every profile the current one
+    # has no data on (right after a publish that is nearly all of them), so the no-data
+    # profiles it ranked highest are measured first instead of in table order. Not gated
+    # on the crown: a current crown is kept, the rest of the field is still seeded. A
+    # copy — the memo must never carry the seed.
+    try:
+        field = seed_field_from_prior(session, field, field.get("min_iterations"))
+    except Exception:  # noqa: BLE001 — a seed orders the race; it must never stop it
+        log.warning("Race: could not seed the field from the prior methodology", exc_info=True)
     known = {p["fingerprint"] for p in field["profiles"]}
     no_data = [
         {

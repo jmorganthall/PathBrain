@@ -1282,8 +1282,8 @@ def ring_leader(
 
 
 def _seeded_field(session, field: dict) -> dict:
-    """The field the ladder matchmakes over, seeded from the prior methodology when the
-    current one has no crown yet.
+    """The field the ladder matchmakes over, seeded from the prior methodology for every
+    profile the current one has no data on yet.
 
     Right after a publish — a new crown metric, a changed site list — every run on record
     is incomparable under the current version, so ``compute_profiles`` returns a field
@@ -1296,8 +1296,10 @@ def _seeded_field(session, field: dict) -> dict:
     it never enters a verdict: the ring still decides on its own paired runs."""
     from .refresh import seed_field_from_prior
 
-    if field.get("best_fingerprint"):
-        return field
+    # Not gated on the crown: a current crown is kept (the seed never displaces a current
+    # measurement), but the profiles the current version has no data on are still folded
+    # in — otherwise the ladder had nobody to challenge with as soon as the firewall's own
+    # profile reached confidence after a publish (see ``seed_field_from_prior``).
     try:
         return seed_field_from_prior(session, field, field.get("min_iterations"))
     except Exception:  # noqa: BLE001 — seeding orders the queue; it must never stop the ladder

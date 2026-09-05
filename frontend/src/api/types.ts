@@ -408,6 +408,9 @@ export interface SeededField {
   best_prior_overall: number | null;
   profiles_without_data: number;
   profiles_seeded: number;
+  // True when the current version already has a crown of its own (the seed then orders only
+  // the unmeasured rest); false when the prior crown is standing in for one.
+  current_crown?: boolean;
 }
 
 export interface SettingsProfilesResponse {

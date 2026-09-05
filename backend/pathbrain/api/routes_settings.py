@@ -1820,10 +1820,9 @@ def _saturation_report(profiles: list[dict], definition: dict) -> list[dict]:
 
 
 def _seeded_field(session: Session, result: dict) -> dict:
-    """The field with the prior methodology's standings folded in, when the current one has
-    no crown yet; otherwise the field itself. See ``refresh.seed_field_from_prior``."""
-    if result.get("best_fingerprint"):
-        return result
+    """The field with the prior methodology's standings folded in for every profile the
+    current one has no data on yet (a current crown is kept). See
+    ``refresh.seed_field_from_prior``."""
     try:
         return refresh_mod.seed_field_from_prior(
             session, result, result.get("min_iterations") or _min_iterations(session)
@@ -1840,7 +1839,9 @@ def _seed_summary(session: Session, seeded: dict) -> dict | None:
     version = seeded.get("seeded_from")
     if not version:
         return None
-    best_fp = seeded.get("best_fingerprint")
+    # The PRIOR's crown, not the field's: with a current crown present the field's best is
+    # a current measurement and the prior crown is just the first profile to challenge it.
+    best_fp = seeded.get("seeded_best_fingerprint") or seeded.get("best_fingerprint")
     best = next((p for p in seeded.get("profiles", []) if p["fingerprint"] == best_fp), None)
     without = [p for p in seeded.get("profiles", []) if p.get("no_data")]
     return {
@@ -1850,6 +1851,9 @@ def _seed_summary(session: Session, seeded: dict) -> dict | None:
         "best_prior_overall": (best or {}).get("prior_overall"),
         "profiles_without_data": len(without),
         "profiles_seeded": int(seeded.get("seeded_profiles") or 0),
+        # Whether the current version already has a crown of its own (the seed then orders
+        # only the unmeasured rest) or the prior crown is standing in for one.
+        "current_crown": bool(seeded.get("seeded_has_current_crown")),
     }
 
 

@@ -187,36 +187,61 @@ def _prior_field_under(session, version: str, min_iterations: int | None) -> dic
 
 
 def seed_field_from_prior(session, field: dict, min_iterations: int | None = None) -> dict:
-    """A field with no pooled crown, seeded from the prior version's standings.
+    """The field with the prior version's standings folded in, for every stored profile the
+    current version has no data on yet.
 
     Returns a **copy** (``compute_profiles`` memoizes its result; the seed must never leak
-    into the cache). Every stored profile is present, each carrying ``prior_overall``;
-    profiles with no current data are added as ``no_data`` entries; ``best_fingerprint``
-    becomes the prior crown when the current field has none, and ``seeded_from`` names
-    the version. A field that already has a crown is returned unchanged (still a copy)."""
+    into the cache). Every profile carries ``prior_overall``; stored profiles the current
+    version has not scored are added as ``no_data`` entries (with their settings, so the
+    ladder and the race can apply them); ``best_fingerprint`` becomes the prior crown **only
+    when the current field has none** — a current crown is a current measurement and is
+    never displaced by a seed; ``seeded_from`` names the version.
+
+    The seed applies whether or not the current version has a crown. It used to switch off
+    the moment one appeared — and right after a publish the one profile the firewall sits
+    on reaches confidence within hours from monitoring alone, at which point the field
+    read as one crowned profile and nothing else: the heirs card emptied, the race had
+    nobody to run, and the ladder had nobody to challenge with, while the prior version's
+    two hundred ranked profiles sat unmeasured (the *"no evidence dueling pulls profiles
+    from the prior methodology"* report). With a crown present the no-data entries are the
+    profiles the prior version actually scored — its standings are the seed, and a profile
+    it never ranked has no standing to seed with (the race's own no-data pass still covers
+    those). With no crown at all every stored profile is seeded, as before, so a field with
+    nothing measured still has a full queue."""
     out = {**field, "profiles": [dict(p) for p in field.get("profiles", [])]}
-    if out.get("best_fingerprint"):
-        return out
     prior = prior_field(session, min_iterations)
     if not prior:
         return out
+    has_crown = bool(out.get("best_fingerprint"))
     known = {p["fingerprint"] for p in out["profiles"]}
     for p in out["profiles"]:
         p["prior_overall"] = prior["overall"].get(p["fingerprint"])
+    added = 0
     for p in list_profiles(session):
         if p["fingerprint"] in known:
+            continue
+        prior_overall = prior["overall"].get(p["fingerprint"])
+        if has_crown and prior_overall is None:
             continue
         out["profiles"].append({
             "fingerprint": p["fingerprint"], "settings": p["settings"], "label": p["label"],
             "name": p.get("name"), "confident": False, "overall": None, "optimistic": None,
             "crown_spreads": {}, "last_seen": None, "no_data": True, "iterations": 0,
-            "prior_overall": prior["overall"].get(p["fingerprint"]),
+            "prior_overall": prior_overall,
         })
-    fps = {p["fingerprint"] for p in out["profiles"]}
-    if prior["best_fingerprint"] in fps:
-        out["best_fingerprint"] = prior["best_fingerprint"]
+        added += 1
+    if not has_crown:
+        fps = {p["fingerprint"] for p in out["profiles"]}
+        if prior["best_fingerprint"] in fps:
+            out["best_fingerprint"] = prior["best_fingerprint"]
+    elif not added:
+        return out  # every profile the prior ranked already has current data: nothing to seed
     out["seeded_from"] = prior["version"]
     out["seeded_profiles"] = sum(1 for p in out["profiles"] if p.get("prior_overall") is not None)
+    # The prior's own crown and whether the current field has one — so the page can say
+    # "the prior crown stands in" vs "the current crown defends, the prior ranks the rest".
+    out["seeded_best_fingerprint"] = prior["best_fingerprint"]
+    out["seeded_has_current_crown"] = has_crown
     return out
 
 

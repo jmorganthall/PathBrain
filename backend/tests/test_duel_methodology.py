@@ -145,6 +145,44 @@ def test_after_a_publish_the_prior_crown_defends_against_the_prior_runner_up(mon
             s.query(Duel).delete()
 
 
+def test_the_seed_still_applies_once_the_firewalls_own_profile_is_crowned(monkeypatch):
+    """Hours after a publish the one profile the firewall sits on reaches confidence from
+    monitoring alone and becomes the current crown. The seed used to switch off at that
+    moment, leaving a field of one crowned profile and nobody to challenge with. Now the
+    current crown defends (a current measurement is never displaced) and the prior
+    version's best unmeasured profile is the first challenger."""
+    import pathbrain.api.routes_settings as rs
+
+    version = "test-duel-seed-crowned-v0"
+    when = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=365)
+    cur, prior_best, prior_low = "dcrowncur000", "dcrownbest00", "dcrownlow000"
+    with session_scope() as s:
+        s.query(Duel).delete()
+        ids = _seed_prior(s, version, [(prior_best, 88.0, 20, 300), (prior_low, 40.0, 20, 600)], when)
+    applied: list[str] = []
+    # The current version has scored exactly one profile — the firewall's — and crowned it.
+    crowned = {"best_fingerprint": cur, "min_iterations": 15, "profiles": [
+        {**_profile(cur, 1514), "confident": True, "overall": 61.0, "optimistic": 63.0,
+         "iterations": 20, "last_seen": None, "crown_spreads": {}},
+    ]}
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: dict(crowned))
+    monkeypatch.setattr(rs, "_discover_live_normalized", lambda: None)
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    _no_settle()
+    _score_by_profile(monkeypatch, applied, {cur: 60.0, prior_best: 66.0, prior_low: 40.0})
+    try:
+        d = _wait_finish(duel_mod.start(duration_minutes=10))
+        assert d.status == DuelStatus.COMPLETE, d.error
+        assert applied[:2] == [cur, prior_best], applied[:4]
+        first = d.matchups[0]
+        assert first["incumbent"] == cur and first["challenger"] == prior_best
+        assert "seeded" in first["challenger_why"]
+    finally:
+        with session_scope() as s:
+            _clear_prior(s, version, ids)
+            s.query(Duel).delete()
+
+
 def test_a_publish_mid_session_reseeds_the_ring_instead_of_stranding_it(monkeypatch):
     """A leg is scored under whatever version is current when it lands; the ring was reading
     every leg under the version it opened with. After a publish every later round used to
