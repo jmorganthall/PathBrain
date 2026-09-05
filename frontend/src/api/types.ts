@@ -1050,6 +1050,8 @@ export interface BrowserClient {
   viewport: { width: number; height: number } | null;
   locale: string;
   timezone_id: string;
+  // Forces QUIC onto every listed origin — an origin without HTTP/3 fails outright.
+  http3: boolean;
 }
 
 export interface BenchmarkConfig {

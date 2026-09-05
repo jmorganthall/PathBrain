@@ -767,7 +767,13 @@ COLLECTION_KEY = "collection"
 # URL as different clients are, like two site lists, measurements of different things. The
 # client is therefore the second half of the collection: declared by the version, overlaid
 # onto every run, stamped, and quarantined under its own token when it differs.
-CLIENT_FIELDS = ("headless_mode", "hide_automation", "user_agent", "viewport", "locale", "timezone_id")
+CLIENT_FIELDS = (
+    "headless_mode", "hide_automation", "user_agent", "viewport", "locale", "timezone_id",
+    # The protocol the pages are fetched over is part of the client too: with `http3` on
+    # PathBrain FORCES QUIC onto every listed origin, so an origin without HTTP/3 fails
+    # outright and one with it is measured on a path a fresh visit never takes.
+    "http3",
+)
 
 
 def _site_set_hash(browser_urls: list[str], http_urls: list[str]) -> str:
@@ -806,6 +812,7 @@ def client_from_config(browser: dict | None) -> dict:
         "viewport": {"width": width, "height": height} if width > 0 and height > 0 else None,
         "locale": str(b.get("locale") or "").strip(),
         "timezone_id": str(b.get("timezone_id") or "").strip(),
+        "http3": bool(b.get("http3", False)),
     }
 
 
@@ -1282,6 +1289,7 @@ def at_measure_comparability(metric_values: dict | None) -> tuple[str, list[str]
 
 SITE_SET_MARKER = "site_set"  #: the `missing_metrics` token for "measured against other sites"
 CLIENT_SET_MARKER = "client_set"  #: … and for "measured as a different browser client"
+SITE_COVERAGE_MARKER = "site_coverage"  #: … and for "a declared page failed to load"
 
 
 def comparability(
@@ -1289,6 +1297,7 @@ def comparability(
     metric_values: dict | None,
     site_set: str | None = None,
     client_set: str | None = None,
+    pages_missing: list[str] | None = None,
 ) -> tuple[str, list[str]]:
     """Can a run's raw reproduce this methodology's metrics? (the at-present check)
 
@@ -1325,6 +1334,12 @@ def comparability(
     declared_client = definition_client_set(definition)
     if declared_client is not None and client_set != declared_client:
         tokens.append(CLIENT_SET_MARKER)
+    # Coverage: the browser means are over the pages that LOADED, so a run in which any
+    # configured page failed is a mean over a subset — a different measurement wearing the
+    # same site-set stamp. Gated on the run's own list, declared or not: the stamp says
+    # what was asked for, this says whether it was delivered.
+    if pages_missing:
+        tokens.append(SITE_COVERAGE_MARKER)
     if tokens:
         return "incomparable", tokens
     missing = [k for k in scored if mv.get(k) is None]

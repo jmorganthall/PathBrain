@@ -555,12 +555,15 @@ function HeirsCard({
           {items.map((h) => (
             <Stack
               key={h.fingerprint}
-              direction="row"
+              // Stacks on a phone: as a fixed row the non-shrinking ceiling column took its
+              // full width first ("upside unknown · 80.4 under the previous methodology")
+              // and the name wrapped one syllable per line.
+              direction={{ xs: "column", sm: "row" }}
               justifyContent="space-between"
-              alignItems="center"
+              alignItems={{ xs: "stretch", sm: "center" }}
               spacing={1}
             >
-              <Box sx={{ minWidth: 0 }}>
+              <Box sx={{ minWidth: 0, flex: 1 }}>
                 <Typography variant="body2" sx={{ fontWeight: 600, wordBreak: "break-word" }}>
                   {h.name || h.label}
                 </Typography>
@@ -578,11 +581,11 @@ function HeirsCard({
                   </Typography>
                 </Stack>
               </Box>
-              <Box sx={{ textAlign: "right", flexShrink: 0 }}>
+              <Box sx={{ textAlign: { xs: "left", sm: "right" }, minWidth: 0, flexShrink: { sm: 0 }, maxWidth: { sm: "55%" } }}>
                 <Typography variant="body2" sx={{ fontWeight: 700, color: "success.main" }}>
                   {h.optimistic != null ? `ceiling ${h.optimistic.toFixed(1)}` : "ceiling —"}
                 </Typography>
-                <Typography variant="caption" color="text.secondary">
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
                   {h.margin != null ? `+${h.margin.toFixed(1)} over crown` : "upside unknown"}
                   {h.overall != null ? ` · now ${h.overall.toFixed(1)}` : ""}
                   {h.overall == null && h.prior_overall != null

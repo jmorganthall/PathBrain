@@ -44,7 +44,8 @@ def _definition_with(browser, http=(), client=None):
 
 
 CLIENT_A = {"headless_mode": "new", "hide_automation": True, "user_agent": "auto",
-            "viewport": {"width": 1920, "height": 1080}, "locale": "en-US", "timezone_id": ""}
+            "viewport": {"width": 1920, "height": 1080}, "locale": "en-US", "timezone_id": "",
+            "http3": False}
 CLIENT_B = {**CLIENT_A, "viewport": {"width": 800, "height": 600}}
 
 
@@ -116,6 +117,45 @@ def test_comparability_gates_on_the_declared_client_too():
     # A version published before the client joined the collection ignores the client stamp.
     sites_only = _definition_with(SITES_A)
     assert comparability(sites_only, mv, site_set=sites, client_set=None) == ("exact", [])
+
+
+def test_a_failed_page_quarantines_the_run_under_site_coverage():
+    """Every browser metric is a mean over the pages that LOADED, so a run in which a
+    declared page failed is a mean over a subset — the same site-set stamp, a different
+    measurement. It is quarantined under its own token, whether or not the version
+    declares a site list (the stamp says what was asked for; this says what was delivered)."""
+    from pathbrain.runner import missing_pages
+
+    cfg = {"browser": {"urls": SITES_A}}
+    ok = {"iterations": [{"urls": {u: {"nav": {"responseEnd": 1}} for u in SITES_A}}] * 2}
+    assert missing_pages(cfg, ok) == []
+    # A page that errored in ONE iteration is a subset mean for that iteration.
+    bad = {"iterations": [
+        {"urls": {u: {"nav": {"responseEnd": 1}} for u in SITES_A}},
+        {"urls": {SITES_A[0]: {"nav": {"responseEnd": 1}}, SITES_A[1]: {"error": "ERR_QUIC_PROTOCOL_ERROR"}}},
+    ]}
+    assert missing_pages(cfg, bad) == [SITES_A[1]]
+    # A page missing from the raw altogether (never attempted) counts too.
+    assert missing_pages(cfg, {"iterations": [{"urls": {SITES_A[0]: {"nav": {}}}}]}) == SITES_A
+    # No browser result at all is not a coverage problem — the crown metrics are missing
+    # and the run is quarantined for that instead.
+    assert missing_pages(cfg, None) == [] and missing_pages({}, bad) == []
+
+    d = _definition_with(SITES_A)
+    mv = _complete_metrics(d)
+    declared = d["collection"]["site_set"]
+    assert comparability(d, mv, site_set=declared, pages_missing=[SITES_A[1]]) == ("incomparable", ["site_coverage"])
+    assert comparability(d, mv, site_set=declared, pages_missing=[]) == ("exact", [])
+    plain = build_definition_from_spec(METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY])
+    assert comparability(plain, _complete_metrics(plain), pages_missing=["x"]) == ("incomparable", ["site_coverage"])
+
+
+def test_http3_is_part_of_the_client_identity():
+    # Forcing QUIC changes what every page load measures (and whether it loads at all), so
+    # flipping it is a different client — a publish, not a config switch.
+    on = client_set_from_config({"browser": {**CLIENT_A, "http3": True}})
+    off = client_set_from_config({"browser": CLIENT_A})
+    assert on != off and client_from_config({})["http3"] is False
 
 
 def test_client_stamp_is_representation_free():

@@ -565,9 +565,35 @@ def _iteration_plugin_metrics_from_raw(run, artifact_base: str | None) -> list[d
     ]
 
 
+def missing_pages(config: dict | None, browser_raw: dict | None) -> list[str]:
+    """The configured browser pages that failed to load in at least one iteration.
+
+    Every browser metric is a mean over the pages that loaded (`_derive_browser` skips a
+    URL entry with no navigation timing), so a run where a declared page failed is a mean
+    over a *different set* than a run where every page loaded — the same measurement of
+    a different thing, and the comparability gate would otherwise pool the two, since
+    the site-set stamp is the *configured* list and it matched. Reported per page so the
+    quarantine names what did not load. ``[]`` when there is no browser result at all
+    (then the crown metrics are missing and the run is quarantined for that instead)."""
+    from .raw_access import stored_iterations
+
+    urls = [str(u) for u in ((config or {}).get("browser") or {}).get("urls") or []]
+    iterations = stored_iterations(browser_raw)
+    if not urls or not iterations:
+        return []
+    missing: set[str] = set()
+    for it in iterations:
+        observed = it.get("urls") if isinstance(it.get("urls"), dict) else {}
+        for url in urls:
+            obs = observed.get(url)
+            if not (isinstance(obs, dict) and obs.get("nav")):
+                missing.add(url)
+    return sorted(missing)
+
+
 def score_metrics_under(
     session, run_id, run_methodology_version, methodology, iter_metrics, site_set=None,
-    client_set=None,
+    client_set=None, pages_missing=None,
 ):
     """Score per-iteration ``{plugin: metrics}`` under a methodology's frozen rubric,
     across every axis it defines, and upsert the (run × methodology) Score.
@@ -635,7 +661,8 @@ def score_metrics_under(
         axis_scores["overall"] = overall
 
     comp_tag, missing = comparability(
-        definition, metric_values, site_set=site_set, client_set=client_set
+        definition, metric_values, site_set=site_set, client_set=client_set,
+        pages_missing=pages_missing,
     )
     return upsert_score(
         session,
@@ -706,10 +733,12 @@ def score_run_under(session, run, methodology, artifact_base: str | None = None)
         return None  # no metrics to interpret
     from .methodology import client_set_from_config, site_set_from_config
 
+    browser_raw = next((res.raw for res in run.results if res.plugin == "browser"), None)
     return score_metrics_under(
         session, run.id, run.methodology_version, methodology, iter_metrics,
         site_set=site_set_from_config(run.config_used),
         client_set=client_set_from_config(run.config_used),
+        pages_missing=missing_pages(run.config_used, browser_raw),
     )
 
 
@@ -1045,10 +1074,14 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
             run.methodology_version = methodology.version
             from .methodology import client_set_from_config, site_set_from_config
 
+            browser_results = per_plugin.get("browser") or []
             score_metrics_under(
                 session, run_id, methodology.version, methodology, iteration_plugin_metrics,
                 site_set=site_set_from_config(config),
                 client_set=client_set_from_config(config),
+                pages_missing=missing_pages(
+                    config, {"iterations": [r.raw for r in browser_results]} if browser_results else None
+                ),
             )
 
             run.per_iteration_ms = (

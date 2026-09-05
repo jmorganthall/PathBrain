@@ -870,9 +870,10 @@ export default function Config() {
                   onChange={(e) =>
                     setDraft((p) => (p ? { ...p, browser: { ...p.browser, http3: e.target.checked } } : p))
                   }
+                  disabled={Boolean(siteOwner)}
                 />
               }
-              label="HTTP/3 (QUIC)"
+              label="Force HTTP/3 (QUIC)"
             />
           </Stack>
           <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 0.5 }}>
