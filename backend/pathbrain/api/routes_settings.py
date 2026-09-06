@@ -759,6 +759,13 @@ def settings_profiles(
     result["seeded"] = _seed_summary(session, seeded)
     result["metric_thresholds"] = _metric_thresholds(definition)
     result["saturation"] = _saturation_report(result["profiles"], definition)
+    # Outliers — profiles whose crown-metric medians (or Overall) sit far outside the field.
+    # Computed here, once, so "Hide outliers" (a view choice) and "Re-run outliers" (an
+    # evidence choice) both read one flag instead of each forming its own opinion.
+    result["outliers"] = _outlier_report(
+        result["profiles"], result.get("overall_metrics") or [], definition,
+        int(result.get("min_iterations") or 0),
+    )
 
     # ── The primary ordering: the ring where it has measured, pooled where it hasn't ────
     # Applied HERE, at the one seam every reader of this endpoint shares, rather than in
@@ -1817,6 +1824,102 @@ def _saturation_report(profiles: list[dict], definition: dict) -> list[dict]:
             }
         )
     return report
+
+
+# ── Outliers ────────────────────────────────────────────────────────────────────────
+# A Settings-Impact scatter with one profile at FCP 2300 ms while the field sits at 600 ms
+# is a scatter of one dot and a smudge: the axes scale to the outlier and the profiles the
+# page exists to separate collapse into a corner. Two different questions hide in "what do
+# we do about it?". *Hiding* is a VIEW decision (let the axes fit the pack); *re-running* is
+# an EVIDENCE decision (is that reading real?). They are answered separately here: the
+# flag is computed once, the client decides what to show, and the refresh engine can be
+# pointed at exactly the flagged profiles. The statistic is the modified z-score
+# (Iglewicz–Hoaglin: 0.6745·(x − median)/MAD, flag |z| > 3.5) over the PROFILE MEDIANS,
+# because the ordinary mean/stddev z is itself moved by the outlier it is meant to find.
+# Most flagged profiles are thin — a two-iteration profile whose median IS one bad run —
+# which is why the summary splits thin from confident: a thin outlier wants re-measuring,
+# a confident one is a real (bad) result and is information, not noise.
+OUTLIER_Z = 3.5
+OUTLIER_MIN_PROFILES = 5
+_MAD_TO_SIGMA = 0.6745
+
+
+def _robust_z(values: list[float]) -> tuple[float, float | None]:
+    """Field median + the MAD-based scale (``None`` when the field is degenerate — a MAD
+    of 0 means more than half the profiles share one value, so no z is meaningful)."""
+    med = median(values)
+    mad = median(abs(v - med) for v in values)
+    if mad <= 0:
+        return med, None
+    return med, mad / _MAD_TO_SIGMA
+
+
+def _outlier_report(profiles: list[dict], crown_metrics: list[str], definition: dict,
+                    min_iterations: int) -> dict:
+    """Tag each profile whose median on a crown metric — or whose Overall — sits more than
+    ``OUTLIER_Z`` robust standard deviations from the field's median. Writes ``outlier``
+    onto the profile (``None`` when it is not one) and returns the field-level summary."""
+    meta = {m.get("key"): m for m in (definition or {}).get("metrics", [])}
+    checks: list[tuple[str, str, bool, callable]] = []
+    for key in crown_metrics:
+        m = meta.get(key) or {}
+        checks.append((
+            key, m.get("label") or key, bool(m.get("higher_is_better")),
+            lambda p, k=key: (p.get("metrics") or {}).get(k),
+        ))
+    checks.append(("overall", "Overall", True, lambda p: p.get("overall")))
+
+    flagged: dict[str, list[dict]] = {}
+    for key, label, higher, read in checks:
+        pts = [(p, read(p)) for p in profiles]
+        pts = [(p, float(v)) for p, v in pts if v is not None]
+        if len(pts) < OUTLIER_MIN_PROFILES:
+            continue
+        med, scale = _robust_z([v for _, v in pts])
+        if scale is None:
+            continue
+        for p, v in pts:
+            z = (v - med) / scale
+            if abs(z) <= OUTLIER_Z:
+                continue
+            # "worse" = the bad side for this metric, so a reader knows whether the profile
+            # is implausibly slow (the usual) or implausibly fast (a lucky thin reading).
+            worse = (z < 0) if higher else (z > 0)
+            flagged.setdefault(p["fingerprint"], []).append({
+                "key": key,
+                "label": label,
+                "value": round(v, 2),
+                "field_median": round(med, 2),
+                "z": round(z, 1),
+                "side": "worse" if worse else "better",
+            })
+
+    thin = confident = 0
+    fps: list[str] = []
+    for p in profiles:
+        hits = flagged.get(p["fingerprint"])
+        if not hits:
+            p["outlier"] = None
+            continue
+        is_thin = int(p.get("iterations") or 0) < min_iterations
+        p["outlier"] = {
+            "metrics": sorted(hits, key=lambda h: -abs(h["z"])),
+            "thin": is_thin,
+        }
+        fps.append(p["fingerprint"])
+        if is_thin:
+            thin += 1
+        else:
+            confident += 1
+    return {
+        "count": len(fps),
+        "thin": thin,
+        "confident": confident,
+        "fingerprints": fps,
+        "threshold_z": OUTLIER_Z,
+        "min_profiles": OUTLIER_MIN_PROFILES,
+        "method": "modified z-score (MAD) over profile medians, per crown metric and the Overall",
+    }
 
 
 def _seeded_field(session: Session, result: dict) -> dict:
@@ -3377,13 +3480,18 @@ def refresh_preview(
     rank_by: str | None = Query(
         None, description="Methodology version to rank by (defaults to the prior methodology)."
     ),
+    fingerprints: str | None = Query(
+        None, description="Comma-separated fingerprints to re-run exactly (overrides top/rank_by)."
+    ),
     session: Session = Depends(get_session),
 ) -> dict:
     """Preview a 'Re-run profiles' batch: how many profiles, total iterations, and an
     estimated duration (from recent runs' per-iteration timing) — so the UI can show
     'N profiles × M iterations ≈ ~T' before committing. With ``top`` set, previews a
-    winner-first subset ranked by ``rank_by`` (or the prior methodology)."""
-    return refresh_mod.preview(session, iterations, top=top, rank_by=rank_by)
+    winner-first subset ranked by ``rank_by`` (or the prior methodology); with
+    ``fingerprints`` set, exactly those profiles (the "Re-run outliers" scope)."""
+    fps = [f.strip() for f in (fingerprints or "").split(",") if f.strip()] or None
+    return refresh_mod.preview(session, iterations, top=top, rank_by=rank_by, fingerprints=fps)
 
 
 @router.post("/settings/refresh")
@@ -3391,10 +3499,12 @@ def start_refresh(body: dict = Body(...), session: Session = Depends(get_session
     """Start a 'Re-run profiles' batch: apply each stored profile, run ``iterations``
     benchmarks on it, and restore the baseline at the end (see ``refresh.py``).
 
-    Body: ``{"iterations": <number>, "top"?: <N>, "rank_by"?: <version>}``. With ``top`` set,
-    only the top-N profiles are re-run, **winner-first** by their Overall under ``rank_by`` (or
-    the prior methodology) — fresh data for the best performers first after a methodology
-    publish. Returns the refresh id; poll ``GET /settings/refresh`` for status.
+    Body: ``{"iterations": <number>, "top"?: <N>, "rank_by"?: <version>,
+    "fingerprints"?: [<fp>, …]}``. With ``top`` set, only the top-N profiles are re-run,
+    **winner-first** by their Overall under ``rank_by`` (or the prior methodology) — fresh
+    data for the best performers first after a methodology publish. With ``fingerprints``
+    set, exactly those profiles are re-run in that order (the Settings-Impact "Re-run
+    outliers" action). Returns the refresh id; poll ``GET /settings/refresh`` for status.
     """
     iterations = int((body or {}).get("iterations") or 0)
     if iterations <= 0:
@@ -3404,8 +3514,12 @@ def start_refresh(body: dict = Body(...), session: Session = Depends(get_session
     if top is not None and top <= 0:
         raise HTTPException(status_code=400, detail="top must be > 0 when provided")
     rank_by = (body or {}).get("rank_by") or None
+    fps_raw = (body or {}).get("fingerprints")
+    if fps_raw is not None and not isinstance(fps_raw, list):
+        raise HTTPException(status_code=400, detail="fingerprints must be a list when provided")
+    fingerprints = [str(f) for f in (fps_raw or []) if f] or None
     try:
-        refresh_id = refresh_mod.start(iterations, top=top, rank_by=rank_by)
+        refresh_id = refresh_mod.start(iterations, top=top, rank_by=rank_by, fingerprints=fingerprints)
     except RuntimeError as exc:  # already running, or no profiles
         # "already running" is a conflict; "no profiles" is a bad request.
         status = 409 if "already running" in str(exc) else 400
@@ -3415,7 +3529,12 @@ def start_refresh(body: dict = Body(...), session: Session = Depends(get_session
         raise HTTPException(
             status_code=502, detail=f"Could not start the refresh: {type(exc).__name__}: {exc}"
         ) from exc
-    return {"id": refresh_id, "iterations": iterations, "top": top}
+    return {
+        "id": refresh_id,
+        "iterations": iterations,
+        "top": top if not fingerprints else None,
+        "fingerprints": len(fingerprints) if fingerprints else None,
+    }
 
 
 @router.get("/settings/refresh")

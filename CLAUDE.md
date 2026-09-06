@@ -1788,7 +1788,20 @@ LLM-based. See `README.md` for the product overview.
   parsed every other page plus recharts — over a second of blank screen on a phone before a
   single request was sent. Now the shell paints immediately, each page is its own small chunk
   (Duels ~40 kB), and the 384 kB chart bundle loads only for the three views that draw charts.
-  Keep new pages lazy. Pages: Dashboard,
+  Keep new pages lazy. Pages: **Dashboard** (`Dashboard.tsx` — the NOC wall: a status strip
+  of KPI tiles (`components/dashboard/StatTile` — pipeline lock state from the jobs feed,
+  monitoring cadence + next run, the measured per-iteration cost with a 30-run sparkline,
+  run/profile counts, Follow-best state + crown churn), the hero 24h Overall gauge beside
+  the headline axes, the profile the firewall is on now (its Overall, rank and crown-metric
+  percentiles, with the "Test current for X min" control), the running jobs
+  (`ActiveJobs`), the three verdicts side by side — `TwoCrowns`, the pooled `Leaderboard`
+  (confident profiles by Overall, crown + live + tied marked by icon/chip, never by bar
+  colour), and the ring (`RingCard`, the duel standings on fitted strength) — then the
+  series, the per-metric breakdown and the latest waterfall. Every number is read from an
+  existing endpoint; the light ops reads re-poll every 15s while visible, the field reads
+  refresh on load and when a run lands. `GET /score/rolling` reports the window's
+  **`overall`** beside the axis spreads for the hero — the first-class Overall is persisted
+  on every Score but is not a scored axis, so the axis loop never saw it),
   History, Trends, **Weather** (the measured-conditions view — the variance decomposition +
   the covariate × crown-metric sensitivity table; the per-profile weather readings stay on
   Settings Impact beside the standings they qualify), Compare, Settings Impact (**paginated** sortable table — 25/page —
@@ -1804,7 +1817,23 @@ LLM-based. See `README.md` for the product overview.
   methodology's Overall, so it re-derives when the methodology changes (no separate knob). A
   **"Hide profiles worse than SQM off"** checkbox (on by default; inert until a baseline exists)
   drops every profile with `pct_vs_sqm_off < 0` from the table + scatter — dead weight we don't
-  care about. (This replaced the old "vs weather" column.) Plus an optional
+  care about. (This replaced the old "vs weather" column.) **Outliers are flagged once and
+  answered twice** (`routes_settings._outlier_report`, response `outliers` + per-profile
+  `outlier`): a profile whose median on a crown metric — or whose Overall — sits more than
+  `OUTLIER_Z` (3.5) robust standard deviations from the field's median (modified z-score on
+  the MAD, over ≥ `OUTLIER_MIN_PROFILES` profiles; the MAD rather than the stddev because an
+  ordinary z is pulled toward the very outlier it is meant to find) is tagged with the metric,
+  its z, the side (`worse`/`better`) and whether it is `thin` (under the iteration minimum).
+  "What do we do about it?" is two questions, and the page keeps them apart: **Hide outliers**
+  is a *view* choice (the scatter's axes scale to the outlier and the pack it exists to
+  separate collapses into a corner — hiding lets the axes fit the pack; crown and live profile
+  are always kept, nothing is re-scored), and **Re-run outliers** is an *evidence* choice — it
+  opens the Re-run-profiles dialog scoped to exactly the flagged fingerprints
+  (`refresh.start/preview(fingerprints=…)`, an explicit ordered list that overrides
+  `top`/`rank_by`), because a thin outlier is usually one bad run standing in for a median and
+  a re-measurement is what settles it, while a confident outlier is a real result the re-run
+  confirms or moves. The summary splits `thin` from `confident` so the dialog can say which.
+  Plus an optional
   column selector; a **dynamic** any-metric quadrant where X/Y pick the axes, a **Shade**
   picker encodes a third field as dot **opacity** (brighter = better; `ProfileQuadrant`),
   and the crowned profile is ringed — the quadrant now warns when an axis is **saturated**
@@ -1833,7 +1862,23 @@ LLM-based. See `README.md` for the product overview.
   predict better than confounded curves? on your link, measured), a response curve per lever per pipe (marginal solid + reference-conditioned dashed,
   with a **confounded** chip where the two disagree), **"What changing one lever actually did"**
   (the matched-pair contrasts), **local optima** (coupled-basin detection), the holes in
-  coverage, and the lever pairs that genuinely interact; fetched on demand, read-only apart
+  coverage, the lever pairs that genuinely interact, and **"Leaders per crown leg"**
+  (`explore.crown_legs`, response `crown_legs`): for each crown metric — read from the
+  methodology at request time, so it follows whatever the Overall corners over now — the
+  top-`LEG_LEADERS` confident profiles on that leg, where the best profile stands on it
+  (rank / field percentile; the leg it stands lowest on is `weakest`), and the **"move the
+  best profile their way"** proposals: a lever is a move when ≥ `LEG_MOVE_AGREEMENT` (60%) of
+  the leg's leaders run it on the same side of the best profile's value, the target being the
+  leaders' median on that side coerced + snapped to a value the firewall can hold. Each move is
+  resolved against the field first — if the best profile with that lever moved **already
+  exists** it is named with its Overall and the gap to the best (an answered question, not a
+  proposal); a coordinate the ledger has already spent a benchmark on is marked
+  `already_measured`; only a genuinely untested one becomes a runnable candidate, priced by
+  the same `_candidate_dict` as the headline list so its "Test now" posts the identical
+  payload. The leaders' whole signature (every runnable move at once) is offered as a
+  `combined` multi-lever candidate when untested. This answers the "good on two legs, the
+  third struggles — what do the profiles that win the third one do differently?" question the
+  value-gap candidates cannot; fetched on demand, read-only apart
   from the test button. **The long sections grow with the field, so they page**: a lever with
   twenty tested values has 190 possible one-lever transitions and a 150-profile field holds
   dozens of local optima — printed whole that's a wall nobody reads, which is the same as not

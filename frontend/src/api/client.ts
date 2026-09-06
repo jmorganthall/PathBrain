@@ -407,16 +407,27 @@ export const api = {
   // Re-run stored profiles: apply each, run a chosen number of iterations, restore the
   // baseline at the end. `refreshPreview` estimates time before committing. `top` (optional)
   // re-runs only the top-N profiles, winner-first by their Overall under the prior methodology.
-  refreshPreview: (iterations: number, top?: number) =>
+  // `fingerprints` re-runs exactly those profiles (the "Re-run outliers" scope) and overrides `top`.
+  refreshPreview: (iterations: number, top?: number, fingerprints?: string[]) =>
     request<ProfileRefreshPreview>(
-      `/settings/refresh/preview?iterations=${iterations}` + (top ? `&top=${top}` : ""),
+      `/settings/refresh/preview?iterations=${iterations}` +
+        (fingerprints?.length
+          ? `&fingerprints=${encodeURIComponent(fingerprints.join(","))}`
+          : top
+            ? `&top=${top}`
+            : ""),
     ),
-  startRefresh: (iterations: number, top?: number) =>
+  startRefresh: (iterations: number, top?: number, fingerprints?: string[]) =>
     startingJob(
-      request<{ id: number; iterations: number; top: number | null }>("/settings/refresh", {
-        method: "POST",
-        body: JSON.stringify(top ? { iterations, top } : { iterations }),
-      }),
+      request<{ id: number; iterations: number; top: number | null; fingerprints?: number | null }>(
+        "/settings/refresh",
+        {
+          method: "POST",
+          body: JSON.stringify(
+            fingerprints?.length ? { iterations, fingerprints } : top ? { iterations, top } : { iterations },
+          ),
+        },
+      ),
     ),
   refreshCurrent: () => request<{ refresh: ProfileRefresh | null }>("/settings/refresh"),
   cancelRefresh: () => request<{ cancelled: boolean }>("/settings/refresh/cancel", { method: "POST" }),

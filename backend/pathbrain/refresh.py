@@ -351,10 +351,21 @@ def ranked_profiles(session, rank_version: str | None) -> list[dict]:
     )
 
 
-def _select(session, top: int | None, rank_by: str | None) -> tuple[list[dict], str | None]:
+def _select(
+    session, top: int | None, rank_by: str | None, fingerprints: list[str] | None = None,
+) -> tuple[list[dict], str | None]:
     """Resolve the profile work-list + the version it was ranked by. Plain (unranked) list when
     neither ``top`` nor ``rank_by`` is given; otherwise ranked winner-first (``rank_by`` or the
-    auto-detected prior methodology) and capped to ``top`` when a positive cap is given."""
+    auto-detected prior methodology) and capped to ``top`` when a positive cap is given.
+
+    An explicit ``fingerprints`` list is a third scope — *these profiles, in this order* —
+    for a caller that has already decided what needs re-measuring (the Settings-Impact
+    "Re-run outliers" action). It is exact: unknown fingerprints are dropped rather than
+    guessed at, and ``top``/``rank_by`` are ignored, since the caller's list IS the ranking."""
+    if fingerprints:
+        wanted = [fp for fp in fingerprints if fp]
+        by_fp = {p["fingerprint"]: p for p in list_profiles(session)}
+        return [by_fp[fp] for fp in wanted if fp in by_fp], None
     rank_version = rank_by or (_prior_methodology_version(session) if top else None)
     profiles = ranked_profiles(session, rank_version) if (top or rank_by) else list_profiles(session)
     if top is not None and top > 0:
@@ -376,14 +387,18 @@ def _median_iteration_ms(session) -> float | None:
     return estimate_ms(session)
 
 
-def preview(session, iterations: int, top: int | None = None, rank_by: str | None = None) -> dict:
+def preview(
+    session, iterations: int, top: int | None = None, rank_by: str | None = None,
+    fingerprints: list[str] | None = None,
+) -> dict:
     """What a refresh would do + how long it'd take: profile count, total iterations, and
     an estimated duration (median per-iteration time × total iterations + per-profile
     apply/restore overhead). ``estimated_seconds`` is None when there's no timing history
     to base it on. With ``top`` set, previews a winner-first subset (ranked by ``rank_by`` or
-    the auto-detected prior methodology), so the estimate reflects the capped batch."""
+    the auto-detected prior methodology), so the estimate reflects the capped batch. With
+    ``fingerprints`` set, previews exactly those profiles (see ``_select``)."""
     iters = max(1, min(MAX_ITERATIONS, int(iterations)))
-    profiles, rank_version = _select(session, top, rank_by)
+    profiles, rank_version = _select(session, top, rank_by, fingerprints)
     n_profiles = len(profiles)
     per_ms = _median_iteration_ms(session)
     total_iterations = n_profiles * iters
@@ -397,12 +412,17 @@ def preview(session, iterations: int, top: int | None = None, rank_by: str | Non
         "per_iteration_ms": round(per_ms, 1) if per_ms is not None else None,
         "estimated_seconds": estimated,
         # Winner-first context (null when running the full, unranked batch).
-        "top": top if (top and top > 0) else None,
+        "top": top if (top and top > 0 and not fingerprints) else None,
         "ranked_by": rank_version,
+        # How many of an explicit list were actually found (null for the other scopes).
+        "fingerprints": n_profiles if fingerprints else None,
     }
 
 
-def start(iterations: int, top: int | None = None, rank_by: str | None = None) -> int:
+def start(
+    iterations: int, top: int | None = None, rank_by: str | None = None,
+    fingerprints: list[str] | None = None,
+) -> int:
     """Launch a profile refresh that runs ``iterations`` benchmarks on stored profiles.
     Returns the ``ProfileRefresh`` id.
 
@@ -420,9 +440,12 @@ def start(iterations: int, top: int | None = None, rank_by: str | None = None) -
         raise RuntimeError("A profile refresh is already running.")
     iters = max(1, min(MAX_ITERATIONS, int(iterations)))
     with session_scope() as session:
-        profiles, rank_version = _select(session, top, rank_by)
+        profiles, rank_version = _select(session, top, rank_by, fingerprints)
         if not profiles:
-            raise RuntimeError("No stored profiles to refresh.")
+            raise RuntimeError(
+                "None of the requested profiles is stored." if fingerprints
+                else "No stored profiles to refresh."
+            )
         plan = [{**p, "needed": iters} for p in profiles]
         row = ProfileRefresh(status=ProfileRefreshStatus.PENDING, profiles_total=len(plan))
         session.add(row)
@@ -436,7 +459,8 @@ def start(iterations: int, top: int | None = None, rank_by: str | None = None) -
     log.info(
         "Profile refresh %s started: %s profile(s) × %s iteration(s)%s",
         rid, len(plan), iters,
-        f" (winner-first top {top} by {rank_version})" if (top and top > 0) else "",
+        " (explicit profile list)" if fingerprints
+        else f" (winner-first top {top} by {rank_version})" if (top and top > 0) else "",
     )
     return rid
 

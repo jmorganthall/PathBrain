@@ -211,6 +211,8 @@ export interface SettingsProfile {
   /** The ring's fitted strength and how many rounds stand behind it (null if unraced). */
   ring_rating?: number | null;
   ring_rounds?: number | null;
+  /** Set when this profile sits far outside the field on a crown metric or the Overall. */
+  outlier?: ProfileOutlier | null;
 }
 
 // A selectable non-metric numeric field (axis scores + run stats) the /api/metrics
@@ -485,6 +487,8 @@ export interface SettingsProfilesResponse {
   // Methodology health: scored metrics whose 'best' is too lenient to rank profiles
   // (saturating >50%), with a suggested re-anchor.
   saturation: MetricSaturation[];
+  // Profiles far outside the field on a crown metric / the Overall (see ProfileOutlier).
+  outliers?: OutlierSummary;
 }
 
 // One "Test this profile up to the minimum" session.
@@ -568,6 +572,37 @@ export interface ProfileRefreshPreview {
   // under `ranked_by` (the prior methodology). Both null for a full, unranked batch.
   top?: number | null;
   ranked_by?: string | null;
+  // How many of an explicit fingerprint list were found (null for the other scopes).
+  fingerprints?: number | null;
+}
+
+// One metric on which a profile sits far outside the field: its median, the field's
+// median, the robust z (MAD-based), and whether that is the bad side for the metric.
+export interface ProfileOutlierMetric {
+  key: string;
+  label: string;
+  value: number;
+  field_median: number;
+  z: number;
+  side: "worse" | "better";
+}
+
+export interface ProfileOutlier {
+  metrics: ProfileOutlierMetric[];
+  // Under the confidence minimum — most likely one bad run standing in for a median.
+  thin: boolean;
+}
+
+// Field-level outlier summary: who is flagged, and how many of them are thin (re-measure)
+// vs confident (a real result, however unwelcome).
+export interface OutlierSummary {
+  count: number;
+  thin: number;
+  confident: number;
+  fingerprints: string[];
+  threshold_z: number;
+  min_profiles: number;
+  method: string;
 }
 
 export interface VersionInfo {
@@ -2657,8 +2692,84 @@ export interface ExploreLedger {
   quick_iterations: number;
 }
 
+// ── Leaders per crown leg ───────────────────────────────────────────────────
+// For each crown metric (whatever the methodology corners over right now): who leads it,
+// where the best profile stands on it, and the lever moves that would take the best
+// profile toward what the leaders do — each already measured (named) or runnable.
+
+export interface ExploreLegLeader {
+  fingerprint: string;
+  name: string | null;
+  label: string | null;
+  value: number;
+  overall: number;
+  iterations: number;
+  confident: boolean;
+  is_reference: boolean;
+}
+
+export interface ExploreLegMove {
+  key: string;
+  pipe: string;
+  field: string;
+  field_label: string;
+  unit: string | null;
+  from: number;
+  to: number;
+  direction: "up" | "down";
+  // Share of the compared leaders sitting on this side of the best profile's value.
+  agreement: number;
+  leaders_on_side: number;
+  leaders_compared: number;
+  why: string;
+  // The best profile with this lever moved already exists in the field — with its Overall
+  // and the gap to the reference, so "that direction was tried" is a real answer.
+  existing?: {
+    fingerprint: string;
+    name: string | null;
+    label: string;
+    overall: number;
+    iterations: number;
+    confident: boolean;
+    delta: number;
+  };
+  // Benchmarked before via the ledger but the firewall settled elsewhere.
+  already_measured?: boolean;
+  // Untested: the priced, runnable proposal.
+  candidate?: ExploreCandidate;
+}
+
+export interface ExploreCrownLeg {
+  key: string;
+  label: string;
+  unit: string;
+  higher_is_better: boolean;
+  leaders: ExploreLegLeader[];
+  reference: {
+    value: number | null;
+    rank: number | null;
+    of: number;
+    percentile: number | null;
+    leads: boolean;
+  };
+  confident_only: boolean;
+  moves: ExploreLegMove[];
+  // Every runnable move applied at once — the leaders' whole signature — when untested.
+  combined: ExploreCandidate | null;
+}
+
+export interface ExploreCrownLegs {
+  reference: { fingerprint: string; name: string | null; label: string; overall: number };
+  legs: ExploreCrownLeg[];
+  // The leg on which the reference stands lowest in the field.
+  weakest: string;
+  leaders_per_leg: number;
+  agreement: number;
+}
+
 export interface ExploreLandscape {
   axes: ExploreAxis[];
+  crown_legs?: ExploreCrownLegs | null;
   points: ExplorePoint[];
   curves: ExploreCurve[];
   interactions: ExploreInteraction[];
