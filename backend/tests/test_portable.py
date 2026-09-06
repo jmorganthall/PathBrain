@@ -427,3 +427,150 @@ def test_api_detects_home_from_addresses(client, clean, monkeypatch):
     assert v["detected"] is False and v["detected_by"] == "ip4"
     v = client.get("/api/portable/home", params={"egress_ip": "10.0.0.5"}).json()
     assert v["detected"] is None and "choose Home or Away" in v["reason"]
+
+
+# ── PathBrain's own reading: the server reference ────────────────────────────
+
+from pathbrain.interpret.derive import derive as _derive
+from pathbrain.models import BenchmarkResult, Run, RunStatus
+from pathbrain.plugins import get_plugin
+from pathbrain.plugins.base import PluginResult
+
+
+def test_portable_plugin_registered_and_derives_one_iteration():
+    p = get_plugin("portable")
+    assert p is not None and p.name == "portable"
+    it = make_raw()["iterations"][0]
+    m = _derive("portable", {"iteration": it, "instrument_version": VERSION, "client": {}})
+    assert m["first_complete_ms"] == 80.0 and m["rtt_ms"] == 20.5
+    assert _derive("portable", {"nope": 1}) == {}
+
+
+def test_portable_plugin_fails_fast_without_its_server(monkeypatch):
+    """No server at self_url → a failed measurement in milliseconds, and no Chromium launched."""
+    p = get_plugin("portable")
+    launched = []
+    browser = get_plugin("browser")
+    monkeypatch.setattr(browser, "borrow_browser", lambda cfg=None: launched.append(1))
+    r = p.run({"self_url": "http://127.0.0.1:9", "page_timeout_s": 1})
+    assert r.success is False and r.error and launched == []
+    assert p.run({"enabled": False}).success is False
+
+
+def test_portable_plugin_runs_one_iteration_through_the_page(monkeypatch):
+    from pathbrain.plugins import benchmark_portable as bp
+
+    it = make_raw()["iterations"][0]
+    calls: list[str] = []
+
+    class FakePage:
+        def goto(self, url, **kw):
+            calls.append(f"goto {url}")
+
+        def wait_for_function(self, expr, **kw):
+            calls.append("wait")
+
+        def evaluate(self, expr, arg=None):
+            if "runOne" in expr:
+                assert arg and arg["resources"], "the recipe body is handed to the page"
+                return it
+            return {"user_agent": "HeadlessChrome"}
+
+    class FakeContext:
+        closed = False
+
+        def new_page(self):
+            return FakePage()
+
+        def close(self):
+            FakeContext.closed = True
+
+    class FakeBrowser:
+        def new_context(self):
+            return FakeContext()
+
+    monkeypatch.setattr(bp, "fetch_recipe", lambda url, timeout=5.0: {**portable.recipe({}), "instrument_version": VERSION})
+    monkeypatch.setattr(get_plugin("browser"), "borrow_browser", lambda cfg=None: FakeBrowser())
+    r = get_plugin("portable").run({"self_url": "http://pathbrain.test"})
+    assert r.success, r.error
+    assert r.raw["instrument_version"] == VERSION and r.raw["iteration"] is it
+    assert r.raw["client"]["device"] == portable.SERVER_DEVICE_ID
+    assert r.details["resources"] == 5 and r.details["rtt_samples"] == 8
+    assert calls[0] == "goto http://pathbrain.test/away?embedded=1" and FakeContext.closed
+
+
+def _server_run(*, ends=None, fail=frozenset(), when: datetime, fp="fp-crown", iterations=2) -> int:
+    """A completed benchmark run carrying `portable` plugin results, filed the way the
+    runner does it (result row + `record_server_run`)."""
+    raw = make_raw(ends, fail=fail, iterations=iterations)
+    with session_scope() as s:
+        run = Run(status=RunStatus.COMPLETE, iterations=iterations, iterations_completed=iterations,
+                  settings_fingerprint=fp, settings=[{"label": "wan", "quantum": 1514}], created_at=when)
+        s.add(run)
+        s.flush()
+        results = [
+            PluginResult("portable", success=True, raw={"iteration": it, "instrument_version": VERSION, "client": {"device": "pathbrain-server"}})
+            for it in raw["iterations"]
+        ]
+        s.add(BenchmarkResult(run_id=run.id, plugin="portable", success=True, metrics={}, raw={"iterations": [r.raw for r in results]}))
+        row = portable.record_server_run(s, run, results)
+        assert row is not None and row.source_run_id == run.id and row.raw is None
+        return run.id
+
+
+def test_server_reference_is_filed_from_the_run_and_kept_apart_from_the_phone(clean):
+    now = datetime(2026, 9, 8, 21, 0, tzinfo=timezone.utc)
+    for i in range(5):
+        _server_run(when=now - timedelta(hours=i + 1))
+    away = _store("phone", home=False, ends={"doc": 300, "font": 500, "lib": 600, "hero": 2200, "data": 1200}, when=now)
+    c = _compare(away)
+    # No phone home runs → the headline falls back to PathBrain's own readings, labelled.
+    assert c["headline"] == "server" and c["available"] is True
+    assert c["references"]["device"]["available"] is False
+    srv = c["references"]["server"]
+    assert srv["provenance"]["reference"] == "server" and srv["provenance"]["device_id"] == portable.SERVER_DEVICE_ID
+    assert "wired" in srv["provenance"]["note"]
+    assert srv["metrics"]["first_complete_ms"]["verdict"] == "worse" and srv["metrics"]["first_complete_ms"]["n"] == 5
+    assert srv["provenance"]["profile"]["fingerprint"] == "fp-crown"
+    # The server samples are their own device: they never enter the phone's home pool.
+    with session_scope() as s:
+        run = s.get(PortableRun, away)
+        assert all(r.device_id == portable.SERVER_DEVICE_ID for r in portable.server_candidates(s, run))
+        assert portable.home_candidates(s, run) == []
+    # Once the phone has its own home runs, they take the headline; the server stays beside.
+    for _ in range(3):
+        _store("phone", home=True, when=now - timedelta(days=1))
+    c2 = _compare(away)
+    assert c2["headline"] == "device" and c2["references"]["server"]["available"] is True
+    # A server run compares only to other server runs.
+    with session_scope() as s:
+        srow = s.scalars(__import__("sqlalchemy").select(PortableRun).where(PortableRun.device_id == portable.SERVER_DEVICE_ID)).first()
+        cs = portable.compare(s, srow, {"portable": {"min_home_runs": 3}})
+        assert cs["references"]["server"] is None and cs["references"]["device"]["available"] is True
+
+
+def test_record_server_run_refuses_mixed_versions_and_empty(clean):
+    with session_scope() as s:
+        run = Run(status=RunStatus.COMPLETE, iterations=2, iterations_completed=2, settings_fingerprint="fp")
+        s.add(run)
+        s.flush()
+        it = make_raw()["iterations"][0]
+        mixed = [
+            PluginResult("portable", success=True, raw={"iteration": it, "instrument_version": VERSION}),
+            PluginResult("portable", success=True, raw={"iteration": it, "instrument_version": "other000000"}),
+        ]
+        assert portable.record_server_run(s, run, mixed) is None
+        assert portable.record_server_run(s, run, [PluginResult("portable", success=False, error="x")]) is None
+        assert portable.record_server_run(s, run, []) is None
+
+
+def test_runner_skips_a_plugin_disabled_in_config(client, clean):
+    """`portable.enabled: false` leaves the plugin out of a run exactly like `skip` — no
+    result row, nothing fabricated."""
+    from pathbrain.runner import create_run, execute_run
+
+    run_id = create_run(iterations=1, config_overrides={"portable": {"enabled": False}})
+    execute_run(run_id)
+    with session_scope() as s:
+        plugins = set(s.scalars(__import__("sqlalchemy").select(BenchmarkResult.plugin).where(BenchmarkResult.run_id == run_id)).all())
+        assert "portable" not in plugins and "icmp" in plugins

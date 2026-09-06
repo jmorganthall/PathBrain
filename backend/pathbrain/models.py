@@ -899,6 +899,9 @@ class PortableRun(Base):
     settings_summary: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # A sample taken by PathBrain's own `portable` plugin keeps ONE copy of its raw — in that
+    # run's BenchmarkResult — and points at the run here (``raw`` is None for those rows).
+    source_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     per_origin: Mapped[dict] = mapped_column(JSON, default=dict)
     coverage: Mapped[dict] = mapped_column(JSON, default=dict)

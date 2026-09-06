@@ -112,8 +112,9 @@ can't drift apart.
 
 - 🔌 **Plugin benchmark engine** — six registered benchmarks (**pure sensors** that
   store raw observations): `icmp` (per-ping RTT series), `dns` (per-resolver lookup),
-  `tcp` (connect), `tls` (handshake), `http` (TTFB / bytes / timing), and `browser`
-  (headless-Chromium nav/paint timing + a **filmstrip**, with screenshot & HAR).
+  `tcp` (connect), `tls` (handshake), `http` (TTFB / bytes / timing), `browser`
+  (headless-Chromium nav/paint timing + a **filmstrip**, with screenshot & HAR), and
+  `portable` (the Away test's recipe run at home, the per-profile reference for away runs).
 - 🧮 **Three perceptual axes** — perception-calibrated **log curve** (Weber–Fechner):
   **Responsiveness** (time-to-first), **Smoothness** (the steady fill, led by byte-
   arrival metrics — longest-stall/stall-energy/cadence/evenness), and **Speed** (time-to-
@@ -135,7 +136,10 @@ can't drift apart.
   its own small rubric and compared **only against directly comparable data** — the same device,
   the same test version, home runs on one firewall profile, the nearest time of day with enough
   runs, and only the resources both sides completed. Home is detected by comparing the device's
-  public address with PathBrain's own, not declared. Its own table; never the pooled crown.
+  public address with PathBrain's own, not declared. PathBrain also runs the same recipe itself
+  as a `portable` plugin in every benchmark, so a per-profile, per-hour home baseline is always
+  there — shown as a second, labelled reference beside the device's own. Its own table; never
+  the pooled crown.
   (A browser tab can't read google.com's paint timing, so this is a different instrument from
   the Chromium test — `/away`, `/api/portable/*`.)
 - 🔁 **Multi-iteration runs** — repeat the suite N times and take the **median**,

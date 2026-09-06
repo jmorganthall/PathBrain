@@ -34,6 +34,7 @@ import type {
   PortableHome,
   PortableMetricMeta,
   PortableRecipe,
+  PortableReference,
   PortableRun,
 } from "../api/types";
 import { Blurb } from "../components/Explain";
@@ -93,8 +94,7 @@ function writeStorage(key: string, value: string) {
 
 // ── result pieces ────────────────────────────────────────────────────────────
 
-function ScoreLine({ run }: { run: PortableRun }) {
-  const cmp = run.compare;
+function ScoreLine({ run, cmp }: { run: PortableRun; cmp: PortableReference | null }) {
   const score = cmp?.available ? cmp.score : null;
   return (
     <Stack direction="row" spacing={3} alignItems="baseline" flexWrap="wrap" useFlexGap>
@@ -132,19 +132,20 @@ function ScoreLine({ run }: { run: PortableRun }) {
   );
 }
 
-function Provenance({ run }: { run: PortableRun }) {
-  const cmp = run.compare;
+function Provenance({ cmp }: { cmp: PortableReference | null }) {
   if (!cmp) return null;
   const p = cmp.provenance;
   if (!cmp.available) {
     return (
       <Alert severity="info" sx={{ mt: 1.5 }}>
-        No "vs home" yet: {cmp.reason} ({p.home_runs_on_device} of {p.min_home_runs} on this device)
+        No "vs home" yet: {cmp.reason} ({p.home_runs_on_device} of {p.min_home_runs})
       </Alert>
     );
   }
   const parts: string[] = [];
-  parts.push(`vs ${p.home_runs_used} home run${p.home_runs_used === 1 ? "" : "s"} from this device`);
+  parts.push(
+    `vs ${p.home_runs_used} home run${p.home_runs_used === 1 ? "" : "s"} ${p.reference === "server" ? `by ${p.reference_label ?? "PathBrain"}` : "from this device"}`,
+  );
   parts.push("same test version");
   if (p.time_rung_label) parts.push(p.time_rung_label);
   if (p.profile) parts.push(`on ${p.profile.summary || p.profile.fingerprint.slice(0, 8)}`);
@@ -154,6 +155,11 @@ function Provenance({ run }: { run: PortableRun }) {
       <Typography variant="body2" color="text.secondary">
         {parts.join(" · ")}
       </Typography>
+      {p.note && (
+        <Typography variant="caption" color="text.secondary" component="div">
+          Different device: {p.note}.
+        </Typography>
+      )}
       {(p.dropped_resources?.length ?? 0) > 0 && (
         <Typography variant="caption" color="warning.main" component="div">
           Compared without {p.dropped_resources!.join(", ")}: not completed on both sides, so dropped from both.
@@ -168,8 +174,7 @@ function Provenance({ run }: { run: PortableRun }) {
   );
 }
 
-function MetricTable({ run, meta }: { run: PortableRun; meta: PortableMetricMeta[] }) {
-  const cmp = run.compare;
+function MetricTable({ run, cmp, meta }: { run: PortableRun; cmp: PortableReference | null; meta: PortableMetricMeta[] }) {
   const rows = meta.filter((m) => run.metrics[m.key] != null);
   return (
     <Box sx={{ overflowX: "auto", mt: 1 }}>
@@ -225,10 +230,9 @@ function MetricTable({ run, meta }: { run: PortableRun; meta: PortableMetricMeta
   );
 }
 
-function OriginTable({ run }: { run: PortableRun }) {
+function OriginTable({ run, cmp }: { run: PortableRun; cmp: PortableReference | null }) {
   const origins = Object.keys(run.per_origin || {});
   if (!origins.length) return null;
-  const cmp = run.compare;
   return (
     <Box sx={{ overflowX: "auto", mt: 2 }}>
       <Typography variant="subtitle2" gutterBottom>
@@ -297,6 +301,10 @@ export default function Away() {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<PortableProgress | null>(null);
   const [result, setResult] = useState<PortableRun | null>(null);
+  // Which home reference the result reads against: the same device's own home runs, or
+  // PathBrain's wired readings. Defaults to the server's headline choice per result.
+  const [refKind, setRefKind] = useState<"device" | "server" | null>(null);
+  const embedded = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("embedded") === "1";
   const [history, setHistory] = useState<PortableRun[]>([]);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -348,6 +356,7 @@ export default function Away() {
   }, [device]);
 
   useEffect(() => {
+    if (embedded) return;
     api
       .portableRecipe()
       .then(setRecipe)
@@ -365,7 +374,12 @@ export default function Away() {
         }
       })
       .catch(() => undefined);
-  }, [device, loadHistory, detect]);
+  }, [device, loadHistory, detect, embedded]);
+
+  const refs = result?.compare?.references;
+  const activeKind: "device" | "server" | null = refKind ?? result?.compare?.headline ?? null;
+  const activeRef: PortableReference | null = activeKind && refs ? (refs[activeKind] ?? null) : (result?.compare ?? null);
+  const canToggle = !!refs && !!refs.server && refs.device.provenance.home_runs_on_device + (refs.server.provenance.home_runs_on_device ?? 0) > 0;
 
   const homeCount = history.filter((r) => r.is_home && r.instrument_version === recipe?.instrument_version).length;
   const minHome = recipe?.min_home_runs ?? 5;
@@ -395,6 +409,7 @@ export default function Away() {
         raw,
       });
       setResult(run);
+      setRefKind(null);
       await loadHistory();
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) {
@@ -412,6 +427,7 @@ export default function Away() {
   const open = async (id: number) => {
     try {
       setResult(await api.portableRun(id));
+      setRefKind(null);
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -440,6 +456,18 @@ export default function Away() {
     }
   };
 
+  if (embedded) {
+    // Driven by PathBrain's own `portable` plugin (see portableEmbed.ts): no controls, no
+    // polling — just the page the plugin calls `window.__pathbrainPortable.runOne` on.
+    return (
+      <Box sx={{ p: 2 }}>
+        <Typography variant="body2" color="text.secondary">
+          Away test runner (embedded) — driven by PathBrain's portable plugin.
+        </Typography>
+      </Box>
+    );
+  }
+
   return (
     <Box>
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
@@ -459,7 +487,9 @@ export default function Away() {
             enough runs, and only the resources both sides completed. Home is <em>detected</em>: this device's
             public address is compared with PathBrain's own, so a run counts as home only when its traffic
             actually leaves through the tuned firewall (a phone on cellular on the couch is not home for this
-            purpose). Run it at home a few times first so this device has something to compare against.
+            purpose). Two references are kept apart: PathBrain's own wired readings (it runs the same recipe as part
+            of every benchmark, so a per-profile home baseline is always there) and this device's own
+            runs at home, which remove the device difference once a few exist.
           </>
         }
       >
@@ -605,17 +635,37 @@ export default function Away() {
                       ? "detected by IPv4 address"
                       : result.home_detection === "ip6"
                         ? "detected by IPv6 prefix"
-                        : "set manually"
+                        : result.home_detection === "server"
+                          ? "measured by PathBrain"
+                          : "set manually"
                   }
                 />
               </Tooltip>
               {result.settings_summary && <Chip size="small" variant="outlined" label={result.settings_summary} />}
             </Stack>
-            <ScoreLine run={result} />
-            <Provenance run={result} />
+            {canToggle && (
+              <Box sx={{ mb: 1.5 }}>
+                <ToggleButtonGroup
+                  exclusive
+                  size="small"
+                  value={activeKind}
+                  onChange={(_e, v: "device" | "server" | null) => v && setRefKind(v)}
+                  aria-label="home reference"
+                >
+                  <ToggleButton value="device" disabled={!refs?.device}>
+                    This device at home{refs?.device && !refs.device.available ? " (not enough runs)" : ""}
+                  </ToggleButton>
+                  <ToggleButton value="server" disabled={!refs?.server}>
+                    PathBrain (wired){refs?.server && !refs.server.available ? " (not enough runs)" : ""}
+                  </ToggleButton>
+                </ToggleButtonGroup>
+              </Box>
+            )}
+            <ScoreLine run={result} cmp={activeRef} />
+            <Provenance cmp={activeRef} />
             <Divider sx={{ my: 1.5 }} />
-            <MetricTable run={result} meta={recipe.metrics} />
-            <OriginTable run={result} />
+            <MetricTable run={result} cmp={activeRef} meta={recipe.metrics} />
+            <OriginTable run={result} cmp={activeRef} />
             <Failures run={result} />
           </CardContent>
         </Card>

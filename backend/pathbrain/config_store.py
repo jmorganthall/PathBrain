@@ -198,8 +198,14 @@ DEFAULT_CONFIG: dict = {
     # (every default URL verified to send Timing-Allow-Origin + CORS ``*``); override
     # here to add origins or change sizes.
     "portable": {
+        # This section is ALSO the `portable` plugin's config: the runner reads `enabled`
+        # and `iterations` (how many of a run's iterations the plugin runs, one portable
+        # iteration each — so a NAS run and a phone run both carry ≤ this many).
+        "enabled": True,
         "iterations": 2,
         "min_home_runs": 5,
+        # Where the plugin finds its own app (the Away page it drives + the recipe API).
+        "self_url": "http://127.0.0.1:8000",
     },
     "baseline_test": {
         "enabled": False,

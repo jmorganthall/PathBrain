@@ -18,6 +18,7 @@ from statistics import mean, pstdev
 # Reuse the browser plugin's pure nav/paint extractors (importing the module is
 # safe — it imports Playwright lazily inside run()).
 from ..plugins.benchmark_browser import compute_navigation_metrics, extract_paint_metrics
+from .portable import derive_portable
 from .smoothness import smoothness_metrics
 from .waterfall import navigation_phases
 
@@ -219,6 +220,17 @@ def _derive_browser(raw: dict, artifact_dir: str | None) -> dict:
     return {k: _round(mean(v)) for k, v in acc.items() if v}
 
 
+def _derive_portable_plugin(raw: dict, _art: str | None) -> dict:
+    """One portable iteration (the ``portable`` plugin's per-call raw: ``{"iteration": {...},
+    "instrument_version", "client"}``) → the portable metric set. Same derivation as an
+    uploaded Away run (``interpret.portable.derive_portable``), so a NAS-run reference and a
+    phone run are the one instrument. Not methodology metrics: nothing in scoring reads them."""
+    it = raw.get("iteration") if isinstance(raw, dict) else None
+    if not isinstance(it, dict):
+        return {}
+    return derive_portable({"iterations": [it]})["metrics"]
+
+
 _DERIVERS = {
     "icmp": _derive_icmp,
     "dns": _derive_dns,
@@ -226,6 +238,7 @@ _DERIVERS = {
     "tls": _derive_tls,
     "http": _derive_http,
     "browser": _derive_browser,
+    "portable": _derive_portable_plugin,
 }
 
 

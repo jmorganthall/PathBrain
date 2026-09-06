@@ -158,6 +158,7 @@ def _migrate() -> None:
             "home_detection": "VARCHAR(16)",
             "egress_ip": "VARCHAR(96)",
             "home_ip": "VARCHAR(96)",
+            "source_run_id": "INTEGER",
         },
         "challenger_races": {
             "incumbent_refreshes": "INTEGER DEFAULT 0",

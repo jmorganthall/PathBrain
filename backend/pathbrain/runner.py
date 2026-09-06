@@ -916,7 +916,7 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                 # metric is browser-derived and the probes are a share of each leg spent
                 # measuring nothing the verdict reads. Skipped means no result rows, so
                 # the metrics are simply absent — never fabricated.
-                if section.get("skip"):
+                if section.get("skip") or section.get("enabled") is False:
                     return 0
                 cap = section.get("iterations")
                 if cap is None:
@@ -1015,6 +1015,16 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                         raw={"iterations": [r.raw for r in results]},
                     )
                 )
+
+            # The portable plugin's reading is also filed as a home sample for the Away
+            # test's "vs home" (its own table; never a score input). Best-effort.
+            if per_plugin.get("portable"):
+                try:
+                    from . import portable as _portable
+
+                    _portable.record_server_run(session, run, per_plugin["portable"])
+                except Exception:  # noqa: BLE001 — a reference row must never fail a run
+                    log.warning("Run %s: could not file the portable home sample", run_id, exc_info=True)
 
             # Robust headline: score the median of each metric across iterations.
             breakdown = compute_score(

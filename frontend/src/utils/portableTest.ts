@@ -86,6 +86,28 @@ export function clientInfo(): Record<string, unknown> {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// No fetch may hang the test: a stalled origin (a captive portal that never answers, a
+// blackholed CDN) would otherwise park the run forever. Every fetch gets its own deadline,
+// combined with the caller's cancel signal.
+const FETCH_TIMEOUT_MS = 30_000;
+
+function withTimeout(signal: AbortSignal | undefined, ms: number): { signal: AbortSignal; done: () => void } {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new DOMException("fetch timed out", "TimeoutError")), ms);
+  const onAbort = () => ctrl.abort(signal?.reason);
+  if (signal) {
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  }
+  return {
+    signal: ctrl.signal,
+    done: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
 function throwIfAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw new DOMException("cancelled", "AbortError");
 }
@@ -119,13 +141,14 @@ function findEntry(url: string, tStart: number, tEnd: number | null): PortableRa
 
 async function fetchResource(res: PortableRecipeResource, signal?: AbortSignal): Promise<PortableRawResource> {
   const t_start = performance.now();
+  const guard = withTimeout(signal, FETCH_TIMEOUT_MS);
   try {
     const r = await fetch(res.url, {
       cache: "no-store",
       mode: res.mode === "no-cors" ? "no-cors" : "cors",
       credentials: "omit",
       redirect: "follow",
-      signal,
+      signal: guard.signal,
     });
     if (r.type !== "opaque" && !r.ok) throw new Error(`HTTP ${r.status}`);
     // Drain the body so the entry's responseEnd is the whole object, not the headers.
@@ -144,6 +167,8 @@ async function fetchResource(res: PortableRecipeResource, signal?: AbortSignal):
       t_end: null,
       entry: null,
     };
+  } finally {
+    guard.done();
   }
 }
 
@@ -192,8 +217,9 @@ async function runStream(recipe: PortableRecipe, signal?: AbortSignal): Promise<
   const chunks: { t: number; bytes: number }[] = [];
   let bytes = 0;
   let partial = false;
+  const guard = withTimeout(signal, maxMs + FETCH_TIMEOUT_MS);
   try {
-    const r = await fetch(url, { cache: "no-store", mode: "cors", credentials: "omit", signal });
+    const r = await fetch(url, { cache: "no-store", mode: "cors", credentials: "omit", signal: guard.signal });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     if (!r.body) {
       const buf = await r.arrayBuffer();
@@ -225,6 +251,8 @@ async function runStream(recipe: PortableRecipe, signal?: AbortSignal): Promise<
       url, ok: false, partial: bytes > 0, start, end: bytes > 0 ? performance.now() : null, bytes, chunks,
       error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
     };
+  } finally {
+    guard.done();
   }
 }
 
@@ -236,13 +264,16 @@ async function runRtt(recipe: PortableRecipe, signal?: AbortSignal): Promise<Por
     throwIfAborted(signal);
     const t0 = performance.now();
     let t1: number | null = null;
+    const guard = withTimeout(signal, FETCH_TIMEOUT_MS);
     try {
-      const r = await fetch(url, { cache: "no-store", mode: "cors", credentials: "omit", signal });
+      const r = await fetch(url, { cache: "no-store", mode: "cors", credentials: "omit", signal: guard.signal });
       await r.arrayBuffer();
       t1 = performance.now();
     } catch (e) {
       if (signal?.aborted) throw e;
       continue;
+    } finally {
+      guard.done();
     }
     await sleep(40);
     // TTFB off a warm connection ≈ one round trip + server think; fall back to the
@@ -256,6 +287,29 @@ async function runRtt(recipe: PortableRecipe, signal?: AbortSignal): Promise<Por
     await sleep(80);
   }
   return { url, samples_ms };
+}
+
+/** ONE portable iteration — waterfall, stream, round trips — the unit both the phone's
+ * multi-iteration run and PathBrain's own `portable` plugin (one call per suite iteration,
+ * via `window.__pathbrainPortable.runOne`) are built from. */
+export async function runPortableIteration(
+  recipe: PortableRecipe,
+  opts: { signal?: AbortSignal; onStage?: (stage: string) => void } = {},
+): Promise<PortableRawIteration> {
+  const { signal, onStage } = opts;
+  try {
+    performance.setResourceTimingBufferSize(2000);
+    performance.clearResourceTimings();
+  } catch {
+    /* ignore */
+  }
+  onStage?.("waterfall");
+  const resources = await runWaterfall(recipe, signal);
+  onStage?.("stream");
+  const stream = await runStream(recipe, signal);
+  onStage?.("round trips");
+  const rtt = await runRtt(recipe, signal);
+  return { waterfall: { resources }, stream, rtt };
 }
 
 export async function runPortableTest(recipe: PortableRecipe, opts: RunOptions = {}): Promise<PortableRaw> {
@@ -294,21 +348,15 @@ export async function runPortableTest(recipe: PortableRecipe, opts: RunOptions =
     const out: PortableRawIteration[] = [];
     for (let i = 1; i <= iterations; i++) {
       throwIfAborted(signal);
-      try {
-        performance.clearResourceTimings();
-      } catch {
-        /* ignore */
-      }
-      report(`waterfall ${i}/${iterations}`);
-      const resources = await runWaterfall(recipe, signal);
-      step += 1;
-      report(`stream ${i}/${iterations}`);
-      const stream = await runStream(recipe, signal);
-      step += 1;
-      report(`round trips ${i}/${iterations}`);
-      const rtt = await runRtt(recipe, signal);
-      step += 1;
-      out.push({ waterfall: { resources }, stream, rtt });
+      out.push(
+        await runPortableIteration(recipe, {
+          signal,
+          onStage: (stage) => {
+            step += 1;
+            report(`${stage} ${i}/${iterations}`);
+          },
+        }),
+      );
     }
     onProgress?.({ stage: "uploading", fraction: 0.99 });
     return { iterations: out };

@@ -565,6 +565,16 @@ class BrowserBenchmark(BenchmarkPlugin):
             log.info("Browser close reported errors but the process tree is gone: %s",
                      "; ".join(failed))
 
+    def borrow_browser(self, config: dict | None = None):
+        """The run-scoped Chromium for another plugin to use (the portable plugin rides it).
+
+        Same thread-affinity rule as everything here: plugins run on the one probe worker,
+        so the caller is the owner thread. The browser is launched with ``config`` (the
+        browser section; ``None`` = a plain default Chromium) only when none is alive — an
+        existing one is returned as-is — and it is closed by this plugin's own teardown, so
+        process-tree accounting stays in one place. Raises when Playwright is unavailable."""
+        return self._ensure_browser(config or {})
+
     def teardown(self) -> None:
         """Close the reused Chromium at the end of a run (never raises)."""
         self._close_browser()

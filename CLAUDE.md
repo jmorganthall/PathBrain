@@ -523,9 +523,26 @@ LLM-based. See `README.md` for the product overview.
     (`Away.tsx`, `/away`, `utils/portableTest.ts` is the in-browser runner — wake lock, warm-up
     fetch, dependency-chained fetches with `cache: "no-store"`, chunked stream read, RTT off
     `responseStart − requestStart`) is phone-first: label the device, name the venue, and
-    home/away is detected (Auto) with Home/Away as overrides. Not built (would be the natural next step): running the
-    same page under the server's own Playwright as an ordinary `BenchmarkPlugin`, which would
-    give an always-on home reading per profile and per hour with no dedicated schedule.
+    home/away is detected (Auto) with Home/Away as overrides.
+    **Two home references, never merged** (`portable.compare` → `references.device` /
+    `references.server`, `headline` names which the top-level block mirrors). The
+    **`portable` plugin** (`plugins/benchmark_portable.py`) runs the same recipe as an ordinary
+    member of the suite — it loads the app's own `/away?embedded=1` in the browser plugin's
+    Chromium (`borrow_browser`) and calls `window.__pathbrainPortable.runOne(recipe)`, the
+    function the phone runs (`portableEmbed.ts`), so the two can't drift — and the runner files
+    each run's readings as one home sample from the device **`pathbrain-server`**
+    (`record_server_run`; `PortableRun.source_run_id` points at the run's `BenchmarkResult`, the
+    one copy of the raw). So a per-profile, per-hour home baseline accrues from every monitoring
+    run, duel leg and profile test with no dedicated schedule and nobody running anything at
+    home. It is a *different device* (wired, always Chromium) and is labelled so: the readout
+    prefers the same-device reference once the phone has enough home runs (it removes the
+    device difference), shows PathBrain's beside it, and says to expect a few ms better round
+    trip and jitter on the wired side. The plugin fetches the recipe from its own API first, so
+    an unreachable server (the test suite) is a fast failure with no Chromium launched;
+    `portable.enabled: false` leaves it out of runs (the runner treats `enabled: false` like
+    `skip`), and `portable.iterations` caps it like the browser's cap (one portable iteration
+    per suite iteration). Its metrics are derived by `interpret.derive` like any plugin's but are
+    **not methodology metrics** — nothing in scoring reads them.
   - `challenger.py` — **Challenger Race**: the adaptive, multi-profile sibling of
     `profile_test`. A time-boxed loop that runs **one iteration at a time** on whatever the
     field can't currently trust against the winner, re-ranks via `rank_challengers`, and
