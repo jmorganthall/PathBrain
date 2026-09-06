@@ -633,7 +633,13 @@ export const api = {
   // Portable (away) test: a plain-browser instrument any device can run, compared only
   // "vs home" on the same device + recipe (its own table; never the pooled ledger).
   portableRecipe: () => request<PortableRecipe>("/portable/recipe"),
-  portableHome: () => request<PortableHome>("/portable/home"),
+  portableHome: (egress?: { egress_ip?: string | null; egress_ip_v6?: string | null }) => {
+    const q = new URLSearchParams();
+    if (egress?.egress_ip) q.set("egress_ip", egress.egress_ip);
+    if (egress?.egress_ip_v6) q.set("egress_ip_v6", egress.egress_ip_v6);
+    const qs = q.toString();
+    return request<PortableHome>(`/portable/home${qs ? `?${qs}` : ""}`);
+  },
   portableUpload: (body: PortableRunCreate) =>
     request<PortableRun>("/portable/runs", { method: "POST", body: JSON.stringify(body) }, { timeoutMs: 60_000 }),
   portableRuns: (deviceId?: string, limit = 50) =>

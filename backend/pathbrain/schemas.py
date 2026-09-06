@@ -39,7 +39,8 @@ class PortableRunCreate(BaseModel):
     venue: str | None = None
     # None = detect from ``egress_ip`` vs the home WAN address; True/False = the user's override.
     is_home: bool | None = None
-    egress_ip: str | None = None
+    egress_ip: str | None = None      # the device's public IPv4 egress, when known
+    egress_ip_v6: str | None = None   # ...and its IPv6 egress (either may decide)
     instrument_version: str
     tz_offset_minutes: int | None = None
     client: dict[str, Any] | None = None

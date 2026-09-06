@@ -2763,7 +2763,8 @@ export interface PortableRunCreate {
   venue?: string | null;
   // null = detect: the device's public egress (`egress_ip`) vs the home WAN address.
   is_home: boolean | null;
-  egress_ip?: string | null;
+  egress_ip?: string | null; // the device's public IPv4 egress, when known
+  egress_ip_v6?: string | null; // ...and its IPv6 egress; either family may decide
   instrument_version: string;
   tz_offset_minutes?: number | null;
   client?: Record<string, unknown> | null;
@@ -2819,7 +2820,7 @@ export interface PortableRun {
   device_label: string | null;
   venue: string | null;
   is_home: boolean;
-  home_detection: "ip" | "manual" | null;
+  home_detection: "ip4" | "ip6" | "manual" | null;
   egress_ip: string | null;
   home_ip: string | null;
   instrument_version: string;
@@ -2853,11 +2854,19 @@ export interface PortableDevice {
 
 // What "home" looks like from the internet, for detecting home vs away.
 export interface PortableHome {
-  home_ip: string | null;
+  home_ip: string | null; // home WAN IPv4
+  home_ip_v6: string | null; // home WAN IPv6 (a host address in the home prefix)
   source: "config" | "lookup" | null;
   checked_at: number | null;
-  error: string | null;
+  errors: Record<string, string>;
   lookup_url: string | null;
+  lookup_url_v6: string | null;
+  v6_prefix: number;
   request_ip: string | null;
   request_ip_public: boolean;
+  // Present when the device's egress addresses were passed: the server's own verdict, from
+  // the same rule the upload applies.
+  detected: boolean | null;
+  detected_by: "ip4" | "ip6" | null;
+  reason: string | null;
 }

@@ -483,19 +483,29 @@ LLM-based. See `README.md` for the product overview.
     (`portable.compare`) admits a reference only when every stamp matches: the same **device**
     (a `device_id` the page keeps in local storage — a phone compares to itself, never to a
     laptop), the same **instrument version**, **home** — *detected, not declared*
-    (`decide_home`): the page asks a public-IP service (`portable.ip_lookup_url`, ipify by
-    default; the server's own request address is the fallback when the lookup is blocked and
-    that address is public) for the device's egress, the server asks the same service for its
-    own (`home_ip`, cached an hour; `portable.home_ip` in config overrides it), and equal means
-    the device's traffic leaves through the tuned firewall — the definition that matters for
-    shaping, and one a person's answer gets wrong (a phone on cellular on the couch is not home).
+    (`decide_home`): the page asks a public-IP service for the device's egress — **in both
+    address families** (`portable.ip_lookup_url` for IPv4, `ip_lookup_url_v6` for IPv6, ipify by
+    default; the server's own request address is the fallback when the lookups are blocked and
+    that address is public) — the server asks the same services for its own
+    (`home_addresses`, cached an hour; `portable.home_ip` in config overrides it, one or two
+    addresses), and a match in **either** family means the device's traffic leaves through the
+    tuned firewall — the definition that matters for shaping, and one a person's answer gets
+    wrong (a phone on cellular on the couch is not home). IPv4 compares the address; IPv6
+    compares the **prefix** (`home_ipv6_prefix`, default /64), since hosts on one network never
+    share a v6 address, only a prefix. Both families are asked because a dual-stack device may
+    answer one while the server answers the other — with only one family per side and the
+    families different, nothing is comparable and the old single-address check read a home
+    device as away. Either-family-matches is deliberate: a CGNAT can hand different flows
+    different public v4 addresses while the v6 prefix stays the home's, so a v4 mismatch alone
+    is not proof of away. The page asks the server for the verdict (`GET /portable/home?
+    egress_ip=&egress_ip_v6=`), so the preview and the upload apply one rule.
     The request's *source* address is deliberately not the primary signal: over split-tunnel
     Tailscale/WireGuard PathBrain sees a CGNAT/private address whether the device is at home or
     in a hotel, while its internet traffic still egresses locally — so the browser must ask from
     its own vantage point. Private/CGNAT addresses never compare (`is_public_ip`); when neither
     side is known the upload is refused (409) rather than guessed, and the page offers Home/Away
-    as an explicit override (`home_detection` = `ip`/`manual`, both addresses stored, so every
-    stamp is auditable). Home runs are stamped with the live firewall fingerprint, best-effort.
+    as an explicit override (`home_detection` = `ip4`/`ip6`/`manual`, both sides' addresses
+    stored, so every stamp is auditable). Home runs are stamped with the live firewall fingerprint, best-effort.
     One **home profile** (the pooled
     crown when it has `portable.min_home_runs` on that device, else the best-populated), the
     nearest **time cell** with enough runs (same weekday & hour → same hour → any time, each
