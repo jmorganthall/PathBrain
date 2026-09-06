@@ -186,23 +186,25 @@ def cancel_current_test() -> dict:
 
 @router.get("/runs/estimate")
 def estimate_run(session: Session = Depends(get_session)) -> dict:
-    """Estimate per-iteration duration (ms) from recent completed runs.
+    """Estimate per-iteration duration (ms) — recent runs first, older history as fallback.
 
     The UI multiplies this by the chosen iteration count to show an ETA.
     Returns ``per_iteration_ms = null`` until at least one timed run exists.
     """
-    rows = session.scalars(
-        select(Run)
-        .where(Run.status == RunStatus.COMPLETE, Run.per_iteration_ms.is_not(None))
-        .order_by(Run.created_at.desc())
-        .limit(5)
-    ).all()
-    values = [r.per_iteration_ms for r in rows if r.per_iteration_ms]
-    avg = round(sum(values) / len(values), 3) if values else None
+    from ..iteration_cost import iteration_cost
+
+    cost = iteration_cost(session)
     config = get_config(session)
     return {
-        "per_iteration_ms": avg,
-        "based_on_runs": len(values),
+        "per_iteration_ms": cost.ms,
+        "based_on_runs": cost.runs,
+        # Recent-first with a fallback ladder (``iteration_cost``): which tier answered, how
+        # many iterations it rests on, and how old the newest evidence is — so the UI can say
+        # "from the last 30 minutes" or "from older history" instead of implying one number.
+        "basis": cost.basis,
+        "based_on_iterations": cost.iterations,
+        "window_minutes": cost.window_minutes,
+        "newest_age_s": cost.newest_age_s,
         "default_iterations": int(config.get("iterations", 1) or 1),
         "max_iterations": MAX_ITERATIONS,
     }

@@ -236,9 +236,19 @@ export default function Dashboard() {
   const maxIterations = estimate?.max_iterations ?? 20;
   const etaMs =
     estimate?.per_iteration_ms != null ? estimate.per_iteration_ms * iterations : null;
+  // Say what the ETA rests on: an iteration priced from the last half hour is a different
+  // claim from one priced off runs from this morning, and the reader should know which.
+  const etaSource =
+    estimate?.basis === "recent"
+      ? "from the last 30 min"
+      : estimate?.basis === "today"
+        ? "from the last 6 h"
+        : estimate?.basis === "history"
+          ? "from older runs"
+          : "";
   const etaLabel =
     etaMs != null
-      ? `ETA ~${fmtDuration(etaMs)}`
+      ? `ETA ~${fmtDuration(etaMs)}${etaSource ? ` · ${etaSource}` : ""}`
       : "ETA available after the first run";
   const latestDurationMs =
     latest?.started_at && latest?.finished_at

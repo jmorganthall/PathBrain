@@ -368,16 +368,12 @@ _PER_PROFILE_OVERHEAD_S = 3.0
 
 
 def _median_iteration_ms(session) -> float | None:
-    """Median wall-clock per benchmark iteration, from recent completed runs — the basis
-    for the time estimate. ``None`` when no run has recorded a per-iteration timing yet."""
-    rows = session.scalars(
-        select(Run.per_iteration_ms)
-        .where(Run.status == RunStatus.COMPLETE, Run.per_iteration_ms.is_not(None))
-        .order_by(Run.created_at.desc())
-        .limit(50)
-    ).all()
-    vals = [float(v) for v in rows if v]
-    return median(vals) if vals else None
+    """The cost of one benchmark iteration (ms) — the same recent-first, iteration-weighted
+    median every other ETA uses (``iteration_cost``), so a preview and the countdown that
+    follows it can't disagree. ``None`` when no run has recorded a timing yet."""
+    from .iteration_cost import estimate_ms
+
+    return estimate_ms(session)
 
 
 def preview(session, iterations: int, top: int | None = None, rank_by: str | None = None) -> dict:
