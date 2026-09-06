@@ -25,6 +25,7 @@ import RestartAltIcon from "@mui/icons-material/RestartAlt";
 
 import { api } from "../api/client";
 import type {
+  IdleAudit,
   BrowserClient,
   BrowserConfig,
   MethodologyDetail,
@@ -731,6 +732,8 @@ export default function Methodology() {
         </FoldCard>
       )}
 
+      <IdleWaitAudit />
+
       {others.length > 0 && (
         <FoldCard title={`Other versions (${others.length})`} summary="Earlier rubrics, kept frozen for the scores measured under them.">
             {others.map((m, i) => (
@@ -750,5 +753,97 @@ export default function Methodology() {
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
       />
     </Box>
+  );
+}
+
+
+/** The browser's post-load idle wait, audited off stored raw. The stall metrics are bounded to
+ * the load event, so the wait can only move LCP — and only when a page paints its largest
+ * element after load. This says whether that ever happened on the measured sites, and the
+ * smallest cap that would still have caught it. Read-only: the cap itself is edited in Config. */
+function IdleWaitAudit() {
+  const [audit, setAudit] = useState<IdleAudit | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const load = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setAudit(await api.idleAudit(300));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <FoldCard
+      title="Idle-wait audit"
+      summary="Does the post-load network-idle wait ever move LCP on your sites? Read off stored raw; suggests the smallest safe cap."
+    >
+      <Stack spacing={1.5}>
+        <Typography variant="body2" color="text.secondary">
+          After each page load the browser waits up to <b>browser.networkidle_timeout_s</b> for the network to go
+          quiet. The smoothness metrics are bounded to the load event, so that wait can only change <b>LCP</b>,
+          and only when a page paints its largest element after load. This audit reads every recent load and
+          reports whether that ever happened, so the cap can be lowered without changing a crown metric.
+        </Typography>
+        <Box>
+          <Button variant="outlined" size="small" onClick={load} disabled={busy}>
+            {busy ? "Auditing…" : audit ? "Re-run audit" : "Run audit"}
+          </Button>
+        </Box>
+        {err && <Alert severity="error">{err}</Alert>}
+        {audit && (
+          <>
+            <Alert severity={audit.worst_lcp_after_load_ms === 0 ? "success" : "info"}>
+              {audit.verdict ?? "No browser loads on record yet."}{" "}
+              {audit.recommended_networkidle_timeout_s != null && (
+                <>
+                  Current cap <b>{audit.current_networkidle_timeout_s ?? "?"} s</b>; smallest safe cap{" "}
+                  <b>{audit.recommended_networkidle_timeout_s} s</b>
+                  {audit.estimated_saving_ms_per_load != null && (
+                    <> (≈ {Math.round(audit.estimated_saving_ms_per_load)} ms saved per page load)</>
+                  )}
+                  . Change it under Config → browser.
+                </>
+              )}
+            </Alert>
+            <Typography variant="caption" color="text.secondary">
+              {audit.runs} runs · {audit.loads} page loads
+              {audit.mean_idle_wait_ms != null && <> · mean idle wait {Math.round(audit.mean_idle_wait_ms)} ms</>}
+            </Typography>
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Site</TableCell>
+                    <TableCell align="right">Loads</TableCell>
+                    <TableCell align="right">LCP after load</TableCell>
+                    <TableCell align="right">Worst lag</TableCell>
+                    <TableCell align="right">Median idle wait</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {audit.sites.map((s) => (
+                    <TableRow key={s.url} hover>
+                      <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>{s.url}</TableCell>
+                      <TableCell align="right">{s.loads}</TableCell>
+                      <TableCell align="right">
+                        {s.lcp_after_load} ({s.lcp_after_load_share != null ? Math.round(s.lcp_after_load_share * 100) : 0}%)
+                      </TableCell>
+                      <TableCell align="right">{Math.round(s.max_lag_ms)} ms</TableCell>
+                      <TableCell align="right">
+                        {s.median_idle_wait_ms != null ? `${Math.round(s.median_idle_wait_ms)} ms` : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </>
+        )}
+      </Stack>
+    </FoldCard>
   );
 }

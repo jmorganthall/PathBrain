@@ -67,8 +67,27 @@ LLM-based. See `README.md` for the product overview.
     agnostic; *which* metrics form *which* axis lives in `methodology.py`.
   - `methodology.py` — **the published, versioned rubric** (derivation + axis
     weights/thresholds + the first-class Overall), append-only. `CURRENT_METHODOLOGY` =
-    `speed-smoothness-v13`, which scores **three headline axes** (the temporal phases of a
-    load; each metric maps to exactly one axis):
+    `speed-smoothness-v16` — **v15's browser metrics, thresholds and weighted crown
+    byte-for-byte, minus every metric a probe plugin supplied** (the HTTP-socket `ttfb` and the
+    Completion axis `dns`/`tcp`/`tls`/`jitter`/`packet_loss`), because runs now **measure only
+    what the methodology requires** (`config.measurement.methodology_only`, default on:
+    `runner.measurement_scope` skips every plugin outside `methodology.required_plugins` — the
+    browser — plus the `always` list, the `portable` reference; the browser's per-plugin
+    iteration cap is lifted so every iteration measures the crown; the decision is baked into
+    `config_used["measurement"]["applied"]`). The probes never fed the crown and cost about half
+    of every run; a rubric still scoring them would have graded every new run *partial* and
+    changed Responsiveness's composition mid-history. Old runs' probe metrics are ignored, not
+    quarantined — re-grade from cached scalars, no re-derive. Weather keeps reading the
+    browser's `nav_dns`/`nav_tcp`/`nav_tls`/`nav_request` phases (≥ `WEATHER_MIN_COVARIATES`).
+    The post-load `networkidle` settle is the other half of the browser's time and is
+    **deliberately left alone**: the stall metrics are bounded to `loadEventEnd`, so the wait
+    can only move LCP, and only when a page paints its largest element after load — an empirical
+    question about the measured sites that `idle_audit.py` (`GET /api/methodologies/idle-audit`,
+    the **Idle-wait audit** card on the Methodology page) answers off stored raw, recommending
+    the smallest `browser.networkidle_timeout_s` that would have caught every observed late LCP;
+    lowering it below that would change a crown metric and is a methodology decision.
+    The description below is of the v13 rubric these versions inherit; v13 scored **three headline
+    axes** (the temporal phases of a load; each metric maps to exactly one axis):
     - **Responsiveness** (time-to-first): byte-earliness (30) + FCP (25) + TTFB (15).
     - **Smoothness** (steady fill): longest-stall (40, required) + network-stall-all (30)
       + cadence (15) + evenness (15).
@@ -523,9 +542,26 @@ LLM-based. See `README.md` for the product overview.
     (`Away.tsx`, `/away`, `utils/portableTest.ts` is the in-browser runner — wake lock, warm-up
     fetch, dependency-chained fetches with `cache: "no-store"`, chunked stream read, RTT off
     `responseStart − requestStart`) is phone-first: label the device, name the venue, and
-    home/away is detected (Auto) with Home/Away as overrides. Not built (would be the natural next step): running the
-    same page under the server's own Playwright as an ordinary `BenchmarkPlugin`, which would
-    give an always-on home reading per profile and per hour with no dedicated schedule.
+    home/away is detected (Auto) with Home/Away as overrides.
+    **Two home references, never merged** (`portable.compare` → `references.device` /
+    `references.server`, `headline` names which the top-level block mirrors). The
+    **`portable` plugin** (`plugins/benchmark_portable.py`) runs the same recipe as an ordinary
+    member of the suite — it loads the app's own `/away?embedded=1` in the browser plugin's
+    Chromium (`borrow_browser`) and calls `window.__pathbrainPortable.runOne(recipe)`, the
+    function the phone runs (`portableEmbed.ts`), so the two can't drift — and the runner files
+    each run's readings as one home sample from the device **`pathbrain-server`**
+    (`record_server_run`; `PortableRun.source_run_id` points at the run's `BenchmarkResult`, the
+    one copy of the raw). So a per-profile, per-hour home baseline accrues from every monitoring
+    run, duel leg and profile test with no dedicated schedule and nobody running anything at
+    home. It is a *different device* (wired, always Chromium) and is labelled so: the readout
+    prefers the same-device reference once the phone has enough home runs (it removes the
+    device difference), shows PathBrain's beside it, and says to expect a few ms better round
+    trip and jitter on the wired side. The plugin fetches the recipe from its own API first, so
+    an unreachable server (the test suite) is a fast failure with no Chromium launched;
+    `portable.enabled: false` leaves it out of runs (the runner treats `enabled: false` like
+    `skip`), and `portable.iterations` caps it like the browser's cap (one portable iteration
+    per suite iteration). Its metrics are derived by `interpret.derive` like any plugin's but are
+    **not methodology metrics** — nothing in scoring reads them.
   - `challenger.py` — **Challenger Race**: the adaptive, multi-profile sibling of
     `profile_test`. A time-boxed loop that runs **one iteration at a time** on whatever the
     field can't currently trust against the winner, re-ranks via `rank_challengers`, and

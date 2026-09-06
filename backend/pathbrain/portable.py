@@ -51,7 +51,8 @@ from .interpret.portable import (
     iteration_count,
 )
 from .logging_config import get_logger
-from .models import PortableRun
+from .models import BenchmarkResult, PortableRun
+from .raw_access import stored_iterations
 from .scoring.engine import compute_score
 
 log = get_logger("portable")
@@ -514,35 +515,154 @@ def _pick_profile(candidates: list[PortableRun], min_runs: int, crown_fp: str | 
     return None
 
 
-def compare(session, run: PortableRun, cfg: dict | None, *, crown_fingerprint: str | None = None) -> dict:
-    """The "vs home" block for one run.
+# The device id PathBrain files its own plugin's readings under. A *different device* from
+# any phone (wired, always Chromium), so it is never pooled with a phone's home runs — it
+# is the second reference, shown beside the same-device one and labelled.
+SERVER_DEVICE_ID = "pathbrain-server"
+SERVER_DEVICE_LABEL = "PathBrain (wired)"
+SERVER_SAMPLE_LIMIT = 500
+SERVER_NOTE = (
+    "measured by PathBrain itself on its wired connection — expect a few ms better round trip "
+    "and jitter than a Wi-Fi device sees at home, so read small differences with that in mind"
+)
 
-    Returns ``{"available": bool, "reason": str | None, "provenance": {...},
-    "metrics": {key: {"away", "home_median", "home_p25", "home_p75", "delta", "pct",
-    "lower_is_better", "n"}}, "score": {"away", "home_median", "delta"},
-    "per_origin": {origin: {phase: {...same shape...}}}}``. A home run (``is_home``) is
-    compared against the *other* home runs the same way — "is home itself where it was?".
-    """
-    pc = portable_config(cfg)
-    min_runs = int(pc.get("min_home_runs") or 5)
-    candidates = home_candidates(session, run)
+
+def record_server_run(session, run, results: list) -> PortableRun | None:
+    """File a completed run's ``portable`` plugin readings as ONE home sample from
+    ``SERVER_DEVICE_ID`` (called by the runner after the result rows are added; same
+    session, caller commits). The raw stays in the run's ``BenchmarkResult`` — the row
+    points at it (``source_run_id``) rather than copying it. Every iteration must carry the
+    same instrument version, else nothing is filed (a recipe change mid-run). Returns the
+    row, or None when there was nothing usable."""
+    iterations = []
+    versions: set[str] = set()
+    client: dict = {}
+    for r in results or []:
+        raw = getattr(r, "raw", None)
+        if not getattr(r, "success", False) or not isinstance(raw, dict):
+            continue
+        it = raw.get("iteration")
+        if isinstance(it, dict) and it.get("waterfall"):
+            iterations.append(it)
+            versions.add(str(raw.get("instrument_version") or ""))
+            client = client or (raw.get("client") or {})
+    if not iterations:
+        return None
+    if len(versions) != 1 or not next(iter(versions)):
+        log.warning("Run %s: portable iterations span instrument versions %s; not filed", run.id, sorted(versions))
+        return None
+    derived = derive_portable({"iterations": iterations})
+    score, subscores = score_metrics(derived["metrics"])
+    summary = None
+    if run.settings:
+        try:
+            from .settings_profile import summarize
+
+            summary = summarize(run.settings)
+        except Exception:  # noqa: BLE001 — cosmetic
+            summary = None
+    local = datetime.now().astimezone().utcoffset()
+    row = PortableRun(
+        created_at=run.created_at,
+        device_id=SERVER_DEVICE_ID,
+        device_label=SERVER_DEVICE_LABEL,
+        venue=None,
+        is_home=True,
+        home_detection="server",
+        egress_ip=None,
+        home_ip=None,
+        instrument_version=next(iter(versions)),
+        client=client,
+        tz_offset_minutes=int(local.total_seconds() // 60) if local is not None else None,
+        settings_fingerprint=run.settings_fingerprint,
+        settings_summary=summary,
+        raw=None,
+        source_run_id=run.id,
+        metrics=derived["metrics"],
+        per_origin=derived["per_origin"],
+        coverage=derived["coverage"],
+        score=score,
+        subscores=subscores,
+        notes=f"filed from run #{run.id}",
+    )
+    session.add(row)
+    return row
+
+
+def server_candidates(session, run: PortableRun) -> list[PortableRun]:
+    """PathBrain's own recent readings on this instrument version (newest first, capped)."""
+    rows = session.scalars(
+        select(PortableRun)
+        .where(
+            PortableRun.device_id == SERVER_DEVICE_ID,
+            PortableRun.instrument_version == run.instrument_version,
+            PortableRun.is_home.is_(True),
+            PortableRun.id != run.id,
+        )
+        .order_by(PortableRun.created_at.desc())
+        .limit(SERVER_SAMPLE_LIMIT)
+    ).all()
+    return list(rows)
+
+
+def _load_raws(session, rows: list[PortableRun]) -> dict[int, dict]:
+    """Each row's raw document: its own, or — for a server sample — rebuilt from the source
+    run's ``BenchmarkResult`` (one batched query)."""
+    out: dict[int, dict] = {}
+    by_source: dict[int, list[PortableRun]] = {}
+    for r in rows:
+        if r.raw:
+            out[r.id] = r.raw
+        elif r.source_run_id:
+            by_source.setdefault(int(r.source_run_id), []).append(r)
+    if by_source:
+        ids = list(by_source)
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            for run_id, raw in session.execute(
+                select(BenchmarkResult.run_id, BenchmarkResult.raw)
+                .where(BenchmarkResult.run_id.in_(chunk), BenchmarkResult.plugin == "portable")
+            ).all():
+                its = [it["iteration"] for it in stored_iterations(raw) if isinstance(it.get("iteration"), dict)]
+                for r in by_source.get(int(run_id), []):
+                    out[r.id] = {"iterations": its}
+    return out
+
+
+def _reference(
+    session,
+    run: PortableRun,
+    candidates: list[PortableRun],
+    *,
+    min_runs: int,
+    crown_fingerprint: str | None,
+    kind: str,
+) -> dict:
+    """One "vs home" block against one pool of home samples (``kind`` = ``device`` — the same
+    device's own home runs — or ``server`` — PathBrain's wired readings)."""
     prov: dict = {
-        "device_id": run.device_id,
+        "reference": kind,
+        "reference_label": "this device at home" if kind == "device" else SERVER_DEVICE_LABEL,
+        "device_id": run.device_id if kind == "device" else SERVER_DEVICE_ID,
         "instrument_version": run.instrument_version,
         "min_home_runs": min_runs,
         "home_runs_on_device": len(candidates),
     }
+    if kind == "server":
+        prov["note"] = SERVER_NOTE
     if len(candidates) < min_runs:
+        who = "from this device" if kind == "device" else "by PathBrain itself"
         return {
             "available": False,
             "reason": (
-                f"only {len(candidates)} comparable home run(s) from this device on this "
-                f"instrument version; {min_runs} needed. Run the test at home a few more times."
+                f"only {len(candidates)} comparable home run(s) {who} on this instrument version; "
+                f"{min_runs} needed."
+                + (" Run the test at home a few more times." if kind == "device" else
+                   " They accrue with every monitoring run once the portable plugin is on.")
             ),
             "provenance": prov,
         }
 
-    # Profile: one named home profile when it has enough runs; otherwise every home run.
     profile_fp = _pick_profile(candidates, min_runs, crown_fingerprint)
     pool = [r for r in candidates if r.settings_fingerprint == profile_fp] if profile_fp else candidates
     prov["profile"] = None
@@ -552,7 +672,6 @@ def compare(session, run: PortableRun, cfg: dict | None, *, crown_fingerprint: s
     else:
         prov["profile_note"] = "home runs pooled across profiles (no single profile has enough)"
 
-    # Time cell: the first rung with enough runs.
     here = _local(run)
     rung_key, rung_label, cell = RUNGS[-1][0], RUNGS[-1][1], pool
     for key, label in RUNGS:
@@ -563,7 +682,6 @@ def compare(session, run: PortableRun, cfg: dict | None, *, crown_fingerprint: s
     prov["time_rung"] = rung_key
     prov["time_rung_label"] = rung_label
 
-    # Pairwise coverage: resources the away run completed AND ≥80% of the home cell did.
     away_ok = set((run.coverage or {}).get("resources_ok") or [])
     tally: dict[str, int] = {}
     for r in cell:
@@ -580,14 +698,20 @@ def compare(session, run: PortableRun, cfg: dict | None, *, crown_fingerprint: s
     if not common or len(kept) < min_runs:
         return {
             "available": False,
-            "reason": "the away run and the home runs share too few completed resources to compare",
+            "reason": "the run and the home runs share too few completed resources to compare",
             "provenance": prov,
         }
 
-    # Re-derive both sides over the common resource set — from raw, so the restriction is
-    # real (a stored aggregate can't be un-averaged).
-    away = derive_portable(run.raw, include_ids=common)
-    homes = [derive_portable(r.raw, include_ids=common) for r in kept]
+    raws = _load_raws(session, [run, *kept])
+    away_raw = raws.get(run.id)
+    if not away_raw:
+        return {"available": False, "reason": "this run's raw observations are no longer available", "provenance": prov}
+    kept = [r for r in kept if raws.get(r.id)]
+    prov["home_runs_used"] = len(kept)
+    if len(kept) < min_runs:
+        return {"available": False, "reason": "too few home runs still have their raw observations", "provenance": prov}
+    away = derive_portable(away_raw, include_ids=common)
+    homes = [derive_portable(raws[r.id], include_ids=common) for r in kept]
 
     def _delta(a: float | None, vals: list[float], lower_better: bool) -> dict | None:
         vals = [v for v in vals if v is not None]
@@ -628,7 +752,7 @@ def compare(session, run: PortableRun, cfg: dict | None, *, crown_fingerprint: s
             per_origin_out[origin] = slot
 
     away_score, _ = score_metrics(away["metrics"])
-    home_scores = [s for s, _ in (score_metrics(h["metrics"]) for h in homes) if s is not None]
+    home_scores = [sc for sc, _ in (score_metrics(h["metrics"]) for h in homes) if sc is not None]
     score_block = None
     if away_score is not None and home_scores:
         hm = round(median(home_scores), 1)
@@ -645,6 +769,32 @@ def compare(session, run: PortableRun, cfg: dict | None, *, crown_fingerprint: s
         "per_origin": per_origin_out,
         "score": score_block,
     }
+
+
+def compare(session, run: PortableRun, cfg: dict | None, *, crown_fingerprint: str | None = None) -> dict:
+    """The "vs home" block for one run — **two references, never merged**.
+
+    ``references.device`` compares against the same device's own home runs (the reference
+    that removes the device difference); ``references.server`` against PathBrain's own
+    wired readings (``SERVER_DEVICE_ID`` — always accruing, per profile and hour, but a
+    different device, and labelled so). ``headline`` names the one the top-level fields
+    mirror: the device reference when it is available, else the server one. Each block is
+    ``{"available", "reason", "provenance", "metrics", "per_origin", "score"}`` — metrics as
+    ``{key: {"away", "home_median", "home_p25", "home_p75", "delta", "pct", "n",
+    "lower_is_better", "verdict"}}``. A home run is compared against the *other* home
+    runs the same way — "is home itself where it was?". A server run compares only to the
+    other server runs (its ``device`` reference)."""
+    pc = portable_config(cfg)
+    min_runs = int(pc.get("min_home_runs") or 5)
+    device = _reference(session, run, home_candidates(session, run), min_runs=min_runs,
+                        crown_fingerprint=crown_fingerprint, kind="device")
+    server = None
+    if run.device_id != SERVER_DEVICE_ID:
+        server = _reference(session, run, server_candidates(session, run), min_runs=min_runs,
+                            crown_fingerprint=crown_fingerprint, kind="server")
+    headline = "device" if device["available"] else ("server" if server and server["available"] else None)
+    top = server if headline == "server" else device
+    return {**top, "headline": headline, "references": {"device": device, "server": server}}
 
 
 # ── listing ──────────────────────────────────────────────────────────────────
@@ -673,7 +823,8 @@ def serialize_run(run: PortableRun, *, include_raw: bool = False) -> dict:
         "score": run.score,
         "subscores": run.subscores or {},
         "notes": run.notes,
-        "iterations": iteration_count(run.raw),
+        "source_run_id": run.source_run_id,
+        "iterations": iteration_count(run.raw) or int((run.coverage or {}).get("iterations") or 0),
     }
     if include_raw:
         out["raw"] = run.raw

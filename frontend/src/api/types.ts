@@ -2784,10 +2784,15 @@ export interface PortableCompareMetric {
   verdict: "better" | "worse" | "within";
 }
 
-export interface PortableCompare {
+// One "vs home" block against one pool of home samples.
+export interface PortableReference {
   available: boolean;
   reason: string | null;
   provenance: {
+    // "device" = the same device's own home runs; "server" = PathBrain's wired readings.
+    reference?: "device" | "server";
+    reference_label?: string;
+    note?: string;
     device_id: string;
     instrument_version: string;
     min_home_runs: number;
@@ -2813,6 +2818,12 @@ export interface PortableCompare {
   } | null;
 }
 
+// The top-level fields mirror the `headline` reference (device when available, else server).
+export interface PortableCompare extends PortableReference {
+  headline: "device" | "server" | null;
+  references: { device: PortableReference; server: PortableReference | null };
+}
+
 export interface PortableRun {
   id: number;
   created_at: string | null;
@@ -2820,7 +2831,7 @@ export interface PortableRun {
   device_label: string | null;
   venue: string | null;
   is_home: boolean;
-  home_detection: "ip4" | "ip6" | "manual" | null;
+  home_detection: "ip4" | "ip6" | "manual" | "server" | null;
   egress_ip: string | null;
   home_ip: string | null;
   instrument_version: string;
@@ -2839,6 +2850,7 @@ export interface PortableRun {
   score: number | null;
   subscores: Record<string, number>;
   notes: string | null;
+  source_run_id?: number | null;
   iterations: number;
   compare?: PortableCompare;
 }
@@ -2869,4 +2881,29 @@ export interface PortableHome {
   detected: boolean | null;
   detected_by: "ip4" | "ip6" | null;
   reason: string | null;
+}
+
+// The browser's post-load idle wait, audited off stored raw (read-only).
+export interface IdleAuditSite {
+  url: string;
+  loads: number;
+  with_lcp: number;
+  lcp_after_load: number;
+  lcp_after_load_share: number | null;
+  max_lag_ms: number;
+  p95_lag_ms: number;
+  median_idle_wait_ms: number | null;
+  mean_idle_wait_ms: number | null;
+}
+
+export interface IdleAudit {
+  runs: number;
+  loads: number;
+  sites: IdleAuditSite[];
+  worst_lcp_after_load_ms: number;
+  mean_idle_wait_ms: number | null;
+  current_networkidle_timeout_s: number | null;
+  recommended_networkidle_timeout_s: number | null;
+  estimated_saving_ms_per_load: number | null;
+  verdict: string | null;
 }

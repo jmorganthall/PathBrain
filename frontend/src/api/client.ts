@@ -75,6 +75,7 @@ import type {
   TrendHeatmapResponse,
   TrendRelativeResponse,
   WeightsResponse,
+  IdleAudit,
   PortableDevice,
   PortableHome,
   PortableRecipe,
@@ -275,6 +276,7 @@ export const api = {
   // Methodology layer (versioned interpretation)
   methodologies: () => request<MethodologiesResponse>("/methodologies"),
   methodologyCurrent: () => request<MethodologyDetail>("/methodologies/current"),
+  idleAudit: (limit = 200) => request<IdleAudit>(`/methodologies/idle-audit?limit=${limit}`),
   methodology: (version: string) =>
     request<MethodologyDetail>(`/methodologies/${encodeURIComponent(version)}`),
   runScores: (id: number) => request<RunScoresResponse>(`/score/${id}/methodologies`),

@@ -6,6 +6,7 @@ import { ThemeProvider } from "@mui/material/styles";
 import { theme } from "./theme";
 import App from "./App";
 import { MetricCatalogProvider } from "./utils/metrics";
+import "./portableEmbed";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
