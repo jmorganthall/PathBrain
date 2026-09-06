@@ -880,8 +880,14 @@ class PortableRun(Base):
     device_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
     # Where the run was taken ("Hotel Wi-Fi, Denver"); free text, for the reader.
     venue: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    # Marked by the user; home runs are the reference pool for away runs.
+    # Home runs are the reference pool for away runs. Normally DETECTED — the device's public
+    # egress address equals the home WAN's (``portable.decide_home``) — else stated by the
+    # user; ``home_detection`` says which ("ip" / "manual"), and both addresses are kept so the
+    # verdict is auditable.
     is_home: Mapped[bool] = mapped_column(Boolean, default=False)
+    home_detection: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    egress_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    home_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Hash of the recipe + derive version — the second stamp (``portable.instrument_version``).
     instrument_version: Mapped[str] = mapped_column(String(24))
     # Browser/device facts the page could read (user agent, platform, viewport, connection).

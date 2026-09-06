@@ -6,14 +6,14 @@ import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
 import Divider from "@mui/material/Divider";
-import FormControlLabel from "@mui/material/FormControlLabel";
 import IconButton from "@mui/material/IconButton";
 import LinearProgress from "@mui/material/LinearProgress";
 import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
 import ListItemText from "@mui/material/ListItemText";
 import Stack from "@mui/material/Stack";
-import Switch from "@mui/material/Switch";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
@@ -31,17 +31,18 @@ import StopIcon from "@mui/icons-material/Stop";
 import { api, tzOffsetMinutes } from "../api/client";
 import type {
   PortableCompareMetric,
+  PortableHome,
   PortableMetricMeta,
   PortableRecipe,
   PortableRun,
 } from "../api/types";
 import { Blurb } from "../components/Explain";
 import { fmtDateTime } from "../utils/format";
-import { clientInfo, deviceId, runPortableTest } from "../utils/portableTest";
+import { clientInfo, deviceId, egressIp, runPortableTest } from "../utils/portableTest";
 import type { PortableProgress } from "../utils/portableTest";
 
 const VENUE_KEY = "pathbrain.portable.venue";
-const HOME_KEY = "pathbrain.portable.is_home";
+const MODE_KEY = "pathbrain.portable.mode"; // "auto" | "home" | "away"
 const LABEL_KEY = "pathbrain.portable.device_label";
 
 const ORIGIN_PHASES: { key: string; label: string }[] = [
@@ -302,7 +303,33 @@ export default function Away() {
   const device = useMemo(() => deviceId(), []);
   const [label, setLabel] = useState(() => readStorage(LABEL_KEY, ""));
   const [venue, setVenue] = useState(() => readStorage(VENUE_KEY, ""));
-  const [isHome, setIsHome] = useState(() => readStorage(HOME_KEY, "0") === "1");
+  type Mode = "auto" | "home" | "away";
+  const [mode, setMode] = useState<Mode>(() => {
+    const m = readStorage(MODE_KEY, "auto");
+    return m === "home" || m === "away" ? m : "auto";
+  });
+  // Home detection: the device's public egress vs the home WAN address (see portable.decide_home).
+  const [homeInfo, setHomeInfo] = useState<PortableHome | null>(null);
+  const [egress, setEgress] = useState<string | null | undefined>(undefined); // undefined = looking
+  const detected: boolean | null =
+    homeInfo?.home_ip && egress ? egress === homeInfo.home_ip : null;
+  const isHome = mode === "home" ? true : mode === "away" ? false : detected;
+
+  const detect = useCallback(async () => {
+    setEgress(undefined);
+    try {
+      const info = await api.portableHome();
+      setHomeInfo(info);
+      let ip = info.lookup_url ? await egressIp(info.lookup_url) : null;
+      // Fallback where the lookup is blocked: the address PathBrain saw this request come
+      // from — meaningful only when it is a public address (a LAN or tunnel source says
+      // nothing about where the device's internet traffic leaves).
+      if (!ip && info.request_ip_public) ip = info.request_ip;
+      setEgress(ip);
+    } catch {
+      setEgress(null);
+    }
+  }, []);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -318,6 +345,7 @@ export default function Away() {
       .then(setRecipe)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
     loadHistory();
+    detect();
     // Hydrate the label from the server if this device is already known there.
     api
       .portableDevices()
@@ -329,7 +357,7 @@ export default function Away() {
         }
       })
       .catch(() => undefined);
-  }, [device, loadHistory]);
+  }, [device, loadHistory, detect]);
 
   const homeCount = history.filter((r) => r.is_home && r.instrument_version === recipe?.instrument_version).length;
   const minHome = recipe?.min_home_runs ?? 5;
@@ -342,7 +370,7 @@ export default function Away() {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     writeStorage(VENUE_KEY, venue);
-    writeStorage(HOME_KEY, isHome ? "1" : "0");
+    writeStorage(MODE_KEY, mode);
     writeStorage(LABEL_KEY, label);
     try {
       const raw = await runPortableTest(recipe, { signal: ctrl.signal, onProgress: setProgress });
@@ -350,7 +378,8 @@ export default function Away() {
         device_id: device,
         device_label: label.trim() || null,
         venue: isHome ? null : venue.trim() || null,
-        is_home: isHome,
+        is_home: mode === "auto" ? null : mode === "home",
+        egress_ip: egress ?? null,
         instrument_version: recipe.instrument_version,
         tz_offset_minutes: tzOffsetMinutes(),
         client: clientInfo(),
@@ -418,8 +447,10 @@ export default function Away() {
             download and a burst of round trips. It is never put on the methodology's Overall scale. Its one
             comparison is <strong>vs home</strong>, and only against directly comparable data: the same
             device, the same test version, home runs on one firewall profile, the nearest time of day with
-            enough runs, and only the resources both sides completed. Run it at home a few times first
-            (switch <em>I'm at home</em> on) so this device has something to compare against.
+            enough runs, and only the resources both sides completed. Home is <em>detected</em>: this device's
+            public address is compared with PathBrain's own, so a run counts as home only when its traffic
+            actually leaves through the tuned firewall (a phone on cellular on the couch is not home for this
+            purpose). Run it at home a few times first so this device has something to compare against.
           </>
         }
       >
@@ -448,24 +479,51 @@ export default function Away() {
                 placeholder="Hotel Wi-Fi, Denver"
                 value={venue}
                 onChange={(e) => setVenue(e.target.value)}
-                disabled={running || isHome}
+                disabled={running || isHome === true}
                 sx={{ minWidth: 220, flex: 1 }}
-                helperText={isHome ? "home runs are the reference" : " "}
+                helperText={isHome === true ? "home runs are the reference" : " "}
               />
-              <FormControlLabel
-                control={<Switch checked={isHome} onChange={(e) => setIsHome(e.target.checked)} disabled={running} />}
-                label={
-                  <Stack direction="row" spacing={0.5} alignItems="center">
-                    <HomeIcon fontSize="small" />
-                    <span>I'm at home</span>
-                  </Stack>
-                }
-              />
+              <Box>
+                <ToggleButtonGroup
+                  exclusive
+                  size="small"
+                  value={mode}
+                  onChange={(_e, v: Mode | null) => v && setMode(v)}
+                  disabled={running}
+                  aria-label="home or away"
+                >
+                  <ToggleButton value="auto">Auto</ToggleButton>
+                  <ToggleButton value="home">
+                    <HomeIcon fontSize="small" sx={{ mr: 0.5 }} /> Home
+                  </ToggleButton>
+                  <ToggleButton value="away">
+                    <FlightTakeoffIcon fontSize="small" sx={{ mr: 0.5 }} /> Away
+                  </ToggleButton>
+                </ToggleButtonGroup>
+                <Typography variant="caption" color="text.secondary" component="div" sx={{ mt: 0.5 }}>
+                  {egress === undefined
+                    ? "Detecting where you are…"
+                    : detected === true
+                      ? `Detected: home — this device leaves the internet through the same address as PathBrain (${egress}).`
+                      : detected === false
+                        ? `Detected: away — this device's public address (${egress}) is not home's (${homeInfo?.home_ip}).`
+                        : homeInfo?.home_ip
+                          ? "Couldn't read this device's public address (the lookup may be blocked here) — choose Home or Away."
+                          : `Home address unknown${homeInfo?.error ? ` (${homeInfo.error})` : ""} — set portable.home_ip in Config or choose Home or Away.`}
+                  {mode !== "auto" && " Overriding detection."}
+                </Typography>
+              </Box>
             </Stack>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
               {!running ? (
-                <Button variant="contained" size="large" startIcon={<PlayArrowIcon />} onClick={start} disabled={!recipe}>
-                  {isHome ? "Run at home" : "Run here"}
+                <Button
+                  variant="contained"
+                  size="large"
+                  startIcon={<PlayArrowIcon />}
+                  onClick={start}
+                  disabled={!recipe || isHome === null}
+                >
+                  {isHome === true ? "Run at home" : isHome === false ? "Run here" : "Choose Home or Away"}
                 </Button>
               ) : (
                 <Button variant="outlined" color="warning" size="large" startIcon={<StopIcon />} onClick={stop}>
@@ -521,6 +579,15 @@ export default function Away() {
               ) : (
                 <Chip size="small" icon={<FlightTakeoffIcon />} label={result.venue || "away"} />
               )}
+              <Tooltip
+                title={
+                  result.home_detection === "ip"
+                    ? `public address ${result.egress_ip ?? "?"} vs home ${result.home_ip ?? "?"}`
+                    : "chosen by hand"
+                }
+              >
+                <Chip size="small" variant="outlined" label={result.home_detection === "ip" ? "detected by address" : "set manually"} />
+              </Tooltip>
               {result.settings_summary && <Chip size="small" variant="outlined" label={result.settings_summary} />}
             </Stack>
             <ScoreLine run={result} />

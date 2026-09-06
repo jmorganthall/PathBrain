@@ -2761,7 +2761,9 @@ export interface PortableRunCreate {
   device_id: string;
   device_label?: string | null;
   venue?: string | null;
-  is_home: boolean;
+  // null = detect: the device's public egress (`egress_ip`) vs the home WAN address.
+  is_home: boolean | null;
+  egress_ip?: string | null;
   instrument_version: string;
   tz_offset_minutes?: number | null;
   client?: Record<string, unknown> | null;
@@ -2817,6 +2819,9 @@ export interface PortableRun {
   device_label: string | null;
   venue: string | null;
   is_home: boolean;
+  home_detection: "ip" | "manual" | null;
+  egress_ip: string | null;
+  home_ip: string | null;
   instrument_version: string;
   client: Record<string, unknown>;
   tz_offset_minutes: number | null;
@@ -2844,4 +2849,15 @@ export interface PortableDevice {
   home_runs: number;
   away_runs: number;
   last_seen: string | null;
+}
+
+// What "home" looks like from the internet, for detecting home vs away.
+export interface PortableHome {
+  home_ip: string | null;
+  source: "config" | "lookup" | null;
+  checked_at: number | null;
+  error: string | null;
+  lookup_url: string | null;
+  request_ip: string | null;
+  request_ip_public: boolean;
 }

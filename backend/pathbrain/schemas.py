@@ -37,7 +37,9 @@ class PortableRunCreate(BaseModel):
     device_id: str
     device_label: str | None = None
     venue: str | None = None
-    is_home: bool = False
+    # None = detect from ``egress_ip`` vs the home WAN address; True/False = the user's override.
+    is_home: bool | None = None
+    egress_ip: str | None = None
     instrument_version: str
     tz_offset_minutes: int | None = None
     client: dict[str, Any] | None = None

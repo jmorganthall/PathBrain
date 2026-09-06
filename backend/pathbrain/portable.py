@@ -35,7 +35,10 @@ run with no stamp is still a home run, just one that can't be filtered by profil
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
+import time
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from statistics import median
 
@@ -92,6 +95,14 @@ DEFAULT_CONFIG: dict = {
     # Home runs from the same device (and matching stamps) required before a "vs home"
     # delta is shown — below it the page asks for more home runs rather than guessing.
     "min_home_runs": 5,
+    # Home/away is DETECTED, not declared (see ``decide_home``): the page asks this service
+    # for the device's public egress address and the server asks it for its own; equal means
+    # the device's traffic leaves through the tuned firewall — which is what "home" means for
+    # shaping. Any JSON endpoint answering ``{"ip": "..."}`` with CORS ``*`` works.
+    "ip_lookup_url": "https://api.ipify.org?format=json",
+    # The home WAN address, when you would rather state it than have the server look it up
+    # (a server whose own egress isn't the home WAN — say a NAS behind its own tunnel).
+    "home_ip": "",
     "resources": DEFAULT_RESOURCES,
     "stream": DEFAULT_STREAM,
     "rtt": DEFAULT_RTT,
@@ -186,6 +197,92 @@ def score_metrics(metrics: dict) -> tuple[float | None, dict[str, float]]:
     return breakdown.sops, breakdown.subscores
 
 
+# ── home detection ───────────────────────────────────────────────────────────
+
+HOME_IP_TTL_S = 3600.0
+_home_ip_cache: dict = {"ip": None, "source": None, "checked_at": None, "error": None}
+
+
+def is_public_ip(ip: str | None) -> bool:
+    """A globally routable address — i.e. what a device looks like from the internet. Private
+    (RFC1918), loopback, link-local and carrier-grade NAT (100.64/10, what Tailscale hands out)
+    all read False: a request arriving from one of those says "LAN or tunnel", not where the
+    device's internet traffic actually leaves."""
+    try:
+        addr = ipaddress.ip_address((ip or "").strip())
+    except ValueError:
+        return False
+    return addr.is_global
+
+
+def _lookup_egress(url: str, timeout: float = 5.0) -> str | None:
+    """Ask ``url`` (a ``{"ip": ...}`` JSON service, or plain text) what address we come from."""
+    req = urllib.request.Request(url, headers={"User-Agent": "PathBrain/portable"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — https, configured
+        body = resp.read(4096).decode("utf-8", "replace").strip()
+    try:
+        ip = str(json.loads(body).get("ip") or "").strip()
+    except (ValueError, AttributeError):
+        ip = body
+    return ip if is_public_ip(ip) else None
+
+
+def home_ip(cfg: dict | None, *, now: float | None = None) -> dict:
+    """The home network's public address — ``{"ip", "source", "checked_at", "error"}``.
+
+    ``portable.home_ip`` in config wins (``source="config"``); otherwise the server asks the
+    lookup service for its own egress (``source="lookup"``, cached ``HOME_IP_TTL_S``): PathBrain
+    runs at home, so its egress *is* the home WAN. Best-effort — ``ip`` is None when neither
+    is available, and detection then falls back to the user's own choice."""
+    pc = portable_config(cfg)
+    stated = str(pc.get("home_ip") or "").strip()
+    if stated:
+        ok = is_public_ip(stated)
+        return {"ip": stated if ok else None, "source": "config", "checked_at": None,
+                "error": None if ok else f"configured home_ip {stated!r} is not a public address"}
+    t = time.time() if now is None else now
+    c = _home_ip_cache
+    if c["checked_at"] is not None and t - c["checked_at"] < HOME_IP_TTL_S and (c["ip"] or c["error"]):
+        return {"ip": c["ip"], "source": c["source"], "checked_at": c["checked_at"], "error": c["error"]}
+    url = str(pc.get("ip_lookup_url") or "").strip()
+    ip = error = None
+    if url:
+        try:
+            ip = _lookup_egress(url)
+            if ip is None:
+                error = "lookup returned no public address"
+        except Exception as exc:  # noqa: BLE001 — best-effort, reported not raised
+            error = f"{type(exc).__name__}: {exc}"
+            log.warning("Portable: home IP lookup via %s failed: %s", url, exc)
+    else:
+        error = "no ip_lookup_url configured"
+    c.update({"ip": ip, "source": "lookup" if ip else None, "checked_at": t, "error": error})
+    return {"ip": ip, "source": c["source"], "checked_at": t, "error": error}
+
+
+def reset_home_ip_cache() -> None:
+    _home_ip_cache.update({"ip": None, "source": None, "checked_at": None, "error": None})
+
+
+def decide_home(is_home: bool | None, egress_ip: str | None, home: str | None) -> tuple[bool, str]:
+    """Is this run at home? ``(is_home, detection)``.
+
+    Detected by address whenever both sides are known: the device's public egress equal to the
+    home WAN means its traffic leaves through the tuned firewall — the definition that matters
+    for shaping (a phone on cellular on the living-room couch is *not* home for this purpose,
+    and this gets that right where a person's answer wouldn't). An explicit ``is_home`` is an
+    override and wins (``"manual"``). With neither, raise — never guess a stamp the whole
+    comparison keys on."""
+    if is_home is not None:
+        return bool(is_home), "manual"
+    if is_public_ip(egress_ip) and is_public_ip(home):
+        return egress_ip.strip() == home.strip(), "ip"
+    raise ValueError(
+        "could not tell home from away: the device's public address or the home address is "
+        "unknown (the IP lookup may be blocked on this network) — choose Home or Away yourself"
+    )
+
+
 # ── ingest ───────────────────────────────────────────────────────────────────
 
 
@@ -204,10 +301,12 @@ def home_stamp() -> tuple[str | None, str | None]:
         return None, None
 
 
-def build_run(payload: dict, current_version: str) -> PortableRun:
+def build_run(payload: dict, current_version: str, *, home: str | None = None) -> PortableRun:
     """Derive + score an uploaded raw document into a ``PortableRun`` row (not added to a
-    session). Raises ``ValueError`` when the upload's instrument version isn't the current
-    recipe's — a stale page must not file runs that nothing can compare against."""
+    session). ``home`` is the home WAN address for detection (see ``decide_home``). Raises
+    ``ValueError`` when the upload's instrument version isn't the current recipe's — a stale
+    page must not file runs that nothing can compare against — or when home/away can't be
+    told and wasn't stated."""
     version = str(payload.get("instrument_version") or "")
     if version != current_version:
         raise ValueError(
@@ -219,7 +318,8 @@ def build_run(payload: dict, current_version: str) -> PortableRun:
         raise ValueError("the upload carries no iterations")
     derived = derive_portable(raw)
     score, subscores = score_metrics(derived["metrics"])
-    is_home = bool(payload.get("is_home"))
+    egress = str(payload.get("egress_ip")).strip() if payload.get("egress_ip") else None
+    is_home, detection = decide_home(payload.get("is_home"), egress, home)
     fp = summary = None
     if is_home:
         fp, summary = home_stamp()
@@ -233,6 +333,9 @@ def build_run(payload: dict, current_version: str) -> PortableRun:
         device_label=(str(payload.get("device_label"))[:120] if payload.get("device_label") else None),
         venue=(str(payload.get("venue"))[:120] if payload.get("venue") else None),
         is_home=is_home,
+        home_detection=detection,
+        egress_ip=egress[:64] if egress else None,
+        home_ip=home[:64] if home else None,
         instrument_version=version,
         client=payload.get("client") or {},
         tz_offset_minutes=tz,
@@ -476,6 +579,9 @@ def serialize_run(run: PortableRun, *, include_raw: bool = False) -> dict:
         "device_label": run.device_label,
         "venue": run.venue,
         "is_home": bool(run.is_home),
+        "home_detection": run.home_detection,
+        "egress_ip": run.egress_ip,
+        "home_ip": run.home_ip,
         "instrument_version": run.instrument_version,
         "client": run.client or {},
         "tz_offset_minutes": run.tz_offset_minutes,

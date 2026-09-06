@@ -320,3 +320,28 @@ export async function runPortableTest(recipe: PortableRecipe, opts: RunOptions =
     }
   }
 }
+
+/** The device's public egress address, asked of the configured lookup service from the
+ * browser itself — so it is the address the test's traffic actually leaves from, tunnel or
+ * not. Null when the service is unreachable or answers with a non-address. */
+export async function egressIp(lookupUrl: string, timeoutMs = 5000): Promise<string | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(lookupUrl, { cache: "no-store", mode: "cors", credentials: "omit", signal: ctrl.signal });
+    if (!r.ok) return null;
+    const text = (await r.text()).trim();
+    let ip = text;
+    try {
+      const j = JSON.parse(text) as { ip?: unknown };
+      if (typeof j.ip === "string") ip = j.ip.trim();
+    } catch {
+      /* plain-text service */
+    }
+    return /^[0-9a-fA-F:.]{3,45}$/.test(ip) ? ip : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}

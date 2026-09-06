@@ -482,8 +482,21 @@ LLM-based. See `README.md` for the product overview.
     duel, trends or weather (`test_portable_runs_never_touch_the_pooled_ledger`). **"vs home"**
     (`portable.compare`) admits a reference only when every stamp matches: the same **device**
     (a `device_id` the page keeps in local storage — a phone compares to itself, never to a
-    laptop), the same **instrument version**, marked **home** (`is_home`; the server stamps
-    home runs with the live firewall fingerprint, best-effort), one **home profile** (the pooled
+    laptop), the same **instrument version**, **home** — *detected, not declared*
+    (`decide_home`): the page asks a public-IP service (`portable.ip_lookup_url`, ipify by
+    default; the server's own request address is the fallback when the lookup is blocked and
+    that address is public) for the device's egress, the server asks the same service for its
+    own (`home_ip`, cached an hour; `portable.home_ip` in config overrides it), and equal means
+    the device's traffic leaves through the tuned firewall — the definition that matters for
+    shaping, and one a person's answer gets wrong (a phone on cellular on the couch is not home).
+    The request's *source* address is deliberately not the primary signal: over split-tunnel
+    Tailscale/WireGuard PathBrain sees a CGNAT/private address whether the device is at home or
+    in a hotel, while its internet traffic still egresses locally — so the browser must ask from
+    its own vantage point. Private/CGNAT addresses never compare (`is_public_ip`); when neither
+    side is known the upload is refused (409) rather than guessed, and the page offers Home/Away
+    as an explicit override (`home_detection` = `ip`/`manual`, both addresses stored, so every
+    stamp is auditable). Home runs are stamped with the live firewall fingerprint, best-effort.
+    One **home profile** (the pooled
     crown when it has `portable.min_home_runs` on that device, else the best-populated), the
     nearest **time cell** with enough runs (same weekday & hour → same hour → any time, each
     run's *own* UTC offset so "same hour" is the device's wall clock; the readout names the
@@ -499,8 +512,8 @@ LLM-based. See `README.md` for the product overview.
     is network by construction), and any number on the Overall scale. The **Away test** page
     (`Away.tsx`, `/away`, `utils/portableTest.ts` is the in-browser runner — wake lock, warm-up
     fetch, dependency-chained fetches with `cache: "no-store"`, chunked stream read, RTT off
-    `responseStart − requestStart`) is phone-first: label the device, name the venue, flip
-    "I'm at home" for reference runs. Not built (would be the natural next step): running the
+    `responseStart − requestStart`) is phone-first: label the device, name the venue, and
+    home/away is detected (Auto) with Home/Away as overrides. Not built (would be the natural next step): running the
     same page under the server's own Playwright as an ordinary `BenchmarkPlugin`, which would
     give an always-on home reading per profile and per hour with no dedicated schedule.
   - `challenger.py` — **Challenger Race**: the adaptive, multi-profile sibling of

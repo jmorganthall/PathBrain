@@ -300,3 +300,64 @@ def test_portable_runs_never_touch_the_pooled_ledger(client, clean):
     body = {"device_id": "p", "is_home": True, "instrument_version": VERSION, "raw": make_raw()}
     assert client.post("/api/portable/runs", json=body).status_code == 201
     assert client.get("/api/history/count").json() == before
+
+
+# ── home is detected, not declared ───────────────────────────────────────────
+
+
+def test_decide_home_by_egress_address():
+    # Same public egress as the home WAN → home; a different one → away.
+    assert portable.decide_home(None, "8.8.8.8", "8.8.8.8") == (True, "ip")
+    assert portable.decide_home(None, "1.1.1.1", "8.8.8.8") == (False, "ip")
+    # An explicit answer overrides detection either way.
+    assert portable.decide_home(True, "1.1.1.1", "8.8.8.8") == (True, "manual")
+    assert portable.decide_home(False, "8.8.8.8", "8.8.8.8") == (False, "manual")
+    # Unknown on either side and nothing stated → refuse rather than guess the stamp.
+    with pytest.raises(ValueError):
+        portable.decide_home(None, None, "8.8.8.8")
+    with pytest.raises(ValueError):
+        portable.decide_home(None, "8.8.8.8", None)
+    # A LAN / tunnel address is not an egress: it can't be compared with the WAN.
+    with pytest.raises(ValueError):
+        portable.decide_home(None, "192.168.1.20", "8.8.8.8")
+    with pytest.raises(ValueError):
+        portable.decide_home(None, "100.101.102.103", "8.8.8.8")  # Tailscale/CGNAT
+
+
+def test_public_ip_classification():
+    assert portable.is_public_ip("203.0.113.7") is False  # TEST-NET-3 is reserved, not routable
+    assert portable.is_public_ip("8.8.8.8") is True
+    assert portable.is_public_ip("2001:4860:4860::8888") is True
+    for private in ("10.0.0.1", "192.168.1.1", "172.16.5.5", "127.0.0.1", "169.254.1.1", "100.64.0.1", "fe80::1", "", "nope"):
+        assert portable.is_public_ip(private) is False, private
+
+
+def test_home_ip_prefers_config_then_cached_lookup(monkeypatch):
+    portable.reset_home_ip_cache()
+    assert portable.home_ip({"portable": {"home_ip": "8.8.4.4"}})["ip"] == "8.8.4.4"
+    bad = portable.home_ip({"portable": {"home_ip": "192.168.0.1"}})
+    assert bad["ip"] is None and "not a public" in bad["error"]
+    calls = []
+    monkeypatch.setattr(portable, "_lookup_egress", lambda url, timeout=5.0: calls.append(url) or "8.8.8.8")
+    a = portable.home_ip({}, now=1000.0)
+    b = portable.home_ip({}, now=1000.0 + 60)
+    assert a["ip"] == b["ip"] == "8.8.8.8" and a["source"] == "lookup" and len(calls) == 1
+    portable.home_ip({}, now=1000.0 + portable.HOME_IP_TTL_S + 1)
+    assert len(calls) == 2
+    portable.reset_home_ip_cache()
+
+
+def test_api_detects_home_from_addresses(client, clean, monkeypatch):
+    monkeypatch.setattr(portable, "home_ip", lambda cfg, now=None: {"ip": "8.8.8.8", "source": "config", "checked_at": None, "error": None})
+    body = {"device_id": "auto-phone", "instrument_version": VERSION, "raw": make_raw()}
+    home = client.post("/api/portable/runs", json={**body, "egress_ip": "8.8.8.8"}).json()
+    assert home["is_home"] is True and home["home_detection"] == "ip" and home["settings_fingerprint"]
+    away = client.post("/api/portable/runs", json={**body, "egress_ip": "1.1.1.1", "venue": "Hotel"}).json()
+    assert away["is_home"] is False and away["home_detection"] == "ip" and away["home_ip"] == "8.8.8.8"
+    forced = client.post("/api/portable/runs", json={**body, "egress_ip": "1.1.1.1", "is_home": True}).json()
+    assert forced["is_home"] is True and forced["home_detection"] == "manual"
+    undetectable = client.post("/api/portable/runs", json={**body, "egress_ip": "192.168.1.5"})
+    assert undetectable.status_code == 409 and "choose Home or Away" in undetectable.json()["detail"]
+    info = client.get("/api/portable/home", headers={"x-forwarded-for": "9.9.9.9, 10.0.0.2"}).json()
+    assert info["home_ip"] == "8.8.8.8" and info["request_ip"] == "9.9.9.9" and info["request_ip_public"] is True
+    assert info["lookup_url"]

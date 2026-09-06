@@ -12,7 +12,7 @@ Nothing here touches ``runs``/``scores``: portable runs are a separate instrumen
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -50,12 +50,43 @@ def portable_recipe(session: Session = Depends(get_session)) -> dict:
     return out
 
 
+def _request_ip(request: Request) -> str | None:
+    """The address the request arrived from — the first hop of ``X-Forwarded-For`` when a
+    reverse proxy (the user's own) sits in front, else the socket peer."""
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip() or None
+    return request.client.host if request.client else None
+
+
+@router.get("/portable/home")
+def portable_home(request: Request, session: Session = Depends(get_session)) -> dict:
+    """What "home" looks like from the internet, for detection: the home WAN address (stated
+    in config or looked up by the server), the lookup URL the page should ask for its own
+    egress, and — as a fallback where that lookup is blocked — the address this request came
+    from, flagged public or not (a private/CGNAT source is a LAN or tunnel address and says
+    nothing about where the device's internet traffic leaves)."""
+    cfg = get_config(session)
+    home = portable.home_ip(cfg)
+    rip = _request_ip(request)
+    return {
+        "home_ip": home["ip"],
+        "source": home["source"],
+        "checked_at": home["checked_at"],
+        "error": home["error"],
+        "lookup_url": portable.portable_config(cfg).get("ip_lookup_url") or None,
+        "request_ip": rip,
+        "request_ip_public": portable.is_public_ip(rip),
+    }
+
+
 @router.post("/portable/runs", status_code=201)
 def portable_upload(body: PortableRunCreate, session: Session = Depends(get_session)) -> dict:
     cfg = get_config(session)
     current = portable.recipe(cfg)["instrument_version"]
+    home = portable.home_ip(cfg)["ip"] if body.is_home is None else None
     try:
-        run = portable.build_run(body.model_dump(), current)
+        run = portable.build_run(body.model_dump(), current, home=home)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not run.device_id:
@@ -66,8 +97,8 @@ def portable_upload(body: PortableRunCreate, session: Session = Depends(get_sess
         s.flush()
         run_id = run.id
     log.info(
-        "Portable run #%s stored: device=%s home=%s venue=%r score=%s",
-        run_id, run.device_id, run.is_home, run.venue, run.score,
+        "Portable run #%s stored: device=%s home=%s (%s) venue=%r score=%s",
+        run_id, run.device_id, run.is_home, run.home_detection, run.venue, run.score,
     )
     session.expire_all()
     stored = session.get(PortableRun, run_id)

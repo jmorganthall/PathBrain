@@ -154,6 +154,11 @@ def _migrate() -> None:
         "benchmark_results": {
             "raw": "JSON",
         },
+        "portable_runs": {
+            "home_detection": "VARCHAR(16)",
+            "egress_ip": "VARCHAR(64)",
+            "home_ip": "VARCHAR(64)",
+        },
         "challenger_races": {
             "incumbent_refreshes": "INTEGER DEFAULT 0",
         },

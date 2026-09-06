@@ -76,6 +76,7 @@ import type {
   TrendRelativeResponse,
   WeightsResponse,
   PortableDevice,
+  PortableHome,
   PortableRecipe,
   PortableRun,
   PortableRunCreate,
@@ -632,6 +633,7 @@ export const api = {
   // Portable (away) test: a plain-browser instrument any device can run, compared only
   // "vs home" on the same device + recipe (its own table; never the pooled ledger).
   portableRecipe: () => request<PortableRecipe>("/portable/recipe"),
+  portableHome: () => request<PortableHome>("/portable/home"),
   portableUpload: (body: PortableRunCreate) =>
     request<PortableRun>("/portable/runs", { method: "POST", body: JSON.stringify(body) }, { timeoutMs: 60_000 }),
   portableRuns: (deviceId?: string, limit = 50) =>
