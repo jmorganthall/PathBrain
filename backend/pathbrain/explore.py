@@ -42,6 +42,7 @@ from __future__ import annotations
 import math
 
 from .logging_config import get_logger
+from .metrics import METRICS
 from .settings_profile import _to_number
 from .shaper_fields import WRITABLE_FIELDS, coerce_value, field as shaper_field
 from .stats import spearman
@@ -1182,6 +1183,215 @@ def attach_gap_candidates(
         gap["suggest"] = value if value != int(value) else int(value)
         gap["candidate"] = candidate
 
+# ── Leaders per crown leg: "move the best profile the way the leaders on its weak leg go" ──
+#
+# The Overall is a weighted blend of a few crown metrics, and the best profile is rarely
+# the best on every one of them: it can lead on FCP and LCP and sit mid-table on the stall
+# leg. The candidates above look for untested VALUES; this asks a different question — on
+# the leg where the winner struggles, what do the profiles that lead THAT leg do
+# differently? — and turns the answer into the move a person would make by hand: take the
+# winner, move the lever the leaders agree on toward where they have it, and run it. The
+# crown metric set is read from the methodology at call time, so the section follows
+# whatever the current rubric corners over rather than a list frozen here.
+LEG_LEADERS = 5
+# The share of a leg's leaders that must sit on the same side of the winner's value for a
+# lever before "the leaders run it higher/lower" is a finding rather than a coincidence.
+LEG_MOVE_AGREEMENT = 0.6
+LEG_MIN_PROFILES = 3
+
+
+def crown_legs(
+    field: dict,
+    points: list[dict],
+    axes: dict[str, dict],
+    curves: list[dict],
+    pairs: list[dict],
+    tried: set,
+    best_measured: float,
+    crown_metrics: list[str],
+) -> dict | None:
+    """Per crown metric: who leads it, where the best profile stands on it, and the lever
+    moves that would take the best profile toward the leaders — each either already measured
+    (named, with its Overall, so "that direction was tried" is an answer) or runnable."""
+    if not points or not axes or not crown_metrics:
+        return None
+    by_fp_pt = {p["fingerprint"]: p for p in points}
+    profiles = [p for p in field.get("profiles", []) if p.get("fingerprint") in by_fp_pt]
+    if not profiles:
+        return None
+    meta = {m.key: m for m in METRICS}
+    settled = [p for p in points if p.get("confident")]
+    ref_pt = max(settled or points, key=lambda p: p["overall"])
+    ref = next(p for p in profiles if p["fingerprint"] == ref_pt["fingerprint"])
+    by_key = {c["key"]: c for c in curves}
+    pairs_by_key = {m["key"]: m for m in (pairs or [])}
+    local = {c["key"]: c for c in conditioned_curves(points, axes, ref_pt)}
+
+    def _move_target(axis: dict, values: list[float]) -> float | None:
+        raw = coerce_value(axis["field"], _median(values))
+        if not isinstance(raw, (int, float)):
+            return None
+        return _snap_allowed(axis, float(raw))
+
+    def _priced(changes: dict[str, tuple[float, str]]) -> dict:
+        cand = _candidate_dict(ref_pt, changes, axes, points, by_key, pairs_by_key, local)
+        cand["beats_best_by"] = round(cand["upside"] - best_measured, 2)
+        cand["summary"] = _candidate_summary(cand, best_measured)
+        return cand
+
+    def _existing(coords: dict[str, float]) -> dict | None:
+        want = tuple(sorted(coords.items()))
+        for p in points:
+            if tuple(sorted(p["coords"].items())) == want:
+                return {
+                    "fingerprint": p["fingerprint"],
+                    "name": p["name"],
+                    "label": p["label"],
+                    "overall": round(p["overall"], 2),
+                    "iterations": p["iterations"],
+                    "confident": bool(p.get("confident")),
+                    "delta": round(p["overall"] - ref_pt["overall"], 2),
+                }
+        return None
+
+    legs: list[dict] = []
+    for key in crown_metrics:
+        m = meta.get(key)
+        higher = bool(m.higher_is_better) if m else False
+        label = m.label if m else key
+        unit = (m.unit if m else "") or ""
+        have = [
+            (p, float((p.get("metrics") or {})[key]))
+            for p in profiles
+            if isinstance((p.get("metrics") or {}).get(key), (int, float))
+        ]
+        if len(have) < LEG_MIN_PROFILES:
+            continue
+        confident = [(p, v) for p, v in have if p.get("confident")]
+        pool = confident if len(confident) >= LEG_MIN_PROFILES else have
+        ranked = sorted(pool, key=lambda pv: (-pv[1] if higher else pv[1]))
+        leaders = ranked[:LEG_LEADERS]
+        ref_value = next((v for p, v in have if p is ref), None)
+        ref_rank = next((i + 1 for i, (p, _) in enumerate(ranked) if p is ref), None)
+        percentile = (ref.get("crown_norm") or {}).get(key)
+
+        moves: list[dict] = []
+        runnable: dict[str, tuple[float, str]] = {}
+        for akey, axis in axes.items():
+            ref_c = ref_pt["coords"].get(akey)
+            if ref_c is None:
+                continue
+            lvals = [
+                by_fp_pt[p["fingerprint"]]["coords"].get(akey)
+                for p, _ in leaders
+                if p is not ref
+            ]
+            lvals = [v for v in lvals if v is not None]
+            if len(lvals) < 2:
+                continue
+            above = [v for v in lvals if v > ref_c]
+            below = [v for v in lvals if v < ref_c]
+            side, direction = (above, "up") if len(above) >= len(below) else (below, "down")
+            agreement = len(side) / len(lvals)
+            if len(side) < 2 or agreement < LEG_MOVE_AGREEMENT:
+                continue
+            target = _move_target(axis, side)
+            if target is None or target == ref_c:
+                continue
+            why = (
+                f"{len(side)} of {len(lvals)} leaders on {label} run {axis['pipe']} "
+                f"{axis['field_label']} {'above' if direction == 'up' else 'below'} the best "
+                f"profile's {ref_c:g}{axis['unit'] or ''}"
+            )
+            coords = dict(ref_pt["coords"])
+            coords[akey] = target
+            move = {
+                "key": akey,
+                "pipe": axis["pipe"],
+                "field": axis["field"],
+                "field_label": axis["field_label"],
+                "unit": axis["unit"],
+                "from": ref_c,
+                "to": target if target != int(target) else int(target),
+                "direction": direction,
+                "agreement": round(agreement, 2),
+                "leaders_on_side": len(side),
+                "leaders_compared": len(lvals),
+                "why": why,
+            }
+            existing = _existing(coords)
+            if existing is not None:
+                move["existing"] = existing
+            elif tuple(sorted(coords.items())) in tried:
+                # Proposed and benchmarked before, but the firewall settled elsewhere — the
+                # ledger has it, the field doesn't. Not runnable again, not a measurement.
+                move["already_measured"] = True
+            else:
+                move["candidate"] = _priced({akey: (target, why)})
+                runnable[akey] = (target, why)
+            moves.append(move)
+
+        combined = None
+        if len(runnable) > 1:
+            coords = dict(ref_pt["coords"])
+            coords.update({k: v for k, (v, _) in runnable.items()})
+            if tuple(sorted(coords.items())) not in tried and _existing(coords) is None:
+                combined = _priced(runnable)
+
+        legs.append({
+            "key": key,
+            "label": label,
+            "unit": unit,
+            "higher_is_better": higher,
+            "leaders": [
+                {
+                    "fingerprint": p["fingerprint"],
+                    "name": p.get("name"),
+                    "label": p.get("label"),
+                    "value": round(v, 2),
+                    "overall": round(float(p["overall"]), 2),
+                    "iterations": int(p.get("iterations") or 0),
+                    "confident": bool(p.get("confident")),
+                    "is_reference": p is ref,
+                }
+                for p, v in leaders
+            ],
+            "reference": {
+                "value": round(ref_value, 2) if ref_value is not None else None,
+                "rank": ref_rank,
+                "of": len(ranked),
+                "percentile": round(float(percentile), 1) if percentile is not None else None,
+                "leads": ref_rank == 1,
+            },
+            "confident_only": pool is confident,
+            "moves": moves,
+            "combined": combined,
+        })
+
+    if not legs:
+        return None
+    # The weak leg: the reference's lowest field percentile (rank as the fallback), so the
+    # page can lead with the leg where the winner is losing the most ground.
+    def _standing(leg: dict) -> tuple:
+        r = leg["reference"]
+        pct = r["percentile"] if r["percentile"] is not None else -1.0
+        return (pct, -(r["rank"] or 0))
+
+    weakest = min(legs, key=_standing)
+    return {
+        "reference": {
+            "fingerprint": ref_pt["fingerprint"],
+            "name": ref_pt["name"],
+            "label": ref_pt["label"],
+            "overall": round(ref_pt["overall"], 2),
+        },
+        "legs": legs,
+        "weakest": weakest["key"],
+        "leaders_per_leg": LEG_LEADERS,
+        "agreement": LEG_MOVE_AGREEMENT,
+    }
+
+
 # ── Confounding: what the marginal curve cannot tell you ─────────────────────────────
 #
 # A response curve is `median(Overall | lever = v)` — it marginalizes over whatever the
@@ -1595,6 +1805,7 @@ def landscape(
             "matched_pairs": [],
             "conditioned_curves": [],
             "basins": [],
+            "crown_legs": None,
             "reference": None,
             "best_overall": None,
             "profiles_modelled": len(points),
@@ -1661,6 +1872,16 @@ def landscape(
     if noise_floor is not None:
         for c in candidates:
             c["beats_noise"] = (c["predicted"] - best_established) > noise_floor
+    # Who leads each crown leg, and the move that would take the winner their way on the
+    # leg it loses on. Best-effort: a new section must never take the landscape down.
+    try:
+        legs = crown_legs(
+            field, points, axes, curves, pairs, tried, best_established,
+            list(field.get("overall_metrics") or []),
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("Explore: crown-leg leaders could not be computed")
+        legs = None
 
     return {
         "axes": sorted(axes.values(), key=lambda a: (a["pipe"], a["field"])),
@@ -1669,6 +1890,7 @@ def landscape(
         "matched_pairs": pairs,
         "conditioned_curves": conditioned_curves(points, axes, ref),
         "basins": basins(points, axes),
+        "crown_legs": legs,
         "reference": {
             "fingerprint": ref["fingerprint"],
             "name": ref["name"],

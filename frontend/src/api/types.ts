@@ -2692,8 +2692,84 @@ export interface ExploreLedger {
   quick_iterations: number;
 }
 
+// ── Leaders per crown leg ───────────────────────────────────────────────────
+// For each crown metric (whatever the methodology corners over right now): who leads it,
+// where the best profile stands on it, and the lever moves that would take the best
+// profile toward what the leaders do — each already measured (named) or runnable.
+
+export interface ExploreLegLeader {
+  fingerprint: string;
+  name: string | null;
+  label: string | null;
+  value: number;
+  overall: number;
+  iterations: number;
+  confident: boolean;
+  is_reference: boolean;
+}
+
+export interface ExploreLegMove {
+  key: string;
+  pipe: string;
+  field: string;
+  field_label: string;
+  unit: string | null;
+  from: number;
+  to: number;
+  direction: "up" | "down";
+  // Share of the compared leaders sitting on this side of the best profile's value.
+  agreement: number;
+  leaders_on_side: number;
+  leaders_compared: number;
+  why: string;
+  // The best profile with this lever moved already exists in the field — with its Overall
+  // and the gap to the reference, so "that direction was tried" is a real answer.
+  existing?: {
+    fingerprint: string;
+    name: string | null;
+    label: string;
+    overall: number;
+    iterations: number;
+    confident: boolean;
+    delta: number;
+  };
+  // Benchmarked before via the ledger but the firewall settled elsewhere.
+  already_measured?: boolean;
+  // Untested: the priced, runnable proposal.
+  candidate?: ExploreCandidate;
+}
+
+export interface ExploreCrownLeg {
+  key: string;
+  label: string;
+  unit: string;
+  higher_is_better: boolean;
+  leaders: ExploreLegLeader[];
+  reference: {
+    value: number | null;
+    rank: number | null;
+    of: number;
+    percentile: number | null;
+    leads: boolean;
+  };
+  confident_only: boolean;
+  moves: ExploreLegMove[];
+  // Every runnable move applied at once — the leaders' whole signature — when untested.
+  combined: ExploreCandidate | null;
+}
+
+export interface ExploreCrownLegs {
+  reference: { fingerprint: string; name: string | null; label: string; overall: number };
+  legs: ExploreCrownLeg[];
+  // The leg on which the reference stands lowest in the field.
+  weakest: string;
+  leaders_per_leg: number;
+  agreement: number;
+}
+
 export interface ExploreLandscape {
   axes: ExploreAxis[];
+  crown_legs?: ExploreCrownLegs | null;
   points: ExplorePoint[];
   curves: ExploreCurve[];
   interactions: ExploreInteraction[];

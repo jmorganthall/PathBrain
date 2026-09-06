@@ -71,6 +71,8 @@ import type {
   ExploreBasin,
   ExploreCandidate,
   ExploreConditionedCurve,
+  ExploreCrownLeg,
+  ExploreCrownLegs,
   ExploreCurve,
   ExploreGap,
   ExploreLandscape,
@@ -298,6 +300,314 @@ function CurveCard({
               )}
             </LineChart>
           </ResponsiveContainer>
+        </Box>
+      </CardContent>
+    </Card>
+  );
+}
+
+// A pair of test buttons for a runnable candidate — the same two lengths every proposal on
+// this page offers, so the leg moves below can't drift from the headline candidates.
+function TestButtons({
+  candidate,
+  what,
+  keyId,
+  onTest,
+  testing,
+  quickIterations,
+  minIterations,
+}: {
+  candidate: ExploreCandidate;
+  what: string;
+  keyId: string;
+  onTest: (c: ExploreCandidate, iterations: number | undefined, key: string) => void;
+  testing: boolean;
+  quickIterations: number;
+  minIterations: number | null;
+}) {
+  return (
+    <>
+      <Tooltip
+        title={`Measure it: ${what} — ${quickIterations} iterations, then your settings are restored. Predicted ${fmtNum(candidate.predicted, 1)} ± ${fmtNum(candidate.uncertainty, 1)}.`}
+      >
+        <span>
+          <Button
+            size="small"
+            variant="contained"
+            startIcon={testing ? <CircularProgress size={14} /> : <BoltIcon />}
+            disabled={testing}
+            onClick={() => onTest(candidate, quickIterations, keyId)}
+          >
+            Test now ({quickIterations})
+          </Button>
+        </span>
+      </Tooltip>
+      <Tooltip
+        title={`Run the full ${minIterations ?? "confidence"} iterations, so it can be ranked against the field rather than read as an early signal.`}
+      >
+        <span>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<ScienceIcon />}
+            disabled={testing}
+            onClick={() => onTest(candidate, undefined, keyId)}
+          >
+            Test to minimum
+          </Button>
+        </span>
+      </Tooltip>
+    </>
+  );
+}
+
+// One crown leg: who leads it, where the best profile stands, and the moves toward the
+// leaders. The crown metric set comes from the methodology at request time, so the panels
+// follow whatever the Overall corners over now.
+function CrownLegPanel({
+  leg,
+  weakest,
+  referenceName,
+  onTest,
+  testing,
+  quickIterations,
+  minIterations,
+}: {
+  leg: ExploreCrownLeg;
+  weakest: boolean;
+  referenceName: string;
+  onTest: (c: ExploreCandidate, iterations: number | undefined, key: string) => void;
+  testing: string | null;
+  quickIterations: number;
+  minIterations: number | null;
+}) {
+  const navigate = useNavigate();
+  const r = leg.reference;
+  const unit = leg.unit || null;
+  return (
+    <Box
+      sx={{
+        p: 1.5,
+        borderRadius: 2,
+        border: 1,
+        borderColor: weakest ? "warning.main" : "divider",
+        minWidth: 0,
+      }}
+    >
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+          {leg.label}
+        </Typography>
+        {r.leads ? (
+          <Chip size="small" color="success" label={`${referenceName} leads`} sx={{ height: 20 }} />
+        ) : (
+          <Chip
+            size="small"
+            variant="outlined"
+            color={weakest ? "warning" : "default"}
+            label={`${referenceName}: #${r.rank ?? "—"} of ${r.of}${r.percentile != null ? ` · p${Math.round(r.percentile)}` : ""}`}
+            sx={{ height: 20 }}
+          />
+        )}
+        {weakest && (
+          <Tooltip title="The leg on which the best profile stands lowest in the field — the one where the leaders have the most to teach it.">
+            <Chip size="small" color="warning" icon={<WarningAmberIcon />} label="weakest leg" sx={{ height: 20 }} />
+          </Tooltip>
+        )}
+      </Stack>
+
+      <Stack spacing={0.4} sx={{ mb: 1.25 }}>
+        {leg.leaders.map((l, i) => (
+          <Stack key={l.fingerprint} direction="row" spacing={1} alignItems="baseline" sx={{ minWidth: 0 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ width: 16, textAlign: "right", flexShrink: 0 }}>
+              {i + 1}
+            </Typography>
+            <Link
+              component="button"
+              underline="hover"
+              variant="body2"
+              onClick={() => navigate(`/profiles/${encodeURIComponent(l.fingerprint)}`)}
+              sx={{ minWidth: 0, textAlign: "left", fontWeight: l.is_reference ? 700 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}
+              title={l.label ?? undefined}
+            >
+              {l.name || l.label}
+            </Link>
+            <Typography variant="body2" sx={{ flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>
+              {fmtValue(l.value, unit)}
+            </Typography>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ flexShrink: 0, width: 84, textAlign: "right", whiteSpace: "nowrap" }}
+            >
+              Overall {fmtNum(l.overall, 1)}
+            </Typography>
+          </Stack>
+        ))}
+        {!leg.confident_only && (
+          <Typography variant="caption" color="text.disabled">
+            includes thin profiles — too few confident ones lead this leg yet
+          </Typography>
+        )}
+      </Stack>
+
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5, fontWeight: 600 }}>
+        Move {referenceName} their way
+      </Typography>
+      {leg.moves.length === 0 ? (
+        <Typography variant="caption" color="text.secondary">
+          {r.leads
+            ? "It already leads this leg — nothing to borrow."
+            : "The leaders run the same levers as the best profile; their edge on this leg isn't in a lever this field varies."}
+        </Typography>
+      ) : (
+        <Stack spacing={1}>
+          {leg.moves.map((mv) => {
+            const keyId = `leg:${leg.key}:${mv.key}`;
+            return (
+              <Box key={mv.key}>
+                <Typography variant="body2">
+                  <b>
+                    {mv.pipe} {mv.field_label}
+                  </b>{" "}
+                  {fmtValue(mv.from, mv.unit)} → <b>{fmtValue(mv.to, mv.unit)}</b>
+                  <Typography component="span" variant="caption" color="text.secondary">
+                    {" "}
+                    — {mv.why}
+                  </Typography>
+                </Typography>
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+                  {mv.existing && (
+                    <Tooltip title="That profile already exists in the field, so the question is answered by measurement rather than by a run: this is what moving that lever did.">
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={mv.existing.delta > 0 ? "success" : "default"}
+                        clickable
+                        onClick={() => navigate(`/profiles/${encodeURIComponent(mv.existing!.fingerprint)}`)}
+                        label={`already measured: ${mv.existing.name || mv.existing.label} · Overall ${fmtNum(mv.existing.overall, 1)} (${mv.existing.delta > 0 ? "+" : ""}${fmtNum(mv.existing.delta, 1)} vs best${mv.existing.confident ? "" : ", thin"})`}
+                        sx={{ height: 22, maxWidth: "100%" }}
+                      />
+                    </Tooltip>
+                  )}
+                  {mv.already_measured && (
+                    <Tooltip title="A benchmark has already been spent on this proposal (the firewall settled on a neighbouring profile), so it isn't offered again.">
+                      <Chip size="small" variant="outlined" label="benchmarked before" sx={{ height: 20 }} />
+                    </Tooltip>
+                  )}
+                  {mv.candidate && (
+                    <>
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={mv.candidate.beats_best_by > 0 ? "success" : "default"}
+                        label={`predicted ${fmtNum(mv.candidate.predicted, 1)} ± ${fmtNum(mv.candidate.uncertainty, 1)}`}
+                        sx={{ height: 20 }}
+                      />
+                      <TestButtons
+                        candidate={mv.candidate}
+                        what={`${referenceName} with ${mv.pipe} ${mv.field_label} set to ${fmtValue(mv.to, mv.unit)}`}
+                        keyId={keyId}
+                        onTest={onTest}
+                        testing={testing === keyId}
+                        quickIterations={quickIterations}
+                        minIterations={minIterations}
+                      />
+                    </>
+                  )}
+                </Stack>
+              </Box>
+            );
+          })}
+          {leg.combined && (
+            <Box sx={{ pt: 0.75, borderTop: 1, borderColor: "divider" }}>
+              <Typography variant="body2">
+                <b>All of the above at once</b>
+                <Typography component="span" variant="caption" color="text.secondary">
+                  {" "}
+                  — the leaders' whole signature; effects assumed to add, so the band is wider
+                </Typography>
+              </Typography>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  color={leg.combined.beats_best_by > 0 ? "success" : "default"}
+                  label={`predicted ${fmtNum(leg.combined.predicted, 1)} ± ${fmtNum(leg.combined.uncertainty, 1)}`}
+                  sx={{ height: 20 }}
+                />
+                <TestButtons
+                  candidate={leg.combined}
+                  what={`${referenceName} with every lever above moved`}
+                  keyId={`leg:${leg.key}:combined`}
+                  onTest={onTest}
+                  testing={testing === `leg:${leg.key}:combined`}
+                  quickIterations={quickIterations}
+                  minIterations={minIterations}
+                />
+              </Stack>
+            </Box>
+          )}
+        </Stack>
+      )}
+    </Box>
+  );
+}
+
+function CrownLegsCard({
+  legs,
+  onTest,
+  testing,
+  quickIterations,
+  minIterations,
+}: {
+  legs: ExploreCrownLegs;
+  onTest: (c: ExploreCandidate, iterations: number | undefined, key: string) => void;
+  testing: string | null;
+  quickIterations: number;
+  minIterations: number | null;
+}) {
+  const refName = legs.reference.name || legs.reference.label;
+  const weak = legs.legs.find((l) => l.key === legs.weakest);
+  return (
+    <Card sx={{ mb: 2 }}>
+      <CardContent>
+        <Typography variant="h6">Leaders per crown leg</Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+          The Overall is built from {legs.legs.map((l) => l.label).join(" · ")}. For each leg: who
+          leads it, where <b>{refName}</b> (the best profile, Overall {fmtNum(legs.reference.overall, 1)})
+          stands, and the lever moves that would take it toward what the leaders do
+          {weak && !weak.reference.leads ? (
+            <>
+              {" "}— it loses the most ground on <b>{weak.label}</b>
+              {weak.reference.rank != null ? ` (#${weak.reference.rank} of ${weak.reference.of})` : ""}.
+            </>
+          ) : (
+            "."
+          )}
+          <HelpTip
+            title={`Top ${legs.leaders_per_leg} confident profiles per crown metric. A move is proposed when at least ${Math.round(legs.agreement * 100)}% of those leaders run a lever on the same side of the best profile's value; the target is the leaders' median on that side, snapped to a value the firewall can hold. If that profile already exists it is named with its measured Overall instead of being proposed again; otherwise it is priced by the same model as the headline candidates and can be run from here.`}
+          />
+        </Typography>
+        <Box
+          sx={{
+            display: "grid",
+            gap: 1.5,
+            gridTemplateColumns: { xs: "1fr", md: `repeat(${Math.min(legs.legs.length, 3)}, minmax(0, 1fr))` },
+          }}
+        >
+          {legs.legs.map((leg) => (
+            <CrownLegPanel
+              key={leg.key}
+              leg={leg}
+              weakest={leg.key === legs.weakest && !leg.reference.leads}
+              referenceName={refName}
+              onTest={onTest}
+              testing={testing}
+              quickIterations={quickIterations}
+              minIterations={minIterations}
+            />
+          ))}
         </Box>
       </CardContent>
     </Card>
@@ -1383,6 +1693,17 @@ export default function Explore() {
               )}
             </CardContent>
           </Card>
+
+          {/* ── Who leads each crown leg, and how to move the winner their way ── */}
+          {data.crown_legs && data.crown_legs.legs.length > 0 && (
+            <CrownLegsCard
+              legs={data.crown_legs}
+              onTest={test}
+              testing={testing}
+              quickIterations={quickIterations}
+              minIterations={minIterations}
+            />
+          )}
 
           {/* ── Was the data right? ────────────────────────────────────────────── */}
           {ledger && ledger.recommendations.length > 0 && <RecommendationLedger ledger={ledger} />}

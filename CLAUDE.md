@@ -1862,7 +1862,23 @@ LLM-based. See `README.md` for the product overview.
   predict better than confounded curves? on your link, measured), a response curve per lever per pipe (marginal solid + reference-conditioned dashed,
   with a **confounded** chip where the two disagree), **"What changing one lever actually did"**
   (the matched-pair contrasts), **local optima** (coupled-basin detection), the holes in
-  coverage, and the lever pairs that genuinely interact; fetched on demand, read-only apart
+  coverage, the lever pairs that genuinely interact, and **"Leaders per crown leg"**
+  (`explore.crown_legs`, response `crown_legs`): for each crown metric — read from the
+  methodology at request time, so it follows whatever the Overall corners over now — the
+  top-`LEG_LEADERS` confident profiles on that leg, where the best profile stands on it
+  (rank / field percentile; the leg it stands lowest on is `weakest`), and the **"move the
+  best profile their way"** proposals: a lever is a move when ≥ `LEG_MOVE_AGREEMENT` (60%) of
+  the leg's leaders run it on the same side of the best profile's value, the target being the
+  leaders' median on that side coerced + snapped to a value the firewall can hold. Each move is
+  resolved against the field first — if the best profile with that lever moved **already
+  exists** it is named with its Overall and the gap to the best (an answered question, not a
+  proposal); a coordinate the ledger has already spent a benchmark on is marked
+  `already_measured`; only a genuinely untested one becomes a runnable candidate, priced by
+  the same `_candidate_dict` as the headline list so its "Test now" posts the identical
+  payload. The leaders' whole signature (every runnable move at once) is offered as a
+  `combined` multi-lever candidate when untested. This answers the "good on two legs, the
+  third struggles — what do the profiles that win the third one do differently?" question the
+  value-gap candidates cannot; fetched on demand, read-only apart
   from the test button. **The long sections grow with the field, so they page**: a lever with
   twenty tested values has 190 possible one-lever transitions and a 150-profile field holds
   dozens of local optima — printed whole that's a wall nobody reads, which is the same as not
