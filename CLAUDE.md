@@ -1488,6 +1488,18 @@ LLM-based. See `README.md` for the product overview.
     no data on are still folded in as `no_data` entries; with no crown at all every stored
     profile is seeded, as before. `test_the_seed_still_applies_once_the_firewalls_own_profile_is_crowned`
     pins it: the current crown defends, the prior's best unmeasured profile challenges first.
+    **The seed is cached, because it is now read on every page load** (`refresh._PROFILES_CACHE`
+    / `_PRIOR_CACHE`, dropped by `invalidate_seed_cache` from the same hook as the field memo).
+    Ungating the seed made `seed_field_from_prior` run on every Settings-Impact load and every
+    ladder session, and it decoded every completed run's `settings` blob (`list_profiles`, ~120k
+    JSON documents to keep ~150) plus every prior-version score row, in pure Python with the GIL
+    held — the *"couldn't reach the server"* report the morning after #226 landed. The profile
+    list is keyed on the newest run id and **topped up** from the rows that arrived since (one
+    indexed range query); the prior field is memoized on the prior versions' score stamp (count,
+    max id, max `computed_at`). Both verify themselves: the count catches vanished rows, and the
+    fingerprint at the cached max id catches a cache filled from a session that later rolled back
+    (SQLite re-issues those ids to the next rows, so max id and count can both match while the
+    rows differ) — checked on the fast path too, one primary-key lookup. Either → full rebuild.
   - **`compute_profiles` is memoized** (`api/routes_settings.py`: `_field_stamp` /
     `invalidate_profiles_cache`). It is the most expensive thing PathBrain does — it walks
     every completed run, decodes each one's stored scalars, re-normalizes the crown against
