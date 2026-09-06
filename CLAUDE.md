@@ -368,6 +368,17 @@ LLM-based. See `README.md` for the product overview.
     an unpriceable queued job has no basis to read it off) so the client renders it **standing
     still** ("20m once it starts", `JobStatus.QueuedEta`) rather than ticking. `started_at` is
     written at the PENDING → RUNNING transition, so the countdown starts when the job does.
+    **The unit cost is read recent-first** (`iteration_cost.py`): the `measured` basis, the
+    Dashboard's run ETA (`GET /runs/estimate`) and the re-run preview all multiply out ONE
+    number — what an iteration costs — and it used to be a flat mean of the last five runs
+    whatever their age, which is wrong exactly when an ETA matters: after anything changes
+    what a run does, a run from ninety minutes ago describes a different job. Now a ladder:
+    runs finished in the last 30 min (newest first, until 10 iterations are in hand, needing
+    at least 3) → the same over 6 h → the last 5 runs regardless of age → `None`. Within a
+    tier it is the **iteration-weighted median** (a 5-iteration run is five observations; a
+    median so one run that sat on a hung probe until its deadline can't double every
+    countdown after it). The estimate endpoint reports which tier answered (`basis`), how
+    many iterations it rests on and how old the newest evidence is.
     **A job about a profile says WHICH profile** (`routes_jobs._call_sign`): the feed used to
     print the technical settings summary — *"leader Download: 880Mbit q3550 t3 i60 ecn | Upload:
     880Mbit q500 t3 i60 ecn"*, three wrapped lines on a phone that never name the profile — so

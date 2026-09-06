@@ -28,6 +28,12 @@ export interface RunSummary {
 export interface RunEstimate {
   per_iteration_ms: number | null;
   based_on_runs: number;
+  // Which tier of the recent-first ladder answered ("recent" = last 30 min, "today" = last
+  // 6 h, "history" = the last few runs whatever their age), and what it rests on.
+  basis?: "recent" | "today" | "history" | null;
+  based_on_iterations?: number;
+  window_minutes?: number | null;
+  newest_age_s?: number | null;
   default_iterations: number;
   max_iterations: number;
 }

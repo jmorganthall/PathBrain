@@ -67,15 +67,13 @@ def _call_sign(session: Session, fingerprint: str | None) -> str | None:
 
 
 def _per_iteration_estimate(session: Session) -> float | None:
-    """Avg per-iteration duration (ms) over recent completed runs, for ETAs."""
-    rows = session.scalars(
-        select(Run)
-        .where(Run.status == RunStatus.COMPLETE, Run.per_iteration_ms.is_not(None))
-        .order_by(Run.created_at.desc())
-        .limit(5)
-    ).all()
-    vals = [r.per_iteration_ms for r in rows if r.per_iteration_ms]
-    return sum(vals) / len(vals) if vals else None
+    """The cost of one iteration (ms) for the ``measured`` basis — recent runs first, older
+    history as a fallback, iteration-weighted median (``iteration_cost``). The one number
+    every countdown here multiplies out, so all of them move together the moment the work
+    changes shape."""
+    from ..iteration_cost import estimate_ms
+
+    return estimate_ms(session)
 
 
 def _fmt_eta(ms: float) -> str:
