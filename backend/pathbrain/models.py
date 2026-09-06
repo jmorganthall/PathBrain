@@ -886,8 +886,8 @@ class PortableRun(Base):
     # verdict is auditable.
     is_home: Mapped[bool] = mapped_column(Boolean, default=False)
     home_detection: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    egress_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    home_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    egress_ip: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    home_ip: Mapped[str | None] = mapped_column(String(96), nullable=True)
     # Hash of the recipe + derive version — the second stamp (``portable.instrument_version``).
     instrument_version: Mapped[str] = mapped_column(String(24))
     # Browser/device facts the page could read (user agent, platform, viewport, connection).

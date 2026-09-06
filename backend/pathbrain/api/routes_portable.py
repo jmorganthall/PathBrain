@@ -60,33 +60,67 @@ def _request_ip(request: Request) -> str | None:
 
 
 @router.get("/portable/home")
-def portable_home(request: Request, session: Session = Depends(get_session)) -> dict:
-    """What "home" looks like from the internet, for detection: the home WAN address (stated
-    in config or looked up by the server), the lookup URL the page should ask for its own
-    egress, and — as a fallback where that lookup is blocked — the address this request came
-    from, flagged public or not (a private/CGNAT source is a LAN or tunnel address and says
-    nothing about where the device's internet traffic leaves)."""
+def portable_home(
+    request: Request,
+    egress_ip: str | None = Query(default=None),
+    egress_ip_v6: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+) -> dict:
+    """What "home" looks like from the internet, for detection: the home WAN address per
+    family (stated in config or looked up by the server), the lookup URLs the page should ask
+    for its own egress, and — as a fallback where those lookups are blocked — the address
+    this request came from, flagged public or not (a private/CGNAT source is a LAN or tunnel
+    address and says nothing about where the device's internet traffic leaves). Pass the
+    device's ``egress_ip`` / ``egress_ip_v6`` to get the verdict (``detected`` /
+    ``detected_by`` / ``reason``) from the one ``decide_home`` the upload will use."""
     cfg = get_config(session)
-    home = portable.home_ip(cfg)
+    pc = portable.portable_config(cfg)
+    home = portable.home_addresses(cfg)
     rip = _request_ip(request)
-    return {
-        "home_ip": home["ip"],
+    out = {
+        "home_ip": home["v4"],
+        "home_ip_v6": home["v6"],
         "source": home["source"],
         "checked_at": home["checked_at"],
-        "error": home["error"],
-        "lookup_url": portable.portable_config(cfg).get("ip_lookup_url") or None,
+        "errors": home["errors"],
+        "lookup_url": pc.get("ip_lookup_url") or None,
+        "lookup_url_v6": pc.get("ip_lookup_url_v6") or None,
+        "v6_prefix": int(pc.get("home_ipv6_prefix") or 64),
         "request_ip": rip,
         "request_ip_public": portable.is_public_ip(rip),
+        "detected": None,
+        "detected_by": None,
+        "reason": None,
     }
+    if egress_ip or egress_ip_v6:
+        egress = portable.split_families(egress_ip, egress_ip_v6)
+        try:
+            is_home, by = portable.decide_home(None, egress, home, v6_prefix=out["v6_prefix"])
+        except ValueError as exc:
+            out["reason"] = str(exc)
+        else:
+            fam = "IPv4" if by == "ip4" else "IPv6"
+            e, h = egress["v4" if by == "ip4" else "v6"], home["v4" if by == "ip4" else "v6"]
+            out.update({
+                "detected": is_home,
+                "detected_by": by,
+                "reason": (
+                    f"this device leaves the internet through the same {fam} {'address' if by == 'ip4' else 'network'} as PathBrain ({e})"
+                    if is_home
+                    else f"this device's public {fam} ({e}) is not home's ({h})"
+                ),
+            })
+    return out
 
 
 @router.post("/portable/runs", status_code=201)
 def portable_upload(body: PortableRunCreate, session: Session = Depends(get_session)) -> dict:
     cfg = get_config(session)
     current = portable.recipe(cfg)["instrument_version"]
-    home = portable.home_ip(cfg)["ip"] if body.is_home is None else None
+    home = portable.home_addresses(cfg) if body.is_home is None else None
+    v6_prefix = int(portable.portable_config(cfg).get("home_ipv6_prefix") or 64)
     try:
-        run = portable.build_run(body.model_dump(), current, home=home)
+        run = portable.build_run(body.model_dump(), current, home=home, v6_prefix=v6_prefix)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not run.device_id:

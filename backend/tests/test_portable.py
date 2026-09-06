@@ -306,9 +306,9 @@ def test_portable_runs_never_touch_the_pooled_ledger(client, clean):
 
 
 def test_decide_home_by_egress_address():
-    # Same public egress as the home WAN → home; a different one → away.
-    assert portable.decide_home(None, "8.8.8.8", "8.8.8.8") == (True, "ip")
-    assert portable.decide_home(None, "1.1.1.1", "8.8.8.8") == (False, "ip")
+    # Same public IPv4 egress as the home WAN → home; a different one → away.
+    assert portable.decide_home(None, "8.8.8.8", "8.8.8.8") == (True, "ip4")
+    assert portable.decide_home(None, "1.1.1.1", "8.8.8.8") == (False, "ip4")
     # An explicit answer overrides detection either way.
     assert portable.decide_home(True, "1.1.1.1", "8.8.8.8") == (True, "manual")
     assert portable.decide_home(False, "8.8.8.8", "8.8.8.8") == (False, "manual")
@@ -324,40 +324,106 @@ def test_decide_home_by_egress_address():
         portable.decide_home(None, "100.101.102.103", "8.8.8.8")  # Tailscale/CGNAT
 
 
+def test_decide_home_across_address_families():
+    home = {"v4": "8.8.8.8", "v6": "2001:4860:4860::8888"}
+    # IPv6 hosts never share an address, they share the prefix: another host in the home /64 is home.
+    assert portable.decide_home(None, {"v6": "2001:4860:4860::beef"}, home) == (True, "ip6")
+    # A different /64 is away.
+    assert portable.decide_home(None, {"v6": "2001:4860:4860:1::1"}, home) == (False, "ip6")
+    # The reported case: the device answers IPv6, the server IPv4 → nothing comparable → refuse.
+    with pytest.raises(ValueError):
+        portable.decide_home(None, {"v6": "2001:4860:4860::beef"}, {"v4": "8.8.8.8"})
+    # ...and the fix: ask both families on both sides, so one of them can decide.
+    assert portable.decide_home(None, {"v4": "8.8.8.8", "v6": "2001:4860:4860::beef"}, {"v4": "8.8.8.8"}) == (True, "ip4")
+    assert portable.decide_home(None, {"v6": "2001:4860:4860::beef"}, home) == (True, "ip6")
+    # Either family matching means home: a CGNAT can hand flows different public v4s while
+    # the v6 prefix stays the home's.
+    assert portable.decide_home(None, {"v4": "1.1.1.1", "v6": "2001:4860:4860::beef"}, home) == (True, "ip6")
+    # Both known, neither matching → away (reported on the v4 comparison).
+    assert portable.decide_home(None, {"v4": "1.1.1.1", "v6": "2001:4860:4860:1::1"}, home) == (False, "ip4")
+    # The prefix length is a setting: at /48 the "other" /64 above is inside the home delegation.
+    assert portable.decide_home(None, {"v6": "2001:4860:4860:1::1"}, home, v6_prefix=48) == (True, "ip6")
+
+
+def test_split_families_files_addresses_by_what_they_are():
+    fams = portable.split_families("8.8.8.8", "2001:4860:4860::8888")
+    assert fams == {"v4": "8.8.8.8", "v6": "2001:4860:4860::8888"}
+    # A v6 lookup that answered v4 (dual-stack service on a v4-only network) lands under v4.
+    assert portable.split_families(None, "1.1.1.1") == {"v4": "1.1.1.1", "v6": None}
+    # Config may state both in one string; non-public tokens are ignored.
+    assert portable.split_families("8.8.8.8, 2001:4860:4860::8888 192.168.0.1") == {"v4": "8.8.8.8", "v6": "2001:4860:4860::8888"}
+    assert portable.describe_addresses(fams) == "8.8.8.8 / 2001:4860:4860::8888"
+
+
 def test_public_ip_classification():
     assert portable.is_public_ip("203.0.113.7") is False  # TEST-NET-3 is reserved, not routable
     assert portable.is_public_ip("8.8.8.8") is True
     assert portable.is_public_ip("2001:4860:4860::8888") is True
-    for private in ("10.0.0.1", "192.168.1.1", "172.16.5.5", "127.0.0.1", "169.254.1.1", "100.64.0.1", "fe80::1", "", "nope"):
+    for private in ("10.0.0.1", "192.168.1.1", "172.16.5.5", "127.0.0.1", "169.254.1.1", "100.64.0.1", "fe80::1", "fd00::1", "", "nope"):
         assert portable.is_public_ip(private) is False, private
+    assert portable.address_family("8.8.8.8") == "v4" and portable.address_family("2001:4860:4860::8888") == "v6"
+    assert portable.address_family("10.0.0.1") is None
 
 
-def test_home_ip_prefers_config_then_cached_lookup(monkeypatch):
+def test_home_addresses_prefer_config_then_cached_lookup(monkeypatch):
     portable.reset_home_ip_cache()
-    assert portable.home_ip({"portable": {"home_ip": "8.8.4.4"}})["ip"] == "8.8.4.4"
-    bad = portable.home_ip({"portable": {"home_ip": "192.168.0.1"}})
-    assert bad["ip"] is None and "not a public" in bad["error"]
+    cfg = portable.home_addresses({"portable": {"home_ip": "8.8.4.4 2001:4860:4860::8844"}})
+    assert cfg["v4"] == "8.8.4.4" and cfg["v6"] == "2001:4860:4860::8844" and cfg["source"] == "config"
+    bad = portable.home_addresses({"portable": {"home_ip": "192.168.0.1"}})
+    assert bad["v4"] is None and bad["v6"] is None and "no public address" in bad["errors"]["config"]
     calls = []
-    monkeypatch.setattr(portable, "_lookup_egress", lambda url, timeout=5.0: calls.append(url) or "8.8.8.8")
-    a = portable.home_ip({}, now=1000.0)
-    b = portable.home_ip({}, now=1000.0 + 60)
-    assert a["ip"] == b["ip"] == "8.8.8.8" and a["source"] == "lookup" and len(calls) == 1
-    portable.home_ip({}, now=1000.0 + portable.HOME_IP_TTL_S + 1)
-    assert len(calls) == 2
+
+    def fake(url, timeout=5.0):
+        calls.append(url)
+        return "2001:4860:4860::8888" if "v6" in url else "8.8.8.8"
+
+    monkeypatch.setattr(portable, "_lookup_egress", fake)
+    a = portable.home_addresses({"portable": {"ip_lookup_url": "https://v4.example", "ip_lookup_url_v6": "https://v6.example"}}, now=1000.0)
+    b = portable.home_addresses({"portable": {"ip_lookup_url": "https://v4.example", "ip_lookup_url_v6": "https://v6.example"}}, now=1060.0)
+    assert a["v4"] == b["v4"] == "8.8.8.8" and a["v6"] == "2001:4860:4860::8888" and a["source"] == "lookup"
+    assert len(calls) == 2  # one per family, then cached
+    portable.home_addresses({"portable": {"ip_lookup_url": "https://v4.example", "ip_lookup_url_v6": "https://v6.example"}}, now=1000.0 + portable.HOME_IP_TTL_S + 1)
+    assert len(calls) == 4
+    portable.reset_home_ip_cache()
+    # A v4-only home: the v6 lookup fails and is reported per family, v4 still decides.
+    def v4_only(url, timeout=5.0):
+        if "v6" in url:
+            raise OSError("network unreachable")
+        return "8.8.8.8"
+
+    monkeypatch.setattr(portable, "_lookup_egress", v4_only)
+    h = portable.home_addresses({"portable": {"ip_lookup_url": "https://v4.example", "ip_lookup_url_v6": "https://v6.example"}}, now=5000.0)
+    assert h["v4"] == "8.8.8.8" and h["v6"] is None and "OSError" in h["errors"]["v6"]
     portable.reset_home_ip_cache()
 
 
 def test_api_detects_home_from_addresses(client, clean, monkeypatch):
-    monkeypatch.setattr(portable, "home_ip", lambda cfg, now=None: {"ip": "8.8.8.8", "source": "config", "checked_at": None, "error": None})
+    monkeypatch.setattr(
+        portable, "home_addresses",
+        lambda cfg, now=None: {"v4": "8.8.8.8", "v6": "2001:4860:4860::8888", "source": "config", "checked_at": None, "errors": {}},
+    )
     body = {"device_id": "auto-phone", "instrument_version": VERSION, "raw": make_raw()}
     home = client.post("/api/portable/runs", json={**body, "egress_ip": "8.8.8.8"}).json()
-    assert home["is_home"] is True and home["home_detection"] == "ip" and home["settings_fingerprint"]
+    assert home["is_home"] is True and home["home_detection"] == "ip4" and home["settings_fingerprint"]
     away = client.post("/api/portable/runs", json={**body, "egress_ip": "1.1.1.1", "venue": "Hotel"}).json()
-    assert away["is_home"] is False and away["home_detection"] == "ip" and away["home_ip"] == "8.8.8.8"
+    assert away["is_home"] is False and away["home_detection"] == "ip4"
+    assert away["home_ip"] == "8.8.8.8 / 2001:4860:4860::8888" and away["egress_ip"] == "1.1.1.1"
+    # The IPv4/IPv6 case: the device only knows its v6 egress; the home /64 decides.
+    v6 = client.post("/api/portable/runs", json={**body, "egress_ip_v6": "2001:4860:4860::c0fe"}).json()
+    assert v6["is_home"] is True and v6["home_detection"] == "ip6"
     forced = client.post("/api/portable/runs", json={**body, "egress_ip": "1.1.1.1", "is_home": True}).json()
     assert forced["is_home"] is True and forced["home_detection"] == "manual"
     undetectable = client.post("/api/portable/runs", json={**body, "egress_ip": "192.168.1.5"})
     assert undetectable.status_code == 409 and "choose Home or Away" in undetectable.json()["detail"]
+
     info = client.get("/api/portable/home", headers={"x-forwarded-for": "9.9.9.9, 10.0.0.2"}).json()
-    assert info["home_ip"] == "8.8.8.8" and info["request_ip"] == "9.9.9.9" and info["request_ip_public"] is True
-    assert info["lookup_url"]
+    assert info["home_ip"] == "8.8.8.8" and info["home_ip_v6"] == "2001:4860:4860::8888"
+    assert info["request_ip"] == "9.9.9.9" and info["request_ip_public"] is True
+    assert info["lookup_url"] and info["lookup_url_v6"] and info["v6_prefix"] == 64 and info["detected"] is None
+    # The page asks the server for the verdict, so the preview and the upload use one rule.
+    v = client.get("/api/portable/home", params={"egress_ip": "1.1.1.1", "egress_ip_v6": "2001:4860:4860::1"}).json()
+    assert v["detected"] is True and v["detected_by"] == "ip6" and "IPv6" in v["reason"]
+    v = client.get("/api/portable/home", params={"egress_ip": "1.1.1.1"}).json()
+    assert v["detected"] is False and v["detected_by"] == "ip4"
+    v = client.get("/api/portable/home", params={"egress_ip": "10.0.0.5"}).json()
+    assert v["detected"] is None and "choose Home or Away" in v["reason"]

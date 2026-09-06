@@ -308,24 +308,32 @@ export default function Away() {
     const m = readStorage(MODE_KEY, "auto");
     return m === "home" || m === "away" ? m : "auto";
   });
-  // Home detection: the device's public egress vs the home WAN address (see portable.decide_home).
+  // Home detection: the device's public egress vs the home WAN, per address family (see
+  // portable.decide_home). Both families are asked, because a dual-stack device can answer
+  // one while the server answers the other; the SERVER renders the verdict so the preview
+  // here and the upload apply one rule.
   const [homeInfo, setHomeInfo] = useState<PortableHome | null>(null);
-  const [egress, setEgress] = useState<string | null | undefined>(undefined); // undefined = looking
-  const detected: boolean | null =
-    homeInfo?.home_ip && egress ? egress === homeInfo.home_ip : null;
+  const [egress, setEgress] = useState<{ v4: string | null; v6: string | null } | null | undefined>(undefined); // undefined = looking
+  const detected: boolean | null = homeInfo?.detected ?? null;
   const isHome = mode === "home" ? true : mode === "away" ? false : detected;
 
   const detect = useCallback(async () => {
     setEgress(undefined);
     try {
       const info = await api.portableHome();
-      setHomeInfo(info);
-      let ip = info.lookup_url ? await egressIp(info.lookup_url) : null;
-      // Fallback where the lookup is blocked: the address PathBrain saw this request come
+      const [v4, v6] = await Promise.all([
+        info.lookup_url ? egressIp(info.lookup_url) : Promise.resolve(null),
+        info.lookup_url_v6 ? egressIp(info.lookup_url_v6) : Promise.resolve(null),
+      ]);
+      // Fallback where the lookups are blocked: the address PathBrain saw this request come
       // from — meaningful only when it is a public address (a LAN or tunnel source says
       // nothing about where the device's internet traffic leaves).
-      if (!ip && info.request_ip_public) ip = info.request_ip;
-      setEgress(ip);
+      const fallback = !v4 && !v6 && info.request_ip_public ? info.request_ip : null;
+      const found = { v4: v4 ?? (fallback && !fallback.includes(":") ? fallback : null), v6: v6 ?? (fallback && fallback.includes(":") ? fallback : null) };
+      setEgress(found);
+      setHomeInfo(
+        found.v4 || found.v6 ? await api.portableHome({ egress_ip: found.v4, egress_ip_v6: found.v6 }) : info,
+      );
     } catch {
       setEgress(null);
     }
@@ -379,7 +387,8 @@ export default function Away() {
         device_label: label.trim() || null,
         venue: isHome ? null : venue.trim() || null,
         is_home: mode === "auto" ? null : mode === "home",
-        egress_ip: egress ?? null,
+        egress_ip: egress?.v4 ?? null,
+        egress_ip_v6: egress?.v6 ?? null,
         instrument_version: recipe.instrument_version,
         tz_offset_minutes: tzOffsetMinutes(),
         client: clientInfo(),
@@ -504,12 +513,14 @@ export default function Away() {
                   {egress === undefined
                     ? "Detecting where you are…"
                     : detected === true
-                      ? `Detected: home — this device leaves the internet through the same address as PathBrain (${egress}).`
+                      ? `Detected: home — ${homeInfo?.reason}.`
                       : detected === false
-                        ? `Detected: away — this device's public address (${egress}) is not home's (${homeInfo?.home_ip}).`
-                        : homeInfo?.home_ip
-                          ? "Couldn't read this device's public address (the lookup may be blocked here) — choose Home or Away."
-                          : `Home address unknown${homeInfo?.error ? ` (${homeInfo.error})` : ""} — set portable.home_ip in Config or choose Home or Away.`}
+                        ? `Detected: away — ${homeInfo?.reason}.`
+                        : homeInfo?.home_ip || homeInfo?.home_ip_v6
+                          ? egress?.v4 || egress?.v6
+                            ? `Couldn't compare: ${homeInfo?.reason ?? "no address family is known on both sides"}. Choose Home or Away.`
+                            : "Couldn't read this device's public address (the lookup may be blocked here) — choose Home or Away."
+                          : `Home address unknown${Object.values(homeInfo?.errors ?? {})[0] ? ` (${Object.values(homeInfo!.errors)[0]})` : ""} — set portable.home_ip in Config or choose Home or Away.`}
                   {mode !== "auto" && " Overriding detection."}
                 </Typography>
               </Box>
@@ -581,12 +592,22 @@ export default function Away() {
               )}
               <Tooltip
                 title={
-                  result.home_detection === "ip"
-                    ? `public address ${result.egress_ip ?? "?"} vs home ${result.home_ip ?? "?"}`
+                  result.home_detection && result.home_detection !== "manual"
+                    ? `device ${result.egress_ip ?? "?"} vs home ${result.home_ip ?? "?"}`
                     : "chosen by hand"
                 }
               >
-                <Chip size="small" variant="outlined" label={result.home_detection === "ip" ? "detected by address" : "set manually"} />
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={
+                    result.home_detection === "ip4"
+                      ? "detected by IPv4 address"
+                      : result.home_detection === "ip6"
+                        ? "detected by IPv6 prefix"
+                        : "set manually"
+                  }
+                />
               </Tooltip>
               {result.settings_summary && <Chip size="small" variant="outlined" label={result.settings_summary} />}
             </Stack>

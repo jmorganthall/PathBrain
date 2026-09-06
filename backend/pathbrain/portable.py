@@ -100,8 +100,19 @@ DEFAULT_CONFIG: dict = {
     # the device's traffic leaves through the tuned firewall — which is what "home" means for
     # shaping. Any JSON endpoint answering ``{"ip": "..."}`` with CORS ``*`` works.
     "ip_lookup_url": "https://api.ipify.org?format=json",
-    # The home WAN address, when you would rather state it than have the server look it up
-    # (a server whose own egress isn't the home WAN — say a NAS behind its own tunnel).
+    # The same question over IPv6 (a v6-only service, so the answer is the v6 egress). A
+    # dual-stack device may reach the v4 service over v4 and still have a v6 address, and a
+    # v6-only or CGNAT'd network may make v4 useless — so BOTH families are asked and either
+    # may decide (``decide_home``). Best-effort: a v4-only network simply fails this one.
+    "ip_lookup_url_v6": "https://api6.ipify.org?format=json",
+    # IPv6 hosts on one network never share an *address* (every host gets its own), they
+    # share a *prefix*: the delegated /64 (or a VLAN's /64 out of a wider delegation). Two
+    # v6 addresses within this prefix length count as the same network. 64 is the safe
+    # default — wider (56) would also match a neighbour on an ISP that delegates /64s.
+    "home_ipv6_prefix": 64,
+    # The home WAN address(es), when you would rather state them than have the server look
+    # them up (a server whose own egress isn't the home WAN — say a NAS behind its own
+    # tunnel). One or two addresses, IPv4 and/or IPv6, separated by a comma or space.
     "home_ip": "",
     "resources": DEFAULT_RESOURCES,
     "stream": DEFAULT_STREAM,
@@ -200,19 +211,40 @@ def score_metrics(metrics: dict) -> tuple[float | None, dict[str, float]]:
 # ── home detection ───────────────────────────────────────────────────────────
 
 HOME_IP_TTL_S = 3600.0
-_home_ip_cache: dict = {"ip": None, "source": None, "checked_at": None, "error": None}
+FAMILIES = ("v4", "v6")
+_home_cache: dict = {"v4": None, "v6": None, "checked_at": None, "errors": {}}
 
 
 def is_public_ip(ip: str | None) -> bool:
     """A globally routable address — i.e. what a device looks like from the internet. Private
-    (RFC1918), loopback, link-local and carrier-grade NAT (100.64/10, what Tailscale hands out)
-    all read False: a request arriving from one of those says "LAN or tunnel", not where the
-    device's internet traffic actually leaves."""
+    (RFC1918), loopback, link-local, ULA and carrier-grade NAT (100.64/10, what Tailscale hands
+    out) all read False: a request arriving from one of those says "LAN or tunnel", not where
+    the device's internet traffic actually leaves."""
     try:
         addr = ipaddress.ip_address((ip or "").strip())
     except ValueError:
         return False
     return addr.is_global
+
+
+def address_family(ip: str | None) -> str | None:
+    """``"v4"`` / ``"v6"`` for a public address, else None."""
+    if not is_public_ip(ip):
+        return None
+    return "v6" if ipaddress.ip_address(ip.strip()).version == 6 else "v4"
+
+
+def split_families(*ips: str | None) -> dict[str, str | None]:
+    """File each public address under its actual family (first per family wins) — the
+    caller need not know which family a lookup answered with (a dual-stack service may
+    answer v4 to a v6 question, and a plain-text service says nothing about itself)."""
+    out: dict[str, str | None] = {"v4": None, "v6": None}
+    for raw in ips:
+        for token in str(raw or "").replace(",", " ").split():
+            fam = address_family(token)
+            if fam and out[fam] is None:
+                out[fam] = token.strip()
+    return out
 
 
 def _lookup_egress(url: str, timeout: float = 5.0) -> str | None:
@@ -227,60 +259,107 @@ def _lookup_egress(url: str, timeout: float = 5.0) -> str | None:
     return ip if is_public_ip(ip) else None
 
 
-def home_ip(cfg: dict | None, *, now: float | None = None) -> dict:
-    """The home network's public address — ``{"ip", "source", "checked_at", "error"}``.
+def home_addresses(cfg: dict | None, *, now: float | None = None) -> dict:
+    """The home network's public addresses, per family —
+    ``{"v4", "v6", "source", "checked_at", "errors": {family: why}}``.
 
-    ``portable.home_ip`` in config wins (``source="config"``); otherwise the server asks the
-    lookup service for its own egress (``source="lookup"``, cached ``HOME_IP_TTL_S``): PathBrain
-    runs at home, so its egress *is* the home WAN. Best-effort — ``ip`` is None when neither
-    is available, and detection then falls back to the user's own choice."""
+    ``portable.home_ip`` in config wins (``source="config"``; one or two addresses); otherwise
+    the server asks each lookup service for its own egress (``source="lookup"``, cached
+    ``HOME_IP_TTL_S``): PathBrain runs at home, so its egress *is* the home WAN. Best-effort per
+    family — a v4-only home simply has no v6 — and detection falls back to the user's own
+    choice only when no family can be compared."""
     pc = portable_config(cfg)
     stated = str(pc.get("home_ip") or "").strip()
     if stated:
-        ok = is_public_ip(stated)
-        return {"ip": stated if ok else None, "source": "config", "checked_at": None,
-                "error": None if ok else f"configured home_ip {stated!r} is not a public address"}
+        fams = split_families(stated)
+        errors = {} if (fams["v4"] or fams["v6"]) else {"config": f"configured home_ip {stated!r} holds no public address"}
+        return {**fams, "source": "config", "checked_at": None, "errors": errors}
     t = time.time() if now is None else now
-    c = _home_ip_cache
-    if c["checked_at"] is not None and t - c["checked_at"] < HOME_IP_TTL_S and (c["ip"] or c["error"]):
-        return {"ip": c["ip"], "source": c["source"], "checked_at": c["checked_at"], "error": c["error"]}
-    url = str(pc.get("ip_lookup_url") or "").strip()
-    ip = error = None
-    if url:
+    c = _home_cache
+    if c["checked_at"] is not None and t - c["checked_at"] < HOME_IP_TTL_S and (c["v4"] or c["v6"] or c["errors"]):
+        return {"v4": c["v4"], "v6": c["v6"], "source": "lookup" if (c["v4"] or c["v6"]) else None,
+                "checked_at": c["checked_at"], "errors": dict(c["errors"])}
+    found: dict[str, str | None] = {"v4": None, "v6": None}
+    errors: dict[str, str] = {}
+    for fam, key in (("v4", "ip_lookup_url"), ("v6", "ip_lookup_url_v6")):
+        url = str(pc.get(key) or "").strip()
+        if not url:
+            errors[fam] = f"no {key} configured"
+            continue
         try:
             ip = _lookup_egress(url)
-            if ip is None:
-                error = "lookup returned no public address"
         except Exception as exc:  # noqa: BLE001 — best-effort, reported not raised
-            error = f"{type(exc).__name__}: {exc}"
-            log.warning("Portable: home IP lookup via %s failed: %s", url, exc)
-    else:
-        error = "no ip_lookup_url configured"
-    c.update({"ip": ip, "source": "lookup" if ip else None, "checked_at": t, "error": error})
-    return {"ip": ip, "source": c["source"], "checked_at": t, "error": error}
+            errors[fam] = f"{type(exc).__name__}: {exc}"
+            log.info("Portable: home %s lookup via %s failed: %s", fam, url, exc)
+            continue
+        got = address_family(ip)
+        if got is None:
+            errors[fam] = "lookup returned no public address"
+        elif found[got] is None:
+            found[got] = ip  # filed under the family it actually is
+    c.update({"v4": found["v4"], "v6": found["v6"], "checked_at": t, "errors": errors})
+    return {**found, "source": "lookup" if (found["v4"] or found["v6"]) else None, "checked_at": t, "errors": errors}
 
 
 def reset_home_ip_cache() -> None:
-    _home_ip_cache.update({"ip": None, "source": None, "checked_at": None, "error": None})
+    _home_cache.update({"v4": None, "v6": None, "checked_at": None, "errors": {}})
 
 
-def decide_home(is_home: bool | None, egress_ip: str | None, home: str | None) -> tuple[bool, str]:
-    """Is this run at home? ``(is_home, detection)``.
+def same_v6_network(a: str, b: str, prefix: int) -> bool:
+    try:
+        na = ipaddress.ip_network(f"{a.strip()}/{int(prefix)}", strict=False)
+        nb = ipaddress.ip_network(f"{b.strip()}/{int(prefix)}", strict=False)
+    except ValueError:
+        return False
+    return na == nb
 
-    Detected by address whenever both sides are known: the device's public egress equal to the
-    home WAN means its traffic leaves through the tuned firewall — the definition that matters
-    for shaping (a phone on cellular on the living-room couch is *not* home for this purpose,
-    and this gets that right where a person's answer wouldn't). An explicit ``is_home`` is an
-    override and wins (``"manual"``). With neither, raise — never guess a stamp the whole
-    comparison keys on."""
+
+def decide_home(
+    is_home: bool | None,
+    egress: dict | str | None,
+    home: dict | str | None,
+    *,
+    v6_prefix: int = 64,
+) -> tuple[bool, str]:
+    """Is this run at home? ``(is_home, detection)`` with detection ``"manual"`` / ``"ip4"`` /
+    ``"ip6"``.
+
+    Detected by address whenever a family is known on both sides: the device's public egress
+    equal to the home WAN (IPv4), or within the home prefix (IPv6 — hosts on one network share
+    a prefix, never an address), means its traffic leaves through the tuned firewall — the
+    definition that matters for shaping (a phone on cellular on the living-room couch is *not*
+    home for this purpose, and this gets that right where a person's answer wouldn't). **Either
+    family matching means home**: an IPv4 mismatch alone is not proof of away, because a
+    carrier-grade NAT can hand different flows different public v4 addresses while the v6
+    prefix stays the home's. An explicit ``is_home`` is an override and wins. With no family
+    comparable on both sides, raise — never guess a stamp the whole comparison keys on."""
     if is_home is not None:
         return bool(is_home), "manual"
-    if is_public_ip(egress_ip) and is_public_ip(home):
-        return egress_ip.strip() == home.strip(), "ip"
+    e = split_families(egress) if not isinstance(egress, dict) else split_families(egress.get("v4"), egress.get("v6"))
+    h = split_families(home) if not isinstance(home, dict) else split_families(home.get("v4"), home.get("v6"))
+    compared: list[tuple[str, bool]] = []
+    if e["v4"] and h["v4"]:
+        compared.append(("ip4", e["v4"] == h["v4"]))
+    if e["v6"] and h["v6"]:
+        compared.append(("ip6", same_v6_network(e["v6"], h["v6"], v6_prefix)))
+    for fam, matched in compared:
+        if matched:
+            return True, fam
+    if compared:
+        return False, compared[0][0]
     raise ValueError(
-        "could not tell home from away: the device's public address or the home address is "
-        "unknown (the IP lookup may be blocked on this network) — choose Home or Away yourself"
+        "could not tell home from away: no address family is known on both the device and the "
+        "home side (the IP lookup may be blocked on this network, or one side is IPv4-only and "
+        "the other IPv6-only) — choose Home or Away yourself"
     )
+
+
+def describe_addresses(fams: dict | None) -> str | None:
+    """``"203.0.113.7 / 2001:db8::1"`` — one string for a row's ``egress_ip``/``home_ip``."""
+    if not fams:
+        return None
+    parts = [fams.get(f) for f in FAMILIES if fams.get(f)]
+    return " / ".join(parts) if parts else None
 
 
 # ── ingest ───────────────────────────────────────────────────────────────────
@@ -301,7 +380,7 @@ def home_stamp() -> tuple[str | None, str | None]:
         return None, None
 
 
-def build_run(payload: dict, current_version: str, *, home: str | None = None) -> PortableRun:
+def build_run(payload: dict, current_version: str, *, home: dict | None = None, v6_prefix: int = 64) -> PortableRun:
     """Derive + score an uploaded raw document into a ``PortableRun`` row (not added to a
     session). ``home`` is the home WAN address for detection (see ``decide_home``). Raises
     ``ValueError`` when the upload's instrument version isn't the current recipe's — a stale
@@ -318,8 +397,9 @@ def build_run(payload: dict, current_version: str, *, home: str | None = None) -
         raise ValueError("the upload carries no iterations")
     derived = derive_portable(raw)
     score, subscores = score_metrics(derived["metrics"])
-    egress = str(payload.get("egress_ip")).strip() if payload.get("egress_ip") else None
-    is_home, detection = decide_home(payload.get("is_home"), egress, home)
+    egress = split_families(payload.get("egress_ip"), payload.get("egress_ip_v6"))
+    home_fams = split_families(home.get("v4"), home.get("v6")) if home else {"v4": None, "v6": None}
+    is_home, detection = decide_home(payload.get("is_home"), egress, home_fams, v6_prefix=v6_prefix)
     fp = summary = None
     if is_home:
         fp, summary = home_stamp()
@@ -334,8 +414,8 @@ def build_run(payload: dict, current_version: str, *, home: str | None = None) -
         venue=(str(payload.get("venue"))[:120] if payload.get("venue") else None),
         is_home=is_home,
         home_detection=detection,
-        egress_ip=egress[:64] if egress else None,
-        home_ip=home[:64] if home else None,
+        egress_ip=describe_addresses(egress),
+        home_ip=describe_addresses(home_fams),
         instrument_version=version,
         client=payload.get("client") or {},
         tz_offset_minutes=tz,
