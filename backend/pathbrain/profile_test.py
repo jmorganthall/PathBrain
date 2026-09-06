@@ -201,8 +201,8 @@ def _drive(pt_id: int) -> None:
                     run_id, ok, completed = run_chunk(
                         label=f"test · {label}",
                         notes=(
-                            f"Profile test #{pt_id}: top up {target_fp} to the confidence "
-                            f"minimum · part {idx}/{n_chunks}"
+                            f"Profile test #{pt_id}: {iterations} iteration(s) on {target_fp} "
+                            f"· part {idx}/{n_chunks}"
                         ),
                         iterations=iters,
                         teardown=False,  # keep Chromium warm across chunks; closed after the loop

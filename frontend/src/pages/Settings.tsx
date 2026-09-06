@@ -749,7 +749,7 @@ export default function Settings() {
   const [applying, setApplying] = useState(false);
   // Whether to benchmark the profile right after applying it (default on).
   const [applyRunBenchmark, setApplyRunBenchmark] = useState(true);
-  // "Test to minimum" flow: the pending confirmation (a limited-data profile + the
+  // "Test this profile" flow: the pending confirmation (a limited-data profile + the
   // exact firewall diff that would be written) and the in-progress test status.
   const [testConfirm, setTestConfirm] = useState<ApplyConfirm | null>(null);
   const [testPreviewFp, setTestPreviewFp] = useState<string | null>(null);
@@ -1134,7 +1134,7 @@ export default function Settings() {
     }
   }, [confirm, load]);
 
-  // "Test to minimum" step 1: preview the exact firewall diff this test would write,
+  // "Test this profile" step 1: preview the exact firewall diff this test would write,
   // and open the confirmation dialog.
   const handleTestClick = useCallback(async (p: SettingsProfile) => {
     setTestPreviewFp(p.fingerprint);
@@ -2477,7 +2477,7 @@ export default function Settings() {
                       <TableCell align="right">
                         <Stack direction="row" spacing={1} justifyContent="flex-end">
                           {!p.confident && (
-                            <Tooltip title={`Apply this profile, run the iterations still needed to reach the ${minIterations}-iteration minimum, then restore your current settings. Queues behind any other firewall operation.`}>
+                            <Tooltip title={`Apply this profile, benchmark it for a number of iterations you choose (pre-filled with the ${Math.max(0, minIterations - p.iterations)} it still needs to reach the ${minIterations}-iteration minimum), then restore your current settings. Queues behind any other firewall operation.`}>
                               <span>
                                 <Button
                                   size="small"
@@ -2493,7 +2493,7 @@ export default function Settings() {
                                   onClick={() => handleTestClick(p)}
                                   disabled={testPreviewFp != null || testRunning || applying}
                                 >
-                                  Test to min
+                                  Test profile
                                 </Button>
                               </span>
                             </Tooltip>
