@@ -28,6 +28,7 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import SpeedIcon from "@mui/icons-material/Speed";
 
 import { api, ApiError } from "../api/client";
+import { useQueuedAction } from "../hooks/useQueuedAction";
 import type {
   AxisSeriesResponse,
   CrownFollowStatus,
@@ -137,6 +138,9 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The shared "add a job" policy: confirm-then-queue when the pipeline is busy, and one
+  // wording for what happened. Its message lands in the same place as the page's errors.
+  const queue = useQueuedAction(setError);
   const [iterations, setIterations] = useState(3);
   // Raw text backing the Iterations field, so it can be cleared or hold an intermediate value
   // while typing (e.g. "" or "2" on the way to "20") instead of snapping back to 1 each keystroke.
@@ -258,24 +262,35 @@ export default function Dashboard() {
     [refreshScores, refreshOps, refreshField]
   );
 
-  const handleRun = useCallback(async () => {
+  // Every "Run this" goes through the shared queue policy: if the pipeline is busy it asks
+  // whether to queue, and either way the message says which happened. See useQueuedAction.
+  const startRun = useCallback(async () => {
     setRunning(true);
     setError(null);
     try {
       const d = await api.triggerRun({ iterations });
       setLatest(d);
       refreshOps();
-      if (isRunning(d.status)) {
+      // A queued run has no measurement to poll yet — the jobs feed carries it until it
+      // starts, so polling here would just spin on a PENDING row.
+      if (!d.queued && isRunning(d.status)) {
         poll(d.id);
       } else {
         setRunning(false);
-        refreshScores();
+        if (!d.queued) refreshScores();
       }
+      return d;
     } catch (e) {
       setRunning(false);
       setError(e instanceof Error ? e.message : "Failed to start benchmark");
+      throw e;
     }
   }, [poll, iterations, refreshScores, refreshOps]);
+
+  const handleRun = useCallback(
+    () => queue.submit({ label: `Benchmark run · ${iterations} iteration(s)`, run: startRun }),
+    [queue, startRun, iterations],
+  );
 
   // Poll the timed test until it reaches a terminal state, then refresh scores/latest.
   const pollTest = useCallback(() => {
@@ -300,17 +315,26 @@ export default function Dashboard() {
 
   const testActive = currentTest != null && currentTest.status != null && isRunning(currentTest.status);
 
-  const handleStartTest = useCallback(async () => {
+  const startTest = useCallback(async () => {
     setError(null);
     try {
       const t = await api.currentTestStart(testMinutes);
-      setCurrentTest(t);
       refreshOps();
-      pollTest();
+      if (!t.queued) {
+        setCurrentTest(t);
+        pollTest();
+      }
+      return t;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start test");
+      throw e;
     }
   }, [testMinutes, pollTest, refreshOps]);
+
+  const handleStartTest = useCallback(
+    () => queue.submit({ label: `Test current profile · ${testMinutes} min`, run: startTest }),
+    [queue, startTest, testMinutes],
+  );
 
   const handleCancelTest = useCallback(async () => {
     try {
@@ -1036,6 +1060,7 @@ export default function Dashboard() {
           </Box>
         </>
       )}
+      {queue.dialog}
     </Box>
   );
 }

@@ -66,6 +66,9 @@ import type {
   ExploreBatchResult,
   ExploreTestResult,
   ProfileTestQueue,
+  QueueStatus,
+  RefreshStart,
+  TestSettingsStart,
   SettingsProfilesResponse,
   WeatherSensitivity,
   Sweep,
@@ -421,7 +424,7 @@ export const api = {
     ),
   startRefresh: (iterations: number, top?: number, fingerprints?: string[]) =>
     startingJob(
-      request<{ id: number; iterations: number; top: number | null; fingerprints?: number | null }>(
+      request<RefreshStart>(
         "/settings/refresh",
         {
           method: "POST",
@@ -478,6 +481,10 @@ export const api = {
 
   // What holds the pipeline and what is already queued — asked before spending a
   // benchmark, so a busy pipeline can be a "queue this?" question instead of a surprise.
+  // The universal read: covers every engine, not just profile tests.
+  jobQueue: () => request<QueueStatus>("/queue"),
+  cancelQueuedJob: (ticketId: number) =>
+    request<{ cancelled: boolean }>(`/queue/${ticketId}/cancel`, { method: "POST" }),
   profileTestQueue: () => request<ProfileTestQueue>("/settings/test-profile/queue"),
 
   // The recommendation ledger: every claim Explore made, graded against what the link
@@ -634,7 +641,7 @@ export const api = {
   // Apply arbitrary settings (e.g. an AI suggestion) onto the live profile and test to minimum.
   testSettings: (body: { settings: unknown; label?: string; iterations?: number }) =>
     startingJob(
-      request<{ id: number; fingerprint: string; iterations: number; label: string | null }>(
+      request<TestSettingsStart>(
         "/settings/test-settings",
         { method: "POST", body: JSON.stringify(body) },
       ),

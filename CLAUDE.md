@@ -241,6 +241,55 @@ LLM-based. See `README.md` for the product overview.
     (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline). The
     swept `param` is validated against `shaper_fields.WRITABLE_FIELDS` at start — an
     experiment on a non-writable field (scheduler/queues) is refused instead of no-op'ing.
+  - `job_queue.py` — **the universal "add a job" contract: every Run button behaves the same.**
+    PathBrain runs one firewall/benchmark session at a time and `coordinator` enforces that;
+    what was never universal was *what happens when you press a button while it is busy*, and
+    there were **three** answers depending only on which button you pressed. **(1) A refusal** —
+    six engines guarded their own `start()` with an "already running" check that the API turned
+    into a 409, so the button dead-ended; the check protected nothing the coordinator wasn't
+    already protecting, it just fired earlier, and hardest exactly when queueing is what a
+    person wants. **(2) A silent queue** — start a *different* kind of session and it worked,
+    because the engine's thread simply blocked on `coordinator.hold` until its turn: correct,
+    and invisible, since the toast said the session had begun and nothing happened for hours,
+    which reads identically to a broken button. **(3) An immediate start**, when the pipeline
+    happened to be free. Three behaviours for one intent is not a policy, it is an accident of
+    which module a button landed in — and it is why "it doesn't queue" kept being reported
+    after each individual engine was fixed.
+    So: **submitting a job always succeeds**, and the caller is always told which of the two
+    things happened. `submit(kind, label, start)` calls the engine's own `start()`
+    **synchronously** when the pipeline is free (so every existing response shape survives —
+    the caller still gets the real session id, and the engine's own `ValueError` still reaches
+    the HTTP caller as a 400), and otherwise holds it as a **ticket** that a single dispatcher
+    starts when its turn comes. Every start endpoint returns the same
+    **placement block** — `queued` / `ticket_id` / `queue_position` / `queue_ahead` /
+    `blocked_by` — so "did anything happen?" has one answer whichever button asked.
+    `GET /api/queue` is the one "can I start?" read and `POST /api/queue/{id}/cancel` drops a
+    ticket, free by construction because a queued job has applied nothing.
+    **The gate is per KIND, not "is any engine active"** (`kind_active`). Cross-kind exclusion
+    is the coordinator's job and it does it properly, with a lease and stale-holder eviction; a
+    module-level `active()` flag has neither, so gating the whole queue on "no engine anywhere
+    reports itself active" would let one engine that died with its flag set stall every job
+    forever with nothing able to clear it — strictly worse than the refusals this replaces. So
+    the flag answers only the question it can: would starting *this* kind collide with itself.
+    Two consequences stated rather than discovered: the queue is **in memory**, because a
+    ticket has by definition not started (nothing applied, no row written, no measurement
+    taken), so a restart drops it — the same call `profile_test` reconciliation already makes,
+    since hours later silently starting a session nobody is watching is worse than making
+    someone press the button again; and a queued job's **validation moves with it** ("nothing
+    to race", "no stored profiles") from the HTTP response to the moment its turn comes, so the
+    failure is recorded on the ticket and surfaced in the jobs feed rather than being lost.
+    **Two engines queue themselves** rather than through a ticket — `profile_test` (its
+    fingerprint is recorded in the recommendation ledger *before* it runs) and manual runs (the
+    dashboard polls the run id) — because their callers need a real row id back synchronously.
+    They report the same placement block and contribute to the same `pending` list
+    (`register_pending_source`), so there is one queue to a reader; the honest cost is that
+    ordering *between* the two layers is best-effort rather than strict FIFO, which costs at
+    most a swap between two things that were both about to run anyway.
+    Frontend: `hooks/useQueuedAction.tsx` is the policy in one place — it asks `GET /queue`
+    before submitting, shows **"Busy now — queue this?"** (`components/QueueConfirmDialog.tsx`)
+    naming the holder and what is already waiting, and phrases the outcome identically
+    everywhere (`describePlacement`). Every Run button on Dashboard, Shotgun Sweep, Baseline,
+    Duels, Settings (race / re-run / test), Explore, AI and Profile Detail goes through it.
   - `coordinator.py` — process-wide lock that serializes any apply-firewall + benchmark
     session (sweep, profile test, experiment, monitoring, manual run): user-triggered
     ones `hold` (queue), periodic ones `try_hold` (defer).
@@ -2505,6 +2554,18 @@ docker compose up --build   # -> http://localhost:8000
   contradicts — correlation by construction rather than by a hash agreeing with reality.
 - **Next:** multi-parameter Bayesian search + interleaved A/B with effect-size/CI + hysteresis;
   routing intelligence / SD-WAN. (Latency-under-load/bufferbloat is explicitly **out of scope**.)
+
+⚠️ **Every user-triggered session goes through `job_queue.submit()`, and no start path
+refuses because something else is running.** A busy pipeline is a *queue*, never a 409: the
+coordinator has always serialized sessions, so an "already running" guard in front of it only
+removes the user's ability to line work up. A new engine therefore (a) submits through
+`job_queue`, (b) returns the standard placement block (`queued`/`ticket_id`/`queue_position`/
+`queue_ahead`/`blocked_by`) from its start endpoint, (c) registers its `active()` with
+`job_queue.register` so a second session of *its own kind* still waits, and (d) is driven from
+the frontend by `useQueuedAction`, never by a bare `api.*` call — otherwise that button becomes
+the one place with different behaviour, which is the bug this whole contract exists to end.
+Reserve a 4xx for a genuinely bad request (an unreachable profile, an empty spec, a no-op),
+never for "the pipeline is in use".
 
 ⚠️ Firewall **writes** go only through `provider.apply()`. Eight callers use it, all
 snapshot/restore, reversible, or explicitly armed: the experiment engine (disarmed +

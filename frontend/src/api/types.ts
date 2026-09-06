@@ -509,7 +509,7 @@ export interface ProfileTest {
   lock_owner: string | null;
 }
 
-export interface ProfileTestStart {
+export interface ProfileTestStart extends QueuePlacement {
   id: number;
   fingerprint: string;
   iterations: number;
@@ -541,7 +541,25 @@ export interface ChallengerRace {
   lock_owner: string | null;
 }
 
-export interface RaceStart {
+// Starting a profile re-run: which profiles, how long each, and where it landed in the queue.
+export interface RefreshStart extends QueuePlacement {
+  id: number | null;
+  iterations: number;
+  top: number | null;
+  fingerprints?: number | null;
+}
+
+// Testing arbitrary settings (an AI suggestion, an Explore candidate) plus where it landed.
+export interface TestSettingsStart extends QueuePlacement {
+  id: number;
+  fingerprint: string;
+  iterations: number;
+  label: string | null;
+  existing_iterations?: number;
+  warnings?: string[];
+}
+
+export interface RaceStart extends QueuePlacement {
   id: number;
   contenders: number;
   auto_promote: boolean;
@@ -839,7 +857,9 @@ export interface ProfilePauseRollup {
   urls: ProfilePauseUrl[];
 }
 
-export interface RunDetail extends RunSummary {
+// Extends QueuePlacement because POST /run answers with the run *and* where it landed:
+// a manual run queues behind whatever holds the pipeline, like every other job.
+export interface RunDetail extends RunSummary, QueuePlacement {
   notes?: string | null;
   error?: string | null;
   settings_fingerprint?: string | null;
@@ -922,7 +942,7 @@ export interface SweepResult {
   [field: string]: number | string | null | TrendRelative | undefined;
 }
 
-export interface Sweep {
+export interface Sweep extends QueuePlacement {
   id: number;
   status: "pending" | "running" | "complete" | "cancelled" | "failed";
   dry_run: boolean;
@@ -1126,7 +1146,7 @@ export interface BenchmarkConfig {
 // A "test the current settings for X minutes" session — a time-boxed data-collection loop
 // on the live profile (no firewall write). Chunked into <=5-iteration runs so partial
 // completion keeps its data.
-export interface CurrentTest {
+export interface CurrentTest extends QueuePlacement {
   id: number;
   status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
   label: string | null;
@@ -1147,7 +1167,7 @@ export interface BaselinePipeState {
   enabled: boolean;
 }
 
-export interface BaselineTest {
+export interface BaselineTest extends QueuePlacement {
   id: number;
   status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
   trigger: "manual" | "scheduled" | string;
@@ -2343,7 +2363,7 @@ export interface DuelOpenMatch {
   sessions: number[];
 }
 
-export interface DuelSession {
+export interface DuelSession extends QueuePlacement {
   id: number;
   status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
   stage: string | null;
@@ -2580,17 +2600,44 @@ export interface ExploreTestRequest {
   summary?: string;
 }
 
-// Where a just-started test landed in the queue. Every start path returns these, so a
-// caller can say "queued behind a duel session" instead of claiming it began measuring.
+// Where a just-submitted job landed. EVERY start endpoint returns this block — manual run,
+// sweep, race, refresh, duel, baseline, current test, profile test — so "did anything
+// happen?" has one answer whichever button was pressed.
 export interface QueuePlacement {
-  // Something has to finish first — the pipeline is held, or tests are already waiting.
+  // Something has to finish first — the pipeline is held, or jobs are already waiting.
   queued?: boolean;
+  // Set when the job is held as a queue ticket (rather than self-queued as its own row).
+  ticket_id?: number | null;
   // 1 = next up. Null when it starts immediately.
   queue_position?: number | null;
-  // How many things are ahead of it (the holder plus any queued tests).
+  // How many things are ahead of it (the holder plus anything queued).
   queue_ahead?: number;
   // What is in the way, in words ("a duel session"), not a lock label.
   blocked_by?: string | null;
+}
+
+// One job waiting to run, from either queueing layer.
+export interface QueuedJob {
+  ticket_id: number | null;
+  kind: string;
+  // Present for self-queued work (a profile test's or a run's own row id).
+  id?: number;
+  label: string;
+  queue_position: number | null;
+  submitted_at: string | null;
+  state: string;
+}
+
+// What holds the pipeline and everything waiting behind it — the "can I start?" read.
+export interface QueueStatus {
+  busy: boolean;
+  blocked_by: string | null;
+  owner: string | null;
+  held_for_s: number | null;
+  queue_depth: number;
+  pending: QueuedJob[];
+  // Queued jobs whose validation only failed when their turn came.
+  recent_failures: { ticket_id: number; kind: string; label: string; error: string | null }[];
 }
 
 export interface ExploreTestResult extends QueuePlacement {

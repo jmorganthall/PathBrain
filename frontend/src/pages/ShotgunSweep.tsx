@@ -24,6 +24,7 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 
 import { api } from "../api/client";
+import { useQueuedAction } from "../hooks/useQueuedAction";
 import type {
   Sweep,
   SweepField,
@@ -146,6 +147,9 @@ export default function ShotgunSweep() {
   const [selectedPipes, setSelectedPipes] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The shared "add a job" policy: when the pipeline is busy this asks whether to
+  // queue, and either way reports which happened in the same words as every other page.
+  const queue = useQueuedAction(setError);
   const [toast, setToast] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
 
@@ -209,20 +213,30 @@ export default function ShotgunSweep() {
     };
   }, [poll]);
 
-  const handleStart = useCallback(async () => {
+  const startSweep = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
       const s = await api.startSweep({ spec, iterations, dwell_minutes: dwellMinutes, dry_run: dryRun });
-      setSweep(s);
-      poll();
+      // A queued sweep has no row to poll yet — the jobs feed carries it until it starts.
+      if (!s.queued) {
+        setSweep(s);
+        poll();
+      }
+      return s;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start sweep");
+      throw e;
     } finally {
       setBusy(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rangesKey, iterations, dwellMinutes, dryRun, poll]);
+
+  const handleStart = useCallback(
+    () => queue.submit({ label: `Shotgun sweep · ${iterations} iteration(s)`, run: startSweep }),
+    [queue, startSweep, iterations],
+  );
 
   const handleCancel = useCallback(async () => {
     if (!sweep) return;
@@ -509,6 +523,7 @@ export default function ShotgunSweep() {
         message={toast ?? ""}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
       />
+      {queue.dialog}
     </Box>
   );
 }

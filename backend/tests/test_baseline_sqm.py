@@ -181,8 +181,12 @@ def test_baseline_endpoints_start_status_conflict_cancel(client, fake_provider, 
     assert resp.status_code == 202
     assert resp.json()["status"] in ("pending", "running")
 
-    # A second start while one runs is a conflict.
-    assert client.post("/api/baseline/test", json={}).status_code == 409
+    # A second start QUEUES rather than being refused, like every other "Run this" button.
+    second = client.post("/api/baseline/test", json={})
+    assert second.status_code == 202
+    queued = second.json()
+    assert queued["queued"] is True and queued["ticket_id"] is not None
+    assert client.post(f"/api/queue/{queued['ticket_id']}/cancel").json()["cancelled"] is True
     assert client.get("/api/baseline/test").json()["status"] in ("pending", "running")
     assert client.post("/api/baseline/test/cancel").json()["cancelled"] is True
 

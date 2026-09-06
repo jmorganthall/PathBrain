@@ -34,6 +34,7 @@ import { Link as RouterLink } from "react-router-dom";
 import Link from "@mui/material/Link";
 
 import { api } from "../api/client";
+import { describePlacement } from "../hooks/useQueuedAction";
 import type {
   AiConfig,
   AiModel,
@@ -505,7 +506,7 @@ export default function AI() {
           settings: s.settings ?? s,
           label: `AI: ${String(s.rationale ?? "suggestion").slice(0, 60)}`,
         });
-        setToast(`Applied to the firewall — testing to minimum (${r.iterations} iterations).`);
+        setToast(describePlacement(r, `${r.iterations} iteration(s) on this suggestion`));
         // Show the live step-by-step readout below (snapshot → apply → verify → benchmark → restore).
         try {
           const cur = await api.profileTestCurrent();

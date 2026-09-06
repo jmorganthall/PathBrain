@@ -27,6 +27,7 @@ from .. import (
     duel,
     jobs,
     profile_names,
+    job_queue,
     profile_test,
     refresh,
     sweep,
@@ -436,6 +437,91 @@ def _active_sweep_job(session: Session) -> list[dict]:
             "finished_at": None,
         }, eta, queued=queued)
     ]
+
+
+@router.get("/queue")
+def queue_status() -> dict:
+    """What holds the pipeline and everything waiting behind it — the one "can I start?" read.
+
+    Every "Run this" button asks this before submitting, so a busy pipeline can be a
+    "queue this?" question instead of a surprise, and so the answer is worded the same
+    whichever button is asking.
+    """
+    return job_queue.status()
+
+
+@router.post("/queue/{ticket_id}/cancel")
+def cancel_queued_job(ticket_id: int) -> dict:
+    """Drop a queued job before it starts.
+
+    Free by construction: a queued job has applied nothing and written nothing, so it
+    simply leaves the line. A job that has already started is cancelled through its own
+    engine, which owns the baseline it has to restore.
+    """
+    cancelled = job_queue.cancel(ticket_id)
+    return {"cancelled": cancelled, "ticket_id": ticket_id, **job_queue.status()}
+
+
+def _queued_ticket_entries() -> list[dict]:
+    """Queued jobs as feed entries, so waiting work is as visible as running work.
+
+    A job nobody can see is indistinguishable from a button that did nothing — which is
+    the whole reported problem. These carry no progress and no ETA on purpose: nothing has
+    started, so there is nothing to count down, and the size of the wait depends on a
+    holder whose own finish time is its own open question.
+    """
+    entries: list[dict] = []
+    for t in job_queue.pending():
+        position = t["queue_position"]
+        place = "next up" if position == 1 else f"#{position} in the queue"
+        entries.append({
+            "id": f"queued-{t['ticket_id']}",
+            "kind": t["kind"],
+            "label": t["label"],
+            "detail": None,
+            "status": "running",   # the feed's word for "not finished"
+            "current": None,
+            "total": None,
+            "message": f"Queued — {place}",
+            "error": None,
+            "href": None,
+            "parent_id": None,
+            "cancel_url": f"/queue/{t['ticket_id']}/cancel",
+            "started_at": t["submitted_at"],
+            "finished_at": None,
+            "queued": True,
+            "eta_ms": None,
+            "eta_basis": "queued",
+            "unit_ms": None,
+            "window_ms": None,
+            "stalled_ms": None,
+        })
+    # A queued job whose validation only failed when its turn came — the error nobody was
+    # there to receive.
+    for f in job_queue.recent_failures():
+        entries.append({
+            "id": f"queued-failed-{f['ticket_id']}",
+            "kind": f["kind"],
+            "label": f["label"],
+            "detail": None,
+            "status": "failed",
+            "current": None,
+            "total": None,
+            "message": "Could not start when its turn came",
+            "error": f["error"],
+            "href": None,
+            "parent_id": None,
+            "cancel_url": None,
+            "started_at": f["started_at"],
+            "finished_at": f["started_at"],
+            "queued": False,
+            "eta_ms": None,
+            "eta_basis": None,
+            "unit_ms": None,
+            "window_ms": None,
+            "stalled_ms": None,
+        })
+    return entries
 
 
 def _profile_test_entry(session: Session, t: dict) -> dict:
@@ -853,6 +939,7 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
     adapters += _active_run_jobs(session)
     adapters += _active_sweep_job(session)
     adapters += _active_profile_test_job(session)
+    adapters += _queued_ticket_entries()
     adapters += _active_current_test_job(session)
     adapters += _active_baseline_test_job()
     adapters += _active_experiment_job(session)

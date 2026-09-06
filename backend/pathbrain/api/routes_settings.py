@@ -21,6 +21,7 @@ from .. import profile_test as profile_test_mod
 from .. import refresh as refresh_mod
 from ..config_store import get_config, save_config
 from ..database import get_session
+from .. import job_queue
 from ..logging_config import get_logger
 from ..methodology import (
     corner_score,
@@ -3295,13 +3296,17 @@ def _queue_placement(test_id: int) -> dict:
     )
     running = status.get("running")
     ahead = (position - 1 if position else 0) + (1 if running else 0)
+    # ``blocked_by`` comes from the shared queue so every start path names the holder the
+    # same way — a profile test waiting behind a sweep must not say something different
+    # from a sweep waiting behind a duel.
     return {
         # True when something has to finish before this test starts — either the pipeline
         # is held by another engine, or other tests are queued in front of it.
         "queued": bool(status.get("busy")) or ahead > 0,
+        "ticket_id": None,
         "queue_position": position,
         "queue_ahead": ahead,
-        "blocked_by": status.get("owner_label") or status.get("owner"),
+        "blocked_by": job_queue.blocked_by() or status.get("owner_label") or status.get("owner"),
     }
 
 
@@ -3514,16 +3519,23 @@ def start_race(body: dict = Body(...), session: Session = Depends(get_session)) 
         )
 
     try:
-        race_id = challenger_mod.start(int(minutes * 60), auto_promote)
-    except RuntimeError as exc:  # a race is already running
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        submission = job_queue.submit(
+            "race",
+            f"Challenger race · {minutes:g} min",
+            lambda: challenger_mod.start(int(minutes * 60), auto_promote),
+        )
     except Exception as exc:  # noqa: BLE001
         log.exception("race start failed")
         raise HTTPException(
             status_code=502, detail=f"Could not start the race: {type(exc).__name__}: {exc}"
         ) from exc
 
-    return {"id": race_id, "contenders": len(contenders), "auto_promote": auto_promote}
+    return {
+        "id": submission.result,
+        "contenders": len(contenders),
+        "auto_promote": auto_promote,
+        **submission.placement(),
+    }
 
 
 @router.get("/settings/race")
@@ -3586,21 +3598,26 @@ def start_refresh(body: dict = Body(...), session: Session = Depends(get_session
         raise HTTPException(status_code=400, detail="fingerprints must be a list when provided")
     fingerprints = [str(f) for f in (fps_raw or []) if f] or None
     try:
-        refresh_id = refresh_mod.start(iterations, top=top, rank_by=rank_by, fingerprints=fingerprints)
-    except RuntimeError as exc:  # already running, or no profiles
-        # "already running" is a conflict; "no profiles" is a bad request.
-        status = 409 if "already running" in str(exc) else 400
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        submission = job_queue.submit(
+            "refresh",
+            f"Re-run profiles · {iterations} iteration(s) each",
+            lambda: refresh_mod.start(
+                iterations, top=top, rank_by=rank_by, fingerprints=fingerprints
+            ),
+        )
+    except RuntimeError as exc:  # nothing to re-run — a bad request, not a conflict
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         log.exception("refresh start failed")
         raise HTTPException(
             status_code=502, detail=f"Could not start the refresh: {type(exc).__name__}: {exc}"
         ) from exc
     return {
-        "id": refresh_id,
+        "id": submission.result,
         "iterations": iterations,
         "top": top if not fingerprints else None,
         "fingerprints": len(fingerprints) if fingerprints else None,
+        **submission.placement(),
     }
 
 

@@ -39,6 +39,7 @@ import Link from "@mui/material/Link";
 import TextField from "@mui/material/TextField";
 
 import { api } from "../api/client";
+import { describePlacement } from "../hooks/useQueuedAction";
 import type {
   ApplyProfileResult,
   AxisSeriesResponse,
@@ -230,11 +231,12 @@ export default function ProfileDetail() {
       setError(null);
       try {
         const r = await api.testProfile(fingerprint, iterations);
-        setToast(
+        const what =
           r.mode === "exact"
-            ? `Testing this profile: ${r.iterations} iteration(s), then your settings are restored.`
-            : `Topping up: ${r.iterations} iteration(s) to reach the ${r.min_iterations}-iteration minimum.`,
-        );
+            ? `${r.iterations} iteration(s) on this profile`
+            : `a top-up of ${r.iterations} iteration(s) toward the ${r.min_iterations}-iteration minimum`;
+        // One wording for started-vs-queued, shared with every other button on every page.
+        setToast(describePlacement(r, what));
         // Show the live stage readout straight away; the poller below keeps it fresh.
         setActiveTest((await api.profileTestCurrent()).test);
       } catch (e) {

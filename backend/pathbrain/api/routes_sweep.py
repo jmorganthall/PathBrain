@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import job_queue
 from .. import sweep as sweep_mod
 from ..config_store import get_config
 from ..database import get_session
@@ -156,9 +157,11 @@ def start_sweep(
     dry_run = bool(body.get("dry_run", False))
     pipe_uuid = body.get("pipe_uuid") or None
     try:
-        sweep_id = sweep_mod.start(spec, iterations, dwell_s, dry_run, pipe_uuid)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        submission = job_queue.submit(
+            "sweep",
+            f"Shotgun sweep · {iterations} iteration(s)",
+            lambda: sweep_mod.start(spec, iterations, dwell_s, dry_run, pipe_uuid),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — provider discovery etc.
@@ -166,7 +169,9 @@ def start_sweep(
         raise HTTPException(
             status_code=502, detail=f"Could not start sweep: {type(exc).__name__}: {exc}"
         ) from exc
-    return _sweep_out(session, sweep_id, tz_offset) or {}
+    if not submission.started:
+        return {"id": None, "status": "queued", **submission.placement()}
+    return {**(_sweep_out(session, submission.result, tz_offset) or {}), **submission.placement()}
 
 
 @router.get("/sweep/current")

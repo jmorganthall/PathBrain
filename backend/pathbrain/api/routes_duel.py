@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from .. import duel
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
+from .. import job_queue
 from ..logging_config import get_logger
 from ..models import Run, RunStatus
 from ..schemas import DuelScheduleUpdate, DuelStart
@@ -304,15 +305,22 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
 
 @router.post("/duel/start", status_code=202)
 def start_duel(payload: DuelStart) -> dict:
-    """Start a duel-ladder session now. 409 if one is already running."""
+    """Start a duel-ladder session now, or queue it behind whatever holds the pipeline."""
     try:
-        duel_id = duel.start(payload.duration_minutes, trigger="manual")
+        submission = job_queue.submit(
+            "duel",
+            "Duel ladder session",
+            lambda: duel.start(payload.duration_minutes, trigger="manual"),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    log.info("Duel %s requested", duel_id)
-    return duel.current() or {"id": duel_id, "status": "pending"}
+    if not submission.started:
+        return {"id": None, "status": "queued", **submission.placement()}
+    log.info("Duel %s requested", submission.result)
+    return {
+        **(duel.current() or {"id": submission.result, "status": "pending"}),
+        **submission.placement(),
+    }
 
 
 def _leg_progress(session: Session, live: dict | None) -> None:

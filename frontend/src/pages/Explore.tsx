@@ -69,8 +69,7 @@ import { useTheme } from "@mui/material/styles";
 import { api } from "../api/client";
 import { FoldCard, HelpTip } from "../components/Explain";
 import BestBetsDialog from "../components/BestBetsDialog";
-import QueueTestDialog from "../components/QueueTestDialog";
-import type { PendingTest } from "../components/QueueTestDialog";
+import { useQueuedAction } from "../hooks/useQueuedAction";
 import type {
   ExploreBasin,
   ExploreCandidate,
@@ -83,7 +82,6 @@ import type {
   ExploreLedger,
   ExploreMatchedPairs,
   ExploreRecommendation,
-  ProfileTestQueue,
 } from "../api/types";
 import { fmtNum, fmtTimeShort } from "../utils/format";
 
@@ -1513,10 +1511,6 @@ export default function Explore() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
-  // A test the user pressed while the pipeline was busy, held until they say whether to
-  // queue it, plus the queue snapshot the dialog explains itself with.
-  const [queuePrompt, setQueuePrompt] = useState<PendingTest | null>(null);
-  const [queueState, setQueueState] = useState<ProfileTestQueue | null>(null);
   // "Run the best bets": pick how many and how long, then queue them back to back.
   const [betsOpen, setBetsOpen] = useState(false);
   const [betsBusy, setBetsBusy] = useState(false);
@@ -1525,6 +1519,8 @@ export default function Explore() {
   // to spend another night on the next one.
   const [ledger, setLedger] = useState<ExploreLedger | null>(null);
   const [snack, setSnack] = useState<string | null>(null);
+  // The shared "add a job" policy: confirm-then-queue when the pipeline is busy.
+  const queue = useQueuedAction(setSnack);
   const [gapPage, setGapPage] = useState(0);
   // Both test lengths come from the server's own settings, so the buttons on a hole and on
   // a candidate can never promise different run counts.
@@ -1655,27 +1651,14 @@ export default function Explore() {
         .map((ch) => `${ch.pipe} ${ch.field_label} ${fmtValue(ch.to, ch.unit)}`)
         .join(", ");
 
-      let queue: ProfileTestQueue | null = null;
-      try {
-        queue = await api.profileTestQueue();
-      } catch {
-        // Best-effort: if we can't tell whether the pipeline is busy, don't block the
-        // press. The test queues correctly either way; the dialog is only there to say so.
-      }
-      const wouldWait =
-        !!queue && (queue.busy || !!queue.running || queue.pending.length > 0);
-      if (wouldWait) {
-        setQueueState(queue);
-        setQueuePrompt({
-          label: `Explore: ${label}`,
-          iterations,
-          run: () => runTest(c, iterations, id, label),
-        });
-        return;
-      }
-      await runTest(c, iterations, id, label);
+      // The shared "add a job" policy — the same confirm and the same wording as every
+      // other Run button in the app.
+      await queue.submit({
+        label: `Explore: ${label}`,
+        run: () => runTest(c, iterations, id, label),
+      });
     },
-    [runTest],
+    [queue, runTest],
   );
 
   return (
@@ -1966,16 +1949,7 @@ export default function Explore() {
         onRun={(count, iterations, rank) => void runBets(count, iterations, rank)}
       />
 
-      <QueueTestDialog
-        pending={queuePrompt}
-        queue={queueState}
-        onConfirm={() => {
-          const pending = queuePrompt;
-          setQueuePrompt(null);
-          void pending?.run();
-        }}
-        onCancel={() => setQueuePrompt(null)}
-      />
+      {queue.dialog}
 
       <Snackbar
         open={!!snack}

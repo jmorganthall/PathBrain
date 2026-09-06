@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from .. import baseline_test
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
+from .. import job_queue
 from ..logging_config import get_logger
 from ..schemas import BaselineScheduleUpdate, BaselineTestStart
 from ..timezones import schedule_zone as _schedule_zone
@@ -121,13 +122,23 @@ def start_baseline_test(payload: BaselineTestStart, session: Session = Depends(g
     iterations = payload.iterations if payload.iterations is not None else int(bt.get("iterations", 10) or 10)
     settle = payload.settle_seconds if payload.settle_seconds is not None else int(bt.get("settle_seconds", 30) or 0)
     try:
-        bt_id = baseline_test.start(iterations, settle, trigger="manual")
+        submission = job_queue.submit(
+            "baseline_test",
+            f"Baseline (SQM off) · {iterations} iteration(s)",
+            lambda: baseline_test.start(iterations, settle, trigger="manual"),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    log.info("Baseline test %s requested (%s iterations, %ss settle)", bt_id, iterations, settle)
-    return baseline_test.current() or {"id": bt_id, "status": "pending"}
+    if not submission.started:
+        return {"id": None, "status": "queued", **submission.placement()}
+    log.info(
+        "Baseline test %s requested (%s iterations, %ss settle)",
+        submission.result, iterations, settle,
+    )
+    return {
+        **(baseline_test.current() or {"id": submission.result, "status": "pending"}),
+        **submission.placement(),
+    }
 
 
 @router.get("/baseline/test")
