@@ -45,6 +45,8 @@ import type {
   DuelSession,
   DuelStandings,
   MetricSaturation,
+  OutlierSummary,
+  ProfileOutlier,
   SettingsProfilesResponse,
   MetricThreshold,
   ProfileDiff,
@@ -731,6 +733,11 @@ export default function Settings() {
   // profile can't even beat the unshaped link, it's not worth looking at. On by default;
   // only has an effect once a baseline "SQM off" profile has been measured.
   const [hideBelowBaseline, setHideBelowBaseline] = useState(true);
+  // Outliers: profiles far outside the field on a crown metric / the Overall (server-flagged,
+  // robust z over profile medians). Hiding is a VIEW choice (let the scatter fit the pack);
+  // re-running is an EVIDENCE choice (is the reading real?). Both read the same flag.
+  const [outliers, setOutliers] = useState<OutlierSummary | null>(null);
+  const [hideOutliers, setHideOutliers] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -859,10 +866,24 @@ export default function Settings() {
     );
   }, [profiles, hideBelowBaseline, currentFingerprint]);
   const hiddenCount = (profiles?.length ?? 0) - (filteredProfiles?.length ?? 0);
+  // "Hide outliers": drop server-flagged outliers from the table + scatter. The crown and
+  // the live profile are always kept — you must always be able to see the best and where
+  // you are, however odd either reads.
+  const visibleProfiles = useMemo(() => {
+    if (!filteredProfiles || !hideOutliers) return filteredProfiles;
+    return filteredProfiles.filter(
+      (p) => !p.outlier || p.fingerprint === currentFingerprint || p.fingerprint === bestFingerprint
+    );
+  }, [filteredProfiles, hideOutliers, currentFingerprint, bestFingerprint]);
+  const hiddenOutliers = (filteredProfiles?.length ?? 0) - (visibleProfiles?.length ?? 0);
+  const outlierCount = outliers?.count ?? 0;
+  // One line describing why a profile is flagged: "FCP +6.2σ (worse), Overall −4.1σ (worse)".
+  const outlierWhy = (o: ProfileOutlier) =>
+    o.metrics.map((m) => `${m.label} ${m.z > 0 ? "+" : ""}${m.z}σ (${m.side})`).join(", ");
   // Profiles shown on the scatter, after the baseline + min-iterations filters.
   const plotProfiles = useMemo(
-    () => (filteredProfiles ?? []).filter((p) => p.iterations >= minIterPlot),
-    [filteredProfiles, minIterPlot]
+    () => (visibleProfiles ?? []).filter((p) => p.iterations >= minIterPlot),
+    [visibleProfiles, minIterPlot]
   );
 
   const toggleColumn = useCallback((key: string) => {
@@ -908,10 +929,10 @@ export default function Settings() {
 
   const sortedProfiles = useMemo(
     () =>
-      filteredProfiles
-        ? [...filteredProfiles].sort((a, b) => compareProfiles(a, b, orderBy, order))
-        : filteredProfiles,
-    [filteredProfiles, orderBy, order]
+      visibleProfiles
+        ? [...visibleProfiles].sort((a, b) => compareProfiles(a, b, orderBy, order))
+        : visibleProfiles,
+    [visibleProfiles, orderBy, order]
   );
 
   // Paginate the (sorted) profiles table — 25/page by default. Sorting + the column
@@ -947,6 +968,7 @@ export default function Settings() {
       setHeirs(p.heirs ?? null);
       setMetricThresholds(p.metric_thresholds ?? {});
       setSaturation(p.saturation ?? []);
+      setOutliers(p.outliers ?? null);
       setWeatherSuspect(p.weather_crown_suspect ?? null);
       setCrownFading(p.crown_fading ?? null);
       setCrownWindow(p.crown_window_iterations ?? 0);
@@ -1258,7 +1280,12 @@ export default function Settings() {
     let cancelled = false;
     (async () => {
       try {
-        const p = await api.refreshPreview(refreshIters, refreshTop || undefined);
+        // -1 = the outlier scope: exactly the flagged fingerprints, nothing ranked.
+        const p = await api.refreshPreview(
+          refreshIters,
+          refreshTop > 0 ? refreshTop : undefined,
+          refreshTop === -1 ? outliers?.fingerprints ?? [] : undefined,
+        );
         if (!cancelled) setRefreshPreview(p);
       } catch {
         if (!cancelled) setRefreshPreview(null);
@@ -1267,21 +1294,30 @@ export default function Settings() {
     return () => {
       cancelled = true;
     };
-  }, [refreshOpen, refreshIters, refreshTop]);
+  }, [refreshOpen, refreshIters, refreshTop, outliers]);
 
   const handleStartRefresh = useCallback(async () => {
     setError(null);
     try {
-      await api.startRefresh(refreshIters, refreshTop || undefined);
+      await api.startRefresh(
+        refreshIters,
+        refreshTop > 0 ? refreshTop : undefined,
+        refreshTop === -1 ? outliers?.fingerprints ?? [] : undefined,
+      );
       setRefreshOpen(false);
-      const scope = refreshTop ? `top ${refreshTop} profile(s), winner-first` : "all profiles";
+      const scope =
+        refreshTop === -1
+          ? `the ${outliers?.count ?? 0} flagged outlier(s)`
+          : refreshTop
+            ? `top ${refreshTop} profile(s), winner-first`
+            : "all profiles";
       setToast(`Re-running ${scope} · ${refreshIters} iteration(s) each, then restoring`);
       const cur = await api.refreshCurrent();
       setActiveRefresh(cur.refresh);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start the profile refresh");
     }
-  }, [refreshIters, refreshTop]);
+  }, [refreshIters, refreshTop, outliers]);
 
   // Poll the active refresh until it finishes, then reload + report the outcome.
   useEffect(() => {
@@ -1690,12 +1726,21 @@ export default function Settings() {
                           ? " · tied"
                           : ""}
                         {sp.fingerprint === currentFingerprint ? " · active" : ""}
+                        {sp.outlier ? " · outlier" : ""}
                       </Typography>
                       <Typography variant="caption" color="text.secondary">
                         Overall {sp.overall ?? "—"} · {sp.iterations} iteration
                         {sp.iterations === 1 ? "" : "s"}
                         {sp.confident ? "" : " · limited data"}
                       </Typography>
+                      {sp.outlier && (
+                        <Typography variant="caption" color="warning.main" component="div">
+                          Outlier: {outlierWhy(sp.outlier)}
+                          {sp.outlier.thin
+                            ? " — thin data; test it to see whether the reading holds."
+                            : " — confident, so likely a real result."}
+                        </Typography>
+                      )}
                       {/* The crown metrics that compute this profile's Overall — driven entirely by
                           the methodology's `overall_metrics`, so this breakdown tracks the crown with
                           no hardcoding. Each chip is the metric's standing (1 = best) + raw median. */}
@@ -1928,9 +1973,70 @@ export default function Settings() {
                 </Typography>
               }
             />
+            {/* Outliers: hide (a view choice) and re-run (an evidence choice), side by side, so
+                the reader picks the one their question needs instead of the page picking. */}
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+              <Tooltip
+                title={
+                  outliers
+                    ? `Flagged when a profile's median on a crown metric (or its Overall) sits more than ${outliers.threshold_z} robust standard deviations (MAD) from the field's median, over at least ${outliers.min_profiles} profiles. Hiding is display only — the crown, the live profile and every score are unchanged.`
+                    : "Outlier detection needs a few scored profiles first."
+                }
+              >
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={hideOutliers}
+                      disabled={outlierCount === 0}
+                      onChange={(e) => setHideOutliers(e.target.checked)}
+                    />
+                  }
+                  label={
+                    <Typography variant="body2" color="text.secondary">
+                      Hide <b>outliers</b>
+                      {outlierCount === 0
+                        ? " (none flagged)"
+                        : hideOutliers && hiddenOutliers > 0
+                          ? ` (hiding ${hiddenOutliers} of ${outlierCount})`
+                          : ` (${outlierCount} flagged)`}
+                    </Typography>
+                  }
+                />
+              </Tooltip>
+              {outlierCount > 0 && (
+                <Tooltip
+                  title={
+                    `Re-measure the ${outlierCount} flagged profile${outlierCount === 1 ? "" : "s"} to find out whether ` +
+                    `they are real. ${outliers?.thin ?? 0} ${(outliers?.thin ?? 0) === 1 ? "is" : "are"} under the ` +
+                    `${minIterations}-iteration minimum — an outlier that thin is usually one bad run standing in for a ` +
+                    `median. ${outliers?.confident ?? 0} ${(outliers?.confident ?? 0) === 1 ? "is" : "are"} confident: a real ` +
+                    `result, which a re-run will confirm or move. Applies each, benchmarks it, then restores your settings.`
+                  }
+                >
+                  <span>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="secondary"
+                      startIcon={<ScienceIcon />}
+                      disabled={refreshRunning || testRunning || applying}
+                      onClick={() => {
+                        setRefreshTop(-1);
+                        setRefreshOpen(true);
+                      }}
+                    >
+                      Re-run outliers ({outlierCount})
+                    </Button>
+                  </span>
+                </Tooltip>
+              )}
+            </Stack>
             <Tooltip title="Sort and chart by 'vs weather' instead of raw Overall. Display only; the crown is unchanged.">
+              {/* `display: flex`, not `block`: a block FormControlLabel stacks the checkbox
+                  above its own label, which read as an unlabelled box over a stray sentence. */}
               <FormControlLabel
-                sx={{ mt: 0.5, display: "block" }}
+                sx={{ mt: 0.5, display: "flex", width: "fit-content" }}
                 control={
                   <Checkbox
                     size="small"
@@ -2225,6 +2331,18 @@ export default function Settings() {
                           )}
                           {!p.confident && (
                             <Chip size="small" variant="outlined" color="warning" label="limited data" />
+                          )}
+                          {p.outlier && (
+                            <Tooltip
+                              title={
+                                `Far outside the field: ${outlierWhy(p.outlier)}. ` +
+                                (p.outlier.thin
+                                  ? "Under the iteration minimum, so this median may be one bad run — re-run it to find out."
+                                  : "Confident, so this is a real result; a re-run will confirm or move it.")
+                              }
+                            >
+                              <Chip size="small" variant="outlined" color="error" label="outlier" />
+                            </Tooltip>
                           )}
                         </Box>
                         <Typography variant="caption" color="text.secondary">
@@ -2657,6 +2775,11 @@ export default function Settings() {
               onChange={(e) => setRefreshTop(Number(e.target.value))}
             >
               <MenuItem value={0}>All profiles</MenuItem>
+              {outlierCount > 0 && (
+                <MenuItem value={-1}>
+                  Outliers only ({outlierCount})
+                </MenuItem>
+              )}
               {[3, 5, 10, 20, 50, 100, 200].map((n) => (
                 <MenuItem key={n} value={n}>
                   Top {n} (winner-first)
@@ -2664,6 +2787,14 @@ export default function Settings() {
               ))}
             </Select>
           </Stack>
+          {refreshTop === -1 && outliers && (
+            <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1 }}>
+              {outliers.thin} thin (under the {minIterations}-iteration minimum — most likely one bad
+              run) · {outliers.confident} confident (a real result; the re-run confirms or moves it).
+              Pick enough iterations to settle it: 5 shows whether the reading holds, {minIterations}{" "}
+              makes a thin profile confident on its own.
+            </Typography>
+          )}
           <Typography variant="body2" color="text.secondary">
             {refreshPreview == null
               ? "Estimating…"
@@ -2685,7 +2816,11 @@ export default function Settings() {
             onClick={handleStartRefresh}
             disabled={refreshPreview != null && refreshPreview.profiles === 0}
           >
-            {refreshTop ? `Re-run top ${refreshTop}` : "Re-run all profiles"}
+            {refreshTop === -1
+              ? `Re-run ${outlierCount} outlier${outlierCount === 1 ? "" : "s"}`
+              : refreshTop
+                ? `Re-run top ${refreshTop}`
+                : "Re-run all profiles"}
           </Button>
         </DialogActions>
       </Dialog>

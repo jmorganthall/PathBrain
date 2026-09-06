@@ -211,6 +211,8 @@ export interface SettingsProfile {
   /** The ring's fitted strength and how many rounds stand behind it (null if unraced). */
   ring_rating?: number | null;
   ring_rounds?: number | null;
+  /** Set when this profile sits far outside the field on a crown metric or the Overall. */
+  outlier?: ProfileOutlier | null;
 }
 
 // A selectable non-metric numeric field (axis scores + run stats) the /api/metrics
@@ -485,6 +487,8 @@ export interface SettingsProfilesResponse {
   // Methodology health: scored metrics whose 'best' is too lenient to rank profiles
   // (saturating >50%), with a suggested re-anchor.
   saturation: MetricSaturation[];
+  // Profiles far outside the field on a crown metric / the Overall (see ProfileOutlier).
+  outliers?: OutlierSummary;
 }
 
 // One "Test this profile up to the minimum" session.
@@ -568,6 +572,37 @@ export interface ProfileRefreshPreview {
   // under `ranked_by` (the prior methodology). Both null for a full, unranked batch.
   top?: number | null;
   ranked_by?: string | null;
+  // How many of an explicit fingerprint list were found (null for the other scopes).
+  fingerprints?: number | null;
+}
+
+// One metric on which a profile sits far outside the field: its median, the field's
+// median, the robust z (MAD-based), and whether that is the bad side for the metric.
+export interface ProfileOutlierMetric {
+  key: string;
+  label: string;
+  value: number;
+  field_median: number;
+  z: number;
+  side: "worse" | "better";
+}
+
+export interface ProfileOutlier {
+  metrics: ProfileOutlierMetric[];
+  // Under the confidence minimum — most likely one bad run standing in for a median.
+  thin: boolean;
+}
+
+// Field-level outlier summary: who is flagged, and how many of them are thin (re-measure)
+// vs confident (a real result, however unwelcome).
+export interface OutlierSummary {
+  count: number;
+  thin: number;
+  confident: number;
+  fingerprints: string[];
+  threshold_z: number;
+  min_profiles: number;
+  method: string;
 }
 
 export interface VersionInfo {

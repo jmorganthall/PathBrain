@@ -1817,7 +1817,23 @@ LLM-based. See `README.md` for the product overview.
   methodology's Overall, so it re-derives when the methodology changes (no separate knob). A
   **"Hide profiles worse than SQM off"** checkbox (on by default; inert until a baseline exists)
   drops every profile with `pct_vs_sqm_off < 0` from the table + scatter — dead weight we don't
-  care about. (This replaced the old "vs weather" column.) Plus an optional
+  care about. (This replaced the old "vs weather" column.) **Outliers are flagged once and
+  answered twice** (`routes_settings._outlier_report`, response `outliers` + per-profile
+  `outlier`): a profile whose median on a crown metric — or whose Overall — sits more than
+  `OUTLIER_Z` (3.5) robust standard deviations from the field's median (modified z-score on
+  the MAD, over ≥ `OUTLIER_MIN_PROFILES` profiles; the MAD rather than the stddev because an
+  ordinary z is pulled toward the very outlier it is meant to find) is tagged with the metric,
+  its z, the side (`worse`/`better`) and whether it is `thin` (under the iteration minimum).
+  "What do we do about it?" is two questions, and the page keeps them apart: **Hide outliers**
+  is a *view* choice (the scatter's axes scale to the outlier and the pack it exists to
+  separate collapses into a corner — hiding lets the axes fit the pack; crown and live profile
+  are always kept, nothing is re-scored), and **Re-run outliers** is an *evidence* choice — it
+  opens the Re-run-profiles dialog scoped to exactly the flagged fingerprints
+  (`refresh.start/preview(fingerprints=…)`, an explicit ordered list that overrides
+  `top`/`rank_by`), because a thin outlier is usually one bad run standing in for a median and
+  a re-measurement is what settles it, while a confident outlier is a real result the re-run
+  confirms or moves. The summary splits `thin` from `confident` so the dialog can say which.
+  Plus an optional
   column selector; a **dynamic** any-metric quadrant where X/Y pick the axes, a **Shade**
   picker encodes a third field as dot **opacity** (brighter = better; `ProfileQuadrant`),
   and the crowned profile is ringed — the quadrant now warns when an axis is **saturated**
