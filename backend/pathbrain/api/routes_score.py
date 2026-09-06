@@ -297,6 +297,15 @@ def rolling_score(
         vals = [r.axis_scores.get(a["key"]) for r in rows if (r.axis_scores or {}).get(a["key"]) is not None]
         if vals:
             axis_scores[a["key"]] = _spread(vals)
+    # The first-class Overall is persisted beside the axes on every comparable Score
+    # (``axis_scores["overall"]``) but is not a *scored axis*, so the loop above never
+    # sees it. Report it under the same key — it is the Dashboard's hero figure, and
+    # without it the window's Overall had to be inferred from three axis gauges.
+    overall_vals = [
+        r.axis_scores.get("overall") for r in rows if (r.axis_scores or {}).get("overall") is not None
+    ]
+    if overall_vals:
+        axis_scores["overall"] = _spread(overall_vals)
 
     # Stall attribution from the browser plugin's (display-only) metrics for these runs.
     run_ids = [r.run_id for r in rows]

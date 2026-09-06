@@ -1788,7 +1788,20 @@ LLM-based. See `README.md` for the product overview.
   parsed every other page plus recharts — over a second of blank screen on a phone before a
   single request was sent. Now the shell paints immediately, each page is its own small chunk
   (Duels ~40 kB), and the 384 kB chart bundle loads only for the three views that draw charts.
-  Keep new pages lazy. Pages: Dashboard,
+  Keep new pages lazy. Pages: **Dashboard** (`Dashboard.tsx` — the NOC wall: a status strip
+  of KPI tiles (`components/dashboard/StatTile` — pipeline lock state from the jobs feed,
+  monitoring cadence + next run, the measured per-iteration cost with a 30-run sparkline,
+  run/profile counts, Follow-best state + crown churn), the hero 24h Overall gauge beside
+  the headline axes, the profile the firewall is on now (its Overall, rank and crown-metric
+  percentiles, with the "Test current for X min" control), the running jobs
+  (`ActiveJobs`), the three verdicts side by side — `TwoCrowns`, the pooled `Leaderboard`
+  (confident profiles by Overall, crown + live + tied marked by icon/chip, never by bar
+  colour), and the ring (`RingCard`, the duel standings on fitted strength) — then the
+  series, the per-metric breakdown and the latest waterfall. Every number is read from an
+  existing endpoint; the light ops reads re-poll every 15s while visible, the field reads
+  refresh on load and when a run lands. `GET /score/rolling` reports the window's
+  **`overall`** beside the axis spreads for the hero — the first-class Overall is persisted
+  on every Score but is not a scored axis, so the axis loop never saw it),
   History, Trends, **Weather** (the measured-conditions view — the variance decomposition +
   the covariate × crown-metric sensitivity table; the per-profile weather readings stay on
   Settings Impact beside the standings they qualify), Compare, Settings Impact (**paginated** sortable table — 25/page —

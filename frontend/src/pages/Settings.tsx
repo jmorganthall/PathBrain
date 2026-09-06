@@ -746,6 +746,11 @@ export default function Settings() {
   // exact firewall diff that would be written) and the in-progress test status.
   const [testConfirm, setTestConfirm] = useState<ApplyConfirm | null>(null);
   const [testPreviewFp, setTestPreviewFp] = useState<string | null>(null);
+  // "How many iterations?" for the test dialog — raw text so it can be cleared while
+  // typing. Pre-filled with the top-up to the confidence minimum (or 5 for a profile
+  // that is already confident, where the test is a re-measurement rather than a top-up).
+  const [testIterationsText, setTestIterationsText] = useState("5");
+  const [testTargetIterations, setTestTargetIterations] = useState(0);
   const [activeTest, setActiveTest] = useState<ProfileTest | null>(null);
   // The crowned "best" profile (closest to the top-right corner) + the selectable
   // numeric fields, both from the server.
@@ -1114,6 +1119,9 @@ export default function Settings() {
     setError(null);
     try {
       const r = await api.applyProfile(p.fingerprint, true);
+      const topUp = Math.max(0, minIterations - (p.iterations ?? 0));
+      setTestTargetIterations(p.iterations ?? 0);
+      setTestIterationsText(String(topUp > 0 ? topUp : 5));
       setTestConfirm({
         fingerprint: p.fingerprint,
         label: r.label || p.label,
@@ -1126,17 +1134,22 @@ export default function Settings() {
     } finally {
       setTestPreviewFp(null);
     }
-  }, []);
+  }, [minIterations]);
 
-  // "Test to minimum" step 2: kick off the test (applies → runs → restores). The
+  // "Test this profile" step 2: kick off the test (applies → runs the chosen number of
+  // iterations → restores). An explicit count always runs exactly that many, so a
+  // confident profile can be re-measured as easily as a thin one can be topped up. The
   // run queues behind any other firewall operation via the coordination lock.
+  const testIterations = Math.max(1, Math.min(500, parseInt(testIterationsText, 10) || 0));
   const handleConfirmTest = useCallback(async () => {
     if (!testConfirm) return;
     setError(null);
     try {
-      const r = await api.testProfile(testConfirm.fingerprint);
+      const r = await api.testProfile(testConfirm.fingerprint, testIterations);
+      const reaches = testTargetIterations + r.iterations >= r.min_iterations;
       setToast(
-        `Testing ${testConfirm.label}: running ${r.iterations} iteration(s) to reach the ${r.min_iterations}-iteration minimum`
+        `Testing ${testConfirm.label}: running ${r.iterations} iteration${r.iterations === 1 ? "" : "s"}` +
+          (reaches ? ` (reaches the ${r.min_iterations}-iteration minimum)` : ` (${r.min_iterations - testTargetIterations - r.iterations} more still needed for confidence)`)
       );
       setTestConfirm(null);
       // Show the live status immediately; the poller below keeps it fresh.
@@ -1145,7 +1158,7 @@ export default function Settings() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start the profile test");
     }
-  }, [testConfirm]);
+  }, [testConfirm, testIterations, testTargetIterations]);
 
   // Poll the active profile test until it finishes, then reload + clear.
   useEffect(() => {
@@ -1721,6 +1734,22 @@ export default function Settings() {
                       >
                         View history
                       </Button>
+                      <Tooltip title="Temporarily apply this profile, benchmark it for a number of iterations you choose, then restore your current settings. You'll pick the count and see the exact changes first.">
+                        <span>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="secondary"
+                            startIcon={
+                              testPreviewFp === sp.fingerprint ? <CircularProgress size={14} /> : <ScienceIcon />
+                            }
+                            onClick={() => handleTestClick(sp)}
+                            disabled={testPreviewFp != null || testRunning || applying}
+                          >
+                            Test this profile
+                          </Button>
+                        </span>
+                      </Tooltip>
                       <Tooltip title="Write this profile's shaper settings to the firewall now. You'll preview the exact changes and confirm first.">
                         <span>
                           <Button
@@ -2475,14 +2504,32 @@ export default function Settings() {
       />
 
       <Dialog open={testConfirm != null} onClose={() => setTestConfirm(null)} maxWidth="sm" fullWidth>
-        <DialogTitle>Test this profile up to the minimum</DialogTitle>
+        <DialogTitle>Test this profile</DialogTitle>
         <DialogContent>
           {testConfirm && (
             <>
-              <DialogContentText sx={{ mb: 1 }}>
-                Temporarily applies <b>{testConfirm.label}</b>, benchmarks it up to the{" "}
-                {minIterations}-iteration minimum, then <b>restores your current settings</b>.
+              <DialogContentText sx={{ mb: 2 }}>
+                Temporarily applies <b>{testConfirm.label}</b>, benchmarks it for the number of
+                iterations you choose, then <b>restores your current settings</b>.
               </DialogContentText>
+              <TextField
+                label="How many iterations?"
+                type="text"
+                size="small"
+                autoFocus
+                value={testIterationsText}
+                onChange={(e) => setTestIterationsText(e.target.value.replace(/[^0-9]/g, ""))}
+                onBlur={() => setTestIterationsText(String(testIterations))}
+                inputProps={{ inputMode: "numeric", pattern: "[0-9]*", min: 1, max: 500 }}
+                helperText={
+                  testTargetIterations >= minIterations
+                    ? `Already confident (${testTargetIterations} of ${minIterations} iterations) — this re-measures it.`
+                    : testTargetIterations + testIterations >= minIterations
+                      ? `Has ${testTargetIterations} of ${minIterations} — this run reaches confidence.`
+                      : `Has ${testTargetIterations} of ${minIterations} — ${minIterations - testTargetIterations - testIterations} more would still be needed after this run.`
+                }
+                sx={{ mb: 2, maxWidth: 320 }}
+              />
               {testConfirm.changes.length === 0 ? (
                 <Alert severity="info" sx={{ mb: 1 }}>
                   The firewall already matches this profile — it'll benchmark in place, then leave
@@ -2535,8 +2582,9 @@ export default function Settings() {
             color="secondary"
             startIcon={<ScienceIcon />}
             onClick={handleConfirmTest}
+            disabled={testIterations < 1}
           >
-            Run test &amp; restore
+            Run {testIterations} iteration{testIterations === 1 ? "" : "s"} &amp; restore
           </Button>
         </DialogActions>
       </Dialog>
