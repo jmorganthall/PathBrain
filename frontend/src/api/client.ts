@@ -64,6 +64,7 @@ import type {
   ExploreLedger,
   ExploreTestRequest,
   ExploreTestResult,
+  ProfileTestQueue,
   SettingsProfilesResponse,
   WeatherSensitivity,
   Sweep,
@@ -459,6 +460,10 @@ export const api = {
         body: JSON.stringify(body),
       }),
     ),
+  // What holds the pipeline and what is already queued — asked before spending a
+  // benchmark, so a busy pipeline can be a "queue this?" question instead of a surprise.
+  profileTestQueue: () => request<ProfileTestQueue>("/settings/test-profile/queue"),
+
   // The recommendation ledger: every claim Explore made, graded against what the link
   // actually did. Two indexed queries, so unlike the landscape it's cheap to fetch on load.
   exploreRecommendations: (limit = 50) =>

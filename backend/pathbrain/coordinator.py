@@ -169,6 +169,41 @@ def owner() -> str | None:
     return lease.label if lease else None
 
 
+#: How a lock-owner label reads to a person. The labels are ``"<engine>#<id>"`` because
+#: they are log lines first, but "duel#412" is not an answer to "why can't I test now?" —
+#: a modal asking whether to queue has to name what is in the way.
+_OWNER_NAMES: tuple[tuple[str, str], ...] = (
+    ("profile-test", "another profile test"),
+    ("test-current", "a “test current profile” session"),
+    ("baseline-test", "a baseline (SQM off) test"),
+    ("challenger", "a challenger race"),
+    ("experiment", "an experiment"),
+    ("crown-follow", "the crown follower"),
+    ("refresh", "a profile re-run"),
+    ("monitoring", "a scheduled monitoring run"),
+    ("run-series", "a benchmark run"),
+    ("sweep", "a shotgun sweep"),
+    ("duel", "a duel session"),
+    ("run", "a benchmark run"),
+)
+
+
+def describe(label: str | None) -> str | None:
+    """A human phrase for a lock-owner label (``"duel#412"`` → ``"a duel session"``).
+
+    Longest-prefix first, so ``run-series#3`` never reads as ``run#``. An unrecognised
+    label is returned unchanged rather than dressed up: a wrong name is worse than a raw
+    one, and a new engine should show up as itself until someone adds it here.
+    """
+    if not label:
+        return None
+    head = label.split("#", 1)[0]
+    for prefix, phrase in _OWNER_NAMES:
+        if head == prefix:
+            return phrase
+    return label
+
+
 def beat() -> None:
     """Stamp the current holder as alive and progressing.
 

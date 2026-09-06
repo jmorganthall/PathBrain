@@ -3224,15 +3224,13 @@ def test_profile(
 
     try:
         test_id = profile_test_mod.start(fp, target, summarize(target), needed)
-    except RuntimeError as exc:  # a test is already running
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         log.exception("test-profile start failed")
         raise HTTPException(
             status_code=502, detail=f"Could not start the profile test: {type(exc).__name__}: {exc}"
         ) from exc
 
-    log.info("Profile test %s started for %s: %s iteration(s)", test_id, fp, needed)
+    log.info("Profile test %s queued for %s: %s iteration(s)", test_id, fp, needed)
     return {
         "id": test_id,
         "fingerprint": fp,
@@ -3242,6 +3240,7 @@ def test_profile(
         # Which of the two lengths ran, so the caller can say "quick test" vs "topping up"
         # without re-deriving it from the counts.
         "mode": "exact" if requested is not None else "top_up",
+        **_queue_placement(test_id),
     }
 
 
@@ -3282,6 +3281,30 @@ def _apply_writable_overrides(live_norm: list[dict], suggested) -> list[dict]:
     return out
 
 
+def _queue_placement(test_id: int) -> dict:
+    """Where a just-enqueued test landed: does it start now, and if not, what is ahead of it.
+
+    Both start paths return this, so the two callers cannot describe the same queue two
+    ways. It is read *after* the row exists, so the test counts itself: a placement of 1
+    means "next up, nothing else waiting".
+    """
+    status = profile_test_mod.queue_status()
+    pending = status.get("pending") or []
+    position = next(
+        (p.get("queue_position") for p in pending if p.get("id") == test_id), None
+    )
+    running = status.get("running")
+    ahead = (position - 1 if position else 0) + (1 if running else 0)
+    return {
+        # True when something has to finish before this test starts — either the pipeline
+        # is held by another engine, or other tests are queued in front of it.
+        "queued": bool(status.get("busy")) or ahead > 0,
+        "queue_position": position,
+        "queue_ahead": ahead,
+        "blocked_by": status.get("owner_label") or status.get("owner"),
+    }
+
+
 def start_settings_test(
     session: Session,
     settings,
@@ -3300,8 +3323,10 @@ def start_settings_test(
     ``MAX_ITERATIONS`` and floored at one — a top-up on an already-confident profile still
     collects a fresh reading rather than refusing.
 
-    Returns ``{id, fingerprint, iterations, label, existing_iterations}``; raises
-    ``HTTPException`` for a no-op, an unreachable change, or a busy pipeline.
+    Returns ``{id, fingerprint, iterations, label, existing_iterations}`` plus its queue
+    placement (``queued``/``queue_position``/``queue_ahead``/``blocked_by``); raises
+    ``HTTPException`` only for a no-op or an unreachable change. A busy pipeline is **not**
+    a refusal — the test is queued behind whatever holds it.
     """
     try:
         live = get_provider().discover()
@@ -3354,11 +3379,9 @@ def start_settings_test(
     wanted = min(MAX_ITERATIONS, wanted)
     try:
         test_id = profile_test_mod.start(target_fp, target, label or "AI suggestion", wanted)
-    except RuntimeError as exc:  # another firewall/benchmark session already running
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Could not start the test: {exc}") from exc
-    log.info("Test-settings %s started (fp %s, %s iteration(s))", test_id, target_fp, wanted)
+    log.info("Test-settings %s queued (fp %s, %s iteration(s))", test_id, target_fp, wanted)
     return {
         "id": test_id,
         "fingerprint": target_fp,
@@ -3367,6 +3390,7 @@ def start_settings_test(
         "existing_iterations": existing,
         # Requested fields the firewall cannot write, reverted so the fingerprint above is real.
         "warnings": warnings,
+        **_queue_placement(test_id),
     }
 
 
@@ -3386,12 +3410,55 @@ def current_profile_test() -> dict:
     return {"test": profile_test_mod.current()}
 
 
+@router.get("/settings/test-profile/queue")
+def profile_test_queue() -> dict:
+    """What is running, what is queued, and what holds the pipeline.
+
+    The read behind "Busy now — queue this?": before spending a benchmark, a caller can
+    ask whether it would start immediately, and if not, what is in the way and how many
+    tests are already waiting. Cheap (one indexed query plus the in-memory lock state), so
+    it is safe to call on every press.
+    """
+    return profile_test_mod.queue_status()
+
+
+@router.post("/settings/test-profile/{test_id}/cancel")
+def cancel_profile_test_by_id(test_id: int) -> dict:
+    """Cancel one specific profile test — the queue's per-row cancel.
+
+    Separate from the bodiless endpoint above because the jobs feed cancels by URL alone
+    (``cancelJob`` POSTs no body), and with a queue there is more than one cancellable
+    test on screen at a time.
+    """
+    cancelled = profile_test_mod.cancel(test_id)
+    return {
+        "cancelled": cancelled,
+        "id": test_id,
+        "queue_depth": profile_test_mod.queue_depth(),
+    }
+
+
 @router.post("/settings/test-profile/cancel")
-def cancel_profile_test() -> dict:
-    """Ask the running profile test ("test to minimum") to stop after its current chunk.
-    The baseline is still restored. Returns whether one was active."""
-    cancelled = profile_test_mod.cancel()
-    return {"cancelled": cancelled, "status": (profile_test_mod.current() or {}).get("status")}
+def cancel_profile_test(body: dict | None = Body(None)) -> dict:
+    """Cancel a profile test. Returns whether one was cancelled.
+
+    With no body, cancels the test currently claimed — the toolbar button. With
+    ``{"id": N}`` cancels that specific one, which is how a *queued* test is dropped: it
+    has applied nothing, so it leaves the queue immediately rather than starting just to
+    stop. A running test stops after its current chunk and still restores the baseline.
+    """
+    test_id = (body or {}).get("id")
+    if test_id is not None:
+        try:
+            test_id = int(test_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="id must be a number") from None
+    cancelled = profile_test_mod.cancel(test_id)
+    return {
+        "cancelled": cancelled,
+        "status": (profile_test_mod.current() or {}).get("status"),
+        "queue_depth": profile_test_mod.queue_depth(),
+    }
 
 
 def _contending_challengers(session: Session) -> tuple[str | None, list[str]]:

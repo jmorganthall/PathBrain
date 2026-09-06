@@ -67,6 +67,8 @@ import { useTheme } from "@mui/material/styles";
 
 import { api } from "../api/client";
 import { FoldCard, HelpTip } from "../components/Explain";
+import QueueTestDialog from "../components/QueueTestDialog";
+import type { PendingTest } from "../components/QueueTestDialog";
 import type {
   ExploreBasin,
   ExploreCandidate,
@@ -79,6 +81,7 @@ import type {
   ExploreLedger,
   ExploreMatchedPairs,
   ExploreRecommendation,
+  ProfileTestQueue,
 } from "../api/types";
 import { fmtNum, fmtTimeShort } from "../utils/format";
 
@@ -1508,6 +1511,10 @@ export default function Explore() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
+  // A test the user pressed while the pipeline was busy, held until they say whether to
+  // queue it, plus the queue snapshot the dialog explains itself with.
+  const [queuePrompt, setQueuePrompt] = useState<PendingTest | null>(null);
+  const [queueState, setQueueState] = useState<ProfileTestQueue | null>(null);
   // The ledger is two indexed queries, not a compute_profiles pass, so unlike the landscape
   // it loads with the page — "how did the last ones go?" should be there before you decide
   // to spend another night on the next one.
@@ -1556,19 +1563,13 @@ export default function Explore() {
     void loadLedger();
   }, [loadLedger]);
 
-  // Start a measurement — and record the claim it makes first, so it can be graded later.
-  // `iterations` undefined = top up to the confidence minimum; a number = run exactly that.
-  const test = useCallback(
-    async (c: ExploreCandidate, iterations?: number, key?: string) => {
-      // The same lever move can appear twice on the page — once as a ranked candidate and
-      // once as the variant that fills a hole — so the busy marker is keyed by where it was
-      // pressed, not only by what it changes.
-      const id = key ?? c.changes.map((ch) => ch.key).join("|");
+  // Actually send the measurement — and record the claim it makes first, so it can be
+  // graded later. Split from `test` below because a busy pipeline turns this into a
+  // question, and the answer arrives from a dialog rather than from the press.
+  const runTest = useCallback(
+    async (c: ExploreCandidate, iterations: number | undefined, id: string, label: string) => {
       setTesting(id);
       try {
-        const label = c.changes
-          .map((ch) => `${ch.pipe} ${ch.field_label} ${fmtValue(ch.to, ch.unit)}`)
-          .join(", ");
         const started = await api.exploreTest({
           settings: c.settings,
           label: `Explore: ${label}`,
@@ -1586,8 +1587,17 @@ export default function Explore() {
           best_overall: data?.best_overall ?? null,
           summary: c.summary,
         });
+        const iters = `${started.iterations} iteration${started.iterations === 1 ? "" : "s"}`;
+        // Say which of the two actually happened. Reporting "Testing…" for a test that is
+        // eighth in line behind a duel is how a working queue reads as a broken button.
         setSnack(
-          `Testing ${started.iterations} iteration${started.iterations === 1 ? "" : "s"} — apply, benchmark, then restore your settings. The prediction is recorded; its verdict appears below once runs land.${started.note ? ` ${started.note}` : ""}`,
+          started.queued
+            ? `Queued ${iters}${started.blocked_by ? ` behind ${started.blocked_by}` : ""}${
+                started.queue_position && started.queue_position > 1
+                  ? ` (#${started.queue_position} in the queue)`
+                  : ""
+              }. It applies, benchmarks and restores your settings when its turn comes — cancel it any time from the jobs menu.${started.note ? ` ${started.note}` : ""}`
+            : `Testing ${iters} — apply, benchmark, then restore your settings. The prediction is recorded; its verdict appears below once runs land.${started.note ? ` ${started.note}` : ""}`,
         );
         void loadLedger();
       } catch (e) {
@@ -1597,6 +1607,42 @@ export default function Explore() {
       }
     },
     [data, loadLedger],
+  );
+
+  // Press "Test now" / "Test to minimum". A test always queues rather than being refused,
+  // but queueing silently is what made a busy pipeline look like a dead button — so when
+  // something is in the way, ask first and name it.
+  const test = useCallback(
+    async (c: ExploreCandidate, iterations?: number, key?: string) => {
+      // The same lever move can appear twice on the page — once as a ranked candidate and
+      // once as the variant that fills a hole — so the busy marker is keyed by where it was
+      // pressed, not only by what it changes.
+      const id = key ?? c.changes.map((ch) => ch.key).join("|");
+      const label = c.changes
+        .map((ch) => `${ch.pipe} ${ch.field_label} ${fmtValue(ch.to, ch.unit)}`)
+        .join(", ");
+
+      let queue: ProfileTestQueue | null = null;
+      try {
+        queue = await api.profileTestQueue();
+      } catch {
+        // Best-effort: if we can't tell whether the pipeline is busy, don't block the
+        // press. The test queues correctly either way; the dialog is only there to say so.
+      }
+      const wouldWait =
+        !!queue && (queue.busy || !!queue.running || queue.pending.length > 0);
+      if (wouldWait) {
+        setQueueState(queue);
+        setQueuePrompt({
+          label: `Explore: ${label}`,
+          iterations,
+          run: () => runTest(c, iterations, id, label),
+        });
+        return;
+      }
+      await runTest(c, iterations, id, label);
+    },
+    [runTest],
   );
 
   return (
@@ -1867,9 +1913,20 @@ export default function Explore() {
         </>
       )}
 
+      <QueueTestDialog
+        pending={queuePrompt}
+        queue={queueState}
+        onConfirm={() => {
+          const pending = queuePrompt;
+          setQueuePrompt(null);
+          void pending?.run();
+        }}
+        onCancel={() => setQueuePrompt(null)}
+      />
+
       <Snackbar
         open={!!snack}
-        autoHideDuration={6000}
+        autoHideDuration={8000}
         onClose={() => setSnack(null)}
         message={snack ?? ""}
       />

@@ -458,6 +458,45 @@ LLM-based. See `README.md` for the product overview.
     everyday action, applying is the commitment. A live stage readout runs under the header
     and the page **refreshes itself in place** when the test finishes, since the new data is
     the entire point of having run it.
+    **Tests QUEUE; they are never refused** (`_worker`/`_ensure_worker`/`_next_pending_id`,
+    `ProfileTest.target`). The module was a strict singleton — a second `start` raised, the API
+    turned it into a 409, and the button dead-ended — which protected nothing: the coordinator
+    underneath has always queued (`hold` blocks, and the row's own stage read *"Queued — waiting
+    for any running benchmark to finish"*), so the refusal fired **before** the queueing
+    machinery was reached. Worse, the flag was set at *creation* rather than at start, so a test
+    sitting behind a duel window refused every other test for the whole night — the failure
+    landing hardest exactly when queueing is what a person wants. The reported symptom was
+    "click Test now from Explore while jobs are running and it doesn't queue"; only a *second
+    profile test* actually refused, while every other holder — duel, race, sweep, refresh,
+    baseline, monitoring, manual run — queued correctly and **silently**, which reads the same
+    from the outside: Explore polls no stage and its toast said "Testing…" in the present tense.
+    So the **pending rows are the queue** (ordered by id), each carrying its own `target` — a new
+    JSON column, because one in-memory slot cannot hold several queued targets and the next
+    request would overwrite the last one's settings — and a single worker drains them
+    oldest-first. Claiming the next test and deciding to retire both happen under one lock
+    (`_gate`), so a row committed by a request is either seen by the running worker or arrives
+    after it has cleared itself, in which case that request starts a new one; there is no third
+    case, which is what stops the queue stranding with nobody draining it. A test becomes RUNNING
+    only once it holds the coordination lock, so **pending honestly means nothing was applied** —
+    which is what makes `cancel(id)` free: a queued test leaves the line outright rather than
+    starting just to stop, and one cancelled while it waits for the lock bails at a pre-apply
+    seam instead of paying an apply-and-restore round trip. Startup reconciliation closes a
+    queued test as CANCELLED ("not started"), not FAILED — it never ran, and hours later
+    silently running a test nobody is watching is worse than making them press it again.
+    Every start path returns its **queue placement** (`routes_settings._queue_placement`:
+    `queued`/`queue_position`/`queue_ahead`/`blocked_by`), `GET /settings/test-profile/queue`
+    (`queue_status`) reports what holds the pipeline and who is waiting, and
+    `coordinator.describe` turns a lock label into words (`duel#412` → *"a duel session"*),
+    because "duel#412" is not an answer to "why can't I test now?". The jobs feed lists **every**
+    unfinished test rather than only the newest row (`routes_jobs._profile_test_entry`), each
+    cancellable by id (`POST /settings/test-profile/{id}/cancel`), since showing one row was half
+    of why a queued test read as nothing happening. Deliberately **no estimate of when the queue
+    drains**: the holder might be a monitoring run finishing in two minutes or a ladder running
+    until 05:00, and a fabricated wait is the one number someone would plan around. On the page,
+    a press that would not start immediately opens **"Busy now — queue this?"**
+    (`components/QueueTestDialog.tsx`) naming the holder, how long it has run and what is already
+    queued, with **Queue it** / **Not now** — the queue is the fix, the dialog is what makes it
+    visible.
   - `current_test.py` — **Test current for X minutes**: a time-boxed data-collection loop on
     whatever profile the firewall is **already** on. Unlike the other engines it **never writes
     the firewall** (it measures the live profile as-is), so there's no baseline to snapshot or

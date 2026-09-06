@@ -438,13 +438,8 @@ def _active_sweep_job(session: Session) -> list[dict]:
     ]
 
 
-def _active_profile_test_job(session: Session) -> list[dict]:
-    """The most recent profile test as a job entry — shown while running/pending AND for a
-    short window after it finishes, so a fast failure (e.g. the firewall rejecting a field)
-    stays visible with its error instead of blinking out of the dropdown."""
-    t = profile_test.current()
-    if not t:
-        return []
+def _profile_test_entry(session: Session, t: dict) -> dict:
+    """One profile test as a jobs-feed entry (running, queued, or just finished)."""
     status = t.get("status")
     # The call sign names the profile under test; the technical settings summary rides along
     # as `detail` (a tooltip) rather than in the line, since it is what made this unreadable.
@@ -457,7 +452,11 @@ def _active_profile_test_job(session: Session) -> list[dict]:
     iters = t.get("iterations")
     what = f"{iters} iteration{'' if iters == 1 else 's'}" if iters else "profile test"
     label = f"Test profile · {what}: {name or detail or t.get('fingerprint')}"
+    # Every profile test cancels by id: with a queue there is more than one on screen, and
+    # the feed's cancel posts a URL with no body to say which.
+    cancel_url = f"/settings/test-profile/{t['id']}/cancel"
     if status in ("running", "pending"):
+        queued = status == "pending"
         # Progress lived only in the stage sentence ("part 1/1 (0/5 done)"), so the bar was
         # indeterminate and there was no ETA at all. The test's chunks carry
         # job_group="profile_test-<id>" and their own completed-iteration counts, which is
@@ -474,51 +473,78 @@ def _active_profile_test_job(session: Session) -> list[dict]:
             per_unit_ms=_per_iteration_estimate(session),
             current=int(done),
             total=total,
-            queued=status == "pending",
+            queued=queued,
         )
-        return [
-            _with_eta({
-                "id": f"profile_test-{t['id']}",
-                "kind": "profile_test",
-                "label": label,
-                "detail": detail,
-                "status": "running",
-                "current": int(done),
-                "total": total,
-                # The live step readout (snapshot → apply → verify → benchmark → restore).
-                "message": t.get("stage") or f"running {t.get('iterations')} iteration(s)",
-                "error": None,
-                "href": "/settings",
-                "parent_id": None,
-                "cancel_url": "/settings/test-profile/cancel",
-                "started_at": t.get("started_at") or t.get("created_at"),
-                "finished_at": None,
-            }, eta, queued=status == "pending")
-        ]
-    # Finished — keep it in the feed for a few minutes so the outcome is readable.
-    if not _finished_recently(t.get("finished_at"), minutes=5):
-        return []
-    failed = status == "failed"
-    cancelled = status == "cancelled"
-    return [
-        {
+        # A queued test says where it is in the line and what is in front of it — the
+        # question someone actually has when they pressed a button and nothing happened.
+        position = t.get("queue_position")
+        if queued:
+            blocker = t.get("lock_owner_label") or t.get("lock_owner")
+            message = t.get("stage") or "queued"
+            if position:
+                place = "next up" if position == 1 else f"#{position} in the queue"
+                message = f"Queued — {place}" + (f", behind {blocker}" if blocker else "")
+        else:
+            message = t.get("stage") or f"running {t.get('iterations')} iteration(s)"
+        return _with_eta({
             "id": f"profile_test-{t['id']}",
             "kind": "profile_test",
             "label": label,
             "detail": detail,
-            "status": "failed" if failed else "succeeded",
-            "current": None,
-            "total": t.get("iterations"),
-            "message": t.get("stage")
-            or ("failed" if failed else "cancelled" if cancelled else "done — baseline restored"),
-            "error": t.get("error") if failed else None,
+            "status": "running",
+            "current": int(done),
+            "total": total,
+            # The live step readout (snapshot → apply → verify → benchmark → restore).
+            "message": message,
+            "error": None,
             "href": "/settings",
             "parent_id": None,
-            "cancel_url": None,
+            "cancel_url": cancel_url,
             "started_at": t.get("started_at") or t.get("created_at"),
-            "finished_at": t.get("finished_at"),
-        }
-    ]
+            "finished_at": None,
+        }, eta, queued=queued)
+    failed = status == "failed"
+    cancelled = status == "cancelled"
+    return {
+        "id": f"profile_test-{t['id']}",
+        "kind": "profile_test",
+        "label": label,
+        "detail": detail,
+        "status": "failed" if failed else "succeeded",
+        "current": None,
+        "total": t.get("iterations"),
+        "message": t.get("stage")
+        or ("failed" if failed else "cancelled" if cancelled else "done — baseline restored"),
+        "error": t.get("error") if failed else None,
+        "href": "/settings",
+        "parent_id": None,
+        "cancel_url": None,
+        "started_at": t.get("started_at") or t.get("created_at"),
+        "finished_at": t.get("finished_at"),
+    }
+
+
+def _active_profile_test_job(session: Session) -> list[dict]:
+    """Every unfinished profile test as job entries — the running one plus the whole queue.
+
+    Profile tests queue, so there can be several at once, and showing only the newest was
+    the reason a queued test read as "nothing happened": the row existed, the worker was
+    waiting on the pipeline, and the feed said nothing about it. A test that has *finished*
+    is kept for a short window after the queue empties, so a fast failure (the firewall
+    rejecting a field) stays visible with its error instead of blinking out.
+    """
+    live = profile_test.active_tests()
+    if live:
+        return [_profile_test_entry(session, t) for t in live]
+    t = profile_test.current()
+    if not t:
+        return []
+    if t.get("status") in ("running", "pending"):
+        # Claimed by the worker but not yet listed (a race with the row write); show it.
+        return [_profile_test_entry(session, t)]
+    if not _finished_recently(t.get("finished_at"), minutes=5):
+        return []
+    return [_profile_test_entry(session, t)]
 
 
 def _finished_recently(finished_at_iso: str | None, minutes: int) -> bool:

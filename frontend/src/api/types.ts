@@ -2580,7 +2580,20 @@ export interface ExploreTestRequest {
   summary?: string;
 }
 
-export interface ExploreTestResult {
+// Where a just-started test landed in the queue. Every start path returns these, so a
+// caller can say "queued behind a duel session" instead of claiming it began measuring.
+export interface QueuePlacement {
+  // Something has to finish first — the pipeline is held, or tests are already waiting.
+  queued?: boolean;
+  // 1 = next up. Null when it starts immediately.
+  queue_position?: number | null;
+  // How many things are ahead of it (the holder plus any queued tests).
+  queue_ahead?: number;
+  // What is in the way, in words ("a duel session"), not a lock label.
+  blocked_by?: string | null;
+}
+
+export interface ExploreTestResult extends QueuePlacement {
   id: number;
   fingerprint: string;
   iterations: number;
@@ -2589,6 +2602,32 @@ export interface ExploreTestResult {
   recommendation_id: number | null;
   // Set when the measurement is not a faithful reproduction of the proposal.
   note: string | null;
+}
+
+// One profile test in the queue (or the one currently running).
+export interface QueuedProfileTest {
+  id: number;
+  status: string;
+  fingerprint: string;
+  label: string | null;
+  iterations: number;
+  stage: string | null;
+  queued: boolean;
+  queue_position?: number;
+  created_at: string | null;
+  started_at: string | null;
+}
+
+// The read behind "Busy now — queue this?": what holds the pipeline and who is waiting.
+export interface ProfileTestQueue {
+  busy: boolean;
+  owner: string | null;
+  owner_label: string | null;
+  held_for_s: number | null;
+  waiting: number;
+  running: QueuedProfileTest | null;
+  pending: QueuedProfileTest[];
+  queue_depth: number;
 }
 
 // "pending" = nothing measured yet; "incomparable" = proposed under another methodology, so
