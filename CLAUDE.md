@@ -1473,6 +1473,45 @@ LLM-based. See `README.md` for the product overview.
     own representation. This was the dominant cause — because `full_overrides` supplies the parent's
     **whole** writable set, *every* explore test hashed an invented profile, so the runs were filed
     correctly and the recommendation pointed at a fingerprint with no history at all.
+  - **Betting vs exploring: `explore.rank_bets` + `POST /api/explore/test-batch`.** Explore
+    routinely produces ten proposals worth measuring and, until this, exactly one button per
+    row to measure them with — a person had to press, wait, come back and press again. The
+    batch is the missing verb ("test the top X at Y iterations each"), and it is only
+    possible *because* profile tests queue: under the old singleton the second candidate
+    would have been refused, so a "queue the top three" button could only ever have started
+    one. But **which** X is the substance, not the count. The landscape ranks by an **upper**
+    confidence bound (`predicted + EXPLORATION_WEIGHT·uncertainty`) because exploring should
+    be drawn to what we don't know — and that is the wrong order for deciding what to spend a
+    night running, where it puts the candidates we understand least at the top. So a *bet* is
+    scored at the **pessimistic** end: `predicted − CONFIDENCE_SIGMA·band`, the same
+    optimism/pessimism split the duel already makes between `CEILING_SIGMA` (who to race) and
+    `RANK_SIGMA` (who is best) — **optimism decides what to explore, pessimism decides what to
+    back**. The band is *not* the model's self-assessment: every claim is graded in the
+    recommendation ledger, so each **evidence class**'s typical miss is a measured number on
+    this link (`explore_tracker.calibration`), and the band used is the **wider** of the
+    stated one and that measured miss — the wider, never a blend, because a class stating
+    ±1.0 while missing by 2.4 is overconfident and averaging keeps half of the
+    overconfidence. A class under `CALIBRATION_MIN_GRADED` (3) is reported but **untrusted**,
+    so one unlucky measurement can't bury a whole class of proposals. Each bet carries
+    `confidence_score`/`confidence_band`/`confidence`/`calibration_basis` and `clears_bar` —
+    whether the *floor* still beats the best measured profile, the strong claim, as opposed
+    to the upside claim the exploring order makes. `rank_bets` mutates nothing (the landscape
+    returns both orders over the same candidates, so the two views can never disagree about
+    what a candidate is), and with an empty ledger the stated band simply stands and
+    `calibration_basis` says so — an uncalibrated ranking is still useful, but it is the
+    model's opinion rather than a track record and the two must not read the same. The batch
+    endpoint generates `BATCH_CANDIDATE_POOL` (12) candidates and takes the top N — generating
+    more than it takes is the point, since re-ranking five and taking five ranks nothing — and
+    routes every one through the *same* `_start_candidate` the single "Test now" uses, so
+    there is one materialize → apply → benchmark → restore path and one claim-recording path.
+    One bad candidate is skipped with its reason rather than failing the batch (the discipline
+    `refresh` applies to a bad profile). Rendered as **"Run the best bets"**
+    (`components/BestBetsDialog.tsx`): pick how many, how long, and confidence-vs-upside, with
+    a preview showing each bet's floor beside its prediction and whether it clears the bar.
+    **The seam this leaves is the overnight module**: `rank_bets` is a pure function over the
+    landscape, so a scheduler can alternate *explore* (queue tonight's smartest bets) with
+    *adjudicate* (duel the survivors) — the bets mature into pooled evidence as they run, and
+    the ring then decides between them.
   - `explore_tracker.py` — **the recommendation ledger: was the data right?** Explore's output is
     a *prediction*, and a prediction nobody scores is a horoscope — it costs the same night of
     benchmarking either way. So the **claim is stored before the measurement exists**

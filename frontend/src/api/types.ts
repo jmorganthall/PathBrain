@@ -2831,7 +2831,57 @@ export interface ExploreLandscape {
   // profile bigger than the noise floor — the honest state of a packed field, where the
   // right next measurement is the coverage gaps, not a refinement.
   candidates_clear_noise?: boolean | null;
+  // The same candidates re-ranked as *bets*: scored at the pessimistic end of a band
+  // widened by what that evidence class has actually missed by. Exploring is drawn to
+  // what we don't know; betting is the opposite question over the same list.
+  bets?: ExploreBet[];
+  calibration?: Record<string, ExploreCalibration>;
+  confidence_sigma?: number;
   reason: string | null;
+}
+
+// What one evidence class has actually been worth on this link — the ledger's track record.
+export interface ExploreCalibration {
+  kind: string;
+  label: string | null;
+  graded: number;
+  mean_abs_error: number | null;
+  hit_rate: number | null;
+  // False below the minimum graded claims: reported, but not allowed to steer the ranking.
+  trusted: boolean;
+}
+
+// A candidate scored as something to back rather than something to look at.
+export interface ExploreBet extends ExploreCandidate {
+  // predicted − sigma × band. What this is worth if the model is wrong by its usual amount.
+  confidence_score: number;
+  // The band actually used: the wider of the model's stated one and the class's measured miss.
+  confidence_band: number;
+  confidence: "high" | "medium" | "low";
+  evidence_kind: string;
+  // Whether that floor still beats the best measured profile — the strong claim.
+  clears_bar: boolean | null;
+  // Which band was used, so a track-record-backed number never reads like a self-assessed one.
+  calibration_basis: string;
+  calibration_graded: number;
+}
+
+// One press queueing the top N bets.
+export interface ExploreBatchResult {
+  queued: (ExploreTestResult & {
+    summary?: string | null;
+    predicted?: number | null;
+    uncertainty?: number | null;
+    confidence_score?: number | null;
+    confidence?: string | null;
+    clears_bar?: boolean | null;
+  })[];
+  skipped: { label: string; reason: string }[];
+  requested: number;
+  iterations: number | null;
+  rank: string;
+  best_overall: number | null;
+  calibration: Record<string, ExploreCalibration>;
 }
 
 // ── Portable (away) test ────────────────────────────────────────────────────

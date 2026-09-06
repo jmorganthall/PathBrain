@@ -63,6 +63,7 @@ import type {
   ExploreLandscape,
   ExploreLedger,
   ExploreTestRequest,
+  ExploreBatchResult,
   ExploreTestResult,
   ProfileTestQueue,
   SettingsProfilesResponse,
@@ -460,6 +461,21 @@ export const api = {
         body: JSON.stringify(body),
       }),
     ),
+  // Queue the top N recommendations at M iterations each — "run the smartest bets".
+  // `rank: "confidence"` ranks by the pessimistic end of a ledger-calibrated band (what to
+  // back); `"upside"` keeps the page's exploring order (what to go and look at).
+  exploreTestBatch: (body: {
+    count: number;
+    iterations?: number | null;
+    rank?: "confidence" | "upside";
+  }) =>
+    startingJob(
+      request<ExploreBatchResult>("/explore/test-batch", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    ),
+
   // What holds the pipeline and what is already queued — asked before spending a
   // benchmark, so a busy pipeline can be a "queue this?" question instead of a surprise.
   profileTestQueue: () => request<ProfileTestQueue>("/settings/test-profile/queue"),

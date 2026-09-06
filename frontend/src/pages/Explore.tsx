@@ -55,6 +55,7 @@ import TableRow from "@mui/material/TableRow";
 import TableSortLabel from "@mui/material/TableSortLabel";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
+import CasinoIcon from "@mui/icons-material/Casino";
 import ExploreIcon from "@mui/icons-material/Explore";
 import FactCheckIcon from "@mui/icons-material/FactCheck";
 import BoltIcon from "@mui/icons-material/Bolt";
@@ -67,6 +68,7 @@ import { useTheme } from "@mui/material/styles";
 
 import { api } from "../api/client";
 import { FoldCard, HelpTip } from "../components/Explain";
+import BestBetsDialog from "../components/BestBetsDialog";
 import QueueTestDialog from "../components/QueueTestDialog";
 import type { PendingTest } from "../components/QueueTestDialog";
 import type {
@@ -1515,6 +1517,9 @@ export default function Explore() {
   // queue it, plus the queue snapshot the dialog explains itself with.
   const [queuePrompt, setQueuePrompt] = useState<PendingTest | null>(null);
   const [queueState, setQueueState] = useState<ProfileTestQueue | null>(null);
+  // "Run the best bets": pick how many and how long, then queue them back to back.
+  const [betsOpen, setBetsOpen] = useState(false);
+  const [betsBusy, setBetsBusy] = useState(false);
   // The ledger is two indexed queries, not a compute_profiles pass, so unlike the landscape
   // it loads with the page — "how did the last ones go?" should be there before you decide
   // to spend another night on the next one.
@@ -1609,6 +1614,34 @@ export default function Explore() {
     [data, loadLedger],
   );
 
+  // Queue the top N bets in one press. Deliberately does NOT go through the busy-confirm
+  // dialog: "queue these" is the entire request, so asking whether to queue would be
+  // asking the question the user just answered.
+  const runBets = useCallback(
+    async (count: number, iterations: number, rank: "confidence" | "upside") => {
+      setBetsBusy(true);
+      try {
+        const out = await api.exploreTestBatch({ count, iterations, rank });
+        const n = out.queued.length;
+        const skipped = out.skipped.length;
+        setSnack(
+          n === 0
+            ? `Nothing could be queued${skipped ? `: ${out.skipped[0].reason}` : "."}`
+            : `Queued ${n} test${n === 1 ? "" : "s"} at ${iterations} iterations each — they run one after another and restore your settings each time.${
+                skipped ? ` ${skipped} skipped (${out.skipped[0].reason})` : ""
+              }`,
+        );
+        setBetsOpen(false);
+        void loadLedger();
+      } catch (e) {
+        setSnack(e instanceof Error ? e.message : "Could not queue the tests.");
+      } finally {
+        setBetsBusy(false);
+      }
+    },
+    [loadLedger],
+  );
+
   // Press "Test now" / "Test to minimum". A test always queues rather than being refused,
   // but queueing silently is what made a busy pipeline look like a dead button — so when
   // something is in the way, ask first and name it.
@@ -1656,7 +1689,17 @@ export default function Explore() {
             untested profiles are most likely to beat everything you've measured.
           </Typography>
         </Box>
-        <Button variant="contained" onClick={() => void load()} disabled={loading}>
+        {!!data?.bets?.length && (
+          <Button
+            variant="contained"
+            color="secondary"
+            startIcon={<CasinoIcon />}
+            onClick={() => setBetsOpen(true)}
+          >
+            Run the best bets
+          </Button>
+        )}
+        <Button variant="outlined" onClick={() => void load()} disabled={loading}>
           {loading ? "Mapping…" : data ? "Refresh" : "Map the space"}
         </Button>
       </Stack>
@@ -1912,6 +1955,16 @@ export default function Explore() {
           )}
         </>
       )}
+
+      <BestBetsDialog
+        open={betsOpen}
+        bets={data?.bets ?? []}
+        calibration={data?.calibration}
+        bestOverall={data?.best_overall ?? null}
+        busy={betsBusy}
+        onClose={() => setBetsOpen(false)}
+        onRun={(count, iterations, rank) => void runBets(count, iterations, rank)}
+      />
 
       <QueueTestDialog
         pending={queuePrompt}
