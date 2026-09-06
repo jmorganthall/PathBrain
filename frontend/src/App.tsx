@@ -31,6 +31,7 @@ const Baseline = lazy(() => import("./pages/Baseline"));
 const Duels = lazy(() => import("./pages/Duels"));
 const Explore = lazy(() => import("./pages/Explore"));
 const Weather = lazy(() => import("./pages/Weather"));
+const Away = lazy(() => import("./pages/Away"));
 
 export default function App() {
   return (
@@ -50,6 +51,7 @@ export default function App() {
           <Route path="/explore" element={<Explore />} />
           <Route path="/weather" element={<Weather />} />
           <Route path="/baseline" element={<Baseline />} />
+          <Route path="/away" element={<Away />} />
           <Route path="/config" element={<Config />} />
           <Route path="/methodology" element={<Methodology />} />
           <Route path="/plugins" element={<Plugins />} />
