@@ -64,6 +64,7 @@ def portable_home(
     request: Request,
     egress_ip: str | None = Query(default=None),
     egress_ip_v6: str | None = Query(default=None),
+    device_id: str | None = Query(default=None, description="Suggest this device's own venue label first."),
     session: Session = Depends(get_session),
 ) -> dict:
     """What "home" looks like from the internet, for detection: the home WAN address per
@@ -72,7 +73,12 @@ def portable_home(
     this request came from, flagged public or not (a private/CGNAT source is a LAN or tunnel
     address and says nothing about where the device's internet traffic leaves). Pass the
     device's ``egress_ip`` / ``egress_ip_v6`` to get the verdict (``detected`` /
-    ``detected_by`` / ``reason``) from the one ``decide_home`` the upload will use."""
+    ``detected_by`` / ``reason``) from the one ``decide_home`` the upload will use.
+
+    It also returns ``venue`` — the label this network was given the last time anyone tested
+    from it (``portable.recall_venue``), so a place you have been before is recognised rather
+    than asked about from scratch. A suggestion only: the page pre-fills it and the user can
+    type over it."""
     cfg = get_config(session)
     pc = portable.portable_config(cfg)
     home = portable.home_addresses(cfg)
@@ -91,6 +97,7 @@ def portable_home(
         "detected": None,
         "detected_by": None,
         "reason": None,
+        "venue": None,
     }
     if egress_ip or egress_ip_v6:
         egress = portable.split_families(egress_ip, egress_ip_v6)
@@ -110,6 +117,14 @@ def portable_home(
                     else f"this device's public {fam} ({e}) is not home's ({h})"
                 ),
             })
+        # What this network was called last time. Best-effort by rule: a missing suggestion
+        # is an empty field, never a failed page.
+        try:
+            out["venue"] = portable.recall_venue(
+                session, egress, v6_prefix=out["v6_prefix"], device_id=device_id
+            )
+        except Exception:  # noqa: BLE001
+            log.debug("Portable: venue recall failed", exc_info=True)
     return out
 
 

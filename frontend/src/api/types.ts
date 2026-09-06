@@ -3142,6 +3142,20 @@ export interface PortableHome {
   detected: boolean | null;
   detected_by: "ip4" | "ip6" | null;
   reason: string | null;
+  // What this network was called last time anyone tested from it, matched on the egress
+  // address (IPv4 exactly, IPv6 by prefix). A suggestion the page pre-fills, never a
+  // decision — the user can type over it.
+  venue: PortableVenueRecall | null;
+}
+
+export interface PortableVenueRecall {
+  venue: string;
+  matched_on: "ip4" | "ip6";
+  last_seen: string | null;
+  // How many runs here carry this same label — "you have tested here 4 times" reads very
+  // differently from a single stray spelling.
+  runs: number;
+  from_this_device: boolean;
 }
 
 // The browser's post-load idle wait, audited off stored raw (read-only).

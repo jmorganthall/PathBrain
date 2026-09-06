@@ -19,7 +19,9 @@ import TableBody from "@mui/material/TableBody";
 import TableCell from "@mui/material/TableCell";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
+import InputAdornment from "@mui/material/InputAdornment";
 import TextField from "@mui/material/TextField";
+import HistoryIcon from "@mui/icons-material/History";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -90,6 +92,51 @@ function writeStorage(key: string, value: string) {
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * The venue this browser last used, and the network it used it on.
+ *
+ * Remembering only the *label* is the behaviour this replaces: it pre-filled "Hotel Denver"
+ * at the next café, which is both wrong and how one place ends up recorded under several
+ * spellings. Keeping the address beside it makes the memory answer the question actually
+ * being asked — "what did I call *this* network?" — and it works before the server answers,
+ * or if it never does. The server's own recall (which sees every device) still wins.
+ */
+interface VenueMemory {
+  venue: string;
+  v4: string | null;
+  v6: string | null;
+}
+
+function readVenueMemory(): VenueMemory | null {
+  const raw = readStorage(VENUE_KEY, "");
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.venue === "string") {
+      return { venue: parsed.venue, v4: parsed.v4 ?? null, v6: parsed.v6 ?? null };
+    }
+  } catch {
+    // Written by an older build as a bare string: a label with no network attached, which
+    // is exactly the thing that cannot be trusted to belong here. Keep it readable, but
+    // give it no address so it never matches.
+    return { venue: raw, v4: null, v6: null };
+  }
+  return null;
+}
+
+/** Same /64, the rule the server matches IPv6 on — hosts share a prefix, never an address. */
+function sameV6Network(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  const head = (ip: string) => ip.toLowerCase().split(":").slice(0, 4).join(":");
+  return head(a) === head(b);
+}
+
+function memoryMatches(mem: VenueMemory | null, egress: { v4: string | null; v6: string | null } | null): boolean {
+  if (!mem || !egress) return false;
+  if (mem.v4 && egress.v4 && mem.v4 === egress.v4) return true;
+  return sameV6Network(mem.v6, egress.v6);
 }
 
 // ── result pieces ────────────────────────────────────────────────────────────
@@ -310,7 +357,11 @@ export default function Away() {
 
   const device = useMemo(() => deviceId(), []);
   const [label, setLabel] = useState(() => readStorage(LABEL_KEY, ""));
-  const [venue, setVenue] = useState(() => readStorage(VENUE_KEY, ""));
+  // Deliberately NOT seeded from storage: until detection says which network this is, the
+  // last label typed is a guess about a different place.
+  const [venue, setVenue] = useState("");
+  const venueRef = useRef(venue);
+  venueRef.current = venue;
   type Mode = "auto" | "home" | "away";
   const [mode, setMode] = useState<Mode>(() => {
     const m = readStorage(MODE_KEY, "auto");
@@ -339,13 +390,28 @@ export default function Away() {
       const fallback = !v4 && !v6 && info.request_ip_public ? info.request_ip : null;
       const found = { v4: v4 ?? (fallback && !fallback.includes(":") ? fallback : null), v6: v6 ?? (fallback && fallback.includes(":") ? fallback : null) };
       setEgress(found);
-      setHomeInfo(
-        found.v4 || found.v6 ? await api.portableHome({ egress_ip: found.v4, egress_ip_v6: found.v6 }) : info,
-      );
+      const resolved =
+        found.v4 || found.v6
+          ? await api.portableHome({ egress_ip: found.v4, egress_ip_v6: found.v6, device_id: device })
+          : info;
+      setHomeInfo(resolved);
+
+      // Recognise a network we have tested from before instead of asking for its name
+      // again. Pre-fill only into an EMPTY field: whatever is on screen was either typed
+      // just now or is this device's last-used label, and silently replacing either would
+      // be the page overruling the person using it. `venueRef` reads the live value so this
+      // does not have to re-run (and re-detect) every keystroke.
+      const remembered = readVenueMemory();
+      const suggestion =
+        resolved.venue?.venue?.trim() ||
+        (memoryMatches(remembered, found) ? remembered?.venue.trim() : "");
+      if (suggestion && !venueRef.current.trim()) {
+        setVenue(suggestion);
+      }
     } catch {
       setEgress(null);
     }
-  }, []);
+  }, [device]);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -384,6 +450,22 @@ export default function Away() {
   const homeCount = history.filter((r) => r.is_home && r.instrument_version === recipe?.instrument_version).length;
   const minHome = recipe?.min_home_runs ?? 5;
 
+  // What this network was called before, and how to say so in one line. A place tested
+  // repeatedly is worth stating as such — one stray label and four agreeing ones deserve
+  // different confidence from the reader.
+  const venueSuggestion = homeInfo?.venue ?? null;
+  const venueHint = useMemo(() => {
+    if (!venueSuggestion) return null;
+    const family = venueSuggestion.matched_on === "ip6" ? "IPv6 network" : "IP address";
+    const whose = venueSuggestion.from_this_device ? "you named" : "this network was named";
+    if (venue.trim() === venueSuggestion.venue.trim()) {
+      return venueSuggestion.runs > 1
+        ? `Same ${family} as ${venueSuggestion.runs} earlier runs — edit if this is somewhere else`
+        : `Same ${family} ${whose} before — edit if this is somewhere else`;
+    }
+    return `Tested from this ${family} before as "${venueSuggestion.venue}"`;
+  }, [venueSuggestion, venue]);
+
   const start = async () => {
     if (!recipe) return;
     setError(null);
@@ -391,7 +473,10 @@ export default function Away() {
     setRunning(true);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    writeStorage(VENUE_KEY, venue);
+    writeStorage(
+      VENUE_KEY,
+      JSON.stringify({ venue, v4: egress?.v4 ?? null, v6: egress?.v6 ?? null } satisfies VenueMemory),
+    );
     writeStorage(MODE_KEY, mode);
     writeStorage(LABEL_KEY, label);
     try {
@@ -520,7 +605,31 @@ export default function Away() {
                 onChange={(e) => setVenue(e.target.value)}
                 disabled={running || isHome === true}
                 sx={{ minWidth: 220, flex: 1 }}
-                helperText={isHome === true ? "home runs are the reference" : " "}
+                // Say where a pre-filled name came from, and that it can be typed over.
+                // Recognising the network is only useful if the reader can tell that is what
+                // happened — an unexplained name in a field reads as a stale leftover.
+                helperText={
+                  isHome === true
+                    ? "home runs are the reference"
+                    : venueHint ?? " "
+                }
+                InputProps={{
+                  endAdornment:
+                    venueSuggestion && venue.trim() !== venueSuggestion.venue.trim() ? (
+                      <InputAdornment position="end">
+                        <Tooltip title={`Use "${venueSuggestion.venue}" again`}>
+                          <IconButton
+                            size="small"
+                            edge="end"
+                            onClick={() => setVenue(venueSuggestion.venue)}
+                            disabled={running}
+                          >
+                            <HistoryIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                      </InputAdornment>
+                    ) : undefined,
+                }}
               />
               <Box>
                 <ToggleButtonGroup

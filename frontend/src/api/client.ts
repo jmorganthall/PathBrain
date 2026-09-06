@@ -674,10 +674,17 @@ export const api = {
   // Portable (away) test: a plain-browser instrument any device can run, compared only
   // "vs home" on the same device + recipe (its own table; never the pooled ledger).
   portableRecipe: () => request<PortableRecipe>("/portable/recipe"),
-  portableHome: (egress?: { egress_ip?: string | null; egress_ip_v6?: string | null }) => {
+  // `device_id` only steers which spelling of a remembered venue is suggested first (your
+  // own, when this device has named the place before) — never what is compared.
+  portableHome: (egress?: {
+    egress_ip?: string | null;
+    egress_ip_v6?: string | null;
+    device_id?: string | null;
+  }) => {
     const q = new URLSearchParams();
     if (egress?.egress_ip) q.set("egress_ip", egress.egress_ip);
     if (egress?.egress_ip_v6) q.set("egress_ip_v6", egress.egress_ip_v6);
+    if (egress?.device_id) q.set("device_id", egress.device_id);
     const qs = q.toString();
     return request<PortableHome>(`/portable/home${qs ? `?${qs}` : ""}`);
   },
