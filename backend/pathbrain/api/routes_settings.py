@@ -2044,6 +2044,9 @@ def invalidate_profiles_cache() -> None:
     with _FIELD_LOCK:
         _FIELD_CACHE.clear()
     profile_aggregates.invalidate()
+    # The seed's caches (stored-profile list keyed on run ids, prior-version field keyed on
+    # its scores) are blind to an in-place re-key for the same reason the field memo is.
+    refresh_mod.invalidate_seed_cache()
     # The weather-sensitivity memo keys on the same field stamp, and the stamp is blind to
     # the same event this hook exists for: an in-place refingerprint moves runs between
     # profiles without changing any id or count, and the decomposition's within-profile

@@ -478,6 +478,71 @@ def test_prior_field_and_seeding_order_the_unknowns_by_the_previous_verdict():
             _clear_prior(s, version, ids)
 
 
+def test_the_seed_caches_are_incremental_and_never_stale():
+    """`list_profiles` decoded every run's settings on every call, and the seed reads it on
+    every Settings-Impact load — the "couldn't reach the server" report. The cache tops up
+    from the newest run id, rebuilds when rows vanish, and drops on the invalidate hook;
+    the prior-version field memo keys on that version's score rows."""
+    from datetime import datetime, timedelta, timezone as tz
+
+    version = "test-seed-cache-v0"
+    when = datetime.now(tz.utc).replace(tzinfo=None) + timedelta(days=365)
+    with session_scope() as s:
+        ids = _seed_prior(s, version, [("cachefp00001", 70.0, 20)], when)
+    more: list[int] = []
+    try:
+        with session_scope() as s:
+            assert "cachefp00001" in {p["fingerprint"] for p in refresh.list_profiles(s)}
+            assert refresh.prior_field(s, 15)["overall"]["cachefp00001"] == 70.0
+        # A new run on a new profile lands (committed): the top-up sees it.
+        with session_scope() as s:
+            more = _seed_prior(s, version + "-b", [("cachefp00002", 60.0, 20)], when + timedelta(days=1))
+        with session_scope() as s:
+            assert {"cachefp00001", "cachefp00002"} <= {p["fingerprint"] for p in refresh.list_profiles(s)}
+            # The prior memo saw the new score rows too (the newer version now seeds).
+            assert refresh.prior_field(s, 15)["version"] == version + "-b"
+        # Rows vanish: the count no longer matches the top-up, so the list is rebuilt.
+        with session_scope() as s:
+            s.execute(delete(Score).where(Score.run_id.in_(more)))
+            s.execute(delete(Run).where(Run.id.in_(more)))
+            s.execute(delete(Methodology).where(Methodology.version == version + "-b"))
+        with session_scope() as s:
+            third = {p["fingerprint"] for p in refresh.list_profiles(s)}
+            assert "cachefp00002" not in third and "cachefp00001" in third
+            assert refresh.prior_field(s, 15)["version"] == version
+            # A memo hit returns a copy: mutating it must not poison the next reader.
+            refresh.prior_field(s, 15)["overall"]["cachefp00001"] = 0.0
+            assert refresh.prior_field(s, 15)["overall"]["cachefp00001"] == 70.0
+        # The cache was filled from a session that then ROLLED BACK: SQLite re-issues the
+        # same ids to the next rows, which a bare "id > cached max" would skip. The
+        # fingerprint at the cached max id is the sentinel that forces a rebuild.
+        try:
+            with session_scope() as s:
+                ghost = _seed_prior(s, version + "-ghost", [("cachefpghost", 50.0, 20)], when + timedelta(days=2))
+                s.flush()
+                refresh._latest_settings_by_fingerprint(s)  # cache now holds the ghost
+                raise RuntimeError("roll back")
+        except RuntimeError:
+            pass
+        with session_scope() as s:
+            real = _seed_prior(s, version + "-real", [("cachefpreal0", 55.0, 20)], when + timedelta(days=2))
+        with session_scope() as s:
+            fps = {p["fingerprint"] for p in refresh.list_profiles(s)}
+            assert "cachefpreal0" in fps and "cachefpghost" not in fps
+            s.execute(delete(Score).where(Score.run_id.in_(real)))
+            s.execute(delete(Run).where(Run.id.in_(real)))
+            s.execute(delete(Methodology).where(Methodology.version == version + "-real"))
+        refresh.invalidate_seed_cache()
+        with session_scope() as s:
+            assert "cachefp00001" in {p["fingerprint"] for p in refresh.list_profiles(s)}
+    finally:
+        with session_scope() as s:
+            _clear_prior(s, version, ids)
+            for suffix in ("-b", "-ghost", "-real"):
+                s.execute(delete(Methodology).where(Methodology.version == version + suffix))
+        refresh.invalidate_seed_cache()
+
+
 def test_prior_field_walks_past_a_version_that_scored_nothing():
     empty, scored = "test-seed-empty-v0", "test-seed-scored-v0"
     now = datetime.now(timezone.utc).replace(tzinfo=None)

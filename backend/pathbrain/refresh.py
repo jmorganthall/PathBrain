@@ -20,11 +20,12 @@ logged and the refresh moves on.
 """
 from __future__ import annotations
 
+import copy
 import threading
 from datetime import datetime, timezone
 from statistics import median
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from . import coordinator
 from .database import session_scope
@@ -56,6 +57,84 @@ def cancel() -> bool:
     return True
 
 
+# ── The stored-profile list, cached incrementally ────────────────────────────
+# `list_profiles` used to decode every completed run's `settings` blob on every call —
+# 120k JSON documents to keep ~150 of them (measured ~3s, pure Python, GIL held). That was
+# tolerable while it ran only from a refresh dialog and the brief no-crown window after a
+# publish; once the seed applied on every Settings-Impact load and every ladder session it
+# was the difference between a page and a timeout ("couldn't reach the server"). The
+# newest settings per fingerprint only ever change when a NEW run lands (a fingerprint IS
+# its normalized settings), so the cache is keyed on the newest run id and topped up with
+# just the rows that arrived since — one indexed range query, not a table scan. The one
+# event that rewrites fingerprints in place (refingerprint) goes through
+# `invalidate_seed_cache`, the same hook the field memo uses. Deletions are caught by the
+# row count: if the count is not what the top-up implies, the list is rebuilt whole.
+_PROFILES_LOCK = threading.Lock()
+_PROFILES_CACHE: dict = {"max_id": 0, "max_fp": None, "count": 0, "latest": {}}
+_PRIOR_LOCK = threading.Lock()
+_PRIOR_CACHE: dict = {"key": None, "value": None}
+
+
+def invalidate_seed_cache() -> None:
+    """Drop the cached profile list and the cached prior-version field. Called from
+    `routes_settings.invalidate_profiles_cache` (refingerprint / wholesale re-grade)."""
+    with _PROFILES_LOCK:
+        _PROFILES_CACHE.update({"max_id": 0, "max_fp": None, "count": 0, "latest": {}})
+    with _PRIOR_LOCK:
+        _PRIOR_CACHE.update({"key": None, "value": None})
+
+
+def _latest_settings_by_fingerprint(session) -> dict[str, list]:
+    """``{fingerprint: newest settings}`` over every completed run, from the incremental
+    cache. Ascending id order within a top-up, so the last seen per fingerprint is the newest
+    — the same answer the full descending scan gave, without the scan."""
+    base = (
+        select(Run.id, Run.settings_fingerprint, Run.settings)
+        .where(
+            Run.status == RunStatus.COMPLETE,
+            Run.settings_fingerprint.is_not(None),
+            Run.settings.is_not(None),
+        )
+    )
+    max_id, count = session.execute(
+        select(func.max(Run.id), func.count(Run.id)).where(
+            Run.status == RunStatus.COMPLETE,
+            Run.settings_fingerprint.is_not(None),
+            Run.settings.is_not(None),
+        )
+    ).one()
+    max_id, count = int(max_id or 0), int(count or 0)
+    with _PROFILES_LOCK:
+        cached_max, cached_count = _PROFILES_CACHE["max_id"], _PROFILES_CACHE["count"]
+        # The top-up is only sound if what the cache saw is still what the table holds. Two
+        # things break that: rows vanished (a cleanup), or the cache was filled from a
+        # session that later ROLLED BACK — SQLite then re-issues the same ids to the next
+        # rows, so max id and count can both match while the rows differ. The count catches
+        # the first; the fingerprint sitting at the cached max id catches the second (a
+        # reissued id lands there first) — one primary-key lookup, checked on the fast path
+        # too. Either → rebuild from scratch, the rare path priced only when it happens.
+        probe = (
+            session.execute(select(Run.settings_fingerprint).where(Run.id == cached_max)).scalar()
+            if cached_max
+            else None
+        )
+        intact = bool(cached_max) and probe == _PROFILES_CACHE["max_fp"]
+        if intact and max_id == cached_max and count == cached_count:
+            return dict(_PROFILES_CACHE["latest"])
+        latest = dict(_PROFILES_CACHE["latest"])
+        rows = session.execute(base.where(Run.id > cached_max).order_by(Run.id.asc())).all()
+        if cached_max and (not intact or count != cached_count + len(rows)):
+            latest = {}
+            rows = session.execute(base.order_by(Run.id.asc())).all()
+        max_fp = _PROFILES_CACHE["max_fp"]
+        for rid, fp, settings in rows:
+            latest[fp] = settings
+            if rid == max_id:
+                max_fp = fp
+        _PROFILES_CACHE.update({"max_id": max_id, "max_fp": max_fp, "count": count, "latest": latest})
+        return dict(latest)
+
+
 def list_profiles(session) -> list[dict]:
     """Every distinct stored profile (newest settings per fingerprint), as
     ``[{fingerprint, settings, label, name}]`` — the candidates a refresh re-runs.
@@ -64,18 +143,7 @@ def list_profiles(session) -> list[dict]:
     labelled *"refresh · Speedy Sloth"* says which profile it measured, while one labelled
     with the settings summary makes the reader decode the settings to find out.
     """
-    rows = session.execute(
-        select(Run.settings_fingerprint, Run.settings)
-        .where(
-            Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint.is_not(None),
-            Run.settings.is_not(None),
-        )
-        .order_by(Run.created_at.desc())
-    ).all()
-    latest: dict[str, list] = {}
-    for fp, settings in rows:
-        latest.setdefault(fp, settings)  # desc order → first seen is the newest settings
+    latest = _latest_settings_by_fingerprint(session)
     names = names_for(session, list(latest))
     return [
         {
@@ -143,11 +211,31 @@ def prior_field(session, min_iterations: int | None = None) -> dict | None:
     # Walk back through the non-current versions, newest first, to the first that scored
     # anything: a re-anchor fork published and abandoned between two real rubrics holds no
     # scores, and stopping at it would seed nothing when the version before it could.
-    for version in _prior_methodology_versions(session):
+    versions = _prior_methodology_versions(session)
+    if not versions:
+        return None
+    # Memoized on a cheap stamp: a prior version's scores are frozen (nothing scores under a
+    # non-current version except an explicit re-grade, which moves `computed_at`), so the
+    # ~120k-row decode this used to do on every read happens once per change instead —
+    # it is read on every Settings-Impact load and every ladder session since the seed
+    # stopped being gated on the crown.
+    stamp = session.execute(
+        select(func.count(Score.id), func.max(Score.id), func.max(Score.computed_at)).where(
+            Score.methodology_version.in_(versions[:3])
+        )
+    ).one()
+    key = (tuple(versions[:3]), tuple(stamp), int(min_iterations or 0))
+    with _PRIOR_LOCK:
+        if _PRIOR_CACHE["key"] == key:
+            return copy.deepcopy(_PRIOR_CACHE["value"])
+    seeded = None
+    for version in versions:
         seeded = _prior_field_under(session, version, min_iterations)
         if seeded:
-            return seeded
-    return None
+            break
+    with _PRIOR_LOCK:
+        _PRIOR_CACHE.update({"key": key, "value": copy.deepcopy(seeded)})
+    return seeded
 
 
 def _prior_methodology_versions(session) -> list[str]:
