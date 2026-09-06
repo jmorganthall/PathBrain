@@ -48,7 +48,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v15"
+CURRENT_METHODOLOGY = "speed-smoothness-v16"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -288,6 +288,26 @@ def _ss_v13_assignments() -> dict:
     a = _ss_v12_assignments()
     del a["worst_void_fraction"]  # 200ms-floored scale-free void → display-only (inert on fast links)
     a["network_stall_all"] = {"axis": SMOOTHNESS, "weight": 30, "best": 0.0, "worst": 2000.0}
+    return a
+
+
+def _ss_v16_assignments() -> dict:
+    """v13 rubric minus every metric a *probe* plugin supplies — the HTTP-socket ``ttfb`` and
+    the whole Completion axis (``dns``/``tcp``/``tls``/``jitter``/``packet_loss``).
+
+    Not a judgement that they are worthless: a judgement that they are **not what the
+    methodology requires**. The crown is FCP × LCP × network_stall_all, all browser-derived,
+    and the probes never touched it — they ran alongside, roughly half of every run's wall
+    clock, feeding a secondary axis the docs already described as barely moving human feel
+    and weather covariates the browser's own navigation phases duplicate. With runs now
+    measuring only what the methodology requires (``measurement.methodology_only``), a
+    rubric that still scored them would grade every new run *partial* forever and shift the
+    Responsiveness axis's composition mid-history. Dropping them keeps old and new runs on
+    one definition: an old run's extra probe metrics are simply ignored. Browser metrics,
+    thresholds and the Overall are byte-for-byte v15."""
+    a = _ss_v13_assignments()
+    for key in ("ttfb", "dns", "tcp", "tls", "jitter", "packet_loss"):
+        del a[key]
     return a
 
 
@@ -684,6 +704,29 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "weights": {"fcp": 1.0, "lcp": 1.0, "network_stall_all": 0.5},
         },
     },
+    "speed-smoothness-v16": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v14 — rubric-scope change only, re-grade not re-derive
+        "notes": (
+            "Score only what the methodology requires. Same browser metrics, thresholds, axes and "
+            "Overall (FCP 1 · LCP 1 · network_stall_all 0.5, weighted) as v15; the probe-supplied "
+            "metrics leave the rubric — the HTTP-socket TTFB (Responsiveness, weight 15) and the "
+            "Completion axis (DNS/TCP/TLS/jitter/loss). None of them fed the crown; they cost about "
+            "half of every run. Runs now measure only the plugins the crown needs "
+            "(measurement.methodology_only), and a rubric that kept scoring probe metrics would have "
+            "graded every new run 'partial' and changed the Responsiveness axis's composition "
+            "mid-history. Old runs' probe metrics are ignored, not quarantined: this version grades "
+            "history from cached scalars (no re-derive). Weather still reads the browser's own "
+            "nav_dns/nav_tcp/nav_tls/nav_request phases."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v16_assignments(),
+        "overall": {
+            "method": "weighted",
+            "metrics": ["fcp", "lcp", "network_stall_all"],
+            "required": ["fcp", "lcp", "network_stall_all"],
+            "weights": {"fcp": 1.0, "lcp": 1.0, "network_stall_all": 0.5},
+        },
+    },
 }
 
 
@@ -1074,6 +1117,17 @@ def required_metric_keys(definition: dict) -> list[str]:
     flagged = [m["key"] for m in metrics if m.get("required")]
     _, overall_required = overall_metrics(definition)
     return list(dict.fromkeys(flagged + [k for k in overall_required if k in known]))
+
+
+def required_plugins(definition: dict) -> set[str]:
+    """The plugins that supply a methodology's **required** metrics — i.e. what a run must
+    measure to be scorable under it (under v13+ that is the browser alone: the crown is
+    FCP × LCP × network_stall_all). Read from the one metric registry, so a future crown
+    metric from another plugin pulls that plugin in with no call-site edit."""
+    from .metrics import all_metric_sources
+
+    sources = all_metric_sources()
+    return {sources[k][0] for k in required_metric_keys(definition) if k in sources}
 
 
 def is_comparable(score) -> bool:

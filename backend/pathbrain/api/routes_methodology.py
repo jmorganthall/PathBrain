@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import jobs
+from .. import idle_audit, jobs
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
 from ..logging_config import get_logger
@@ -60,6 +60,21 @@ def list_methodologies(session: Session = Depends(get_session)) -> dict:
         "code_default": CURRENT_METHODOLOGY,   # the version this build ships as latest
         "pinned": pinned,                       # config override, if any (else None → follows code)
     }
+
+
+@router.get("/methodologies/idle-audit")
+def idle_wait_audit(limit: int = 200, session: Session = Depends(get_session)) -> dict:
+    """What the browser's post-load idle wait buys, read off stored raw (read-only): per site,
+    how often LCP landed after the load event and by how much, how long the wait actually
+    lasted, and the smallest ``browser.networkidle_timeout_s`` that would have caught every
+    observed late LCP with margin. Nothing here changes a score or a setting."""
+    cfg = get_config(session)
+    cap = (cfg.get("browser") or {}).get("networkidle_timeout_s")
+    try:
+        cap = float(cap) if cap is not None else None
+    except (TypeError, ValueError):
+        cap = None
+    return idle_audit.idle_wait_audit(session, limit=limit, current_cap_s=cap)
 
 
 @router.get("/methodologies/current")

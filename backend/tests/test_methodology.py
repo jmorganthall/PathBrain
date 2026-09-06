@@ -151,25 +151,31 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v15_rubric():
-    # The published-now methodology is speed-smoothness-v15. Same metrics/thresholds as v13/v14
-    # (so every threshold below is unchanged); the crown's *combine method* changes from the
-    # field-percentile corner to a magnitude-aware WEIGHTED AVERAGE of the calibrated subscores
-    # (FCP 1 · LCP 1 · network_stall_all 0.5). A grading change, not a derivation/rubric change.
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v15"
+def test_current_methodology_is_v16_rubric():
+    # The published-now methodology is speed-smoothness-v16: v15's browser metrics, thresholds
+    # and weighted crown (FCP 1 · LCP 1 · network_stall_all 0.5) byte-for-byte, minus every
+    # metric a PROBE plugin supplied — the HTTP-socket ttfb and the Completion axis. Runs now
+    # measure only what the methodology requires, and a rubric still scoring probe metrics
+    # would grade every new run "partial" and shift Responsiveness's composition mid-history.
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v16"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
 
+    # The probe metrics are display-only now (axis None), never scored, never required.
+    for k in ("dns", "tcp", "tls", "jitter", "packet_loss", "ttfb"):
+        assert by_key[k]["axis"] is None and not by_key[k].get("required"), k
+    # ...and v15 still scores them, frozen, for the runs graded under it.
+    v15 = {m["key"]: m for m in build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v15"])["metrics"]}
+    assert v15["ttfb"]["axis"] == "responsiveness" and v15["dns"]["axis"] == "completion"
+    # Every browser metric v15 scored, v16 scores identically.
+    for k, m in v15.items():
+        if m.get("axis") and k not in ("dns", "tcp", "tls", "jitter", "packet_loss", "ttfb"):
+            assert (by_key[k]["axis"], by_key[k]["weight"], by_key[k]["best"], by_key[k]["worst"]) == (
+                m["axis"], m["weight"], m["best"], m["worst"]), k
+
     expected = {
-        # completion — DNS `best` re-anchored 1.0 → 0.8ms (was 91% saturated)
-        "dns": ("completion", 10, 0.8, 150.0),
-        "tcp": ("completion", 15, 5.0, 250.0),
-        "tls": ("completion", 20, 5.0, 500.0),
-        "jitter": ("completion", 5, 0.5, 30.0),
-        "packet_loss": ("completion", 5, 0.0, 2.5),
         # responsiveness — time-to-first (v5 aspirational-floor anchors carried over)
-        "ttfb": ("responsiveness", 15, 30.0, 1800.0),
         "fcp": ("responsiveness", 25, 150.0, 3000.0),
         "byte_earliness": ("responsiveness", 30, 150.0, 5000.0),
         # speed — time-to-last + interactive + page-load (`load_event` best re-anchored 800 → 556.2)
@@ -204,12 +210,15 @@ def test_current_methodology_is_v15_rubric():
     assert {a["key"] for a in d["axes"]} == {
         "responsiveness", "speed", "smoothness", "stability", "completion"
     }
+    # Declared, but the Completion axis carries no scored metric under v16, so it isn't scored.
+    from pathbrain.methodology import scored_axes
+    assert {a["key"] for a in scored_axes(d)} == {"responsiveness", "speed", "smoothness", "stability"}
     # Display-only metrics carry no axis (e.g. latency, transfer, speed_index, worst_void_fraction).
     # network_stall (50ms floor) stays display-only; network_stall_all (floor-free) is the scored one.
     for k in ("latency", "transfer", "speed_index", "network_stall", "worst_void_fraction"):
         assert by_key[k]["axis"] is None
 
-    # v15's crown: a weighted average of the calibrated FCP / LCP / network_stall_all subscores —
+    # v16's crown (unchanged from v15): a weighted average of the calibrated FCP / LCP / network_stall_all subscores —
     # FCP and LCP even (fastest-to-first + fastest-to-main-content), smoothness secondary at 0.5.
     assert d["overall"] == {
         "method": "weighted",

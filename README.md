@@ -142,6 +142,12 @@ can't drift apart.
   the pooled crown.
   (A browser tab can't read google.com's paint timing, so this is a different instrument from
   the Chromium test — `/away`, `/api/portable/*`.)
+- ⏱️ **Measure only what the methodology requires** — the crown is FCP × LCP ×
+  network_stall_all, all browser-derived, so by default a run skips the five probe plugins
+  (about half of its wall clock) and measures the crown on every iteration; `measurement.
+  methodology_only: false` restores the full suite. Methodology v16 drops the probe metrics
+  from the rubric so old and new runs grade on one definition. An **Idle-wait audit** on the
+  Methodology page reads stored raw to say whether the post-load settle ever moved LCP.
 - 🔁 **Multi-iteration runs** — repeat the suite N times and take the **median**,
   with a per-run **confidence band** (± / range) and an **ETA**. Per-plugin iteration
   caps keep runs fast: the heavy browser runs fewer iterations than the cheap network

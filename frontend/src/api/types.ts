@@ -2882,3 +2882,28 @@ export interface PortableHome {
   detected_by: "ip4" | "ip6" | null;
   reason: string | null;
 }
+
+// The browser's post-load idle wait, audited off stored raw (read-only).
+export interface IdleAuditSite {
+  url: string;
+  loads: number;
+  with_lcp: number;
+  lcp_after_load: number;
+  lcp_after_load_share: number | null;
+  max_lag_ms: number;
+  p95_lag_ms: number;
+  median_idle_wait_ms: number | null;
+  mean_idle_wait_ms: number | null;
+}
+
+export interface IdleAudit {
+  runs: number;
+  loads: number;
+  sites: IdleAuditSite[];
+  worst_lcp_after_load_ms: number;
+  mean_idle_wait_ms: number | null;
+  current_networkidle_timeout_s: number | null;
+  recommended_networkidle_timeout_s: number | null;
+  estimated_saving_ms_per_load: number | null;
+  verdict: string | null;
+}

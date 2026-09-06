@@ -137,6 +137,17 @@ DEFAULT_CONFIG: dict = {
         "http3": False,
         "force_quic_origins": [],
     },
+    # What a run measures. `methodology_only` (default): only the plugins whose metrics the
+    # current methodology REQUIRES — the browser, since the crown is FCP × LCP ×
+    # network_stall_all — plus the `always` list. The five probes (ICMP/DNS/TCP/TLS/HTTP)
+    # never fed the crown and cost about half of every run, so they are skipped; the
+    # browser's per-plugin iteration cap is lifted so every iteration measures the crown.
+    # Set false to run the full suite as before (Completion axis, probe weather covariates).
+    "measurement": {
+        "methodology_only": True,
+        # Plugins measured on every run regardless: the Away test's home reference.
+        "always": ["portable"],
+    },
     # Default number of full-suite iterations to run and average per benchmark.
     # Averaging across iterations reduces per-run variability. Editable per run.
     "iterations": 3,

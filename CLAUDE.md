@@ -67,8 +67,27 @@ LLM-based. See `README.md` for the product overview.
     agnostic; *which* metrics form *which* axis lives in `methodology.py`.
   - `methodology.py` — **the published, versioned rubric** (derivation + axis
     weights/thresholds + the first-class Overall), append-only. `CURRENT_METHODOLOGY` =
-    `speed-smoothness-v13`, which scores **three headline axes** (the temporal phases of a
-    load; each metric maps to exactly one axis):
+    `speed-smoothness-v16` — **v15's browser metrics, thresholds and weighted crown
+    byte-for-byte, minus every metric a probe plugin supplied** (the HTTP-socket `ttfb` and the
+    Completion axis `dns`/`tcp`/`tls`/`jitter`/`packet_loss`), because runs now **measure only
+    what the methodology requires** (`config.measurement.methodology_only`, default on:
+    `runner.measurement_scope` skips every plugin outside `methodology.required_plugins` — the
+    browser — plus the `always` list, the `portable` reference; the browser's per-plugin
+    iteration cap is lifted so every iteration measures the crown; the decision is baked into
+    `config_used["measurement"]["applied"]`). The probes never fed the crown and cost about half
+    of every run; a rubric still scoring them would have graded every new run *partial* and
+    changed Responsiveness's composition mid-history. Old runs' probe metrics are ignored, not
+    quarantined — re-grade from cached scalars, no re-derive. Weather keeps reading the
+    browser's `nav_dns`/`nav_tcp`/`nav_tls`/`nav_request` phases (≥ `WEATHER_MIN_COVARIATES`).
+    The post-load `networkidle` settle is the other half of the browser's time and is
+    **deliberately left alone**: the stall metrics are bounded to `loadEventEnd`, so the wait
+    can only move LCP, and only when a page paints its largest element after load — an empirical
+    question about the measured sites that `idle_audit.py` (`GET /api/methodologies/idle-audit`,
+    the **Idle-wait audit** card on the Methodology page) answers off stored raw, recommending
+    the smallest `browser.networkidle_timeout_s` that would have caught every observed late LCP;
+    lowering it below that would change a crown metric and is a methodology decision.
+    The description below is of the v13 rubric these versions inherit; v13 scored **three headline
+    axes** (the temporal phases of a load; each metric maps to exactly one axis):
     - **Responsiveness** (time-to-first): byte-earliness (30) + FCP (25) + TTFB (15).
     - **Smoothness** (steady fill): longest-stall (40, required) + network-stall-all (30)
       + cadence (15) + evenness (15).

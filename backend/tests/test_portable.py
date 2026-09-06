@@ -573,4 +573,4 @@ def test_runner_skips_a_plugin_disabled_in_config(client, clean):
     execute_run(run_id)
     with session_scope() as s:
         plugins = set(s.scalars(__import__("sqlalchemy").select(BenchmarkResult.plugin).where(BenchmarkResult.run_id == run_id)).all())
-        assert "portable" not in plugins and "icmp" in plugins
+        assert "portable" not in plugins and "browser" in plugins

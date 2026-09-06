@@ -63,6 +63,66 @@ def _probe_timeout_s(config: dict) -> float:
     return max(minutes, 0.5) * 60.0
 
 
+def measurement_scope(config: dict, definition: dict, plugin_names: list[str]) -> dict:
+    """Which plugins a run should measure under ``config["measurement"]``.
+
+    ``methodology_only`` (the default): a run measures **only the plugins whose metrics the
+    methodology requires** (``methodology.required_plugins`` — the browser, under every
+    version since the crown became FCP × LCP × network_stall_all) plus the ``always`` list
+    (the ``portable`` plugin, the Away test's home reference, which is not a methodology
+    metric but is wanted on every run). Everything else is skipped — the five probes, about
+    half of every run's wall clock, none of it read by the crown. A required plugin's own
+    per-plugin iteration cap is also lifted: the cap existed so the heavy browser sampled
+    fewer rounds than the cheap probes, and with the probes gone every iteration should
+    measure the crown, so ``iterations`` means what it says. ``always`` plugins keep their
+    caps. Only plugins the **metric registry knows** (ones that supply catalog metrics) are
+    ever skipped — the scope is a statement about the methodology's metrics, so a plugin
+    that supplies none (a test double, an experiment) is none of its business and runs.
+    Returns ``{"methodology_only", "required", "skipped", "uncapped", "kept"}``."""
+    m = (config or {}).get("measurement") or {}
+    if m.get("methodology_only", True) is False:
+        return {"methodology_only": False, "required": [], "skipped": [], "uncapped": [], "kept": list(plugin_names)}
+    from .methodology import required_plugins
+    from .metrics import all_metric_sources
+
+    catalog = {plugin for plugin, _key in all_metric_sources().values()}
+    required = required_plugins(definition)
+    always = {str(x) for x in (m.get("always") or [])}
+    skipped = [n for n in plugin_names if n in catalog and n not in required and n not in always]
+    return {
+        "methodology_only": True,
+        "required": sorted(required & set(plugin_names)),
+        "skipped": skipped,
+        "uncapped": [n for n in plugin_names if n in required],
+        "kept": [n for n in plugin_names if n not in skipped],
+    }
+
+
+def apply_measurement_scope(config: dict, definition: dict, *, preserve_caps: set[str] | None = None) -> dict:
+    """Bake :func:`measurement_scope` into a run's config: ``skip: True`` on the plugins left
+    out, the iteration cap lifted on the required ones (except those in ``preserve_caps`` —
+    a cap an engine set on purpose for this run, like the profile test's lift), and the
+    decision recorded under ``config["measurement"]["applied"]`` so the run says what it
+    measured. Returns the (new) config."""
+    from .plugins import iter_plugins
+
+    names = [p.name for p in iter_plugins()]
+    scope = measurement_scope(config, definition, names)
+    out = dict(config)
+    if scope["methodology_only"]:
+        for name in scope["skipped"]:
+            out[name] = {**(out.get(name) or {}), "skip": True}
+        for name in scope["uncapped"]:
+            if name in (preserve_caps or set()):
+                continue
+            section = dict(out.get(name) or {})
+            if section.get("iterations") is not None:
+                section["iterations"] = None
+            out[name] = section
+    out["measurement"] = {**(out.get("measurement") or {}), "applied": scope}
+    return out
+
+
 def create_run(
     label: str | None = None,
     notes: str | None = None,
@@ -87,7 +147,8 @@ def create_run(
         # publish), so the sites a run measures can never drift from the set comparability
         # will hold it to. Baked into `config_used` like every other setting the run ran
         # under, which is also what stamps the run's site set.
-        config = apply_collection(config, ensure_current_methodology(session, config).definition)
+        definition = ensure_current_methodology(session, config).definition
+        config = apply_collection(config, definition)
         if config_overrides:
             # Per-run tweaks over the DB config, section-merged and baked into the run's
             # ``config_used`` snapshot — so ``execute_run`` needs no extra channel and the
@@ -99,6 +160,14 @@ def create_run(
                     config[key] = {**(config.get(key) or {}), **value}
                 else:
                     config[key] = value
+        # Measure only what the methodology requires (plus the always-on portable
+        # reference), unless `measurement.methodology_only` is off. Applied after the
+        # overrides so an engine's own `skip` (the duel's browser-only legs) still holds,
+        # and baked into `config_used` so the run records what it left out.
+        explicit_caps = {
+            k for k, v in (config_overrides or {}).items() if isinstance(v, dict) and "iterations" in v
+        }
+        config = apply_measurement_scope(config, definition, preserve_caps=explicit_caps)
         iters = iterations if iterations else int(config.get("iterations", 1) or 1)
         iters = max(1, min(iters, MAX_ITERATIONS))
         run = Run(
