@@ -461,8 +461,15 @@ export default function Dashboard() {
   const crownMetrics = field?.overall_metrics ?? [];
   const minIterations = field?.min_iterations ?? 15;
 
-  const headlineAxes = rolling?.axes.filter((a) => a.role === "headline") ?? [];
-  const secondaryAxes = rolling?.axes.filter((a) => a.role !== "headline") ?? [];
+  // What the Overall is ACTUALLY computed from, read off the methodology on every request.
+  // The axes are a different decomposition and have not been the Overall's inputs since
+  // v5 — under v16 they are dominated by metrics (render, load_event, cadence, evenness,
+  // byte earliness, CLS) the Overall never reads, so a hero card built on them shows a
+  // rubric that stopped being current many versions ago.
+  const overallLegs = rolling?.overall_metrics ?? crownMetrics;
+  const overallWeights = rolling?.overall_weights ?? {};
+  const overallMethod = rolling?.overall_method ?? "corner";
+  const allAxes = rolling?.axes ?? [];
   const overallStat = rolling?.axis_scores["overall"] ?? null;
 
   return (
@@ -625,7 +632,7 @@ export default function Dashboard() {
               <CardContent>
                 <CardTitle
                   title={`Overall · last ${rolling?.window_hours ?? 24}h`}
-                  help="Median of every scored run in the window, under the current methodology. The three gauges are the headline axes the Overall is built from."
+                  help="Median of every scored run in the window, under the current methodology. The smaller gauges are the metrics the Overall is actually computed from — read from the methodology itself, so they follow a rubric change. The axis breakdown below is a separate decomposition, not the Overall's inputs."
                   right={
                     profiles.length > 1 ? (
                       <Select
@@ -663,44 +670,68 @@ export default function Dashboard() {
                         </Typography>
                       )}
                     </Box>
+                    {/* The Overall's actual legs — one gauge per crown metric, named and
+                        weighted by the methodology itself. A metric that leaves the crown
+                        leaves this card with it. */}
                     <Stack direction="row" spacing={2} justifyContent="center" flexWrap="wrap" useFlexGap>
-                      {headlineAxes.map((a) => {
-                        const stat = rolling.axis_scores[a.key];
+                      {overallLegs.map((k) => {
+                        const meta = metricMeta(k);
+                        const sub = rolling.subscores?.[k];
+                        const raw = rolling.metric_values?.[k];
+                        const weight = overallWeights[k];
                         return (
-                          <Box key={a.key} sx={{ textAlign: "center" }}>
-                            <ScoreGauge value={stat?.median ?? null} size={104} label={a.label} />
-                            {stat && (
-                              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.25 }}>
-                                {Math.round(stat.p25)}–{Math.round(stat.p75)}
+                          // The label lives OUTSIDE the ring: metric names ("Largest
+                          // Contentful Paint") are far longer than the axis names that used
+                          // to sit here, and inside a 104px circle they wrap to mush.
+                          <Box key={k} sx={{ textAlign: "center", maxWidth: 128 }}>
+                            <Tooltip title={meta.description || meta.label}>
+                              <Box component="span">
+                                <ScoreGauge value={sub ?? null} size={104} label="" />
+                              </Box>
+                            </Tooltip>
+                            <Typography variant="caption" sx={{ display: "block", mt: 0.25, lineHeight: 1.2 }}>
+                              {meta.label}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                              {raw != null
+                                ? `${Number.isInteger(raw) ? raw : raw.toFixed(1)}${meta.unit ? ` ${meta.unit}` : ""}`
+                                : "—"}
+                            </Typography>
+                            {/* Weight only means something where the Overall is a weighted
+                                average; a corner is an intersection and has none. */}
+                            {overallMethod === "weighted" && weight != null && (
+                              <Typography variant="caption" color="text.disabled" sx={{ display: "block" }}>
+                                ×{weight}
                               </Typography>
                             )}
                           </Box>
                         );
                       })}
                     </Stack>
-                    {secondaryAxes.length > 0 && (
-                      <Stack spacing={0.75} sx={{ minWidth: 110 }}>
-                        {secondaryAxes.map((a) => {
-                          const stat = rolling.axis_scores[a.key];
-                          return (
-                            <Stack key={a.key} direction="row" justifyContent="space-between" spacing={1.5}>
-                              <Typography variant="caption" color="text.secondary">
-                                {a.label}
-                              </Typography>
-                              <Typography variant="body2" sx={{ fontWeight: 700, color: sopsColor(stat?.median) }}>
-                                {stat ? Math.round(stat.median) : "—"}
-                              </Typography>
-                            </Stack>
-                          );
-                        })}
-                        <Typography variant="caption" color="text.disabled">
-                          methodology{" "}
-                          <RouterLink to="/methodology" style={{ color: "inherit" }}>
-                            {rolling.methodology}
-                          </RouterLink>
-                        </Typography>
-                      </Stack>
-                    )}
+                    <Stack spacing={0.75} sx={{ minWidth: 130 }}>
+                      <Typography variant="caption" color="text.disabled">
+                        Axis breakdown
+                      </Typography>
+                      {allAxes.map((a) => {
+                        const stat = rolling.axis_scores[a.key];
+                        return (
+                          <Stack key={a.key} direction="row" justifyContent="space-between" spacing={1.5}>
+                            <Typography variant="caption" color="text.secondary" noWrap>
+                              {a.label}
+                            </Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 700, color: sopsColor(stat?.median) }}>
+                              {stat ? Math.round(stat.median) : "—"}
+                            </Typography>
+                          </Stack>
+                        );
+                      })}
+                      <Typography variant="caption" color="text.disabled">
+                        {overallMethod === "weighted" ? "weighted" : overallMethod} ·{" "}
+                        <RouterLink to="/methodology" style={{ color: "inherit" }}>
+                          {rolling.methodology}
+                        </RouterLink>
+                      </Typography>
+                    </Stack>
                   </Stack>
                 ) : (
                   <Typography variant="body2" color="text.secondary">

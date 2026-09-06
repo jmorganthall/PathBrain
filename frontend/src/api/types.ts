@@ -68,6 +68,14 @@ export interface RollingScore {
   metric_values: Record<string, number>;
   weights: Record<string, number>;
   attribution?: StallAttribution | null;
+  // The crown: which metric subscores the Overall is actually computed from, how they are
+  // combined, and their weights — read from the current methodology on every request. The
+  // axes above are a *different* decomposition and have not been the Overall's inputs
+  // since v5, so anything presenting "what the Overall is built from" must read these.
+  overall_metrics?: string[];
+  overall_required?: string[];
+  overall_method?: string;
+  overall_weights?: Record<string, number>;
 }
 
 export interface AxisSeriesPoint {

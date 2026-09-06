@@ -2236,9 +2236,21 @@ docker compose up --build   # -> http://localhost:8000
      version owns the list and quarantines runs measured against the old one, and the
      field is seeded from the prior version's standings until fresh runs arrive (see the
      "site list is part of the methodology" note above).
-  3. **No frontend edit needed.** The Settings-Impact view is fully crown-driven off the
-     profiles response's `overall_metrics` (the methodology's `overall` spec, exposed by the
-     API): the pinned **standings columns**, the **quadrant default axes** (X/Y/Shade =
+  3. **No frontend edit needed.** The **Dashboard's Overall card** and the Settings-Impact
+     view are both fully crown-driven. The hero card's smaller gauges are the metrics the
+     Overall is *actually* computed from, read from `GET /score/rolling`'s `overall_metrics`
+     / `overall_method` / `overall_weights` (straight off the methodology's `overall` spec at
+     request time), with each leg's subscore, measured value and weight; the axes are demoted
+     to a clearly-labelled **"Axis breakdown"** strip. That distinction is the fix: the card
+     used to show the three headline **axes** captioned as "the axes the Overall is built
+     from", which stopped being true at **v5** when the Overall became a first-class quantity
+     over the crown metrics — by v16 those gauges were dominated by metrics the Overall never
+     reads (`render`, `load_event`, `cadence`, `evenness`, `byte_earliness`, `cls`), and the
+     Completion axis it also rendered had lost every one of its metrics. A headline describing
+     a rubric that stopped being current months earlier. `test_scores` pins it: the payload
+     carries the crown, the crown is disjoint from the axis keys, and pointing the endpoint at
+     another version re-points the card with no frontend edit. Settings-Impact reads the same
+     `overall_metrics` from the profiles response: the pinned **standings columns**, the **quadrant default axes** (X/Y/Shade =
      crown[0]/[1]/[2], until the user manually picks an axis), and the **scatter dot-selection
      panel's** per-metric breakdown all read that one set, so a crown change (new methodology)
      re-wires the whole view automatically with zero `Settings.tsx` edits. Keep it that way —
