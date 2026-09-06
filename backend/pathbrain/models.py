@@ -853,6 +853,54 @@ class UpdateAttempt(Base):
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class PortableRun(Base):
+    """One run of the **portable (away) test** — a plain browser tab on any device
+    measuring a synthetic CDN waterfall, a streamed download and warm round trips
+    (``portable.py`` / ``interpret/portable.py``).
+
+    Deliberately its **own table**, never joined to ``runs``/``scores``: a portable run is a
+    different instrument from the Chromium page-load test and must never enter the pooled
+    crown, the duel, the trends baseline or the weather pass. Its only comparison is
+    "vs home" — the same ``device_id`` + ``instrument_version``, marked ``is_home``.
+    ``raw`` is the source of truth (the comparison re-derives from it over the resource
+    subset both sides completed); ``metrics``/``per_origin``/``coverage``/``score`` are the
+    materialized derivation over the whole recipe.
+    """
+
+    __tablename__ = "portable_runs"
+    __table_args__ = (
+        Index("ix_portable_runs_device_home", "device_id", "is_home"),
+        Index("ix_portable_runs_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # The page keeps a random id in local storage; "same device" is the comparison's first stamp.
+    device_id: Mapped[str] = mapped_column(String(64))
+    device_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Where the run was taken ("Hotel Wi-Fi, Denver"); free text, for the reader.
+    venue: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Marked by the user; home runs are the reference pool for away runs.
+    is_home: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Hash of the recipe + derive version — the second stamp (``portable.instrument_version``).
+    instrument_version: Mapped[str] = mapped_column(String(24))
+    # Browser/device facts the page could read (user agent, platform, viewport, connection).
+    client: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The device's UTC offset at the time, so "same hour" means the device's wall clock.
+    tz_offset_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Home runs only: the firewall profile in effect (best-effort), the third stamp.
+    settings_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    settings_summary: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    per_origin: Mapped[dict] = mapped_column(JSON, default=dict)
+    coverage: Mapped[dict] = mapped_column(JSON, default=dict)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    subscores: Mapped[dict] = mapped_column(JSON, default=dict)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ExploreRecommendation(Base):
     """One exploration proposal we actually spent a benchmark on — and the claim it made.
 

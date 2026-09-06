@@ -189,6 +189,18 @@ DEFAULT_CONFIG: dict = {
     # all pipes, waits `settle_seconds` for the link to stabilize, benchmarks `iterations`
     # iterations, then restores each pipe's prior state. All quantities are also overridable
     # per on-demand ("run now") request.
+    # Portable (away) test: what a plain browser tab on any device measures — a synthetic
+    # CDN resource waterfall, a streamed download and warm round trips — so a hotel or
+    # client-site network can be read "vs home" from the same device. The resource list,
+    # stream object and round-trip probe are the RECIPE; changing any of them changes the
+    # instrument version, and older home runs stop being admitted as a reference (the
+    # portable analogue of a site publish). Defaults live in ``portable.DEFAULT_CONFIG``
+    # (every default URL verified to send Timing-Allow-Origin + CORS ``*``); override
+    # here to add origins or change sizes.
+    "portable": {
+        "iterations": 2,
+        "min_home_runs": 5,
+    },
     "baseline_test": {
         "enabled": False,
         "hour": 1,

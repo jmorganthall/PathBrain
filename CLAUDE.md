@@ -458,6 +458,51 @@ LLM-based. See `README.md` for the product overview.
     `_is_sqm_off` reads the stored `settings` (not the fingerprint), so the "% vs SQM off" baseline
     is unaffected by the collapse. Own thread under the `coordinator` lock. `/api/baseline/*` + the
     **Baseline (SQM off)** tab.
+  - `portable.py` + `interpret/portable.py` — **the Away test ("this isn't home, but here is
+    how it stood up")**: a measurement any device can take from a plain browser tab, compared
+    **only against directly comparable data**. A page served by PathBrain can never load
+    google.com and read its paint timing (same-origin policy), so this is a *different
+    instrument* from the Chromium plugin, never graded on the methodology's Overall: a
+    synthetic **resource waterfall** of public CDN objects (Resource Timing gives every fetch's
+    `responseEnd` on Safari/Chrome/Firefox, so the byte-arrival shape math in
+    `interpret/smoothness.py` — longest stall / stall energy / cadence / Gini / byte earliness —
+    runs unchanged on it; origins sending `Timing-Allow-Origin` also expose DNS/TCP/TLS/TTFB,
+    read from the first **new** connection per origin, since a reused connection reports
+    `connectStart == connectEnd` and must not read as a 0 ms handshake), one **streamed
+    download** read chunk by chunk (throughput + cadence inside a transfer), and warm **round
+    trips**. Synthetic milestones stand in for the paint legs: first / largest / last resource
+    complete. The **recipe** (resources + sizes + dependency chain, stream object, RTT probe;
+    `portable.DEFAULT_CONFIG`, overridable under `config.portable`) is served by
+    `GET /api/portable/recipe` and hashed with the derive version into an
+    **`instrument_version`** — the portable analogue of `site_set`: change the recipe and older
+    home runs stop being admitted as a reference. Every default URL was verified to send TAO +
+    CORS `*` (sizes from Content-Length). Runs live in their **own table** (`PortableRun`,
+    `POST /api/portable/runs` — the page uploads raw only, derivation is server-side like the
+    plugins) and are never joined to `runs`/`scores`, so nothing here can reach the crown, the
+    duel, trends or weather (`test_portable_runs_never_touch_the_pooled_ledger`). **"vs home"**
+    (`portable.compare`) admits a reference only when every stamp matches: the same **device**
+    (a `device_id` the page keeps in local storage — a phone compares to itself, never to a
+    laptop), the same **instrument version**, marked **home** (`is_home`; the server stamps
+    home runs with the live firewall fingerprint, best-effort), one **home profile** (the pooled
+    crown when it has `portable.min_home_runs` on that device, else the best-populated), the
+    nearest **time cell** with enough runs (same weekday & hour → same hour → any time, each
+    run's *own* UTC offset so "same hour" is the device's wall clock; the readout names the
+    rung), and **pairwise coverage**: resources the away run and ≥80% of the home cell both
+    completed, with **both sides re-derived from raw over that common set**
+    (`derive_portable(include_ids=)`) rather than averaged over the survivors — a hotel that
+    blocks one CDN drops that resource from home too. Each metric's verdict is read against
+    home's own IQR (`within`/`worse`/`better`), plus a small portable score (`PORTABLE_RUBRIC`,
+    reasoned thresholds on the shared log curve — for reading an away run against a home run on
+    this instrument, nothing else). Below the minimum the page says "run it at home N times"
+    rather than guessing. Sacrificed vs the Chromium test, by design: real page composition,
+    FCP/LCP/INP, LoAF attribution (the synthetic waterfall does no render work, so its dead-air
+    is network by construction), and any number on the Overall scale. The **Away test** page
+    (`Away.tsx`, `/away`, `utils/portableTest.ts` is the in-browser runner — wake lock, warm-up
+    fetch, dependency-chained fetches with `cache: "no-store"`, chunked stream read, RTT off
+    `responseStart − requestStart`) is phone-first: label the device, name the venue, flip
+    "I'm at home" for reference runs. Not built (would be the natural next step): running the
+    same page under the server's own Playwright as an ordinary `BenchmarkPlugin`, which would
+    give an always-on home reading per profile and per hour with no dedicated schedule.
   - `challenger.py` — **Challenger Race**: the adaptive, multi-profile sibling of
     `profile_test`. A time-boxed loop that runs **one iteration at a time** on whatever the
     field can't currently trust against the winner, re-ranks via `rank_challengers`, and
@@ -1743,8 +1788,9 @@ LLM-based. See `README.md` for the product overview.
   from the page. Settings Impact keeps only a one-line **Duel ladder** pointer strip so the two
   rankings don't duplicate controls; `Duels.tsx`, `/api/duel/*`), **Baseline (SQM off)** (the "Test baseline behavior" tab: arm the
   nightly schedule — time/iterations/settle all configurable — or run one on demand, with a live
-  stage readout; `Baseline.tsx`, `/api/baseline/*`), Config, Methodology, Plugins, Data Dump, AI,
-  Run Detail.
+  stage readout; `Baseline.tsx`, `/api/baseline/*`), **Away test** (the phone-first portable test +
+  its "vs home" readout; `Away.tsx`, `/api/portable/*` — see `portable.py`), Config, Methodology,
+  Plugins, Data Dump, AI, Run Detail.
   The pages are **read on a phone**, so a control row is never a fixed `direction="row"`: the
   Settings-Impact scatter's selected-dot panel stacks under `sm` (as a row the buttons took
   their width first and collapsed the text half — the call sign rendered as "N…" and each

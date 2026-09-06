@@ -130,6 +130,13 @@ can't drift apart.
   interrupted). Marking another field sweepable surfaces it end to end — engine *and* UI
   control — with no code branch. Plus a reversible **config write-test**
   (`POST /api/config/test-apply`) to validate the firewall apply path.
+- ✈️ **Away test ("vs home")** — a phone-first test any device can run from a plain browser
+  tab: a synthetic CDN resource waterfall, a streamed download and warm round trips, scored on
+  its own small rubric and compared **only against directly comparable data** — the same device,
+  the same test version, home runs on one firewall profile, the nearest time of day with enough
+  runs, and only the resources both sides completed. Its own table; never the pooled crown.
+  (A browser tab can't read google.com's paint timing, so this is a different instrument from
+  the Chromium test — `/away`, `/api/portable/*`.)
 - 🔁 **Multi-iteration runs** — repeat the suite N times and take the **median**,
   with a per-run **confidence band** (± / range) and an **ETA**. Per-plugin iteration
   caps keep runs fast: the heavy browser runs fewer iterations than the cheap network
@@ -365,6 +372,10 @@ Interactive docs are served at `/docs` (Swagger) and `/redoc`. Base path: `/api`
 | `GET /api/history/count` | Total run count (for pagination) |
 | `GET /api/history/series` | Time-series of SOPS + metrics for charts |
 | `GET /api/history/dump` | Consolidated JSON of the last `limit` runs incl. raw observations |
+| `GET /api/portable/recipe` | The Away test's recipe (CDN resources, stream, RTT probe) + `instrument_version` |
+| `POST /api/portable/runs` | Upload one Away-test run (raw); returns it derived, scored and compared "vs home" |
+| `GET /api/portable/runs` / `…/{id}` / `DELETE …/{id}` | A device's Away-test history / one run with its comparison / delete |
+| `GET /api/portable/devices` / `PUT …/{id}` | Devices that have uploaded runs / rename one |
 | `GET /api/score/{id}` / `…/weights` | Run score / current weights + thresholds |
 | `GET /api/score/rolling` | Windowed median SOPS + IQR + aggregated subscores |
 | `POST /api/score/regrade` | Re-score history under the current methodology (background job → `202 {job_id}`) |

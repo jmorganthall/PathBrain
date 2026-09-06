@@ -2677,3 +2677,171 @@ export interface ExploreLandscape {
   candidates_clear_noise?: boolean | null;
   reason: string | null;
 }
+
+// ── Portable (away) test ────────────────────────────────────────────────────
+// A plain-browser instrument (synthetic CDN waterfall + stream + round trips) that any
+// device can run; compared ONLY "vs home" on the same device + recipe. Never on the
+// methodology's Overall scale.
+
+export interface PortableRecipeResource {
+  id: string;
+  url: string;
+  bytes: number;
+  after: string | null;
+  mode: string; // "cors" | "no-cors"
+}
+
+export interface PortableMetricMeta {
+  key: string;
+  label: string;
+  unit: string;
+  lower_is_better: boolean;
+  scored: boolean;
+}
+
+export interface PortableRecipe {
+  resources: PortableRecipeResource[];
+  stream: { url: string; bytes?: number; max_seconds?: number };
+  rtt: { url: string; samples?: number };
+  iterations: number;
+  min_home_runs: number;
+  instrument_version: string;
+  derivation_version: string;
+  metrics: PortableMetricMeta[];
+  rubric: Record<string, { weight: number; best: number; worst: number }>;
+}
+
+export interface PortableRawEntry {
+  startTime: number;
+  fetchStart: number;
+  domainLookupStart: number;
+  domainLookupEnd: number;
+  connectStart: number;
+  secureConnectionStart: number;
+  connectEnd: number;
+  requestStart: number;
+  responseStart: number;
+  responseEnd: number;
+  transferSize: number;
+  encodedBodySize: number;
+  nextHopProtocol: string;
+}
+
+export interface PortableRawResource {
+  id: string;
+  url: string;
+  bytes: number;
+  ok: boolean;
+  error: string | null;
+  t_start: number;
+  t_end: number | null;
+  entry: PortableRawEntry | null;
+}
+
+export interface PortableRawIteration {
+  waterfall: { resources: PortableRawResource[] };
+  stream: {
+    url: string;
+    ok: boolean;
+    partial: boolean;
+    start: number;
+    end: number | null;
+    bytes: number;
+    chunks: { t: number; bytes: number }[];
+    error?: string | null;
+  };
+  rtt: { url: string; samples_ms: number[] };
+}
+
+export interface PortableRaw {
+  iterations: PortableRawIteration[];
+}
+
+export interface PortableRunCreate {
+  device_id: string;
+  device_label?: string | null;
+  venue?: string | null;
+  is_home: boolean;
+  instrument_version: string;
+  tz_offset_minutes?: number | null;
+  client?: Record<string, unknown> | null;
+  raw: PortableRaw;
+  notes?: string | null;
+}
+
+export interface PortableCompareMetric {
+  away: number;
+  home_median: number;
+  home_p25: number | null;
+  home_p75: number | null;
+  delta: number;
+  pct: number | null;
+  n: number;
+  lower_is_better: boolean;
+  verdict: "better" | "worse" | "within";
+}
+
+export interface PortableCompare {
+  available: boolean;
+  reason: string | null;
+  provenance: {
+    device_id: string;
+    instrument_version: string;
+    min_home_runs: number;
+    home_runs_on_device: number;
+    profile?: { fingerprint: string; summary: string | null } | null;
+    profile_note?: string;
+    time_rung?: string;
+    time_rung_label?: string;
+    common_resources?: string[];
+    dropped_resources?: string[];
+    home_runs_used?: number;
+    home_runs_dropped?: number;
+  };
+  metrics?: Record<string, PortableCompareMetric>;
+  per_origin?: Record<string, Record<string, PortableCompareMetric>>;
+  score?: {
+    away: number;
+    home_median: number;
+    home_p25: number | null;
+    home_p75: number | null;
+    delta: number;
+    n: number;
+  } | null;
+}
+
+export interface PortableRun {
+  id: number;
+  created_at: string | null;
+  device_id: string;
+  device_label: string | null;
+  venue: string | null;
+  is_home: boolean;
+  instrument_version: string;
+  client: Record<string, unknown>;
+  tz_offset_minutes: number | null;
+  settings_fingerprint: string | null;
+  settings_summary: string | null;
+  metrics: Record<string, number>;
+  per_origin: Record<string, Record<string, number>>;
+  coverage: {
+    resources_ok: string[];
+    resources_failed: Record<string, string>;
+    origins: string[];
+    iterations: number;
+  };
+  score: number | null;
+  subscores: Record<string, number>;
+  notes: string | null;
+  iterations: number;
+  compare?: PortableCompare;
+}
+
+export interface PortableDevice {
+  device_id: string;
+  label: string | null;
+  runs: number;
+  home_runs: number;
+  away_runs: number;
+  last_seen: string | null;
+}

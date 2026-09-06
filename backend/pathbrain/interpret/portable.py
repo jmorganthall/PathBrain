@@ -1,0 +1,308 @@
+"""Raw observations → metrics for the **portable (away) test**.
+
+The portable test is what a plain browser tab on *any* device can measure: a synthetic
+resource waterfall of public CDN objects, a streamed download, and a burst of warm
+round trips. A page served by PathBrain can never read the load timing of google.com
+or github.com (same-origin policy), so this is a different instrument from the
+Chromium plugin — deliberately **never** graded on the methodology's Overall scale. Its
+only comparison is "vs home": the same device, the same recipe, at home.
+
+Everything here is a pure function over the stored raw, so a run re-derives at any time
+and — the property the "vs home" comparison depends on — can be re-derived over a
+**restricted resource set** (``include_ids``): when an away network blocked one origin,
+the comparison drops that origin from *both* sides instead of averaging over the
+survivors (the same rule ``runner.missing_pages`` applies to a failed page).
+
+Raw shape (one document per run, built by the page — ``frontend/src/utils/portableTest.ts``)::
+
+    {"iterations": [
+       {"waterfall": {"resources": [
+            {"id": "doc", "url": "...", "bytes": 13188, "ok": true, "error": null,
+             "t_start": 12.3, "t_end": 98.1,
+             "entry": {  # the Resource Timing entry, when the page could match one
+               "startTime": .., "fetchStart": .., "domainLookupStart": .., "domainLookupEnd": ..,
+               "connectStart": .., "secureConnectionStart": .., "connectEnd": ..,
+               "requestStart": .., "responseStart": .., "responseEnd": ..,
+               "transferSize": .., "encodedBodySize": .., "nextHopProtocol": ".."}}, ...]},
+        "stream": {"url": "...", "ok": true, "start": .., "end": .., "bytes": .., "partial": false,
+                   "chunks": [{"t": ms_since_start, "bytes": n}, ...]},
+        "rtt":    {"url": "...", "samples_ms": [..]}}
+    ]}
+
+All times are ``performance.now()`` milliseconds on the device's own clock; only
+differences are ever used.
+"""
+from __future__ import annotations
+
+from statistics import median, pstdev
+from urllib.parse import urlsplit
+
+from .smoothness import (
+    byte_earliness,
+    cadence_cov,
+    delivery_gini,
+    longest_stall,
+    stall_energy,
+)
+
+# Bump when a formula here changes: it is folded into the instrument version, so home
+# references derived under an older formula stop being admitted as comparable.
+PORTABLE_DERIVATION_VERSION = "portable-derive-v1"
+
+# Metric catalog for the portable instrument: key → (label, unit, lower_is_better).
+# Kept here (not in ``metrics.py``) on purpose — these are NOT methodology metrics and must
+# never enter the crown, the axes or the per-run Score.
+PORTABLE_METRICS: dict[str, tuple[str, str, bool]] = {
+    "first_complete_ms": ("First resource complete", "ms", True),
+    "largest_complete_ms": ("Largest resource complete", "ms", True),
+    "last_complete_ms": ("Waterfall complete", "ms", True),
+    "longest_stall_ms": ("Longest stall", "ms", True),
+    "stall_energy_ms": ("Stall energy", "ms", True),
+    "cadence_cov": ("Cadence CoV", "", True),
+    "delivery_gini": ("Delivery Gini", "", True),
+    "byte_earliness_ms": ("Byte earliness", "ms", True),
+    "rtt_ms": ("Round trip (warm)", "ms", True),
+    "jitter_ms": ("Round-trip jitter", "ms", True),
+    "throughput_mbps": ("Stream throughput", "Mbit/s", False),
+    "stream_ms_per_mb": ("Stream time per MB", "ms", True),
+    "stream_longest_stall_ms": ("Stream longest stall", "ms", True),
+    "stream_cadence_cov": ("Stream cadence CoV", "", True),
+}
+
+# Per-origin connection-setup phases, from the first *new* connection an iteration opened
+# to that origin. Only origins that send ``Timing-Allow-Origin`` expose them.
+ORIGIN_PHASES = ("dns_ms", "tcp_ms", "tls_ms", "ttfb_ms", "download_ms")
+
+
+def _f(v) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+
+def _origin(url: str | None) -> str:
+    try:
+        parts = urlsplit(url or "")
+        return parts.hostname or ""
+    except Exception:  # noqa: BLE001 — a malformed URL is just an unnamed origin
+        return ""
+
+
+def _median(vals: list[float]) -> float | None:
+    vals = [v for v in vals if v is not None]
+    return round(median(vals), 3) if vals else None
+
+
+# ── one iteration ────────────────────────────────────────────────────────────
+
+
+def _resource_end(r: dict) -> float | None:
+    """Completion time of a resource: the Resource Timing ``responseEnd`` when the page
+    matched an entry, else the page's own wall-clock ``t_end`` (same clock, coarser)."""
+    entry = r.get("entry") or {}
+    end = _f(entry.get("responseEnd"))
+    if end is not None and end > 0:
+        return end
+    return _f(r.get("t_end"))
+
+
+def _resource_start(r: dict) -> float | None:
+    entry = r.get("entry") or {}
+    start = _f(entry.get("startTime"))
+    if start is not None and start > 0:
+        return start
+    return _f(r.get("t_start"))
+
+
+def _usable(resources: list, include_ids: set[str] | None) -> list[dict]:
+    out = []
+    for r in resources or []:
+        if not isinstance(r, dict) or not r.get("ok"):
+            continue
+        if include_ids is not None and r.get("id") not in include_ids:
+            continue
+        if _resource_end(r) is None:
+            continue
+        out.append(r)
+    return out
+
+
+def _waterfall_metrics(waterfall: dict | None, include_ids: set[str] | None) -> dict:
+    res = _usable((waterfall or {}).get("resources") or [], include_ids)
+    if not res:
+        return {}
+    starts = [s for s in (_resource_start(r) for r in res) if s is not None]
+    t0 = min(starts) if starts else None
+    if t0 is None:
+        return {}
+    ends = sorted(_resource_end(r) for r in res)
+    out: dict[str, float | None] = {
+        "first_complete_ms": round(ends[0] - t0, 3),
+        "last_complete_ms": round(ends[-1] - t0, 3),
+    }
+    largest = max(res, key=lambda r: _f(r.get("bytes")) or 0.0)
+    if (_f(largest.get("bytes")) or 0.0) > 0:
+        out["largest_complete_ms"] = round(_resource_end(largest) - t0, 3)
+    # The byte-arrival smoothness math is shared with the page-load instrument: the
+    # completion series is the same object (sorted responseEnd), so the shape statistics
+    # mean the same thing. Sizes come from the recipe (opaque cross-origin entries report
+    # transferSize 0), so the byte-weighted metrics see real bytes.
+    pseudo = [
+        {"responseEnd": _resource_end(r), "transferSize": _f(r.get("bytes")) or 0.0} for r in res
+    ]
+    out["longest_stall_ms"] = longest_stall(ends)
+    out["stall_energy_ms"] = stall_energy(ends)
+    out["cadence_cov"] = cadence_cov(ends)
+    out["byte_earliness_ms"] = byte_earliness(pseudo, t0)
+    out["delivery_gini"] = delivery_gini(pseudo, t0, ends[-1])
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _stream_metrics(stream: dict | None) -> dict:
+    s = stream or {}
+    if not s.get("ok") and not s.get("partial"):
+        return {}
+    start, end, nbytes = _f(s.get("start")), _f(s.get("end")), _f(s.get("bytes"))
+    out: dict[str, float | None] = {}
+    if start is not None and end is not None and end > start and nbytes and nbytes > 0:
+        secs = (end - start) / 1000.0
+        mbps = (nbytes * 8.0) / secs / 1_000_000.0
+        out["throughput_mbps"] = round(mbps, 3)
+        out["stream_ms_per_mb"] = round((end - start) / (nbytes / 1_000_000.0), 3)
+    chunks = [c for c in (s.get("chunks") or []) if isinstance(c, dict)]
+    times = sorted(t for t in (_f(c.get("t")) for c in chunks) if t is not None)
+    if len(times) >= 3:
+        out["stream_longest_stall_ms"] = longest_stall(times)
+        out["stream_cadence_cov"] = cadence_cov(times)
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _rtt_metrics(rtt: dict | None) -> dict:
+    samples = [v for v in (_f(x) for x in ((rtt or {}).get("samples_ms") or [])) if v is not None and v >= 0]
+    if not samples:
+        return {}
+    out = {"rtt_ms": round(median(samples), 3)}
+    if len(samples) > 1:
+        out["jitter_ms"] = round(pstdev(samples), 3)
+    return out
+
+
+def _origin_phases(waterfall: dict | None, include_ids: set[str] | None) -> dict[str, dict]:
+    """Per-origin setup phases from the first NEW connection to each origin.
+
+    A reused connection reports ``connectStart == connectEnd`` — that is connection reuse,
+    not a 0 ms handshake — so setup phases are only read off entries that actually opened
+    a connection. TTFB/download come from the first usable entry regardless."""
+    out: dict[str, dict] = {}
+    res = sorted(_usable((waterfall or {}).get("resources") or [], include_ids), key=lambda r: _resource_start(r) or 0.0)
+    for r in res:
+        entry = r.get("entry") or {}
+        origin = _origin(r.get("url"))
+        if not origin:
+            continue
+        rs, rq, re_ = _f(entry.get("responseStart")), _f(entry.get("requestStart")), _f(entry.get("responseEnd"))
+        if rs is None or rs <= 0 or rq is None or rq <= 0:
+            continue  # no Timing-Allow-Origin: the phases are zeroed, nothing to read
+        slot = out.setdefault(origin, {})
+        if "ttfb_ms" not in slot:
+            slot["ttfb_ms"] = round(rs - rq, 3)
+            if re_ is not None and re_ >= rs:
+                slot["download_ms"] = round(re_ - rs, 3)
+        cs, ce = _f(entry.get("connectStart")), _f(entry.get("connectEnd"))
+        if "tcp_ms" in slot or cs is None or ce is None or ce <= cs:
+            continue  # already have a cold connection, or this one was reused
+        dls, dle = _f(entry.get("domainLookupStart")), _f(entry.get("domainLookupEnd"))
+        if dls is not None and dle is not None and dle >= dls:
+            slot["dns_ms"] = round(dle - dls, 3)
+        sec = _f(entry.get("secureConnectionStart")) or 0.0
+        if sec > 0 and ce >= sec:
+            slot["tls_ms"] = round(ce - sec, 3)
+            slot["tcp_ms"] = round(sec - cs, 3)
+        else:
+            slot["tls_ms"] = 0.0
+            slot["tcp_ms"] = round(ce - cs, 3)
+    return out
+
+
+# ── the run ──────────────────────────────────────────────────────────────────
+
+
+def coverage(raw: dict | None) -> dict:
+    """Which recipe resources succeeded in **every** iteration, which failed, and the
+    origins involved — the input to the pairwise "compare only what both sides have" rule."""
+    ok_all: set[str] | None = None
+    failed: dict[str, str] = {}
+    origins: set[str] = set()
+    iterations = (raw or {}).get("iterations") or []
+    for it in iterations:
+        res = ((it or {}).get("waterfall") or {}).get("resources") or []
+        ok_here = set()
+        for r in res:
+            if not isinstance(r, dict) or not r.get("id"):
+                continue
+            origins.add(_origin(r.get("url")))
+            if r.get("ok") and _resource_end(r) is not None:
+                ok_here.add(r["id"])
+            else:
+                failed[r["id"]] = str(r.get("error") or "failed")
+        ok_all = ok_here if ok_all is None else (ok_all & ok_here)
+    return {
+        "resources_ok": sorted(ok_all or set()),
+        "resources_failed": failed,
+        "origins": sorted(o for o in origins if o),
+        "iterations": len(iterations),
+    }
+
+
+def derive_portable(raw: dict | None, include_ids: set[str] | list[str] | None = None) -> dict:
+    """Derive the portable metric set from a run's raw.
+
+    Returns ``{"metrics": {...}, "per_origin": {origin: {phase: ms}}, "coverage": {...}}``.
+    Metrics are medians over the iterations that produced them. ``include_ids`` restricts
+    the waterfall to that resource subset (for pairwise comparison); stream and RTT are
+    independent of it."""
+    ids = set(include_ids) if include_ids is not None else None
+    iterations = (raw or {}).get("iterations") or []
+    per_iter: list[dict] = []
+    per_origin_iters: list[dict[str, dict]] = []
+    for it in iterations:
+        it = it or {}
+        m: dict[str, float] = {}
+        m.update(_waterfall_metrics(it.get("waterfall"), ids))
+        m.update(_stream_metrics(it.get("stream")))
+        m.update(_rtt_metrics(it.get("rtt")))
+        per_iter.append(m)
+        per_origin_iters.append(_origin_phases(it.get("waterfall"), ids))
+    metrics: dict[str, float] = {}
+    for key in PORTABLE_METRICS:
+        vals = [m[key] for m in per_iter if key in m]
+        med = _median(vals)
+        if med is not None:
+            metrics[key] = med
+    per_origin: dict[str, dict] = {}
+    for origin in sorted({o for po in per_origin_iters for o in po}):
+        slot: dict[str, float] = {}
+        for phase in ORIGIN_PHASES:
+            vals = [po[origin][phase] for po in per_origin_iters if origin in po and phase in po[origin]]
+            med = _median(vals)
+            if med is not None:
+                slot[phase] = med
+        if slot:
+            per_origin[origin] = slot
+    return {"metrics": metrics, "per_origin": per_origin, "coverage": coverage(raw)}
+
+
+def iteration_count(raw: dict | None) -> int:
+    return len((raw or {}).get("iterations") or [])
+
+
+__all__ = [
+    "ORIGIN_PHASES",
+    "PORTABLE_DERIVATION_VERSION",
+    "PORTABLE_METRICS",
+    "coverage",
+    "derive_portable",
+    "iteration_count",
+]

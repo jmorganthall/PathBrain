@@ -30,6 +30,25 @@ class BaselineTestStart(BaseModel):
     settle_seconds: int | None = None
 
 
+class PortableRunCreate(BaseModel):
+    """Upload one portable (away) test run: the raw document the page measured plus the
+    stamps the "vs home" comparison keys on."""
+
+    device_id: str
+    device_label: str | None = None
+    venue: str | None = None
+    is_home: bool = False
+    instrument_version: str
+    tz_offset_minutes: int | None = None
+    client: dict[str, Any] | None = None
+    raw: dict[str, Any]
+    notes: str | None = None
+
+
+class PortableDeviceUpdate(BaseModel):
+    label: str | None = None
+
+
 class BaselineScheduleUpdate(BaseModel):
     """Update the nightly baseline-test schedule + defaults (all fields optional)."""
 

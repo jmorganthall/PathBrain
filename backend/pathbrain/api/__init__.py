@@ -16,6 +16,7 @@ from . import (
     routes_metrics,
     routes_monitoring,
     routes_plugins,
+    routes_portable,
     routes_results,
     routes_run,
     routes_score,
@@ -45,3 +46,4 @@ api_router.include_router(routes_ai.router, tags=["ai"])
 api_router.include_router(routes_baseline.router, tags=["baseline"])
 api_router.include_router(routes_duel.router, tags=["duel"])
 api_router.include_router(routes_explore.router, tags=["explore"])
+api_router.include_router(routes_portable.router, tags=["portable"])

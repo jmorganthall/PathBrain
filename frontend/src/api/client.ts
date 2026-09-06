@@ -75,6 +75,10 @@ import type {
   TrendHeatmapResponse,
   TrendRelativeResponse,
   WeightsResponse,
+  PortableDevice,
+  PortableRecipe,
+  PortableRun,
+  PortableRunCreate,
 } from "./types";
 
 // Minutes to add to UTC to reach the viewer's local time. getTimezoneOffset()
@@ -624,4 +628,22 @@ export const api = {
   experiments: () => request<ExperimentsResponse>("/experiments"),
   experiment: (id: number) => request<ExperimentDetail>(`/experiments/${id}`),
   abortExperiment: () => request<{ aborted: boolean }>("/experiments/abort", { method: "POST" }),
+
+  // Portable (away) test: a plain-browser instrument any device can run, compared only
+  // "vs home" on the same device + recipe (its own table; never the pooled ledger).
+  portableRecipe: () => request<PortableRecipe>("/portable/recipe"),
+  portableUpload: (body: PortableRunCreate) =>
+    request<PortableRun>("/portable/runs", { method: "POST", body: JSON.stringify(body) }, { timeoutMs: 60_000 }),
+  portableRuns: (deviceId?: string, limit = 50) =>
+    request<PortableRun[]>(
+      `/portable/runs?limit=${limit}` + (deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : ""),
+    ),
+  portableRun: (id: number) => request<PortableRun>(`/portable/runs/${id}`),
+  portableDelete: (id: number) => request<void>(`/portable/runs/${id}`, { method: "DELETE" }),
+  portableDevices: () => request<PortableDevice[]>("/portable/devices"),
+  portableDeviceRename: (deviceId: string, label: string | null) =>
+    request<{ device_id: string; label: string | null }>(
+      `/portable/devices/${encodeURIComponent(deviceId)}`,
+      { method: "PUT", body: JSON.stringify({ label }) },
+    ),
 };
