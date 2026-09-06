@@ -450,7 +450,13 @@ def _active_profile_test_job(session: Session) -> list[dict]:
     # as `detail` (a tooltip) rather than in the line, since it is what made this unreadable.
     name = _call_sign(session, t.get("fingerprint"))
     detail = t.get("label")
-    label = f"Test to minimum: {name or detail or t.get('fingerprint')}"
+    # Say what actually runs. A profile test is either a top-up to the confidence minimum
+    # or an explicit count (5 for a quick "did this go anywhere?", any number from the
+    # dialog), and the row can't tell which — so it names the count, which is true of both,
+    # rather than "to minimum", which was true of neither for a 5-iteration test.
+    iters = t.get("iterations")
+    what = f"{iters} iteration{'' if iters == 1 else 's'}" if iters else "profile test"
+    label = f"Test profile · {what}: {name or detail or t.get('fingerprint')}"
     if status in ("running", "pending"):
         # Progress lived only in the stage sentence ("part 1/1 (0/5 done)"), so the bar was
         # indeterminate and there was no ETA at all. The test's chunks carry
