@@ -3370,3 +3370,34 @@ export interface InstrumentDrift {
   stale_derivations: number | null;
   derivation_version: string;
 }
+
+// GET /methodologies/warm-agreement — do the first-visit and repeat-visit instruments rank
+// the profiles alike? Each profile's cold and warm Overall on the methodology's own yardstick.
+export interface WarmAgreementRow {
+  fingerprint: string;
+  name: string | null;
+  runs: number;
+  is_crown: boolean;
+  cold: { overall: number; medians: Record<string, number>; subscores: Record<string, number> };
+  warm: { overall: number; medians: Record<string, number>; subscores: Record<string, number> };
+  warm_minus_cold: number;
+  cold_rank: number;
+  warm_rank: number;
+}
+
+export interface WarmAgreement {
+  verdict: "insufficient" | "agree" | "same_top" | "disagree";
+  text: string;
+  rho: number | null;
+  profiles: number;
+  thin_profiles: number;
+  min_runs: number;
+  agree_top: boolean;
+  top_cold: { fingerprint: string; name: string | null } | null;
+  top_warm: { fingerprint: string; name: string | null } | null;
+  crown: { fingerprint: string | null; cold_rank?: number; warm_rank?: number } | null;
+  rows: WarmAgreementRow[];
+  crown_metrics: string[];
+  methodology: string;
+  runs_with_warm_reading: number;
+}

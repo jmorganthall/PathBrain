@@ -27,6 +27,7 @@ import { api } from "../api/client";
 import type {
   IdleAudit,
   InstrumentDrift,
+  WarmAgreement,
   BrowserClient,
   BrowserConfig,
   MethodologyDetail,
@@ -739,6 +740,8 @@ export default function Methodology() {
 
       <InstrumentDriftAudit autoRun={auditParam === "instrument"} />
 
+      <WarmCrownAudit autoRun={auditParam === "warm"} />
+
       {others.length > 0 && (
         <FoldCard title={`Other versions (${others.length})`} summary="Earlier rubrics, kept frozen for the scores measured under them.">
             {others.map((m, i) => (
@@ -1199,5 +1202,134 @@ function FragmentRows({ title, children }: { title: string; children: ReactNode 
       </TableRow>
       {children}
     </>
+  );
+}
+
+
+const WARM_SEVERITY: Record<WarmAgreement["verdict"], "success" | "info" | "warning"> = {
+  agree: "success",
+  same_top: "info",
+  disagree: "warning",
+  insufficient: "info",
+};
+
+/** Cold vs warm crown. The crown grades a first visit (fresh context, every handshake paid);
+ * most clicks are repeat visits on warm connections. The browser plugin now records both, and
+ * this ranks the profiles by a warm Overall on the methodology's own yardstick beside the cold
+ * one. Agreement means the cold crown stands for the warm case; disagreement is the measured
+ * reason to publish a version that adopts the warm legs. Read-only. */
+function WarmCrownAudit({ autoRun }: { autoRun: boolean }) {
+  const [minRuns, setMinRuns] = useState(5);
+  const [audit, setAudit] = useState<WarmAgreement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const load = useCallback(async (n: number) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setAudit(await api.warmAgreement(n));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+  useEffect(() => {
+    if (autoRun) void load(5);
+  }, [autoRun, load]);
+  return (
+    <FoldCard
+      title="Cold vs warm crown"
+      summary="Do the first-visit (what the crown grades) and repeat-visit (what most clicks feel like) instruments rank the profiles alike?"
+      openWhen={autoRun}
+    >
+      <Stack spacing={1.5}>
+        <Typography variant="body2" color="text.secondary">
+          The crown grades a <b>first visit</b>: a fresh browser context per page, every handshake paid. Most of a
+          person's clicks are not that — a site's next page reuses its connections — so with <b>browser.warm_loads</b>{" "}
+          on, each page is loaded once more in the same context with the cache disabled (warm sockets, every byte
+          fetched) and recorded beside the cold reading as <code>warm_*</code>. Nothing graded moves. This ranks every
+          profile by a warm Overall built from the methodology's own crown metrics, thresholds and weights, and asks
+          whether the order matches the cold one. If it does, the cold crown stands for the warm case. If it doesn't,
+          that is the measured reason to publish a version that adopts the warm legs.
+        </Typography>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <TextField
+            select
+            size="small"
+            label="Runs per profile"
+            value={minRuns}
+            onChange={(e) => setMinRuns(Number(e.target.value))}
+            sx={{ minWidth: 150 }}
+          >
+            {[3, 5, 10, 20].map((n) => (
+              <MenuItem key={n} value={n}>
+                at least {n}
+              </MenuItem>
+            ))}
+          </TextField>
+          <Button variant="outlined" size="small" onClick={() => load(minRuns)} disabled={busy}>
+            {busy ? "Comparing…" : audit ? "Re-run comparison" : "Run comparison"}
+          </Button>
+        </Stack>
+        {err && <Alert severity="error">{err}</Alert>}
+        {audit && (
+          <>
+            <Alert severity={WARM_SEVERITY[audit.verdict] ?? "info"}>
+              <b>{audit.text}</b>
+              <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.5 }}>
+                {audit.runs_with_warm_reading} runs carry both readings under {audit.methodology.replace(/^speed-smoothness-/, "")} ·{" "}
+                {audit.profiles} profile(s) compared
+                {audit.thin_profiles ? ` · ${audit.thin_profiles} below ${audit.min_runs} runs` : ""} · crown legs:{" "}
+                {audit.crown_metrics.join(", ")}
+              </Typography>
+            </Alert>
+            {audit.rows.length > 0 && (
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Profile</TableCell>
+                      <TableCell align="right">Runs</TableCell>
+                      <TableCell align="right">Cold Overall</TableCell>
+                      <TableCell align="right">Cold #</TableCell>
+                      <TableCell align="right">Warm Overall</TableCell>
+                      <TableCell align="right">Warm #</TableCell>
+                      <TableCell align="right">Warm − cold</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {audit.rows.map((r) => (
+                      <TableRow key={r.fingerprint} hover>
+                        <TableCell>
+                          {r.name ?? r.fingerprint.slice(0, 8)}
+                          {r.is_crown && <Chip size="small" label="crown" color="primary" variant="outlined" sx={{ ml: 0.5 }} />}
+                        </TableCell>
+                        <TableCell align="right">{r.runs}</TableCell>
+                        <TableCell align="right">{r.cold.overall.toFixed(1)}</TableCell>
+                        <TableCell align="right">{r.cold_rank}</TableCell>
+                        <TableCell align="right">{r.warm.overall.toFixed(1)}</TableCell>
+                        <TableCell align="right">
+                          {r.warm_rank}
+                          {r.warm_rank !== r.cold_rank && (
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              label={r.warm_rank < r.cold_rank ? `▲${r.cold_rank - r.warm_rank}` : `▼${r.warm_rank - r.cold_rank}`}
+                              sx={{ ml: 0.5 }}
+                            />
+                          )}
+                        </TableCell>
+                        <TableCell align="right">{r.warm_minus_cold > 0 ? "+" : ""}{r.warm_minus_cold.toFixed(1)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+          </>
+        )}
+      </Stack>
+    </FoldCard>
   );
 }

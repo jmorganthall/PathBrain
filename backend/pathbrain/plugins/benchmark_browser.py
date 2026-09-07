@@ -99,7 +99,7 @@ def _origins_from_urls(urls: list[str]) -> list[str]:
 #: The phases of one page load the plugin times itself (``details.phases`` totals them per
 #: iteration): context setup → navigation → post-load idle wait → timing reads (+ the
 #: synthetic interaction) → context close.
-_PHASE_KEYS = ("context_ms", "goto_ms", "idle_ms", "reads_ms", "close_ms")
+_PHASE_KEYS = ("context_ms", "goto_ms", "idle_ms", "reads_ms", "warm_ms", "close_ms")
 
 
 def build_chromium_args(config: dict) -> list[str]:
@@ -647,6 +647,8 @@ class BrowserBenchmark(BenchmarkPlugin):
         # feeds the pixel-based Speed Index / paint-cadence diagnostics. Off by
         # default — scored SOPS smoothness now comes from the byte-arrival metrics.
         want_filmstrip = bool(config.get("filmstrip", False))
+        # The repeat-visit load (see `config_store`): same context, cache disabled.
+        want_warm = bool(config.get("warm_loads", True))
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         base_dir = os.path.abspath(get_settings().artifact_dir)
@@ -693,6 +695,39 @@ class BrowserBenchmark(BenchmarkPlugin):
             # the instrument-drift audit; the per-URL split rides in raw as ``phases``.
             phase_totals: dict[str, float] = {k: 0.0 for k in _PHASE_KEYS}
 
+            def _read_timing(page):
+                """The timing reads after a load: Navigation Timing, a few synthetic
+                interactions so INP has something to report, then paint / Resource Timing /
+                LoAF. One function so the cold and the warm load are read identically."""
+                nav = page.evaluate(_NAV_JS)
+                # Best-effort INP: drive a few synthetic interactions and let event-timing
+                # settle before reading the observers.
+                try:
+                    page.mouse.click(5, 5)
+                    page.keyboard.press("Tab")
+                    page.mouse.wheel(0, 400)
+                    page.wait_for_timeout(200)
+                except Exception:  # noqa: BLE001 — interaction is optional
+                    pass
+                paint = None
+                try:
+                    paint = page.evaluate(_PAINT_READ_JS)
+                except Exception:  # noqa: BLE001 — paint capture is optional
+                    pass
+                # Resource Timing + LoAF for the smoothness instrument. Read after the
+                # synthetic interaction so the full initial-load resource set is captured.
+                resources = None
+                try:
+                    resources = page.evaluate(_RESOURCE_JS)
+                except Exception:  # noqa: BLE001 — optional
+                    pass
+                loaf = None
+                try:
+                    loaf = page.evaluate(_LOAF_READ_JS)
+                except Exception:  # noqa: BLE001 — optional
+                    pass
+                return nav, paint, resources, loaf
+
             for idx, url in enumerate(urls):
                 slug = _slug(url, idx)
                 har_path = os.path.join(run_dir, f"{slug}.har") if want_har else None
@@ -729,41 +764,47 @@ class BrowserBenchmark(BenchmarkPlugin):
                         except Exception:  # noqa: BLE001
                             pass
 
-                    nav = page.evaluate(_NAV_JS)
-
-                    # Best-effort INP: drive a few synthetic interactions and
-                    # let event-timing settle before reading the observers.
-                    try:
-                        page.mouse.click(5, 5)
-                        page.keyboard.press("Tab")
-                        page.mouse.wheel(0, 400)
-                        page.wait_for_timeout(200)
-                    except Exception:  # noqa: BLE001 — interaction is optional
-                        pass
-
-                    paint = None
-                    try:
-                        paint = page.evaluate(_PAINT_READ_JS)
-                    except Exception:  # noqa: BLE001 — paint capture is optional
-                        pass
-
-                    # Resource Timing + LoAF for the smoothness instrument.
-                    # Read after the synthetic interaction so the full
-                    # initial-load resource set is captured. Best-effort.
-                    resources = None
-                    try:
-                        resources = page.evaluate(_RESOURCE_JS)
-                    except Exception:  # noqa: BLE001 — optional
-                        pass
-                    loaf = None
-                    try:
-                        loaf = page.evaluate(_LOAF_READ_JS)
-                    except Exception:  # noqa: BLE001 — optional
-                        pass
+                    nav, paint, resources, loaf = _read_timing(page)
 
                     if want_screenshot and shot_path:
                         page.screenshot(path=shot_path)
                     phases["reads_ms"] = round((perf_counter() - t_idle) * 1000.0, 3)
+
+                    # The repeat visit: the same page again, in the same context, with the
+                    # HTTP cache disabled — warm sockets and resumed TLS/QUIC sessions, every
+                    # byte still fetched. The cold load above is what the crown grades (a
+                    # first visit); this is what most clicks feel like. Recorded beside it,
+                    # never in its place, so nothing graded changes.
+                    warm = None
+                    if want_warm:
+                        t_warm = perf_counter()
+                        cdp = None
+                        try:
+                            cdp = context.new_cdp_session(page)
+                            cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
+                            page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+                            try:
+                                page.wait_for_load_state("networkidle", timeout=idle_timeout_ms)
+                            except Exception:  # noqa: BLE001 — idle may never settle
+                                pass
+                            warm_total = round((perf_counter() - t_warm) * 1000.0, 3)
+                            w_nav, w_paint, w_res, w_loaf = _read_timing(page)
+                            warm = {
+                                "nav": w_nav,
+                                "paint": w_paint,
+                                "total_render_ms": warm_total,
+                                "resources": w_res,
+                                "loaf": w_loaf,
+                            }
+                        except Exception as exc:  # noqa: BLE001 — the warm load is a bonus reading
+                            warm = {"error": f"{type(exc).__name__}: {exc}"}
+                        finally:
+                            if cdp is not None:
+                                try:
+                                    cdp.detach()
+                                except Exception:  # noqa: BLE001
+                                    pass
+                            phases["warm_ms"] = round((perf_counter() - t_warm) * 1000.0, 3)
 
                     urls_raw[url] = {
                         "nav": nav,
@@ -773,6 +814,7 @@ class BrowserBenchmark(BenchmarkPlugin):
                         "resources": resources,
                         "loaf": loaf,
                         "phases": phases,
+                        "warm": warm,
                     }
                     per_url_display[url] = {
                         "screenshot_url": (

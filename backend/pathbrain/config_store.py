@@ -117,6 +117,14 @@ DEFAULT_CONFIG: dict = {
         "locale": "en-US",
         # IANA zone for the page's clock; "" = the container's.
         "timezone_id": "",
+        # After the cold (first-visit) load of each page, load it once more in the SAME
+        # context with the HTTP cache disabled: warm sockets and TLS/QUIC sessions, every
+        # byte still fetched. Most of a person's clicks are warm — a site's next page reuses
+        # its connections — and the crown is graded on cold loads only, so this records the
+        # repeat-visit reading beside it (`warm_*` metrics, display-only) and the Methodology
+        # page's "Cold vs warm crown" card says whether the two rank the profiles alike. It
+        # roughly doubles a browser iteration's page loads; turn off to keep runs short.
+        "warm_loads": True,
         # Screenshot + HAR feed only the artifacts UI (no scored metric), so they're off by
         # default now — set true to capture them for debugging a specific run.
         "screenshot": False,

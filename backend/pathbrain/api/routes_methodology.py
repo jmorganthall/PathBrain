@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import idle_audit, instrument_drift, jobs
+from .. import idle_audit, instrument_drift, jobs, warm_agreement
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
 from ..logging_config import get_logger
@@ -77,6 +77,17 @@ def instrument_drift_audit(
     grading, since FCP and LCP contain render). Adds the live browser-process snapshot and
     a count of stale-derivation runs in the window. Nothing here changes a score."""
     return instrument_drift.instrument_drift(session, days=days, limit=limit)
+
+
+@router.get("/methodologies/warm-agreement")
+def warm_crown_agreement(min_runs: int = warm_agreement.MIN_RUNS, session: Session = Depends(get_session)) -> dict:
+    """Do the first-visit (cold, what the crown grades) and the repeat-visit (warm, what most
+    clicks feel like) instruments rank the profiles alike? Ranks every profile with
+    ``min_runs``+ runs carrying both readings by a cold and a warm Overall built from the
+    methodology's own crown metrics, thresholds and weights, and reports the rank
+    correlation, the #1 on each, and the crown's rank on each. Read-only; the decision it
+    informs (adopting warm legs in a version) is a publish, made elsewhere."""
+    return warm_agreement.warm_agreement(session, get_config(session), min_runs=min_runs)
 
 
 @router.get("/methodologies/idle-audit")
