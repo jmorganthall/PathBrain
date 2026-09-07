@@ -73,6 +73,14 @@ PORTABLE_METRICS: dict[str, tuple[str, str, bool]] = {
 # to that origin. Only origins that send ``Timing-Allow-Origin`` expose them.
 ORIGIN_PHASES = ("dns_ms", "tcp_ms", "tls_ms", "ttfb_ms", "download_ms")
 
+# Metrics whose value is dominated by connection setup — DNS, TCP and TLS on the first fetch
+# to each origin. Two runs compare on them only when they opened their connections the same
+# way: a phone's long-lived tab holds warm sockets to the recipe's origins from ordinary use,
+# while a fresh browser context pays every handshake, and the difference (tens of ms per
+# origin, chained down the waterfall) is exactly the size of the "lead" the first real
+# cross-device reading showed. ``warmth`` measures it per run; the compare reads it.
+SETUP_BOUND = ("first_complete_ms", "largest_complete_ms", "last_complete_ms", "byte_earliness_ms")
+
 
 def _f(v) -> float | None:
     try:
@@ -226,6 +234,54 @@ def _origin_phases(waterfall: dict | None, include_ids: set[str] | None) -> dict
     return out
 
 
+def _protocol(entry: dict | None) -> str:
+    p = str((entry or {}).get("nextHopProtocol") or "").strip().lower()
+    if not p:
+        return "unknown"
+    if p.startswith("h3") or "quic" in p:
+        return "h3"
+    if p == "h2":
+        return "h2"
+    if p.startswith("http/1"):
+        return "http/1.1"
+    return p
+
+
+def warmth(raw: dict | None) -> dict:
+    """How warm the run's connections were, and over what transport.
+
+    Over every completed resource whose origin sends ``Timing-Allow-Origin`` (only those
+    expose the connect phases): the share whose entry **reused** a connection — the Resource
+    Timing spec reports ``connectEnd <= connectStart`` for a reused socket, never a 0 ms
+    handshake — and the ``nextHopProtocol`` mix (h2 over TCP, h3 over QUIC, http/1.1). The
+    two together say whether a run's setup-bound metrics can be compared with another run's:
+    a warm h3 tab and a cold h2 context are two instruments."""
+    tao = reused = 0
+    protocols: dict[str, int] = {}
+    for it in (raw or {}).get("iterations") or []:
+        res = ((it or {}).get("waterfall") or {}).get("resources") or []
+        for r in _usable(res, None):
+            entry = r.get("entry") or {}
+            rq = _f(entry.get("requestStart"))
+            if rq is None or rq <= 0:
+                continue  # no Timing-Allow-Origin: the connect phases are zeroed, unreadable
+            tao += 1
+            cs, ce = _f(entry.get("connectStart")), _f(entry.get("connectEnd"))
+            if cs is not None and ce is not None and ce <= cs:
+                reused += 1
+            proto = _protocol(entry)
+            protocols[proto] = protocols.get(proto, 0) + 1
+    known = {k: v for k, v in protocols.items() if k != "unknown"}
+    dominant = max(known, key=known.get) if known else None
+    return {
+        "tao_resources": tao,
+        "reused": reused,
+        "reused_share": round(reused / tao, 3) if tao else None,
+        "protocols": protocols,
+        "protocol": dominant,
+    }
+
+
 # ── the run ──────────────────────────────────────────────────────────────────
 
 
@@ -253,13 +309,16 @@ def coverage(raw: dict | None) -> dict:
         "resources_failed": failed,
         "origins": sorted(o for o in origins if o),
         "iterations": len(iterations),
+        # Stored with the coverage so a run's warmth is on its row without a migration.
+        "warmth": warmth(raw),
     }
 
 
 def derive_portable(raw: dict | None, include_ids: set[str] | list[str] | None = None) -> dict:
     """Derive the portable metric set from a run's raw.
 
-    Returns ``{"metrics": {...}, "per_origin": {origin: {phase: ms}}, "coverage": {...}}``.
+    Returns ``{"metrics": {...}, "per_origin": {origin: {phase: ms}}, "coverage": {...},
+    "warmth": {...}}`` (``warmth`` is also inside ``coverage``).
     Metrics are medians over the iterations that produced them. ``include_ids`` restricts
     the waterfall to that resource subset (for pairwise comparison); stream and RTT are
     independent of it."""
@@ -291,7 +350,8 @@ def derive_portable(raw: dict | None, include_ids: set[str] | list[str] | None =
                 slot[phase] = med
         if slot:
             per_origin[origin] = slot
-    return {"metrics": metrics, "per_origin": per_origin, "coverage": coverage(raw)}
+    cov = coverage(raw)
+    return {"metrics": metrics, "per_origin": per_origin, "coverage": cov, "warmth": cov["warmth"]}
 
 
 def iteration_count(raw: dict | None) -> int:

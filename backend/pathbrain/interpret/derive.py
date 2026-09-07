@@ -220,15 +220,27 @@ def _derive_browser(raw: dict, artifact_dir: str | None) -> dict:
     return {k: _round(mean(v)) for k, v in acc.items() if v}
 
 
+def _portable_iterations(raw: dict | None) -> list[dict]:
+    """The iterations in a ``portable`` plugin call's raw: ``{"iterations": [...]}`` (the
+    phone's full sequence, warm-up + N) or the older ``{"iteration": {...}}`` (one cold)."""
+    if not isinstance(raw, dict):
+        return []
+    its = raw.get("iterations")
+    if isinstance(its, list):
+        return [it for it in its if isinstance(it, dict) and "waterfall" in it]
+    it = raw.get("iteration")
+    return [it] if isinstance(it, dict) and "waterfall" in it else []
+
+
 def _derive_portable_plugin(raw: dict, _art: str | None) -> dict:
-    """One portable iteration (the ``portable`` plugin's per-call raw: ``{"iteration": {...},
-    "instrument_version", "client"}``) → the portable metric set. Same derivation as an
-    uploaded Away run (``interpret.portable.derive_portable``), so a NAS-run reference and a
-    phone run are the one instrument. Not methodology metrics: nothing in scoring reads them."""
-    it = raw.get("iteration") if isinstance(raw, dict) else None
-    if not isinstance(it, dict):
+    """One portable plugin call (``{"iterations": [...], "instrument_version", "client"}``, the
+    same warm-up + iterations sequence a phone runs) → the portable metric set. Same derivation
+    as an uploaded Away run (``interpret.portable.derive_portable``), so a NAS-run reference and
+    a phone run are the one instrument. Not methodology metrics: nothing in scoring reads them."""
+    its = _portable_iterations(raw)
+    if not its:
         return {}
-    return derive_portable({"iterations": [it]})["metrics"]
+    return derive_portable({"iterations": its})["metrics"]
 
 
 _DERIVERS = {

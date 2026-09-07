@@ -207,6 +207,14 @@ function Provenance({ cmp }: { cmp: PortableReference | null }) {
           Different device: {p.note}.
         </Typography>
       )}
+      {p.warmth && (
+        <Typography variant="caption" color={p.warmth.comparable ? "text.secondary" : "warning.main"} component="div">
+          Connections — this run reused {fmtShare(p.warmth.away.reused_share)} ({p.warmth.away.protocol ?? "?"},{" "}
+          {p.warmth.away.family ?? "?"}); the home reference reused {fmtShare(p.warmth.home.reused_share)} (
+          {p.warmth.home.protocol ?? "?"}, {p.warmth.home.engine ?? "?"}).
+          {p.warmth.note ? ` ${p.warmth.note}` : " Same warmth, so every row compares."}
+        </Typography>
+      )}
       {(p.dropped_resources?.length ?? 0) > 0 && (
         <Typography variant="caption" color="warning.main" component="div">
           Compared without {p.dropped_resources!.join(", ")}: not completed on both sides, so dropped from both.
@@ -219,6 +227,10 @@ function Provenance({ cmp }: { cmp: PortableReference | null }) {
       )}
     </Box>
   );
+}
+
+function fmtShare(v: number | null | undefined): string {
+  return v == null ? "an unknown share" : `${Math.round(v * 100)}%`;
 }
 
 function MetricTable({ run, cmp, meta }: { run: PortableRun; cmp: PortableReference | null; meta: PortableMetricMeta[] }) {
@@ -238,27 +250,41 @@ function MetricTable({ run, cmp, meta }: { run: PortableRun; cmp: PortableRefere
         <TableBody>
           {rows.map((m) => {
             const c = cmp?.available ? cmp.metrics?.[m.key] : undefined;
+            // A setup-bound row whose two sides differ in connection warmth: the numbers are
+            // real, the comparison is not — grey it rather than print a chip either way.
+            const greyed = !!c && c.comparable === false;
+            const dim = greyed ? { opacity: 0.45 } : {};
             return (
               <TableRow key={m.key} hover>
                 <TableCell>
-                  <Tooltip title={m.lower_is_better ? "lower is better" : "higher is better"}>
+                  <Tooltip
+                    title={
+                      (m.lower_is_better ? "lower is better" : "higher is better") +
+                      (m.setup_bound ? " · bound by connection setup (DNS/TCP/TLS on each origin's first fetch)" : "")
+                    }
+                  >
                     <span>
                       {m.label}
                       {m.scored ? "" : " ·"}
+                      {m.setup_bound ? " ⌁" : ""}
                     </span>
                   </Tooltip>
                 </TableCell>
                 <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
                   {fmtValue(c ? c.away : run.metrics[m.key], m.unit)}
                 </TableCell>
-                <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", ...dim }}>
                   {c ? fmtValue(c.home_median, m.unit) : "—"}
                 </TableCell>
-                <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", color: "text.secondary" }}>
+                <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", color: "text.secondary", ...dim }}>
                   {c ? `${fmtValue(c.home_p25, m.unit)} – ${fmtValue(c.home_p75, m.unit)}` : "—"}
                 </TableCell>
                 <TableCell align="right">
-                  {c ? (
+                  {greyed ? (
+                    <Tooltip title="Not compared: the two sides opened their connections differently (warm tab vs cold context, or different transports), and this row is mostly that difference.">
+                      <Chip size="small" variant="outlined" label="not comparable" sx={{ opacity: 0.7 }} />
+                    </Tooltip>
+                  ) : c ? (
                     <Chip size="small" color={verdictColor(c.verdict)} variant={c.verdict === "within" ? "outlined" : "filled"} label={fmtDelta(c, m.unit)} />
                   ) : (
                     "—"
@@ -271,7 +297,8 @@ function MetricTable({ run, cmp, meta }: { run: PortableRun; cmp: PortableRefere
       </Table>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
         "vs home" is read against home's own run-to-run spread: inside the IQR is <em>within</em> what home does
-        itself; past its worse edge is <em>worse</em>. Metrics marked · are shown but not scored.
+        itself; past its worse edge is <em>worse</em>. Metrics marked · are shown but not scored; ⌁ marks a row
+        bound by connection setup, compared only when both sides opened their connections the same way.
       </Typography>
     </Box>
   );

@@ -45,12 +45,13 @@ def _entry(start: float, end: float, *, new_conn: bool, tao: bool = True) -> dic
 
 
 def make_raw(ends: dict[str, float] | None = None, *, fail: set[str] = frozenset(), iterations: int = 1,
-             rtt: list[float] | None = None, stream_ms: float = 500.0) -> dict:
-    """One raw document. ``ends`` = completion time per resource id (ms from t0=1000)."""
+             rtt: list[float] | None = None, stream_ms: float = 500.0, warm: bool = False) -> dict:
+    """One raw document. ``ends`` = completion time per resource id (ms from t0=1000). ``warm``
+    reuses a connection for every resource (a long-lived tab); the default opens one per origin."""
     ends = ends or {"doc": 80, "font": 160, "lib": 220, "hero": 700, "data": 420}
     its = []
     for _ in range(iterations):
-        seen_origins: set[str] = set()
+        seen_origins: set[str] = set(o.split("/")[2] for _r, o, _b, _a in RECIPE) if warm else set()
         resources = []
         for rid, url, nbytes, after in RECIPE:
             origin = url.split("/")[2]
@@ -441,8 +442,12 @@ def test_portable_plugin_registered_and_derives_one_iteration():
     p = get_plugin("portable")
     assert p is not None and p.name == "portable"
     it = make_raw()["iterations"][0]
-    m = _derive("portable", {"iteration": it, "instrument_version": VERSION, "client": {}})
+    # The plugin's raw now carries the phone's whole sequence (a list); the older single
+    # ``iteration`` shape still derives, so history filed before the change keeps working.
+    m = _derive("portable", {"iterations": [it, it], "instrument_version": VERSION, "client": {}})
     assert m["first_complete_ms"] == 80.0 and m["rtt_ms"] == 20.5
+    legacy = _derive("portable", {"iteration": it, "instrument_version": VERSION, "client": {}})
+    assert legacy["first_complete_ms"] == 80.0
     assert _derive("portable", {"nope": 1}) == {}
 
 
@@ -473,7 +478,10 @@ def test_portable_plugin_runs_one_iteration_through_the_page(monkeypatch):
         def evaluate(self, expr, arg=None):
             if "runOne" in expr:
                 assert arg and arg["resources"], "the recipe body is handed to the page"
-                return it
+                # The page's `run` — the phone's full sequence — is preferred; `runOne` is the
+                # fallback for an older bundle. The plugin asks for either in one expression.
+                assert "__pathbrainPortable.run " in expr or "__pathbrainPortable.run|" in expr.replace(" ", "")
+                return {"iterations": [it, it]}
             return {"user_agent": "HeadlessChrome"}
 
     class FakeContext:
@@ -493,9 +501,10 @@ def test_portable_plugin_runs_one_iteration_through_the_page(monkeypatch):
     monkeypatch.setattr(get_plugin("browser"), "borrow_browser", lambda cfg=None: FakeBrowser())
     r = get_plugin("portable").run({"self_url": "http://pathbrain.test"})
     assert r.success, r.error
-    assert r.raw["instrument_version"] == VERSION and r.raw["iteration"] is it
+    assert r.raw["instrument_version"] == VERSION and r.raw["iterations"] == [it, it]
     assert r.raw["client"]["device"] == portable.SERVER_DEVICE_ID
     assert r.details["resources"] == 5 and r.details["rtt_samples"] == 8
+    assert r.details["iterations"] == 2 and r.details["warm_up"] == "run"
     assert calls[0] == "goto http://pathbrain.test/away?embedded=1" and FakeContext.closed
 
 
@@ -671,3 +680,129 @@ def test_the_home_endpoint_carries_the_suggestion(client, clean):
     # An address nobody has labelled leaves the field empty rather than guessing.
     other = client.get("/api/portable/home?egress_ip=104.16.132.229").json()
     assert other["venue"] is None
+
+
+# ── warmth: the same instrument at the same warmth, or say so ────────────────
+
+
+def test_warmth_reads_reused_share_and_transport_off_the_entries():
+    from pathbrain.interpret.portable import warmth
+
+    cold = warmth(make_raw())
+    origins = len({o.split("/")[2] for _r, o, _b, _a in RECIPE})
+    # One new connection per origin, the rest reused; every entry carries Timing-Allow-Origin.
+    assert cold["tao_resources"] == len(RECIPE) and cold["reused"] == len(RECIPE) - origins
+    assert cold["reused_share"] == round((len(RECIPE) - origins) / len(RECIPE), 3) and cold["protocol"] == "h2"
+    warm = warmth(make_raw(warm=True))
+    assert warm["reused_share"] == 1.0
+    # Entries without TAO are unreadable and never counted either way.
+    raw = make_raw()
+    for r in raw["iterations"][0]["waterfall"]["resources"]:
+        r["entry"] = _entry(r["t_start"], r["t_end"], new_conn=True, tao=False)
+    assert warmth(raw)["tao_resources"] == 0 and warmth(raw)["reused_share"] is None
+    # Stored with the coverage, so it rides on the row without a migration.
+    assert derive_portable(make_raw())["coverage"]["warmth"]["protocol"] == "h2"
+
+
+def test_client_family_tells_engines_apart():
+    fam = portable.client_family
+    assert fam({"device": portable.SERVER_DEVICE_ID, "user_agent": "Mozilla/5.0 Chrome/128"}) == {"family": "PathBrain Chromium", "engine": "Blink"}
+    assert fam({"user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) AppleWebKit/605 Version/17.0 Mobile/15E148 Safari/604.1"}) == {"family": "Safari", "engine": "WebKit"}
+    assert fam({"user_agent": "Mozilla/5.0 (iPhone) AppleWebKit/605 CriOS/128 Mobile Safari/604.1"}) == {"family": "Chrome", "engine": "WebKit"}
+    assert fam({"user_agent": "Mozilla/5.0 (Linux; Android 14) Chrome/128 Mobile Safari/537.36"}) == {"family": "Chrome", "engine": "Blink"}
+    assert fam({"user_agent": "Mozilla/5.0 HeadlessChrome/120"})["family"] == "Chromium (headless)"
+    assert fam({})["engine"] == "unknown"
+
+
+def test_setup_bound_rows_are_not_compared_across_a_warmth_gap(clean):
+    """A phone's warm tab against a cold reference reads as the phone "beating" the wire on
+    every setup-bound row by exactly the handshake cost. The rows stay; the verdict does not."""
+    when = datetime(2026, 3, 3, 10, 0, tzinfo=timezone.utc)
+    for i in range(3):
+        _store("phone", home=True, when=when - timedelta(days=i))  # cold: one new connection per origin
+    warm_run = _store("phone", home=True, when=when, **{})
+    with session_scope() as s:
+        run = s.get(PortableRun, warm_run)
+        run.raw = make_raw(warm=True)
+        d = derive_portable(run.raw)
+        run.metrics, run.per_origin, run.coverage = d["metrics"], d["per_origin"], d["coverage"]
+    out = _compare(warm_run)["references"]["device"]
+    assert out["available"]
+    w = out["provenance"]["warmth"]
+    assert w["away"]["reused_share"] == 1.0 and w["home"]["reused_share"] < 0.7 and w["comparable"] is False
+    assert "paying handshakes" in w["note"]
+    for key in portable.SETUP_BOUND:
+        if key in out["metrics"]:
+            assert out["metrics"][key]["setup_bound"] is True and out["metrics"][key]["comparable"] is False
+            assert out["metrics"][key]["verdict"] == "incomparable"
+    assert out["metrics"]["rtt_ms"].get("setup_bound") is None and out["metrics"]["rtt_ms"]["verdict"] in {"within", "better", "worse"}
+    assert out["score"]["comparable"] is False
+    # Same warmth on both sides: everything compares, and the note says so by being absent.
+    cold_run = _store("phone", home=True, when=when + timedelta(hours=1))
+    out = _compare(cold_run)["references"]["device"]
+    assert out["provenance"]["warmth"]["comparable"] is True and out["provenance"]["warmth"]["note"] is None
+    assert out["metrics"]["first_complete_ms"]["comparable"] is True and out["score"]["comparable"] is True
+
+
+def test_stream_time_per_mb_is_shown_but_no_longer_scored():
+    assert "stream_ms_per_mb" not in portable.PORTABLE_RUBRIC
+    cat = {m["key"]: m for m in portable.metric_catalog()}
+    assert cat["stream_ms_per_mb"]["scored"] is False and cat["first_complete_ms"]["setup_bound"] is True
+    assert cat["rtt_ms"]["setup_bound"] is False
+
+
+# ── the per-profile phone standing ───────────────────────────────────────────
+
+
+def test_profile_standings_rank_each_devices_profiles_and_check_the_crown(clean, monkeypatch):
+    from pathbrain import crown_follower
+
+    when = datetime(2026, 3, 3, 10, 0, tzinfo=timezone.utc)
+    fast = {"doc": 60, "font": 120, "lib": 170, "hero": 500, "data": 300}
+    slow = {"doc": 160, "font": 300, "lib": 420, "hero": 1400, "data": 900}
+    for i in range(4):
+        _store("phone", home=True, when=when - timedelta(hours=i), fp="fp-a", ends=fast)
+        _store("phone", home=True, when=when - timedelta(hours=i), fp="fp-b", ends=slow)
+    _store("phone", home=True, when=when, fp="fp-c", ends=fast)  # thin
+    for i in range(3):
+        _store(portable.SERVER_DEVICE_ID, home=True, when=when - timedelta(hours=i), fp="fp-b", ends=fast)
+    cfg = {"portable": {"min_home_runs": 3}}
+
+    monkeypatch.setattr(crown_follower, "current_crown", lambda session: None)
+    with session_scope() as s:
+        out = portable.profile_standings(s, cfg)
+    assert out["min_home_runs"] == 3 and out["crown"] is None
+    phone = next(d for d in out["devices"] if d["device_id"] == "phone")
+    assert out["devices"][0]["device_id"] == "phone" and out["devices"][-1]["is_server"] is True
+    ranks = {p["fingerprint"]: p["rank"] for p in phone["profiles"]}
+    assert ranks["fp-a"] == 1 and ranks["fp-b"] == 2 and ranks["fp-c"] is None  # thin: shown, unranked
+    a = next(p for p in phone["profiles"] if p["fingerprint"] == "fp-a")
+    assert a["runs"] == 4 and a["confident"] and a["score"] > next(p for p in phone["profiles"] if p["fingerprint"] == "fp-b")["score"]
+    assert a["name"]  # call signs resolve
+    assert phone["best"]["fingerprint"] == "fp-a" and "no pooled crown" in phone["agreement"]["verdict"]
+
+    # The crown is the device's #2: disagreement, with the crown's rank on the device named.
+    monkeypatch.setattr(crown_follower, "current_crown", lambda session: {"fingerprint": "fp-b", "label": "B"})
+    with session_scope() as s:
+        out = portable.profile_standings(s, cfg, device_id="phone")
+    phone = out["devices"][0]
+    assert out["crown"]["fingerprint"] == "fp-b" and phone["agreement"]["agree"] is False
+    assert phone["agreement"]["crown_rank_on_device"] == 2 and "disagrees" in phone["agreement"]["verdict"]
+    assert next(p for p in phone["profiles"] if p["is_crown"])["fingerprint"] == "fp-b"
+
+    # The crown is the device's #1: agreement.
+    monkeypatch.setattr(crown_follower, "current_crown", lambda session: {"fingerprint": "fp-a", "label": "A"})
+    with session_scope() as s:
+        out = portable.profile_standings(s, cfg, device_id="phone")
+    assert out["devices"][0]["agreement"]["agree"] is True and "agrees" in out["devices"][0]["agreement"]["verdict"]
+
+    # A crown the device has never measured: said outright, never guessed.
+    monkeypatch.setattr(crown_follower, "current_crown", lambda session: {"fingerprint": "fp-zzz", "label": "Z"})
+    with session_scope() as s:
+        out = portable.profile_standings(s, cfg, device_id="phone")
+    assert "has not measured the crown" in out["devices"][0]["agreement"]["verdict"]
+
+
+def test_standings_endpoint(client, clean):
+    body = client.get("/api/portable/standings").json()
+    assert body["devices"] == [] and body["min_home_runs"] == 5 and "instrument_version" in body

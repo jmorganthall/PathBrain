@@ -72,6 +72,7 @@ import type {
   DuelWeatherDistance,
   CrownsOut,
   Job,
+  PortableStandings,
 } from "../api/types";
 import { Countdown, JobProgressBar, useSmoothProgress } from "../components/JobStatus";
 import { fmtDateTime, fmtNum } from "../utils/format";
@@ -2714,6 +2715,9 @@ export default function Duels() {
         </CardContent>
       </Card>
 
+      {/* ── The mission's own check: what each device measured at home per profile ── */}
+      <PhoneStanding />
+
       {/* ── Head-to-head grid ────────────────────────────────────────────────────── */}
       {hasGrid && (
         <FoldCard
@@ -3046,5 +3050,125 @@ export default function Duels() {
       />
       {queue.dialog}
     </Box>
+  );
+}
+
+
+/** The mission's own check on the crown. The crown is ranked by a wired headless Chromium;
+ * the person feels the Internet on a warm browser on Wi-Fi. Every home run a phone uploads
+ * from the Away test is stamped with the profile the firewall was on, so per device, per
+ * profile, the phone's own readings have been accruing all along — this reads them, ranks
+ * the profiles by the device's portable score, and says whether the device agrees with the
+ * crown. Agreement is about ranking: the portable score is the device's own instrument, never
+ * the Overall. Read-only; nothing here touches the ladder or the pooled record. */
+function PhoneStanding() {
+  const [data, setData] = useState<PortableStandings | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    api
+      .portableStandings()
+      .then(setData)
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  }, []);
+  const phones = (data?.devices ?? []).filter((d) => !d.is_server);
+  const server = (data?.devices ?? []).find((d) => d.is_server) ?? null;
+  const shown = [...phones, ...(server ? [server] : [])];
+  const hasPhoneData = phones.some((d) => d.confident_profiles > 0);
+  return (
+    <FoldCard
+      title="What your phone measured"
+      summary="Per device, per profile: the Away test's own readings at home, ranked — and whether the device agrees with the crown."
+      openWhen={hasPhoneData}
+    >
+      <Stack spacing={1.5}>
+        <Typography variant="body2" color="text.secondary">
+          The crown is ranked by PathBrain's wired headless Chromium. The person feels the Internet on a warm browser
+          on Wi-Fi. Every home run a phone uploads is stamped with the profile the firewall was on, so this is the
+          mission's own check: does the device in your hand rank the profiles the way the crown does? Run the Away test
+          at home under different profiles (at least {data?.min_home_runs ?? 5} runs each) and the answer fills in.
+        </Typography>
+        {err && <Alert severity="warning">Could not load the phone standing: {err}</Alert>}
+        {data && shown.length === 0 && (
+          <Alert severity="info">
+            No home runs on the current test version yet. Open the Away test on a phone at home and run it a few times.
+          </Alert>
+        )}
+        {shown.map((d) => (
+          <Box key={d.device_id}>
+            <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+              {d.device_label ?? d.device_id}
+              {d.is_server ? " · PathBrain's own wired Chromium" : ""} · {d.runs} home run{d.runs === 1 ? "" : "s"}
+            </Typography>
+            <Alert
+              severity={
+                d.confident_profiles === 0
+                  ? "info"
+                  : d.agreement.agree
+                    ? "success"
+                    : d.agreement.crown_rank_on_device == null
+                      ? "info"
+                      : "warning"
+              }
+              variant="outlined"
+              sx={{ mb: 1 }}
+            >
+              {d.agreement.verdict}
+            </Alert>
+            {d.profiles.length > 0 && (
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>#</TableCell>
+                      <TableCell>Profile</TableCell>
+                      <TableCell align="right">Runs</TableCell>
+                      <TableCell align="right">
+                        <Tooltip title="This device's portable score under the profile: median, with the IQR beneath. Its own instrument — not the Overall.">
+                          <span>Score here</span>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell align="right">
+                        <Tooltip title="The pooled Overall the crown is ranked on, for the same profile.">
+                          <span>Pooled Overall</span>
+                        </Tooltip>
+                      </TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {d.profiles.map((pr) => (
+                      <TableRow key={pr.fingerprint} hover sx={{ opacity: pr.confident ? 1 : 0.55 }}>
+                        <TableCell>{pr.rank ?? "—"}</TableCell>
+                        <TableCell>
+                          <Tooltip title={pr.summary ?? pr.fingerprint}>
+                            <span>{pr.name ?? pr.fingerprint.slice(0, 8)}</span>
+                          </Tooltip>
+                          {pr.is_crown && <Chip size="small" label="crown" color="primary" variant="outlined" sx={{ ml: 0.5 }} />}
+                          {!pr.confident && (
+                            <Chip size="small" label={`${pr.runs}/${data?.min_home_runs ?? 5}`} variant="outlined" sx={{ ml: 0.5 }} />
+                          )}
+                        </TableCell>
+                        <TableCell align="right">{pr.runs}</TableCell>
+                        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                          {pr.score != null ? pr.score.toFixed(1) : "—"}
+                          {pr.score_p25 != null && pr.score_p75 != null && (
+                            <Typography variant="caption" color="text.secondary" display="block">
+                              {pr.score_p25.toFixed(1)}–{pr.score_p75.toFixed(1)}
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                          {pr.pooled_overall != null ? pr.pooled_overall.toFixed(1) : "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+          </Box>
+        ))}
+        {data && <Typography variant="caption" color="text.secondary">{data.note}</Typography>}
+      </Stack>
+    </FoldCard>
   );
 }

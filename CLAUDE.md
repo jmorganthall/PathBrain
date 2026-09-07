@@ -782,7 +782,36 @@ LLM-based. See `README.md` for the product overview.
     home. It is a *different device* (wired, always Chromium) and is labelled so: the readout
     prefers the same-device reference once the phone has enough home runs (it removes the
     device difference), shows PathBrain's beside it, and says to expect a few ms better round
-    trip and jitter on the wired side. The plugin fetches the recipe from its own API first, so
+    trip and jitter on the wired side. **The plugin runs the phone's exact sequence**
+    (`window.__pathbrainPortable.run` = `runPortableTest`: a warm-up fetch, then the recipe's
+    iterations in one page; `runOne` is the fallback for an older bundle; raw carries
+    `iterations: [...]`, the legacy single `iteration` still derives). It used to run one cold
+    iteration in a fresh browser context per call, and the first real cross-device reading
+    showed a phone at home "beating" the wire by 36–65% on first/largest/waterfall complete
+    while losing on round trip and jitter exactly as Wi-Fi predicts — the lead was the
+    handshake cost (DNS+TCP+TLS on every origin, chained), because a phone's long-lived tab
+    holds warm sockets to the recipe's origins from ordinary use and a fresh context pays
+    every one. **Warmth is stamped on every run** (`interpret/portable.warmth`, in
+    `coverage.warmth`: the reused-connection share over the Timing-Allow-Origin entries — a
+    reused socket reports `connectEnd <= connectStart`, never a 0 ms handshake — and the
+    `nextHopProtocol` mix; `portable.client_family` adds the browser family/engine from the
+    recorded client), and `warmth_compare` decides per reference whether the **setup-bound**
+    rows (`SETUP_BOUND`: first/largest/waterfall complete, byte earliness) may be compared:
+    not when either side is unstamped, when the reused shares differ by more than
+    `WARMTH_TOLERANCE`, or when the transports differ (h3 and h2 account for a handshake
+    differently). The rows keep their numbers and read `incomparable`; the page greys them and
+    says why. `stream_ms_per_mb` is **no longer scored** (a CPU reading at these link speeds:
+    the chunk-reader loop, not the shaper). **The per-profile phone standing**
+    (`portable.profile_standings`, `GET /api/portable/standings`, the **"What your phone
+    measured"** card on the Dueling Champions page) is the mission's own check on the crown:
+    every home run a phone uploads is stamped with the live profile, so per device, per
+    profile, the device's own readings have been accruing all along — ranked by the device's
+    portable score among profiles with ≥ `portable.min_home_runs` runs, beside the pooled
+    Overall, with the crown's rank on that device, Spearman ρ across the profiles both have,
+    and a verdict sentence (agrees / disagrees with the IQRs read / crown not yet measured /
+    too thin). Agreement is about *ranking*: the portable score is the device's own
+    instrument, never the Overall, and nothing here reaches the crown. The plugin fetches
+    the recipe from its own API first, so
     an unreachable server (the test suite) is a fast failure with no Chromium launched;
     `portable.enabled: false` leaves it out of runs (the runner treats `enabled: false` like
     `skip`), and `portable.iterations` caps it like the browser's cap (one portable iteration
