@@ -420,6 +420,36 @@ METRICS: list[MetricDef] = [
             "diagnostic (filmstrip only); the scored stall signal is now longest_stall. Lower is better."
         ),
     ),
+    # ── The repeat visit (display-only; `browser.warm_loads`) ──
+    # The crown grades a FIRST visit: a fresh context, every handshake paid. Most of a
+    # person's clicks are not that — a site's next page reuses its connections — so each
+    # page is loaded once more in the same context with the cache disabled (warm sockets,
+    # every byte fetched) and read with the same derivations. Recorded beside the cold
+    # reading, never in its place: the Methodology page's "Cold vs warm crown" card says
+    # whether the two rank the profiles alike, and a methodology can adopt warm legs later.
+    MetricDef(
+        "warm_fcp", "browser", "warm_fcp_ms", "FCP (warm)", unit="ms",
+        description="First Contentful Paint on the repeat visit — warm connections, cache disabled. Lower is better.",
+    ),
+    MetricDef(
+        "warm_lcp", "browser", "warm_lcp_ms", "LCP (warm)", unit="ms",
+        description="Largest Contentful Paint on the repeat visit — warm connections, cache disabled. Lower is better.",
+    ),
+    MetricDef(
+        "warm_network_stall_all", "browser", "warm_network_stall_all_ms", "Network stall, all (warm)", unit="ms",
+        description=(
+            "Floor-free network-attributed dead-air on the repeat visit: the resource-handoff gaps "
+            "left once the handshakes are gone. Lower is better."
+        ),
+    ),
+    MetricDef(
+        "warm_load_event", "browser", "warm_load_event_ms", "Page load (warm)", unit="ms",
+        description="loadEventEnd on the repeat visit. Lower is better.",
+    ),
+    MetricDef(
+        "warm_nav_render", "browser", "warm_nav_render_ms", "Client render (warm)", unit="ms",
+        description="responseEnd → first paint on the repeat visit — parse and layout, client-side. Lower is better.",
+    ),
 ]
 
 
@@ -484,6 +514,9 @@ METRIC_ROLES: dict[str, str] = {
     "speed_index": ROLE_COMPOSITE, "paint_cadence": ROLE_COMPOSITE,
     "nav_fcp_lcp": ROLE_COMPOSITE, "nav_lcp_load": ROLE_COMPOSITE,
     "nav_fcp_after_ttfb": ROLE_COMPOSITE, "nav_lcp_after_ttfb": ROLE_COMPOSITE,
+    # The repeat-visit readings bucket exactly as their cold counterparts do.
+    "warm_fcp": ROLE_COMPOSITE, "warm_lcp": ROLE_COMPOSITE, "warm_load_event": ROLE_COMPOSITE,
+    "warm_network_stall_all": ROLE_SHAPE, "warm_nav_render": ROLE_CLIENT,
 }
 
 

@@ -512,6 +512,33 @@ LLM-based. See `README.md` for the product overview.
     JSON paths — never a materialized `Run`+`BenchmarkResult` scan like `drift.py`'s all-history
     campaign reading, which answers a different question (is a metric time-stationary enough to rank
     raw?) and is fine to be slow. Read-only; nothing here changes a score.
+  - `warm_agreement.py` + **the repeat-visit load** (`browser.warm_loads`, default on). The
+    crown grades a **first visit**: a fresh browser context per page, every handshake paid.
+    Most of a person's clicks are not that — a site's next page reuses its connections, a
+    resumed TLS/QUIC session skips the round trips — and the mission is how the Internet
+    *feels* on those clicks. So after the cold load of each page the browser plugin loads it
+    once more in the **same context with the HTTP cache disabled** (`Network.setCacheDisabled`
+    over CDP: warm sockets, every byte still fetched), reads it with the same `_read_timing`
+    (one function, so cold and warm are read identically) and files it in raw as `warm`
+    beside the cold observation; `_derive_browser` derives it with the same functions under
+    `warm_*` (**omitted, never defaulted**, when absent or failed), and five of those are
+    registry metrics, display-only, bucketed like their cold twins (`warm_fcp`/`warm_lcp`/
+    `warm_load_event` O, `warm_network_stall_all` S, `warm_nav_render` C). `derive-v15` is
+    purely additive; old raw has no warm block, so re-deriving changes nothing. Nothing graded
+    moves. The plugin times it as its own phase (`warm_ms`, the drift audit's
+    `phase_warm_ms`), since it roughly doubles a browser iteration's page loads. **Whether the
+    crown should ever read them is an empirical question, and `GET
+    /api/methodologies/warm-agreement` (the "Cold vs warm crown" card on the Methodology
+    page) answers it**: every profile with ≥ `min_runs` runs carrying both readings is ranked
+    by a cold and a warm Overall built from the methodology's **own** crown metrics,
+    thresholds and weights (`overall_from_definition` with each leg's warm median substituted
+    — the same yardstick, so the rankings differ only in what was measured; medians over the
+    same runs, so the comparison is paired), and the readout is the Spearman ρ, the #1 on
+    each, and the crown's rank on each: `agree` (the cold crown stands for the warm case, no
+    change indicated), `same_top` (the crown holds, the ladder under it doesn't), `disagree`
+    (on the repeat visit the crown is not the best-feeling profile — the measured reason to
+    publish a version that adopts the warm legs), `insufficient`. Read-only; the decision it
+    informs is a publish, made elsewhere.
   - `jobs.py` — in-process background-job registry (progress/status/recent history).
     The heavy score passes (`/api/score/regrade|rescore|rederive`) run as jobs and
     return `202 {job_id}`; `/api/jobs` (`api/routes_jobs.py`) merges them with read-only

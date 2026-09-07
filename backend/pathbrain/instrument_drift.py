@@ -103,6 +103,7 @@ QUANTITIES: dict[str, dict] = {
     "phase_goto_ms": {"label": "Navigation (open → load)", "unit": "ms", "floor": 200.0, "family": "phase"},
     "phase_idle_ms": {"label": "Idle wait (measured)", "unit": "ms", "floor": 200.0, "family": "phase"},
     "phase_reads_ms": {"label": "Timing reads + interaction", "unit": "ms", "floor": 200.0, "family": "phase"},
+    "phase_warm_ms": {"label": "Warm repeat load", "unit": "ms", "floor": 200.0, "family": "phase"},
     "phase_close_ms": {"label": "Context close", "unit": "ms", "floor": 200.0, "family": "phase"},
     "page_clock_ms": {"label": "Page load, own clock", "unit": "ms", "floor": 100.0, "family": "page"},
     "nav_render_ms": {"label": "Render to first paint", "unit": "ms", "floor": 20.0, "family": "client"},
@@ -119,7 +120,7 @@ CLIENT_KEYS = ("nav_render_ms", "inp_ms", "cls")
 CROWN_KEYS = ("fcp_ms", "lcp_ms", "network_stall_all_ms")
 # A step in any of these is a step in what the crown reads — the instrument, not the schedule.
 INSTRUMENT_KEYS = CLIENT_KEYS + CROWN_KEYS + ("page_clock_ms", "nav_network_ms")
-PHASE_KEYS = ("context_ms", "goto_ms", "idle_ms", "reads_ms", "close_ms")
+PHASE_KEYS = ("context_ms", "goto_ms", "idle_ms", "reads_ms", "warm_ms", "close_ms")
 _NAV_NETWORK = ("nav_dns_ms", "nav_tcp_ms", "nav_tls_ms", "nav_request_ms", "nav_response_ms")
 UNRECORDED_CLIENT = "unrecorded (before the client was stamped)"
 
@@ -760,9 +761,10 @@ def assess(
         found.append({
             "key": "derivation", "severity": "warn",
             "text": (
-                f"{stale_derivations} run(s) in the window carry metrics derived under an older formula than the "
-                f"current {DERIVATION_VERSION}. Their stored values are not like-for-like with the rest — re-derive "
-                "history (Methodology page) before trusting a cross-window comparison."
+                f"{stale_derivations} run(s) in the window carry metrics derived under an older version than the "
+                f"current {DERIVATION_VERSION}. If the newer version only added metrics (the usual case), nothing "
+                "is wrong; if it changed a formula, re-derive history (Methodology page) before trusting a "
+                "cross-window comparison."
             ),
         })
     return {

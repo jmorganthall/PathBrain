@@ -48,7 +48,7 @@ from .waterfall import navigation_phases
 # measurements (the crowned profile dropping in rank once fresh, attributable runs arrived). They're
 # now omitted, so `comparability` quarantines those runs as incomparable instead of scoring them
 # wrong. A formula/emission change → re-derive from raw to drop the bogus zeros from history.
-DERIVATION_VERSION = "derive-v14"
+DERIVATION_VERSION = "derive-v15"  # + warm_* (repeat-visit) browser metrics; purely additive
 
 
 def _round(v: float | None, n: int = 3) -> float | None:
@@ -214,6 +214,21 @@ def _derive_browser(raw: dict, artifact_dir: str | None) -> dict:
         # Navigation-timing waterfall: additive, independent phase durations + the
         # network-independent paint roll-ups, from the raw nav marks + FCP/LCP.
         m.update(navigation_phases(u.get("nav"), paint))
+        # The repeat-visit load (``warm``: same page, same context, cache disabled — warm
+        # sockets, every byte fetched), read with the same derivations and filed under
+        # ``warm_*`` beside the cold reading. Omitted, never defaulted, when the plugin did
+        # not take it or it failed: an absent warm reading is absent.
+        w = u.get("warm")
+        if isinstance(w, dict) and "nav" in w and not w.get("error"):
+            wm: dict[str, float | None] = {}
+            wm.update(compute_navigation_metrics(w.get("nav")))
+            wm.update(extract_paint_metrics(w.get("paint")))
+            wm["total_render_ms"] = w.get("total_render_ms")
+            w_paint = w.get("paint") or {}
+            wm.update(smoothness_metrics(w.get("nav"), w.get("resources"), w_paint, w.get("loaf")))
+            wm.update(navigation_phases(w.get("nav"), w_paint))
+            for k, v in wm.items():
+                m[f"warm_{k}"] = v
         for k, v in m.items():
             if v is not None:
                 acc[k].append(float(v))
