@@ -164,8 +164,24 @@ def upcoming(config: dict, monitoring_next: str | None = None, monitoring_enable
     return out
 
 
+#: Sources that are a routine cadence rather than an event. They stay in ``upcoming`` (the
+#: hover list is the whole schedule) but never become ``next``: the Dashboard's Monitoring
+#: tile already says when the next monitoring run is due, so a "Next scheduled" that named it
+#: too was the same fact twice and hid the answer the tile exists for — the overnight duel,
+#: the baseline test, the experiment window: the things that change what the platform is
+#: doing for hours.
+ROUTINE_KINDS = frozenset({"monitoring"})
+
+
 def status(config: dict, monitoring: dict | None = None) -> dict:
-    """``{next, upcoming}`` — the whole schedule, and the one thing happening soonest."""
+    """``{next, upcoming}`` — the whole schedule, and the one *event* happening soonest.
+
+    ``next`` is the soonest clocked entry outside ``ROUTINE_KINDS``; ``None`` when nothing
+    but routine work (or nothing at all) has a time. A cadence source with no clock (a
+    continuous duel, the crown-follow backstop) is never ``next`` either — it starts
+    whenever the pipeline is free, and naming an hour would be inventing one — but it is in
+    ``upcoming`` marked enabled, so the tile can say it is armed.
+    """
     monitoring = monitoring or {}
     items = upcoming(
         config,
@@ -173,7 +189,7 @@ def status(config: dict, monitoring: dict | None = None) -> dict:
         monitoring_enabled=bool(monitoring.get("enabled")),
         monitoring_interval=monitoring.get("interval_minutes"),
     )
-    nxt = next((e for e in items if e["at"]), None)
+    nxt = next((e for e in items if e["at"] and e["kind"] not in ROUTINE_KINDS), None)
     return {"next": nxt, "upcoming": items}
 
 

@@ -44,16 +44,26 @@ def test_a_daily_schedule_is_converted_from_its_own_zone_exactly_once():
     assert at > datetime.now(timezone.utc)           # and always in the future
 
 
-def test_the_soonest_armed_schedule_is_the_next_one():
+def test_the_soonest_armed_event_is_the_next_one_and_monitoring_never_is():
+    """The Monitoring tile already says when the next monitoring run is due; "Next
+    scheduled" naming it too was the same fact twice, hiding the overnight work the tile
+    exists to announce. So a monitoring run five minutes out is listed but never ``next``."""
     now = datetime.now(timezone.utc)
     soon = (now + timedelta(minutes=5)).isoformat()
     out = schedule.status(_armed(), {"enabled": True, "interval_minutes": 15, "next_run_at": soon})
-    assert out["next"]["kind"] == "monitoring"
+    assert out["next"]["kind"] in {"duel", "baseline_test", "experiment"}
+    monitoring = next(e for e in out["upcoming"] if e["kind"] == "monitoring")
+    assert monitoring["enabled"] is True and monitoring["at"] == soon  # still listed, still timed
 
-    # With monitoring off, the next thing is whichever clock comes first — not "nothing".
+    # With monitoring off the answer is the same: whichever event clock comes first.
     out = schedule.status(_armed(), {"enabled": False, "interval_minutes": 15, "next_run_at": None})
     assert out["next"] is not None and out["next"]["kind"] in {"duel", "baseline_test", "experiment"}
     assert out["next"]["at"] is not None
+
+    # Only routine work armed → no next event, but the cadence is still in the list.
+    out = schedule.status({}, {"enabled": True, "interval_minutes": 15, "next_run_at": soon})
+    assert out["next"] is None
+    assert any(e["kind"] == "monitoring" and e["enabled"] for e in out["upcoming"])
 
 
 def test_disarmed_schedules_are_listed_and_marked_never_dropped():

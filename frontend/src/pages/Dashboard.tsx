@@ -426,15 +426,22 @@ export default function Dashboard() {
   // opening at 03:00, a nightly baseline test or an armed experiment change what the
   // platform is doing for hours, and used to announce themselves only by taking the
   // pipeline — so "nothing is running" and "a duel opens in twenty minutes" read the same.
+  // The server's `next` already skips the monitoring cadence — the Monitoring tile beside
+  // this one says when that is due, and naming it here too hid the answer this tile exists
+  // for: the overnight duel, the baseline test, the experiment window.
   const nextJob = schedule?.next ?? null;
   const nextJobMs = nextJob?.at ? parseApiDate(nextJob.at).getTime() - Date.now() : null;
-  const armed = (schedule?.upcoming ?? []).filter((e) => e.enabled);
+  const armed = (schedule?.upcoming ?? []).filter((e) => e.enabled && e.kind !== "monitoring");
+  // Armed, but on a cadence rather than a clock (a continuous duel, the crown-follow
+  // backstop): there is no next time to name, and inventing one would be worse than saying
+  // so — but it IS the scheduled work, so name it rather than "on demand".
+  const cadence = armed.find((e) => !e.at) ?? null;
   const scheduleValue = !schedule
     ? "—"
     : nextJob
       ? nextJob.label
-      : armed.length > 0
-        ? "On demand"
+      : cadence
+        ? cadence.label
         : "Nothing armed";
   const scheduleCaption = !schedule
     ? "status unavailable"
@@ -442,16 +449,14 @@ export default function Dashboard() {
       ? nextJobMs > 0
         ? `in ${fmtDuration(nextJobMs)} · ${fmtDateTime(nextJob.at!)}`
         : "due now"
-      : armed.length > 0
-        // Armed, but on a cadence rather than a clock (continuous duel, crown follow) —
-        // there is no next time to name, and inventing one would be worse than saying so.
-        ? `${armed.length} armed · no fixed time`
-        : "no scheduled work — runs are manual";
-  const scheduleTone: Tone = !schedule ? "idle" : nextJob ? "good" : armed.length > 0 ? "info" : "warn";
+      : cadence
+        ? `${cadence.detail ?? "armed"} · no fixed time`
+        : "no overnight or scheduled work armed";
+  const scheduleTone: Tone = !schedule ? "idle" : nextJob ? "good" : cadence ? "info" : "warn";
   // Everything armed, and everything off, as one hover — so "why is nothing scheduled?" is
   // answerable without opening Config.
   const scheduleHelp = [
-    "Every scheduled source, not just monitoring: the monitoring cadence, the duel ladder, the nightly baseline test, the experiment window and the crown-follow check.",
+    "The next scheduled event beyond the monitoring cadence (that one has its own tile): the duel ladder, the nightly baseline test, the experiment window and the crown-follow check. Every source, armed or off:",
     ...(schedule?.upcoming ?? []).map((e) => {
       const when = e.at ? fmtDateTime(e.at) : e.enabled ? e.detail || "no fixed time" : "off";
       return `• ${e.label}: ${when}${e.at && e.detail ? ` (${e.detail})` : ""}`;
