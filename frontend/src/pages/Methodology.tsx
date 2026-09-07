@@ -856,10 +856,14 @@ function IdleWaitAudit() {
 
 const DRIFT_SEVERITY: Record<InstrumentDrift["verdict"], "error" | "warning" | "info" | "success"> = {
   instrument: "error",
+  pooled_instruments: "error",
+  unexplained_step: "warning",
   unattributed: "warning",
   overhead: "warning",
   idle: "warning",
+  browser_failed: "warning",
   network: "info",
+  published: "info",
   mix: "success",
   stable: "success",
   insufficient: "info",
@@ -867,6 +871,7 @@ const DRIFT_SEVERITY: Record<InstrumentDrift["verdict"], "error" | "warning" | "
 const FINDING_SEVERITY = { bad: "error", warn: "warning", info: "info", ok: "success" } as const;
 const DRIFT_FAMILIES: Array<[string, string]> = [
   ["wall", "Wall clock (nothing graded lives here)"],
+  ["phase", "Where a browser iteration goes (measured by the plugin, per iteration)"],
   ["page", "The page's own clock (the crown's window)"],
   ["client", "Client-side, shaping-immune (the instrument detector)"],
   ["network", "Network phases (the link / profile control)"],
@@ -887,6 +892,12 @@ const DRIFT_COLUMNS: Array<[string, string]> = [
   ["browser_share", "Browser/it."],
   ["pages", "Pages"],
 ];
+
+/** A methodology version, shortened to what distinguishes it: "v16" or "v16+sites-ab12". */
+function shortVersion(v: string | null | undefined): string {
+  if (!v) return "—";
+  return v.replace(/^speed-smoothness-/, "");
+}
 
 function fmtQuantity(unit: string, v: number | null | undefined): string {
   if (v == null) return "—";
@@ -962,20 +973,91 @@ function InstrumentDriftAudit({ autoRun }: { autoRun: boolean }) {
               <b>{audit.headline}</b>
               <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.5 }}>
                 {audit.window.runs} runs over {audit.window.days} days, by {audit.window.bucket}
+                {audit.scope?.within_version && audit.scope.methodology
+                  ? ` · trends over the ${audit.scope.runs} runs under ${shortVersion(audit.scope.methodology)}`
+                  : ""}
                 {audit.stale_derivations ? ` · ${audit.stale_derivations} stale-derivation run(s)` : ""}
                 {audit.leaked_processes ? ` · ${audit.leaked_processes} leaked browser process(es) right now` : ""}
               </Typography>
             </Alert>
-            {audit.findings.map((f) => (
-              <Alert key={f.key} severity={FINDING_SEVERITY[f.severity] ?? "info"} variant="outlined">
+            {audit.findings.map((f, i) => (
+              <Alert key={`${f.key}-${f.at ?? i}`} severity={FINDING_SEVERITY[f.severity] ?? "info"} variant="outlined">
                 {f.text}
               </Alert>
             ))}
-            <Typography variant="subtitle2">What moved across the window</Typography>
+            {audit.steps.length > 0 && (
+              <>
+                <Typography variant="subtitle2">Steps: the day something changed</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  The largest {audit.window.bucket}-over-{audit.window.bucket} change in each quantity, when it is a
+                  step (≥50%) rather than a wobble, with what else changed at that boundary. A step in a crown leg
+                  or the render phase is a change of <i>instrument</i>; whether that is fine depends on whether the
+                  version in force declares the client it was measured as.
+                </Typography>
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Day</TableCell>
+                        <TableCell>Quantity</TableCell>
+                        <TableCell align="right">Before → after</TableCell>
+                        <TableCell align="right">Step</TableCell>
+                        <TableCell>Version</TableCell>
+                        <TableCell>Client</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {audit.steps.map((st) => (
+                        <TableRow key={`${st.at}-${st.key}`} hover>
+                          <TableCell sx={{ whiteSpace: "nowrap", fontFamily: "monospace", fontSize: 12 }}>{st.at}</TableCell>
+                          <TableCell>
+                            {q[st.key]?.label ?? st.key}
+                            {q[st.key]?.family === "client" || q[st.key]?.family === "crown" || q[st.key]?.family === "page" ? (
+                              <Chip size="small" label="instrument" variant="outlined" sx={{ ml: 0.5 }} />
+                            ) : null}
+                          </TableCell>
+                          <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                            {fmtQuantity(q[st.key]?.unit ?? "", st.before)} → {fmtQuantity(q[st.key]?.unit ?? "", st.after)}
+                          </TableCell>
+                          <TableCell align="right">{st.shift_pct != null ? `${st.shift_pct > 0 ? "+" : ""}${st.shift_pct}%` : "—"}</TableCell>
+                          <TableCell sx={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>
+                            {st.version_changed ? `${shortVersion(st.version_from)} → ${shortVersion(st.version_to)}` : shortVersion(st.version_to)}
+                            {st.version_to && (
+                              <Chip
+                                size="small"
+                                variant="outlined"
+                                sx={{ ml: 0.5 }}
+                                label={audit.version_clients[st.version_to] ? "declares client" : "no client declared"}
+                                color={audit.version_clients[st.version_to] ? "default" : st.client_changed ? "error" : "default"}
+                              />
+                            )}
+                          </TableCell>
+                          <TableCell sx={{ fontSize: 12 }}>
+                            {st.client_changed ? (
+                              <Tooltip title={`${st.client_from ?? "—"} → ${st.client_to ?? "—"}`} arrow enterTouchDelay={0}>
+                                <Chip size="small" color="warning" variant="outlined" label="changed" />
+                              </Tooltip>
+                            ) : (
+                              <Tooltip title={st.client_to ?? "—"} arrow enterTouchDelay={0}>
+                                <span>same</span>
+                              </Tooltip>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </>
+            )}
+            <Typography variant="subtitle2">
+              What moved {audit.scope?.within_version && audit.scope.methodology ? `under ${shortVersion(audit.scope.methodology)}` : "across the window"}
+            </Typography>
             <Typography variant="caption" color="text.secondary">
-              Median of the first third → median of the last third. A row is flagged only when the rank
-              correlation with time is significant <i>and</i> the shift is material — a few hundred runs make a
-              1% wobble “significant”, and no grade notices 1%.
+              Median of the first third → median of the last third
+              {audit.scope?.within_version ? " of the runs under the version in force (a rubric change is not drift)" : ""}.
+              A row is flagged only when the rank correlation with time is significant <i>and</i> the shift is
+              material — a few hundred runs make a 1% wobble “significant”, and no grade notices 1%.
             </Typography>
             <TableContainer>
               <Table size="small">
@@ -1029,6 +1111,13 @@ function InstrumentDriftAudit({ autoRun }: { autoRun: boolean }) {
                   <TableRow>
                     <TableCell>{audit.window.bucket === "hour" ? "Hour (UTC)" : "Day (UTC)"}</TableCell>
                     <TableCell align="right">Runs</TableCell>
+                    <TableCell>Version</TableCell>
+                    <TableCell>Client</TableCell>
+                    <TableCell align="right">
+                      <Tooltip title="Share of runs whose browser had no successful iteration" arrow enterTouchDelay={0}>
+                        <span>Browser fail</span>
+                      </Tooltip>
+                    </TableCell>
                     {DRIFT_COLUMNS.map(([k, label]) => (
                       <TableCell key={k} align="right">
                         <Tooltip title={q[k]?.label ?? k} arrow enterTouchDelay={0}>
@@ -1052,6 +1141,27 @@ function InstrumentDriftAudit({ autoRun }: { autoRun: boolean }) {
                         >
                           <span>{c.runs}</span>
                         </Tooltip>
+                      </TableCell>
+                      <TableCell sx={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>
+                        <Tooltip
+                          title={Object.entries(c.methodology_versions).map(([v, n]) => `${v}: ${n}`).join(" · ")}
+                          arrow
+                          enterTouchDelay={0}
+                        >
+                          <span>{shortVersion(c.version)}</span>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                        <Tooltip
+                          title={Object.entries(c.clients).map(([v, n]) => `${v}: ${n}`).join(" · ") || "no browser rows"}
+                          arrow
+                          enterTouchDelay={0}
+                        >
+                          <span>{c.client ? c.client.split(" · ").slice(0, 2).join(" · ") : "—"}</span>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell align="right" sx={{ color: (c.browser_failed_share ?? 0) >= 0.5 ? "warning.main" : undefined }}>
+                        {c.browser_failed_share != null ? `${Math.round(c.browser_failed_share * 100)}%` : "—"}
                       </TableCell>
                       {DRIFT_COLUMNS.map(([k]) => (
                         <TableCell key={k} align="right" sx={{ whiteSpace: "nowrap" }}>

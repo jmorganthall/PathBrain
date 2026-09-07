@@ -339,6 +339,16 @@ def _aggregate(results: list[PluginResult]) -> dict:
     details["samples"] = len(successes)
     details["metric_stats"] = metric_stats
     details["iteration_metrics"] = [r.metrics for r in results]
+    # A plugin that times its own phases (the browser: context / goto / idle / reads / close
+    # per iteration) gets the median over iterations, like every other central value here.
+    phase_rows = [d["phases"] for d in ((r.details or {}) for r in successes) if isinstance(d.get("phases"), dict)]
+    if phase_rows:
+        keys = sorted({k for row in phase_rows for k in row})
+        details["phases"] = {
+            k: round(median(float(row[k]) for row in phase_rows if row.get(k) is not None), 3)
+            for k in keys
+            if any(row.get(k) is not None for row in phase_rows)
+        }
 
     return {
         "success": True,

@@ -474,15 +474,40 @@ LLM-based. See `README.md` for the product overview.
     by construction) as the detector against the **network phases** as the control. A quantity
     "drifts" only when its rank correlation with time is significant *and* the first-third →
     last-third median shift is material (`MATERIAL_SHIFT_PCT`, per-quantity floors): a few hundred
-    runs make a 1% wobble significant and no grade notices 1%. Verdicts, each a sentence with its
-    numbers in it: `instrument` (client readings rose → `grading_at_risk`), `network` (page clock +
-    network phases rose, render flat → the link/profile mix changed, instrument fine), `unattributed`
-    (page clock rose, neither explains it → the pages themselves changed; see the Data-integrity
-    card's collection shape), `overhead` / `idle` (runs longer outside page loads / in the settle —
-    ungraded, but the same machine), `mix` (suite iteration up, browser iteration flat → what an
-    iteration contains changed: `browser_share`, pages), `stable`. Beside the trends: the live
-    `browser_procs` snapshot (leaked trees are the usual live cause) and a count of runs in the
-    window derived under an older formula (not like-for-like until re-derived). **Bounded by the
+    runs make a 1% wobble significant and no grade notices 1%. **A step is not a drift, and a
+    thirds comparison hides one**: the audit's first real reading showed every page metric flat
+    for twelve days and then doubling in a day (the real-browser client taking effect, so every
+    site served the page it serves a person) while the diluted trend read "+6%". So trends are
+    computed **within the methodology version in force** (`scope`; what a rubric change is meant
+    to move is not drift), `steps()` names the largest day-over-day change per quantity
+    (`STEP_PCT`, both cohorts ≥ `STEP_MIN_RUNS`), and each step is read against what changed at
+    that boundary — the browser **client** each cohort measured as (`details.client` →
+    `client_label`: headless mode, viewport, Chromium major, UA kind, automation hiding) and
+    whether the version that took effect **declares** a client (`declared_clients` →
+    `definition_client_set`). That declaration is the fact that matters: a client change under a
+    version that declares it is `published` (earlier runs quarantined, fine); under one that
+    declares none — a code-shipped version carries the prior collection forward — it is
+    **`pooled_instruments`** (`grading_at_risk`: every profile measured before that day holds an
+    unearned lead; the fix is "Publish sites + client"); a version-only change is `published`
+    hedged; neither is `unexplained_step`. A step in a client-role or crown quantity **suppresses**
+    the trend readings it would otherwise trip (`instrument`, `network`, `unattributed`): the
+    step names the day and the cause, and a gradual host degradation shows no step, so it still
+    reaches `instrument`. Verdicts, each a sentence with its numbers in it:
+    `instrument` (client readings rose within the version → `grading_at_risk`), the boundary
+    verdicts above, `network` (page clock + network phases rose, render flat → the link/profile
+    mix changed, instrument fine), `unattributed` (page clock rose, neither explains it → the
+    pages themselves changed), then the wall-clock ones **ranked by seconds added to a browser
+    iteration** (`impact_ms` — the first reading headlined a +0.5 s idle wait over a +3.2 s
+    overhead because of check order): `overhead` / `idle` (ungraded, but the same machine) and
+    `mix` (suite iteration up, browser iteration flat → what an iteration contains changed),
+    plus `browser_failed` (days on which the median run had no successful browser iteration —
+    quarantined legs, thin verdicts) and `stable`. The browser plugin now times **each phase of a
+    page load** — context setup → navigation → idle wait → timing reads + interaction → close
+    (`_PHASE_KEYS`, per-URL in raw as `phases`, per-iteration totals in `details.phases`, the
+    median over iterations via `_aggregate`) — so "outside page loads" is attributable rather than
+    a residual (the `phase_*` quantities; the overhead finding names the phases that moved).
+    Beside the trends: the live `browser_procs` snapshot (leaked trees are the usual live cause)
+    and a count of runs in the window derived under an older formula. **Bounded by the
     question**: a window of days, sampled evenly (`_stride`) to `limit` runs, read as scalars through
     JSON paths — never a materialized `Run`+`BenchmarkResult` scan like `drift.py`'s all-history
     campaign reading, which answers a different question (is a metric time-stationary enough to rank
