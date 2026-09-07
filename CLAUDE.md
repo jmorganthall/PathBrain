@@ -246,7 +246,12 @@ LLM-based. See `README.md` for the product overview.
     hours away" are different answers, and a list that omits the first can't tell them apart),
     and a schedule that is a **cadence rather than a clock** (continuous duel, crown-follow)
     reports its interval with no time, because it starts whenever the pipeline is free and
-    naming an hour would be inventing one.
+    naming an hour would be inventing one. **`next` never names routine work**
+    (`ROUTINE_KINDS` = monitoring): the Monitoring tile beside it already says when that run
+    is due, and a "Next scheduled" that repeated it hid the answer the tile exists for — the
+    overnight duel, the baseline test, the experiment window. Monitoring stays in `upcoming`
+    (the hover is the whole schedule). With no clocked event the tile names an armed cadence
+    (*Duel ladder · continuous · 30 min gap · no fixed time*) rather than "on demand".
   - **A nightly schedule is a window, not an instant** (`scheduler._schedule_due`,
     `SCHEDULE_CATCHUP_MINUTES`). Reported as *"our overnight duels didn't run at all"*, and
     it was two things compounding. The loop **abandons the rest of its tick whenever the
