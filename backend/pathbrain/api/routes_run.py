@@ -1,6 +1,9 @@
 """Run endpoints: trigger a benchmark suite."""
 from __future__ import annotations
 
+import re
+import threading
+
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -78,6 +81,40 @@ def _locked_execute_series(
                     break
         finally:
             teardown_plugins()
+
+
+_SERIES_PART = re.compile(r" · part \d+/\d+$")
+
+
+def resume_pending_runs() -> int:
+    """Re-dispatch the manual runs a previous process left PENDING.
+
+    Called from the lifespan **after** every engine's reconcile has restored the firewall
+    (``reconcile_interrupted_runs`` keeps the young ones; see there). A pending run is one
+    whose background task was waiting on the coordinator lock when the process died, so
+    resuming it is exactly what it was doing: hold the lock, execute. The first chunk of a
+    chunked series carries the series' group and total, so it resumes as the whole series
+    (the later chunks are created as it goes, as ever); any other pending chunk runs alone.
+    Returns how many were re-dispatched.
+    """
+    with session_scope() as session:
+        rows = session.execute(
+            select(Run.id, Run.label, Run.notes, Run.job_group, Run.job_group_total)
+            .where(Run.status == RunStatus.PENDING)
+            .order_by(Run.id)
+        ).all()
+    started = 0
+    for rid, label, notes, group, total in rows:
+        series_first = bool(group and group == f"run-series-{rid}" and total)
+        if series_first:
+            base_notes = _SERIES_PART.sub("", notes or "") or None
+            target, args = _locked_execute_series, (rid, int(total), label, base_notes, group)
+        else:
+            target, args = _locked_execute, (rid,)
+        threading.Thread(target=target, args=args, name=f"pathbrain-resume-run-{rid}", daemon=True).start()
+        started += 1
+        log.info("Resumed queued run %s after a restart%s", rid, " (series)" if series_first else "")
+    return started
 
 
 @router.get("/runs/{run_id}/verify-derivation")
@@ -178,7 +215,7 @@ def start_current_test(payload: CurrentTestStart) -> dict:
         submission = job_queue.submit(
             "current_test",
             f"Test current profile · {payload.minutes:g} min",
-            lambda: current_test.start(payload.minutes),
+            spec={"minutes": payload.minutes},
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

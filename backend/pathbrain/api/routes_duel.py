@@ -310,7 +310,7 @@ def start_duel(payload: DuelStart) -> dict:
         submission = job_queue.submit(
             "duel",
             "Duel ladder session",
-            lambda: duel.start(payload.duration_minutes, trigger="manual"),
+            spec={"duration_minutes": payload.duration_minutes, "trigger": "manual"},
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

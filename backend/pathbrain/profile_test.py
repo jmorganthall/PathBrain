@@ -479,15 +479,24 @@ def queue_status() -> dict:
     }
 
 
-def reconcile_interrupted_profile_tests() -> int:
-    """Restore the baseline for any profile test left RUNNING by a previous process.
+def reconcile_interrupted_profile_tests(*, now: datetime | None = None) -> int:
+    """Restore the baseline for any profile test left RUNNING by a previous process, and
+    decide what happens to the ones left PENDING.
 
     Called once at startup, like ``sweep.reconcile_interrupted_sweeps``. The driving
     thread is gone, so the firewall may be stranded on the tested profile — set it
-    back to the snapshotted baseline.
+    back to the snapshotted baseline. A *queued* test applied nothing, so it is not
+    failed: one younger than ``job_queue.RESUME_WINDOW_HOURS`` stays PENDING (stamped so
+    the feed says it came back) and :func:`resume_queued` starts the worker once every
+    engine has restored the firewall; an older one is closed CANCELLED with the reason,
+    because a queue from last week is a surprise, not a queue. Returns the rows touched.
     """
+    from .job_queue import RESUME_WINDOW_HOURS
+
+    now = now or datetime.now(timezone.utc)
     provider = None
     restored = 0
+    resumed = 0
     with session_scope() as session:
         tests = session.scalars(
             select(ProfileTest).where(
@@ -509,9 +518,18 @@ def reconcile_interrupted_profile_tests() -> int:
             # later, by which point silently running a test nobody is watching is worse
             # than making them press it again.
             if queued:
+                created = pt.created_at if pt.created_at is None or pt.created_at.tzinfo else pt.created_at.replace(tzinfo=timezone.utc)
+                age_h = (now - created).total_seconds() / 3600.0 if created else float("inf")
+                if age_h <= RESUME_WINDOW_HOURS:
+                    pt.stage = "Queued — resumed after a restart"
+                    resumed += 1
+                    continue
                 pt.status = ProfileTestStatus.CANCELLED
                 pt.error = None
-                pt.stage = "Not started — the service restarted while it was queued"
+                pt.stage = (
+                    f"Not started — queued {age_h:.0f} h ago, before a restart; older than the "
+                    f"{RESUME_WINDOW_HOURS:g} h resume window"
+                )
             else:
                 pt.status = ProfileTestStatus.FAILED
                 pt.error = (
@@ -521,7 +539,30 @@ def reconcile_interrupted_profile_tests() -> int:
             restored += 1
     if restored:
         log.warning("Reconciled %s interrupted profile test(s); baseline restored", restored)
-    return restored
+    if resumed:
+        log.warning("%s queued profile test(s) kept pending across the restart", resumed)
+    return restored + resumed
+
+
+def resume_queued() -> int:
+    """Start the worker for any tests still PENDING after startup reconciliation.
+
+    Separate from the reconcile on purpose: it runs from the lifespan **after** every
+    engine has restored the firewall, so the first resumed test snapshots the real
+    baseline rather than whatever profile a dead duel left behind. Returns how many are
+    waiting; the worker drains them oldest-first exactly as if they had just been queued.
+    """
+    with session_scope() as session:
+        waiting = int(
+            session.scalar(
+                select(func.count()).select_from(ProfileTest).where(ProfileTest.status == ProfileTestStatus.PENDING)
+            )
+            or 0
+        )
+    if waiting:
+        _ensure_worker()
+        log.info("Resuming %s queued profile test(s) after a restart", waiting)
+    return waiting
 
 
 __all__ = [

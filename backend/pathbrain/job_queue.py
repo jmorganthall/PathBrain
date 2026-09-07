@@ -29,11 +29,22 @@ pipeline is free, at which point a single dispatcher calls that same ``start()``
 
 Two consequences worth stating rather than discovering:
 
-* The queue is **in memory**. A ticket has, by definition, not started: nothing was applied,
-  no row was written, no measurement was taken. So a restart drops the queue, which is the
-  same decision ``profile_test``'s reconciliation already makes for its own pending rows —
-  hours later, silently starting a session nobody is watching is worse than making someone
-  press the button again.
+* The queue **survives a restart**. It began in memory, on the argument that a queued job
+  has by definition applied nothing and so has nothing to resume — true, and beside the
+  point. The person who queued twelve bets for the night pressed the button once, and a
+  container recreate (Watchtower pulling the image a merged PR just published, an OOM kill,
+  a compose restart) emptied the line with nothing on screen to say so: reported as
+  *"cancelled a duel job and all my queued jobs were cancelled too — even the non-duel
+  ones"*, because the restart happened to follow the cancel, and every queueing layer
+  dropped its work at once (tickets gone, pending profile tests marked cancelled, pending
+  manual runs marked failed). So a ticket is now written to ``queued_jobs`` with a JSON
+  ``spec`` that its kind's registered **starter** can rebuild the call from, and
+  :func:`restore` re-queues the pending rows at startup — inside ``RESUME_WINDOW_HOURS``,
+  because a queue from last week is not a queue, it is a surprise. The same window governs
+  ``profile_test``'s pending rows and pending manual runs, so all three layers answer a
+  restart the same way. Resuming happens **after** every engine's reconcile has restored
+  the firewall, never before: a resumed job snapshots its baseline when it starts, and that
+  baseline must be the real one.
 * A queued job's **validation moves with it**. "No contenders to race" or "no stored
   profiles to re-run" used to be an error the HTTP caller saw immediately; for a queued job
   it can only be discovered when its turn comes. So the failure is recorded on the ticket and
@@ -45,7 +56,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import coordinator
@@ -64,6 +75,15 @@ POLL_S = 1.0
 #: waiting on a job that has, on this evidence, not started at all.
 START_GRACE_S = 5.0
 
+#: How long a queued job stays worth resuming after a restart. A ticket younger than this
+#: is re-queued exactly as submitted; an older one is marked ``expired`` with the reason,
+#: because silently starting last week's session on a firewall nobody is watching is the
+#: surprise the in-memory design was originally avoiding. One number for every layer —
+#: tickets, pending profile tests, pending manual runs — so a restart treats them alike.
+RESUME_WINDOW_HOURS = 24.0
+#: Settled rows (started/failed/cancelled/expired) older than this are pruned on restore.
+PRUNE_AFTER_DAYS = 7
+
 
 @dataclass
 class Ticket:
@@ -81,6 +101,11 @@ class Ticket:
     result: Any = None
     error: str | None = None
     started_at: datetime | None = None
+    # The JSON-serializable arguments the kind's starter rebuilds the call from; a ticket
+    # with a spec is written to ``queued_jobs`` (``row_id``) and survives a restart.
+    spec: dict | None = None
+    row_id: int | None = None
+    resumed: bool = False
 
 
 @dataclass
@@ -116,6 +141,13 @@ _dispatcher: threading.Thread | None = None
 #: ``kind -> active()``. Registered by the API layer so this module never imports the
 #: engines (several of them import scoring, which imports the API — a cycle).
 _engines: dict[str, Callable[[], bool]] = {}
+#: ``kind -> starter(spec)``: the one definition of how a kind's session is started from a
+#: serializable spec. A route submits a spec rather than a closure, so the job that runs
+#: now and the job that runs after a restart are the same call.
+_starters: dict[str, Callable[[dict], Any]] = {}
+#: What the last :func:`restore` did, for ``status()`` — so a feed can say the queue came
+#: back after a restart rather than leaving the reader to wonder why it is not empty.
+_restored: dict | None = None
 #: Extra "what is waiting" sources. Two engines queue *themselves* rather than through a
 #: ticket, because their caller needs a real row id back synchronously — a profile test's
 #: fingerprint is recorded in the recommendation ledger before it runs, and a manual run's
@@ -132,6 +164,24 @@ def register(kind: str, is_active: Callable[[], bool]) -> None:
     """Teach the queue how to tell whether a ``kind`` of session is still running."""
     with _lock:
         _engines[kind] = is_active
+
+
+def register_starter(kind: str, start: Callable[[dict], Any]) -> None:
+    """Teach the queue how to start a ``kind`` of session from its serializable spec."""
+    with _lock:
+        _starters[kind] = start
+
+
+def _starter_for(kind: str) -> Callable[[dict], Any] | None:
+    with _lock:
+        fn = _starters.get(kind)
+    if fn is None and not _engines:
+        # Nothing registered yet (a request before the lifespan ran, or a test client that
+        # never runs it): the registration is idempotent and imports lazily, so do it now.
+        register_engines()
+        with _lock:
+            fn = _starters.get(kind)
+    return fn
 
 
 def register_pending_source(source: Callable[[], list[dict]]) -> None:
@@ -157,6 +207,36 @@ def register_engines() -> None:
     register("current_test", current_test.active)
     register("baseline_test", baseline_test.active)
     register("duel", duel.active)
+
+    # How each kind starts from its spec — the single definition, used for a job that starts
+    # now and for one rebuilt from a row after a restart. Looked up at call time, so a test
+    # that patches an engine's ``start`` is honoured.
+    register_starter(
+        "sweep",
+        lambda s: sweep.start(
+            s.get("spec") or {}, int(s["iterations"]), float(s.get("dwell_s") or 0.0),
+            bool(s.get("dry_run", False)), s.get("pipe_uuid") or None,
+        ),
+    )
+    register_starter(
+        "race", lambda s: challenger.start(int(s["time_budget_s"]), bool(s.get("auto_promote", False)))
+    )
+    register_starter(
+        "refresh",
+        lambda s: refresh.start(
+            int(s["iterations"]), top=s.get("top"), rank_by=s.get("rank_by"), fingerprints=s.get("fingerprints"),
+        ),
+    )
+    register_starter("current_test", lambda s: current_test.start(float(s["minutes"])))
+    register_starter(
+        "baseline_test",
+        lambda s: baseline_test.start(
+            int(s["iterations"]), int(s.get("settle_seconds") or 0), trigger=s.get("trigger") or "manual"
+        ),
+    )
+    register_starter(
+        "duel", lambda s: duel.start(s.get("duration_minutes"), trigger=s.get("trigger") or "manual")
+    )
 
     # The two self-queueing engines: they own row-level identity their callers need back
     # synchronously, so they queue themselves — but they still report into the one list.
@@ -244,15 +324,28 @@ def blocked_by() -> str | None:
     return coordinator.describe(coordinator.owner())
 
 
-def submit(kind: str, label: str, start: Callable[[], Any]) -> Submission:
+def submit(
+    kind: str, label: str, start: Callable[[], Any] | None = None, *, spec: dict | None = None
+) -> Submission:
     """Start a job, or queue it. Never refuses because something else is running.
 
     When the pipeline is free the engine's own ``start()`` is called **synchronously**, so
     the caller gets the real session id back and every existing response shape is preserved;
     exceptions it raises propagate exactly as they always did. Otherwise the job becomes a
     ticket and the dispatcher starts it when its turn comes.
+
+    Pass a ``spec`` — the JSON-serializable arguments — and the kind's registered starter
+    makes the call; a queued ticket with a spec is written to disk and comes back after a
+    restart (see :func:`restore`). A bare ``start`` closure is still accepted (tests, ad hoc
+    callers) and queues in memory only.
     """
     global _seq
+    if start is None:
+        starter = _starter_for(kind)
+        if starter is None:
+            raise ValueError(f"No starter registered for '{kind}' jobs")
+        args = dict(spec or {})
+        start = lambda: starter(args)  # noqa: E731 — bound once, the one call for now or later
     with _lock:
         if not _queue and not coordinator.busy() and not kind_active(kind):
             log.info("Job %s (%s) starting immediately", kind, label)
@@ -265,7 +358,10 @@ def submit(kind: str, label: str, start: Callable[[], Any]) -> Submission:
             label=label,
             submitted_at=datetime.now(timezone.utc),
             start=start,
+            spec=spec,
         )
+        if spec is not None:
+            _persist(ticket)  # under the lock, so a cancel can never race the row into being
         _queue.append(ticket)
         position = len(_queue)
         _ensure_dispatcher()
@@ -283,6 +379,141 @@ def submit(kind: str, label: str, start: Callable[[], Any]) -> Submission:
         queue_ahead=(position - 1) + (1 if holder else 0),
         blocked_by=holder,
     )
+
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _persist(ticket: Ticket) -> None:
+    """Write a queued ticket to ``queued_jobs``. Best-effort: the disk copy is what survives
+    a restart, and failing to write it must never turn a queue into a refusal."""
+    from .database import session_scope
+    from .models import QueuedJob
+
+    try:
+        with session_scope() as session:
+            row = QueuedJob(
+                kind=ticket.kind, label=ticket.label, spec=ticket.spec,
+                submitted_at=ticket.submitted_at, state="pending", resumed=ticket.resumed,
+            )
+            session.add(row)
+            session.flush()
+            ticket.row_id = row.id
+    except Exception:  # noqa: BLE001
+        log.warning("job_queue: could not persist ticket %s (%s)", ticket.kind, ticket.label, exc_info=True)
+
+
+def _settle(ticket: Ticket) -> None:
+    """Record a ticket's final state on its row, so a restart never resurrects it."""
+    if ticket.row_id is None:
+        return
+    from .database import session_scope
+    from .models import QueuedJob
+
+    try:
+        with session_scope() as session:
+            row = session.get(QueuedJob, ticket.row_id)
+            if row is None:
+                return
+            row.state = ticket.state
+            row.error = ticket.error
+            row.started_at = ticket.started_at
+            row.finished_at = datetime.now(timezone.utc)
+    except Exception:  # noqa: BLE001
+        log.debug("job_queue: could not settle ticket row %s", ticket.row_id, exc_info=True)
+
+
+def restore(*, now: datetime | None = None) -> dict:
+    """Re-queue the tickets a previous process left pending. Called once at startup, and
+    only after every engine's reconcile has restored the firewall.
+
+    A pending row younger than ``RESUME_WINDOW_HOURS`` with a registered starter comes back
+    as a ticket exactly as submitted (marked ``resumed`` so the feed can say so), ahead of
+    anything submitted since — it was asked for first. Anything older, or of a kind nothing
+    can start, is marked ``expired`` with the reason rather than deleted: the row is the
+    only record that the button was ever pressed. Settled rows past ``PRUNE_AFTER_DAYS``
+    are dropped. Returns ``{tickets, expired, at}``; also kept for ``status()``.
+    """
+    global _restored, _seq
+    from sqlalchemy import delete as _delete, select as _select
+
+    from .database import session_scope
+    from .models import QueuedJob
+
+    now = now or datetime.now(timezone.utc)
+    tickets: list[Ticket] = []
+    expired = 0
+    with _lock:
+        # Rows this process already holds as live tickets are not orphans. Startup never has
+        # any, but this keeps a second restore from duplicating the queue it just built.
+        live_rows = {t.row_id for t in _queue if t.row_id is not None}
+    with session_scope() as session:
+        rows = session.scalars(
+            _select(QueuedJob).where(QueuedJob.state == "pending").order_by(QueuedJob.id)
+        ).all()
+        for row in rows:
+            if row.id in live_rows:
+                continue
+            submitted = _as_utc(row.submitted_at) or now
+            age_h = (now - submitted).total_seconds() / 3600.0
+            starter = _starter_for(row.kind)
+            if age_h > RESUME_WINDOW_HOURS:
+                row.state = "expired"
+                row.error = (
+                    f"Not resumed — queued {age_h:.0f} h ago, before a restart; older than the "
+                    f"{RESUME_WINDOW_HOURS:g} h resume window."
+                )
+                row.finished_at = now
+                expired += 1
+                continue
+            if starter is None:
+                row.state = "expired"
+                row.error = f"Not resumed — nothing registered can start '{row.kind}' jobs."
+                row.finished_at = now
+                expired += 1
+                continue
+            row.resumed = True
+            args = dict(row.spec or {})
+            with _lock:
+                _seq += 1
+                seq = _seq
+            tickets.append(
+                Ticket(
+                    id=seq, kind=row.kind, label=row.label, submitted_at=submitted,
+                    start=lambda st=starter, a=args: st(a), spec=row.spec, row_id=row.id, resumed=True,
+                )
+            )
+        cutoff = now - timedelta(days=PRUNE_AFTER_DAYS)
+        session.execute(
+            _delete(QueuedJob).where(QueuedJob.state != "pending", QueuedJob.finished_at < cutoff.replace(tzinfo=None)),
+            # No in-session evaluation: the rows settled above carry aware timestamps and the
+            # stored column is naive UTC; the database compares them correctly, the evaluator
+            # cannot.
+            execution_options={"synchronize_session": False},
+        )
+    with _lock:
+        _queue[0:0] = tickets  # ahead of anything submitted since this process started
+        if _queue:
+            _ensure_dispatcher()
+    _restored = {"at": now.isoformat(), "tickets": len(tickets), "expired": expired}
+    if tickets or expired:
+        log.warning(
+            "Job queue restored after a restart: %s ticket(s) re-queued, %s expired",
+            len(tickets), expired,
+        )
+    return dict(_restored)
+
+
+def note_restored(**counts: int) -> None:
+    """Add what the other queueing layers resumed (profile tests, manual runs) to the
+    restore record, so ``status()`` tells the whole story in one place."""
+    global _restored
+    base = dict(_restored or {"at": datetime.now(timezone.utc).isoformat(), "tickets": 0, "expired": 0})
+    base.update({k: int(v) for k, v in counts.items()})
+    _restored = base
 
 
 def _ensure_dispatcher() -> None:
@@ -328,6 +559,7 @@ def _drain() -> None:
             ticket.state = "failed"
             ticket.error = f"{type(exc).__name__}: {exc}"
             log.warning("Queued job %s (%s) failed to start: %s", ticket.kind, ticket.label, exc)
+        _settle(ticket)
         _remember(ticket)
 
         if ticket.state == "started":
@@ -368,6 +600,7 @@ def cancel(ticket_id: int) -> bool:
             if ticket.id == ticket_id:
                 ticket.state = "cancelled"
                 _queue.pop(i)
+                _settle(ticket)
                 _remember(ticket)
                 log.info("Queued job %s (%s) cancelled before starting", ticket.kind, ticket.label)
                 return True
@@ -386,6 +619,7 @@ def pending() -> list[dict]:
             "queue_position": i,
             "submitted_at": t.submitted_at.isoformat(),
             "state": t.state,
+            "resumed": t.resumed,
         }
         for i, t in enumerate(tickets, start=1)
     ]
@@ -443,21 +677,26 @@ def status() -> dict:
         "queue_depth": len(waiting),
         "pending": waiting,
         "recent_failures": recent_failures(),
+        # Set once per process by the startup restore: what came back after a restart.
+        "restored": dict(_restored) if _restored else None,
     }
 
 
 def _reset_for_tests() -> None:
-    global _seq, _dispatcher
+    global _seq, _dispatcher, _restored
     with _lock:
         _queue.clear()
         _recent.clear()
         _engines.clear()
+        _starters.clear()
         _pending_sources.clear()
         _seq = 0
         _dispatcher = None
+        _restored = None
 
 
 __all__ = [
     "submit", "cancel", "pending", "all_pending", "status", "register", "kind_active",
-    "register_pending_source", "register_engines", "can_start_now", "Submission",
+    "register_pending_source", "register_engines", "register_starter", "restore",
+    "note_restored", "can_start_now", "Submission", "RESUME_WINDOW_HOURS",
 ]
