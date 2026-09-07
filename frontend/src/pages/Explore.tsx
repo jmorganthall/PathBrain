@@ -1506,6 +1506,11 @@ function RecommendationLedger({ ledger }: { ledger: ExploreLedger }) {
   );
 }
 
+// How many headline candidates to generate per landscape read. Kept moderate on purpose:
+// these are all rendered as cards, and the bets pool no longer depends on this number —
+// it also draws on every coverage hole's runnable variant and every crown-leg move.
+const CANDIDATE_POOL = 10;
+
 export default function Explore() {
   const [data, setData] = useState<ExploreLandscape | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1542,7 +1547,11 @@ export default function Explore() {
     setLoading(true);
     setError(null);
     try {
-      setData(await api.exploreLandscape(3));
+      // Generate a real pool, not three. The candidate list shows a handful, but "run the
+      // best bets" can only ever offer what was generated — asking for 3 made "Top 3" the
+      // ceiling by construction. Generating more costs nothing extra: the expensive part is
+      // the one compute_profiles pass, which happens either way.
+      setData(await api.exploreLandscape(CANDIDATE_POOL));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not map the landscape.");
     } finally {

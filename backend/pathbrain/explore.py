@@ -980,6 +980,53 @@ CONFIDENCE_TIGHT = 1.5
 CONFIDENCE_LOOSE = 3.0
 
 
+def runnable_candidates(
+    candidates: list[dict],
+    gaps: list[dict] | None = None,
+    legs: dict | None = None,
+) -> list[dict]:
+    """Every proposal on the page that can actually be run, deduplicated.
+
+    The ranked candidate list is only one of the places Explore proposes something. Each
+    **hole in coverage** carries a runnable variant (the best profile with that one lever
+    moved to the untested value), and each **crown leg** carries "move the best profile the
+    leaders' way" proposals plus their combined multi-lever version. All three are built by
+    the same ``_candidate_dict``, post the same payload and land in the same ledger — so a
+    "run the smartest bets" that only saw the headline list was ignoring most of what the
+    page had already worked out was worth measuring.
+
+    Deduplicated on *(parent, moves)* — the same lever move genuinely appears twice, once as
+    a ranked candidate and once as the variant that fills a hole, and queueing it twice would
+    spend two benchmarks answering one question. First occurrence wins, so the ranked list's
+    richer provenance survives. Anything already measured or already claimed is not included
+    by construction: the builders attach a ``candidate`` only when the coordinate is untested.
+    """
+    seen: set = set()
+    out: list[dict] = []
+
+    def _add(candidate: dict | None) -> None:
+        if not candidate or not candidate.get("settings"):
+            return
+        key = (
+            (candidate.get("parent") or {}).get("fingerprint"),
+            tuple(sorted((c["key"], c["to"]) for c in candidate.get("changes") or [])),
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(candidate)
+
+    for candidate in candidates or []:
+        _add(candidate)
+    for gap in gaps or []:
+        _add(gap.get("candidate"))
+    for leg in (legs or {}).get("legs") or []:
+        for move in leg.get("moves") or []:
+            _add(move.get("candidate"))
+        _add(leg.get("combined"))
+    return out
+
+
 def rank_bets(
     candidates: list[dict],
     calibration: dict | None = None,
@@ -2011,7 +2058,10 @@ def landscape(
         # The same candidates, re-ranked as bets: the pessimistic end of a band widened by
         # what this evidence class has historically missed by. Same objects re-sorted, so
         # it costs nothing beyond the one ledger read the calibration needs.
-        "bets": rank_bets(candidates, calib, best_established),
+        # Ranked over EVERY runnable proposal on the page — the headline candidates, the
+        # variant attached to each coverage hole, and the crown-leg moves — not just the
+        # top section. They are all the same shape and all post the same payload.
+        "bets": rank_bets(runnable_candidates(candidates, gaps, legs), calib, best_established),
         "calibration": calib,
         "confidence_sigma": CONFIDENCE_SIGMA,
         "noise_floor": noise_floor,
@@ -2026,4 +2076,4 @@ def landscape(
     }
 
 
-__all__ = ["landscape", "full_overrides", "rank_bets"]
+__all__ = ["landscape", "full_overrides", "rank_bets", "runnable_candidates"]

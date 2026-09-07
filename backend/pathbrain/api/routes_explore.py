@@ -30,10 +30,20 @@ from ..schemas import ExploreBatchTest, ExploreTest
 router = APIRouter()
 log = get_logger("api.explore")
 
-#: How many candidates a batch generates before picking its top N. Generating more than
-#: we take is the point — re-ranking five candidates and taking five ranks nothing — and
-#: the cost is the same ``compute_profiles`` pass either way.
+#: The smallest pool a batch generates before picking its top N. Generating more than we
+#: take is the point — re-ranking five candidates and taking five ranks nothing — and the
+#: cost is the same ``compute_profiles`` pass either way, so the pool scales with the ask
+#: (``_batch_pool``) rather than capping it: asking for the top 20 of 12 would silently be
+#: "all of them, in bet order", which is not the ranking the caller asked for.
 BATCH_CANDIDATE_POOL = 12
+
+#: How much wider than the request to generate, so there is something to rank.
+BATCH_POOL_FACTOR = 2
+
+
+def _batch_pool(count: int) -> int:
+    """How many candidates to generate for a batch of ``count``."""
+    return max(BATCH_CANDIDATE_POOL, count * BATCH_POOL_FACTOR)
 
 
 def _allowed_values() -> dict | None:
@@ -58,7 +68,7 @@ def _allowed_values() -> dict | None:
 
 @router.get("/explore/landscape")
 def landscape(
-    suggestions: int = Query(3, ge=1, le=12),
+    suggestions: int = Query(3, ge=1, le=50),
     confident_only: bool = Query(True),
     reference: str | None = Query(None, description="Fingerprint the conditioned curves are built around (default: the best measured profile)."),
     session: Session = Depends(get_session),
@@ -202,11 +212,24 @@ def test_batch(payload: ExploreBatchTest, session: Session = Depends(get_session
     """
     landscape = explore_mod.landscape(
         session,
-        suggestions=BATCH_CANDIDATE_POOL,
+        suggestions=_batch_pool(payload.count),
         confident_only=payload.confident_only,
         allowed_values=_allowed_values(),
     )
-    pool = landscape.get("bets" if payload.rank == "confidence" else "candidates") or []
+    # `bets` already pools every runnable proposal — headline candidates, coverage-hole
+    # variants and crown-leg moves. The upside order has to be built over the same pool,
+    # or "pick by upside" would quietly draw from a smaller list than "pick by confidence".
+    if payload.rank == "confidence":
+        pool = landscape.get("bets") or []
+    else:
+        pool = sorted(
+            explore_mod.runnable_candidates(
+                landscape.get("candidates") or [],
+                landscape.get("gaps") or [],
+                landscape.get("crown_legs") or {},
+            ),
+            key=lambda c: -(c.get("upside") or 0.0),
+        )
     if not pool:
         raise HTTPException(
             status_code=400,
