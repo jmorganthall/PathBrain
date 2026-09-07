@@ -36,7 +36,10 @@ async def lifespan(app: FastAPI):
     log.info("PathBrain %s starting up", __version__)
     init_db()
     log.info("Database initialized (%s)", settings.database_url)
+    from .job_queue import register_engines
     from .runner import reconcile_interrupted_runs
+
+    register_engines()  # one queue in front of every user-triggered session
 
     reconcile_interrupted_runs()  # fail any runs orphaned by a previous restart
     from .methodology import seed_current_methodology

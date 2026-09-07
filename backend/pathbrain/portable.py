@@ -355,6 +355,81 @@ def decide_home(
     )
 
 
+#: How many recent away runs the venue recall scans. Portable runs are a handful a week, not
+#: the benchmark table, so this covers a long history for one indexed query — and the label
+#: worth suggesting is a recent one anyway.
+VENUE_RECALL_SCAN = 500
+
+
+def recall_venue(
+    session,
+    egress: dict | str | None,
+    *,
+    v6_prefix: int = 64,
+    device_id: str | None = None,
+) -> dict | None:
+    """The venue label this network was given last time someone tested from it.
+
+    Being somewhere you have tested before is the common case — the same hotel, the same
+    office, the same café — and asking for the label from scratch every time is both busywork
+    and how one place ends up recorded under three spellings, which silently splits its
+    history. The address is the thing that identifies a network, so the address is what the
+    label is recalled by: IPv4 compared exactly, IPv6 by **prefix**, the same rule
+    ``decide_home`` uses, because hosts on one network share a prefix and never an address.
+
+    Matching is deliberately **not** restricted to one device — a laptop should inherit the
+    name a phone gave the hotel — but the asking device's own label wins when it has one,
+    since that is the spelling that reader is used to. Home runs are skipped: they carry no
+    venue by construction.
+
+    Returns ``{venue, matched_on, last_seen, runs, from_this_device}`` or ``None`` — a
+    *suggestion*, never a decision. The caller pre-fills it and the user can type over it.
+    """
+    from .models import PortableRun
+
+    want = split_families(egress) if not isinstance(egress, dict) else split_families(
+        egress.get("v4"), egress.get("v6")
+    )
+    if not (want["v4"] or want["v6"]):
+        return None
+
+    rows = (
+        session.query(PortableRun)
+        .filter(
+            PortableRun.is_home.is_(False),
+            PortableRun.venue.isnot(None),
+            PortableRun.venue != "",
+            PortableRun.egress_ip.isnot(None),
+        )
+        .order_by(PortableRun.id.desc())
+        .limit(VENUE_RECALL_SCAN)
+        .all()
+    )
+
+    matches: list[tuple[PortableRun, str]] = []
+    for row in rows:
+        seen = split_families(row.egress_ip)
+        if want["v4"] and seen["v4"] and want["v4"] == seen["v4"]:
+            matches.append((row, "ip4"))
+        elif want["v6"] and seen["v6"] and same_v6_network(want["v6"], seen["v6"], v6_prefix):
+            matches.append((row, "ip6"))
+    if not matches:
+        return None
+
+    # This device's own last label for the place, else the most recent anyone gave it.
+    mine = [m for m in matches if device_id and m[0].device_id == device_id]
+    row, matched_on = (mine or matches)[0]
+    return {
+        "venue": row.venue,
+        "matched_on": matched_on,
+        "last_seen": row.created_at.isoformat() if row.created_at else None,
+        # How much agreement there is behind the suggestion, so the page can say "you have
+        # tested here 4 times" rather than implying a single stray label is established.
+        "runs": sum(1 for m in matches if (m[0].venue or "").strip() == (row.venue or "").strip()),
+        "from_this_device": bool(mine),
+    }
+
+
 def describe_addresses(fams: dict | None) -> str | None:
     """``"203.0.113.7 / 2001:db8::1"`` — one string for a row's ``egress_ip``/``home_ip``."""
     if not fams:

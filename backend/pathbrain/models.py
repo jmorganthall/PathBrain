@@ -418,6 +418,10 @@ class ProfileTest(Base):
     iterations: Mapped[int] = mapped_column(Integer, default=1)
     # Pre-test live settings to restore: normalized pipe list.
     baseline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The settings to apply, persisted rather than held in module state. Tests QUEUE — several
+    # can be waiting at once, and a queued one may sit behind a duel window for hours — so the
+    # target cannot live in a single in-memory slot that the next request would overwrite.
+    target: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # The benchmark run this test produced (once it starts), for linking.
     run_id: Mapped[int | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
     # The fingerprint the firewall ACTUALLY reported after the apply, which is not always the

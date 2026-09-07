@@ -68,6 +68,14 @@ export interface RollingScore {
   metric_values: Record<string, number>;
   weights: Record<string, number>;
   attribution?: StallAttribution | null;
+  // The crown: which metric subscores the Overall is actually computed from, how they are
+  // combined, and their weights — read from the current methodology on every request. The
+  // axes above are a *different* decomposition and have not been the Overall's inputs
+  // since v5, so anything presenting "what the Overall is built from" must read these.
+  overall_metrics?: string[];
+  overall_required?: string[];
+  overall_method?: string;
+  overall_weights?: Record<string, number>;
 }
 
 export interface AxisSeriesPoint {
@@ -509,7 +517,7 @@ export interface ProfileTest {
   lock_owner: string | null;
 }
 
-export interface ProfileTestStart {
+export interface ProfileTestStart extends QueuePlacement {
   id: number;
   fingerprint: string;
   iterations: number;
@@ -541,7 +549,25 @@ export interface ChallengerRace {
   lock_owner: string | null;
 }
 
-export interface RaceStart {
+// Starting a profile re-run: which profiles, how long each, and where it landed in the queue.
+export interface RefreshStart extends QueuePlacement {
+  id: number | null;
+  iterations: number;
+  top: number | null;
+  fingerprints?: number | null;
+}
+
+// Testing arbitrary settings (an AI suggestion, an Explore candidate) plus where it landed.
+export interface TestSettingsStart extends QueuePlacement {
+  id: number;
+  fingerprint: string;
+  iterations: number;
+  label: string | null;
+  existing_iterations?: number;
+  warnings?: string[];
+}
+
+export interface RaceStart extends QueuePlacement {
   id: number;
   contenders: number;
   auto_promote: boolean;
@@ -839,7 +865,9 @@ export interface ProfilePauseRollup {
   urls: ProfilePauseUrl[];
 }
 
-export interface RunDetail extends RunSummary {
+// Extends QueuePlacement because POST /run answers with the run *and* where it landed:
+// a manual run queues behind whatever holds the pipeline, like every other job.
+export interface RunDetail extends RunSummary, QueuePlacement {
   notes?: string | null;
   error?: string | null;
   settings_fingerprint?: string | null;
@@ -922,7 +950,7 @@ export interface SweepResult {
   [field: string]: number | string | null | TrendRelative | undefined;
 }
 
-export interface Sweep {
+export interface Sweep extends QueuePlacement {
   id: number;
   status: "pending" | "running" | "complete" | "cancelled" | "failed";
   dry_run: boolean;
@@ -1126,7 +1154,7 @@ export interface BenchmarkConfig {
 // A "test the current settings for X minutes" session — a time-boxed data-collection loop
 // on the live profile (no firewall write). Chunked into <=5-iteration runs so partial
 // completion keeps its data.
-export interface CurrentTest {
+export interface CurrentTest extends QueuePlacement {
   id: number;
   status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
   label: string | null;
@@ -1147,7 +1175,7 @@ export interface BaselinePipeState {
   enabled: boolean;
 }
 
-export interface BaselineTest {
+export interface BaselineTest extends QueuePlacement {
   id: number;
   status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
   trigger: "manual" | "scheduled" | string;
@@ -2343,7 +2371,7 @@ export interface DuelOpenMatch {
   sessions: number[];
 }
 
-export interface DuelSession {
+export interface DuelSession extends QueuePlacement {
   id: number;
   status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
   stage: string | null;
@@ -2580,7 +2608,47 @@ export interface ExploreTestRequest {
   summary?: string;
 }
 
-export interface ExploreTestResult {
+// Where a just-submitted job landed. EVERY start endpoint returns this block — manual run,
+// sweep, race, refresh, duel, baseline, current test, profile test — so "did anything
+// happen?" has one answer whichever button was pressed.
+export interface QueuePlacement {
+  // Something has to finish first — the pipeline is held, or jobs are already waiting.
+  queued?: boolean;
+  // Set when the job is held as a queue ticket (rather than self-queued as its own row).
+  ticket_id?: number | null;
+  // 1 = next up. Null when it starts immediately.
+  queue_position?: number | null;
+  // How many things are ahead of it (the holder plus anything queued).
+  queue_ahead?: number;
+  // What is in the way, in words ("a duel session"), not a lock label.
+  blocked_by?: string | null;
+}
+
+// One job waiting to run, from either queueing layer.
+export interface QueuedJob {
+  ticket_id: number | null;
+  kind: string;
+  // Present for self-queued work (a profile test's or a run's own row id).
+  id?: number;
+  label: string;
+  queue_position: number | null;
+  submitted_at: string | null;
+  state: string;
+}
+
+// What holds the pipeline and everything waiting behind it — the "can I start?" read.
+export interface QueueStatus {
+  busy: boolean;
+  blocked_by: string | null;
+  owner: string | null;
+  held_for_s: number | null;
+  queue_depth: number;
+  pending: QueuedJob[];
+  // Queued jobs whose validation only failed when their turn came.
+  recent_failures: { ticket_id: number; kind: string; label: string; error: string | null }[];
+}
+
+export interface ExploreTestResult extends QueuePlacement {
   id: number;
   fingerprint: string;
   iterations: number;
@@ -2589,6 +2657,32 @@ export interface ExploreTestResult {
   recommendation_id: number | null;
   // Set when the measurement is not a faithful reproduction of the proposal.
   note: string | null;
+}
+
+// One profile test in the queue (or the one currently running).
+export interface QueuedProfileTest {
+  id: number;
+  status: string;
+  fingerprint: string;
+  label: string | null;
+  iterations: number;
+  stage: string | null;
+  queued: boolean;
+  queue_position?: number;
+  created_at: string | null;
+  started_at: string | null;
+}
+
+// The read behind "Busy now — queue this?": what holds the pipeline and who is waiting.
+export interface ProfileTestQueue {
+  busy: boolean;
+  owner: string | null;
+  owner_label: string | null;
+  held_for_s: number | null;
+  waiting: number;
+  running: QueuedProfileTest | null;
+  pending: QueuedProfileTest[];
+  queue_depth: number;
 }
 
 // "pending" = nothing measured yet; "incomparable" = proposed under another methodology, so
@@ -2792,7 +2886,57 @@ export interface ExploreLandscape {
   // profile bigger than the noise floor — the honest state of a packed field, where the
   // right next measurement is the coverage gaps, not a refinement.
   candidates_clear_noise?: boolean | null;
+  // The same candidates re-ranked as *bets*: scored at the pessimistic end of a band
+  // widened by what that evidence class has actually missed by. Exploring is drawn to
+  // what we don't know; betting is the opposite question over the same list.
+  bets?: ExploreBet[];
+  calibration?: Record<string, ExploreCalibration>;
+  confidence_sigma?: number;
   reason: string | null;
+}
+
+// What one evidence class has actually been worth on this link — the ledger's track record.
+export interface ExploreCalibration {
+  kind: string;
+  label: string | null;
+  graded: number;
+  mean_abs_error: number | null;
+  hit_rate: number | null;
+  // False below the minimum graded claims: reported, but not allowed to steer the ranking.
+  trusted: boolean;
+}
+
+// A candidate scored as something to back rather than something to look at.
+export interface ExploreBet extends ExploreCandidate {
+  // predicted − sigma × band. What this is worth if the model is wrong by its usual amount.
+  confidence_score: number;
+  // The band actually used: the wider of the model's stated one and the class's measured miss.
+  confidence_band: number;
+  confidence: "high" | "medium" | "low";
+  evidence_kind: string;
+  // Whether that floor still beats the best measured profile — the strong claim.
+  clears_bar: boolean | null;
+  // Which band was used, so a track-record-backed number never reads like a self-assessed one.
+  calibration_basis: string;
+  calibration_graded: number;
+}
+
+// One press queueing the top N bets.
+export interface ExploreBatchResult {
+  queued: (ExploreTestResult & {
+    summary?: string | null;
+    predicted?: number | null;
+    uncertainty?: number | null;
+    confidence_score?: number | null;
+    confidence?: string | null;
+    clears_bar?: boolean | null;
+  })[];
+  skipped: { label: string; reason: string }[];
+  requested: number;
+  iterations: number | null;
+  rank: string;
+  best_overall: number | null;
+  calibration: Record<string, ExploreCalibration>;
 }
 
 // ── Portable (away) test ────────────────────────────────────────────────────
@@ -2998,6 +3142,20 @@ export interface PortableHome {
   detected: boolean | null;
   detected_by: "ip4" | "ip6" | null;
   reason: string | null;
+  // What this network was called last time anyone tested from it, matched on the egress
+  // address (IPv4 exactly, IPv6 by prefix). A suggestion the page pre-fills, never a
+  // decision — the user can type over it.
+  venue: PortableVenueRecall | null;
+}
+
+export interface PortableVenueRecall {
+  venue: string;
+  matched_on: "ip4" | "ip6";
+  last_seen: string | null;
+  // How many runs here carry this same label — "you have tested here 4 times" reads very
+  // differently from a single stray spelling.
+  runs: number;
+  from_this_device: boolean;
 }
 
 // The browser's post-load idle wait, audited off stored raw (read-only).

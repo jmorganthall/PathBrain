@@ -966,6 +966,100 @@ def _candidate_dict(
     }
 
 
+#: How many bands below the prediction a bet is judged on. The mirror image of
+#: ``EXPLORATION_WEIGHT``, and deliberately the same shape as the duel's split between
+#: ``CEILING_SIGMA`` (who to race) and ``RANK_SIGMA`` (who is best): **optimism decides what
+#: to explore, pessimism decides what to bet on.** A candidate is attractive to *measure*
+#: because it might be anything; it is a good *bet* only if it looks good even when the
+#: model is wrong by as much as it usually is.
+CONFIDENCE_SIGMA = 1.0
+
+#: Band thresholds for the one-word confidence label. Points of Overall, on the same scale
+#: as the predictions themselves.
+CONFIDENCE_TIGHT = 1.5
+CONFIDENCE_LOOSE = 3.0
+
+
+def rank_bets(
+    candidates: list[dict],
+    calibration: dict | None = None,
+    best_overall: float | None = None,
+) -> list[dict]:
+    """Re-rank candidates as **bets**: what would we back, not what would we go and look at.
+
+    The landscape ranks by an upper confidence bound, which is right for exploring — the
+    question there is "where *might* we beat everything measured?", so uncertainty is an
+    attraction. "Which of these should I actually spend the night running?" is the opposite
+    question, and ranking it the same way puts the candidates we understand least at the top.
+
+    So a bet is scored on the pessimistic end of its own band, and the band is not the
+    model's self-assessment. Every claim is graded in the recommendation ledger, so the
+    typical miss of each *evidence class* is a measured number on this link
+    (``explore_tracker.calibration``): the band used here is the wider of what the model
+    stated and what that class has historically missed by. The wider, not a blend — a class
+    stating +/-1.0 while missing by 2.4 is overconfident, and averaging the two keeps half
+    of the overconfidence.
+
+    Mutates nothing: each candidate is returned as a copy carrying its bet fields, sorted
+    best bet first. With an empty ledger the measured term is simply absent and the stated
+    band stands, which the ``calibration_basis`` field says outright — an uncalibrated
+    ranking is still useful, but it is the model's opinion rather than a track record, and
+    those should not read the same.
+    """
+    calibration = calibration or {}
+    out: list[dict] = []
+    for c in candidates:
+        stated = float(c.get("uncertainty") or 0.0)
+        kind = _evidence_kind_of(c)
+        row = calibration.get(kind) or {}
+        measured = row.get("mean_abs_error") if row.get("trusted") else None
+        band = max(stated, float(measured)) if measured is not None else stated
+        predicted = float(c.get("predicted") or 0.0)
+        score = max(OVERALL_MIN, min(OVERALL_MAX, predicted - CONFIDENCE_SIGMA * band))
+        bet = dict(c)
+        bet["confidence_score"] = round(score, 2)
+        bet["confidence_band"] = round(band, 2)
+        bet["evidence_kind"] = kind
+        # Whether the bet's *floor* clears the best profile actually measured. This is the
+        # strong claim — "even if the model is wrong by its usual amount, this still wins" —
+        # as opposed to the upside claim the exploration ranking makes.
+        bet["clears_bar"] = (
+            None if best_overall is None else bool(score > float(best_overall))
+        )
+        bet["confidence"] = (
+            "high" if band <= CONFIDENCE_TIGHT
+            else "medium" if band <= CONFIDENCE_LOOSE
+            else "low"
+        )
+        # Say which band was used, so a number resting on a measured track record never
+        # reads the same as one resting on the model's own stated uncertainty.
+        bet["calibration_basis"] = (
+            "measured" if measured is not None and measured >= stated
+            else "stated" if measured is None
+            else "stated (wider than measured)"
+        )
+        bet["calibration_graded"] = row.get("graded") or 0
+        out.append(bet)
+    # Best bet first; ties broken by the tighter band, so between two equal floors the
+    # better-understood one leads.
+    out.sort(key=lambda b: (-b["confidence_score"], b["confidence_band"]))
+    return out
+
+
+def _evidence_kind_of(candidate: dict) -> str:
+    """The candidate's weakest evidence class, via the ledger's own classifier.
+
+    Imported lazily and defensively: the bet ranking must never be what breaks the
+    landscape, and the tracker imports scoring machinery this module does not need.
+    """
+    try:
+        from .explore_tracker import evidence_kind
+
+        return evidence_kind(candidate.get("evidence"))
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 def _candidates(
     points: list[dict],
     axes: dict[str, dict],
@@ -1802,6 +1896,8 @@ def landscape(
             "interactions": [],
             "gaps": [],
             "candidates": [],
+            "bets": [],
+            "calibration": {},
             "matched_pairs": [],
             "conditioned_curves": [],
             "basins": [],
@@ -1883,6 +1979,17 @@ def landscape(
         log.exception("Explore: crown-leg leaders could not be computed")
         legs = None
 
+    # What each evidence class has actually been worth on this link, which is what turns
+    # "these are the best bets" from an opinion into a measurement. Best-effort: an
+    # unreadable ledger costs the bets their calibration, never the landscape its content.
+    try:
+        from .explore_tracker import calibration as _calibration
+
+        calib = _calibration(session)
+    except Exception:  # noqa: BLE001
+        log.debug("Explore: could not read the recommendation calibration", exc_info=True)
+        calib = {}
+
     return {
         "axes": sorted(axes.values(), key=lambda a: (a["pipe"], a["field"])),
         "points": points,
@@ -1901,6 +2008,12 @@ def landscape(
         "interactions": _interactions(points, axes),
         "gaps": gaps,
         "candidates": candidates,
+        # The same candidates, re-ranked as bets: the pessimistic end of a band widened by
+        # what this evidence class has historically missed by. Same objects re-sorted, so
+        # it costs nothing beyond the one ledger read the calibration needs.
+        "bets": rank_bets(candidates, calib, best_established),
+        "calibration": calib,
+        "confidence_sigma": CONFIDENCE_SIGMA,
         "noise_floor": noise_floor,
         "candidates_clear_noise": (
             None if noise_floor is None else any(c.get("beats_noise") for c in candidates)
@@ -1913,4 +2026,4 @@ def landscape(
     }
 
 
-__all__ = ["landscape", "full_overrides"]
+__all__ = ["landscape", "full_overrides", "rank_bets"]

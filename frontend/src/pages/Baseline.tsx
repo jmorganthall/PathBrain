@@ -22,6 +22,7 @@ import ScheduleIcon from "@mui/icons-material/Schedule";
 import PowerOffIcon from "@mui/icons-material/PowerSettingsNew";
 
 import { api } from "../api/client";
+import { useQueuedAction } from "../hooks/useQueuedAction";
 import type { BaselineConfig, BaselineTest } from "../api/types";
 import { Blurb } from "../components/Explain";
 import { fmtDateTime } from "../utils/format";
@@ -86,6 +87,9 @@ export default function Baseline() {
 
   const [test, setTest] = useState<BaselineTest | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The shared "add a job" policy: when the pipeline is busy this asks whether to
+  // queue, and either way reports which happened in the same words as every other page.
+  const queue = useQueuedAction(setError);
   const [busy, setBusy] = useState(false);
   const pollRef = useRef<number | null>(null);
 
@@ -155,18 +159,26 @@ export default function Baseline() {
     }
   };
 
-  const runNow = async () => {
+  const startBaseline = async () => {
     setBusy(true);
     setError(null);
     try {
       const t = await api.baselineTestStart({ iterations, settle_seconds: settle });
-      setTest(t);
+      if (!t.queued) setTest(t);
+      return t;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      throw e;
     } finally {
       setBusy(false);
     }
   };
+
+  const runNow = () =>
+    queue.submit({
+      label: `Baseline (SQM off) · ${iterations} iteration(s)`,
+      run: startBaseline,
+    });
 
   const cancel = async () => {
     setBusy(true);
@@ -439,6 +451,7 @@ export default function Baseline() {
         onClose={() => setSavedAt(null)}
         message="Schedule saved"
       />
+      {queue.dialog}
     </Box>
   );
 }

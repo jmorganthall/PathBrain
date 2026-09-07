@@ -8,6 +8,8 @@ construction.
 """
 from __future__ import annotations
 
+import time
+
 import pathbrain.api.routes_settings as rs
 from pathbrain import explore
 
@@ -832,3 +834,218 @@ def test_proposed_values_snap_to_the_firewalls_own_option_list(monkeypatch):
             for ch in g["candidate"]["changes"]:
                 if ch["field"] == "target":
                     assert ch["to"] in (2, 5, 9, 12, 15), ch
+
+
+# ── "Run the smartest bets": queue the top N recommendations in one press ───────────────
+
+
+def test_the_landscape_carries_both_orders(monkeypatch):
+    """Exploring and betting are different questions over the same candidates, so the
+    landscape answers both rather than making the page re-rank and risk disagreeing."""
+    profiles = [
+        _profile("a", quantum=1000, target=5, overall=60.0),
+        _profile("b", quantum=2000, target=5, overall=70.0),
+        _profile("c", quantum=3000, target=5, overall=80.0),
+        _profile("d", quantum=9000, target=5, overall=65.0),
+    ]
+    out = _landscape(monkeypatch, profiles, suggestions=5)
+    assert len(out["bets"]) == len(out["candidates"])
+    # Bets are sorted by their floor, and every one carries what that floor rests on.
+    floors = [b["confidence_score"] for b in out["bets"]]
+    assert floors == sorted(floors, reverse=True)
+    for bet in out["bets"]:
+        assert bet["confidence"] in ("high", "medium", "low")
+        assert bet["calibration_basis"] is not None
+        assert bet["confidence_score"] <= bet["predicted"]
+
+
+def _wide_field() -> list[dict]:
+    """A field with enough variety that the candidate pool is bigger than any batch asks
+    for — so a batch test is exercising the *ranking and queueing*, not the pool's size."""
+    return [
+        _profile("a", quantum=1000, target=3, overall=60.0, up_quantum=500),
+        _profile("b", quantum=2000, target=5, overall=70.0, up_quantum=1000),
+        _profile("c", quantum=3000, target=8, overall=80.0, up_quantum=1514),
+        _profile("d", quantum=5000, target=10, overall=65.0, up_quantum=2000),
+        _profile("e", quantum=7000, target=15, overall=55.0, up_quantum=3000),
+        _profile("f", quantum=9000, target=20, overall=50.0, up_quantum=4000),
+    ]
+
+
+def _stub_start(monkeypatch, fail_first: bool = False):
+    """Stand in for the apply → benchmark → restore session, recording what was asked for."""
+    import pathbrain.api.routes_settings as rs_mod
+    from fastapi import HTTPException
+
+    started: list[dict] = []
+
+    def fake_start(session, settings, label, iterations):
+        started.append({"label": label, "iterations": iterations})
+        n = len(started)
+        if fail_first and n == 1:
+            raise HTTPException(status_code=400, detail="Unreachable: non-writable field.")
+        return {
+            "id": n,
+            "fingerprint": f"fp{n}",
+            "iterations": iterations,
+            "label": label,
+            "existing_iterations": 0,
+            "warnings": [],
+            # Tests queue behind one another; only the first starts straight away.
+            "queued": n > 1,
+            "queue_position": n,
+            "queue_ahead": n - 1,
+            "blocked_by": None,
+        }
+
+    monkeypatch.setattr(rs_mod, "start_settings_test", fake_start)
+    return started
+
+
+def test_batch_queues_the_top_n_bets_at_the_requested_iterations(client, monkeypatch):
+    """The ask: "grab the top X and test Y iterations each" — one press instead of X.
+
+    Each goes through the ordinary single-test path, so they queue behind each other and
+    land in the recommendation ledger exactly as an individually pressed test does.
+    """
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: {"profiles": _wide_field()})
+    started = _stub_start(monkeypatch)
+
+    body = client.post("/api/explore/test-batch", json={"count": 3, "iterations": 4}).json()
+
+    assert len(body["queued"]) == 3 and not body["skipped"]
+    assert body["rank"] == "confidence" and body["iterations"] == 4
+    assert [s["iterations"] for s in started] == [4, 4, 4]
+    # Each queued row carries the reasoning that got it picked, not just an id.
+    for row in body["queued"]:
+        assert row["confidence_score"] is not None and row["predicted"] is not None
+    # They line up rather than racing each other.
+    assert [r["queue_position"] for r in body["queued"]] == [1, 2, 3]
+    # And they are the *best bets*, in bet order — not the page's exploring order.
+    floors = [r["confidence_score"] for r in body["queued"]]
+    assert floors == sorted(floors, reverse=True)
+
+
+def test_batch_can_still_be_asked_for_the_exploring_order(client, monkeypatch):
+    """Betting and exploring are different questions, so the caller can pick. `upside`
+    reproduces the page's own ranking — drawn to what we know least about."""
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: {"profiles": _wide_field()})
+    _stub_start(monkeypatch)
+
+    body = client.post(
+        "/api/explore/test-batch", json={"count": 2, "rank": "upside"}
+    ).json()
+    assert body["rank"] == "upside" and len(body["queued"]) == 2
+
+
+def test_batch_skips_a_bad_candidate_instead_of_failing_the_whole_run(client, monkeypatch):
+    """One unreachable proposal must not cost the others their night — the same discipline
+    `refresh` applies to a bad profile."""
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: {"profiles": _wide_field()})
+    _stub_start(monkeypatch, fail_first=True)
+
+    body = client.post("/api/explore/test-batch", json={"count": 3}).json()
+    assert len(body["skipped"]) == 1
+    assert "Unreachable" in body["skipped"][0]["reason"]
+    assert len(body["queued"]) == 2
+
+
+def test_batch_refuses_when_there_is_nothing_to_propose(client, monkeypatch):
+    """An empty batch should say why rather than reporting a successful run of nothing."""
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: {"profiles": []})
+    resp = client.post("/api/explore/test-batch", json={"count": 3})
+    assert resp.status_code == 400
+    assert "enough comparable profiles" in resp.json()["detail"].lower() or resp.json()["detail"]
+
+
+def test_a_batch_really_lines_up_queued_profile_tests(client, monkeypatch):
+    """End to end, with nothing stubbed between the button and the queue.
+
+    This is the join between the two features: batching is only possible *because* profile
+    tests queue. Under the old singleton the second candidate would have been refused, so a
+    "queue the top three" button could only ever have started one. Here the pipeline is held
+    so nothing can run, and all three must be sitting in the queue in bet order, having
+    applied nothing.
+    """
+    from sqlalchemy import select as sa_select
+
+    from pathbrain import coordinator, profile_test
+    from pathbrain.database import session_scope
+    from pathbrain.models import ProfileTest, ProfileTestStatus
+    from pathbrain.providers import get_provider
+    from pathbrain.providers import mock as mock_mod
+    from pathbrain.settings_profile import fingerprint, normalize
+
+    mock_mod._OVERRIDES.clear()
+    # Built on the live firewall's OWN pipe labels: a candidate's overrides are matched to
+    # live pipes by label, so a field labelled anything else proposes changes to pipes that
+    # do not exist and every one collapses to "nothing to change".
+    live = normalize(get_provider().discover())
+    labels = [p["label"] for p in live]
+    field = [
+        {
+            "fingerprint": fp,
+            "name": fp.title(),
+            "label": f"q{quantum}",
+            "overall": overall,
+            "iterations": 30,
+            "confident": True,
+            "settings": [
+                {"label": labels[0], "quantum": quantum, "target": f"{target}ms",
+                 "scheduler": "fq_codel", "queues": 1},
+                {"label": labels[1], "quantum": up_quantum, "target": f"{target}ms",
+                 "scheduler": "fq_codel", "queues": 1},
+            ],
+        }
+        for fp, quantum, target, overall, up_quantum in [
+            ("ea", 1000, 3, 60.0, 500), ("eb", 2000, 5, 70.0, 1000),
+            ("ec", 3000, 8, 80.0, 1514), ("ed", 5000, 10, 65.0, 2000),
+            ("ee", 7000, 15, 55.0, 3000), ("ef", 9000, 20, 50.0, 4000),
+        ]
+    ]
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: {"profiles": field})
+
+    with coordinator.hold("duel#99"):
+        body = client.post(
+            "/api/explore/test-batch", json={"count": 3, "iterations": 2}
+        ).json()
+        ids = [r["id"] for r in body["queued"]]
+        try:
+            # Not all three necessarily queue — a candidate the firewall cannot write is
+            # reverted and becomes a no-op, which is the reachability check doing its job —
+            # but a batch must line up more than one, which is the whole point of it.
+            assert len(ids) >= 2, body.get("skipped")
+            assert all(s["reason"] for s in body["skipped"])
+            # Every queued row says it is behind the duel rather than claiming to run.
+            assert all(r["queued"] for r in body["queued"])
+            assert {r["blocked_by"] for r in body["queued"]} == {"a duel session"}
+            assert [r["queue_position"] for r in body["queued"]] == list(
+                range(1, len(ids) + 1)
+            )
+
+            with session_scope() as s_:
+                rows = s_.scalars(
+                    sa_select(ProfileTest)
+                    .where(ProfileTest.id.in_(ids))
+                    .order_by(ProfileTest.id)
+                ).all()
+                assert [r.id for r in rows] == sorted(ids)
+                assert all(r.status == ProfileTestStatus.PENDING for r in rows)
+                assert all(r.iterations == 2 for r in rows)
+                # Each carries its OWN target — the whole reason the target moved onto the
+                # row rather than staying in one module-level slot.
+                assert all(r.target for r in rows)
+                assert len({fingerprint(r.target) for r in rows}) == len(rows)
+                # Nothing applied: a queued test has not touched the firewall.
+                assert all(r.baseline is None for r in rows)
+        finally:
+            # Always drop them, or a failed assertion leaves real benchmarks to run at
+            # teardown against the shared mock firewall.
+            for test_id in ids:
+                client.post(f"/api/settings/test-profile/{test_id}/cancel")
+
+    for _ in range(200):
+        if not profile_test.active():
+            break
+        time.sleep(0.02)
+    mock_mod._OVERRIDES.clear()

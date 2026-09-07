@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from .. import coordinator, current_test
 from ..config_store import get_config
 from ..database import get_session, session_scope
+from .. import job_queue
 from ..logging_config import get_logger
 from ..models import Run, RunStatus
 from ..runner import (
@@ -110,12 +111,14 @@ def cancel_run(run_id: int, session: Session = Depends(get_session)) -> RunDetai
     return _serialize_run(run)
 
 
-@router.post("/run", response_model=RunDetail, status_code=202)
+# No ``response_model``: the body is a run *plus* the universal queue-placement block, and
+# a response model would silently strip the half that says whether anything is happening.
+@router.post("/run", status_code=202)
 def trigger_run(
     payload: RunCreate,
     background: BackgroundTasks,
     session: Session = Depends(get_session),
-) -> RunDetail:
+) -> dict:
     """Create a run and execute it in the background. Returns the pending (first) run.
 
     A request over ``CHUNK_ITERATIONS`` is executed as a **series** of runs of at most
@@ -152,23 +155,40 @@ def trigger_run(
         run = session.get(Run, run_id)
     if run is None:  # pragma: no cover - defensive
         raise HTTPException(status_code=500, detail="Run could not be created")
-    return _serialize_run(run)
+    # A manual run self-queues: the row exists immediately (the dashboard polls its id) and
+    # its background task waits on the coordinator. It still reports the same placement
+    # block as every other start path, so "did anything happen?" has one answer everywhere.
+    status = job_queue.status()
+    return {
+        **_serialize_run(run).model_dump(),
+        "queued": bool(status["busy"]),
+        "ticket_id": None,
+        "queue_position": None,
+        "queue_ahead": status["queue_depth"] + (1 if status["busy"] else 0),
+        "blocked_by": status["blocked_by"],
+    }
 
 
 @router.post("/current/test", status_code=202)
 def start_current_test(payload: CurrentTestStart) -> dict:
     """Start a "test the current settings for X minutes" session: a time-boxed loop that
     benchmarks the live profile as-is (no firewall write) in short chunks until the timer
-    is up. Returns the session status. 409 if one is already running."""
+    is up. Returns the session status, or its place in the queue if the pipeline is busy."""
     try:
-        ct_id = current_test.start(payload.minutes)
+        submission = job_queue.submit(
+            "current_test",
+            f"Test current profile · {payload.minutes:g} min",
+            lambda: current_test.start(payload.minutes),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    status = current_test.current()
-    log.info("Test-current %s requested (%s min)", ct_id, payload.minutes)
-    return status or {"id": ct_id, "status": "pending"}
+    if not submission.started:
+        return {"id": None, "status": "queued", **submission.placement()}
+    log.info("Test-current %s requested (%s min)", submission.result, payload.minutes)
+    return {
+        **(current_test.current() or {"id": submission.result, "status": "pending"}),
+        **submission.placement(),
+    }
 
 
 @router.get("/current/test")

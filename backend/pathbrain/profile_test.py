@@ -17,13 +17,27 @@ session that:
 It runs in its own thread and holds the coordination lock for the whole session, so
 it never overlaps a sweep, an experiment, or a monitoring/manual run. The benchmark
 itself adds the read-before/read-after integrity guarantee (see ``runner``).
+
+**Tests queue; they are never refused.** This module used to be a strict singleton — a
+second ``start`` raised, the API turned that into a 409, and the button dead-ended. The
+coordinator underneath has always queued (``hold`` blocks), so the refusal was not
+protecting anything: it fired *before* the queueing machinery was reached, and it fired
+hardest exactly when queueing is what a person wants. Worse, the flag was set the moment
+a test was created rather than when it started running, so a test sitting behind a duel
+window — hours — refused every other test for the whole night.
+
+So the pending rows **are** the queue. Each carries its own ``target`` (persisted, because
+a queue cannot keep several targets in one in-memory slot), one worker thread drains them
+oldest-first, and a queued test is a row anyone can list, count or cancel before it ever
+touches the firewall. A test only becomes RUNNING once it holds the coordination lock, so
+"pending" honestly means *not yet applied to anything*.
 """
 from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from . import coordinator
 from .database import session_scope
@@ -36,22 +50,68 @@ from .shaper_fields import WRITABLE_FIELDS
 
 log = get_logger("profile_test")
 
-# Single profile test at a time. Module state coordinates with the driver thread
-# and holds the target settings (which aren't stored on the row) + a cooperative cancel flag.
-_state: dict = {"active": False, "id": None, "target": None, "thread": None, "cancel": False}
+# The queue lives in the database (PENDING rows, ordered by id); this is only the drainer.
+# ``thread`` is the single worker, ``driving`` the test it has claimed, and ``cancel`` the
+# ids asked to stop — a set, because the test being cancelled may not be the running one.
+_state: dict = {"thread": None, "driving": None, "cancel": set()}
+# Guards _state *and* the worker's decision to exit. Without it there is a window where a
+# worker finds the queue empty while a request is committing a row: the worker exits, the
+# request sees a live thread and spawns nothing, and the queue strands with no drainer.
+_gate = threading.RLock()
 
 
 def active() -> bool:
-    return bool(_state.get("active"))
+    """True while a test is claimed by the worker (queued for the lock, or running)."""
+    with _gate:
+        return _state.get("driving") is not None
 
 
-def cancel() -> bool:
-    """Ask the running profile test to stop after its current chunk. Returns True if one was
-    active. The baseline is still restored (the driver's ``finally``)."""
-    if not active():
-        return False
-    _state["cancel"] = True
-    log.info("Profile test %s: cancel requested", _state.get("id"))
+def queue_depth() -> int:
+    """How many tests are waiting to start."""
+    with session_scope() as session:
+        return int(
+            session.scalar(
+                select(func.count())
+                .select_from(ProfileTest)
+                .where(ProfileTest.status == ProfileTestStatus.PENDING)
+            )
+            or 0
+        )
+
+
+def cancel(test_id: int | None = None) -> bool:
+    """Cancel a test. Returns True if one was cancelled.
+
+    ``test_id`` omitted cancels whichever test is currently claimed (the historical
+    behaviour, and what the toolbar button means). A *pending* test is dropped from the
+    queue outright — it has applied nothing, so there is nothing to restore and no reason
+    to make the user wait for it to start just so it can stop. A *running* test is asked
+    to stop after its current chunk; its baseline is still restored by the driver's
+    ``finally``.
+    """
+    if test_id is None:
+        with _gate:
+            test_id = _state.get("driving")
+        if test_id is None:
+            return False
+        _state["cancel"].add(test_id)
+        log.info("Profile test %s: cancel requested", test_id)
+        return True
+
+    with _gate:
+        if _state.get("driving") == test_id:
+            _state["cancel"].add(test_id)
+            log.info("Profile test %s: cancel requested", test_id)
+            return True
+    # Not the claimed one: drop it from the queue before it ever runs.
+    with session_scope() as session:
+        pt = session.get(ProfileTest, test_id)
+        if pt is None or pt.status != ProfileTestStatus.PENDING:
+            return False
+        pt.status = ProfileTestStatus.CANCELLED
+        pt.stage = "Cancelled while queued — nothing was applied"
+        pt.finished_at = datetime.now(timezone.utc)
+    log.info("Profile test %s: removed from the queue before it started", test_id)
     return True
 
 
@@ -73,43 +133,124 @@ def _set_stage(pt_id: int, stage: str) -> None:
 
 
 def start(fingerprint_: str, target_settings: list[dict], label: str, iterations: int) -> int:
-    """Launch a profile test. Returns the ``ProfileTest`` id.
+    """Enqueue a profile test. Returns the ``ProfileTest`` id.
 
-    Raises ``RuntimeError`` if a test is already running. The baseline is snapshotted
-    inside the driver (under the lock) so it reflects the true pre-apply state.
+    Never refuses: the row is written PENDING and a single worker drains the queue
+    oldest-first. The baseline is snapshotted inside the driver (under the coordination
+    lock) so it reflects the true pre-apply state — which is also why a queued test is
+    harmless: it has read nothing and applied nothing until its turn comes.
     """
-    if active():
-        raise RuntimeError("A profile test is already running.")
     with session_scope() as session:
+        ahead = int(
+            session.scalar(
+                select(func.count())
+                .select_from(ProfileTest)
+                .where(ProfileTest.status == ProfileTestStatus.PENDING)
+            )
+            or 0
+        )
         pt = ProfileTest(
             status=ProfileTestStatus.PENDING,
             fingerprint=fingerprint_,
             target_label=label,
             iterations=iterations,
             baseline=None,
-            stage="Queued — waiting for any running benchmark to finish",
+            target=target_settings,
+            stage=(
+                "Queued — waiting for any running benchmark to finish"
+                if ahead or coordinator.busy()
+                else "Queued — starting"
+            ),
         )
         session.add(pt)
         session.flush()
         pt_id = pt.id
 
-    _state.update({"active": True, "id": pt_id, "target": target_settings, "cancel": False})
-    thread = threading.Thread(target=_drive, args=(pt_id,), name="pathbrain-profile-test", daemon=True)
-    _state["thread"] = thread
-    thread.start()
-    log.info("Profile test %s started: %s (%s iteration(s))", pt_id, fingerprint_, iterations)
+    _ensure_worker()
+    log.info(
+        "Profile test %s queued: %s (%s iteration(s), %s ahead of it)",
+        pt_id, fingerprint_, iterations, ahead,
+    )
     return pt_id
+
+
+def _ensure_worker() -> None:
+    """Make sure a drainer is running. Idempotent and safe to call from any thread."""
+    with _gate:
+        thread = _state.get("thread")
+        if thread is not None and thread.is_alive():
+            return
+        thread = threading.Thread(target=_worker, name="pathbrain-profile-test", daemon=True)
+        _state["thread"] = thread
+        thread.start()
+
+
+def _next_pending_id() -> int | None:
+    """The oldest queued test, or None. FIFO: tests run in the order they were asked for."""
+    with session_scope() as session:
+        return session.scalar(
+            select(ProfileTest.id)
+            .where(ProfileTest.status == ProfileTestStatus.PENDING)
+            .order_by(ProfileTest.id)
+            .limit(1)
+        )
+
+
+def _worker() -> None:
+    """Drain the queue until it is empty, then retire.
+
+    Claiming the next test and deciding to exit both happen under ``_gate``, so a row
+    committed by a request either is seen by this worker or arrives after the worker has
+    cleared itself — in which case that request starts a new one. There is no third case,
+    which is what stops the queue stranding with nobody draining it.
+    """
+    while True:
+        with _gate:
+            pt_id = _next_pending_id()
+            if pt_id is None:
+                _state["thread"] = None
+                return
+            _state["driving"] = pt_id
+        try:
+            _drive(pt_id)
+        except Exception:  # noqa: BLE001 — one bad test must never kill the drainer
+            log.exception("Profile test %s: driver raised; continuing with the queue", pt_id)
+        finally:
+            with _gate:
+                _state["driving"] = None
+                _state["cancel"].discard(pt_id)
 
 
 def _drive(pt_id: int) -> None:
     provider = get_provider()
-    target = _state.get("target")
+    # The target rides on the row: several tests can be queued at once, so it cannot live
+    # in one module-level slot that the next request would overwrite.
+    with session_scope() as session:
+        row = session.get(ProfileTest, pt_id)
+        target = list(row.target or []) if row is not None else []
     final_status = ProfileTestStatus.COMPLETE
     err: str | None = None
+    if not target:
+        log.error("Profile test %s: no target settings on the row; cannot run", pt_id)
+        with session_scope() as session:
+            row = session.get(ProfileTest, pt_id)
+            if row is not None:
+                row.status = ProfileTestStatus.FAILED
+                row.error = "No target settings recorded for this test."
+                row.stage = "Failed — no target settings recorded"
+                row.finished_at = datetime.now(timezone.utc)
+        return
     try:
         # Hold the coordination lock for the whole session (apply → benchmark →
         # restore). Queues behind any in-progress firewall/benchmark session.
         with coordinator.hold(f"profile-test#{pt_id}"):
+            # Cancelled while it queued for the lock. Checked here, before the first
+            # discover/apply, so a cancel during a long wait costs no firewall write at
+            # all rather than an apply-and-restore round trip nobody asked for.
+            if pt_id in _state["cancel"]:
+                final_status = ProfileTestStatus.CANCELLED
+                _set_stage(pt_id, "Cancelled while queued — nothing was applied")
+                return
             _set_stage(pt_id, "Reading current firewall settings")
             live = provider.discover()
             baseline = normalize(live)
@@ -187,7 +328,7 @@ def _drive(pt_id: int) -> None:
                 done = 0
                 idx = 0
                 while done < iterations:
-                    if _state.get("cancel"):
+                    if pt_id in _state["cancel"]:
                         final_status = ProfileTestStatus.CANCELLED
                         _set_stage(pt_id, f"Cancelled after {done} iteration(s) — restoring baseline")
                         break
@@ -262,7 +403,6 @@ def _drive(pt_id: int) -> None:
                     ProfileTestStatus.CANCELLED: "Cancelled — baseline restored",
                 }.get(final_status, err or "Failed")
                 pt.finished_at = datetime.now(timezone.utc)
-        _state.update({"active": False, "id": None, "target": None, "cancel": False})
         log.info("Profile test %s finished: %s", pt_id, final_status.value)
 
 
@@ -282,6 +422,10 @@ def _serialize(pt: ProfileTest) -> dict:
         # Best-effort label of whatever currently holds the coordination lock, so
         # the UI can explain a queued/waiting test.
         "lock_owner": coordinator.owner(),
+        "lock_owner_label": coordinator.describe(coordinator.owner()),
+        # A queued test has applied nothing yet — worth stating outright, because it is the
+        # difference between "cancel this" being free and it costing a restore.
+        "queued": pt.status == ProfileTestStatus.PENDING,
     }
 
 
@@ -290,6 +434,49 @@ def current() -> dict | None:
     with session_scope() as session:
         pt = session.scalars(select(ProfileTest).order_by(ProfileTest.id.desc())).first()
         return _serialize(pt) if pt else None
+
+
+def active_tests() -> list[dict]:
+    """Every test that has not finished — the running one first, then the queue in order."""
+    with session_scope() as session:
+        rows = session.scalars(
+            select(ProfileTest)
+            .where(
+                ProfileTest.status.in_([ProfileTestStatus.RUNNING, ProfileTestStatus.PENDING])
+            )
+            .order_by(ProfileTest.id)
+        ).all()
+        items = [_serialize(pt) for pt in rows]
+    running = [i for i in items if i["status"] == "running"]
+    pending = [i for i in items if i["status"] == "pending"]
+    for position, item in enumerate(pending, start=1):
+        item["queue_position"] = position
+    return running + pending
+
+
+def queue_status() -> dict:
+    """Everything a "the pipeline is busy — queue this?" prompt needs, in one cheap read.
+
+    The question a person is really asking before pressing a second time is *what is in
+    the way and how many are already waiting*, so this answers both rather than the bare
+    boolean the coordinator exposes. Deliberately no estimate of when the queue drains: a
+    duel window runs for hours and a monitoring run for minutes, and a fabricated wait is
+    the one number someone would plan around.
+    """
+    items = active_tests()
+    owner = coordinator.owner()
+    pending = [i for i in items if i["status"] == "pending"]
+    running = next((i for i in items if i["status"] == "running"), None)
+    return {
+        "busy": coordinator.busy(),
+        "owner": owner,
+        "owner_label": coordinator.describe(owner),
+        "held_for_s": coordinator.held_for(),
+        "waiting": coordinator.waiting(),
+        "running": running,
+        "pending": pending,
+        "queue_depth": len(pending),
+    }
 
 
 def reconcile_interrupted_profile_tests() -> int:
@@ -308,6 +495,7 @@ def reconcile_interrupted_profile_tests() -> int:
             )
         ).all()
         for pt in tests:
+            queued = pt.status == ProfileTestStatus.PENDING
             baseline = pt.baseline or []
             if baseline:
                 try:
@@ -316,8 +504,19 @@ def reconcile_interrupted_profile_tests() -> int:
                     _apply_all(provider, changes)
                 except Exception:  # noqa: BLE001
                     log.exception("Profile test %s: restore on reconcile failed", pt.id)
-            pt.status = ProfileTestStatus.FAILED
-            pt.error = "Interrupted — service restarted mid-test; baseline restored (best-effort)."
+            # A queued test never applied anything, so it did not fail — it simply never
+            # ran. Saying so keeps "failed" meaning something, and the restart may be hours
+            # later, by which point silently running a test nobody is watching is worse
+            # than making them press it again.
+            if queued:
+                pt.status = ProfileTestStatus.CANCELLED
+                pt.error = None
+                pt.stage = "Not started — the service restarted while it was queued"
+            else:
+                pt.status = ProfileTestStatus.FAILED
+                pt.error = (
+                    "Interrupted — service restarted mid-test; baseline restored (best-effort)."
+                )
             pt.finished_at = datetime.now(timezone.utc)
             restored += 1
     if restored:
@@ -325,4 +524,13 @@ def reconcile_interrupted_profile_tests() -> int:
     return restored
 
 
-__all__ = ["start", "active", "current", "reconcile_interrupted_profile_tests"]
+__all__ = [
+    "start",
+    "active",
+    "cancel",
+    "current",
+    "active_tests",
+    "queue_depth",
+    "queue_status",
+    "reconcile_interrupted_profile_tests",
+]

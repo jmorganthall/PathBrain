@@ -16,7 +16,7 @@ show it immediately.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .. import explore as explore_mod
@@ -25,10 +25,35 @@ from ..config_store import get_config
 from ..database import get_session
 from ..logging_config import get_logger
 from ..methodology import ensure_current_methodology
-from ..schemas import ExploreTest
+from ..schemas import ExploreBatchTest, ExploreTest
 
 router = APIRouter()
 log = get_logger("api.explore")
+
+#: How many candidates a batch generates before picking its top N. Generating more than
+#: we take is the point — re-ranking five candidates and taking five ranks nothing — and
+#: the cost is the same ``compute_profiles`` pass either way.
+BATCH_CANDIDATE_POOL = 12
+
+
+def _allowed_values() -> dict | None:
+    """The firewall's own select option lists, so every proposed value is one it can hold.
+
+    Best-effort: the landscape must render against an unreachable firewall, and no options
+    simply means no snapping.
+    """
+    try:
+        from ..providers import get_provider
+
+        provider = get_provider()
+        allowed = provider.field_options() or None
+        if allowed is None:
+            provider.discover()
+            allowed = provider.field_options() or None
+        return allowed
+    except Exception:  # noqa: BLE001
+        log.debug("Explore: could not read provider field options", exc_info=True)
+        return None
 
 
 @router.get("/explore/landscape")
@@ -54,47 +79,23 @@ def landscape(
     behind it, so a lucky Overall on two runs informs a curve without carrying it; passing
     false counts every profile equally.
     """
-    # The firewall's own select option lists, so every proposed target/interval is a value
-    # the firewall can hold. Best-effort: the landscape must render with an unreachable
-    # firewall, and no options simply means no snapping.
-    allowed: dict | None = None
-    try:
-        from ..providers import get_provider
-
-        provider = get_provider()
-        allowed = provider.field_options() or None
-        if allowed is None:
-            provider.discover()
-            allowed = provider.field_options() or None
-    except Exception:  # noqa: BLE001
-        log.debug("Explore landscape: could not read provider field options", exc_info=True)
-
     return explore_mod.landscape(
         session,
         suggestions=suggestions,
         confident_only=confident_only,
-        allowed_values=allowed,
+        allowed_values=_allowed_values(),
         reference=reference,
     )
 
 
-@router.post("/explore/test")
-def test_candidate(payload: ExploreTest, session: Session = Depends(get_session)) -> dict:
-    """Measure one recommendation — and record the claim it made, before measuring it.
+def _start_candidate(session: Session, payload: ExploreTest) -> dict:
+    """Measure one candidate and write its claim down first. The one path both buttons use.
 
-    Two questions, one path. ``iterations`` (default 5, "Test now") runs a short block:
-    enough to see whether the recommendation went anywhere at all, cheap enough to try
-    several in an evening. Omitting it tops the profile up to the confidence minimum — the
-    long answer, for a candidate worth settling. Either way it's the same supervised
-    apply → benchmark → restore session as any profile test, under the coordinator lock.
-
-    The candidate is materialized on the **parent's** stored settings rather than on
-    whatever the firewall is currently set to (see ``explore.full_overrides``), because
-    "Speedy Sloth, with the download quantum nobody has tried" is only that profile if it
-    starts from Speedy Sloth. When the parent's settings can't be found the levers fall
-    back to the live profile and the recommendation is stamped with a ``note`` saying so —
-    a caveat on the record beats a silent substitution.
+    Factored out so "Test now" on a single row and "run the top N bets" cannot drift into
+    two different notions of what materializing a candidate means — which is exactly how
+    the ledger ends up grading claims against profiles nobody proposed.
     """
+
     from .routes_settings import _profile_settings, start_settings_test
 
     settings = payload.settings
@@ -156,6 +157,123 @@ def test_candidate(payload: ExploreTest, session: Session = Depends(get_session)
         log.exception("Could not record the explore recommendation for test %s", started["id"])
 
     return {**started, "recommendation_id": rec_id, "note": note}
+
+
+@router.post("/explore/test")
+def test_candidate(payload: ExploreTest, session: Session = Depends(get_session)) -> dict:
+    """Measure one recommendation — and record the claim it made, before measuring it.
+
+    Two questions, one path. ``iterations`` (default 5, "Test now") runs a short block:
+    enough to see whether the recommendation went anywhere at all, cheap enough to try
+    several in an evening. Omitting it tops the profile up to the confidence minimum — the
+    long answer, for a candidate worth settling. Either way it's the same supervised
+    apply → benchmark → restore session as any profile test, under the coordinator lock.
+
+    The candidate is materialized on the **parent's** stored settings rather than on
+    whatever the firewall is currently set to (see ``explore.full_overrides``), because
+    "Speedy Sloth, with the download quantum nobody has tried" is only that profile if it
+    starts from Speedy Sloth. When the parent's settings can't be found the levers fall
+    back to the live profile and the recommendation is stamped with a ``note`` saying so —
+    a caveat on the record beats a silent substitution.
+    """
+    return _start_candidate(session, payload)
+
+
+@router.post("/explore/test-batch")
+def test_batch(payload: ExploreBatchTest, session: Session = Depends(get_session)) -> dict:
+    """Queue the top **N** recommendations at **M** iterations each — "run the smartest bets".
+
+    Explore routinely produces ten proposals worth measuring and, until now, exactly one
+    button per row to measure them with: a person had to press, wait, come back and press
+    again. Since profile tests queue, a batch is simply N presses the server makes on your
+    behalf, and the pipeline drains them one at a time in order.
+
+    Which N is the whole question, and it is not the page's default order. The landscape
+    ranks candidates by an **upper** confidence bound because exploring should be drawn to
+    what we don't know; deciding what to spend a night running is the opposite question, so
+    ``rank="confidence"`` (the default) scores each candidate at the **pessimistic** end of
+    a band widened by what its evidence class has actually missed by in the recommendation
+    ledger — the measured track record of which bets win, on this link. ``rank="upside"``
+    keeps the page's exploring order for callers that want it.
+
+    One bad candidate is skipped with its reason, never fatal to the batch — the same
+    discipline ``refresh`` applies to a bad profile. Nothing is applied to the firewall
+    here: each test snapshots, applies, benchmarks and restores when its own turn comes.
+    """
+    landscape = explore_mod.landscape(
+        session,
+        suggestions=BATCH_CANDIDATE_POOL,
+        confident_only=payload.confident_only,
+        allowed_values=_allowed_values(),
+    )
+    pool = landscape.get("bets" if payload.rank == "confidence" else "candidates") or []
+    if not pool:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                landscape.get("reason")
+                or "No candidates to test — the landscape has nothing to propose right now."
+            ),
+        )
+
+    best_overall = landscape.get("best_overall")
+    queued: list[dict] = []
+    skipped: list[dict] = []
+    for candidate in pool[: payload.count]:
+        label = ", ".join(
+            f"{ch['pipe']} {ch['field_label']} {ch['to']}" for ch in candidate.get("changes") or []
+        )
+        one = ExploreTest(
+            settings=candidate.get("settings"),
+            label=f"Explore: {label}",
+            iterations=payload.iterations,
+            parent_fingerprint=(candidate.get("parent") or {}).get("fingerprint"),
+            parent_overall=(candidate.get("parent") or {}).get("overall"),
+            changes=candidate.get("changes"),
+            evidence=candidate.get("evidence"),
+            multi_lever=bool(candidate.get("multi_lever")),
+            predicted=candidate.get("predicted"),
+            uncertainty=candidate.get("uncertainty"),
+            upside=candidate.get("upside"),
+            best_overall=best_overall,
+            summary=candidate.get("summary"),
+        )
+        try:
+            started = _start_candidate(session, one)
+        except HTTPException as exc:
+            # A no-op or an unreachable change. Worth reporting per row — "3 of 5 queued,
+            # and here is why the other two weren't" is an answer; a failed batch is not.
+            skipped.append({"label": label, "reason": exc.detail})
+            continue
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Batch test: could not queue a candidate")
+            skipped.append({"label": label, "reason": f"{type(exc).__name__}: {exc}"})
+            continue
+        queued.append({
+            **started,
+            "summary": candidate.get("summary"),
+            "predicted": candidate.get("predicted"),
+            "uncertainty": candidate.get("uncertainty"),
+            "confidence_score": candidate.get("confidence_score"),
+            "confidence": candidate.get("confidence"),
+            "clears_bar": candidate.get("clears_bar"),
+        })
+
+    log.info(
+        "Batch test: queued %s of %s candidate(s) at %s iteration(s), ranked by %s",
+        len(queued), min(payload.count, len(pool)), payload.iterations, payload.rank,
+    )
+    return {
+        "queued": queued,
+        "skipped": skipped,
+        "requested": payload.count,
+        "iterations": payload.iterations,
+        "rank": payload.rank,
+        "best_overall": best_overall,
+        # What the ranking rested on, so an uncalibrated batch never reads like a
+        # track-record-backed one.
+        "calibration": landscape.get("calibration") or {},
+    }
 
 
 @router.get("/explore/recommendations")

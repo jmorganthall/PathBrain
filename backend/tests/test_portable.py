@@ -574,3 +574,100 @@ def test_runner_skips_a_plugin_disabled_in_config(client, clean):
     with session_scope() as s:
         plugins = set(s.scalars(__import__("sqlalchemy").select(BenchmarkResult.plugin).where(BenchmarkResult.run_id == run_id)).all())
         assert "portable" not in plugins and "browser" in plugins
+
+
+# ── Venue recall: a place you have tested before is recognised, not re-asked ────────────
+#
+# Being somewhere you have tested before is the common case — the same hotel, the same
+# office, the same café. Asking for the label from scratch every time is busywork, and it is
+# how one place ends up recorded under three spellings, which silently splits its history.
+# The page used to pre-fill whatever this device typed *last*, wherever that was, which is
+# wrong in the one way that matters: it has nothing to do with where you are now.
+
+
+def _away(device: str, venue: str | None, egress: str | None, when: datetime | None = None) -> int:
+    run = PortableRun(
+        device_id=device, is_home=False, instrument_version=VERSION, tz_offset_minutes=0,
+        venue=venue, egress_ip=egress, raw=make_raw(),
+    )
+    if when is not None:
+        run.created_at = when
+    with session_scope() as s:
+        s.add(run)
+        s.flush()
+        return run.id
+
+
+def test_a_previously_labelled_address_suggests_its_venue(clean):
+    _away("phone", "Hotel Denver", "93.184.216.34")
+    with session_scope() as s:
+        out = portable.recall_venue(s, {"v4": "93.184.216.34", "v6": None})
+    assert out is not None
+    assert out["venue"] == "Hotel Denver"
+    assert out["matched_on"] == "ip4"
+
+
+def test_a_different_address_suggests_nothing(clean):
+    """The recall must be about *this* network. Suggesting the last label typed anywhere is
+    the behaviour being replaced."""
+    _away("phone", "Hotel Denver", "93.184.216.34")
+    with session_scope() as s:
+        assert portable.recall_venue(s, {"v4": "104.16.132.229", "v6": None}) is None
+
+
+def test_ipv6_is_recalled_by_prefix_not_by_address(clean):
+    """Hosts on one network share a prefix and never an address, so an exact v6 comparison
+    would recognise a place exactly never — the same rule `decide_home` follows."""
+    _away("phone", "Airport lounge", "2606:2800:220:1::5")
+    with session_scope() as s:
+        out = portable.recall_venue(s, {"v4": None, "v6": "2606:2800:220:1::99"}, v6_prefix=64)
+        assert out is not None and out["venue"] == "Airport lounge"
+        assert out["matched_on"] == "ip6"
+        # A different /64 is a different network.
+        assert portable.recall_venue(s, {"v4": None, "v6": "2606:2800:220:2::5"}, v6_prefix=64) is None
+
+
+def test_a_laptop_inherits_the_name_a_phone_gave_the_place(clean):
+    """Deliberately not device-scoped: the point is that the network has a name."""
+    _away("phone", "Hotel Denver", "93.184.216.34")
+    with session_scope() as s:
+        out = portable.recall_venue(s, {"v4": "93.184.216.34", "v6": None}, device_id="laptop")
+    assert out["venue"] == "Hotel Denver"
+    assert out["from_this_device"] is False
+
+
+def test_this_devices_own_label_wins_over_someone_elses(clean):
+    """When two devices spell a place differently, suggest the reader their own spelling."""
+    _away("phone", "Denver hotel wifi", "93.184.216.34", when=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    _away("laptop", "Hotel Denver", "93.184.216.34", when=datetime(2026, 1, 2, tzinfo=timezone.utc))
+    with session_scope() as s:
+        out = portable.recall_venue(s, {"v4": "93.184.216.34", "v6": None}, device_id="phone")
+    assert out["venue"] == "Denver hotel wifi"
+    assert out["from_this_device"] is True
+
+
+def test_home_runs_are_never_a_venue_source(clean):
+    """A home run carries no venue by construction, and home is not a place you label."""
+    with session_scope() as s:
+        s.add(PortableRun(
+            device_id="phone", is_home=True, instrument_version=VERSION,
+            venue="should not be suggested", egress_ip="93.184.216.34", raw=make_raw(),
+        ))
+    with session_scope() as s:
+        assert portable.recall_venue(s, {"v4": "93.184.216.34", "v6": None}) is None
+
+
+def test_the_home_endpoint_carries_the_suggestion(client, clean):
+    """One round trip: the page already asks this endpoint where it is, so it learns what
+    this network is called in the same answer."""
+    _away("phone", "Hotel Denver", "93.184.216.34")
+    body = client.get(
+        "/api/portable/home?egress_ip=93.184.216.34&device_id=phone"
+    ).json()
+    assert body["venue"] is not None
+    assert body["venue"]["venue"] == "Hotel Denver"
+    assert body["venue"]["from_this_device"] is True
+
+    # An address nobody has labelled leaves the field empty rather than guessing.
+    other = client.get("/api/portable/home?egress_ip=104.16.132.229").json()
+    assert other["venue"] is None

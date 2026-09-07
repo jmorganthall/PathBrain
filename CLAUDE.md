@@ -241,6 +241,55 @@ LLM-based. See `README.md` for the product overview.
     (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline). The
     swept `param` is validated against `shaper_fields.WRITABLE_FIELDS` at start — an
     experiment on a non-writable field (scheduler/queues) is refused instead of no-op'ing.
+  - `job_queue.py` — **the universal "add a job" contract: every Run button behaves the same.**
+    PathBrain runs one firewall/benchmark session at a time and `coordinator` enforces that;
+    what was never universal was *what happens when you press a button while it is busy*, and
+    there were **three** answers depending only on which button you pressed. **(1) A refusal** —
+    six engines guarded their own `start()` with an "already running" check that the API turned
+    into a 409, so the button dead-ended; the check protected nothing the coordinator wasn't
+    already protecting, it just fired earlier, and hardest exactly when queueing is what a
+    person wants. **(2) A silent queue** — start a *different* kind of session and it worked,
+    because the engine's thread simply blocked on `coordinator.hold` until its turn: correct,
+    and invisible, since the toast said the session had begun and nothing happened for hours,
+    which reads identically to a broken button. **(3) An immediate start**, when the pipeline
+    happened to be free. Three behaviours for one intent is not a policy, it is an accident of
+    which module a button landed in — and it is why "it doesn't queue" kept being reported
+    after each individual engine was fixed.
+    So: **submitting a job always succeeds**, and the caller is always told which of the two
+    things happened. `submit(kind, label, start)` calls the engine's own `start()`
+    **synchronously** when the pipeline is free (so every existing response shape survives —
+    the caller still gets the real session id, and the engine's own `ValueError` still reaches
+    the HTTP caller as a 400), and otherwise holds it as a **ticket** that a single dispatcher
+    starts when its turn comes. Every start endpoint returns the same
+    **placement block** — `queued` / `ticket_id` / `queue_position` / `queue_ahead` /
+    `blocked_by` — so "did anything happen?" has one answer whichever button asked.
+    `GET /api/queue` is the one "can I start?" read and `POST /api/queue/{id}/cancel` drops a
+    ticket, free by construction because a queued job has applied nothing.
+    **The gate is per KIND, not "is any engine active"** (`kind_active`). Cross-kind exclusion
+    is the coordinator's job and it does it properly, with a lease and stale-holder eviction; a
+    module-level `active()` flag has neither, so gating the whole queue on "no engine anywhere
+    reports itself active" would let one engine that died with its flag set stall every job
+    forever with nothing able to clear it — strictly worse than the refusals this replaces. So
+    the flag answers only the question it can: would starting *this* kind collide with itself.
+    Two consequences stated rather than discovered: the queue is **in memory**, because a
+    ticket has by definition not started (nothing applied, no row written, no measurement
+    taken), so a restart drops it — the same call `profile_test` reconciliation already makes,
+    since hours later silently starting a session nobody is watching is worse than making
+    someone press the button again; and a queued job's **validation moves with it** ("nothing
+    to race", "no stored profiles") from the HTTP response to the moment its turn comes, so the
+    failure is recorded on the ticket and surfaced in the jobs feed rather than being lost.
+    **Two engines queue themselves** rather than through a ticket — `profile_test` (its
+    fingerprint is recorded in the recommendation ledger *before* it runs) and manual runs (the
+    dashboard polls the run id) — because their callers need a real row id back synchronously.
+    They report the same placement block and contribute to the same `pending` list
+    (`register_pending_source`), so there is one queue to a reader; the honest cost is that
+    ordering *between* the two layers is best-effort rather than strict FIFO, which costs at
+    most a swap between two things that were both about to run anyway.
+    Frontend: `hooks/useQueuedAction.tsx` is the policy in one place — it asks `GET /queue`
+    before submitting, shows **"Busy now — queue this?"** (`components/QueueConfirmDialog.tsx`)
+    naming the holder and what is already waiting, and phrases the outcome identically
+    everywhere (`describePlacement`). Every Run button on Dashboard, Shotgun Sweep, Baseline,
+    Duels, Settings (race / re-run / test), Explore, AI and Profile Detail goes through it.
   - `coordinator.py` — process-wide lock that serializes any apply-firewall + benchmark
     session (sweep, profile test, experiment, monitoring, manual run): user-triggered
     ones `hold` (queue), periodic ones `try_hold` (defer).
@@ -458,6 +507,45 @@ LLM-based. See `README.md` for the product overview.
     everyday action, applying is the commitment. A live stage readout runs under the header
     and the page **refreshes itself in place** when the test finishes, since the new data is
     the entire point of having run it.
+    **Tests QUEUE; they are never refused** (`_worker`/`_ensure_worker`/`_next_pending_id`,
+    `ProfileTest.target`). The module was a strict singleton — a second `start` raised, the API
+    turned it into a 409, and the button dead-ended — which protected nothing: the coordinator
+    underneath has always queued (`hold` blocks, and the row's own stage read *"Queued — waiting
+    for any running benchmark to finish"*), so the refusal fired **before** the queueing
+    machinery was reached. Worse, the flag was set at *creation* rather than at start, so a test
+    sitting behind a duel window refused every other test for the whole night — the failure
+    landing hardest exactly when queueing is what a person wants. The reported symptom was
+    "click Test now from Explore while jobs are running and it doesn't queue"; only a *second
+    profile test* actually refused, while every other holder — duel, race, sweep, refresh,
+    baseline, monitoring, manual run — queued correctly and **silently**, which reads the same
+    from the outside: Explore polls no stage and its toast said "Testing…" in the present tense.
+    So the **pending rows are the queue** (ordered by id), each carrying its own `target` — a new
+    JSON column, because one in-memory slot cannot hold several queued targets and the next
+    request would overwrite the last one's settings — and a single worker drains them
+    oldest-first. Claiming the next test and deciding to retire both happen under one lock
+    (`_gate`), so a row committed by a request is either seen by the running worker or arrives
+    after it has cleared itself, in which case that request starts a new one; there is no third
+    case, which is what stops the queue stranding with nobody draining it. A test becomes RUNNING
+    only once it holds the coordination lock, so **pending honestly means nothing was applied** —
+    which is what makes `cancel(id)` free: a queued test leaves the line outright rather than
+    starting just to stop, and one cancelled while it waits for the lock bails at a pre-apply
+    seam instead of paying an apply-and-restore round trip. Startup reconciliation closes a
+    queued test as CANCELLED ("not started"), not FAILED — it never ran, and hours later
+    silently running a test nobody is watching is worse than making them press it again.
+    Every start path returns its **queue placement** (`routes_settings._queue_placement`:
+    `queued`/`queue_position`/`queue_ahead`/`blocked_by`), `GET /settings/test-profile/queue`
+    (`queue_status`) reports what holds the pipeline and who is waiting, and
+    `coordinator.describe` turns a lock label into words (`duel#412` → *"a duel session"*),
+    because "duel#412" is not an answer to "why can't I test now?". The jobs feed lists **every**
+    unfinished test rather than only the newest row (`routes_jobs._profile_test_entry`), each
+    cancellable by id (`POST /settings/test-profile/{id}/cancel`), since showing one row was half
+    of why a queued test read as nothing happening. Deliberately **no estimate of when the queue
+    drains**: the holder might be a monitoring run finishing in two minutes or a ladder running
+    until 05:00, and a fabricated wait is the one number someone would plan around. On the page,
+    a press that would not start immediately opens **"Busy now — queue this?"**
+    (`components/QueueTestDialog.tsx`) naming the holder, how long it has run and what is already
+    queued, with **Queue it** / **Not now** — the queue is the fix, the dialog is what makes it
+    visible.
   - `current_test.py` — **Test current for X minutes**: a time-boxed data-collection loop on
     whatever profile the firewall is **already** on. Unlike the other engines it **never writes
     the firewall** (it measures the live profile as-is), so there's no baseline to snapshot or
@@ -1434,6 +1522,45 @@ LLM-based. See `README.md` for the product overview.
     own representation. This was the dominant cause — because `full_overrides` supplies the parent's
     **whole** writable set, *every* explore test hashed an invented profile, so the runs were filed
     correctly and the recommendation pointed at a fingerprint with no history at all.
+  - **Betting vs exploring: `explore.rank_bets` + `POST /api/explore/test-batch`.** Explore
+    routinely produces ten proposals worth measuring and, until this, exactly one button per
+    row to measure them with — a person had to press, wait, come back and press again. The
+    batch is the missing verb ("test the top X at Y iterations each"), and it is only
+    possible *because* profile tests queue: under the old singleton the second candidate
+    would have been refused, so a "queue the top three" button could only ever have started
+    one. But **which** X is the substance, not the count. The landscape ranks by an **upper**
+    confidence bound (`predicted + EXPLORATION_WEIGHT·uncertainty`) because exploring should
+    be drawn to what we don't know — and that is the wrong order for deciding what to spend a
+    night running, where it puts the candidates we understand least at the top. So a *bet* is
+    scored at the **pessimistic** end: `predicted − CONFIDENCE_SIGMA·band`, the same
+    optimism/pessimism split the duel already makes between `CEILING_SIGMA` (who to race) and
+    `RANK_SIGMA` (who is best) — **optimism decides what to explore, pessimism decides what to
+    back**. The band is *not* the model's self-assessment: every claim is graded in the
+    recommendation ledger, so each **evidence class**'s typical miss is a measured number on
+    this link (`explore_tracker.calibration`), and the band used is the **wider** of the
+    stated one and that measured miss — the wider, never a blend, because a class stating
+    ±1.0 while missing by 2.4 is overconfident and averaging keeps half of the
+    overconfidence. A class under `CALIBRATION_MIN_GRADED` (3) is reported but **untrusted**,
+    so one unlucky measurement can't bury a whole class of proposals. Each bet carries
+    `confidence_score`/`confidence_band`/`confidence`/`calibration_basis` and `clears_bar` —
+    whether the *floor* still beats the best measured profile, the strong claim, as opposed
+    to the upside claim the exploring order makes. `rank_bets` mutates nothing (the landscape
+    returns both orders over the same candidates, so the two views can never disagree about
+    what a candidate is), and with an empty ledger the stated band simply stands and
+    `calibration_basis` says so — an uncalibrated ranking is still useful, but it is the
+    model's opinion rather than a track record and the two must not read the same. The batch
+    endpoint generates `BATCH_CANDIDATE_POOL` (12) candidates and takes the top N — generating
+    more than it takes is the point, since re-ranking five and taking five ranks nothing — and
+    routes every one through the *same* `_start_candidate` the single "Test now" uses, so
+    there is one materialize → apply → benchmark → restore path and one claim-recording path.
+    One bad candidate is skipped with its reason rather than failing the batch (the discipline
+    `refresh` applies to a bad profile). Rendered as **"Run the best bets"**
+    (`components/BestBetsDialog.tsx`): pick how many, how long, and confidence-vs-upside, with
+    a preview showing each bet's floor beside its prediction and whether it clears the bar.
+    **The seam this leaves is the overnight module**: `rank_bets` is a pure function over the
+    landscape, so a scheduler can alternate *explore* (queue tonight's smartest bets) with
+    *adjudicate* (duel the survivors) — the bets mature into pooled evidence as they run, and
+    the ring then decides between them.
   - `explore_tracker.py` — **the recommendation ledger: was the data right?** Explore's output is
     a *prediction*, and a prediction nobody scores is a horoscope — it costs the same night of
     benchmarking either way. So the **claim is stored before the measurement exists**
@@ -2109,9 +2236,21 @@ docker compose up --build   # -> http://localhost:8000
      version owns the list and quarantines runs measured against the old one, and the
      field is seeded from the prior version's standings until fresh runs arrive (see the
      "site list is part of the methodology" note above).
-  3. **No frontend edit needed.** The Settings-Impact view is fully crown-driven off the
-     profiles response's `overall_metrics` (the methodology's `overall` spec, exposed by the
-     API): the pinned **standings columns**, the **quadrant default axes** (X/Y/Shade =
+  3. **No frontend edit needed.** The **Dashboard's Overall card** and the Settings-Impact
+     view are both fully crown-driven. The hero card's smaller gauges are the metrics the
+     Overall is *actually* computed from, read from `GET /score/rolling`'s `overall_metrics`
+     / `overall_method` / `overall_weights` (straight off the methodology's `overall` spec at
+     request time), with each leg's subscore, measured value and weight; the axes are demoted
+     to a clearly-labelled **"Axis breakdown"** strip. That distinction is the fix: the card
+     used to show the three headline **axes** captioned as "the axes the Overall is built
+     from", which stopped being true at **v5** when the Overall became a first-class quantity
+     over the crown metrics — by v16 those gauges were dominated by metrics the Overall never
+     reads (`render`, `load_event`, `cadence`, `evenness`, `byte_earliness`, `cls`), and the
+     Completion axis it also rendered had lost every one of its metrics. A headline describing
+     a rubric that stopped being current months earlier. `test_scores` pins it: the payload
+     carries the crown, the crown is disjoint from the axis keys, and pointing the endpoint at
+     another version re-points the card with no frontend edit. Settings-Impact reads the same
+     `overall_metrics` from the profiles response: the pinned **standings columns**, the **quadrant default axes** (X/Y/Shade =
      crown[0]/[1]/[2], until the user manually picks an axis), and the **scatter dot-selection
      panel's** per-metric breakdown all read that one set, so a crown change (new methodology)
      re-wires the whole view automatically with zero `Settings.tsx` edits. Keep it that way —
@@ -2427,6 +2566,18 @@ docker compose up --build   # -> http://localhost:8000
   contradicts — correlation by construction rather than by a hash agreeing with reality.
 - **Next:** multi-parameter Bayesian search + interleaved A/B with effect-size/CI + hysteresis;
   routing intelligence / SD-WAN. (Latency-under-load/bufferbloat is explicitly **out of scope**.)
+
+⚠️ **Every user-triggered session goes through `job_queue.submit()`, and no start path
+refuses because something else is running.** A busy pipeline is a *queue*, never a 409: the
+coordinator has always serialized sessions, so an "already running" guard in front of it only
+removes the user's ability to line work up. A new engine therefore (a) submits through
+`job_queue`, (b) returns the standard placement block (`queued`/`ticket_id`/`queue_position`/
+`queue_ahead`/`blocked_by`) from its start endpoint, (c) registers its `active()` with
+`job_queue.register` so a second session of *its own kind* still waits, and (d) is driven from
+the frontend by `useQueuedAction`, never by a bare `api.*` call — otherwise that button becomes
+the one place with different behaviour, which is the bug this whole contract exists to end.
+Reserve a 4xx for a genuinely bad request (an unreachable profile, an empty spec, a no-op),
+never for "the pipeline is in use".
 
 ⚠️ Firewall **writes** go only through `provider.apply()`. Eight callers use it, all
 snapshot/restore, reversible, or explicitly armed: the experiment engine (disarmed +

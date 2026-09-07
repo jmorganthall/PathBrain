@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # -- Requests -------------------------------------------------------------
@@ -150,6 +150,26 @@ class TestSettings(BaseModel):
     settings: Any
     label: str | None = None
     iterations: int | None = None
+
+
+class ExploreBatchTest(BaseModel):
+    """Queue the top N Explore recommendations at M iterations each.
+
+    ``rank`` decides *which* N, and it is the substance of this request rather than a
+    detail. ``"confidence"`` scores each candidate at the pessimistic end of a band widened
+    by what its evidence class has actually missed by in the recommendation ledger — the
+    best bets we have a track record for. ``"upside"`` keeps the landscape's exploring
+    order, which is deliberately drawn to what we know least about.
+    """
+
+    # How many to queue. Capped because this is a queue of real benchmark sessions, not a
+    # list: twelve at five iterations is already most of an evening.
+    count: int = Field(3, ge=1, le=12)
+    # Iterations each. None tops each profile up to the confidence minimum, which is the
+    # long answer and rarely what a batch wants.
+    iterations: int | None = Field(5, ge=1)
+    rank: Literal["confidence", "upside"] = "confidence"
+    confident_only: bool = True
 
 
 class ExploreTest(BaseModel):

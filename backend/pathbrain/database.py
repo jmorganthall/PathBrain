@@ -173,6 +173,7 @@ def _migrate() -> None:
         "profile_tests": {
             "stage": "VARCHAR(255)",
             "reached_fingerprint": "VARCHAR(40)",
+            "target": "JSON",
         },
         "explore_recommendations": {
             "unreachable": "BOOLEAN DEFAULT 0",

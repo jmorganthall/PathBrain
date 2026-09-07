@@ -116,8 +116,17 @@ def test_current_test_endpoints_start_status_conflict_cancel(client, monkeypatch
     assert resp.status_code == 202
     assert resp.json()["status"] in ("pending", "running")
 
-    # A second start while one is active is a conflict.
-    assert client.post("/api/current/test", json={"minutes": 5}).status_code == 409
+    # A second start QUEUES rather than being refused — "add a job" is universal, and a
+    # busy pipeline is the moment queueing is most wanted, not the moment to dead-end.
+    second = client.post("/api/current/test", json={"minutes": 5})
+    assert second.status_code == 202
+    body = second.json()
+    assert body["queued"] is True and body["status"] == "queued"
+    assert body["ticket_id"] is not None
+    # It is listed as waiting, and can be dropped before it starts (nothing applied yet).
+    queue = client.get("/api/queue").json()
+    assert any(p["ticket_id"] == body["ticket_id"] for p in queue["pending"])
+    assert client.post(f"/api/queue/{body['ticket_id']}/cancel").json()["cancelled"] is True
 
     # Status is queryable, then cancel winds it down.
     assert client.get("/api/current/test").json()["status"] in ("pending", "running")

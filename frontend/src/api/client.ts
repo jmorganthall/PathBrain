@@ -63,7 +63,12 @@ import type {
   ExploreLandscape,
   ExploreLedger,
   ExploreTestRequest,
+  ExploreBatchResult,
   ExploreTestResult,
+  ProfileTestQueue,
+  QueueStatus,
+  RefreshStart,
+  TestSettingsStart,
   SettingsProfilesResponse,
   WeatherSensitivity,
   Sweep,
@@ -419,7 +424,7 @@ export const api = {
     ),
   startRefresh: (iterations: number, top?: number, fingerprints?: string[]) =>
     startingJob(
-      request<{ id: number; iterations: number; top: number | null; fingerprints?: number | null }>(
+      request<RefreshStart>(
         "/settings/refresh",
         {
           method: "POST",
@@ -459,6 +464,29 @@ export const api = {
         body: JSON.stringify(body),
       }),
     ),
+  // Queue the top N recommendations at M iterations each — "run the smartest bets".
+  // `rank: "confidence"` ranks by the pessimistic end of a ledger-calibrated band (what to
+  // back); `"upside"` keeps the page's exploring order (what to go and look at).
+  exploreTestBatch: (body: {
+    count: number;
+    iterations?: number | null;
+    rank?: "confidence" | "upside";
+  }) =>
+    startingJob(
+      request<ExploreBatchResult>("/explore/test-batch", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    ),
+
+  // What holds the pipeline and what is already queued — asked before spending a
+  // benchmark, so a busy pipeline can be a "queue this?" question instead of a surprise.
+  // The universal read: covers every engine, not just profile tests.
+  jobQueue: () => request<QueueStatus>("/queue"),
+  cancelQueuedJob: (ticketId: number) =>
+    request<{ cancelled: boolean }>(`/queue/${ticketId}/cancel`, { method: "POST" }),
+  profileTestQueue: () => request<ProfileTestQueue>("/settings/test-profile/queue"),
+
   // The recommendation ledger: every claim Explore made, graded against what the link
   // actually did. Two indexed queries, so unlike the landscape it's cheap to fetch on load.
   exploreRecommendations: (limit = 50) =>
@@ -613,7 +641,7 @@ export const api = {
   // Apply arbitrary settings (e.g. an AI suggestion) onto the live profile and test to minimum.
   testSettings: (body: { settings: unknown; label?: string; iterations?: number }) =>
     startingJob(
-      request<{ id: number; fingerprint: string; iterations: number; label: string | null }>(
+      request<TestSettingsStart>(
         "/settings/test-settings",
         { method: "POST", body: JSON.stringify(body) },
       ),
@@ -646,10 +674,17 @@ export const api = {
   // Portable (away) test: a plain-browser instrument any device can run, compared only
   // "vs home" on the same device + recipe (its own table; never the pooled ledger).
   portableRecipe: () => request<PortableRecipe>("/portable/recipe"),
-  portableHome: (egress?: { egress_ip?: string | null; egress_ip_v6?: string | null }) => {
+  // `device_id` only steers which spelling of a remembered venue is suggested first (your
+  // own, when this device has named the place before) — never what is compared.
+  portableHome: (egress?: {
+    egress_ip?: string | null;
+    egress_ip_v6?: string | null;
+    device_id?: string | null;
+  }) => {
     const q = new URLSearchParams();
     if (egress?.egress_ip) q.set("egress_ip", egress.egress_ip);
     if (egress?.egress_ip_v6) q.set("egress_ip_v6", egress.egress_ip_v6);
+    if (egress?.device_id) q.set("device_id", egress.device_id);
     const qs = q.toString();
     return request<PortableHome>(`/portable/home${qs ? `?${qs}` : ""}`);
   },

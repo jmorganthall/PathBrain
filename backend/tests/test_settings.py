@@ -1,6 +1,7 @@
 """Tests for settings fingerprinting and the correlation endpoints."""
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 
 from pathbrain.database import session_scope
@@ -1818,3 +1819,55 @@ def test_weather_sensitivity_is_memoized_on_the_field_stamp(client):
 
     routes_settings.invalidate_profiles_cache()
     assert routes_settings._weather_memo is None
+
+
+# ── A busy pipeline queues a test; it never refuses one ────────────────────────────────
+
+
+def test_a_busy_pipeline_queues_the_test_and_says_what_is_in_the_way(client):
+    """The reported bug: pressing "Test now" from Explore while a job ran got a 409 and
+    nothing was scheduled. A busy pipeline is a *queue*, not a refusal — and the response
+    has to say so, or a queued test is indistinguishable from a dead button."""
+    from pathbrain import coordinator, profile_test
+    from pathbrain.providers import mock as mock_mod
+
+    mock_mod._OVERRIDES.clear()
+    with coordinator.hold("duel#7"):
+        first = client.post(
+            "/api/settings/test-settings",
+            json={"settings": {"quantum": 6000}, "label": "one", "iterations": 1},
+        )
+        assert first.status_code == 200
+        a = first.json()
+        assert a["queued"] is True
+        assert a["blocked_by"] == "a duel session"
+
+        # A second press must also be accepted — this is the exact case that used to 409.
+        second = client.post(
+            "/api/settings/test-settings",
+            json={"settings": {"quantum": 7000}, "label": "two", "iterations": 1},
+        )
+        assert second.status_code == 200
+        b = second.json()
+        assert b["id"] != a["id"]
+        assert b["queued"] is True
+        assert b["queue_position"] == 2 and b["queue_ahead"] >= 1
+
+        # The queue endpoint the "Busy now — queue this?" dialog reads.
+        q = client.get("/api/settings/test-profile/queue").json()
+        assert q["busy"] is True and q["owner_label"] == "a duel session"
+        assert {p["id"] for p in q["pending"]} >= {a["id"], b["id"]}
+
+        # A queued test is cancellable before it applies anything.
+        dropped = client.post(f"/api/settings/test-profile/{b['id']}/cancel").json()
+        assert dropped["cancelled"] is True
+
+        # Tidy up so neither test runs against the shared mock firewall after the lock
+        # releases. The first one is claimed by the worker (waiting on the lock), so its
+        # cancel is honoured at the pre-apply seam rather than by leaving the queue.
+        client.post(f"/api/settings/test-profile/{a['id']}/cancel")
+    for _ in range(200):
+        if not profile_test.active():
+            break
+        time.sleep(0.02)
+    mock_mod._OVERRIDES.clear()

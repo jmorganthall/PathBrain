@@ -274,11 +274,32 @@ def rolling_score(
     Per-axis (Speed/Smoothness/…) median + IQR band, plus the median per-metric
     subscore/value/weight over the window for the breakdown, and the network/render
     stall attribution. A median over many runs, so it doesn't swing on noise.
+
+    It also reports the **crown** — ``overall_metrics``/``overall_method``/
+    ``overall_weights``, straight off the current methodology's ``overall`` spec — because
+    the Overall is computed from those metric subscores and *not* from the axes. The two
+    have been different things since v5, and a headline card that shows axis gauges under
+    the Overall is describing a rubric that has not been current for many versions: under
+    v16 the axes are dominated by metrics (render, load_event, cadence, evenness, byte
+    earliness, CLS) that the Overall never reads.
     """
-    from ..methodology import scored_axes
+    from ..methodology import overall_method, overall_metrics, overall_weights, scored_axes
 
     methodology, rows = _window_scores(session, hours, fingerprint)
-    axes = scored_axes(methodology.definition or {})
+    definition = methodology.definition or {}
+    axes = scored_axes(definition)
+    # The crown: which metric subscores the Overall is actually computed from, how they are
+    # combined, and their weights. Read from the methodology at request time, so the
+    # Dashboard's headline follows a rubric change instead of describing the one that was
+    # current when the card was written — the axes are a *different* decomposition and have
+    # not been the Overall's inputs since v5.
+    crown_keys, crown_required = overall_metrics(definition)
+    crown = {
+        "overall_metrics": crown_keys,
+        "overall_required": crown_required,
+        "overall_method": overall_method(definition),
+        "overall_weights": overall_weights(definition),
+    }
     if not rows:
         return {
             "window_hours": hours,
@@ -290,6 +311,7 @@ def rolling_score(
             "metric_values": {},
             "weights": {},
             "attribution": None,
+            **crown,
         }
 
     axis_scores: dict[str, dict] = {}
@@ -337,6 +359,7 @@ def rolling_score(
             _med_metric("render_stall_ms"),
             _med_metric("unknown_stall_ms"),
         ),
+        **crown,
     }
 
 

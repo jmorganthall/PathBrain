@@ -55,6 +55,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import SportsMmaIcon from "@mui/icons-material/SportsMma";
 
 import { api } from "../api/client";
+import { useQueuedAction } from "../hooks/useQueuedAction";
 import { Blurb, FoldCard, HelpTip } from "../components/Explain";
 import type { Theme } from "@mui/material/styles";
 import type {
@@ -1477,6 +1478,9 @@ export default function Duels() {
   const [liveShown, setLiveShown] = useState(BOUTS_PER_SESSION);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The shared "add a job" policy: when the pipeline is busy this asks whether to
+  // queue, and either way reports which happened in the same words as every other page.
+  const queue = useQueuedAction(setError);
   const [toast, setToast] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
 
@@ -1643,19 +1647,30 @@ export default function Duels() {
     }
   };
 
-  const startNow = async (minutes: number) => {
+  const startDuel = async (minutes: number) => {
     setBusy(true);
     setError(null);
     setAskDuration(false);
     try {
-      setStatus(await api.duelStart(minutes));
-      setToast(`Duel started · running for ${fmtWindow(minutes)}`);
+      const started = await api.duelStart(minutes);
+      if (!started.queued) {
+        setStatus(started);
+        setToast(`Duel started · running for ${fmtWindow(minutes)}`);
+      }
+      return started;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      throw e;
     } finally {
       setBusy(false);
     }
   };
+
+  const startNow = (minutes: number) =>
+    queue.submit({
+      label: `Duel ladder · ${fmtWindow(minutes)}`,
+      run: () => startDuel(minutes),
+    });
 
   const cancelNow = async () => {
     try {
@@ -3029,6 +3044,7 @@ export default function Duels() {
         onClose={() => setToast(null)}
         message={toast ?? ""}
       />
+      {queue.dialog}
     </Box>
   );
 }

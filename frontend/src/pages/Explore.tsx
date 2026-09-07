@@ -55,6 +55,7 @@ import TableRow from "@mui/material/TableRow";
 import TableSortLabel from "@mui/material/TableSortLabel";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
+import CasinoIcon from "@mui/icons-material/Casino";
 import ExploreIcon from "@mui/icons-material/Explore";
 import FactCheckIcon from "@mui/icons-material/FactCheck";
 import BoltIcon from "@mui/icons-material/Bolt";
@@ -67,6 +68,8 @@ import { useTheme } from "@mui/material/styles";
 
 import { api } from "../api/client";
 import { FoldCard, HelpTip } from "../components/Explain";
+import BestBetsDialog from "../components/BestBetsDialog";
+import { useQueuedAction } from "../hooks/useQueuedAction";
 import type {
   ExploreBasin,
   ExploreCandidate,
@@ -1508,11 +1511,16 @@ export default function Explore() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
+  // "Run the best bets": pick how many and how long, then queue them back to back.
+  const [betsOpen, setBetsOpen] = useState(false);
+  const [betsBusy, setBetsBusy] = useState(false);
   // The ledger is two indexed queries, not a compute_profiles pass, so unlike the landscape
   // it loads with the page — "how did the last ones go?" should be there before you decide
   // to spend another night on the next one.
   const [ledger, setLedger] = useState<ExploreLedger | null>(null);
   const [snack, setSnack] = useState<string | null>(null);
+  // The shared "add a job" policy: confirm-then-queue when the pipeline is busy.
+  const queue = useQueuedAction(setSnack);
   const [gapPage, setGapPage] = useState(0);
   // Both test lengths come from the server's own settings, so the buttons on a hole and on
   // a candidate can never promise different run counts.
@@ -1556,19 +1564,13 @@ export default function Explore() {
     void loadLedger();
   }, [loadLedger]);
 
-  // Start a measurement — and record the claim it makes first, so it can be graded later.
-  // `iterations` undefined = top up to the confidence minimum; a number = run exactly that.
-  const test = useCallback(
-    async (c: ExploreCandidate, iterations?: number, key?: string) => {
-      // The same lever move can appear twice on the page — once as a ranked candidate and
-      // once as the variant that fills a hole — so the busy marker is keyed by where it was
-      // pressed, not only by what it changes.
-      const id = key ?? c.changes.map((ch) => ch.key).join("|");
+  // Actually send the measurement — and record the claim it makes first, so it can be
+  // graded later. Split from `test` below because a busy pipeline turns this into a
+  // question, and the answer arrives from a dialog rather than from the press.
+  const runTest = useCallback(
+    async (c: ExploreCandidate, iterations: number | undefined, id: string, label: string) => {
       setTesting(id);
       try {
-        const label = c.changes
-          .map((ch) => `${ch.pipe} ${ch.field_label} ${fmtValue(ch.to, ch.unit)}`)
-          .join(", ");
         const started = await api.exploreTest({
           settings: c.settings,
           label: `Explore: ${label}`,
@@ -1586,8 +1588,17 @@ export default function Explore() {
           best_overall: data?.best_overall ?? null,
           summary: c.summary,
         });
+        const iters = `${started.iterations} iteration${started.iterations === 1 ? "" : "s"}`;
+        // Say which of the two actually happened. Reporting "Testing…" for a test that is
+        // eighth in line behind a duel is how a working queue reads as a broken button.
         setSnack(
-          `Testing ${started.iterations} iteration${started.iterations === 1 ? "" : "s"} — apply, benchmark, then restore your settings. The prediction is recorded; its verdict appears below once runs land.${started.note ? ` ${started.note}` : ""}`,
+          started.queued
+            ? `Queued ${iters}${started.blocked_by ? ` behind ${started.blocked_by}` : ""}${
+                started.queue_position && started.queue_position > 1
+                  ? ` (#${started.queue_position} in the queue)`
+                  : ""
+              }. It applies, benchmarks and restores your settings when its turn comes — cancel it any time from the jobs menu.${started.note ? ` ${started.note}` : ""}`
+            : `Testing ${iters} — apply, benchmark, then restore your settings. The prediction is recorded; its verdict appears below once runs land.${started.note ? ` ${started.note}` : ""}`,
         );
         void loadLedger();
       } catch (e) {
@@ -1597,6 +1608,57 @@ export default function Explore() {
       }
     },
     [data, loadLedger],
+  );
+
+  // Queue the top N bets in one press. Deliberately does NOT go through the busy-confirm
+  // dialog: "queue these" is the entire request, so asking whether to queue would be
+  // asking the question the user just answered.
+  const runBets = useCallback(
+    async (count: number, iterations: number, rank: "confidence" | "upside") => {
+      setBetsBusy(true);
+      try {
+        const out = await api.exploreTestBatch({ count, iterations, rank });
+        const n = out.queued.length;
+        const skipped = out.skipped.length;
+        setSnack(
+          n === 0
+            ? `Nothing could be queued${skipped ? `: ${out.skipped[0].reason}` : "."}`
+            : `Queued ${n} test${n === 1 ? "" : "s"} at ${iterations} iterations each — they run one after another and restore your settings each time.${
+                skipped ? ` ${skipped} skipped (${out.skipped[0].reason})` : ""
+              }`,
+        );
+        setBetsOpen(false);
+        void loadLedger();
+      } catch (e) {
+        setSnack(e instanceof Error ? e.message : "Could not queue the tests.");
+      } finally {
+        setBetsBusy(false);
+      }
+    },
+    [loadLedger],
+  );
+
+  // Press "Test now" / "Test to minimum". A test always queues rather than being refused,
+  // but queueing silently is what made a busy pipeline look like a dead button — so when
+  // something is in the way, ask first and name it.
+  const test = useCallback(
+    async (c: ExploreCandidate, iterations?: number, key?: string) => {
+      // The same lever move can appear twice on the page — once as a ranked candidate and
+      // once as the variant that fills a hole — so the busy marker is keyed by where it was
+      // pressed, not only by what it changes.
+      const id = key ?? c.changes.map((ch) => ch.key).join("|");
+      const label = c.changes
+        .map((ch) => `${ch.pipe} ${ch.field_label} ${fmtValue(ch.to, ch.unit)}`)
+        .join(", ");
+
+      // The shared "add a job" policy — the same confirm and the same wording as every
+      // other Run button in the app.
+      await queue.submit({
+        label: `Explore: ${label}`,
+        run: () => runTest(c, iterations, id, label),
+      });
+    },
+    [queue, runTest],
   );
 
   return (
@@ -1610,7 +1672,17 @@ export default function Explore() {
             untested profiles are most likely to beat everything you've measured.
           </Typography>
         </Box>
-        <Button variant="contained" onClick={() => void load()} disabled={loading}>
+        {!!data?.bets?.length && (
+          <Button
+            variant="contained"
+            color="secondary"
+            startIcon={<CasinoIcon />}
+            onClick={() => setBetsOpen(true)}
+          >
+            Run the best bets
+          </Button>
+        )}
+        <Button variant="outlined" onClick={() => void load()} disabled={loading}>
           {loading ? "Mapping…" : data ? "Refresh" : "Map the space"}
         </Button>
       </Stack>
@@ -1867,9 +1939,21 @@ export default function Explore() {
         </>
       )}
 
+      <BestBetsDialog
+        open={betsOpen}
+        bets={data?.bets ?? []}
+        calibration={data?.calibration}
+        bestOverall={data?.best_overall ?? null}
+        busy={betsBusy}
+        onClose={() => setBetsOpen(false)}
+        onRun={(count, iterations, rank) => void runBets(count, iterations, rank)}
+      />
+
+      {queue.dialog}
+
       <Snackbar
         open={!!snack}
-        autoHideDuration={6000}
+        autoHideDuration={8000}
         onClose={() => setSnack(null)}
         message={snack ?? ""}
       />

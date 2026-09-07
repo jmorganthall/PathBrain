@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from pathbrain import profile_test as pt_mod
 from pathbrain import runner
@@ -187,7 +187,8 @@ def test_profile_test_cancel_stops_after_chunk(monkeypatch):
     monkeypatch.setattr(runner, "iter_plugins", lambda: [])
 
     # Slow chunks so we can request cancel between them (each creates a real completed run).
-    def slow_chunk(label, notes, iterations, teardown=True, job_group=None, job_group_total=None):
+    def slow_chunk(label, notes, iterations, teardown=True, job_group=None,
+                   job_group_total=None, config_overrides=None, on_created=None):
         rid = runner.create_run(label=label, notes=notes, iterations=iterations, job_group=job_group)
         runner.execute_run(rid)
         time.sleep(0.12)
@@ -241,3 +242,114 @@ def test_a_confident_profile_can_still_be_re_measured_with_an_explicit_count(cli
     assert body["iterations"] == 5 and body["mode"] == "exact"
     assert body["current_iterations"] == 120
     assert started["iterations"] == 5
+
+
+# ── The queue ──────────────────────────────────────────────────────────────────────────
+#
+# Profile tests used to be a strict singleton: a second one raised, the API turned that
+# into a 409, and the button dead-ended. The flag was also set at *creation*, not at start,
+# so a test queued behind a duel window refused every other test for the whole night —
+# which is exactly when someone wants to line one up.
+
+
+def test_a_second_test_queues_instead_of_being_refused(monkeypatch):
+    """The regression this exists for: pressing "Test now" while another test is in flight
+    must line the second one up, not reject it."""
+    mock_mod._OVERRIDES.clear()
+    monkeypatch.setattr(runner, "iter_plugins", lambda: [])
+    target = normalize(get_provider().discover())
+    fp = fingerprint(target)
+
+    first = pt_mod.start(fp, target, "first", 1)
+    second = pt_mod.start(fp, target, "second", 1)  # must not raise
+
+    assert second != first
+    for test_id in (first, second):
+        assert _wait_for_finish(test_id, timeout=20.0).status == ProfileTestStatus.COMPLETE
+    # Both really ran, in the order they were asked for.
+    with session_scope() as s:
+        a, b = s.get(ProfileTest, first), s.get(ProfileTest, second)
+        assert a.started_at is not None and b.started_at is not None
+        assert a.started_at <= b.started_at
+    assert not pt_mod.active()
+
+
+def test_each_queued_test_keeps_its_own_target(monkeypatch):
+    """The target used to live in one module-level slot, so a second test would overwrite
+    the first one's settings. With a queue that silently measures the wrong profile."""
+    mock_mod._OVERRIDES.clear()
+    monkeypatch.setattr(runner, "iter_plugins", lambda: [])
+    base = normalize(get_provider().discover())
+
+    one = [dict(p) for p in base]
+    one[0]["quantum"] = 3000
+    two = [dict(p) for p in base]
+    two[0]["quantum"] = 6000
+
+    a = pt_mod.start(fingerprint(one), one, "q3000", 1)
+    b = pt_mod.start(fingerprint(two), two, "q6000", 1)
+    for test_id in (a, b):
+        _wait_for_finish(test_id, timeout=20.0)
+
+    with session_scope() as s:
+        assert s.get(ProfileTest, a).target[0]["quantum"] == 3000
+        assert s.get(ProfileTest, b).target[0]["quantum"] == 6000
+    mock_mod._OVERRIDES.clear()
+
+
+def test_a_queued_test_is_dropped_without_touching_the_firewall(monkeypatch):
+    """Cancelling something that has not started must not cost an apply-and-restore round
+    trip: a queued test has read nothing and written nothing, so it just leaves the line."""
+    from pathbrain import coordinator
+
+    mock_mod._OVERRIDES.clear()
+    monkeypatch.setattr(runner, "iter_plugins", lambda: [])
+    target = normalize(get_provider().discover())
+    fp = fingerprint(target)
+
+    applied: list = []
+    real_apply = pt_mod._apply_all
+    monkeypatch.setattr(
+        pt_mod, "_apply_all", lambda p, ch: (applied.extend(ch), real_apply(p, ch))[1]
+    )
+
+    # Hold the pipeline so nothing can start, then queue two and drop the second.
+    with coordinator.hold("test-holder"):
+        first = pt_mod.start(fp, target, "runs", 1)
+        second = pt_mod.start(fp, target, "dropped", 1)
+        assert pt_mod.cancel(second) is True
+        with session_scope() as s:
+            assert s.get(ProfileTest, second).status == ProfileTestStatus.CANCELLED
+            assert s.get(ProfileTest, second).baseline is None  # never snapshotted anything
+
+    assert _wait_for_finish(first, timeout=20.0).status == ProfileTestStatus.COMPLETE
+    # The dropped test never became a run of its own.
+    with session_scope() as s:
+        assert s.scalar(
+            select(func.count()).select_from(Run).where(Run.job_group == f"profile_test-{second}")
+        ) == 0
+
+
+def test_queue_status_names_what_is_in_the_way(monkeypatch):
+    """The "Busy now — queue this?" prompt has to say what is holding the pipeline. A raw
+    lock label ("duel#412") is not an answer, so the owner is described in words."""
+    from pathbrain import coordinator
+
+    mock_mod._OVERRIDES.clear()
+    monkeypatch.setattr(runner, "iter_plugins", lambda: [])
+    target = normalize(get_provider().discover())
+    fp = fingerprint(target)
+
+    with coordinator.hold("duel#412"):
+        queued = pt_mod.start(fp, target, "waiting", 1)
+        status = pt_mod.queue_status()
+        assert status["busy"] is True
+        assert status["owner"] == "duel#412"
+        assert status["owner_label"] == "a duel session"
+        assert status["queue_depth"] >= 1
+        assert any(p["id"] == queued for p in status["pending"])
+        assert pt_mod.cancel(queued) is True
+
+    assert coordinator.describe("run-series#3") == "a benchmark run"
+    assert coordinator.describe(None) is None
+    assert coordinator.describe("brand-new-engine#1") == "brand-new-engine#1"

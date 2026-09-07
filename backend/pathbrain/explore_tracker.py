@@ -74,6 +74,40 @@ _EVIDENCE_MATCH = [
 ]
 
 
+#: Graded claims an evidence class needs before its *measured* miss is allowed to widen a
+#: bet's band. Below this the "track record" is one or two runs, and a single unlucky
+#: measurement would bury a whole class of proposals — the opposite of calibration.
+CALIBRATION_MIN_GRADED = 3
+
+
+def calibration(session, limit: int = 200) -> dict:
+    """What each evidence class has actually been worth **on this link**.
+
+    ``{kind: {graded, mean_abs_error, hit_rate, trusted}}`` — the ledger's own track record,
+    which is the thing that turns "these are the best bets" from an opinion into a
+    measurement. A class the model prices confidently but that has historically missed by
+    three points is not a confident bet, however narrow the stated band; the bet ranking
+    widens by this rather than trusting the model's self-assessment.
+
+    ``trusted`` is False below :data:`CALIBRATION_MIN_GRADED`, so a class with two graded
+    claims is *reported* (it is real evidence, and hiding it would be worse) without being
+    allowed to steer the ranking.
+    """
+    summary = recommendations(session, limit=limit).get("summary") or {}
+    out: dict[str, dict] = {}
+    for row in summary.get("by_evidence") or []:
+        graded = int(row.get("graded") or 0)
+        out[row["kind"]] = {
+            "kind": row["kind"],
+            "label": row.get("label"),
+            "graded": graded,
+            "mean_abs_error": row.get("mean_abs_error"),
+            "hit_rate": round(row["on_target"] / graded, 3) if graded else None,
+            "trusted": graded >= CALIBRATION_MIN_GRADED and row.get("mean_abs_error") is not None,
+        }
+    return out
+
+
 def evidence_kind(notes) -> str:
     """The weakest evidence class among a candidate's per-lever notes.
 

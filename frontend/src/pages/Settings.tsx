@@ -39,6 +39,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
 import { api } from "../api/client";
+import { describePlacement, useQueuedAction } from "../hooks/useQueuedAction";
 import type {
   ChallengerRace,
   CrownHeirs,
@@ -742,6 +743,9 @@ export default function Settings() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // The shared "add a job" policy: when the pipeline is busy this asks whether to queue,
+  // and either way reports which happened in the same words as every other page.
+  const queue = useQueuedAction(setToast);
   // Apply-this-profile flow: which row is loading its preview, the pending
   // confirmation, and whether a write is in flight.
   const [previewFp, setPreviewFp] = useState<string | null>(null);
@@ -1169,10 +1173,11 @@ export default function Settings() {
     try {
       const r = await api.testProfile(testConfirm.fingerprint, testIterations);
       const reaches = testTargetIterations + r.iterations >= r.min_iterations;
-      setToast(
-        `Testing ${testConfirm.label}: running ${r.iterations} iteration${r.iterations === 1 ? "" : "s"}` +
-          (reaches ? ` (reaches the ${r.min_iterations}-iteration minimum)` : ` (${r.min_iterations - testTargetIterations - r.iterations} more still needed for confidence)`)
-      );
+      const what =
+        `${r.iterations} iteration${r.iterations === 1 ? "" : "s"} on ${testConfirm.label}` +
+        (reaches ? ` (reaches the ${r.min_iterations}-iteration minimum)` : "");
+      // One wording for started-vs-queued, shared with every other button on every page.
+      setToast(describePlacement(r, what));
       setTestConfirm(null);
       // Show the live status immediately; the poller below keeps it fresh.
       const cur = await api.profileTestCurrent();
@@ -1215,20 +1220,26 @@ export default function Settings() {
   const raceRunning =
     activeRace != null && (activeRace.status === "running" || activeRace.status === "pending");
 
-  const handleStartRace = useCallback(async () => {
-    setError(null);
-    try {
-      await api.startRace(raceMinutes, raceAutoPromote);
-      setRaceOpen(false);
-      setToast(
-        `Racing challengers for up to ${raceMinutes} min${raceAutoPromote ? " — winner will be auto-applied" : ""}`
-      );
+  const startRace = useCallback(async () => {
+    const started = await api.startRace(raceMinutes, raceAutoPromote);
+    setRaceOpen(false);
+    if (!started.queued) {
       const cur = await api.raceCurrent();
       setActiveRace(cur.race);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to start the challenger race");
     }
+    return started;
   }, [raceMinutes, raceAutoPromote]);
+
+  const handleStartRace = useCallback(
+    () =>
+      queue.submit({
+        label:
+          `Challenger race · up to ${raceMinutes} min` +
+          (raceAutoPromote ? " (winner auto-applied)" : ""),
+        run: startRace,
+      }),
+    [queue, startRace, raceMinutes, raceAutoPromote],
+  );
 
   // Poll the active race until it finishes, then reload + report the outcome.
   useEffect(() => {
@@ -1296,28 +1307,38 @@ export default function Settings() {
     };
   }, [refreshOpen, refreshIters, refreshTop, outliers]);
 
-  const handleStartRefresh = useCallback(async () => {
-    setError(null);
-    try {
-      await api.startRefresh(
-        refreshIters,
-        refreshTop > 0 ? refreshTop : undefined,
-        refreshTop === -1 ? outliers?.fingerprints ?? [] : undefined,
-      );
-      setRefreshOpen(false);
-      const scope =
-        refreshTop === -1
-          ? `the ${outliers?.count ?? 0} flagged outlier(s)`
-          : refreshTop
-            ? `top ${refreshTop} profile(s), winner-first`
-            : "all profiles";
-      setToast(`Re-running ${scope} · ${refreshIters} iteration(s) each, then restoring`);
+  const refreshScope = useMemo(
+    () =>
+      refreshTop === -1
+        ? `the ${outliers?.count ?? 0} flagged outlier(s)`
+        : refreshTop
+          ? `top ${refreshTop} profile(s), winner-first`
+          : "all profiles",
+    [refreshTop, outliers],
+  );
+
+  const startRefresh = useCallback(async () => {
+    const started = await api.startRefresh(
+      refreshIters,
+      refreshTop > 0 ? refreshTop : undefined,
+      refreshTop === -1 ? outliers?.fingerprints ?? [] : undefined,
+    );
+    setRefreshOpen(false);
+    if (!started.queued) {
       const cur = await api.refreshCurrent();
       setActiveRefresh(cur.refresh);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to start the profile refresh");
     }
+    return started;
   }, [refreshIters, refreshTop, outliers]);
+
+  const handleStartRefresh = useCallback(
+    () =>
+      queue.submit({
+        label: `Re-run ${refreshScope} · ${refreshIters} iteration(s) each`,
+        run: startRefresh,
+      }),
+    [queue, startRefresh, refreshScope, refreshIters],
+  );
 
   // Poll the active refresh until it finishes, then reload + report the outcome.
   useEffect(() => {
@@ -2832,6 +2853,7 @@ export default function Settings() {
         message={toast ?? ""}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
       />
+      {queue.dialog}
     </Box>
   );
 }
