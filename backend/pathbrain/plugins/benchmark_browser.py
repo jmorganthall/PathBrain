@@ -96,6 +96,12 @@ def _origins_from_urls(urls: list[str]) -> list[str]:
     return out
 
 
+#: The phases of one page load the plugin times itself (``details.phases`` totals them per
+#: iteration): context setup → navigation → post-load idle wait → timing reads (+ the
+#: synthetic interaction) → context close.
+_PHASE_KEYS = ("context_ms", "goto_ms", "idle_ms", "reads_ms", "close_ms")
+
+
 def build_chromium_args(config: dict) -> list[str]:
     """Build Chromium launch flags from browser config.
 
@@ -678,18 +684,28 @@ class BrowserBenchmark(BenchmarkPlugin):
 
             # ``browser`` is the run-scoped Chromium (reused across iterations); each URL
             # still gets a fresh context so loads stay isolated. It's closed in teardown().
+            from time import perf_counter
+
+            # Per-iteration totals of each phase of a page load, summed over the pages, so
+            # "the browser iteration got longer" is attributable: context setup, the
+            # navigation itself, the post-load idle wait, the timing reads (+ the synthetic
+            # interaction), and the context close. Reported in ``details.phases`` and read by
+            # the instrument-drift audit; the per-URL split rides in raw as ``phases``.
+            phase_totals: dict[str, float] = {k: 0.0 for k in _PHASE_KEYS}
+
             for idx, url in enumerate(urls):
                 slug = _slug(url, idx)
                 har_path = os.path.join(run_dir, f"{slug}.har") if want_har else None
                 shot_path = os.path.join(run_dir, f"{slug}.png") if want_screenshot else None
+                phases: dict[str, float] = {}
+                t_ctx = perf_counter()
                 context = browser.new_context(record_har_path=har_path, **ctx_opts)
                 # Buffer paint/LCP/CLS/long-task timing from the very start.
                 context.add_init_script(_PAINT_INIT_JS)
                 page = context.new_page()
                 try:
-                    from time import perf_counter
-
                     t0 = perf_counter()
+                    phases["context_ms"] = round((t0 - t_ctx) * 1000.0, 3)
                     frames: list[dict] = []
                     cdp = (
                         _start_screencast(context, page, frames, run_dir, stamp, slug, t0)
@@ -698,11 +714,15 @@ class BrowserBenchmark(BenchmarkPlugin):
                     )
 
                     page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+                    t_goto = perf_counter()
+                    phases["goto_ms"] = round((t_goto - t0) * 1000.0, 3)
                     try:
                         page.wait_for_load_state("networkidle", timeout=idle_timeout_ms)
                     except Exception:  # noqa: BLE001 — idle may never settle
                         pass
-                    total_render_ms = round((perf_counter() - t0) * 1000.0, 3)
+                    t_idle = perf_counter()
+                    phases["idle_ms"] = round((t_idle - t_goto) * 1000.0, 3)
+                    total_render_ms = round((t_idle - t0) * 1000.0, 3)
                     if cdp is not None:
                         try:
                             cdp.send("Page.stopScreencast")
@@ -743,6 +763,7 @@ class BrowserBenchmark(BenchmarkPlugin):
 
                     if want_screenshot and shot_path:
                         page.screenshot(path=shot_path)
+                    phases["reads_ms"] = round((perf_counter() - t_idle) * 1000.0, 3)
 
                     urls_raw[url] = {
                         "nav": nav,
@@ -751,6 +772,7 @@ class BrowserBenchmark(BenchmarkPlugin):
                         "filmstrip": frames,
                         "resources": resources,
                         "loaf": loaf,
+                        "phases": phases,
                     }
                     per_url_display[url] = {
                         "screenshot_url": (
@@ -772,11 +794,20 @@ class BrowserBenchmark(BenchmarkPlugin):
                     urls_raw[url] = {"error": f"{type(exc).__name__}: {exc}"}
                     per_url_display[url] = {"error": f"{type(exc).__name__}: {exc}"}
                 finally:
+                    t_close = perf_counter()
                     context.close()  # flushes the HAR file
+                    phases["close_ms"] = round((perf_counter() - t_close) * 1000.0, 3)
+                    for k in _PHASE_KEYS:
+                        phase_totals[k] += phases.get(k, 0.0)
 
             return {
                 "raw": {"urls": urls_raw},
-                "details": {"per_url": per_url_display, "artifact_dir": run_dir, "client": client},
+                "details": {
+                    "per_url": per_url_display,
+                    "artifact_dir": run_dir,
+                    "client": client,
+                    "phases": {k: round(v, 3) for k, v in phase_totals.items()},
+                },
             }
 
         return self.timed(work)

@@ -3201,11 +3201,15 @@ export interface IdleAudit {
 
 export type DriftVerdict =
   | "instrument"
+  | "pooled_instruments"
+  | "unexplained_step"
   | "unattributed"
   | "network"
   | "overhead"
   | "idle"
   | "mix"
+  | "published"
+  | "browser_failed"
   | "stable"
   | "insufficient";
 
@@ -3225,6 +3229,27 @@ export interface DriftFinding {
   key: string;
   severity: "bad" | "warn" | "info" | "ok";
   text: string;
+  // The cohort a step landed on (boundary findings), and seconds a wall-clock finding adds
+  // to a browser iteration (idle / overhead / mix), so the headline can rank by magnitude.
+  at?: string;
+  impact_ms?: number;
+}
+
+// The largest day-over-day change in one quantity, with what else changed at that boundary.
+export interface DriftStep {
+  key: string;
+  at: string;
+  from_cohort: string;
+  before: number;
+  after: number;
+  shift_pct: number | null;
+  direction: "up" | "down";
+  version_from: string | null;
+  version_to: string | null;
+  version_changed: boolean;
+  client_from: string | null;
+  client_to: string | null;
+  client_changed: boolean;
 }
 
 export interface DriftCohort {
@@ -3233,7 +3258,11 @@ export interface DriftCohort {
   iterations: number;
   kinds: Record<string, number>;
   methodology_versions: Record<string, number>;
+  version: string | null;
+  clients: Record<string, number>;
+  client: string | null;
   methodology_only_share: number | null;
+  browser_failed_share: number | null;
   medians: Record<string, number | null>;
 }
 
@@ -3253,13 +3282,18 @@ export interface DriftProcesses {
 // measurement got slower" and the answer says whether a graded number moved.
 export interface InstrumentDrift {
   window: { days: number; bucket: "day" | "hour"; runs: number; from: string | null; to: string | null; min_samples: number };
+  // Which runs the trends were computed over: the version in force when it has enough runs.
+  scope: { methodology: string | null; runs: number; within_version: boolean };
   verdict: DriftVerdict;
   grading_at_risk: boolean;
   headline: string;
   findings: DriftFinding[];
   trends: Record<string, DriftTrend | null>;
+  steps: DriftStep[];
   quantities: Record<string, { label: string; unit: string; family: string }>;
   cohorts: DriftCohort[];
+  // Per methodology version in the window: does it declare a browser client?
+  version_clients: Record<string, boolean>;
   processes: DriftProcesses | null;
   leaked_processes: number;
   stale_derivations: number | null;
