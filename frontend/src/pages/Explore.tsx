@@ -1371,7 +1371,7 @@ function RecommendationLedger({ ledger }: { ledger: ExploreLedger }) {
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
           Every recommendation you&apos;ve tested: what it predicted vs what the link did.
-          <HelpTip title="The claim is recorded before it's measured. Verdicts are recomputed on every read, so a re-grade or fresh runs move them. A claim made under an older methodology is reported as incomparable rather than graded on a different yardstick." />
+          <HelpTip title="The claim is recorded before it's measured. Verdicts are recomputed on every read, so a re-grade or fresh runs move them. A claim made under an older methodology is reported as incomparable rather than graded on a different yardstick. Most rows note that they were filed under a different fingerprint than the one predicted at start: that is expected, not a fault — the firewall echoes a CoDel duration back as a string, so the same setting hashes differently. The apply is verified field by field before any benchmark runs, and each claim is graded against the runs it actually produced." />
         </Typography>
 
         {s.graded === 0 ? (
