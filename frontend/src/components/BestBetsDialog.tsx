@@ -15,6 +15,8 @@ import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import CasinoIcon from "@mui/icons-material/Casino";
+import useMediaQuery from "@mui/material/useMediaQuery";
+import { useTheme } from "@mui/material/styles";
 
 import type { ExploreBet, ExploreCalibration } from "../api/types";
 
@@ -22,6 +24,12 @@ import type { ExploreBet, ExploreCalibration } from "../api/types";
 // anywhere?" reading; the top-up is the long "settle it" answer and is rarely what a batch
 // wants, so it sits last rather than first.
 const LENGTHS = [3, 5, 10, 15];
+
+// Offered counts. "All" is the point of the list — "run everything worth running" is a real
+// ask, and the old ceiling of 12 was the generator's default pool size leaking out as a
+// product limit. The steps stay coarse past 10 because picking 17 rather than 20 is not a
+// decision anyone is making; the cost is what matters, and the preview shows it.
+const COUNTS = [1, 2, 3, 5, 8, 10, 15, 20, 30, 50];
 
 function fmt(n: number | null | undefined, digits = 1): string {
   return n == null ? "—" : n.toFixed(digits);
@@ -66,6 +74,11 @@ export default function BestBetsDialog({
   const [count, setCount] = useState(3);
   const [iterations, setIterations] = useState(5);
   const [rank, setRank] = useState<"confidence" | "upside">("confidence");
+  const theme = useTheme();
+  // Phone-first: this dialog carries three selects and a preview list, which at 390px wide
+  // is a scrolling column with the actions sitting on top of the content. Full screen gives
+  // it the room it needs instead of squeezing the same layout into a card.
+  const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
 
   const ordered = useMemo(() => {
     if (rank === "confidence") return bets;
@@ -73,7 +86,8 @@ export default function BestBetsDialog({
     return [...bets].sort((a, b) => (b.upside ?? 0) - (a.upside ?? 0));
   }, [bets, rank]);
 
-  const picked = ordered.slice(0, Math.min(count, ordered.length));
+  const wanted = Math.min(count, ordered.length);
+  const picked = ordered.slice(0, wanted);
   const clearing = picked.filter((b) => b.clears_bar).length;
 
   // Is any of this backed by a track record yet, or is it the model's own opinion?
@@ -83,7 +97,14 @@ export default function BestBetsDialog({
   );
 
   return (
-    <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="md" fullWidth>
+    <Dialog
+      open={open}
+      onClose={busy ? undefined : onClose}
+      maxWidth="md"
+      fullWidth
+      fullScreen={fullScreen}
+      scroll="paper"
+    >
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
         <CasinoIcon color="primary" /> Run the best bets
       </DialogTitle>
@@ -99,17 +120,19 @@ export default function BestBetsDialog({
             select
             size="small"
             label="How many"
-            value={count}
+            value={wanted || ""}
             onChange={(e) => setCount(Number(e.target.value))}
-            sx={{ minWidth: 120 }}
+            sx={{ minWidth: 140 }}
+            helperText={`${bets.length} proposed`}
           >
-            {Array.from({ length: Math.min(12, Math.max(1, bets.length)) }, (_, i) => i + 1).map(
-              (n) => (
-                <MenuItem key={n} value={n}>
-                  Top {n}
-                </MenuItem>
-              ),
-            )}
+            {/* Only offer counts the landscape can actually fill, plus "All" — a "Top 30"
+                that silently queues 12 is not the ranking the reader asked for. */}
+            {COUNTS.filter((n) => n < bets.length).map((n) => (
+              <MenuItem key={n} value={n}>
+                Top {n}
+              </MenuItem>
+            ))}
+            <MenuItem value={bets.length}>All {bets.length}</MenuItem>
           </TextField>
           <TextField
             select
@@ -222,7 +245,7 @@ export default function BestBetsDialog({
           variant="contained"
           startIcon={<CasinoIcon />}
           disabled={busy || picked.length === 0}
-          onClick={() => onRun(count, iterations, rank)}
+          onClick={() => onRun(wanted, iterations, rank)}
         >
           {busy ? "Queueing…" : `Queue ${picked.length} test${picked.length === 1 ? "" : "s"}`}
         </Button>

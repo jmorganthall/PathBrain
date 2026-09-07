@@ -82,6 +82,7 @@ import type {
   TrendRelativeResponse,
   WeightsResponse,
   IdleAudit,
+  InstrumentDrift,
   PortableDevice,
   PortableHome,
   PortableRecipe,
@@ -283,6 +284,7 @@ export const api = {
   methodologies: () => request<MethodologiesResponse>("/methodologies"),
   methodologyCurrent: () => request<MethodologyDetail>("/methodologies/current"),
   idleAudit: (limit = 200) => request<IdleAudit>(`/methodologies/idle-audit?limit=${limit}`),
+  instrumentDrift: (days = 14) => request<InstrumentDrift>(`/methodologies/instrument-drift?days=${days}`),
   methodology: (version: string) =>
     request<MethodologyDetail>(`/methodologies/${encodeURIComponent(version)}`),
   runScores: (id: number) => request<RunScoresResponse>(`/score/${id}/methodologies`),

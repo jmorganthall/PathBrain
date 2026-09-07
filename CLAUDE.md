@@ -425,6 +425,39 @@ LLM-based. See `README.md` for the product overview.
     counted everywhere, killed only under `/.dockerenv` so a dev box's real Chrome is safe).
     `tini` is baked into the image as PID 1 (`Dockerfile`), so zombie reaping never depends
     on the compose flags.
+  - `instrument_drift.py` — **when a run gets longer, did the MEASUREMENT get slower, and does
+    it move a graded number?** (`GET /api/methodologies/instrument-drift?days=`, the
+    **Instrument drift** card on the Methodology page; the Dashboard's *Avg iteration* tile links
+    to it.) Reported as *"iterations have gone from 33 to 40 to 49 s — is a tool issue screwing up
+    grading consistency?"*, and the tile cannot answer that, because a wall clock climbs for two
+    opposite reasons. **The run got bigger**: the methodology-only scope lifts the browser's 2-of-N
+    cap so every iteration measures the crown, a duel round runs three browser iterations a side,
+    a publish adds pages, a longer idle wait adds seconds per page — none of which touches a graded
+    value, since the crown reads the page's own clock. **The machine got slower**: leaked Chromium
+    or a swapping host makes the browser itself slower, and that lands *inside* FCP and LCP through
+    the render phase, so every profile grades worse the later it was measured — the "best drops to
+    65th over time" failure class, and the only one of the two that corrupts grading. The audit
+    trends **three clocks per run** — the suite iteration (`Run.per_iteration_ms`, the tile), the
+    browser iteration (the browser result's `duration_ms`, mix-independent) and the page's own clock
+    (`load_event_ms`, pages-independent) — whose differences are the ungraded parts of a run (the
+    post-load idle wait `total_render − load_event`; the time outside page loads `browser − pages ×
+    total_render`), and the ledger's **client-role** metrics (`nav_render`/`inp`/`cls`, shaping-immune
+    by construction) as the detector against the **network phases** as the control. A quantity
+    "drifts" only when its rank correlation with time is significant *and* the first-third →
+    last-third median shift is material (`MATERIAL_SHIFT_PCT`, per-quantity floors): a few hundred
+    runs make a 1% wobble significant and no grade notices 1%. Verdicts, each a sentence with its
+    numbers in it: `instrument` (client readings rose → `grading_at_risk`), `network` (page clock +
+    network phases rose, render flat → the link/profile mix changed, instrument fine), `unattributed`
+    (page clock rose, neither explains it → the pages themselves changed; see the Data-integrity
+    card's collection shape), `overhead` / `idle` (runs longer outside page loads / in the settle —
+    ungraded, but the same machine), `mix` (suite iteration up, browser iteration flat → what an
+    iteration contains changed: `browser_share`, pages), `stable`. Beside the trends: the live
+    `browser_procs` snapshot (leaked trees are the usual live cause) and a count of runs in the
+    window derived under an older formula (not like-for-like until re-derived). **Bounded by the
+    question**: a window of days, sampled evenly (`_stride`) to `limit` runs, read as scalars through
+    JSON paths — never a materialized `Run`+`BenchmarkResult` scan like `drift.py`'s all-history
+    campaign reading, which answers a different question (is a metric time-stationary enough to rank
+    raw?) and is fine to be slow. Read-only; nothing here changes a score.
   - `jobs.py` — in-process background-job registry (progress/status/recent history).
     The heavy score passes (`/api/score/regrade|rescore|rederive`) run as jobs and
     return `202 {job_id}`; `/api/jobs` (`api/routes_jobs.py`) merges them with read-only

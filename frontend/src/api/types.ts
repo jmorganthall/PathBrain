@@ -3198,3 +3198,70 @@ export interface IdleAudit {
   estimated_saving_ms_per_load: number | null;
   verdict: string | null;
 }
+
+export type DriftVerdict =
+  | "instrument"
+  | "unattributed"
+  | "network"
+  | "overhead"
+  | "idle"
+  | "mix"
+  | "stable"
+  | "insufficient";
+
+export interface DriftTrend {
+  n: number;
+  rho: number | null;
+  z: number;
+  early: number;
+  late: number;
+  delta: number;
+  shift_pct: number | null;
+  direction: "up" | "down" | "flat";
+  drifts: boolean;
+}
+
+export interface DriftFinding {
+  key: string;
+  severity: "bad" | "warn" | "info" | "ok";
+  text: string;
+}
+
+export interface DriftCohort {
+  key: string;
+  runs: number;
+  iterations: number;
+  kinds: Record<string, number>;
+  methodology_versions: Record<string, number>;
+  methodology_only_share: number | null;
+  medians: Record<string, number | null>;
+}
+
+export interface DriftProcesses {
+  available: boolean;
+  drivers?: number;
+  chrome?: number;
+  node?: number;
+  zombies?: number;
+  stray_chrome?: number;
+  self_rss_mb?: number;
+  children_rss_mb?: number;
+}
+
+// GET /methodologies/instrument-drift — three clocks per run plus the ledger's client-role
+// metrics, trended over a window, so "the run got bigger" is told apart from "the
+// measurement got slower" and the answer says whether a graded number moved.
+export interface InstrumentDrift {
+  window: { days: number; bucket: "day" | "hour"; runs: number; from: string | null; to: string | null; min_samples: number };
+  verdict: DriftVerdict;
+  grading_at_risk: boolean;
+  headline: string;
+  findings: DriftFinding[];
+  trends: Record<string, DriftTrend | null>;
+  quantities: Record<string, { label: string; unit: string; family: string }>;
+  cohorts: DriftCohort[];
+  processes: DriftProcesses | null;
+  leaked_processes: number;
+  stale_derivations: number | null;
+  derivation_version: string;
+}

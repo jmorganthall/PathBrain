@@ -162,9 +162,13 @@ class ExploreBatchTest(BaseModel):
     order, which is deliberately drawn to what we know least about.
     """
 
-    # How many to queue. Capped because this is a queue of real benchmark sessions, not a
-    # list: twelve at five iterations is already most of an evening.
-    count: int = Field(3, ge=1, le=12)
+    # How many to queue. There IS a ceiling — this is a queue of real benchmark sessions,
+    # and fifty at five iterations is days of pipeline — but the old cap of twelve was the
+    # generator's default pool size leaking out as a product limit. "Run everything worth
+    # running" is a legitimate ask, so the cap is set where the cost genuinely bites rather
+    # than where the pool happened to stop. The dialog offers "All" for whatever the
+    # landscape actually proposed.
+    count: int = Field(3, ge=1, le=50)
     # Iterations each. None tops each profile up to the confidence minimum, which is the
     # long answer and rarely what a batch wants.
     iterations: int | None = Field(5, ge=1)

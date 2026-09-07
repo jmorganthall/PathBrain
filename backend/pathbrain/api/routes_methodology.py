@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import idle_audit, jobs
+from .. import idle_audit, instrument_drift, jobs
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
 from ..logging_config import get_logger
@@ -60,6 +60,23 @@ def list_methodologies(session: Session = Depends(get_session)) -> dict:
         "code_default": CURRENT_METHODOLOGY,   # the version this build ships as latest
         "pinned": pinned,                       # config override, if any (else None → follows code)
     }
+
+
+@router.get("/methodologies/instrument-drift")
+def instrument_drift_audit(
+    days: int = instrument_drift.DEFAULT_DAYS,
+    limit: int = instrument_drift.DEFAULT_LIMIT,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Is a run getting longer because the *measurement* got slower — and does it move a
+    graded number? Read-only, bounded to ``days`` sampled evenly to ``limit`` runs. Trends
+    three clocks per run (suite iteration, browser iteration, the page's own clock) and the
+    ledger's shaping-immune client-role metrics against the network phases, so "the run got
+    bigger" (methodology-only scope, duel rounds, more pages, a longer idle wait) is told
+    apart from "the machine got slower" (render/INP/CLS rising — the one that corrupts
+    grading, since FCP and LCP contain render). Adds the live browser-process snapshot and
+    a count of stale-derivation runs in the window. Nothing here changes a score."""
+    return instrument_drift.instrument_drift(session, days=days, limit=limit)
 
 
 @router.get("/methodologies/idle-audit")

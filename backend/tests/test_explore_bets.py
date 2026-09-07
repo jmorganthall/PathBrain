@@ -107,3 +107,58 @@ def test_ranking_does_not_mutate_the_candidates_it_was_given():
     c = _candidate("x", 70.0, 1.0, ["from a matched pair"])
     rank_bets([c])
     assert "confidence_score" not in c
+
+
+# ── The bets pool is every runnable proposal, not just the headline list ────────────────
+
+
+def _with_candidate(key, to, parent="p"):
+    return {
+        "changes": [{"key": key, "pipe": "Download", "field_label": "quantum", "to": to}],
+        "predicted": 60.0, "uncertainty": 1.0, "evidence": ["from a matched pair"],
+        "upside": 61.0, "settings": [{"label": "Download", "quantum": to}],
+        "parent": {"fingerprint": parent, "name": "P", "label": "p", "overall": 50.0},
+    }
+
+
+def test_coverage_holes_and_crown_leg_moves_are_runnable_bets_too():
+    """Explore proposes in three places — the ranked list, the variant attached to each hole
+    in coverage, and the crown-leg "move the best profile the leaders' way". All three are
+    built by the same `_candidate_dict` and post the same payload, so a batch that only saw
+    the headline list was ignoring most of what the page had already worked out."""
+    from pathbrain.explore import runnable_candidates
+
+    out = runnable_candidates(
+        [_with_candidate("Download::quantum", 5000)],
+        [{"candidate": _with_candidate("Download::target", 6)}],
+        {"legs": [{
+            "moves": [{"candidate": _with_candidate("Upload::quantum", 900)}],
+            "combined": _with_candidate("Download::interval", 40),
+        }]},
+    )
+    assert {c["changes"][0]["key"] for c in out} == {
+        "Download::quantum", "Download::target", "Upload::quantum", "Download::interval",
+    }
+
+
+def test_the_same_move_proposed_twice_is_one_bet():
+    """A lever move genuinely appears both as a ranked candidate and as the variant that
+    fills a hole. Queueing it twice spends two benchmarks answering one question."""
+    from pathbrain.explore import runnable_candidates
+
+    same = _with_candidate("Download::quantum", 5000)
+    out = runnable_candidates([same], [{"candidate": _with_candidate("Download::quantum", 5000)}])
+    assert len(out) == 1
+
+
+def test_a_hole_with_no_runnable_variant_contributes_nothing():
+    """`already_measured` holes and legs whose move is an existing profile carry no
+    `candidate` — they are answers, not proposals."""
+    from pathbrain.explore import runnable_candidates
+
+    out = runnable_candidates(
+        [],
+        [{"already_measured": True}, {"existing": {"fingerprint": "x"}}],
+        {"legs": [{"moves": [{"existing": {"fingerprint": "y"}}], "combined": None}]},
+    )
+    assert out == []
