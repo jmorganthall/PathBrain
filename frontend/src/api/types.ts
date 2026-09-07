@@ -2958,6 +2958,28 @@ export interface PortableMetricMeta {
   unit: string;
   lower_is_better: boolean;
   scored: boolean;
+  // Dominated by connection setup (DNS/TCP/TLS on each origin's first fetch): comparable
+  // across two runs only when both opened their connections the same way.
+  setup_bound?: boolean;
+}
+
+// How warm a run's connections were, and over what transport (per side of a comparison).
+export interface PortableWarmth {
+  tao_resources?: number;
+  reused?: number;
+  reused_share: number | null;
+  protocols?: Record<string, number>;
+  protocol: string | null;
+  family?: string;
+  engine?: string;
+  runs_with_warmth?: number;
+}
+
+export interface PortableWarmthCompare {
+  away: PortableWarmth;
+  home: PortableWarmth;
+  comparable: boolean;
+  note: string | null;
 }
 
 export interface PortableRecipe {
@@ -3042,7 +3064,9 @@ export interface PortableCompareMetric {
   pct: number | null;
   n: number;
   lower_is_better: boolean;
-  verdict: "better" | "worse" | "within";
+  verdict: "better" | "worse" | "within" | "incomparable";
+  setup_bound?: boolean;
+  comparable?: boolean;
 }
 
 // One "vs home" block against one pool of home samples.
@@ -3060,6 +3084,7 @@ export interface PortableReference {
     home_runs_on_device: number;
     profile?: { fingerprint: string; summary: string | null } | null;
     profile_note?: string;
+    warmth?: PortableWarmthCompare;
     time_rung?: string;
     time_rung_label?: string;
     common_resources?: string[];
@@ -3083,6 +3108,52 @@ export interface PortableReference {
 export interface PortableCompare extends PortableReference {
   headline: "device" | "server" | null;
   references: { device: PortableReference; server: PortableReference | null };
+}
+
+// GET /portable/standings — what each device measured at home under each firewall profile,
+// ranked, and whether that ranking agrees with the pooled crown (the mission's own check).
+export interface PortableStandingProfile {
+  fingerprint: string;
+  name: string | null;
+  summary: string | null;
+  runs: number;
+  confident: boolean;
+  score: number | null;
+  score_p25: number | null;
+  score_p75: number | null;
+  metrics: Record<string, number>;
+  pooled_overall: number | null;
+  pooled_iterations: number;
+  is_crown: boolean;
+  last_seen: string | null;
+  rank: number | null;
+}
+
+export interface PortableStandingDevice {
+  device_id: string;
+  device_label: string | null;
+  is_server: boolean;
+  runs: number;
+  profiles: PortableStandingProfile[];
+  confident_profiles: number;
+  best: { fingerprint: string; name: string | null; score: number | null; runs: number } | null;
+  agreement: {
+    rho: number | null;
+    profiles_compared: number;
+    agree: boolean;
+    crown_rank_on_device: number | null;
+    crown_runs_on_device: number;
+    crown_score_on_device: number | null;
+    verdict: string;
+  };
+}
+
+export interface PortableStandings {
+  instrument_version: string;
+  min_home_runs: number;
+  crown: { fingerprint: string; name: string | null; label: string | null } | null;
+  devices: PortableStandingDevice[];
+  note: string;
 }
 
 export interface PortableRun {

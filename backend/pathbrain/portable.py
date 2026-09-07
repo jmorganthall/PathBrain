@@ -47,6 +47,7 @@ from sqlalchemy import func, select
 from .interpret.portable import (
     PORTABLE_DERIVATION_VERSION,
     PORTABLE_METRICS,
+    SETUP_BOUND,
     derive_portable,
     iteration_count,
 )
@@ -191,7 +192,10 @@ PORTABLE_RUBRIC: dict[str, dict] = {
     "jitter_ms": {"weight": 5, "best": 0.5, "worst": 50.0},
     # Time to move one megabyte (lower is better) rather than Mbit/s, so it rides the same
     # log curve as everything else: 40 ms/MB ≈ 200 Mbit/s, 4000 ms/MB ≈ 2 Mbit/s.
-    "stream_ms_per_mb": {"weight": 5, "best": 40.0, "worst": 4000.0},
+    # ``stream_ms_per_mb`` is deliberately NOT scored: at these link speeds the chunk-reader
+    # loop is bound by the client's CPU (a phone reads a stream faster than a NAS Chromium
+    # that has just loaded six pages), so it is shown as a diagnostic beside the other stream
+    # readings rather than graded as if it were the link.
 }
 _SOURCES = {k: ("portable", k) for k in PORTABLE_RUBRIC}
 
@@ -597,8 +601,10 @@ SERVER_DEVICE_ID = "pathbrain-server"
 SERVER_DEVICE_LABEL = "PathBrain (wired)"
 SERVER_SAMPLE_LIMIT = 500
 SERVER_NOTE = (
-    "measured by PathBrain itself on its wired connection — expect a few ms better round trip "
-    "and jitter than a Wi-Fi device sees at home, so read small differences with that in mind"
+    "measured by PathBrain itself, in its own Chromium on its wired connection, running the same "
+    "warm-up and iterations as this page — expect a few ms better round trip and jitter than a "
+    "Wi-Fi device sees at home, and read the connection warmth line before trusting the "
+    "setup-bound rows"
 )
 
 
@@ -616,9 +622,13 @@ def record_server_run(session, run, results: list) -> PortableRun | None:
         raw = getattr(r, "raw", None)
         if not getattr(r, "success", False) or not isinstance(raw, dict):
             continue
+        its = raw.get("iterations")
+        found = [it for it in its if isinstance(it, dict) and it.get("waterfall")] if isinstance(its, list) else []
         it = raw.get("iteration")
-        if isinstance(it, dict) and it.get("waterfall"):
-            iterations.append(it)
+        if not found and isinstance(it, dict) and it.get("waterfall"):
+            found = [it]  # an older plugin: one cold iteration per call
+        if found:
+            iterations.extend(found)
             versions.add(str(raw.get("instrument_version") or ""))
             client = client or (raw.get("client") or {})
     if not iterations:
@@ -756,6 +766,7 @@ def _reference(
             break
     prov["time_rung"] = rung_key
     prov["time_rung_label"] = rung_label
+    prov["warmth"] = warmth_compare(run, cell)
 
     away_ok = set((run.coverage or {}).get("resources_ok") or [])
     tally: dict[str, int] = {}
@@ -836,6 +847,18 @@ def _reference(
             "away": away_score, "home_median": hm, "home_p25": p25, "home_p75": p75,
             "delta": round(away_score - hm, 1), "n": len(home_scores),
         }
+    # A metric bound by connection setup compares only across equal warmth: the numbers stay
+    # (they are real), the verdict does not — a warm tab against a cold context is measuring
+    # the handshakes, and the row says so instead of printing a green chip.
+    comparable = bool(prov["warmth"].get("comparable", True))
+    for key in SETUP_BOUND:
+        if key in metrics_out:
+            metrics_out[key]["setup_bound"] = True
+            metrics_out[key]["comparable"] = comparable
+            if not comparable:
+                metrics_out[key]["verdict"] = "incomparable"
+    if score_block is not None:
+        score_block["comparable"] = comparable
     return {
         "available": True,
         "reason": None,
@@ -844,6 +867,88 @@ def _reference(
         "per_origin": per_origin_out,
         "score": score_block,
     }
+
+
+#: Two runs' reused-connection shares may differ by this much and still compare on the
+#: setup-bound metrics. Beyond it one side is paying handshakes the other is not.
+WARMTH_TOLERANCE = 0.34
+
+
+def client_family(client: dict | None) -> dict:
+    """The browser a run was taken in, from its recorded client: ``family`` (Safari, Chrome,
+    Firefox, Edge, PathBrain's own Chromium) and ``engine`` (WebKit, Blink, Gecko) — the engine
+    is what decides how Resource Timing reports a handshake, so it is what the warmth
+    comparison cares about."""
+    c = client or {}
+    ua = str(c.get("user_agent") or "")
+    if c.get("device") == SERVER_DEVICE_ID:
+        return {"family": "PathBrain Chromium", "engine": "Blink"}
+    if not ua:
+        return {"family": "unknown", "engine": "unknown"}
+    ios = "iPhone" in ua or "iPad" in ua
+    if "HeadlessChrome" in ua:
+        return {"family": "Chromium (headless)", "engine": "Blink"}
+    if "Firefox/" in ua or "FxiOS/" in ua:
+        return {"family": "Firefox", "engine": "WebKit" if ios else "Gecko"}
+    if "Edg/" in ua or "EdgiOS/" in ua:
+        return {"family": "Edge", "engine": "WebKit" if ios else "Blink"}
+    if "CriOS/" in ua:
+        return {"family": "Chrome", "engine": "WebKit"}
+    if "Chrome/" in ua:
+        return {"family": "Chrome", "engine": "Blink"}
+    if "Safari/" in ua:
+        return {"family": "Safari", "engine": "WebKit"}
+    return {"family": "unknown", "engine": "unknown"}
+
+
+def _run_warmth(run: PortableRun) -> dict:
+    w = dict(((run.coverage or {}).get("warmth")) or {})
+    w.update(client_family(run.client))
+    return w
+
+
+def warmth_compare(run: PortableRun, homes: list[PortableRun]) -> dict:
+    """Both sides' warmth, and whether the setup-bound metrics may be compared across them.
+
+    ``away`` is this run; ``home`` is the reference pool (median reused share, the dominant
+    protocol, the dominant engine). ``comparable`` is False when either side's warmth is
+    unknown (runs from before warmth was stamped), when the reused shares differ by more than
+    ``WARMTH_TOLERANCE``, or when the transports differ (h3 and h2 account for a handshake
+    differently). ``note`` is the sentence the page shows."""
+    away = _run_warmth(run)
+    shares = [w["reused_share"] for w in (_run_warmth(h) for h in homes) if w.get("reused_share") is not None]
+    protocols: dict[str, int] = {}
+    engines: dict[str, int] = {}
+    for h in homes:
+        w = _run_warmth(h)
+        if w.get("protocol"):
+            protocols[w["protocol"]] = protocols.get(w["protocol"], 0) + 1
+        if w.get("engine") and w["engine"] != "unknown":
+            engines[w["engine"]] = engines.get(w["engine"], 0) + 1
+    home = {
+        "reused_share": round(median(shares), 3) if shares else None,
+        "runs_with_warmth": len(shares),
+        "protocol": max(protocols, key=protocols.get) if protocols else None,
+        "engine": max(engines, key=engines.get) if engines else None,
+    }
+    reasons: list[str] = []
+    a_share, h_share = away.get("reused_share"), home.get("reused_share")
+    if a_share is None or h_share is None:
+        reasons.append("connection warmth is not recorded on one side (runs from before it was stamped)")
+    elif abs(a_share - h_share) > WARMTH_TOLERANCE:
+        warm, cold = ("this run", "the home reference") if a_share > h_share else ("the home reference", "this run")
+        reasons.append(
+            f"{warm} reused {max(a_share, h_share):.0%} of its connections and {cold} only "
+            f"{min(a_share, h_share):.0%} — one side is paying handshakes the other is not"
+        )
+    if away.get("protocol") and home.get("protocol") and away["protocol"] != home["protocol"]:
+        reasons.append(f"different transports ({away['protocol']} here, {home['protocol']} at home)")
+    comparable = not reasons
+    note = None if comparable else (
+        "Setup-bound rows (first / largest / waterfall complete, byte earliness) are shown but not "
+        "compared: " + "; ".join(reasons) + "."
+    )
+    return {"away": away, "home": home, "comparable": comparable, "note": note}
 
 
 def compare(session, run: PortableRun, cfg: dict | None, *, crown_fingerprint: str | None = None) -> dict:
@@ -944,6 +1049,203 @@ def devices(session) -> list[dict]:
 
 def metric_catalog() -> list[dict]:
     return [
-        {"key": k, "label": label, "unit": unit, "lower_is_better": lower, "scored": k in PORTABLE_RUBRIC}
+        {
+            "key": k, "label": label, "unit": unit, "lower_is_better": lower,
+            "scored": k in PORTABLE_RUBRIC, "setup_bound": k in SETUP_BOUND,
+        }
         for k, (label, unit, lower) in PORTABLE_METRICS.items()
     ]
+
+
+# ── per-profile standing: what each device measured under each profile ───────
+
+
+def _quartiles_of(vals: list[float]) -> tuple[float | None, float | None]:
+    if len(vals) < 2:
+        return None, None
+    return _quartiles(vals)
+
+
+def profile_standings(session, cfg: dict | None, *, device_id: str | None = None) -> dict:
+    """What every device measured at home under each firewall profile, ranked — and whether
+    that ranking agrees with the pooled crown.
+
+    The mission is "does the Internet feel faster to a person", and the person's device is a
+    warm browser on Wi-Fi, not the wired headless Chromium that ranks profiles. Every home run
+    a phone uploads is already stamped with the profile the firewall was on, so the data for
+    the mission's own check has been accruing since the Away test shipped; this is the read.
+    Per device: each profile's runs, portable-score median and IQR, scored-metric medians,
+    ranked by score among profiles with ≥ ``portable.min_home_runs`` runs (``confident``);
+    then the crown's standing on that device and the Spearman ρ between the device's scores
+    and the pooled Overall across the profiles both have. Agreement is about the *ranking*:
+    the portable score is the device's own instrument, never the Overall. Read-only; nothing
+    here reaches the crown, the duel or the pooled record."""
+    from .stats import spearman
+
+    pc = portable_config(cfg)
+    min_runs = int(pc.get("min_home_runs") or 5)
+    version = recipe(cfg)["instrument_version"]
+    q = select(PortableRun).where(
+        PortableRun.is_home.is_(True),
+        PortableRun.settings_fingerprint.is_not(None),
+        PortableRun.instrument_version == version,
+    )
+    if device_id:
+        q = q.where(PortableRun.device_id == device_id)
+    rows = session.scalars(q.order_by(PortableRun.id)).all()
+
+    by_device: dict[str, dict] = {}
+    for r in rows:
+        d = by_device.setdefault(r.device_id, {"device_id": r.device_id, "device_label": r.device_label, "runs": 0, "profiles": {}})
+        d["device_label"] = d["device_label"] or r.device_label
+        d["runs"] += 1
+        fp = r.settings_fingerprint
+        prof = d["profiles"].setdefault(fp, {"summary": r.settings_summary, "scores": [], "metrics": {}, "last_seen": None})
+        prof["summary"] = prof["summary"] or r.settings_summary
+        # Re-scored from the stored metrics, so a rubric change (the stream leaving the score)
+        # applies to every run on record rather than only to new uploads.
+        sc, _ = score_metrics(r.metrics or {})
+        if sc is not None:
+            prof["scores"].append(sc)
+        for k, v in (r.metrics or {}).items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                prof["metrics"].setdefault(k, []).append(float(v))
+        created = _as_utc(r.created_at)
+        if created and (prof["last_seen"] is None or created > prof["last_seen"]):
+            prof["last_seen"] = created
+
+    fps = sorted({fp for d in by_device.values() for fp in d["profiles"]})
+    names: dict[str, str] = {}
+    if fps:
+        try:
+            from .profile_names import names_for
+
+            names = names_for(session, fps)
+        except Exception:  # noqa: BLE001 — naming must never be why the standing fails
+            names = {}
+    crown_fp = crown_label = None
+    pooled: dict[str, tuple[float | None, int]] = {}
+    try:
+        from . import crown_follower
+        from .config_store import get_config
+        from .methodology import ensure_current_methodology, overall_metrics, overall_weights
+
+        crown = crown_follower.current_crown(session)
+        crown_fp = (crown or {}).get("fingerprint")
+        crown_label = (crown or {}).get("label")
+        if fps:
+            methodology = ensure_current_methodology(session, cfg or get_config(session))
+            metrics_, required_ = overall_metrics(methodology.definition or {})
+            pooled = crown_follower.profile_overalls(
+                session, fps, methodology.version, metrics_, required_, overall_weights(methodology.definition or {})
+            )
+    except Exception:  # noqa: BLE001 — the pooled side is context; the device's own standing stands
+        log.debug("profile_standings: pooled side unavailable", exc_info=True)
+    crown_name = names.get(crown_fp) if crown_fp else None
+
+    devices_out: list[dict] = []
+    for d in by_device.values():
+        profiles: list[dict] = []
+        for fp, prof in d["profiles"].items():
+            scores = prof["scores"]
+            n = len(scores)
+            p25, p75 = _quartiles_of(scores)
+            overall, iters = pooled.get(fp, (None, 0))
+            profiles.append({
+                "fingerprint": fp,
+                "name": names.get(fp),
+                "summary": prof["summary"],
+                "runs": n,
+                "confident": n >= min_runs,
+                "score": round(median(scores), 1) if scores else None,
+                "score_p25": p25,
+                "score_p75": p75,
+                "metrics": {k: round(median(v), 3) for k, v in prof["metrics"].items() if v},
+                "pooled_overall": None if overall is None else round(overall, 2),
+                "pooled_iterations": iters,
+                "is_crown": fp == crown_fp,
+                "last_seen": prof["last_seen"].isoformat() if prof["last_seen"] else None,
+                "rank": None,
+            })
+        profiles.sort(key=lambda p: (not p["confident"], -(p["score"] if p["score"] is not None else -1.0), -p["runs"]))
+        rank = 0
+        for p in profiles:
+            if p["confident"] and p["score"] is not None:
+                rank += 1
+                p["rank"] = rank
+        confident = [p for p in profiles if p["rank"] is not None]
+        best = confident[0] if confident else None
+        crown_row = next((p for p in profiles if p["is_crown"]), None)
+        pairs = [(p["score"], p["pooled_overall"]) for p in confident if p["pooled_overall"] is not None]
+        rho = spearman([a for a, _ in pairs], [b for _, b in pairs]) if len(pairs) >= 3 else None
+
+        label = d["device_label"] or d["device_id"]
+        if not confident:
+            verdict = (
+                f"{d['runs']} home run(s) on {label}, none on a single profile reaching {min_runs}: the standing "
+                f"needs {min_runs} runs per profile — keep running the Away test at home."
+            )
+        elif best and crown_fp and best["fingerprint"] == crown_fp:
+            verdict = (
+                f"{label} agrees with the crown: {crown_name or crown_label or crown_fp[:8]} is its best profile too "
+                f"({best['runs']} runs, score {best['score']})."
+            )
+        elif crown_fp and crown_row is None:
+            verdict = (
+                f"{label} has not measured the crown ({crown_name or crown_label or crown_fp[:8]}) yet — run the Away "
+                "test at home while it is on the firewall; until then its best is "
+                f"{best['name'] or best['fingerprint'][:8]} ({best['runs']} runs, score {best['score']})."
+            )
+        elif crown_fp and crown_row is not None and not crown_row["confident"]:
+            verdict = (
+                f"{label} has {crown_row['runs']} run(s) on the crown ({crown_name or crown_label or crown_fp[:8]}), "
+                f"under the {min_runs} the standing needs; its best so far is {best['name'] or best['fingerprint'][:8]} "
+                f"(score {best['score']})."
+            )
+        elif crown_fp:
+            gap = None if crown_row["score"] is None or best["score"] is None else round(best["score"] - crown_row["score"], 1)
+            overlap = (
+                crown_row["score_p75"] is not None and best["score_p25"] is not None and crown_row["score_p75"] >= best["score_p25"]
+            )
+            verdict = (
+                f"{label} disagrees with the crown: {best['name'] or best['fingerprint'][:8]} scores {best['score']} here "
+                f"against the crown's {crown_row['score']} (rank {crown_row['rank']} of {len(confident)}"
+                + (f", {gap:+} points" if gap is not None else "")
+                + "). "
+                + ("The IQRs overlap, so on this instrument that is a tie, not a verdict." if overlap else
+                   "The IQRs do not overlap: on this device the crown is not the best-feeling profile.")
+            )
+        else:
+            verdict = f"{label}'s best profile is {best['name'] or best['fingerprint'][:8]} ({best['runs']} runs, score {best['score']}); no pooled crown to compare against yet."
+        if rho is not None:
+            verdict += f" Rank agreement with the pooled Overall across {len(pairs)} profiles: ρ = {rho:+.2f}."
+        devices_out.append({
+            "device_id": d["device_id"],
+            "device_label": d["device_label"],
+            "is_server": d["device_id"] == SERVER_DEVICE_ID,
+            "runs": d["runs"],
+            "profiles": profiles,
+            "confident_profiles": len(confident),
+            "best": {"fingerprint": best["fingerprint"], "name": best["name"], "score": best["score"], "runs": best["runs"]} if best else None,
+            "agreement": {
+                "rho": round(rho, 3) if rho is not None else None,
+                "profiles_compared": len(pairs),
+                "agree": bool(best and crown_fp and best["fingerprint"] == crown_fp),
+                "crown_rank_on_device": crown_row["rank"] if crown_row else None,
+                "crown_runs_on_device": crown_row["runs"] if crown_row else 0,
+                "crown_score_on_device": crown_row["score"] if crown_row else None,
+                "verdict": verdict,
+            },
+        })
+    devices_out.sort(key=lambda d: (d["is_server"], -d["runs"]))
+    return {
+        "instrument_version": version,
+        "min_home_runs": min_runs,
+        "crown": {"fingerprint": crown_fp, "name": crown_name, "label": crown_label} if crown_fp else None,
+        "devices": devices_out,
+        "note": (
+            "The portable score is each device's own instrument — a synthetic waterfall, a streamed "
+            "download and warm round trips — never the Overall. Agreement is about which profile ranks "
+            "first, not about the number."
+        ),
+    }

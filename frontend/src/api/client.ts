@@ -84,6 +84,7 @@ import type {
   IdleAudit,
   InstrumentDrift,
   PortableDevice,
+  PortableStandings,
   PortableHome,
   PortableRecipe,
   PortableRun,
@@ -702,6 +703,7 @@ export const api = {
   portableRun: (id: number) => request<PortableRun>(`/portable/runs/${id}`),
   portableDelete: (id: number) => request<void>(`/portable/runs/${id}`, { method: "DELETE" }),
   portableDevices: () => request<PortableDevice[]>("/portable/devices"),
+  portableStandings: () => request<PortableStandings>("/portable/standings"),
   portableDeviceRename: (deviceId: string, label: string | null) =>
     request<{ device_id: string; label: string | null }>(
       `/portable/devices/${encodeURIComponent(deviceId)}`,

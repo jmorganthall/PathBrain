@@ -185,6 +185,15 @@ def portable_delete(run_id: int) -> Response:
     return Response(status_code=204)
 
 
+@router.get("/portable/standings")
+def portable_standings(device_id: str | None = Query(None), session: Session = Depends(get_session)) -> dict:
+    """What every device measured at home under each firewall profile, ranked, and whether
+    that ranking agrees with the pooled crown — the mission's own check on the crown, read
+    off the home runs the Away test has been stamping with the live profile all along.
+    Read-only; the portable score never touches the crown."""
+    return portable.profile_standings(session, get_config(session), device_id=device_id)
+
+
 @router.get("/portable/devices")
 def portable_devices(session: Session = Depends(get_session)) -> list[dict]:
     return portable.devices(session)

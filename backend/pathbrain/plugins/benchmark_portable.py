@@ -9,7 +9,7 @@ per-profile, per-hour home baseline with no dedicated schedule.
 
 One runner, not two: rather than re-implementing the waterfall in Python, the plugin loads
 the app's own Away page (``/away?embedded=1``) in the browser plugin's Chromium and calls
-the page's ``window.__pathbrainPortable.runOne(recipe)`` — the function the phone runs —
+the page's ``window.__pathbrainPortable.run(recipe)`` — the function the phone runs —
 so the recipe and the measurement code cannot drift apart. The recipe is fetched from the
 app's own API first, which also makes the plugin fail fast (no Chromium launched) when the
 server isn't reachable, e.g. under the test suite.
@@ -82,7 +82,16 @@ class PortableBenchmark(BenchmarkPlugin):
                     "() => !!(window.__pathbrainPortable && window.__pathbrainPortable.ready)",
                     timeout=timeout_ms,
                 )
-                iteration = page.evaluate("(recipe) => window.__pathbrainPortable.runOne(recipe)", body)
+                # The SAME sequence a phone runs (`runPortableTest`: a warm-up fetch, then the
+                # recipe's iterations in this one page), so the reference and a phone run carry
+                # the same connection warmth. A single cold `runOne` measured against a phone's
+                # warm tab read as the phone beating the wire on every setup-bound metric —
+                # the handshake cost, not the link. `runOne` stays the fallback for a page
+                # served from an older bundle.
+                doc = page.evaluate(
+                    "(recipe) => (window.__pathbrainPortable.run || window.__pathbrainPortable.runOne)(recipe)",
+                    body,
+                )
                 try:
                     client = page.evaluate("() => window.__pathbrainPortable.clientInfo()")
                 except Exception:  # noqa: BLE001 — cosmetic
@@ -93,23 +102,32 @@ class PortableBenchmark(BenchmarkPlugin):
                 except Exception:  # noqa: BLE001 — best-effort; the browser plugin reaps
                     pass
 
-            if not isinstance(iteration, dict) or "waterfall" not in iteration:
+            if isinstance(doc, dict) and isinstance(doc.get("iterations"), list):
+                iterations = [it for it in doc["iterations"] if isinstance(it, dict) and "waterfall" in it]
+            elif isinstance(doc, dict) and "waterfall" in doc:
+                iterations = [doc]  # an older page: one cold iteration
+            else:
+                iterations = []
+            if not iterations:
                 raise ValueError("the page returned no iteration document")
-            resources = (iteration.get("waterfall") or {}).get("resources") or []
+            first = iterations[0]
+            resources = (first.get("waterfall") or {}).get("resources") or []
             failed = {r.get("id"): r.get("error") for r in resources if isinstance(r, dict) and not r.get("ok")}
             return {
                 "raw": {
-                    "iteration": iteration,
+                    "iterations": iterations,
                     "instrument_version": recipe["instrument_version"],
                     "client": {**(client or {}), "device": SERVER_DEVICE_ID},
                 },
                 "details": {
                     "instrument_version": recipe["instrument_version"],
                     "self_url": self_url,
+                    "iterations": len(iterations),
+                    "warm_up": "run" if len(iterations) > 1 or isinstance(doc.get("iterations"), list) else "none",
                     "resources": len(resources),
                     "resources_failed": failed,
-                    "stream_ok": bool((iteration.get("stream") or {}).get("ok")),
-                    "rtt_samples": len((iteration.get("rtt") or {}).get("samples_ms") or []),
+                    "stream_ok": bool((first.get("stream") or {}).get("ok")),
+                    "rtt_samples": len((first.get("rtt") or {}).get("samples_ms") or []),
                 },
             }
 
