@@ -619,7 +619,8 @@ export default function Dashboard() {
           value={estimate?.per_iteration_ms != null ? fmtDuration(estimate.per_iteration_ms) : "—"}
           caption={iterCaption}
           aside={<Sparkline values={iterSeries} color="#4dd0e1" width={72} />}
-          help="What one iteration of the suite costs, priced from the most recent runs first. The sparkline is the per-iteration time of the last 30 runs, oldest to newest."
+          to="/methodology?audit=instrument"
+          help="What one iteration of the suite costs, priced from the most recent runs first. The sparkline is the per-iteration time of the last 30 runs, oldest to newest. Climbing? Tap to run the instrument-drift audit: it says whether the measurement got slower (grading at risk) or the run got bigger (nothing graded moved)."
         />
         <StatTile
           label="Runs"

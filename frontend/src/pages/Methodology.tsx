@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -26,6 +26,7 @@ import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import { api } from "../api/client";
 import type {
   IdleAudit,
+  InstrumentDrift,
   BrowserClient,
   BrowserConfig,
   MethodologyDetail,
@@ -268,6 +269,8 @@ export default function Methodology() {
   // (?reanchor=<metric>&best=<suggested>). The 'best' is editable before publishing.
   const [searchParams, setSearchParams] = useSearchParams();
   const reanchorKey = searchParams.get("reanchor");
+  // ?audit=instrument (the Dashboard's "Avg iteration" tile links here): open + run the drift audit.
+  const auditParam = searchParams.get("audit");
   const suggestedBest = searchParams.get("best");
   // How many metrics the saturation alert flagged. When more than one, default the re-grade
   // OFF so the user can re-anchor them all first and re-grade once (a re-grade is heavy).
@@ -734,6 +737,8 @@ export default function Methodology() {
 
       <IdleWaitAudit />
 
+      <InstrumentDriftAudit autoRun={auditParam === "instrument"} />
+
       {others.length > 0 && (
         <FoldCard title={`Other versions (${others.length})`} summary="Earlier rubrics, kept frozen for the scores measured under them.">
             {others.map((m, i) => (
@@ -845,5 +850,244 @@ function IdleWaitAudit() {
         )}
       </Stack>
     </FoldCard>
+  );
+}
+
+
+const DRIFT_SEVERITY: Record<InstrumentDrift["verdict"], "error" | "warning" | "info" | "success"> = {
+  instrument: "error",
+  unattributed: "warning",
+  overhead: "warning",
+  idle: "warning",
+  network: "info",
+  mix: "success",
+  stable: "success",
+  insufficient: "info",
+};
+const FINDING_SEVERITY = { bad: "error", warn: "warning", info: "info", ok: "success" } as const;
+const DRIFT_FAMILIES: Array<[string, string]> = [
+  ["wall", "Wall clock (nothing graded lives here)"],
+  ["page", "The page's own clock (the crown's window)"],
+  ["client", "Client-side, shaping-immune (the instrument detector)"],
+  ["network", "Network phases (the link / profile control)"],
+  ["crown", "Crown legs"],
+  ["mix", "What an iteration contains"],
+];
+const DRIFT_COLUMNS: Array<[string, string]> = [
+  ["per_iteration_ms", "Suite it."],
+  ["browser_wall_ms", "Browser it."],
+  ["page_clock_ms", "Page load"],
+  ["idle_wait_ms", "Idle wait"],
+  ["overhead_ms", "Outside loads"],
+  ["nav_render_ms", "Render"],
+  ["inp_ms", "INP"],
+  ["nav_network_ms", "Network"],
+  ["fcp_ms", "FCP"],
+  ["lcp_ms", "LCP"],
+  ["browser_share", "Browser/it."],
+  ["pages", "Pages"],
+];
+
+function fmtQuantity(unit: string, v: number | null | undefined): string {
+  if (v == null) return "—";
+  if (unit === "ms") return Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`;
+  return Math.abs(v) < 10 ? v.toFixed(2) : String(Math.round(v));
+}
+
+/** Instrument drift: when the Dashboard's "Avg iteration" climbs, did the *measurement* get
+ * slower or did the *run* get bigger — and did a graded number move? Three clocks per run
+ * (suite iteration, browser iteration, the page's own clock) and the ledger's shaping-immune
+ * client metrics (render / INP / CLS), trended over a window against the network phases. A
+ * rising client reading means the machine got slower and FCP/LCP carry it — the one case that
+ * corrupts grading. Read-only; nothing here changes a score. */
+function InstrumentDriftAudit({ autoRun }: { autoRun: boolean }) {
+  const [days, setDays] = useState(14);
+  const [audit, setAudit] = useState<InstrumentDrift | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const load = useCallback(async (d: number) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setAudit(await api.instrumentDrift(d));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+  useEffect(() => {
+    if (autoRun) void load(14);
+  }, [autoRun, load]);
+  const q = audit?.quantities ?? {};
+  return (
+    <FoldCard
+      title="Instrument drift"
+      summary="Runs getting longer? Says whether the measurement got slower (grading at risk) or the run got bigger (nothing graded moved)."
+      openWhen={autoRun}
+    >
+      <Stack spacing={1.5}>
+        <Typography variant="body2" color="text.secondary">
+          The Dashboard's <b>Avg iteration</b> is a wall clock, and a wall clock can climb for two opposite reasons.
+          The run can get <b>bigger</b> — the methodology-only scope measures the crown on every iteration where
+          the old cap sampled 2 of N, a duel round runs three browser iterations a side, a publish adds pages, a
+          longer idle wait adds seconds per page — none of which touches a graded number, because the crown reads
+          the page's own clock. Or the <b>machine</b> can get slower, which lands inside FCP and LCP through the
+          render phase and grades every profile worse the later it was measured. This reads three clocks per run
+          and the shaping-immune client readings (render, INP, CLS) against the network phases, and says which.
+        </Typography>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <TextField
+            select
+            size="small"
+            label="Window"
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
+            sx={{ minWidth: 120 }}
+          >
+            {[3, 7, 14, 30, 60].map((d) => (
+              <MenuItem key={d} value={d}>
+                last {d} days
+              </MenuItem>
+            ))}
+          </TextField>
+          <Button variant="outlined" size="small" onClick={() => load(days)} disabled={busy}>
+            {busy ? "Auditing…" : audit ? "Re-run audit" : "Run audit"}
+          </Button>
+        </Stack>
+        {err && <Alert severity="error">{err}</Alert>}
+        {audit && (
+          <>
+            <Alert severity={DRIFT_SEVERITY[audit.verdict] ?? "info"}>
+              <b>{audit.headline}</b>
+              <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.5 }}>
+                {audit.window.runs} runs over {audit.window.days} days, by {audit.window.bucket}
+                {audit.stale_derivations ? ` · ${audit.stale_derivations} stale-derivation run(s)` : ""}
+                {audit.leaked_processes ? ` · ${audit.leaked_processes} leaked browser process(es) right now` : ""}
+              </Typography>
+            </Alert>
+            {audit.findings.map((f) => (
+              <Alert key={f.key} severity={FINDING_SEVERITY[f.severity] ?? "info"} variant="outlined">
+                {f.text}
+              </Alert>
+            ))}
+            <Typography variant="subtitle2">What moved across the window</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Median of the first third → median of the last third. A row is flagged only when the rank
+              correlation with time is significant <i>and</i> the shift is material — a few hundred runs make a
+              1% wobble “significant”, and no grade notices 1%.
+            </Typography>
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Quantity</TableCell>
+                    <TableCell align="right">Start → end</TableCell>
+                    <TableCell align="right">Shift</TableCell>
+                    <TableCell align="right">ρ vs time</TableCell>
+                    <TableCell align="right">Runs</TableCell>
+                    <TableCell />
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {DRIFT_FAMILIES.map(([family, title]) => {
+                    const rows = Object.entries(audit.trends).filter(([k, t]) => t && q[k]?.family === family);
+                    if (rows.length === 0) return null;
+                    return (
+                      <FragmentRows key={family} title={title}>
+                        {rows.map(([k, t]) => (
+                          <TableRow key={k} hover>
+                            <TableCell>{q[k]?.label ?? k}</TableCell>
+                            <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                              {fmtQuantity(q[k]?.unit ?? "", t!.early)} → {fmtQuantity(q[k]?.unit ?? "", t!.late)}
+                            </TableCell>
+                            <TableCell align="right">{t!.shift_pct != null ? `${t!.shift_pct > 0 ? "+" : ""}${t!.shift_pct}%` : "—"}</TableCell>
+                            <TableCell align="right">{t!.rho != null ? t!.rho.toFixed(2) : "—"}</TableCell>
+                            <TableCell align="right">{t!.n}</TableCell>
+                            <TableCell>
+                              {t!.drifts && (
+                                <Chip
+                                  size="small"
+                                  label={t!.direction === "up" ? "rising" : "falling"}
+                                  color={q[k]?.family === "client" ? "error" : q[k]?.family === "mix" ? "default" : "warning"}
+                                  variant="outlined"
+                                />
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </FragmentRows>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+            <Typography variant="subtitle2">By {audit.window.bucket}</Typography>
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>{audit.window.bucket === "hour" ? "Hour (UTC)" : "Day (UTC)"}</TableCell>
+                    <TableCell align="right">Runs</TableCell>
+                    {DRIFT_COLUMNS.map(([k, label]) => (
+                      <TableCell key={k} align="right">
+                        <Tooltip title={q[k]?.label ?? k} arrow enterTouchDelay={0}>
+                          <span>{label}</span>
+                        </Tooltip>
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {audit.cohorts.map((c) => (
+                    <TableRow key={c.key} hover>
+                      <TableCell sx={{ whiteSpace: "nowrap", fontFamily: "monospace", fontSize: 12 }}>{c.key}</TableCell>
+                      <TableCell align="right">
+                        <Tooltip
+                          title={Object.entries(c.kinds)
+                            .map(([k, n]) => `${k}: ${n}`)
+                            .join(" · ")}
+                          arrow
+                          enterTouchDelay={0}
+                        >
+                          <span>{c.runs}</span>
+                        </Tooltip>
+                      </TableCell>
+                      {DRIFT_COLUMNS.map(([k]) => (
+                        <TableCell key={k} align="right" sx={{ whiteSpace: "nowrap" }}>
+                          {fmtQuantity(q[k]?.unit ?? "", c.medians[k])}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+            {audit.processes?.available && (
+              <Typography variant="caption" color="text.secondary">
+                Right now: {audit.processes.drivers ?? 0} driver tree(s) · {audit.processes.chrome ?? 0} Chrome ·{" "}
+                {audit.processes.zombies ?? 0} zombies · {audit.processes.stray_chrome ?? 0} stray ·{" "}
+                {audit.processes.children_rss_mb ?? 0} MB in browser trees. One driver during a measurement and
+                none between is healthy.
+              </Typography>
+            )}
+          </>
+        )}
+      </Stack>
+    </FoldCard>
+  );
+}
+
+/** A labelled group of rows inside one table body. */
+function FragmentRows({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <>
+      <TableRow>
+        <TableCell colSpan={6} sx={{ bgcolor: "action.hover", fontWeight: 600, fontSize: 12 }}>
+          {title}
+        </TableCell>
+      </TableRow>
+      {children}
+    </>
   );
 }
