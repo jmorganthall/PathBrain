@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -119,6 +119,33 @@ def _baseline_config() -> dict:
         return get_config(session).get("baseline_test", {}) or {}
 
 
+#: How long after its scheduled minute a nightly schedule may still be started.
+#:
+#: The gate used to be an exact ``hour:minute`` match, which quietly made a *whole night*
+#: contingent on one 60-second window being clear. The scheduler abandons the rest of its
+#: tick whenever the pipeline is busy, so any session running across 03:00 — a monitoring
+#: run, a queue of profile tests — meant the ladder simply did not run, with nothing logged
+#: and nothing to notice. A window instead of an instant makes a missed minute cost minutes.
+#:
+#: Bounded rather than open-ended, because "past the scheduled time and not yet run today"
+#: alone would kick a duel at 2pm on any restart. An hour is long enough to outlast the
+#: sessions that realistically hold the pipeline, and short enough that a late start is
+#: still recognisably the night's run.
+SCHEDULE_CATCHUP_MINUTES = 60
+
+
+def _schedule_due(now: datetime, hour: int, minute: int) -> bool:
+    """Is a daily ``hour:minute`` schedule due now, allowing for a late tick?
+
+    True from the scheduled time until ``SCHEDULE_CATCHUP_MINUTES`` after it. Callers pair
+    this with their own once-per-day guard, so the window fires at most once.
+    """
+    scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now < scheduled:
+        return False
+    return (now - scheduled) < timedelta(minutes=SCHEDULE_CATCHUP_MINUTES)
+
+
 def _maybe_run_duel() -> bool:
     """Kick the duel ladder — nightly at its scheduled minute, or perpetually in
     ``continuous`` mode.
@@ -165,7 +192,7 @@ def _maybe_run_duel() -> bool:
         minute = int(cfg.get("minute", 0))
     except (TypeError, ValueError):
         return False
-    if now.hour != hour or now.minute != minute:
+    if not _schedule_due(now, hour, minute):
         return False
     try:
         duel.start(int(cfg.get("duration_minutes", 120) or 120), trigger="scheduled")
@@ -207,7 +234,7 @@ def _maybe_run_baseline() -> bool:
         minute = int(cfg.get("minute", 0))
     except (TypeError, ValueError):
         return False
-    if now.hour != hour or now.minute != minute:
+    if not _schedule_due(now, hour, minute):
         return False
     try:
         iterations = max(1, int(cfg.get("iterations", 10) or 10))
@@ -279,6 +306,21 @@ def _loop(stop: threading.Event) -> None:
 
             _coordinator.evict_if_stalled()
 
+            # The nightly schedules are checked BEFORE the busy gate below, because they
+            # do not need the pipeline free: both engines take the coordination lock on
+            # their own thread and queue behind whatever is running. Checking them after
+            # the gate made a whole night contingent on the pipeline happening to be idle
+            # during one scheduled minute — a monitoring run or a queue of profile tests
+            # spanning 03:00 meant the ladder silently did not run at all. Kicking them
+            # here starts the session; the coordinator still decides when it measures.
+            if _maybe_run_baseline():
+                stop.wait(_TICK_SECONDS)
+                continue
+
+            if _maybe_run_duel():
+                stop.wait(_TICK_SECONDS)
+                continue
+
             # Another firewall/benchmark session (sweep, profile test, manual run)
             # owns the pipeline while it holds the coordination lock. Yield so
             # monitoring and experiments never overlap its measurements.
@@ -293,16 +335,6 @@ def _loop(stop: threading.Event) -> None:
             from . import experiment
 
             if experiment.step():
-                stop.wait(_TICK_SECONDS)
-                continue
-
-            # Nightly baseline (SQM off) test, if armed + due. Its engine holds the
-            # coordination lock and queues, so yield the tick once it's kicked.
-            if _maybe_run_baseline():
-                stop.wait(_TICK_SECONDS)
-                continue
-
-            if _maybe_run_duel():
                 stop.wait(_TICK_SECONDS)
                 continue
 

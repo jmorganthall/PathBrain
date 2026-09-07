@@ -247,6 +247,24 @@ LLM-based. See `README.md` for the product overview.
     and a schedule that is a **cadence rather than a clock** (continuous duel, crown-follow)
     reports its interval with no time, because it starts whenever the pipeline is free and
     naming an hour would be inventing one.
+  - **A nightly schedule is a window, not an instant** (`scheduler._schedule_due`,
+    `SCHEDULE_CATCHUP_MINUTES`). Reported as *"our overnight duels didn't run at all"*, and
+    it was two things compounding. The loop **abandons the rest of its tick whenever the
+    pipeline is busy** (`if coordinator.busy(): continue`) — so it never reached the duel
+    check — and the nightly gate fired only on an **exact `hour:minute` match**. Together
+    that made a whole night contingent on one 60-second window happening to be idle: any
+    session running across 03:00 meant the ladder silently did not run, with nothing logged
+    and nothing to notice. Both halves are fixed. The nightly checks now run **before** the
+    busy gate, because neither needs the pipeline free — `duel.start`/`baseline_test.start`
+    take the coordination lock on their own thread and queue behind whatever is running, so
+    the gate was withholding a *start* over a conflict the coordinator already handles. And
+    the gate is a window: due from its minute until `SCHEDULE_CATCHUP_MINUTES` (60) later,
+    paired with the existing once-per-day guard. Bounded deliberately — "past the scheduled
+    time and not yet run today" alone would kick a duel at 2pm on any restart, which is not
+    the night's run in any meaningful sense. The pressure that surfaced this came from the
+    job queue: before it, a second profile test was *refused* and the pipeline freed up
+    between tests; now they drain back-to-back (and a bets batch can queue twelve), so
+    continuously-busy stretches got much longer.
   - `scheduler.py` — daemon thread: watchdog → (yield while the coordination lock is
     held) → experiment step → monitoring run (serialized so benchmark runs never overlap).
     **One leader per deployment** (`is_leader`): everything the scheduler drives assumes it
