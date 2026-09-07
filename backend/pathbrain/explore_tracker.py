@@ -544,13 +544,16 @@ def _reconcile(rows: list[ExploreRecommendation], actual: dict[int, str]) -> Non
             row = session.get(ExploreRecommendation, rec.id)
             if row is None:
                 continue
+            # Terse on purpose. This re-point is the *normal* case — the fingerprint
+            # recorded at start predicts the firewall's spelling of a value, and the
+            # firewall echoes CoDel durations back as strings, so nearly every claim lands
+            # here. A sixty-word explanation of a benign, universal condition repeated on
+            # every row is noise, not information: the fact belongs on the row, the reason
+            # belongs once in the card's help text. (And it is a plain-text field rendered
+            # as plain text, so markdown emphasis here shows up as literal asterisks.)
             note = (
-                f"Filed under {fp} rather than the {row.fingerprint} recorded when the test "
-                "started. The recorded one is a *prediction* of the profile's spelling: a CoDel "
-                "interval is written as 55 and the firewall reports it back as \"55\" — the same "
-                "setting, hashed differently. The apply is verified field by field before any "
-                "benchmark runs, so this is the profile that was asked for; it is graded against "
-                "the runs it actually produced."
+                f"Filed under {fp}, not the {row.fingerprint} predicted when the test "
+                "started — the same profile, spelled differently by the firewall."
             )
             log.info(
                 "Explore recommendation %s: recorded %s, filed under %s; re-pointing (a spelling "
