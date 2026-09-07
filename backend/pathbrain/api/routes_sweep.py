@@ -160,7 +160,7 @@ def start_sweep(
         submission = job_queue.submit(
             "sweep",
             f"Shotgun sweep · {iterations} iteration(s)",
-            lambda: sweep_mod.start(spec, iterations, dwell_s, dry_run, pipe_uuid),
+            spec={"spec": spec, "iterations": iterations, "dwell_s": dwell_s, "dry_run": dry_run, "pipe_uuid": pipe_uuid},
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

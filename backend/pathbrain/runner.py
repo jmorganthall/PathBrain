@@ -879,23 +879,46 @@ def score_history_under_current(session, progress=None) -> dict:
     return {"methodology": methodology.version, "total": total, **counts}
 
 
-def reconcile_interrupted_runs() -> int:
-    """Mark runs left RUNNING/PENDING by a previous process as failed.
+def reconcile_interrupted_runs(*, now: datetime | None = None) -> int:
+    """Mark runs left RUNNING by a previous process as failed, and decide what happens to
+    the ones left PENDING.
 
-    Their executing thread is gone (e.g. the container was restarted), so they
-    can never complete. Called once at startup.
+    A RUNNING run's executing thread is gone (the container was restarted), so it can never
+    complete. A PENDING run never started measuring — it was queued behind the coordinator
+    lock — so it is not failed: one younger than ``job_queue.RESUME_WINDOW_HOURS`` is kept
+    for ``routes_run.resume_pending_runs`` to re-dispatch once every engine has restored the
+    firewall, an older one is failed with the reason. Called once at startup. Returns the
+    number of runs failed.
     """
+    from .job_queue import RESUME_WINDOW_HOURS
+
+    now = now or datetime.now(timezone.utc)
+    failed = kept = 0
     with session_scope() as session:
         runs = session.scalars(
             select(Run).where(Run.status.in_([RunStatus.RUNNING, RunStatus.PENDING]))
         ).all()
         for run in runs:
+            if run.status == RunStatus.PENDING:
+                created = run.created_at if run.created_at is None or run.created_at.tzinfo else run.created_at.replace(tzinfo=timezone.utc)
+                age_h = (now - created).total_seconds() / 3600.0 if created else float("inf")
+                if age_h <= RESUME_WINDOW_HOURS:
+                    kept += 1
+                    continue
+                run.error = (
+                    f"Not started — queued {age_h:.0f} h ago, before a restart; older than the "
+                    f"{RESUME_WINDOW_HOURS:g} h resume window."
+                )
+            else:
+                run.error = "Interrupted — service restarted while the run was in progress."
             run.status = RunStatus.FAILED
-            run.error = "Interrupted — service restarted while the run was in progress."
-            run.finished_at = datetime.now(timezone.utc)
-        if runs:
-            log.warning("Reconciled %s interrupted run(s) to FAILED", len(runs))
-        return len(runs)
+            run.finished_at = now
+            failed += 1
+        if failed:
+            log.warning("Reconciled %s interrupted run(s) to FAILED", failed)
+        if kept:
+            log.warning("%s queued run(s) kept pending across the restart", kept)
+        return failed
 
 
 def fail_stale_runs(timeout_minutes: float) -> int:

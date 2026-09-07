@@ -987,3 +987,33 @@ class ExploreRecommendation(Base):
     # (e.g. the parent's stored settings were unavailable, so the levers were pasted onto the
     # live profile instead). Read it before believing a verdict.
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class QueuedJob(Base):
+    """A submitted job waiting for the pipeline — the queue, on disk.
+
+    A ticket used to live only in memory, on the argument that a queued job has by
+    definition applied nothing and so has nothing to resume. That was true and beside the
+    point: the person who queued twelve bets for the night pressed the button *once*, and a
+    container recreate (a self-update after every merged PR, an OOM kill, a compose restart)
+    silently emptied the line — reported as "cancelled a duel and every queued job vanished".
+    So each queued ticket is written here with a JSON ``spec`` its kind's registered starter
+    can rebuild the call from, and ``job_queue.restore`` re-queues the pending ones at startup
+    inside ``RESUME_WINDOW_HOURS``. ``state`` walks pending → started | failed | cancelled |
+    expired (too old to resume, or no starter for the kind).
+    """
+
+    __tablename__ = "queued_jobs"
+    __table_args__ = (Index("ix_queued_jobs_state", "state"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    label: Mapped[str] = mapped_column(String(255))
+    spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    state: Mapped[str] = mapped_column(String(16), default="pending")
+    # Carried across a restart at least once (so the feed can say so).
+    resumed: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)

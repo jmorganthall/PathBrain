@@ -125,7 +125,7 @@ def start_baseline_test(payload: BaselineTestStart, session: Session = Depends(g
         submission = job_queue.submit(
             "baseline_test",
             f"Baseline (SQM off) · {iterations} iteration(s)",
-            lambda: baseline_test.start(iterations, settle, trigger="manual"),
+            spec={"iterations": iterations, "settle_seconds": settle, "trigger": "manual"},
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

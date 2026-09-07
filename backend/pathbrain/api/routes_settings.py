@@ -3522,7 +3522,7 @@ def start_race(body: dict = Body(...), session: Session = Depends(get_session)) 
         submission = job_queue.submit(
             "race",
             f"Challenger race · {minutes:g} min",
-            lambda: challenger_mod.start(int(minutes * 60), auto_promote),
+            spec={"time_budget_s": int(minutes * 60), "auto_promote": auto_promote},
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("race start failed")
@@ -3601,9 +3601,7 @@ def start_refresh(body: dict = Body(...), session: Session = Depends(get_session
         submission = job_queue.submit(
             "refresh",
             f"Re-run profiles · {iterations} iteration(s) each",
-            lambda: refresh_mod.start(
-                iterations, top=top, rank_by=rank_by, fingerprints=fingerprints
-            ),
+            spec={"iterations": iterations, "top": top, "rank_by": rank_by, "fingerprints": fingerprints},
         )
     except RuntimeError as exc:  # nothing to re-run — a bad request, not a conflict
         raise HTTPException(status_code=400, detail=str(exc)) from exc

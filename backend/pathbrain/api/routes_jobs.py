@@ -482,7 +482,7 @@ def _queued_ticket_entries() -> list[dict]:
             "status": "running",   # the feed's word for "not finished"
             "current": None,
             "total": None,
-            "message": f"Queued — {place}",
+            "message": f"Queued — {place}" + (" · resumed after a restart" if t.get("resumed") else ""),
             "error": None,
             "href": None,
             "parent_id": None,

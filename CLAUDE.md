@@ -309,13 +309,37 @@ LLM-based. See `README.md` for the product overview.
     reports itself active" would let one engine that died with its flag set stall every job
     forever with nothing able to clear it — strictly worse than the refusals this replaces. So
     the flag answers only the question it can: would starting *this* kind collide with itself.
-    Two consequences stated rather than discovered: the queue is **in memory**, because a
-    ticket has by definition not started (nothing applied, no row written, no measurement
-    taken), so a restart drops it — the same call `profile_test` reconciliation already makes,
-    since hours later silently starting a session nobody is watching is worse than making
-    someone press the button again; and a queued job's **validation moves with it** ("nothing
-    to race", "no stored profiles") from the HTTP response to the moment its turn comes, so the
-    failure is recorded on the ticket and surfaced in the jobs feed rather than being lost.
+    Two consequences stated rather than discovered. **The queue survives a restart**
+    (`models.QueuedJob`, `job_queue.restore`, `RESUME_WINDOW_HOURS` = 24). It began in memory,
+    on the argument that a queued job has by definition applied nothing and so has nothing to
+    resume — true, and beside the point: the person who queued twelve bets for the night
+    pressed the button once, and a container recreate (Watchtower pulling the image a merged
+    PR just published, an OOM kill, a compose restart) emptied the line with nothing on screen
+    to say so. Reported as *"cancelled a duel job and all my queued jobs were cancelled too —
+    even the non-duel ones"*: nothing in any cancel path touches another job (the duel's
+    cancel sets one flag; the feed posts to one job's own URL), but the restart that followed
+    made every queueing layer drop its work at once — tickets gone, pending profile tests
+    marked cancelled, pending manual runs marked failed. So a route now submits a JSON
+    **`spec`** rather than a closure, each kind has one registered **starter**
+    (`register_starter`, in `register_engines`) that is the single definition of how it starts
+    — the job that runs now and the job rebuilt from a row after a restart are the same call —
+    and a queued ticket is written to `queued_jobs` and settled (started/failed/cancelled) when
+    it leaves the line, so a restart can never resurrect one that already ran. `restore()`
+    re-queues pending rows younger than the window **ahead** of anything submitted since (they
+    were asked for first), marks older ones or unknown kinds `expired` with the reason rather
+    than deleting them (the row is the only record the button was pressed), and reports itself
+    on `GET /api/queue` as `restored` and on each ticket as *"resumed after a restart"*. The
+    same window governs the other two layers: `reconcile_interrupted_profile_tests` keeps a
+    young PENDING test (stage *"Queued — resumed after a restart"*) and closes an old one
+    CANCELLED with the reason; `runner.reconcile_interrupted_runs` keeps a young PENDING
+    manual run and `routes_run.resume_pending_runs` re-dispatches it (a series' first chunk
+    resumes as the whole series). **Resuming happens after every engine's reconcile**, from
+    one block in `main.lifespan` (`restore_queue` → `resume_queued` → `resume_pending_runs`),
+    never inside a reconcile: a resumed job snapshots its baseline when it starts, and that
+    baseline must be the real one, not the profile a dead duel left on the firewall. A queued
+    job's **validation moves with it** ("nothing to race", "no stored profiles") from the HTTP
+    response to the moment its turn comes, so the failure is recorded on the ticket and
+    surfaced in the jobs feed rather than being lost.
     **Two engines queue themselves** rather than through a ticket — `profile_test` (its
     fingerprint is recorded in the recommendation ledger *before* it runs) and manual runs (the
     dashboard polls the run id) — because their callers need a real row id back synchronously.
@@ -600,9 +624,11 @@ LLM-based. See `README.md` for the product overview.
     only once it holds the coordination lock, so **pending honestly means nothing was applied** —
     which is what makes `cancel(id)` free: a queued test leaves the line outright rather than
     starting just to stop, and one cancelled while it waits for the lock bails at a pre-apply
-    seam instead of paying an apply-and-restore round trip. Startup reconciliation closes a
-    queued test as CANCELLED ("not started"), not FAILED — it never ran, and hours later
-    silently running a test nobody is watching is worse than making them press it again.
+    seam instead of paying an apply-and-restore round trip. Startup reconciliation keeps a
+    queued test PENDING when it is younger than `job_queue.RESUME_WINDOW_HOURS` (stage
+    *"Queued — resumed after a restart"*; `resume_queued` starts the worker once every engine
+    has restored the firewall) and closes an older one CANCELLED ("not started"), not FAILED
+    — it never ran, and a queue from last week is a surprise, not a queue.
     Every start path returns its **queue placement** (`routes_settings._queue_placement`:
     `queued`/`queue_position`/`queue_ahead`/`blocked_by`), `GET /settings/test-profile/queue`
     (`queue_status`) reports what holds the pipeline and who is waiting, and
@@ -2647,6 +2673,9 @@ removes the user's ability to line work up. A new engine therefore (a) submits t
 `job_queue.register` so a second session of *its own kind* still waits, and (d) is driven from
 the frontend by `useQueuedAction`, never by a bare `api.*` call — otherwise that button becomes
 the one place with different behaviour, which is the bug this whole contract exists to end.
+And it submits a JSON **`spec`** with a **starter** registered in `job_queue.register_engines`
+(never a closure), so its queued ticket is written to disk and comes back after a restart like
+every other kind's.
 Reserve a 4xx for a genuinely bad request (an unreachable profile, an empty spec, a no-op),
 never for "the pipeline is in use".
 

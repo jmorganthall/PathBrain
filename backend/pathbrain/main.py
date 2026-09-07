@@ -65,6 +65,16 @@ async def lifespan(app: FastAPI):
 
     reconcile_interrupted_baseline_tests()  # re-enable SQM if a baseline test was interrupted
     reconcile_interrupted_duels()  # restore the pre-duel baseline if a duel was interrupted
+
+    # Only now — with every engine's baseline back on the firewall — is it safe to let the
+    # work the previous process had queued start again. Three layers, one window: the
+    # ticket queue, the pending profile tests, the pending manual runs.
+    from .api.routes_run import resume_pending_runs
+    from .job_queue import note_restored, restore as restore_queue
+    from .profile_test import resume_queued
+
+    restore_queue()
+    note_restored(profile_tests=resume_queued(), runs=resume_pending_runs())
     from .updates import verify_pending_updates
 
     # A self-update recreates this container, so startup is the moment of truth: compare the
