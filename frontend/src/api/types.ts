@@ -3158,6 +3158,22 @@ export interface PortableVenueRecall {
   from_this_device: boolean;
 }
 
+// One scheduled source: when it next fires, or why it has no time (disarmed, or a cadence
+// rather than a clock). Disarmed entries are listed and marked — "the duel is off" and "the
+// duel is six hours away" are different answers.
+export interface ScheduledJob {
+  kind: string;
+  label: string;
+  enabled: boolean;
+  at: string | null;
+  detail: string | null;
+}
+
+export interface ScheduleStatus {
+  next: ScheduledJob | null;
+  upcoming: ScheduledJob[];
+}
+
 // The browser's post-load idle wait, audited off stored raw (read-only).
 export interface IdleAuditSite {
   url: string;
