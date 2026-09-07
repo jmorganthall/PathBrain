@@ -227,6 +227,26 @@ LLM-based. See `README.md` for the product overview.
     label/unit/default range (from `ShaperField.sweep_default`) and the page renders a control
     + a results column per field — so a new sweepable field needs no frontend edit. Runs in its
     own thread; the scheduler yields while `sweep.active()`.
+  - `schedule.py` — **what is scheduled to run next, across every source** (`GET /api/schedule`,
+    the Dashboard's **"Next scheduled"** tile). The Dashboard could say when the next
+    *monitoring* run was due and nothing else, which is the wrong half of the answer:
+    monitoring is the small, frequent, unsurprising piece, while a duel window opening at
+    03:00, a nightly unshaped baseline test or an armed experiment change what the platform
+    is doing for hours — and announced themselves only by taking the pipeline, so "nothing is
+    running" and "a duel opens in twenty minutes" read identically. Each engine stores its
+    schedule in its own shape (an interval for monitoring, a wall clock for the duel and the
+    baseline test, a weekday-plus-hour-range window for the experiment, a bare cadence for
+    crown-follow), and that is why this is a module rather than a fourth inline computation:
+    `routes_baseline` had the daily-time arithmetic written out by hand and the duel had none
+    at all, so a fourth copy is where they would have started disagreeing about what "next"
+    means. Every time is emitted as a real UTC **instant** with an offset — a schedule is
+    stored in the zone the user saved it from and rendered in the viewer's, so the conversion
+    happens exactly once and is labelled. Two deliberate refusals to guess: a **disarmed**
+    schedule is listed and marked rather than dropped ("the duel is off" and "the duel is six
+    hours away" are different answers, and a list that omits the first can't tell them apart),
+    and a schedule that is a **cadence rather than a clock** (continuous duel, crown-follow)
+    reports its interval with no time, because it starts whenever the pipeline is free and
+    naming an hour would be inventing one.
   - `scheduler.py` — daemon thread: watchdog → (yield while the coordination lock is
     held) → experiment step → monitoring run (serialized so benchmark runs never overlap).
     **One leader per deployment** (`is_leader`): everything the scheduler drives assumes it

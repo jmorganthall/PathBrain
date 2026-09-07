@@ -67,6 +67,7 @@ import type {
   ExploreTestResult,
   ProfileTestQueue,
   QueueStatus,
+  ScheduleStatus,
   RefreshStart,
   TestSettingsStart,
   SettingsProfilesResponse,
@@ -341,6 +342,8 @@ export const api = {
 
   // Monitoring
   monitoring: () => request<MonitoringStatus>("/monitoring"),
+  // Everything scheduled to run, soonest first — not just the monitoring cadence.
+  schedule: () => request<ScheduleStatus>("/schedule"),
 
   // Settings correlation
   settingsProfiles: (completeOnly = true) =>

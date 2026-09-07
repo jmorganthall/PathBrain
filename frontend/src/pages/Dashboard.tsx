@@ -36,6 +36,7 @@ import type {
   DuelStandings,
   JobsResponse,
   MonitoringStatus,
+  ScheduleStatus,
   RollingScore,
   RunDetail,
   RunEstimate,
@@ -148,6 +149,7 @@ export default function Dashboard() {
   const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [rolling, setRolling] = useState<RollingScore | null>(null);
   const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
+  const [schedule, setSchedule] = useState<ScheduleStatus | null>(null);
   const [impact, setImpact] = useState<SettingsImpact | null>(null);
   const [field, setField] = useState<SettingsProfilesResponse | null>(null);
   const [standings, setStandings] = useState<DuelStandings | null>(null);
@@ -190,6 +192,7 @@ export default function Dashboard() {
     api.jobs().then((j) => setJobs({ data: j, receivedAt: Date.now() })).catch(() => {});
     api.runEstimate().then((e) => setEstimate(e)).catch(() => {});
     api.monitoring().then((m) => setMonitoring(m)).catch(() => {});
+    api.schedule().then(setSchedule).catch(() => {});
     api.history(30).then((h) => setRecentRuns(h)).catch(() => {});
     api.historyCount().then((c) => setRunCount(c.count)).catch(() => {});
   }, []);
@@ -419,6 +422,42 @@ export default function Dashboard() {
             ? `last ${fmtDateTime(monitoring.last_run_at)}`
             : "waiting for the first run";
 
+  // What runs next across EVERY schedule, not just the monitoring cadence. A duel window
+  // opening at 03:00, a nightly baseline test or an armed experiment change what the
+  // platform is doing for hours, and used to announce themselves only by taking the
+  // pipeline — so "nothing is running" and "a duel opens in twenty minutes" read the same.
+  const nextJob = schedule?.next ?? null;
+  const nextJobMs = nextJob?.at ? parseApiDate(nextJob.at).getTime() - Date.now() : null;
+  const armed = (schedule?.upcoming ?? []).filter((e) => e.enabled);
+  const scheduleValue = !schedule
+    ? "—"
+    : nextJob
+      ? nextJob.label
+      : armed.length > 0
+        ? "On demand"
+        : "Nothing armed";
+  const scheduleCaption = !schedule
+    ? "status unavailable"
+    : nextJob && nextJobMs != null
+      ? nextJobMs > 0
+        ? `in ${fmtDuration(nextJobMs)} · ${fmtDateTime(nextJob.at!)}`
+        : "due now"
+      : armed.length > 0
+        // Armed, but on a cadence rather than a clock (continuous duel, crown follow) —
+        // there is no next time to name, and inventing one would be worse than saying so.
+        ? `${armed.length} armed · no fixed time`
+        : "no scheduled work — runs are manual";
+  const scheduleTone: Tone = !schedule ? "idle" : nextJob ? "good" : armed.length > 0 ? "info" : "warn";
+  // Everything armed, and everything off, as one hover — so "why is nothing scheduled?" is
+  // answerable without opening Config.
+  const scheduleHelp = [
+    "Every scheduled source, not just monitoring: the monitoring cadence, the duel ladder, the nightly baseline test, the experiment window and the crown-follow check.",
+    ...(schedule?.upcoming ?? []).map((e) => {
+      const when = e.at ? fmtDateTime(e.at) : e.enabled ? e.detail || "no fixed time" : "off";
+      return `• ${e.label}: ${when}${e.at && e.detail ? ` (${e.detail})` : ""}`;
+    }),
+  ].join("\n");
+
   const iterSeries = [...recentRuns].reverse().map((r) => r.per_iteration_ms ?? null);
   const iterCaption = estimate?.per_iteration_ms != null
     ? `${etaSource || "measured"}${estimate.based_on_iterations ? ` · ${estimate.based_on_iterations} iterations` : ""}`
@@ -566,6 +605,14 @@ export default function Dashboard() {
           live={!!monitoring?.active}
           to="/config"
           help="Scheduled background runs on whatever profile the firewall is on."
+        />
+        <StatTile
+          label="Next scheduled"
+          value={scheduleValue}
+          caption={scheduleCaption}
+          tone={scheduleTone}
+          to="/config"
+          help={scheduleHelp}
         />
         <StatTile
           label="Avg iteration"
