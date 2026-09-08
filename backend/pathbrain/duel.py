@@ -566,13 +566,25 @@ def _set_stage(duel_id: int, stage: str) -> None:
         log.debug("Duel %s: could not persist stage %r", duel_id, stage, exc_info=True)
 
 
-def start(duration_minutes: int | None = None, *, trigger: str = "manual") -> int:
-    """Launch a duel-ladder session. Returns the ``Duel`` id.
+#: The session kinds a duel can be started as. ``contenders`` in config picks the ladder's
+#: own matchmaking (ring / leaders / heirs); ``levers`` is only ever chosen per session,
+#: from the Levers page — a lever session measures settings, it does not hunt the best
+#: profile, so it must not become the ladder's standing mode by a stored switch.
+SESSION_MODES = ("ring", "leaders", "heirs", "levers")
 
-    Raises ``RuntimeError`` if one is already running; ``ValueError`` for a bad duration.
+
+def start(duration_minutes: int | None = None, *, trigger: str = "manual",
+          contenders: str | None = None) -> int:
+    """Launch a duel session. Returns the ``Duel`` id.
+
+    ``contenders`` fixes the session's kind (``SESSION_MODES``) for this session only;
+    None runs whatever the ladder's config says. Raises ``RuntimeError`` if one is already
+    running; ``ValueError`` for a bad duration or an unknown kind.
     """
     if active():
         raise RuntimeError("A duel is already running.")
+    if contenders is not None and contenders not in SESSION_MODES:
+        raise ValueError(f"contenders must be one of {', '.join(SESSION_MODES)}")
     with session_scope() as session:
         cfg = _duel_config(session)
         minutes = duration_minutes if duration_minutes else int(cfg.get("duration_minutes", 120) or 120)
@@ -582,6 +594,7 @@ def start(duration_minutes: int | None = None, *, trigger: str = "manual") -> in
             status=DuelStatus.PENDING,
             duration_s=minutes * 60,
             trigger=trigger,
+            mode=contenders,
             matchups=[],
             run_ids=[],
             stage="Queued — waiting for any running benchmark to finish",
@@ -594,7 +607,8 @@ def start(duration_minutes: int | None = None, *, trigger: str = "manual") -> in
     thread = threading.Thread(target=_drive, args=(duel_id,), name="pathbrain-duel", daemon=True)
     _state["thread"] = thread
     thread.start()
-    log.info("Duel %s started (%s min, %s)", duel_id, minutes, trigger)
+    log.info("Duel %s started (%s min, %s%s)", duel_id, minutes, trigger,
+             f", {contenders} session" if contenders else "")
     return duel_id
 
 
@@ -3041,6 +3055,10 @@ def _drive(duel_id: int) -> None:
                 d.baseline = baseline
                 duration_s = d.duration_s
                 cfg = _duel_config(session)
+                if d.mode:
+                    # The session's kind was chosen at start (the Levers page): it governs
+                    # this session only, and never touches the ladder's stored config.
+                    cfg = {**cfg, "contenders": d.mode}
                 meth_version = ensure_current_methodology(session, get_config(session)).version
 
             # Matchmaking, re-decided BEFORE EVERY BOUT rather than once a session: the
@@ -3154,7 +3172,7 @@ def _drive(duel_id: int) -> None:
 # ── The fight card (who fights whom, before a duel starts) ───────────────────────────
 
 
-def fight_card(session, limit: int = 12) -> dict:
+def fight_card(session, limit: int = 12, contenders: str | None = None) -> dict:
     """The matchups a duel started right now would run, in order, if nothing upsets them.
 
     "Are we just racing randoms?" is a fair question to ask of any ladder, and the honest
@@ -3175,6 +3193,11 @@ def fight_card(session, limit: int = 12) -> dict:
     from .providers import get_provider
 
     cfg = _duel_config(session)
+    if contenders:
+        # A preview for a session KIND chosen at start (the Levers page asks for
+        # ``levers``): the same override ``_drive`` applies, so the preview and the session
+        # are built by one rule.
+        cfg = {**cfg, "contenders": contenders}
     live = None
     try:
         live = normalize(get_provider().discover())
@@ -4128,6 +4151,8 @@ def _serialize(d: Duel, session=None, matchup_limit: int | None = None) -> dict:
         "status": d.status.value if hasattr(d.status, "value") else str(d.status),
         "stage": d.stage,
         "trigger": d.trigger,
+        # The session kind fixed at start (None = the ladder's configured matchmaking).
+        "mode": d.mode,
         "duration_s": d.duration_s,
         "matchups": matchups,
         "live": d.live,

@@ -1597,13 +1597,22 @@ LLM-based. See `README.md` for the product overview.
     matchup ledger; neither triggers a scoring pass. A duel verdict aged past
     `duel.rematch_days` is still shown, labelled expired, instead of vanishing.
   - `levers.py` — **what moving ONE setting does: how the ring asks, and the book it keeps**
-    (`duel.contenders = "levers"`, `GET /api/explore/levers`, the **"What one lever does,
-    measured in the ring"** card on Explore beside the observational matched pairs). A profile
+    (the **Lever duels** page, `Levers.tsx` / `/levers`; `GET /api/explore/levers`). A profile
     is a bundle of levers, and a bout between two bundles that differ in four of them is four
     questions asked at once with one answer; the matched pairs answer it observationally (pairs
-    someone happened to build, measured on different nights). **Asking** (`lever_variants` /
-    `next_variant`): in lever mode the belt-holder defends against single-lever variants of
-    *itself* — the field's siblings that differ from it in exactly one writable lever first
+    someone happened to build, measured on different nights). **A lever session is a session
+    KIND, never a stored config value** (`Duel.mode`, `duel.SESSION_MODES`, `POST /duel/start
+    {contenders: "levers"}`, `GET /duel/card?contenders=levers`): it measures settings, it does
+    not hunt the best profile, so it must not become the ladder's standing matchmaking by a
+    switch someone forgets to flip back — `PUT /duel/config {contenders: "levers"}` is refused
+    with a pointer to the page. The Levers page previews what would be seated (the same
+    `fight_card` with the kind overridden — the preview and the session are one rule), starts
+    one session through `useQueuedAction` like every other Run button, shows the live board with
+    each seat's lever and crown split, lists past lever sessions, and hosts the ledger card
+    (`components/LeverLedgerCard.tsx`, moved off Explore). The nightly/continuous ladder never
+    runs one; `_drive` applies `d.mode` over the config for that session only. **Asking**
+    (`lever_variants` / `next_variant`): in a lever session the belt-holder defends against
+    single-lever variants of *itself* — the field's siblings that differ from it in exactly one writable lever first
     (they carry pooled data; the duel matures them), then **generated** steps the firewall can
     hold (the adjacent option on a select via `provider.field_options()`, halve/double on an
     unbounded integer, the flip on a boolean; a bandwidth is never generated — `NO_GENERATE`).

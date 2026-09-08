@@ -29,6 +29,7 @@ const DataDump = lazy(() => import("./pages/DataDump"));
 const AI = lazy(() => import("./pages/AI"));
 const Baseline = lazy(() => import("./pages/Baseline"));
 const Duels = lazy(() => import("./pages/Duels"));
+const Levers = lazy(() => import("./pages/Levers"));
 const Explore = lazy(() => import("./pages/Explore"));
 const Weather = lazy(() => import("./pages/Weather"));
 const Away = lazy(() => import("./pages/Away"));
@@ -48,6 +49,7 @@ export default function App() {
           <Route path="/experiments" element={<Experiments />} />
           <Route path="/sweep" element={<ShotgunSweep />} />
           <Route path="/duels" element={<Duels />} />
+          <Route path="/levers" element={<Levers />} />
           <Route path="/explore" element={<Explore />} />
           <Route path="/weather" element={<Weather />} />
           <Route path="/baseline" element={<Baseline />} />

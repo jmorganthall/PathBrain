@@ -166,6 +166,7 @@ def _migrate() -> None:
         "duels": {
             "live": "JSON",
             "open_matches": "JSON",
+            "mode": "VARCHAR(16)",
         },
         "current_tests": {
             "target_fingerprint": "VARCHAR(40)",

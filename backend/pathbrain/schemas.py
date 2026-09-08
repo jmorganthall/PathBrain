@@ -131,9 +131,14 @@ class DuelScheduleUpdate(BaseModel):
 
 
 class DuelStart(BaseModel):
-    """Start an on-demand duel-ladder session (duration defaults to the configured window)."""
+    """Start an on-demand duel session (duration defaults to the configured window).
+
+    ``contenders`` fixes THIS session's kind: omit it for the ladder's configured
+    matchmaking; ``"levers"`` for a lever session (the champion against single-setting
+    variants of itself — started from the Levers page, never a stored config value)."""
 
     duration_minutes: int | None = None
+    contenders: str | None = None
 
 
 class TestSettings(BaseModel):
