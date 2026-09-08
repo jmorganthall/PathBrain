@@ -253,9 +253,9 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
             )
         updates["crown_rule"] = payload.crown_rule
     if payload.contenders is not None:
-        if payload.contenders not in ("ring", "leaders", "heirs"):
+        if payload.contenders not in ("ring", "leaders", "heirs", "levers"):
             raise HTTPException(
-                status_code=422, detail="contenders must be 'ring', 'leaders' or 'heirs'"
+                status_code=422, detail="contenders must be 'ring', 'leaders', 'heirs' or 'levers'"
             )
         updates["contenders"] = payload.contenders
     if payload.contender_top_n is not None:

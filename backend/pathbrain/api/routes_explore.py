@@ -299,6 +299,21 @@ def test_batch(payload: ExploreBatchTest, session: Session = Depends(get_session
     }
 
 
+@router.get("/explore/levers")
+def explore_levers(
+    sessions: int = Query(50, ge=1, le=200, description="Duel sessions to read, newest first."),
+    session: Session = Depends(get_session),
+) -> dict:
+    """**The lever ledger**: every single-lever match on the duel ledger — two profiles that
+    differ in exactly one setting, seated for it or not — pooled per lever and per
+    transition as paired, same-weather evidence of what moving that setting does, beside
+    the mechanism prediction for an unsaturated link. Cheap (the ledger plus one settings
+    lookup), so the page can load it on mount. See ``levers.lever_ledger``."""
+    from .. import levers as levers_mod
+
+    return levers_mod.lever_ledger(session, limit_sessions=sessions)
+
+
 @router.get("/explore/recommendations")
 def recommendations(
     limit: int = Query(50, ge=1, le=200),

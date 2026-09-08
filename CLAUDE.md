@@ -1556,6 +1556,47 @@ LLM-based. See `README.md` for the product overview.
     than recomputing `compute_profiles` on every dashboard load, and the duel side reads the
     matchup ledger; neither triggers a scoring pass. A duel verdict aged past
     `duel.rematch_days` is still shown, labelled expired, instead of vanishing.
+  - `levers.py` — **what moving ONE setting does: how the ring asks, and the book it keeps**
+    (`duel.contenders = "levers"`, `GET /api/explore/levers`, the **"What one lever does,
+    measured in the ring"** card on Explore beside the observational matched pairs). A profile
+    is a bundle of levers, and a bout between two bundles that differ in four of them is four
+    questions asked at once with one answer; the matched pairs answer it observationally (pairs
+    someone happened to build, measured on different nights). **Asking** (`lever_variants` /
+    `next_variant`): in lever mode the belt-holder defends against single-lever variants of
+    *itself* — the field's siblings that differ from it in exactly one writable lever first
+    (they carry pooled data; the duel matures them), then **generated** steps the firewall can
+    hold (the adjacent option on a select via `provider.field_options()`, halve/double on an
+    unbounded integer, the flip on a boolean; a bandwidth is never generated — `NO_GENERATE`).
+    A generated variant is the defender's whole settings deep-copied with one field moved, so it
+    hashes as the firewall will echo it and is reachable by construction; it joins the session's
+    `settings_by_fp` so the leg can be applied, named and recorded like any profile. Levers are
+    round-robined by the paired rounds the ledger already holds for them (`rounds_by_lever`),
+    fewest first, so a night spreads across the levers. `single_lever_diff` compares numerically
+    (`_field_equal`), so `"5ms"` vs `5` is never a phantom lever. **The ring now records where a
+    margin lived**: every leg reads its crown-metric subscores (`duel._run_crown`, `_Leg.crown`),
+    `_append_crown` keeps per-metric margins aligned index-for-index with `seat.deltas`, and the
+    match record carries `deltas` (the per-round margins themselves), `crown_deltas`,
+    `median_crown_delta` and `lever` — snapshots and the live board (`crown_margins`) carry the
+    same, so a carried match resumes with its split intact. **The book** (`lever_ledger`): every
+    non-aborted match on the duel ledger whose two profiles differ in exactly one lever — seated
+    for it (`lever` on the record) or one apart by chance (`single_lever_diff` over each side's
+    newest stored settings) — is oriented as *the effect of moving UP* (higher value minus lower)
+    and pooled per lever and per transition: rounds won each way with an exact two-sided sign
+    test (available for every record ever written), a signed-rank test over the pooled per-round
+    margins (records that carry `deltas`), the per-crown-leg medians, and a `direction`
+    (`higher`/`lower`/`none`, or `thin` under `MIN_ROUNDS` = 8). Beside each lever sits its
+    **mechanism prediction** (`MECHANISM`) for an **unsaturated** link — the regime a page load
+    runs in, per the agreed model that fq_codel's round-robin acts on page-load bursts, not on a
+    saturated queue: `quantum` → an interior optimum (the one lever whose interleave is exercised
+    without saturation); `target`/`interval`/`limit`/`flows`/`ecn` → **null** (nothing stands in
+    a queue long enough for CoDel to act); `download_bandwidth` → conditional (only below line
+    rate). `agreement` reads the measured direction against it: `as_predicted`, `consistent`
+    (one side of an interior optimum), `flat_here`, and **`surprise`** — a null-predicted lever
+    the ring finds moving the Overall, which says the model of the link is wrong (a queue forms
+    during bursts after all) or the pairs are confounded; that row is the point of the table.
+    Levers never fought get a row with their prediction and no verdict. `fight_card` previews
+    the variant order in lever mode. Strictly read-only outside the ring; nothing here changes a
+    score.
   - `explore.py` — **the exploration landscape**: the one engine that asks what we *haven't*
     tried. Every other engine judges profiles that already exist (Settings Impact ranks them,
     the duel adjudicates them, the race promotes the under-sampled) — none answers "what's
