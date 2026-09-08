@@ -43,7 +43,8 @@ from . import profile_names
 from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
-from .models import Duel, DuelStatus, Score
+from .methodology import overall_metrics
+from .models import Duel, DuelStatus, Methodology, Score
 from .rating import ELO_SCALE, PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
 from .providers import get_provider
 from .runner import run_chunk, teardown_plugins
@@ -609,6 +610,53 @@ def _run_overall(run_id: int, methodology_version: str) -> float | None:
             return None
         val = (score.axis_scores or {}).get("overall")
         return float(val) if isinstance(val, (int, float)) else None
+
+
+#: Crown metric keys per methodology version. A published definition is frozen, so the
+#: cache can never go stale; an empty answer is deliberately not cached (a version row
+#: created after the first read would otherwise stay invisible for the process lifetime).
+_CROWN_KEYS: dict[str, list[str]] = {}
+
+
+def _crown_keys(session, version: str) -> list[str]:
+    keys = _CROWN_KEYS.get(version)
+    if keys:
+        return keys
+    row = session.get(Methodology, version)
+    keys = list(overall_metrics(row.definition or {})[0]) if row else []
+    if keys:
+        _CROWN_KEYS[version] = keys
+    return keys
+
+
+def _run_crown(run_id: int, methodology_version: str) -> dict[str, float] | None:
+    """The run's **crown-metric subscores** under the version, keyed by metric — so a
+    round's margin can be placed on FCP, LCP or network stall rather than only on the
+    Overall. None when the run is unscored or the version has no crown."""
+    with session_scope() as session:
+        keys = _crown_keys(session, methodology_version)
+        if not keys:
+            return None
+        score = session.scalars(
+            select(Score).where(
+                Score.run_id == run_id, Score.methodology_version == methodology_version
+            )
+        ).first()
+        if score is None:
+            return None
+        sub = score.subscores or {}
+        out = {m: float(sub[m]) for m in keys if isinstance(sub.get(m), (int, float))
+               and not isinstance(sub.get(m), bool)}
+        return out or None
+
+
+def _field_options(provider) -> dict[str, list[float]]:
+    """The firewall's own select option lists (best-effort) — what a generated lever step
+    must be snapped to, so a variant proposes only values the firewall can hold."""
+    try:
+        return dict(provider.field_options() or {})
+    except Exception:  # noqa: BLE001 — no option list means no snapping, never a failure
+        return {}
 
 
 # ── Per-round weather stamps ──────────────────────────────────────────────────────────
@@ -1472,6 +1520,17 @@ def build_queue(
             field, ratings or {}, incumbent_fp, baseline=baseline, heirs=heirs
         )
         return [c["fingerprint"] for c in order]
+    if contenders == "levers":
+        # The defender against single-lever variants of itself (``levers``): field
+        # siblings first, then generated steps. Preview order only — the engine re-reads
+        # the ledger's per-lever evidence and the firewall's option lists each cycle.
+        from . import levers as levers_mod
+
+        inc = profiles.get(incumbent_fp) or {}
+        return [
+            v["fingerprint"]
+            for v in levers_mod.lever_variants(inc, list(profiles.values()), baseline)
+        ]
     if contenders != "leaders":
         return heir_order
 
@@ -1950,10 +2009,11 @@ def contender_order(
 
 #: The reference leg opening/closing a cycle, or a challenger's leg within it.
 class _Leg:
-    __slots__ = ("fp", "role", "run_id", "value", "severity", "why_missing", "index", "position")
+    __slots__ = ("fp", "role", "run_id", "value", "severity", "why_missing", "index", "position", "crown")
 
     def __init__(self, fp: str, role: str, run_id: int | None, value: float | None,
-                 severity: float | None, why_missing: str | None, index: int, position: int):
+                 severity: float | None, why_missing: str | None, index: int, position: int,
+                 crown: dict[str, float] | None = None):
         self.fp = fp
         self.role = role            # "belt" | "challenger"
         self.run_id = run_id
@@ -1962,6 +2022,7 @@ class _Leg:
         self.why_missing = why_missing
         self.index = index          # leg number within the session (1-based)
         self.position = position    # slot within its cycle (belt = 0)
+        self.crown = crown          # {crown metric: subscore} for this leg, or None
 
 
 class _Seat:
@@ -1977,6 +2038,14 @@ class _Seat:
         self.sprt = SprtState(p1, alpha)
         self.paired = PairedEvidence(alpha, min_margin, min_pairs, max_pairs, streak_wins=streak_wins)
         self.deltas: list[float] = []
+        # Per crown metric, the same margins split by leg: ``{metric: [Δ per round]}``,
+        # aligned index-for-index with ``deltas`` (None where a leg lacked the metric) —
+        # so a match says WHERE its margin lived, not only how big it was.
+        self.crown_deltas: dict[str, list[float | None]] = {}
+        # Set when the ring seated this match to measure ONE lever (``contenders =
+        # "levers"``): {pipe, field, field_label, unit, from, to}. Rides the record so the
+        # lever ledger can pool it without re-deriving the pair's difference.
+        self.lever: dict | None = None
         self.weather_shifts: list[float | None] = []
         self.leg_distances: list[int] = []
         self.bad_streak = 0
@@ -1988,6 +2057,26 @@ class _Seat:
         # Every session this match has been seated in. More than one means it was carried
         # across a window close (or a restart) and resumed with its margins intact.
         self.sessions: list[int] = []
+
+
+def _append_crown(seat: _Seat, leg: _Leg, usable: list[_Leg]) -> None:
+    """The per-crown-leg margins for the round just recorded on ``seat`` — each metric's
+    subscore on the challenger leg minus the mean over the usable belt legs — appended
+    index-for-index with ``seat.deltas`` (None where any leg lacked the metric, and
+    left-padded for a metric that first appears mid-match), so the two series stay aligned
+    however the readings arrive."""
+    n = len(seat.deltas)
+    metrics = set(leg.crown or {}) | {m for f in usable for m in (f.crown or {})} | set(seat.crown_deltas)
+    for m in metrics:
+        series = seat.crown_deltas.setdefault(m, [])
+        while len(series) < n - 1:
+            series.append(None)
+        mine = (leg.crown or {}).get(m)
+        flank = [(f.crown or {}).get(m) for f in usable]
+        if mine is None or not flank or any(v is None for v in flank):
+            series.append(None)
+        else:
+            series.append(round(mine - sum(flank) / len(flank), 3))
 
 
 # ── Open matches survive the window ──────────────────────────────────────────────
@@ -2023,6 +2112,8 @@ def _seat_snapshot(seat: _Seat, duel_id: int, methodology: str | None = None) ->
         "challenger_name": seat.profile.get("name"),
         "why": seat.why,
         "deltas": [round(float(d), 4) for d in seat.deltas],
+        "crown_deltas": {m: list(v) for m, v in seat.crown_deltas.items()},
+        "lever": dict(seat.lever) if seat.lever else None,
         "weather_shifts": list(seat.weather_shifts),
         "leg_distances": list(seat.leg_distances),
         "legs": int(seat.legs),
@@ -2051,6 +2142,11 @@ def _seat_from_snapshot(snap: dict, profile: dict, *, p1: float, alpha: float,
         seat.deltas.append(delta)
         seat.sprt.add_pair(delta > 0)
         seat.paired.add(delta)
+    seat.crown_deltas = {
+        str(m): [None if d is None else float(d) for d in (series or [])]
+        for m, series in (snap.get("crown_deltas") or {}).items()
+    }
+    seat.lever = dict(snap["lever"]) if isinstance(snap.get("lever"), dict) else None
     seat.weather_shifts = [None if w is None else float(w) for w in (snap.get("weather_shifts") or [])]
     seat.leg_distances = [int(x) for x in (snap.get("leg_distances") or [])]
     seat.legs = int(snap.get("legs") or 0)
@@ -2200,6 +2296,20 @@ def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: 
         "wins_incumbent": sprt.wins_incumbent,
         "wins_challenger": sprt.wins_challenger,
         "median_delta": round(_median(deltas), 2) if deltas else None,
+        # The per-round margins themselves (challenger − reference), so a later reader —
+        # the lever ledger pooling rounds across matches — can run a paired test over the
+        # actual evidence rather than reconstruct it from a median and a count.
+        "deltas": [round(float(d), 3) for d in deltas],
+        # Where the margin lived: the same rounds split by crown leg, and each leg's median.
+        "crown_deltas": {m: list(v) for m, v in seat.crown_deltas.items()} or None,
+        "median_crown_delta": {
+            m: round(_median([d for d in v if d is not None]), 2)
+            for m, v in seat.crown_deltas.items() if any(d is not None for d in v)
+        } or None,
+        # The one lever this match was seated to measure, when the ring's lever mode
+        # seated it (None for an ordinary match — the ledger then reads the pair's own
+        # difference).
+        "lever": dict(seat.lever) if seat.lever else None,
         "llr_incumbent": round(sprt.llr_incumbent, 2),
         "llr_challenger": round(sprt.llr_challenger, 2),
         "method": method,
@@ -2292,6 +2402,11 @@ def _ring_live(*, matchups_done: int, inc: dict, seats_list: list[_Seat], curren
         board["leg_distances"] = list(seat.leg_distances[-24:])
         board["measuring"] = seat is current
         board["sessions"] = list(seat.sessions)
+        board["crown_margins"] = {
+            m: round(_median([d for d in v if d is not None]), 2)
+            for m, v in seat.crown_deltas.items() if any(d is not None for d in v)
+        }
+        board["lever"] = dict(seat.lever) if seat.lever else None
         boards.append(board)
     # Callers only publish the ring while at least one seat is filled (`_run_ring` breaks
     # before its first `_live` otherwise), so there is always a board to lead with.
@@ -2360,6 +2475,9 @@ def _run_ring(
     streak_needed = streak_to_decide(alpha, min_pairs, max_pairs, streak_wins)
     mode = str(cfg.get("contenders", "ring") or "ring")
     top_n = int(cfg.get("contender_top_n", 8) or 8)
+    # Lever mode: the option lists a generated step must land on, read once per session.
+    lever_allowed = _field_options(provider) if mode == "levers" else {}
+    lever_pool: list[dict] = []
 
     matchups: list[dict] = []
     fought: set[frozenset[str]] = set()
@@ -2446,12 +2564,13 @@ def _run_ring(
         counters["legs"] += 1
         value, why_missing = _round_reading(run_id, meth_version, ok)
         severity = weather.leg_severity(run_id) if weather else None
+        crown = _run_crown(run_id, meth_version) if value is not None else None
         with session_scope() as session:
             d = session.get(Duel, duel_id)
             if d is not None:
                 d.run_ids = list(run_ids)
                 d.iterations_run = counters["iterations"]
-        leg = _Leg(fp, role, run_id, value, severity, why_missing, counters["legs"], position)
+        leg = _Leg(fp, role, run_id, value, severity, why_missing, counters["legs"], position, crown)
         legs_tape.append({
             "index": leg.index,
             "fingerprint": fp,
@@ -2462,6 +2581,7 @@ def _run_ring(
             "overall": round(value, 2) if value is not None else None,
             "severity": round(severity, 1) if severity is not None else None,
             "run_id": run_id,
+            "crown": {m: round(v, 2) for m, v in crown.items()} if crown else None,
         })
         if seat is not None:
             seat.legs += 1
@@ -2496,6 +2616,7 @@ def _run_ring(
         seat.weather_shifts.append(round(max(shifts), 1) if shifts else None)
         seat.sprt.add_pair(delta > 0)
         seat.paired.add(delta)
+        _append_crown(seat, leg, usable)
 
     def _close(seat: _Seat, verdict: str, reason: str, ref: dict | None = None) -> None:
         if not seat.sessions or seat.sessions[-1] != duel_id:
@@ -2629,6 +2750,16 @@ def _run_ring(
                         continue
                     carried.remove(snap)
                     unresumable.append((snap, problem))
+            if mode == "levers" and not draining and len(seated) < n_seats:
+                # The defender's single-lever variants, ordered so the levers with the
+                # least paired evidence on the ledger are asked first.
+                from . import levers as levers_mod
+
+                lever_pool = levers_mod.lever_variants(
+                    inc, list(settings_by_fp.values()), baseline,
+                    allowed=lever_allowed,
+                    history=levers_mod.rounds_by_lever(_ledger_sessions(session), settings_by_fp),
+                )
             while not draining and len(seated) < n_seats:
                 snap = next(
                     (c for c in carried if str(c.get("incumbent")) == incumbent_fp), None
@@ -2645,10 +2776,23 @@ def _run_ring(
                              duel_id, len(seated), seat.fp, incumbent_fp, len(seat.deltas),
                              seat.sessions[:-1])
                     continue
-                challenger_fp, why_challenger = next_challenger(
-                    session, field, ratings, incumbent_fp, heirs=heirs, baseline=baseline,
-                    cooldown_hours=cooldown_hours, mode=mode, top_n=top_n, fought=fought,
-                )
+                variant: dict | None = None
+                if mode == "levers":
+                    from . import levers as levers_mod
+
+                    challenger_fp, why_challenger, variant = levers_mod.next_variant(
+                        lever_pool, incumbent_fp, fought=fought,
+                        recently_decided=lambda a, b: _recently_decided(session, a, b, cooldown_hours),
+                    )
+                    if variant is not None:
+                        # A generated step is a profile the field has never seen: it joins
+                        # the session's map so the leg can be applied, named and recorded.
+                        settings_by_fp.setdefault(challenger_fp, variant["profile"])
+                else:
+                    challenger_fp, why_challenger = next_challenger(
+                        session, field, ratings, incumbent_fp, heirs=heirs, baseline=baseline,
+                        cooldown_hours=cooldown_hours, mode=mode, top_n=top_n, fought=fought,
+                    )
                 if challenger_fp is None or challenger_fp not in settings_by_fp:
                     break
                 if rematch_now == frozenset((incumbent_fp, challenger_fp)):
@@ -2660,6 +2804,7 @@ def _run_ring(
                     challenger_fp, settings_by_fp[challenger_fp], why_challenger, incumbent_fp,
                     **seat_kw,
                 )
+                fresh.lever = dict(variant["lever"]) if variant else None
                 fresh.sessions.append(duel_id)
                 seated.append(fresh)
                 log.info("Duel %s seat %d: challenger %s (%s)", duel_id, len(seated),
@@ -3082,9 +3227,21 @@ def fight_card(session, limit: int = 12) -> dict:
     cooldown_hours = rematch_hours(cfg)
 
     tiers = contender_tiers(field, order, ratings if mode == "ring" else None, incumbent_fp)
+    # Lever mode: a generated step is not in the field, so the preview needs its label and
+    # the lever it moves from the variant list itself (kept beside the field rather than
+    # written into it — ``compute_profiles`` is memoized, and its dicts must not be edited).
+    lever_why: dict[str, str] = {}
+    lever_profiles: dict[str, dict] = {}
+    if mode == "levers":
+        from . import levers as levers_mod
+
+        for v in levers_mod.lever_variants(profiles[incumbent_fp], list(profiles.values()), live):
+            lever_why[v["fingerprint"]] = v["why"]
+            if v["source"] == "generated":
+                lever_profiles[v["fingerprint"]] = v["profile"]
 
     def _entry(fp: str, position: int) -> dict:
-        p = profiles.get(fp, {})
+        p = profiles.get(fp) or lever_profiles.get(fp, {})
         return {
             "position": position,
             "fingerprint": fp,
@@ -3095,9 +3252,9 @@ def fight_card(session, limit: int = 12) -> dict:
             "confident": p.get("confident"),
             # Why this profile is in the queue at all.
             "reason": (
-                "pooled-crown"
-                if fp == pooled_fp
-                else heir_reason.get(fp)
+                lever_why.get(fp)
+                or ("pooled-crown" if fp == pooled_fp else None)
+                or heir_reason.get(fp)
                 or ("contender" if p.get("overall") is not None else "untested")
             ),
             # What the RING says about it: its fitted rating, the optimistic ceiling the

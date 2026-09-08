@@ -91,6 +91,7 @@ import type {
   PortableRun,
   PortableRunCreate,
   ProfileWhy,
+  LeverLedger,
 } from "./types";
 
 // Minutes to add to UTC to reach the viewer's local time. getTimezoneOffset()
@@ -509,6 +510,9 @@ export const api = {
 
   // The recommendation ledger: every claim Explore made, graded against what the link
   // actually did. Two indexed queries, so unlike the landscape it's cheap to fetch on load.
+  // The lever ledger: every single-lever duel match pooled per lever, beside the mechanism
+  // prediction for an unsaturated link.
+  leverLedger: (sessions = 50) => request<LeverLedger>(`/explore/levers?sessions=${sessions}`),
   exploreRecommendations: (limit = 50) =>
     request<ExploreLedger>(`/explore/recommendations?limit=${limit}`),
 

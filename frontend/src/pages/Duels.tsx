@@ -690,6 +690,18 @@ function BoutRow({ m }: { m: DuelMatchup }) {
             {m.wins_incumbent}–{m.wins_challenger} in {m.pairs} rounds · {marginPhrase(m)}
           </Typography>
           <VerdictChip m={m} />
+          {m.lever && (
+            <Tooltip
+              title={`Seated to measure one lever: ${m.lever.pipe} ${m.lever.field_label} ${String(m.lever.from)} → ${String(m.lever.to)}. Every round is a paired, same-weather reading of that setting alone; the lever ledger on Explore pools it.`}
+            >
+              <Chip
+                size="small"
+                variant="outlined"
+                color="info"
+                label={`lever · ${m.lever.field_label} ${String(m.lever.from)} → ${String(m.lever.to)}`}
+              />
+            </Tooltip>
+          )}
           {(m.max_leg_distance ?? 1) > 1 && (
             <Tooltip
               title={`Fought in the ring with the belt leg every ${m.belt_every} legs, so a challenger leg could be up to ${m.max_leg_distance} legs from the belt leg it was compared against.`}
@@ -739,6 +751,14 @@ function BoutRow({ m }: { m: DuelMatchup }) {
       <Typography variant="caption" color="text.secondary">
         {m.reason}
       </Typography>
+      {m.median_crown_delta && Object.keys(m.median_crown_delta).length > 0 && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+          Where the margin lived (challenger − holder, median per round):{" "}
+          {Object.entries(m.median_crown_delta)
+            .map(([k, v]) => `${k} ${v > 0 ? "+" : ""}${fmtNum(v, 1)}`)
+            .join(" · ")}
+        </Typography>
+      )}
     </Box>
   );
 }
@@ -1825,8 +1845,18 @@ export default function Duels() {
           sx={{ mb: 2 }}
           more={
             <>
-              The champion defends against the top {cfg.contender_top_n}{" "}
-              {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"},{" "}
+              {cfg.contenders === "levers" ? (
+                <>
+                  The champion defends against <b>single-lever variants of itself</b> — measured
+                  siblings first, then steps the firewall can hold — so every round is a paired
+                  reading of one setting,{" "}
+                </>
+              ) : (
+                <>
+                  The champion defends against the top {cfg.contender_top_n}{" "}
+                  {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"},{" "}
+                </>
+              )}
               {cfg.seats ?? 2} at a time with a belt leg every {cfg.belt_every ?? 2} legs,{" "}
               {cfg.iterations_per_round ?? 3} iteration(s) a leg. A match ends after{" "}
               {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of margins, then
@@ -2064,6 +2094,28 @@ export default function Duels() {
               >
                 <MenuItem value="lineal">Lineal title (beat the holder)</MenuItem>
                 <MenuItem value="rating_floor">Ring's #1 (proven rating)</MenuItem>
+              </TextField>
+              <TextField
+                select
+                size="small"
+                label="Who challenges"
+                value={cfg?.contenders ?? "ring"}
+                disabled={!cfg || busy}
+                onChange={(e) => void patch({ contenders: e.target.value as DuelConfig["contenders"] })}
+                helperText={
+                  (cfg?.contenders ?? "ring") === "levers"
+                    ? "The champion against single-setting variants of itself. Every round measures one lever; the lever ledger on Explore keeps the book."
+                    : (cfg?.contenders ?? "ring") === "ring"
+                      ? "Whoever the ring's own ratings say is most likely to unseat the belt."
+                      : (cfg?.contenders ?? "ring") === "leaders"
+                        ? "The profiles nearest the crown on the pooled Overall."
+                        : "The exploring order: under-sampled and untested profiles first."
+                }
+              >
+                <MenuItem value="ring">Ring rating (most likely to unseat the belt)</MenuItem>
+                <MenuItem value="levers">Levers (one setting at a time from the champion)</MenuItem>
+                <MenuItem value="leaders">Pooled leaders (nearest the crown)</MenuItem>
+                <MenuItem value="heirs">Heirs (exploring order)</MenuItem>
               </TextField>
               <NumField
                 label="Contenders to race"

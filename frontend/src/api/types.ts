@@ -1878,7 +1878,7 @@ export interface DuelCard {
   } | null;
   queue: DuelCardEntry[];
   total?: number;
-  contenders: "ring" | "leaders" | "heirs";
+  contenders: "ring" | "leaders" | "heirs" | "levers";
   top_n: number;
   rematch_hours?: number;
   champion_freshness_days?: number;
@@ -1961,7 +1961,7 @@ export interface DuelConfig {
   continuous: boolean;
   continuous_gap_minutes: number;
   // Who the champion fights: the profiles nearest the crown, or the exploring heirs order.
-  contenders: "ring" | "leaders" | "heirs";
+  contenders: "ring" | "leaders" | "heirs" | "levers";
   contender_top_n: number;
   // Which rule names the champion. "lineal" — you take the belt by beating its holder,
   // provided your whole shared record then favours you on BOTH matches and rounds.
@@ -2013,6 +2013,13 @@ export interface DuelMatchup {
   // Why this challenger got the ring: "pooled crown", "contender", "untested", possibly
   // with ", re-raced (…)". Absent on bouts fought before matchmaking recorded it.
   challenger_why?: string | null;
+  // The one lever this match was seated to measure (the ring's "levers" mode); null on an
+  // ordinary match.
+  lever?: DuelLever | null;
+  // Per-round margins (challenger − reference) and the same margins split by crown leg —
+  // where the margin lived. Absent on records written before the ring kept them.
+  deltas?: number[] | null;
+  median_crown_delta?: Record<string, number> | null;
   pairs: number;
   wins_incumbent: number;
   wins_challenger: number;
@@ -3490,4 +3497,60 @@ export interface ProfileWhy {
   site_runs: { a: number; b: number };
   verdict: string;
   notes: string[];
+}
+
+// ── Levers: what moving one setting does (GET /explore/levers) ─────────────────
+export interface DuelLever {
+  pipe: string;
+  field: string;
+  field_label: string;
+  unit: string | null;
+  from: number | string | boolean | null;
+  to: number | string | boolean | null;
+}
+
+export interface LeverEvidence {
+  matches: number;
+  rounds: number;
+  wins_higher: number;
+  wins_lower: number;
+  // Median Overall-point margin of moving the lever UP (higher value minus lower).
+  median_margin_up: number | null;
+  sign_p: number | null;
+  paired_p: number | null;
+  paired_rounds: number;
+  crown_margin_up: Record<string, number>;
+  direction: "higher" | "lower" | "none" | "thin";
+  seated_as_lever: number;
+}
+
+export interface LeverTransition extends LeverEvidence {
+  from: number;
+  to: number;
+  from_shown: string | number;
+  to_shown: string | number;
+}
+
+export interface LeverRow extends LeverEvidence {
+  pipe: string;
+  field: string;
+  field_label: string;
+  unit: string | null;
+  prediction: "null" | "interior" | "conditional" | "unknown";
+  mechanism: string;
+  unsaturated: string;
+  agreement: "as_predicted" | "surprise" | "consistent" | "flat_here" | "measured" | "untested";
+  agreement_why: string;
+  transitions: LeverTransition[];
+}
+
+export interface LeverLedger {
+  levers: LeverRow[];
+  sessions_analyzed: number;
+  matches_used: number;
+  matches_skipped: number;
+  matches_aborted: number;
+  min_rounds: number;
+  alpha: number;
+  note: string;
 }
