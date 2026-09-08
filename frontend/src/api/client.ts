@@ -90,6 +90,7 @@ import type {
   PortableRecipe,
   PortableRun,
   PortableRunCreate,
+  ProfileWhy,
 } from "./types";
 
 // Minutes to add to UTC to reach the viewer's local time. getTimezoneOffset()
@@ -294,6 +295,17 @@ export const api = {
   // Profile-level roll-up of the "Where's the pause?" diagnostic across the profile's runs.
   profilePauses: (fingerprint: string) =>
     request<ProfilePauseRollup>(`/results/profile/${encodeURIComponent(fingerprint)}/pauses`),
+  // Where a win lives: what the Overall gap between this profile and a reference is made of
+  // (per crown leg, per navigation phase, per site), each delta with its noise bar.
+  profileWhy: (fingerprint: string, vs?: string | null, limit?: number) => {
+    const q = new URLSearchParams();
+    if (vs) q.set("vs", vs);
+    if (limit != null) q.set("limit", String(limit));
+    const qs = q.toString();
+    return request<ProfileWhy>(
+      `/settings/profiles/${encodeURIComponent(fingerprint)}/why${qs ? `?${qs}` : ""}`,
+    );
+  },
   // Read-only data-integrity audit: re-derive a profile's oldest + newest runs from raw and
   // report whether the stored metrics reproduce (are old and new runs like-for-like?).
   verifyProfileDerivation: (fingerprint: string) =>

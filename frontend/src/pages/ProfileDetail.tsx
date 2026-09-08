@@ -53,6 +53,7 @@ import type {
 } from "../api/types";
 import SeriesChart from "../components/SeriesChart";
 import Waterfall from "../components/Waterfall";
+import WhyCard from "../components/WhyCard";
 import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
@@ -1224,6 +1225,11 @@ export default function ProfileDetail() {
                 })}
               </Stack>
           </FoldCard>
+        )}
+
+        {/* ── Where a win lives: what this profile's gap to a reference is made of ─────── */}
+        {profile && (
+          <WhyCard fingerprint={fingerprint} profiles={allProfiles} bestFp={bestFp} />
         )}
 
         <Card>

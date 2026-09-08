@@ -19,6 +19,7 @@ from .. import challenger as challenger_mod
 from .. import crowning
 from .. import profile_test as profile_test_mod
 from .. import refresh as refresh_mod
+from .. import why as why_mod
 from ..config_store import get_config, save_config
 from ..database import get_session
 from .. import job_queue
@@ -493,6 +494,22 @@ def apply_warmup(session: Session = Depends(get_session)) -> dict:
     from ..runner import apply_warmup_report
 
     return apply_warmup_report(session)
+
+
+@router.get("/settings/profiles/{fingerprint}/why")
+def profile_why(
+    fingerprint: str,
+    vs: str | None = Query(None, description="Fingerprint to compare against (default: SQM off, else the crown)."),
+    limit: int = Query(why_mod.SITE_RUN_LIMIT, ge=0, le=100, description="Newest runs a side for the per-site pass (0 skips it)."),
+    session: Session = Depends(get_session),
+) -> dict:
+    """**Where a win lives**: what the Overall gap between this profile and a reference is made
+    of — per crown leg (exact under the weighted crown), per navigation phase, and per site,
+    every delta with its noise bar. Read-only; see ``why.explain``."""
+    try:
+        return why_mod.explain(session, fingerprint, vs=vs, site_run_limit=limit)
+    except why_mod.NoData as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get("/settings/profiles/{fingerprint}/verify-derivation")

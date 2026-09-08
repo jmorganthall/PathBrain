@@ -3401,3 +3401,93 @@ export interface WarmAgreement {
   methodology: string;
   runs_with_warm_reading: number;
 }
+
+// ── Where a win lives (GET /settings/profiles/{fp}/why) ────────────────────────
+export interface WhySide {
+  fingerprint: string;
+  name: string;
+  label: string | null;
+  overall: number | null;
+  iterations: number;
+  runs: number;
+}
+
+export interface WhyLeg {
+  metric: string;
+  label: string;
+  unit: string;
+  weight: number;
+  share_of_weight: number;
+  required: boolean;
+  a: { subscore: number | null; n: number; raw: number | null; raw_se: number | null };
+  b: { subscore: number | null; n: number; raw: number | null; raw_se: number | null };
+  delta_subscore: number | null;
+  delta_raw: number | null;
+  raw_clear: boolean | null;
+  // Overall points, signed from this profile's side (positive = this profile ahead).
+  points: number | null;
+  se: number | null;
+  clear: boolean | null;
+  missing: boolean;
+}
+
+export interface WhyPhase {
+  metric: string;
+  label: string;
+  a: { median: number | null; se: number | null; n: number };
+  b: { median: number | null; se: number | null; n: number };
+  delta: number | null;
+  se: number | null;
+  clear: boolean | null;
+}
+
+export interface WhySiteLeg {
+  metric: string;
+  label: string;
+  a: number | null;
+  b: number | null;
+  delta: number | null;
+  se: number | null;
+  clear: boolean | null;
+  points: number | null;
+}
+
+export interface WhySitePhase {
+  metric: string;
+  label: string;
+  a: number | null;
+  b: number | null;
+  delta: number | null;
+  se: number | null;
+  clear: boolean | null;
+}
+
+export interface WhySite {
+  url: string;
+  host: string;
+  runs_a: number;
+  runs_b: number;
+  points: number | null;
+  legs: WhySiteLeg[];
+  phases: WhySitePhase[];
+  top_phase: WhySitePhase | null;
+}
+
+export interface ProfileWhy {
+  fingerprint: string;
+  methodology: string;
+  method: string;
+  exact: boolean;
+  sigma: number;
+  reference: { why: "sqm_off" | "crown" | "chosen" | "best_other" };
+  a: WhySide;
+  b: WhySide;
+  gap: { points: number | null; se: number | null; clear: boolean | null };
+  legs: WhyLeg[];
+  phases: WhyPhase[];
+  sites: WhySite[];
+  site_run_limit: number;
+  site_runs: { a: number; b: number };
+  verdict: string;
+  notes: string[];
+}
