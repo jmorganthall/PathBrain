@@ -872,6 +872,46 @@ LLM-based. See `README.md` for the product overview.
     `skip`), and `portable.iterations` caps it like the browser's cap (one portable iteration
     per suite iteration). Its metrics are derived by `interpret.derive` like any plugin's but are
     **not methodology metrics** — nothing in scoring reads them.
+  - **Burst fairness: the round-robin mechanism, measured** (`interpret/portable.py`
+    `_burst_metrics` / `BURST_METRICS`, the **"Under a burst"** section of the Why-it-wins card
+    via `why.burst_block`, the **Interleave** column on the Dueling Champions phone-standing card,
+    and three rows on the Away test's metric table). fq_codel's everyday effect on an unsaturated
+    link is not queue management — nothing stands in a queue long enough for CoDel to act — it
+    is the scheduler interleaving the flows of a page-load burst: a font's few packets get onto
+    the wire between a bundle's many instead of behind them. A **real page cannot expose that
+    mechanism**: its resource sizes are unknown (cross-origin entries report 0 bytes without
+    Timing-Allow-Origin), its overlap structure changes with every deploy and its bytes are
+    opaque. The portable recipe fixes all three — known sizes, TAO'd origins, a fixed
+    dependency chain in which small objects (fonts, small libraries) are fetched *while* large
+    ones (bundles) are in flight — so the interleave's fairness reads directly off the
+    waterfall's concurrent download windows (`responseStart → responseEnd`, TAO'd entries only):
+    **`interleave_index`** — per small object (≤ `SMALL_BYTES`) downloaded mostly (≥
+    `MIN_OVERLAP_SHARE` of its window) beside a large one (≥ `LARGE_BYTES`), its byte rate over
+    its own window divided by the large flow's over its window, median over pairs: 1 = it moved
+    at the large flow's pace (a fair share), well below 1 = it waited behind the bulk (FIFO), above
+    1 = small/new flows favoured (fq_codel's new-flow priority); the large flow's whole-window
+    average includes stretches with fewer competitors, so the reading sits slightly below 1 even
+    under perfect fairness — the same bias for every profile on the same recipe, so the
+    comparison across profiles (and against SQM off) is what to read. **`bulk_share`** — over
+    every stretch with ≥2 downloads in flight, the byte-weighted share that went to the largest
+    active flow (each flow's bytes in a stretch at its own average rate): 0.5 for two equal flows,
+    toward 1 for one flow hogging the wire. **`small_under_large_ms`** — the felt cost: the median
+    download time of those small objects while a large one was in flight. Purely additive, so
+    `PORTABLE_DERIVATION_VERSION` is deliberately **not** bumped: it is part of
+    `instrument_version`, and bumping it would stop every home run on record being admitted as a
+    reference for a metric older raws re-derive perfectly well; instead `coverage["burst"]` marks
+    a derivation that knew the metrics and `portable.backfill_burst` (called from
+    `profile_standings`, ≤ `BURST_BACKFILL_LIMIT` rows a read, own transaction, best-effort)
+    re-derives unflagged rows from raw so the standing fills in over a few page loads — a run
+    *with* the flag and no burst metric genuinely had no overlapping downloads. Per profile the
+    standing accrues on every device the same way the phone standing does: PathBrain's own wired
+    Chromium files one from every run through the `portable` plugin, a phone from every Away
+    test at home. `why.burst_block` reads them per device for the two profiles being compared
+    (≥ `BURST_MIN_RUNS` home runs a side, SE-of-median noise bars at `crown_tie_sigma`) and the
+    verdict gains a clause when the interleave delta is clear — so an outcome ("A's small
+    objects arrive sooner") sits beside the mechanism it rests on ("under A a small object moved
+    at 0.9× the large flow's pace, under B at 0.4×"). Read-only; nothing here reaches the crown,
+    the duel or the pooled record — the mechanism sits beside the crown, never in it.
   - `challenger.py` — **Challenger Race**: the adaptive, multi-profile sibling of
     `profile_test`. A time-boxed loop that runs **one iteration at a time** on whatever the
     field can't currently trust against the winner, re-ranks via `rank_challengers`, and

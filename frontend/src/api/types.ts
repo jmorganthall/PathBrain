@@ -3480,6 +3480,36 @@ export interface WhySite {
   top_phase: WhySitePhase | null;
 }
 
+export interface WhyBurstMetric {
+  key: string;
+  label: string;
+  unit: string;
+  higher_is_better: boolean;
+  a: number | null;
+  b: number | null;
+  delta: number | null;
+  se: number | null;
+  clear: boolean | null;
+  n_a: number;
+  n_b: number;
+}
+
+export interface WhyBurstDevice {
+  device_id: string;
+  label: string;
+  is_server: boolean;
+  runs_a: number;
+  runs_b: number;
+  metrics: WhyBurstMetric[];
+}
+
+export interface WhyBurst {
+  instrument_version: string;
+  min_runs: number;
+  devices: WhyBurstDevice[];
+  note: string;
+}
+
 export interface ProfileWhy {
   fingerprint: string;
   methodology: string;
@@ -3495,6 +3525,8 @@ export interface ProfileWhy {
   sites: WhySite[];
   site_run_limit: number;
   site_runs: { a: number; b: number };
+  // The round-robin mechanism per device, from the portable recipe's burst-fairness metrics.
+  burst: WhyBurst;
   verdict: string;
   notes: string[];
 }
