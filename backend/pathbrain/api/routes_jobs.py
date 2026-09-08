@@ -895,6 +895,35 @@ def _duel_message(d: dict) -> str:
     return f"{stage} · {progress}" if stage else progress
 
 
+def _evicted(owner_label: str, started_at: str | None) -> dict | None:
+    """The coordinator's last eviction, if it was THIS session's lease — so the feed can say
+    "stood down" instead of "running" for a duel the watchdog has already disowned.
+
+    After an eviction the lease is gone, so ``_stalled_ms`` (which reads the live holder)
+    goes quiet exactly when the feed most needs to speak: the evicted thread is still
+    finishing whatever call it was in, the row still reads *running · 5h left*, and a
+    monitoring run has started beside it. The eviction record names the owner, so an
+    eviction of this session at or after its start is the fact to show.
+    """
+    from datetime import datetime, timezone
+
+    from .. import coordinator
+
+    last = coordinator.status().get("last_eviction") or {}
+    if last.get("owner") != owner_label:
+        return None
+    if started_at:
+        try:
+            began = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+            if began.tzinfo is None:
+                began = began.replace(tzinfo=timezone.utc)
+            if float(last.get("at") or 0) < began.timestamp() - 1.0:
+                return None  # an older session's eviction, not this one's
+        except (TypeError, ValueError):
+            pass
+    return dict(last)
+
+
 def _active_duel_job() -> list[dict]:
     if not duel.active():
         return []
@@ -903,12 +932,26 @@ def _active_duel_job() -> list[dict]:
         return []
     queued = d.get("status") == "pending"
     eta = _eta_ms(started_at=d.get("started_at"), budget_s=d.get("duration_s"), queued=queued)
+    owner = f"duel#{d['id']}"
+    message = _duel_message(d)
+    stalled_ms = _stalled_ms(owner)
+    evicted = None if queued else _evicted(owner, d.get("started_at"))
+    if evicted:
+        quiet_min = float(evicted.get("quiet_s") or 0) / 60.0
+        message = (
+            f"Stood down by the pipeline watchdog — no progress for {quiet_min:.0f} min while "
+            f"\"{(d.get('stage') or '').strip() or 'starting'}\". The pipeline is free; this "
+            f"session stops at its next seam. · {message}"
+        )
+        stalled_ms = round(float(evicted.get("quiet_s") or 0) * 1000.0)
     return [
         _with_eta({
             # id matches the chunks' job_group so they nest under this parent line.
             "id": f"duel-{d['id']}",
             "kind": "duel",
-            "label": "Duel ladder",
+            # A lever session measures settings, not the best profile: say so, since the
+            # two run the same engine and read alike otherwise.
+            "label": "Lever session" if d.get("mode") == "levers" else "Duel ladder",
             "status": "running",
             "current": d.get("iterations_run") or 0,
             # No unit total: a duel does not run a known number of anything — it runs until
@@ -916,14 +959,14 @@ def _active_duel_job() -> list[dict]:
             # match settles. The bar is the window (`window_ms` on the ETA), which is the
             # honest denominator; `current` stays as the count of what has been measured.
             "total": None,
-            "message": _duel_message(d),
+            "message": message,
             "error": None,
-            "href": "/settings",
+            "href": "/levers" if d.get("mode") == "levers" else "/duels",
             "parent_id": None,
             "cancel_url": "/duel/cancel",
             "started_at": d.get("started_at") or d.get("created_at"),
             "finished_at": None,
-        }, eta, queued=queued, stalled_ms=_stalled_ms(f"duel#{d['id']}"))
+        }, eta, queued=queued, stalled_ms=stalled_ms)
     ]
 
 
