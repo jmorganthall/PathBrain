@@ -17,7 +17,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 
 import { api } from "../api/client";
-import type { ProfileWhy, SettingsProfile, WhyLeg, WhyPhase, WhySite } from "../api/types";
+import type { ProfileWhy, SettingsProfile, WhyBurst, WhyLeg, WhyPhase, WhySite } from "../api/types";
 import { FoldCard, HelpTip } from "./Explain";
 
 /**
@@ -259,6 +259,70 @@ function SitesTable({ sites, legs }: { sites: WhySite[]; legs: WhyLeg[] }) {
   );
 }
 
+function BurstTable({ burst, bName }: { burst: WhyBurst; bName: string }) {
+  if (burst.devices.length === 0) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        No device has {burst.min_runs} home portable runs under both profiles yet. PathBrain&apos;s own
+        wired Chromium takes one with every run once the portable plugin is on; a phone adds one with
+        every Away test at home.
+      </Typography>
+    );
+  }
+  return (
+    <Stack spacing={1}>
+      {burst.devices.map((d) => (
+        <TableContainer key={d.device_id} sx={{ overflowX: "auto" }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>
+                  {d.label}
+                  {d.is_server ? " · wired Chromium" : ""}
+                  <Typography component="span" variant="caption" color="text.secondary">
+                    {" "}
+                    {d.runs_a} / {d.runs_b} runs
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">This profile</TableCell>
+                <TableCell align="right">{bName}</TableCell>
+                <TableCell align="right">Δ</TableCell>
+                <TableCell />
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {d.metrics.map((m) => {
+                const good =
+                  m.delta == null || m.delta === 0 ? null : m.higher_is_better ? m.delta > 0 : m.delta < 0;
+                return (
+                  <TableRow key={m.key}>
+                    <TableCell>
+                      <Typography variant="body2">{m.label}</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {m.higher_is_better ? "higher is better" : "lower is better"}
+                      </Typography>
+                    </TableCell>
+                    <TableCell align="right">{m.a != null ? `${m.a.toFixed(m.unit === "ms" ? 0 : 2)}${m.unit ? ` ${m.unit}` : ""}` : "—"}</TableCell>
+                    <TableCell align="right">{m.b != null ? `${m.b.toFixed(m.unit === "ms" ? 0 : 2)}${m.unit ? ` ${m.unit}` : ""}` : "—"}</TableCell>
+                    <TableCell align="right">
+                      <Typography variant="body2" color={good == null ? "text.secondary" : good ? "success.main" : "error.main"}>
+                        {signed(m.delta, m.unit === "ms" ? 0 : 2, m.unit ? ` ${m.unit}` : "")}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      <ClearChip clear={m.clear} se={m.se} />
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      ))}
+    </Stack>
+  );
+}
+
 export default function WhyCard({
   fingerprint,
   profiles,
@@ -386,6 +450,13 @@ export default function WhyCard({
               </Typography>
             </Typography>
             <SitesTable sites={data.sites} legs={data.legs} />
+          </Box>
+          <Box>
+            <Typography variant="subtitle2" gutterBottom>
+              Under a burst
+              <HelpTip title="The round-robin mechanism itself, on the portable recipe: known sizes and a fixed overlap of small objects fetched while large ones are in flight. Interleave 1.0 means a small object moved at the large flow's pace beside it; well below 1 means it waited behind the bulk (FIFO behaviour); above 1 means small flows were favoured. A real page cannot carry this reading — its sizes and overlaps are unknown — so it sits beside the crown, never in it." />
+            </Typography>
+            <BurstTable burst={data.burst} bName={data.b.name} />
           </Box>
           <Stack spacing={0.25}>
             {data.notes.map((n) => (

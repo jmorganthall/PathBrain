@@ -3184,6 +3184,11 @@ function PhoneStanding() {
                           <span>Pooled Overall</span>
                         </Tooltip>
                       </TableCell>
+                      <TableCell align="right">
+                        <Tooltip title="Burst interleave, median on this device under the profile: a small object's byte rate beside a large flow, over the large flow's. 1.0 = it moved at the large flow's pace (fair share); well below 1 = it waited behind the bulk; above 1 = small flows favoured. The round-robin mechanism itself, read on the portable recipe.">
+                          <span>Interleave</span>
+                        </Tooltip>
+                      </TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -3210,6 +3215,14 @@ function PhoneStanding() {
                         </TableCell>
                         <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
                           {pr.pooled_overall != null ? pr.pooled_overall.toFixed(1) : "—"}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                          {pr.metrics?.interleave_index != null ? `${pr.metrics.interleave_index.toFixed(2)}×` : "—"}
+                          {pr.metrics?.bulk_share != null && (
+                            <Typography variant="caption" color="text.secondary" display="block">
+                              bulk {Math.round(pr.metrics.bulk_share * 100)}%
+                            </Typography>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}

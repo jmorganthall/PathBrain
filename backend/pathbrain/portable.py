@@ -51,6 +51,7 @@ from .interpret.portable import (
     derive_portable,
     iteration_count,
 )
+from .database import session_scope
 from .logging_config import get_logger
 from .models import BenchmarkResult, PortableRun
 from .raw_access import stored_iterations
@@ -1066,6 +1067,47 @@ def _quartiles_of(vals: list[float]) -> tuple[float | None, float | None]:
     return _quartiles(vals)
 
 
+#: Rows re-derived per standings read to pick up the burst metrics — bounded, so a read
+#: stays cheap and the backlog drains over a few page loads rather than in one.
+BURST_BACKFILL_LIMIT = 100
+
+
+def backfill_burst(session, rows: list[PortableRun], *, limit: int = BURST_BACKFILL_LIMIT) -> int:
+    """Rows derived before the burst-fairness metrics existed carry none; re-derive them from
+    raw and persist (own transaction, best-effort, at most ``limit`` a call). The in-memory
+    rows are updated too, so the read that triggered it already sees the numbers. A row is
+    recognised by the absence of the ``burst`` coverage flag, never by a missing metric — a
+    run with no overlapping downloads legitimately has none."""
+    stale = [r for r in rows if not (r.coverage or {}).get("burst")][:limit]
+    if not stale:
+        return 0
+    done = 0
+    try:
+        with session_scope() as own:
+            fresh = [row for row in (own.get(PortableRun, r.id) for r in stale) if row is not None]
+            raws = _load_raws(own, fresh)
+            by_id = {r.id: r for r in stale}
+            for row in fresh:
+                raw = raws.get(row.id)
+                if not raw:
+                    continue
+                derived = derive_portable(raw)
+                score, subscores = score_metrics(derived["metrics"])
+                row.metrics = derived["metrics"]
+                row.per_origin = derived["per_origin"]
+                row.coverage = derived["coverage"]
+                row.score = score
+                row.subscores = subscores
+                mine = by_id.get(row.id)
+                if mine is not None:
+                    mine.metrics = dict(derived["metrics"])
+                    mine.coverage = dict(derived["coverage"])
+                done += 1
+    except Exception:  # noqa: BLE001 — a backfill must never be why a standing fails
+        log.debug("backfill_burst: could not re-derive", exc_info=True)
+    return done
+
+
 def profile_standings(session, cfg: dict | None, *, device_id: str | None = None) -> dict:
     """What every device measured at home under each firewall profile, ranked — and whether
     that ranking agrees with the pooled crown.
@@ -1093,6 +1135,7 @@ def profile_standings(session, cfg: dict | None, *, device_id: str | None = None
     if device_id:
         q = q.where(PortableRun.device_id == device_id)
     rows = session.scalars(q.order_by(PortableRun.id)).all()
+    backfilled = backfill_burst(session, rows)
 
     by_device: dict[str, dict] = {}
     for r in rows:
@@ -1242,6 +1285,7 @@ def profile_standings(session, cfg: dict | None, *, device_id: str | None = None
         "instrument_version": version,
         "min_home_runs": min_runs,
         "crown": {"fingerprint": crown_fp, "name": crown_name, "label": crown_label} if crown_fp else None,
+        "burst_backfilled": backfilled,
         "devices": devices_out,
         "note": (
             "The portable score is each device's own instrument — a synthetic waterfall, a streamed "

@@ -50,7 +50,7 @@ from .methodology import (
     overall_weights,
 )
 from .metrics import METRICS
-from .models import BenchmarkResult, Run, RunStatus, Score
+from .models import BenchmarkResult, PortableRun, Run, RunStatus, Score
 from .raw_access import browser_url_observations
 from .scoring.engine import _normalize
 from .settings_profile import SQM_OFF_FINGERPRINT, summarize
@@ -412,6 +412,77 @@ def _site_rows(
     return rows
 
 
+# ── under a burst: the mechanism, per device ───────────────────────────────────
+
+#: Home portable runs a side, per device, before a burst row is compared.
+BURST_MIN_RUNS = 3
+
+
+def burst_block(session, cfg: dict, fp_a: str, fp_b: str, sigma: float) -> dict:
+    """The round-robin mechanism itself, per device: the portable instrument's burst-fairness
+    metrics (``interpret.portable.BURST_METRICS``) for home runs stamped with each profile —
+    PathBrain's own wired Chromium accrues one from every run, phones from every Away test at
+    home — so a crown-leg outcome ("A's small objects arrive sooner") can be read beside the
+    mechanism it rests on ("under A a small object moved at 0.9× the large flow's pace, under
+    B at 0.4×"). Only on the portable recipe: a real page's resource sizes and overlaps are
+    unknown, which is why this lives beside the crown rather than in it."""
+    from .interpret.portable import BURST_METRICS, PORTABLE_METRICS
+    from .portable import SERVER_DEVICE_ID, recipe
+
+    version = recipe(cfg)["instrument_version"]
+    rows = session.execute(
+        select(PortableRun.device_id, PortableRun.device_label, PortableRun.settings_fingerprint,
+               PortableRun.metrics)
+        .where(PortableRun.is_home.is_(True), PortableRun.instrument_version == version,
+               PortableRun.settings_fingerprint.in_([fp_a, fp_b]))
+    ).all()
+    per_device: dict[str, dict] = {}
+    for device_id, label, fp, metrics in rows:
+        slot = per_device.setdefault(device_id, {"label": label, "a": {}, "b": {}, "runs_a": 0, "runs_b": 0})
+        slot["label"] = slot["label"] or label
+        side = "a" if fp == fp_a else "b"
+        slot[f"runs_{side}"] += 1
+        for key in BURST_METRICS:
+            v = (metrics or {}).get(key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                slot[side].setdefault(key, []).append(float(v))
+    devices: list[dict] = []
+    for device_id, slot in per_device.items():
+        metrics_out = []
+        for key in BURST_METRICS:
+            va, vb = slot["a"].get(key) or [], slot["b"].get(key) or []
+            if len(va) < BURST_MIN_RUNS or len(vb) < BURST_MIN_RUNS:
+                continue
+            label, unit, lower = PORTABLE_METRICS[key]
+            ma, mb = median(va), median(vb)
+            se = _pooled(_se(va), _se(vb))
+            metrics_out.append({
+                "key": key, "label": label, "unit": unit, "higher_is_better": not lower,
+                "a": _r(ma, 3), "b": _r(mb, 3), "delta": _r(ma - mb, 3), "se": _r(se, 3),
+                "clear": _clear(ma - mb, se, sigma), "n_a": len(va), "n_b": len(vb),
+            })
+        if metrics_out:
+            devices.append({
+                "device_id": device_id,
+                "label": slot["label"] or device_id,
+                "is_server": device_id == SERVER_DEVICE_ID,
+                "runs_a": slot["runs_a"], "runs_b": slot["runs_b"],
+                "metrics": metrics_out,
+            })
+    devices.sort(key=lambda d: (not d["is_server"], d["label"]))
+    return {
+        "instrument_version": version,
+        "min_runs": BURST_MIN_RUNS,
+        "devices": devices,
+        "note": (
+            "The round-robin mechanism, read on the portable recipe (known sizes, fixed overlaps): "
+            "interleave 1.0 means a small object moved at the large flow's pace beside it, well "
+            "below 1 means it waited behind the bulk. A real page cannot carry this reading — its "
+            "sizes and overlaps are unknown — so it sits beside the crown, never in it."
+        ),
+    }
+
+
 # ── the verdict ───────────────────────────────────────────────────────────────
 
 
@@ -419,7 +490,8 @@ def _pts(v: float) -> str:
     return f"{abs(v):.1f} point{'' if abs(v) == 1 else 's'}"
 
 
-def verdict(names: tuple[str, str], gap: dict, legs: list[dict], phases: list[dict], sites: list[dict]) -> str:
+def verdict(names: tuple[str, str], gap: dict, legs: list[dict], phases: list[dict], sites: list[dict],
+            burst: dict | None = None) -> str:
     """One paragraph, with its numbers in it, read from the winner's side."""
     a_name, b_name = names
     g = gap.get("points")
@@ -468,6 +540,17 @@ def verdict(names: tuple[str, str], gap: dict, legs: list[dict], phases: list[di
             )
         else:
             parts.append(f"No single site shows the edge on its own ({len(priced)} sites priced).")
+    for dev in (burst or {}).get("devices") or []:
+        row = next((m for m in dev["metrics"] if m["key"] == "interleave_index" and m["clear"]), None)
+        if row is None:
+            continue
+        a, b = (row["a"], row["b"]) if sign > 0 else (row["b"], row["a"])
+        parts.append(
+            f"Under a burst on {dev['label']}, small objects ran at {a:.2f}× the large flow's pace "
+            f"under {win} against {b:.2f}× under {lose} — {win} interleaves "
+            f"{'better' if a > b else 'worse'}."
+        )
+        break
     return " ".join(parts)
 
 
@@ -535,6 +618,8 @@ def explain(session: Session, fingerprint: str, vs: str | None = None, *, site_r
     sites_b, used_b = _site_samples(session, version, ref, site_run_limit, keys)
     sites = _site_rows(definition, sites_a, sites_b, sigma)
 
+    burst = burst_block(session, config, fingerprint, ref, sigma)
+
     names = profile_names.names_for(session, [fingerprint, ref])
     name_a = names.get(fingerprint) or fingerprint
     name_b = names.get(ref) or ref
@@ -569,6 +654,7 @@ def explain(session: Session, fingerprint: str, vs: str | None = None, *, site_r
         "sites": sites,
         "site_run_limit": site_run_limit,
         "site_runs": {"a": used_a, "b": used_b},
-        "verdict": verdict((name_a, name_b), split["gap"], split["legs"], phases, sites),
+        "burst": burst,
+        "verdict": verdict((name_a, name_b), split["gap"], split["legs"], phases, sites, burst),
         "notes": notes,
     }

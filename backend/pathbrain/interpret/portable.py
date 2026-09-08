@@ -67,7 +67,17 @@ PORTABLE_METRICS: dict[str, tuple[str, str, bool]] = {
     "stream_ms_per_mb": ("Stream time per MB", "ms", True),
     "stream_longest_stall_ms": ("Stream longest stall", "ms", True),
     "stream_cadence_cov": ("Stream cadence CoV", "", True),
+    # Burst fairness — the round-robin mechanism itself, read off the waterfall's concurrent
+    # downloads (see ``_burst_metrics``). "Higher is better" on the interleave index: 1 means
+    # a small object moved at the large flow's pace beside it; below 1 it waited behind the
+    # bulk; above 1 the small flow was favoured (fq_codel's new-flow priority).
+    "interleave_index": ("Burst interleave (small ÷ large flow pace)", "", False),
+    "bulk_share": ("Bulk share while ≥2 flows in flight", "", True),
+    "small_under_large_ms": ("Small object under a large one", "ms", True),
 }
+
+#: The burst-fairness keys, for readers that want just the mechanism.
+BURST_METRICS = ("interleave_index", "bulk_share", "small_under_large_ms")
 
 # Per-origin connection-setup phases, from the first *new* connection an iteration opened
 # to that origin. Only origins that send ``Timing-Allow-Origin`` expose them.
@@ -134,6 +144,100 @@ def _usable(resources: list, include_ids: set[str] | None) -> list[dict]:
         if _resource_end(r) is None:
             continue
         out.append(r)
+    return out
+
+
+# ── burst fairness: the round-robin mechanism, measured ─────────────────────────
+#
+# fq_codel's everyday effect on an UNSATURATED link is not queue management — nothing
+# stands in a queue long enough for CoDel to act — it is the scheduler interleaving the
+# flows of a page-load burst: a font's few packets get onto the wire between a bundle's
+# many, instead of behind them. That mechanism is exactly what a real page cannot expose:
+# a page's resource sizes are unknown (cross-origin entries report 0 bytes without
+# Timing-Allow-Origin), its overlap structure changes with every deploy, and its bytes are
+# opaque. The portable recipe fixes all three — known sizes, TAO'd origins, a fixed
+# dependency chain in which small objects (fonts, small libraries) are fetched WHILE large
+# ones (bundles) are in flight — so the fairness of the interleave can be read directly:
+#
+# * ``interleave_index`` — for each small object downloaded mostly beside a large one, its
+#   byte rate over its own download window divided by the large flow's over its window,
+#   median over such pairs. 1 = it moved at the large flow's pace (a fair share); well below
+#   1 = it waited behind the bulk (FIFO behaviour); above 1 = small/new flows were favoured
+#   (fq_codel's new-flow priority). The large flow's rate is its whole-window average, which
+#   includes stretches with fewer competitors, so the reading is biased slightly below 1
+#   even under perfect fairness — the same bias for every profile on the same recipe, so
+#   the comparison across profiles (and against SQM off) is what to read.
+# * ``bulk_share`` — over every stretch in which two or more downloads were in flight, the
+#   share of the bytes that went to the largest active flow (each flow's bytes in a
+#   stretch taken at its own average rate), byte-weighted. Two equal flows read 0.5; one
+#   flow hogging the wire reads toward 1.
+# * ``small_under_large_ms`` — the median download time of those small objects while a
+#   large one was in flight: the felt cost, in ms, on this device.
+#
+# Additive, so ``PORTABLE_DERIVATION_VERSION`` is deliberately NOT bumped: it is part of
+# the instrument identity, and bumping it would stop every home run on record from being
+# admitted as a reference — for a metric older raws re-derive perfectly well.
+SMALL_BYTES = 32_000
+LARGE_BYTES = 100_000
+MIN_OVERLAP_SHARE = 0.5
+
+
+def _download_window(r: dict) -> tuple[float, float] | None:
+    """The body-download window (responseStart → responseEnd) of a TAO'd entry, or None."""
+    entry = r.get("entry") or {}
+    rs, re_ = _f(entry.get("responseStart")), _f(entry.get("responseEnd"))
+    if rs is None or re_ is None or rs <= 0 or re_ <= rs:
+        return None
+    return rs, re_
+
+
+def _burst_metrics(waterfall: dict | None, include_ids: set[str] | None) -> dict:
+    res = _usable((waterfall or {}).get("resources") or [], include_ids)
+    windows: list[tuple[str, float, float, float]] = []
+    for r in res:
+        w = _download_window(r)
+        nbytes = _f(r.get("bytes")) or 0.0
+        if w is None or nbytes <= 0:
+            continue
+        windows.append((str(r.get("id")), w[0], w[1], nbytes))
+    if len(windows) < 2:
+        return {}
+    rate = {rid: nbytes / (re_ - rs) for rid, rs, re_, nbytes in windows}
+    smalls = [w for w in windows if w[3] <= SMALL_BYTES]
+    larges = [w for w in windows if w[3] >= LARGE_BYTES]
+    ratios: list[float] = []
+    durations: list[float] = []
+    for sid, srs, sre, _sb in smalls:
+        s_dur = sre - srs
+        best: tuple[float, str] | None = None
+        for lid, lrs, lre, _lb in larges:
+            overlap = min(sre, lre) - max(srs, lrs)
+            if overlap <= 0 or overlap < MIN_OVERLAP_SHARE * s_dur:
+                continue
+            if best is None or overlap > best[0]:
+                best = (overlap, lid)
+        if best is None or rate[best[1]] <= 0:
+            continue
+        ratios.append(rate[sid] / rate[best[1]])
+        durations.append(s_dur)
+    out: dict[str, float] = {}
+    if ratios:
+        out["interleave_index"] = round(median(ratios), 3)
+        out["small_under_large_ms"] = round(median(durations), 3)
+    events = sorted({t for _id, rs, re_, _b in windows for t in (rs, re_)})
+    hog = total = 0.0
+    for a, b in zip(events, events[1:]):
+        active = [w for w in windows if w[1] <= a and w[2] >= b]
+        if len(active) < 2:
+            continue
+        by = [rate[w[0]] * (b - a) for w in active]
+        tot = sum(by)
+        if tot <= 0:
+            continue
+        hog += max(by)
+        total += tot
+    if total > 0:
+        out["bulk_share"] = round(hog / total, 3)
     return out
 
 
@@ -311,6 +415,10 @@ def coverage(raw: dict | None) -> dict:
         "iterations": len(iterations),
         # Stored with the coverage so a run's warmth is on its row without a migration.
         "warmth": warmth(raw),
+        # This derivation knew the burst metrics. A row without the flag was derived before
+        # they existed, so a reader can backfill it from raw; a row WITH the flag and no
+        # burst metric genuinely had no overlapping downloads to read.
+        "burst": True,
     }
 
 
@@ -330,6 +438,7 @@ def derive_portable(raw: dict | None, include_ids: set[str] | list[str] | None =
         it = it or {}
         m: dict[str, float] = {}
         m.update(_waterfall_metrics(it.get("waterfall"), ids))
+        m.update(_burst_metrics(it.get("waterfall"), ids))
         m.update(_stream_metrics(it.get("stream")))
         m.update(_rtt_metrics(it.get("rtt")))
         per_iter.append(m)
@@ -359,6 +468,7 @@ def iteration_count(raw: dict | None) -> int:
 
 
 __all__ = [
+    "BURST_METRICS",
     "ORIGIN_PHASES",
     "PORTABLE_DERIVATION_VERSION",
     "PORTABLE_METRICS",
