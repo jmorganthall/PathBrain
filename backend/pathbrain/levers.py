@@ -247,8 +247,13 @@ def lever_variants(
     *,
     allowed: dict[str, list[float]] | None = None,
     history: dict[tuple[str, str], int] | None = None,
+    settled: set[tuple[str, str, float]] | None = None,
 ) -> list[dict]:
     """Single-lever variants of ``defender``, in the order the ring should seat them.
+
+    ``settled`` — ``(pipe, field, value)`` transitions the campaign has already answered at
+    this base — go last: the ring has answered that question and re-asking finds nothing,
+    but "last" rather than "never" is the same discipline the rematch cooldown follows.
 
     Field siblings first (a profile already measured that differs in exactly this lever —
     the duel matures pooled data it already has), then generated steps; levers ordered by
@@ -264,6 +269,7 @@ def lever_variants(
         return []
     history = history or {}
     allowed = allowed or {}
+    settled = settled or set()
     defender_fp = defender.get("fingerprint")
     out: list[dict] = []
     seen_fps: set[str] = {str(defender_fp)} if defender_fp else set()
@@ -298,8 +304,9 @@ def lever_variants(
                         f"{format_display(fkey, current)} → {format_display(fkey, diff['to'])} "
                         f"(a measured profile, {int(p.get('iterations') or 0)} iterations)"
                     ),
+                    "settled": (label, fkey, to_num) in settled,
                     "priority": (
-                        fought, 0,
+                        1 if (label, fkey, to_num) in settled else 0, fought, 0,
                         abs((to_num if to_num is not None else 0.0) - (cur_num or 0.0)),
                     ),
                 })
@@ -339,7 +346,8 @@ def lever_variants(
                         f"{format_display(fkey, current)} → {format_display(fkey, shown)} "
                         "(a new step the firewall can hold — nobody has measured it)"
                     ),
-                    "priority": (fought, 1, abs(value - cur_num)),
+                    "settled": (label, fkey, value) in settled,
+                    "priority": (1 if (label, fkey, value) in settled else 0, fought, 1, abs(value - cur_num)),
                 })
     out.sort(key=lambda v: v["priority"])
     return out
@@ -413,10 +421,12 @@ def _direction(wins_hi: int, wins_lo: int, sign_p: float | None, paired_p: float
     return "none"
 
 
-def rounds_by_lever(sessions_data: list[dict], settings_by_fp: dict[str, dict | list]) -> dict[tuple[str, str], int]:
+def rounds_by_lever(sessions_data: list[dict], settings_by_fp: dict[str, dict | list],
+                    base: str | None = None) -> dict[tuple[str, str], int]:
     """``{(pipe, field): rounds}`` the ledger already holds per lever — what orders the
     variants so a night spreads across levers. ``settings_by_fp`` maps a fingerprint to a
-    profile dict (with ``settings``) or a bare settings list."""
+    profile dict (with ``settings``) or a bare settings list. With ``base`` only matches that
+    involve that profile count: a campaign's evidence is evidence at its base."""
     out: dict[tuple[str, str], int] = {}
 
     def _settings(fp: str):
@@ -425,6 +435,8 @@ def rounds_by_lever(sessions_data: list[dict], settings_by_fp: dict[str, dict | 
 
     for sess in sessions_data:
         for m in sess.get("matchups") or []:
+            if base is not None and base not in (str(m.get("incumbent")), str(m.get("challenger"))):
+                continue
             lever = m.get("lever") or single_lever_diff(_settings(str(m.get("incumbent"))), _settings(str(m.get("challenger"))))
             if not lever:
                 continue
@@ -624,5 +636,343 @@ def lever_ledger(session, *, limit_sessions: int = 50) -> dict:
             "between two profiles that differ in exactly one lever, whether the ring seated them for "
             "that lever or they happened to be one apart. Margins are signed as the effect of moving "
             "the lever UP (higher value minus lower), in Overall points."
+        ),
+    }
+
+
+# ── Campaigns: one base, measured until its levers are settled ─────────────────
+#
+# A lever session used to defend whoever the ring said was #1, re-decided every cycle.
+# Under the lineal rule a variant that wins takes the belt, so within one session the base
+# drifted to whichever variant last won; between sessions a crown change moved it again; and
+# a match carried across a window close was closed the moment the belt changed hands. The
+# evidence about ONE profile's levers — which is the only thing a single-lever reading is —
+# was scattered across bases and discarded. A campaign pins the base and holds its own open
+# matches, so an ordinary ladder session in between cannot consume them and the next lever
+# session resumes exactly where the last stopped. Read-only outside the ring, like the book.
+
+from datetime import datetime, timezone  # noqa: E402
+
+from . import profile_names  # noqa: E402
+from .database import session_scope  # noqa: E402
+from .models import LeverCampaign  # noqa: E402
+
+#: Rounds before a transition with no measurable margin is called NULL at the campaign's
+#: resolving power — twice the bar for a direction, since "no effect" is the harder claim.
+NULL_ROUNDS = 2 * MIN_ROUNDS
+#: The margin (Overall points, variant minus base) below which a transition is not worth
+#: more rounds: the crown's own tie floor. A lever whose every step lands inside it is
+#: settled as "no gain" — the answer, not the absence of one.
+NULL_MARGIN = 0.5
+SETTLED_STATES = ("better", "worse", "null")
+
+
+def _utc(dt) -> str | None:
+    return dt.isoformat() if dt else None
+
+
+def serialize_campaign(c: LeverCampaign) -> dict:
+    return {
+        "id": c.id,
+        "status": c.status,
+        "base_fingerprint": c.base_fingerprint,
+        "base_label": c.base_label,
+        "base_name": c.base_name,
+        "created_at": _utc(c.created_at),
+        "updated_at": _utc(c.updated_at),
+        "sessions": list(c.sessions or []),
+        "carried_open": len(c.open_matches or []),
+        "notes": c.notes,
+    }
+
+
+def create_campaign(session, base_fingerprint: str, *, base_settings: list[dict] | None = None) -> LeverCampaign:
+    """Open a campaign on ``base_fingerprint``. Its settings come from the newest run under
+    that fingerprint unless supplied; a base with no settings on record cannot be applied
+    and is refused."""
+    settings = base_settings or _settings_lookup(session, {base_fingerprint}).get(base_fingerprint)
+    if not settings:
+        raise ValueError(f"Profile {base_fingerprint} has no settings on record to build a campaign on")
+    try:
+        name = profile_names.names_for(session, [base_fingerprint]).get(base_fingerprint)
+    except Exception:  # noqa: BLE001 — a name is decoration
+        name = None
+    row = LeverCampaign(
+        status="open",
+        base_fingerprint=base_fingerprint,
+        base_label=summarize(settings),
+        base_name=name,
+        base_settings=settings,
+        open_matches=None,
+        sessions=[],
+    )
+    session.add(row)
+    session.flush()
+    log.info("Lever campaign %s opened on %s (%s)", row.id, name or base_fingerprint, row.base_label)
+    return row
+
+
+def list_campaigns(session, *, include_closed: bool = True) -> list[LeverCampaign]:
+    q = select(LeverCampaign).order_by(LeverCampaign.updated_at.desc(), LeverCampaign.id.desc())
+    if not include_closed:
+        q = q.where(LeverCampaign.status == "open")
+    return list(session.scalars(q).all())
+
+
+def resolve_campaign(session, campaign_id: int | None = None, base_fingerprint: str | None = None) -> LeverCampaign:
+    """The campaign a lever session runs under: the one asked for, else the open one on
+    this base (opened if none), else the newest open campaign, else a new one on the pooled
+    crown. Raises ``ValueError`` when nothing can be resolved."""
+    if campaign_id is not None:
+        row = session.get(LeverCampaign, int(campaign_id))
+        if row is None:
+            raise ValueError(f"No lever campaign #{campaign_id}")
+        if row.status != "open":
+            raise ValueError(f"Lever campaign #{campaign_id} is closed — open a new one on its base to continue")
+        return row
+    if base_fingerprint:
+        for row in list_campaigns(session, include_closed=False):
+            if row.base_fingerprint == base_fingerprint:
+                return row
+        return create_campaign(session, base_fingerprint)
+    open_rows = list_campaigns(session, include_closed=False)
+    if open_rows:
+        return open_rows[0]
+    from .crown_follower import current_crown
+
+    crown = current_crown(session) or {}
+    if crown.get("fingerprint"):
+        return create_campaign(session, str(crown["fingerprint"]))
+    raise ValueError("No lever campaign to continue and no crown to open one on — choose a base profile")
+
+
+def close_campaign(session, campaign_id: int, reason: str | None = None) -> LeverCampaign:
+    row = session.get(LeverCampaign, int(campaign_id))
+    if row is None:
+        raise ValueError(f"No lever campaign #{campaign_id}")
+    row.status = "closed"
+    row.updated_at = datetime.now(timezone.utc)
+    if reason:
+        row.notes = reason
+    return row
+
+
+def take_campaign_open_matches(campaign_id: int) -> list[dict]:
+    """The campaign's open matches, MOVED off its row so each is carried exactly once."""
+    with session_scope() as session:
+        row = session.get(LeverCampaign, int(campaign_id))
+        if row is None:
+            return []
+        snaps = [dict(x) for x in (row.open_matches or []) if isinstance(x, dict)]
+        row.open_matches = None
+        return snaps
+
+
+def persist_campaign_open(campaign_id: int, snaps: list[dict], duel_id: int | None = None) -> None:
+    """Write the open matches (and this session's id) to the campaign row, own transaction."""
+    with session_scope() as session:
+        row = session.get(LeverCampaign, int(campaign_id))
+        if row is None:
+            return
+        row.open_matches = [dict(x) for x in snaps] or None
+        if duel_id is not None:
+            ids = [int(x) for x in (row.sessions or [])]
+            if int(duel_id) not in ids:
+                ids.append(int(duel_id))
+            row.sessions = ids
+        row.updated_at = datetime.now(timezone.utc)
+
+
+def _transition_state(rounds: int, wins_variant: int, wins_base: int, sign_p: float | None,
+                      paired_p: float | None, margin: float | None) -> str:
+    significant = (sign_p is not None and sign_p < ALPHA) or (paired_p is not None and paired_p < ALPHA)
+    if rounds >= MIN_ROUNDS and significant:
+        favours_variant = (margin or 0.0) > 0 if margin is not None else wins_variant > wins_base
+        return "better" if favours_variant else "worse"
+    if rounds >= NULL_ROUNDS and margin is not None and abs(margin) < NULL_MARGIN:
+        return "null"
+    return "open"
+
+
+def base_readings(sessions_data: list[dict], base_fp: str, settings_of) -> list[dict]:
+    """Every non-aborted single-lever match with ``base_fp`` on one side, read from the
+    base's side: ``margin`` is variant minus base. ``settings_of(fp)`` supplies settings for
+    matches recorded without an explicit ``lever``."""
+    from .duel import outcome
+
+    out: list[dict] = []
+    for sess in sessions_data:
+        for m in sess.get("matchups") or []:
+            inc, cha = str(m.get("incumbent") or ""), str(m.get("challenger") or "")
+            if base_fp not in (inc, cha) or outcome(m) == "aborted":
+                continue
+            lever = m.get("lever") or single_lever_diff(settings_of(inc), settings_of(cha))
+            if not lever:
+                continue
+            base_is_inc = inc == base_fp
+            sign = 1.0 if base_is_inc else -1.0
+            from_v = lever.get("from") if base_is_inc else lever.get("to")
+            to_v = lever.get("to") if base_is_inc else lever.get("from")
+            to_num = _numeric(lever["field"], to_v)
+            delta = m.get("median_delta")
+            out.append({
+                "pipe": str(lever["pipe"]), "field": str(lever["field"]),
+                "field_label": lever.get("field_label") or lever["field"], "unit": lever.get("unit"),
+                "from": from_v, "to": to_v, "to_num": to_num,
+                "margin": sign * float(delta) if isinstance(delta, (int, float)) else None,
+                "wins_variant": int(m.get("wins_challenger" if base_is_inc else "wins_incumbent") or 0),
+                "wins_base": int(m.get("wins_incumbent" if base_is_inc else "wins_challenger") or 0),
+                "deltas": [sign * float(d) for d in (m.get("deltas") or []) if isinstance(d, (int, float))],
+                "crown": {k: sign * float(v) for k, v in (m.get("median_crown_delta") or {}).items()
+                          if isinstance(v, (int, float))},
+                "verdict": m.get("verdict"),
+                "duel_id": sess.get("id"),
+            })
+    return out
+
+
+def campaign_evidence(sessions_data: list[dict], base_fp: str, settings_of) -> dict:
+    """What the ledger already says about each lever AT THIS BASE — per transition (base
+    value → variant value): rounds, the variant's margin, its state (better / worse / null /
+    open), and per lever a one-word state and the best step found. Pure."""
+    from .duel import wilcoxon_p
+
+    readings = base_readings(sessions_data, base_fp, settings_of)
+    by_lever: dict[tuple[str, str], dict] = {}
+    for r in readings:
+        slot = by_lever.setdefault((r["pipe"], r["field"]), {
+            "pipe": r["pipe"], "field": r["field"], "field_label": r["field_label"],
+            "unit": r["unit"], "from": r["from"], "transitions": {},
+        })
+        slot["transitions"].setdefault(r["to_num"] if r["to_num"] is not None else str(r["to"]), []).append(r)
+    levers_out: list[dict] = []
+    for (pipe, fkey), slot in by_lever.items():
+        transitions = []
+        for key, rs in slot["transitions"].items():
+            wins_v = sum(r["wins_variant"] for r in rs)
+            wins_b = sum(r["wins_base"] for r in rs)
+            margins = [r["margin"] for r in rs if r["margin"] is not None]
+            deltas = [d for r in rs for d in r["deltas"]]
+            margin = round(median(margins), 2) if margins else None
+            sign_p = _binom_two_sided(wins_v, wins_v + wins_b)
+            paired_p = None
+            if len(deltas) >= 5:
+                try:
+                    paired_p = min(1.0, 2.0 * min(wilcoxon_p(deltas, 1), wilcoxon_p(deltas, -1)))
+                except Exception:  # noqa: BLE001
+                    paired_p = None
+            crown: dict[str, float] = {}
+            for k in sorted({k for r in rs for k in r["crown"]}):
+                vals = [r["crown"][k] for r in rs if k in r["crown"]]
+                if vals:
+                    crown[k] = round(median(vals), 2)
+            state = _transition_state(wins_v + wins_b, wins_v, wins_b, sign_p, paired_p, margin)
+            first = rs[0]
+            transitions.append({
+                "to": first["to_num"], "to_shown": format_display(fkey, first["to"]),
+                "from_shown": format_display(fkey, first["from"]),
+                "matches": len(rs), "rounds": wins_v + wins_b,
+                "wins_variant": wins_v, "wins_base": wins_b,
+                "margin": margin,
+                "sign_p": round(sign_p, 4) if sign_p is not None else None,
+                "paired_p": round(paired_p, 4) if paired_p is not None else None,
+                "crown_margin": crown,
+                "state": state,
+            })
+        transitions.sort(key=lambda t: (t["to"] is None, t["to"] if t["to"] is not None else 0))
+        better = [t for t in transitions if t["state"] == "better"]
+        best = max(better, key=lambda t: t["margin"] or 0.0) if better else None
+        if best is not None:
+            state = "improves"
+        elif transitions and all(t["state"] in ("worse", "null") for t in transitions):
+            state = "no_gain"
+        else:
+            state = "open"
+        from_num = _numeric(fkey, slot["from"])
+        if best is not None and best["to"] is not None and from_num is not None:
+            direction = "higher" if best["to"] > from_num else "lower"
+        elif state == "no_gain":
+            direction = "none"
+        else:
+            direction = "thin"
+        mech = MECHANISM.get(fkey) or {"prediction": "unknown", "mechanism": "", "unsaturated": ""}
+        agreement, why = _agreement(mech["prediction"], direction)
+        levers_out.append({
+            "pipe": pipe, "field": fkey, "field_label": slot["field_label"], "unit": slot["unit"],
+            "from_shown": format_display(fkey, slot["from"]),
+            "state": state,
+            "rounds": sum(t["rounds"] for t in transitions),
+            "matches": sum(t["matches"] for t in transitions),
+            "best": {"to_shown": best["to_shown"], "margin": best["margin"]} if best else None,
+            "direction": direction,
+            "prediction": mech["prediction"],
+            "agreement": agreement,
+            "agreement_why": why,
+            "transitions": transitions,
+        })
+    levers_out.sort(key=lambda l: (l["state"] != "open", -l["rounds"], l["pipe"], l["field"]))
+    settled = {
+        (l["pipe"], l["field"], t["to"])
+        for l in levers_out for t in l["transitions"]
+        if t["state"] in SETTLED_STATES and t["to"] is not None
+    }
+    return {
+        "levers": levers_out,
+        "settled_transitions": settled,
+        "rounds": sum(l["rounds"] for l in levers_out),
+        "matches": sum(l["matches"] for l in levers_out),
+        "improves": sum(1 for l in levers_out if l["state"] == "improves"),
+        "no_gain": sum(1 for l in levers_out if l["state"] == "no_gain"),
+        "open": sum(1 for l in levers_out if l["state"] == "open"),
+    }
+
+
+def campaign_status(session, campaign: LeverCampaign, *, limit_sessions: int = 200) -> dict:
+    """The campaign's record: what is settled at its base, what is open, what is untested."""
+    from .duel import _ledger_sessions
+
+    sessions = _ledger_sessions(session, limit_sessions)
+    mine = {int(x) for x in (campaign.sessions or [])}
+    # Every session's matches count — an ordinary ladder match that happened to pit the base
+    # against a one-lever sibling is the same evidence — but the campaign's own sessions are
+    # named so the page can say what it has spent.
+    fps: set[str] = set()
+    for sess in sessions:
+        for m in sess.get("matchups") or []:
+            if campaign.base_fingerprint in (str(m.get("incumbent")), str(m.get("challenger"))) and not m.get("lever"):
+                fps.add(str(m.get("incumbent") or ""))
+                fps.add(str(m.get("challenger") or ""))
+    lookup = _settings_lookup(session, fps)
+    lookup[campaign.base_fingerprint] = campaign.base_settings or lookup.get(campaign.base_fingerprint)
+    evidence = campaign_evidence(sessions, campaign.base_fingerprint, lookup.get)
+    measured = {(l["pipe"], l["field"]) for l in evidence["levers"]}
+    pipes = sorted({str(p.get("label") or "pipe") for p in (campaign.base_settings or [])}) or ["download"]
+    untested = [
+        {"pipe": pipe, "field": fkey, "field_label": (shaper_field(fkey).label if shaper_field(fkey) else fkey),
+         "prediction": (MECHANISM.get(fkey) or {}).get("prediction", "unknown")}
+        for pipe in pipes for fkey in WRITABLE_FIELDS
+        if (pipe, fkey) not in measured
+        and any(str(p.get("label") or "pipe") == pipe and p.get(fkey) is not None for p in (campaign.base_settings or []))
+    ]
+    return {
+        "campaign": serialize_campaign(campaign),
+        "levers": evidence["levers"],
+        "untested": untested,
+        "rounds": evidence["rounds"],
+        "matches": evidence["matches"],
+        "improves": evidence["improves"],
+        "no_gain": evidence["no_gain"],
+        "open": evidence["open"],
+        "sessions_run": len(mine),
+        "carried_open": len(campaign.open_matches or []),
+        "min_rounds": MIN_ROUNDS,
+        "null_rounds": NULL_ROUNDS,
+        "null_margin": NULL_MARGIN,
+        "alpha": ALPHA,
+        "note": (
+            "Everything here is measured against this campaign's base: a transition is settled "
+            f"once it has {MIN_ROUNDS}+ rounds and a significant margin, or {NULL_ROUNDS}+ rounds "
+            f"inside ±{NULL_MARGIN} points (no gain worth more rounds). Settled steps are raced "
+            "last, never never; open ones and untested levers come first."
         ),
     }

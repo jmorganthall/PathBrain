@@ -24,7 +24,23 @@ import StopIcon from "@mui/icons-material/Stop";
 import RefreshIcon from "@mui/icons-material/Refresh";
 
 import { api } from "../api/client";
-import type { DuelCard, DuelCardEntry, DuelLever, DuelLive, DuelMatchup, DuelSession, LeverLedger } from "../api/types";
+import FormControl from "@mui/material/FormControl";
+import InputLabel from "@mui/material/InputLabel";
+import MenuItem from "@mui/material/MenuItem";
+import Select from "@mui/material/Select";
+import type {
+  CampaignLever,
+  DuelCard,
+  DuelCardEntry,
+  DuelLever,
+  DuelLive,
+  DuelMatchup,
+  DuelSession,
+  LeverCampaign,
+  LeverCampaignStatus,
+  LeverLedger,
+  SettingsProfile,
+} from "../api/types";
 import { FoldCard, HelpTip } from "../components/Explain";
 import LeverLedgerCard from "../components/LeverLedgerCard";
 import { useQueuedAction } from "../hooks/useQueuedAction";
@@ -69,6 +85,110 @@ function crownSplit(m: Record<string, number> | null | undefined): string {
   return Object.entries(m)
     .map(([k, v]) => `${k} ${v > 0 ? "+" : ""}${fmtNum(v, 1)}`)
     .join(" · ");
+}
+
+const LEVER_STATE: Record<CampaignLever["state"], { label: string; color: "success" | "default" | "warning" }> = {
+  improves: { label: "improves the base", color: "success" },
+  no_gain: { label: "no gain at this base", color: "default" },
+  open: { label: "open", color: "warning" },
+};
+
+const STEP_STATE: Record<string, string> = {
+  better: "better",
+  worse: "worse",
+  null: "no effect",
+  open: "open",
+};
+
+/** What the campaign has settled at its base, lever by lever. */
+function CampaignTable({ status }: { status: LeverCampaignStatus }) {
+  const rows = status.levers;
+  return (
+    <Stack spacing={1}>
+      <Typography variant="body2" color="text.secondary">
+        {status.rounds} paired round{status.rounds === 1 ? "" : "s"} at this base across {status.matches} match
+        {status.matches === 1 ? "" : "es"} · {status.improves} lever{status.improves === 1 ? "" : "s"} improve
+        {status.improves === 1 ? "s" : ""} it · {status.no_gain} settled as no gain · {status.open} still open ·{" "}
+        {status.untested.length} untested
+        {status.carried_open > 0 ? ` · ${status.carried_open} match${status.carried_open === 1 ? "" : "es"} carried, waiting to resume` : ""}
+        <HelpTip title={status.note} />
+      </Typography>
+      {rows.length === 0 ? (
+        <Typography variant="body2" color="text.secondary">
+          Nothing measured at this base yet. The first session asks every lever, least evidence first.
+        </Typography>
+      ) : (
+        <TableContainer sx={{ overflowX: "auto" }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Lever (base value)</TableCell>
+                <TableCell>State</TableCell>
+                <TableCell>Steps tried · variant − base</TableCell>
+                <TableCell align="right">Rounds</TableCell>
+                <TableCell>Mechanism</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {rows.map((l) => {
+                const st = LEVER_STATE[l.state] ?? LEVER_STATE.open;
+                return (
+                  <TableRow key={`${l.pipe}:${l.field}`} hover>
+                    <TableCell sx={{ whiteSpace: "nowrap" }}>
+                      {l.pipe} {l.field_label}
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                        base at {String(l.from_shown)}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      <Chip size="small" variant={l.state === "open" ? "outlined" : "filled"} color={st.color} label={st.label} sx={{ height: 20 }} />
+                      {l.best && (
+                        <Typography variant="caption" color="success.main" sx={{ display: "block" }}>
+                          best step {String(l.best.to_shown)}: {l.best.margin != null ? `${l.best.margin > 0 ? "+" : ""}${fmtNum(l.best.margin, 2)}` : "—"}
+                        </Typography>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {l.transitions.map((t) => (
+                        <Typography key={String(t.to_shown)} variant="caption" sx={{ display: "block", whiteSpace: "nowrap" }}>
+                          → {String(t.to_shown)}: {t.margin == null ? "—" : `${t.margin > 0 ? "+" : ""}${fmtNum(t.margin, 2)}`} over{" "}
+                          {t.rounds} rds ({t.wins_variant}–{t.wins_base}) · {STEP_STATE[t.state] ?? t.state}
+                          {t.paired_p != null || t.sign_p != null ? ` · p=${fmtNum(t.paired_p ?? t.sign_p ?? 0, 3)}` : ""}
+                        </Typography>
+                      ))}
+                    </TableCell>
+                    <TableCell align="right">{l.rounds}</TableCell>
+                    <TableCell>
+                      <Tooltip title={l.agreement_why}>
+                        <Typography variant="caption" sx={{ cursor: "help" }}>
+                          {l.prediction} · {l.agreement.replace("_", " ")}
+                        </Typography>
+                      </Tooltip>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+              {status.untested.map((u) => (
+                <TableRow key={`${u.pipe}:${u.field}:untested`} sx={{ opacity: 0.6 }}>
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>
+                    {u.pipe} {u.field_label}
+                  </TableCell>
+                  <TableCell>
+                    <Chip size="small" variant="outlined" label="untested" sx={{ height: 20 }} />
+                  </TableCell>
+                  <TableCell />
+                  <TableCell align="right">0</TableCell>
+                  <TableCell>
+                    <Typography variant="caption">{u.prediction}</Typography>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
+    </Stack>
+  );
 }
 
 function PreviewCard({ card, busy, onRefresh }: { card: DuelCard | null; busy: boolean; onRefresh: () => void }) {
@@ -205,6 +325,11 @@ function MatchLine({ m }: { m: DuelMatchup }) {
 
 export default function Levers() {
   const [minutes, setMinutes] = useState<number>(120);
+  const [campaigns, setCampaigns] = useState<LeverCampaign[]>([]);
+  const [selected, setSelected] = useState<number | null>(null);
+  const [campStatus, setCampStatus] = useState<LeverCampaignStatus | null>(null);
+  const [profiles, setProfiles] = useState<SettingsProfile[]>([]);
+  const [newBase, setNewBase] = useState<string>("");
   const [status, setStatus] = useState<DuelSession | null>(null);
   const [card, setCard] = useState<DuelCard | null>(null);
   const [cardBusy, setCardBusy] = useState(false);
@@ -221,16 +346,33 @@ export default function Levers() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
+  const loadCampaigns = useCallback(async () => {
+    try {
+      const r = await api.leverCampaigns();
+      setCampaigns(r.campaigns);
+      setSelected((cur) => (cur != null && r.campaigns.some((c) => c.id === cur) ? cur : (r.open_ids[0] ?? null)));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+  const selectedCampaign = useMemo(() => campaigns.find((c) => c.id === selected) ?? null, [campaigns, selected]);
+  useEffect(() => {
+    if (selected == null) {
+      setCampStatus(null);
+      return;
+    }
+    api.leverCampaignStatus(selected).then(setCampStatus).catch(() => setCampStatus(null));
+  }, [selected]);
   const loadCard = useCallback(async () => {
     setCardBusy(true);
     try {
-      setCard(await api.duelCard(16, "levers"));
+      setCard(await api.duelCard(16, "levers", selectedCampaign?.base_fingerprint));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setCardBusy(false);
     }
-  }, []);
+  }, [selectedCampaign?.base_fingerprint]);
   const loadBook = useCallback(async () => {
     try {
       setBook(await api.leverLedger());
@@ -253,10 +395,19 @@ export default function Levers() {
       .then((c) => setMinutes(c.duration_minutes || 120))
       .catch(() => {});
     void loadStatus();
-    void loadCard();
+    void loadCampaigns();
     void loadBook();
     void loadHistory();
-  }, [loadStatus, loadCard, loadBook, loadHistory]);
+    // The base picker for a new campaign: every profile with settings on record, by name.
+    api
+      .settingsProfiles(false)
+      .then((r) => setProfiles(r.profiles))
+      .catch(() => setProfiles([]));
+  }, [loadStatus, loadCampaigns, loadBook, loadHistory]);
+  // The preview follows the selected campaign's base (or the champion when there is none).
+  useEffect(() => {
+    void loadCard();
+  }, [loadCard]);
 
   // Poll while any session holds the ring; when it ends, the book and the history move.
   const running = isRunning(status);
@@ -272,21 +423,46 @@ export default function Levers() {
       setWasRunning(false);
       void loadBook();
       void loadHistory();
+      void loadCampaigns();
+      if (selected != null) api.leverCampaignStatus(selected).then(setCampStatus).catch(() => {});
     }
-  }, [running, wasRunning, loadBook, loadHistory]);
+  }, [running, wasRunning, loadBook, loadHistory, loadCampaigns, selected]);
 
   const leverSession = status?.mode === "levers";
   const otherSession = running && !leverSession;
 
   const start = () =>
     queue.submit({
-      label: `Lever session · ${minutes} min`,
+      label: `Lever session · ${selectedCampaign?.base_name ?? selectedCampaign?.base_label ?? "campaign"} · ${minutes} min`,
       run: async () => {
-        const started = await api.duelStart(minutes, "levers");
+        const started = await api.duelStart(minutes, "levers", selected != null ? { campaign_id: selected } : undefined);
         if (!started.queued) setStatus(started);
         return started;
       },
     });
+  const openCampaign = async () => {
+    if (!newBase) return;
+    try {
+      const c = await api.leverCampaignCreate(newBase);
+      await loadCampaigns();
+      setSelected(c.id);
+      setNewBase("");
+      setToast(`Campaign opened on ${c.base_name ?? c.base_label ?? c.base_fingerprint}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const closeCampaign = async () => {
+    if (selected == null) return;
+    try {
+      await api.leverCampaignClose(selected);
+      await loadCampaigns();
+      setToast("Campaign closed — its record stays; open a new one on any base to continue");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const openCampaigns = campaigns.filter((c) => c.status === "open");
   const cancel = async () => {
     try {
       await api.duelCancel();
@@ -356,28 +532,94 @@ export default function Levers() {
               )}
             </Stack>
           ) : (
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
-              <TextField
-                size="small"
-                type="number"
-                label="Run for (minutes)"
-                value={minutes}
-                onChange={(e) => setMinutes(Math.max(5, Math.round(Number(e.target.value) || 0)))}
-                inputProps={{ min: 5, step: 5 }}
-                sx={{ width: 170 }}
-              />
-              <Button
-                variant="contained"
-                startIcon={<PlayArrowIcon />}
-                disabled={queue.busy || !card?.incumbent || (card?.queue?.length ?? 0) === 0}
-                onClick={start}
-              >
-                Start a lever session
-              </Button>
+            <Stack spacing={1.5}>
+              <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ md: "center" }}>
+                <FormControl size="small" sx={{ minWidth: 260 }}>
+                  <InputLabel id="campaign-pick">Campaign</InputLabel>
+                  <Select
+                    labelId="campaign-pick"
+                    label="Campaign"
+                    value={selected ?? ""}
+                    onChange={(e) => setSelected(Number(e.target.value) || null)}
+                    displayEmpty
+                  >
+                    {openCampaigns.length === 0 && (
+                      <MenuItem value="" disabled>
+                        No open campaign — open one below
+                      </MenuItem>
+                    )}
+                    {openCampaigns.map((c) => (
+                      <MenuItem key={c.id} value={c.id}>
+                        {c.base_name ?? c.base_label ?? c.base_fingerprint.slice(0, 8)} · {c.sessions.length} session
+                        {c.sessions.length === 1 ? "" : "s"}
+                        {c.carried_open > 0 ? ` · ${c.carried_open} carried` : ""}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <TextField
+                  size="small"
+                  type="number"
+                  label="Run for (minutes)"
+                  value={minutes}
+                  onChange={(e) => setMinutes(Math.max(5, Math.round(Number(e.target.value) || 0)))}
+                  inputProps={{ min: 5, step: 5 }}
+                  sx={{ width: 170 }}
+                />
+                <Button
+                  variant="contained"
+                  startIcon={<PlayArrowIcon />}
+                  disabled={queue.busy || selected == null}
+                  onClick={start}
+                >
+                  {selectedCampaign && selectedCampaign.sessions.length > 0 ? "Continue this campaign" : "Start this campaign"}
+                </Button>
+                {selected != null && (
+                  <Button size="small" color="inherit" onClick={closeCampaign}>
+                    Close campaign
+                  </Button>
+                )}
+              </Stack>
               <Typography variant="caption" color="text.secondary">
-                Runs through the same queue as every other benchmark and restores your settings when it ends.
+                A campaign pins its base: every match is that profile with one setting moved, whatever the belt does,
+                and a session picks up where the last one stopped. Runs through the same queue as every other
+                benchmark and restores your settings when it ends.
                 {otherSession ? " Another session holds the ring right now; this one will queue behind it." : ""}
               </Typography>
+              {campStatus && selectedCampaign && (
+                <Box>
+                  <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                    {selectedCampaign.base_name ?? selectedCampaign.base_label}
+                    <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                      {selectedCampaign.base_label} · opened {fmtDateTime(selectedCampaign.created_at)} · {campStatus.sessions_run} session
+                      {campStatus.sessions_run === 1 ? "" : "s"} run
+                    </Typography>
+                  </Typography>
+                  <CampaignTable status={campStatus} />
+                </Box>
+              )}
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
+                <FormControl size="small" sx={{ minWidth: 280 }}>
+                  <InputLabel id="new-base">New campaign on…</InputLabel>
+                  <Select labelId="new-base" label="New campaign on…" value={newBase} onChange={(e) => setNewBase(String(e.target.value))}>
+                    {profiles
+                      .slice()
+                      .sort((a, b) => (b.overall ?? -1) - (a.overall ?? -1))
+                      .map((p) => (
+                        <MenuItem key={p.fingerprint} value={p.fingerprint}>
+                          {p.name ?? p.label}
+                          {p.overall != null ? ` · ${p.overall.toFixed(1)}` : ""}
+                        </MenuItem>
+                      ))}
+                  </Select>
+                </FormControl>
+                <Button size="small" variant="outlined" disabled={!newBase} onClick={openCampaign}>
+                  Open campaign
+                </Button>
+                <Typography variant="caption" color="text.secondary">
+                  Usually the crown or the ring&apos;s #1. Opening a base that already has an open campaign selects it.
+                </Typography>
+              </Stack>
             </Stack>
           )}
         </CardContent>

@@ -92,6 +92,8 @@ import type {
   PortableRunCreate,
   ProfileWhy,
   LeverLedger,
+  LeverCampaign,
+  LeverCampaignStatus,
 } from "./types";
 
 // Minutes to add to UTC to reach the viewer's local time. getTimezoneOffset()
@@ -215,19 +217,35 @@ export const api = {
     request<DuelConfig>("/duel/config", { method: "PUT", body: JSON.stringify(body) }),
   // `contenders` fixes this session's kind ("levers" = a lever session); omitted = the
   // ladder's configured matchmaking.
-  duelStart: (durationMinutes?: number, contenders?: "levers") =>
+  duelStart: (
+    durationMinutes?: number,
+    contenders?: "levers",
+    campaign?: { campaign_id?: number; base_fingerprint?: string },
+  ) =>
     startingJob(
       request<DuelSession>("/duel/start", {
         method: "POST",
-        body: JSON.stringify({ duration_minutes: durationMinutes ?? null, ...(contenders ? { contenders } : {}) }),
+        body: JSON.stringify({
+          duration_minutes: durationMinutes ?? null,
+          ...(contenders ? { contenders } : {}),
+          ...(campaign ?? {}),
+        }),
       })
     ),
   duelStatus: () => request<DuelSession>("/duel/status"),
   duelCancel: () =>
     request<{ cancelled: boolean; status: string | null }>("/duel/cancel", { method: "POST" }),
   duelHistory: (limit = 10) => request<{ duels: DuelSession[] }>(`/duel/history?limit=${limit}`),
-  duelCard: (limit = 12, contenders?: "levers") =>
-    request<DuelCard>(`/duel/card?limit=${limit}${contenders ? `&contenders=${contenders}` : ""}`),
+  duelCard: (limit = 12, contenders?: "levers", base?: string) =>
+    request<DuelCard>(
+      `/duel/card?limit=${limit}${contenders ? `&contenders=${contenders}` : ""}${base ? `&base=${encodeURIComponent(base)}` : ""}`,
+    ),
+  // Lever campaigns: one base profile, measured one setting at a time across sessions.
+  leverCampaigns: () => request<{ campaigns: LeverCampaign[]; open_ids: number[] }>("/levers/campaigns"),
+  leverCampaignCreate: (baseFingerprint: string) =>
+    request<LeverCampaign>("/levers/campaigns", { method: "POST", body: JSON.stringify({ base_fingerprint: baseFingerprint }) }),
+  leverCampaignStatus: (id: number) => request<LeverCampaignStatus>(`/levers/campaigns/${id}`),
+  leverCampaignClose: (id: number) => request<LeverCampaign>(`/levers/campaigns/${id}/close`, { method: "POST" }),
   // Prices raising `belt_every`: severity shift between legs 1–4 apart, from recent duel
   // sessions' own runs. Stamps every leg on demand, so it gets a generous fuse.
   duelWeatherDistance: (sessions = 10, legs = 400) =>

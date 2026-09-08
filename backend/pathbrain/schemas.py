@@ -139,6 +139,16 @@ class DuelStart(BaseModel):
 
     duration_minutes: int | None = None
     contenders: str | None = None
+    # Lever sessions only: continue this campaign, or open one on this base profile.
+    # Neither → the newest open campaign, else a new one on the pooled crown.
+    campaign_id: int | None = None
+    base_fingerprint: str | None = None
+
+
+class LeverCampaignCreate(BaseModel):
+    """Open a lever campaign on a base profile (or return the open one on it)."""
+
+    base_fingerprint: str
 
 
 class TestSettings(BaseModel):
