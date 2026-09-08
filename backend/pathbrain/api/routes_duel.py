@@ -16,7 +16,8 @@ from ..database import get_session, session_scope
 from .. import job_queue
 from ..logging_config import get_logger
 from ..models import Run, RunStatus
-from ..schemas import DuelScheduleUpdate, DuelStart
+from .. import levers as levers_mod
+from ..schemas import DuelScheduleUpdate, DuelStart, LeverCampaignCreate
 from ..timezones import validate_timezone
 from .routes_jobs import _per_iteration_estimate, _run_entry
 
@@ -319,10 +320,16 @@ def start_duel(payload: DuelStart) -> dict:
         raise HTTPException(
             status_code=422, detail=f"contenders must be one of {', '.join(duel.SESSION_MODES)}"
         )
+    if (payload.campaign_id is not None or payload.base_fingerprint) and payload.contenders != "levers":
+        raise HTTPException(status_code=422, detail="campaign_id / base_fingerprint apply to a lever session only")
     label = "Lever duel session" if payload.contenders == "levers" else "Duel ladder session"
     spec = {"duration_minutes": payload.duration_minutes, "trigger": "manual"}
     if payload.contenders:
         spec["contenders"] = payload.contenders
+    if payload.campaign_id is not None:
+        spec["campaign_id"] = int(payload.campaign_id)
+    if payload.base_fingerprint:
+        spec["base_fingerprint"] = payload.base_fingerprint
     try:
         submission = job_queue.submit("duel", label, spec=spec)
     except ValueError as exc:
@@ -395,6 +402,7 @@ def cancel_duel() -> dict:
 def duel_card(
     limit: int = 12,
     contenders: str | None = Query(None, description="Preview a session of this kind (e.g. 'levers') instead of the configured one."),
+    base: str | None = Query(None, description="Lever preview only: pin the defender to this campaign base."),
     session: Session = Depends(get_session),
 ) -> dict:
     """Who would fight whom if a duel started right now, in order.
@@ -405,7 +413,54 @@ def duel_card(
         raise HTTPException(
             status_code=422, detail=f"contenders must be one of {', '.join(duel.SESSION_MODES)}"
         )
-    return duel.fight_card(session, limit=max(1, min(limit, 50)), contenders=contenders)
+    return duel.fight_card(session, limit=max(1, min(limit, 50)), contenders=contenders,
+                           base_fingerprint=base if contenders == "levers" else None)
+
+
+# ── Lever campaigns: one base, measured until its levers are settled ──────────────
+
+
+@router.get("/levers/campaigns")
+def lever_campaigns(session: Session = Depends(get_session)) -> dict:
+    """Every campaign, newest activity first, with the open ones flagged."""
+    rows = levers_mod.list_campaigns(session)
+    return {
+        "campaigns": [levers_mod.serialize_campaign(c) for c in rows],
+        "open_ids": [c.id for c in rows if c.status == "open"],
+    }
+
+
+@router.post("/levers/campaigns", status_code=201)
+def lever_campaign_create(payload: LeverCampaignCreate) -> dict:
+    """Open a campaign on a base profile — or return the open one already on it."""
+    with session_scope() as session:
+        try:
+            row = levers_mod.resolve_campaign(session, None, payload.base_fingerprint)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return levers_mod.serialize_campaign(row)
+
+
+@router.get("/levers/campaigns/{campaign_id}")
+def lever_campaign_status(campaign_id: int, session: Session = Depends(get_session)) -> dict:
+    """What the campaign has settled at its base, what is open, what is untested."""
+    from ..models import LeverCampaign
+
+    row = session.get(LeverCampaign, campaign_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No lever campaign #{campaign_id}")
+    return levers_mod.campaign_status(session, row)
+
+
+@router.post("/levers/campaigns/{campaign_id}/close")
+def lever_campaign_close(campaign_id: int) -> dict:
+    """Close a campaign (its record stays; a new one can be opened on the same base)."""
+    with session_scope() as session:
+        try:
+            row = levers_mod.close_campaign(session, campaign_id, "closed from the Levers page")
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return levers_mod.serialize_campaign(row)
 
 
 @router.get("/duel/standings")

@@ -1610,7 +1610,37 @@ LLM-based. See `README.md` for the product overview.
     one session through `useQueuedAction` like every other Run button, shows the live board with
     each seat's lever and crown split, lists past lever sessions, and hosts the ledger card
     (`components/LeverLedgerCard.tsx`, moved off Explore). The nightly/continuous ladder never
-    runs one; `_drive` applies `d.mode` over the config for that session only. **Asking**
+    runs one; `_drive` applies `d.mode` over the config for that session only. **A lever
+    session runs under a CAMPAIGN pinned to one base** (`models.LeverCampaign`,
+    `Duel.campaign_id`, `levers.resolve_campaign` / `campaign_evidence` / `campaign_status`,
+    `GET/POST /api/levers/campaigns`, `GET /levers/campaigns/{id}`, `POST …/close`). The
+    first cut defended whoever the ring said was #1, re-decided every cycle — and under the
+    lineal rule a variant that wins takes the belt, so within one session the base drifted to
+    whichever variant last won, a crown change moved it between sessions, and a carried match
+    was closed the moment the belt changed hands: evidence about ONE profile's levers (the only
+    thing a single-lever reading is) scattered across bases and discarded (*"each start is
+    taking off from a new profile"*). Now `start(contenders="levers", campaign_id= |
+    base_fingerprint=)` resolves the campaign (named → open one on that base, opened if none →
+    newest open → a new one on the pooled crown), the ring's defender is the campaign's base
+    whatever the belt says (`_run_ring(campaign=)`; unreachable base → a clear failure, not a
+    substitute), and open matches are persisted to and carried from the **campaign row**
+    (`take_campaign_open_matches` / `persist_campaign_open`), where the ladder's own
+    `_carried_open_matches` never looks — so a ladder session in between cannot consume them
+    and the next lever session resumes with every round intact. The base's settings ride the
+    campaign, so it can be applied even when the field no longer lists it. **Evidence is read
+    at the base**: `campaign_evidence` orients every non-aborted single-lever match with the
+    base on either side as *variant minus base*, per transition (base value → variant value)
+    with rounds, margin, sign/signed-rank p and crown split, and a `state` — `better`/`worse`
+    (≥ `MIN_ROUNDS`, significant), `null` (≥ `NULL_ROUNDS` = 16 rounds inside ±`NULL_MARGIN` =
+    0.5 points — no gain worth more rounds, the crown's own tie floor), else `open`; per lever
+    `improves` (names the best step) / `no_gain` / `open`, with the mechanism agreement. Settled
+    transitions form the last tier of `lever_variants(settled=)` (raced last, never never — the
+    cooldown's discipline) and `rounds_by_lever(base=)` counts only matches at the base, so a
+    session spends its rounds on what is still open. `fight_card(contenders="levers",
+    base_fingerprint=)` previews the campaign the same way. The Levers page leads with the open
+    campaigns (per-lever state table, continue / close), opens a new one on any profile, and
+    the preview follows the selected campaign's base. Closing is by hand; a closed campaign
+    keeps its record and a new one can be opened on the same base. **Asking**
     (`lever_variants` / `next_variant`): in a lever session the belt-holder defends against
     single-lever variants of *itself* — the field's siblings that differ from it in exactly one writable lever first
     (they carry pooled data; the duel matures them), then **generated** steps the firewall can

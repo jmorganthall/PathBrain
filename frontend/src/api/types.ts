@@ -2391,6 +2391,8 @@ export interface DuelSession extends QueuePlacement {
   // The session's kind, fixed at start: "levers" for a lever session (the champion against
   // single-setting variants of itself), null/absent for the ladder's configured matchmaking.
   mode?: "ring" | "leaders" | "heirs" | "levers" | null;
+  // The lever campaign this session ran under (lever sessions only).
+  campaign_id?: number | null;
   duration_s: number;
   matchups: DuelMatchup[];
   iterations_run: number;
@@ -3590,6 +3592,71 @@ export interface LeverLedger {
   matches_skipped: number;
   matches_aborted: number;
   min_rounds: number;
+  alpha: number;
+  note: string;
+}
+
+// ── Lever campaigns (GET/POST /levers/campaigns) ───────────────────────────────
+export interface LeverCampaign {
+  id: number;
+  status: "open" | "closed";
+  base_fingerprint: string;
+  base_label: string | null;
+  base_name: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  sessions: number[];
+  carried_open: number;
+  notes: string | null;
+}
+
+export interface CampaignTransition {
+  to: number | null;
+  to_shown: string | number;
+  from_shown: string | number;
+  matches: number;
+  rounds: number;
+  wins_variant: number;
+  wins_base: number;
+  // Variant minus base, Overall points.
+  margin: number | null;
+  sign_p: number | null;
+  paired_p: number | null;
+  crown_margin: Record<string, number>;
+  state: "better" | "worse" | "null" | "open";
+}
+
+export interface CampaignLever {
+  pipe: string;
+  field: string;
+  field_label: string;
+  unit: string | null;
+  from_shown: string | number;
+  state: "improves" | "no_gain" | "open";
+  rounds: number;
+  matches: number;
+  best: { to_shown: string | number; margin: number | null } | null;
+  direction: "higher" | "lower" | "none" | "thin";
+  prediction: string;
+  agreement: string;
+  agreement_why: string;
+  transitions: CampaignTransition[];
+}
+
+export interface LeverCampaignStatus {
+  campaign: LeverCampaign;
+  levers: CampaignLever[];
+  untested: { pipe: string; field: string; field_label: string; prediction: string }[];
+  rounds: number;
+  matches: number;
+  improves: number;
+  no_gain: number;
+  open: number;
+  sessions_run: number;
+  carried_open: number;
+  min_rounds: number;
+  null_rounds: number;
+  null_margin: number;
   alpha: number;
   note: string;
 }

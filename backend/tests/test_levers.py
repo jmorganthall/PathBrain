@@ -254,16 +254,29 @@ def _fake_engine(monkeypatch, applied: list[str], scores: dict[str, float], crow
 @pytest.fixture()
 def lever_mode():
     """A lever session is a per-session KIND, never a stored config value: the ladder's
-    config stays on its own matchmaking throughout."""
+    config stays on its own matchmaking throughout. It runs under a campaign, and a campaign
+    needs a base with settings on record — one completed run under the incumbent every lever
+    test uses."""
+    from pathbrain.models import LeverCampaign
+
+    base_s = _settings(quantum=1514)
     with session_scope() as s:
         save_config(s, {"duel": {"settle_seconds": 0, "seats": 1, "belt_every": 2, "contenders": "ring"}})
         s.query(Duel).delete()
+        s.query(LeverCampaign).delete()
+        r = Run(status=RunStatus.COMPLETE, created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                settings_fingerprint=_fp(base_s), settings=base_s, iterations=1)
+        s.add(r)
+        s.flush()
+        run_id = r.id
         s.commit()
     try:
         yield
     finally:
         with session_scope() as s:
             s.query(Duel).delete()
+            s.query(LeverCampaign).delete()
+            s.execute(delete(Run).where(Run.id == run_id).execution_options(synchronize_session=False))
             s.commit()
 
 
@@ -304,7 +317,7 @@ def test_lever_mode_seats_the_defenders_own_variants_and_records_the_lever(monke
     monkeypatch.setattr(duel_mod, "plan_apply", lambda target, live: ([], []))
     assert real_provider is not None
 
-    d = _wait_finish(duel_mod.start(duration_minutes=10, contenders="levers"))
+    d = _wait_finish(duel_mod.start(duration_minutes=10, contenders="levers", base_fingerprint=inc_fp))
     assert d.status == DuelStatus.COMPLETE, d.error
     assert d.mode == "levers"
     assert d.matchups, "the lever mode seated nothing"
@@ -412,14 +425,14 @@ def test_a_lever_session_is_started_as_a_kind_not_stored_as_the_ladders_mode(cli
     r = client.put("/api/duel/config", json={"contenders": "levers"})
     assert r.status_code == 422 and "Levers page" in r.json()["detail"]
     # The preview can be asked for the lever kind without touching config.
-    card = client.get("/api/duel/card", params={"contenders": "levers"}).json()
+    card = client.get("/api/duel/card", params={"contenders": "levers", "base": inc_fp}).json()
     assert card["contenders"] == "levers"
     assert card["queue"] and card["queue"][0]["reason"].startswith("lever:")
     assert card["queue"][0]["fingerprint"] == sib_fp
     # An unknown kind is refused up front.
     assert client.post("/api/duel/start", json={"duration_minutes": 5, "contenders": "chaos"}).status_code == 422
     # Starting the lever kind goes through the queue and stamps the session, not the config.
-    r = client.post("/api/duel/start", json={"duration_minutes": 10, "contenders": "levers"})
+    r = client.post("/api/duel/start", json={"duration_minutes": 10, "contenders": "levers", "base_fingerprint": inc_fp})
     assert r.status_code == 202, r.text
     body = r.json()
     assert body.get("queued") is False and body["mode"] == "levers"

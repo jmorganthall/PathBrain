@@ -767,6 +767,10 @@ class Duel(Base):
     # (the champion against single-setting variants of itself). A per-session choice, never
     # a stored config value: the Levers page starts one, the ladder's own config never does.
     mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # A lever session belongs to a campaign (``LeverCampaign``): the base it measures
+    # against is pinned there, and its open matches are carried there — never through the
+    # ladder's own sessions. None for an ordinary ladder session.
+    campaign_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     duration_s: Mapped[int] = mapped_column(Integer, default=7200)
     # Pre-duel firewall settings to restore (persisted for crash reconcile).
@@ -794,6 +798,39 @@ class Duel(Base):
     # The ladder's final incumbent (the duel champion) when the session completed.
     champion_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     champion_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class LeverCampaign(Base):
+    """A lever campaign: one base profile, measured one setting at a time until its levers
+    are settled — across as many sessions as that takes.
+
+    A lever session used to defend whoever the ring said was #1, re-decided every cycle:
+    a variant that won took the belt and became the next base, a crown change between
+    sessions moved the base, and a carried match was closed the moment the belt changed
+    hands. Evidence about *one* profile's levers was scattered across bases and thrown
+    away. The campaign pins the base — every match in it is "this profile with one
+    setting moved" — and holds the open matches itself, so an ordinary ladder session in
+    between cannot consume them and the next lever session resumes exactly where the last
+    one stopped."""
+
+    __tablename__ = "lever_campaigns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # "open" until closed by hand (or superseded); a closed campaign keeps its record.
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    base_fingerprint: Mapped[str] = mapped_column(String(40))
+    base_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    base_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # The base's full settings, so the campaign can be applied even when the field no
+    # longer lists the profile (no comparable runs under the current methodology).
+    base_settings: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Seat snapshots of the matches still open (the same shape a duel row carries).
+    open_matches: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Every duel session run under this campaign, oldest first.
+    sessions: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ProfileName(Base):

@@ -167,6 +167,7 @@ def _migrate() -> None:
             "live": "JSON",
             "open_matches": "JSON",
             "mode": "VARCHAR(16)",
+            "campaign_id": "INTEGER",
         },
         "current_tests": {
             "target_fingerprint": "VARCHAR(40)",

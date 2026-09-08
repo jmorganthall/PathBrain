@@ -44,11 +44,12 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .methodology import overall_metrics
-from .models import Duel, DuelStatus, Methodology, Score
+from .models import Duel, DuelStatus, LeverCampaign, Methodology, Score
 from .rating import ELO_SCALE, PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
 from .providers import get_provider
 from .runner import run_chunk, teardown_plugins
 from .settings_profile import fingerprint, normalize, plan_apply
+from .settings_profile import summarize as summarize_settings
 
 log = get_logger("duel")
 
@@ -574,27 +575,39 @@ SESSION_MODES = ("ring", "leaders", "heirs", "levers")
 
 
 def start(duration_minutes: int | None = None, *, trigger: str = "manual",
-          contenders: str | None = None) -> int:
+          contenders: str | None = None, campaign_id: int | None = None,
+          base_fingerprint: str | None = None) -> int:
     """Launch a duel session. Returns the ``Duel`` id.
 
     ``contenders`` fixes the session's kind (``SESSION_MODES``) for this session only;
-    None runs whatever the ladder's config says. Raises ``RuntimeError`` if one is already
-    running; ``ValueError`` for a bad duration or an unknown kind.
+    None runs whatever the ladder's config says. A lever session runs under a **campaign**
+    (``levers.resolve_campaign``: the one named, else the open one on ``base_fingerprint``,
+    else the newest open campaign, else a new one on the pooled crown), whose base it is
+    pinned to and whose open matches it resumes. Raises ``RuntimeError`` if one is already
+    running; ``ValueError`` for a bad duration, an unknown kind, or an unresolvable campaign.
     """
     if active():
         raise RuntimeError("A duel is already running.")
     if contenders is not None and contenders not in SESSION_MODES:
         raise ValueError(f"contenders must be one of {', '.join(SESSION_MODES)}")
+    if (campaign_id is not None or base_fingerprint) and contenders != "levers":
+        raise ValueError("A campaign or base profile only applies to a lever session (contenders='levers')")
     with session_scope() as session:
         cfg = _duel_config(session)
         minutes = duration_minutes if duration_minutes else int(cfg.get("duration_minutes", 120) or 120)
         if minutes <= 0:
             raise ValueError("duration_minutes must be positive")
+        campaign_row_id: int | None = None
+        if contenders == "levers":
+            from . import levers as levers_mod
+
+            campaign_row_id = levers_mod.resolve_campaign(session, campaign_id, base_fingerprint).id
         d = Duel(
             status=DuelStatus.PENDING,
             duration_s=minutes * 60,
             trigger=trigger,
             mode=contenders,
+            campaign_id=campaign_row_id,
             matchups=[],
             run_ids=[],
             stage="Queued — waiting for any running benchmark to finish",
@@ -602,6 +615,14 @@ def start(duration_minutes: int | None = None, *, trigger: str = "manual",
         session.add(d)
         session.flush()
         duel_id = d.id
+        if campaign_row_id is not None:
+            camp = session.get(LeverCampaign, campaign_row_id)
+            if camp is not None:
+                ids = [int(x) for x in (camp.sessions or [])]
+                if duel_id not in ids:
+                    ids.append(duel_id)
+                camp.sessions = ids
+                camp.updated_at = datetime.now(timezone.utc)
 
     _state.update({"active": True, "id": duel_id, "cancel": False})
     thread = threading.Thread(target=_drive, args=(duel_id,), name="pathbrain-duel", daemon=True)
@@ -2460,8 +2481,14 @@ def _run_ring(
     meth_version: str,
     deadline: float,
     run_ids: list[int],
+    campaign: dict | None = None,
 ) -> tuple[list[dict], str | None, int]:
     """Run the ring until the window closes. Returns ``(matchups, last reference, iterations)``.
+
+    Under a ``campaign`` (a lever session) the defender is the campaign's pinned base — never
+    re-decided, so a winning variant does not become the next base — and open matches are
+    carried on the campaign row rather than the duel row, so an ordinary ladder session in
+    between cannot consume them.
 
     The loop is a cycle scheduler: a belt leg opens the cycle, ``belt_every - 1`` challenger
     legs follow (seats rotating through the slots so every seat sees every position), and a
@@ -2507,8 +2534,24 @@ def _run_ring(
                    max_pairs=max_pairs, streak_wins=streak_wins)
     # Open matches the previous session (or a crashed one) left behind, moved onto this
     # row. Each is seated the moment its reference is the profile defending, or closed
-    # with a reason when it can't be — never silently dropped.
-    carried: list[dict] = _carried_open_matches(duel_id)
+    # with a reason when it can't be — never silently dropped. A campaign carries its own.
+    if campaign is not None:
+        from . import levers as levers_mod
+
+        carried: list[dict] = levers_mod.take_campaign_open_matches(int(campaign["id"]))
+        if campaign["base_fingerprint"] not in settings_by_fp:
+            # The base need not be in the field (no comparable runs under the current
+            # methodology): the campaign carries its settings, so it can still be applied.
+            settings_by_fp[campaign["base_fingerprint"]] = {
+                "fingerprint": campaign["base_fingerprint"],
+                "label": campaign.get("base_label") or campaign["base_fingerprint"],
+                "name": campaign.get("base_name"),
+                "settings": campaign["base_settings"],
+                "overall": None,
+                "iterations": 0,
+            }
+    else:
+        carried = _carried_open_matches(duel_id)
 
     def _stopped() -> bool:
         return time.monotonic() >= deadline or bool(_state.get("cancel"))
@@ -2521,9 +2564,15 @@ def _run_ring(
 
     def _persist_open() -> None:
         # The open matches' full adjudication state, on the row, after every change — so
-        # nothing about a match in progress exists only in this thread.
+        # nothing about a match in progress exists only in this thread. A campaign's live
+        # on the campaign row, where the ladder's own carry-over never looks.
         snaps = [_seat_snapshot(x, duel_id, meth_version) for x in seated if x.verdict is None]
         snaps += [dict(c) for c in carried]
+        if campaign is not None:
+            from . import levers as levers_mod
+
+            levers_mod.persist_campaign_open(int(campaign["id"]), snaps, duel_id)
+            return
         with session_scope() as session:
             d = session.get(Duel, duel_id)
             if d is not None:
@@ -2705,7 +2754,18 @@ def _run_ring(
         #    seat is filled.
         with session_scope() as session:
             ratings = ledger_ratings(session)
-            defender_fp, defender_why = select_incumbent(session, field, baseline, cfg, ratings)
+            if campaign is not None:
+                # The campaign's base defends, whatever the belt says: a variant that wins
+                # is a finding about the base, not the next base.
+                defender_fp, defender_why = campaign["base_fingerprint"], "the campaign's pinned base"
+                if not _reachable(settings_by_fp[defender_fp].get("settings"), baseline):
+                    raise RuntimeError(
+                        "The campaign's base profile is unreachable from the live environment "
+                        "(scheduler / queue count / upload bandwidth differ) — close the campaign "
+                        "or measure a profile under the current environment first."
+                    )
+            else:
+                defender_fp, defender_why = select_incumbent(session, field, baseline, cfg, ratings)
             if defender_fp is None or defender_fp not in settings_by_fp:
                 if not matchups and not seated:
                     raise RuntimeError("No confident profile to defend — nothing to duel.")
@@ -2769,10 +2829,20 @@ def _run_ring(
                 # least paired evidence on the ledger are asked first.
                 from . import levers as levers_mod
 
+                ledger = _ledger_sessions(session)
+                base_fp = campaign["base_fingerprint"] if campaign is not None else None
+                settled: set = set()
+                if campaign is not None:
+                    evidence = levers_mod.campaign_evidence(
+                        ledger, base_fp,
+                        lambda fp: (settings_by_fp.get(fp) or {}).get("settings"),
+                    )
+                    settled = evidence["settled_transitions"]
                 lever_pool = levers_mod.lever_variants(
                     inc, list(settings_by_fp.values()), baseline,
                     allowed=lever_allowed,
-                    history=levers_mod.rounds_by_lever(_ledger_sessions(session), settings_by_fp),
+                    history=levers_mod.rounds_by_lever(ledger, settings_by_fp, base=base_fp),
+                    settled=settled,
                 )
             while not draining and len(seated) < n_seats:
                 snap = next(
@@ -3059,6 +3129,18 @@ def _drive(duel_id: int) -> None:
                     # The session's kind was chosen at start (the Levers page): it governs
                     # this session only, and never touches the ladder's stored config.
                     cfg = {**cfg, "contenders": d.mode}
+                campaign: dict | None = None
+                if d.campaign_id is not None:
+                    camp = session.get(LeverCampaign, d.campaign_id)
+                    if camp is None or camp.status != "open":
+                        raise RuntimeError(f"Lever campaign #{d.campaign_id} is missing or closed")
+                    campaign = {
+                        "id": camp.id,
+                        "base_fingerprint": camp.base_fingerprint,
+                        "base_settings": list(camp.base_settings or []),
+                        "base_label": camp.base_label,
+                        "base_name": camp.base_name,
+                    }
                 meth_version = ensure_current_methodology(session, get_config(session)).version
 
             # Matchmaking, re-decided BEFORE EVERY BOUT rather than once a session: the
@@ -3080,6 +3162,7 @@ def _drive(duel_id: int) -> None:
                 duel_id=duel_id, lease=lease, provider=provider, cfg=cfg, field=field,
                 heirs=heirs, baseline=baseline, settings_by_fp=settings_by_fp, weather=weather,
                 meth_version=meth_version, deadline=deadline, run_ids=run_ids,
+                campaign=campaign,
             )
             log.info("Duel %s: ring closed — %d match(es), %d iteration(s)",
                      duel_id, len(matchups), iterations_run)
@@ -3172,7 +3255,8 @@ def _drive(duel_id: int) -> None:
 # ── The fight card (who fights whom, before a duel starts) ───────────────────────────
 
 
-def fight_card(session, limit: int = 12, contenders: str | None = None) -> dict:
+def fight_card(session, limit: int = 12, contenders: str | None = None,
+               base_fingerprint: str | None = None) -> dict:
     """The matchups a duel started right now would run, in order, if nothing upsets them.
 
     "Are we just racing randoms?" is a fair question to ask of any ladder, and the honest
@@ -3208,8 +3292,20 @@ def fight_card(session, limit: int = 12, contenders: str | None = None) -> dict:
     heirs = _engine_heirs(_compute_heirs(field, session, live))
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
     # Exactly the engine's choice of who defends, so the preview can't promise a different
-    # champion than the one that actually walks out.
-    incumbent_fp, incumbent_why = select_incumbent(session, field, live, cfg)
+    # champion than the one that actually walks out — or, for a campaign preview, its base.
+    if contenders == "levers" and base_fingerprint:
+        from . import levers as levers_mod
+
+        incumbent_fp, incumbent_why = base_fingerprint, "the campaign's pinned base"
+        if incumbent_fp not in profiles:
+            settings = levers_mod._settings_lookup(session, {incumbent_fp}).get(incumbent_fp)
+            if settings:
+                profiles[incumbent_fp] = {
+                    "fingerprint": incumbent_fp, "label": summarize_settings(settings),
+                    "name": None, "settings": settings, "overall": None, "iterations": 0,
+                }
+    else:
+        incumbent_fp, incumbent_why = select_incumbent(session, field, live, cfg)
     ratings = ledger_ratings(session)
     if incumbent_fp is None or incumbent_fp not in profiles:
         return {
@@ -3258,8 +3354,24 @@ def fight_card(session, limit: int = 12, contenders: str | None = None) -> dict:
     if mode == "levers":
         from . import levers as levers_mod
 
-        for v in levers_mod.lever_variants(profiles[incumbent_fp], list(profiles.values()), live):
-            lever_why[v["fingerprint"]] = v["why"]
+        ledger = _ledger_sessions(session)
+        settled: set = set()
+        if base_fingerprint:
+            evidence = levers_mod.campaign_evidence(
+                ledger, incumbent_fp, lambda fp: (profiles.get(fp) or {}).get("settings")
+            )
+            settled = evidence["settled_transitions"]
+        order = [
+            v["fingerprint"] for v in levers_mod.lever_variants(
+                profiles[incumbent_fp], list(profiles.values()), live,
+                history=levers_mod.rounds_by_lever(ledger, profiles, base=base_fingerprint),
+                settled=settled,
+            )
+        ]
+        for v in levers_mod.lever_variants(profiles[incumbent_fp], list(profiles.values()), live,
+                                           history=levers_mod.rounds_by_lever(ledger, profiles, base=base_fingerprint),
+                                           settled=settled):
+            lever_why[v["fingerprint"]] = v["why"] + (" — settled at this base; raced last" if v.get("settled") else "")
             if v["source"] == "generated":
                 lever_profiles[v["fingerprint"]] = v["profile"]
 
@@ -4153,6 +4265,7 @@ def _serialize(d: Duel, session=None, matchup_limit: int | None = None) -> dict:
         "trigger": d.trigger,
         # The session kind fixed at start (None = the ladder's configured matchmaking).
         "mode": d.mode,
+        "campaign_id": d.campaign_id,
         "duration_s": d.duration_s,
         "matchups": matchups,
         "live": d.live,
