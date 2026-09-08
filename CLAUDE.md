@@ -539,6 +539,34 @@ LLM-based. See `README.md` for the product overview.
     (on the repeat visit the crown is not the best-feeling profile — the measured reason to
     publish a version that adopts the warm legs), `insufficient`. Read-only; the decision it
     informs is a publish, made elsewhere.
+  - `why.py` — **where a win lives** (`GET /api/settings/profiles/{fp}/why?vs=&limit=`, the
+    **"Why it wins"** card on Profile Detail). The crown says *which* profile is best and by how
+    much; nothing said *where* the margin came from — a 3-point lead could be three points of
+    network stall on every page or a 30 ms LCP edge on one site, which are different findings
+    with different next steps, and one number reads the same for both. `explain` takes any
+    two profiles (default reference: the unshaped `SQM_OFF_FINGERPRINT` when it has comparable
+    runs — "what is shaping buying?" — else the churn ledger's crown, else the best-graded other
+    profile; `reference.why` says which) and splits their gap three ways on the runs the crown
+    graded. **(1) Crown legs** (`decompose_legs`, pure): under the weighted crown the Overall is a
+    weighted mean of median subscores, so the gap is *exactly* `Σ w_k·(sub_A − sub_B)/Σw` — one
+    number per leg in Overall points that add up to the gap, formed from the same
+    `profile_aggregates` rollup and the same 2-dp rounding as `crown_follower._grade_medians`,
+    so the legs and the standings grade are one arithmetic (`test_leg_points_add_up_…` pins it);
+    a corner crown has no additive split, so `exact` is False and each leg is a one-leg swap,
+    labelled as such. **(2) Navigation phases** (`NAV_PHASES`: dns/tcp/tls/request/response/
+    render, read in SQL off the browser result's metrics), so a leg's edge can be traced to the
+    part of the load it sits in — request wait is the server answering sooner, response is bytes
+    through the queue, render is the machine and not the shaper. **(3) Sites**: the crown legs
+    re-derived **per page** from the stored raw through the one `interpret.derive` (a run's own
+    number restricted to one page, never a second reading), the newest `SITE_RUN_LIMIT` (30)
+    comparable runs a side, priced on the methodology's own thresholds and weights so each site
+    reports the gap *it alone* would produce — deliberately not a split of the pooled gap (a mean
+    over pages that is then subscored is not linear) but the answer to "everywhere, or one page?".
+    Every delta is signed from the profile's own side with a noise bar: SE of the median
+    (IQR/√n, the `_overall_se` convention) on each side pooled in quadrature, `clear` when the
+    delta exceeds `correlation.crown_tie_sigma` of it — the same bar the crown uses to call a tie.
+    `verdict` is one paragraph with its numbers in it, told from the winner's side whichever
+    profile asked. Read-only, bounded by the two profiles; nothing here changes a score.
   - `jobs.py` — in-process background-job registry (progress/status/recent history).
     The heavy score passes (`/api/score/regrade|rescore|rederive`) run as jobs and
     return `202 {job_id}`; `/api/jobs` (`api/routes_jobs.py`) merges them with read-only
