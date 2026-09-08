@@ -1451,6 +1451,28 @@ LLM-based. See `README.md` for the product overview.
     while the *rating* — fitted to pairs, magnitude-blind by design — still moves the belt,
     because "is this difference worth acting on?" and "which profile is stronger?" are
     different questions.
+    **Setup is progress, so it beats** (`duel._setup_step`, `SETUP_SLOW_S`; `_run_ring`
+    beats at the top of every cycle). A session's setup — the pooled standings
+    (`compute_profiles`), the heirs, the weather yardstick — runs no probe, and only the runner
+    beats, so from the moment it took the lock a session in setup was **silent** to the
+    coordinator. A field pass that outgrew `STALE_HOLDER_S` (20 min: a large table, a cold
+    memo, three page loads computing the same field under the GIL) got the ladder **evicted
+    for making progress**: the watchdog freed the pipeline, monitoring started beside it, and
+    the duel row kept reading *running · 5h left* until its next `lease.check()` raised —
+    reported as a screenshot of two jobs running at once with the ladder frozen on "Ranking
+    the field for matchmaking" for twenty minutes. Each setup step now sets a stage that
+    **names it and lists what has finished with its seconds** (*"Ranking the field for
+    matchmaking — weather yardstick (done: standings 34s · heirs 2s)"*), is timed and logged
+    (a warning past `SETUP_SLOW_S` pointing at `GET /api/health/pipeline`, whose thread stacks
+    are the one thing that says which call is not returning), and **beats the lease when it
+    ends**; the ring's per-cycle matchmaking (ledger refit, defender, seats) beats too. A
+    single step past the bar still evicts, and that is right — it is a wedge — but the log
+    now names it. **The jobs feed says when the watchdog stood a session down**
+    (`routes_jobs._evicted`): after an eviction the lease is gone, so `_stalled_ms` (which
+    reads the live holder) goes quiet exactly when the feed most needs to speak; the row now
+    reads *Stood down by the pipeline watchdog — no progress for N min while "<stage>"* with
+    the stall chip, for an eviction of this session at or after its start. The row is
+    labelled **Lever session** (linking to `/levers`) when the duel's `mode` is `levers`.
     **The bout in progress is structured state, not a sentence** (`_live_scoreboard`,
     persisted to `Duel.live` after every pair and cleared at session end). A scoreline inside
     the stage line — *"pair 4 (2-1)"* — can't say **whose** wins those are, by how much, or how

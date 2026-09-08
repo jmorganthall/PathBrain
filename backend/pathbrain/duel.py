@@ -33,6 +33,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from contextlib import contextmanager
 from time import perf_counter as _perf
 from datetime import datetime, timedelta, timezone
 
@@ -2749,6 +2750,9 @@ def _run_ring(
             # The yardstick reads covariates through the version's re-graded scores, so
             # it is rebuilt for the new one (outside the session above: it opens its own).
             weather = _weather_stamper(meth_version)
+        # Matchmaking is progress: refitting the ledger, choosing the defender and filling
+        # the seats run no probe, so without this a session between legs was silent.
+        lease.beat()
         # 1. Who defends, and who is seated against it. Refit the ledger INCLUDING this
         #    session's matches, so a challenger that just won is re-rated before the next
         #    seat is filled.
@@ -3104,6 +3108,45 @@ def weather_by_distance(limit_sessions: int = 10, max_legs: int = 400) -> dict:
     }
 
 
+#: A setup step slower than this is logged as a warning naming the step: the pipeline is
+#: held while it runs, and past ``coordinator.STALE_HOLDER_S`` the watchdog evicts the
+#: session — which is how a slow field pass turned into "a monitoring run started beside a
+#: duel that still says running".
+SETUP_SLOW_S = 60.0
+
+
+@contextmanager
+def _setup_step(duel_id: int, lease, timings: dict[str, float], key: str, label: str):
+    """One step of a session's setup: name it in the stage (with what has finished and how
+    long each took), time it, log it, and **beat the lease when it ends**.
+
+    Setup — the pooled standings, the heirs, the weather yardstick — runs no probe, and only
+    the runner beats, so a session in setup was silent to the coordinator from the moment it
+    took the lock. A field pass that outgrew the 20-minute stale bar got the ladder evicted
+    for making progress: the watchdog freed the pipeline, monitoring started beside it, and
+    the duel row kept reading "running" until its next seam raised. A finished step is
+    progress, so it beats; a single step past the bar still evicts, and that is right — but
+    now the log says which step, instead of a stage sentence frozen for twenty minutes.
+    """
+    done = " · ".join(f"{k} {v:.0f}s" for k, v in timings.items())
+    _set_stage(duel_id, f"Ranking the field for matchmaking — {label}" + (f" (done: {done})" if done else ""))
+    t0 = _perf()
+    try:
+        yield
+    finally:
+        took = _perf() - t0
+        timings[key] = took
+        lease.beat()
+        if took >= SETUP_SLOW_S:
+            log.warning(
+                "Duel %s: setup step '%s' took %.0fs while holding the pipeline — if it recurs, "
+                "GET /api/health/pipeline during the stall shows which call is not returning",
+                duel_id, label, took,
+            )
+        else:
+            log.info("Duel %s: setup step '%s' took %.1fs", duel_id, label, took)
+
+
 def _drive(duel_id: int) -> None:
     from .api.routes_settings import _compute_heirs, compute_profiles
     from .challenger import _apply_all
@@ -3148,14 +3191,20 @@ def _drive(duel_id: int) -> None:
             # likely to beat *it*. Deciding this once up front is what produced "random
             # duels" — a queue chosen hours ago against a defender that had since been
             # replaced, walked to the end regardless of what the bouts in between found.
-            _set_stage(duel_id, "Ranking the field for matchmaking")
-            with session_scope() as session:
-                field = _seeded_field(session, compute_profiles(session, include_weather=False))
-                heirs = _engine_heirs(_compute_heirs(field, session, baseline))
+            timings: dict[str, float] = {}
+            with _setup_step(duel_id, lease, timings, "standings", "pooled standings"):
+                with session_scope() as session:
+                    field = _seeded_field(session, compute_profiles(session, include_weather=False))
+            with _setup_step(duel_id, lease, timings, "heirs", "heirs and reachability"):
+                with session_scope() as session:
+                    heirs = _engine_heirs(_compute_heirs(field, session, baseline))
             # The session's weather yardstick, built once: each leg is stamped with its
             # severity against recent history, so a round can say whether its two legs
             # actually shared their weather instead of assuming adjacency proved it.
-            weather = _weather_stamper(meth_version)
+            with _setup_step(duel_id, lease, timings, "weather", "weather yardstick"):
+                weather = _weather_stamper(meth_version)
+            log.info("Duel %s: setup done in %.0fs (%s)", duel_id, sum(timings.values()),
+                     ", ".join(f"{k} {v:.0f}s" for k, v in timings.items()))
             settings_by_fp = {p["fingerprint"]: p for p in field.get("profiles", [])}
             deadline = time.monotonic() + duration_s
             matchups, incumbent_fp, iterations_run = _run_ring(
