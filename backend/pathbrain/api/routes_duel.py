@@ -430,6 +430,32 @@ def lever_campaigns(session: Session = Depends(get_session)) -> dict:
     }
 
 
+@router.get("/levers/bases")
+def lever_bases(session: Session = Depends(get_session)) -> dict:
+    """Every stored profile a campaign could be opened on, by call sign, with its pooled
+    Overall — **without a field pass**. The Levers page used to fill this picker from
+    ``GET /settings/profiles``, which is the full ``compute_profiles`` field (with the weather
+    cohort pass, under its own memo key) computed on every page load; the picker needs a
+    name, a label and a number to sort on, all of which the cached stored-profile list and
+    the per-profile rollup answer in milliseconds."""
+    from .. import refresh as refresh_mod
+
+    profiles = refresh_mod.list_profiles(session)
+    overalls = duel._pooled_overalls(session, [p["fingerprint"] for p in profiles])
+    rows = []
+    for p in profiles:
+        overall, iterations = overalls.get(p["fingerprint"], (None, 0))
+        rows.append({
+            "fingerprint": p["fingerprint"],
+            "label": p["label"],
+            "name": p.get("name"),
+            "overall": overall,
+            "iterations": iterations,
+        })
+    rows.sort(key=lambda r: (r["overall"] is None, -(r["overall"] or 0.0), r["label"]))
+    return {"bases": rows}
+
+
 @router.post("/levers/campaigns", status_code=201)
 def lever_campaign_create(payload: LeverCampaignCreate) -> dict:
     """Open a campaign on a base profile — or return the open one already on it."""

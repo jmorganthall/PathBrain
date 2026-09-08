@@ -40,7 +40,7 @@ import copy
 import math
 from statistics import median
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .logging_config import get_logger
 from .models import Run, RunStatus
@@ -381,16 +381,25 @@ def next_variant(
 
 
 def _settings_lookup(session, fingerprints: set[str]) -> dict[str, list[dict]]:
-    """Newest stored settings per fingerprint, one query per 500 keys."""
+    """Newest stored settings per fingerprint, one query per 500 keys.
+
+    Reads exactly ONE ``settings`` blob per fingerprint: the row at each fingerprint's
+    newest run id (a grouped ``max(id)`` subquery). The first cut selected every completed
+    run of those profiles ordered newest-first and kept the first per fingerprint — for the
+    crown that is every run it ever took, thousands of JSON documents decoded to keep one,
+    on every ledger read and every fight-card preview."""
     out: dict[str, list[dict]] = {}
     fps = [fp for fp in fingerprints if fp]
     for i in range(0, len(fps), 500):
         chunk = fps[i:i + 500]
-        rows = session.execute(
-            select(Run.settings_fingerprint, Run.settings)
+        newest = (
+            select(func.max(Run.id).label("id"))
             .where(Run.settings_fingerprint.in_(chunk), Run.settings.is_not(None),
                    Run.status == RunStatus.COMPLETE)
-            .order_by(Run.id.desc())
+            .group_by(Run.settings_fingerprint)
+        ).subquery()
+        rows = session.execute(
+            select(Run.settings_fingerprint, Run.settings).where(Run.id.in_(select(newest.c.id)))
         )
         for fp, settings in rows:
             if fp not in out and isinstance(settings, list):

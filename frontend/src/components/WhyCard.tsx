@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
 import FormControl from "@mui/material/FormControl";
@@ -28,7 +29,17 @@ import { FoldCard, HelpTip } from "./Explain";
  * gap), per navigation phase (which part of the load moved), and per site (is the edge
  * everywhere, or one page). Every delta carries the same noise bar the crown uses to call
  * a tie. Read-only; a second reading of the same runs, never a re-score.
+ *
+ * Nothing is fetched until the reader asks. The first cut fetched on mount, with the
+ * per-site pass on — and that pass re-derives every page of the newest runs a side from
+ * their stored raw, on the request thread, on every Profile Detail load. Two readers on
+ * two profiles was enough to take the server down. So the card opens with an "Explain"
+ * button (legs + phases + burst: SQL scalars and the rollup, cheap) and the per-site table
+ * is a second, explicit "Price per site" action with its cost stated on the button.
  */
+
+/** Runs a side the per-site pass re-derives when asked for — the server's own default cap. */
+const SITE_RUNS = 10;
 
 const DEFAULT_VS = "__default__";
 
@@ -335,30 +346,33 @@ export default function WhyCard({
   const [vs, setVs] = useState<string>(DEFAULT_VS);
   const [data, setData] = useState<ProfileWhy | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sitesLoading, setSitesLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // The comparison the data on screen was read for; a changed reference or profile makes
+  // it stale rather than refetching behind the reader's back.
+  const [readFor, setReadFor] = useState<string | null>(null);
+  const key = `${fingerprint}|${vs}`;
+  const stale = data != null && readFor !== key;
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setErr(null);
-    api
-      .profileWhy(fingerprint, vs === DEFAULT_VS ? null : vs)
-      .then((d) => {
-        if (!cancelled) setData(d);
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          setData(null);
-          setErr(e instanceof Error ? e.message : "Could not read the comparison");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [fingerprint, vs]);
+  const load = useCallback(
+    async (siteRuns: number) => {
+      if (siteRuns > 0) setSitesLoading(true);
+      else setLoading(true);
+      setErr(null);
+      try {
+        const d = await api.profileWhy(fingerprint, vs === DEFAULT_VS ? null : vs, siteRuns);
+        setData(d);
+        setReadFor(key);
+      } catch (e) {
+        setData(null);
+        setErr(e instanceof Error ? e.message : "Could not read the comparison");
+      } finally {
+        setLoading(false);
+        setSitesLoading(false);
+      }
+    },
+    [fingerprint, vs, key],
+  );
 
   // Reference choices: the other profiles, best Overall first, named by call sign.
   const options = useMemo(
@@ -385,7 +399,7 @@ export default function WhyCard({
       sx={{ mb: 0 }}
       title={title}
       summary={
-        data ? (
+        data && !stale ? (
           <>
             vs <strong>{data.b.name}</strong> ({refWhy[data.reference.why] ?? data.reference.why}):{" "}
             <strong>{signed(gap, 1)}</strong> Overall points
@@ -394,36 +408,49 @@ export default function WhyCard({
           </>
         ) : loading ? (
           "Reading the comparison…"
+        ) : stale ? (
+          "The reference changed — press Explain to re-read."
         ) : (
-          err ?? "No comparison available yet."
+          err ?? "Not read yet — press Explain to split this profile's Overall gap by crown leg, phase and site."
         )
       }
       actions={
-        <FormControl size="small" sx={{ minWidth: 200 }} onClick={(e) => e.stopPropagation()}>
-          <InputLabel id="why-vs">Compare against</InputLabel>
-          <Select
-            labelId="why-vs"
-            label="Compare against"
-            value={vs}
-            onChange={(e) => setVs(String(e.target.value))}
+        <Stack direction="row" spacing={1} alignItems="center" onClick={(e) => e.stopPropagation()}>
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <InputLabel id="why-vs">Compare against</InputLabel>
+            <Select
+              labelId="why-vs"
+              label="Compare against"
+              value={vs}
+              onChange={(e) => setVs(String(e.target.value))}
+            >
+              <MenuItem value={DEFAULT_VS}>Default (SQM off, else the crown)</MenuItem>
+              {options.map((p) => (
+                <MenuItem key={p.fingerprint} value={p.fingerprint}>
+                  {p.name ?? p.label}
+                  {p.fingerprint === bestFp ? " · crown" : ""}
+                  {p.overall != null ? ` · ${p.overall.toFixed(1)}` : ""}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <Button
+            size="small"
+            variant={data && !stale ? "outlined" : "contained"}
+            disabled={loading || sitesLoading}
+            startIcon={loading ? <CircularProgress size={14} /> : undefined}
+            onClick={() => void load(0)}
           >
-            <MenuItem value={DEFAULT_VS}>Default (SQM off, else the crown)</MenuItem>
-            {options.map((p) => (
-              <MenuItem key={p.fingerprint} value={p.fingerprint}>
-                {p.name ?? p.label}
-                {p.fingerprint === bestFp ? " · crown" : ""}
-                {p.overall != null ? ` · ${p.overall.toFixed(1)}` : ""}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+            Explain
+          </Button>
+        </Stack>
       }
     >
       {loading && !data ? (
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           <CircularProgress size={18} />
           <Typography variant="body2" color="text.secondary">
-            Re-deriving the recent runs per site…
+            Reading the comparison…
           </Typography>
         </Box>
       ) : data ? (
@@ -445,11 +472,31 @@ export default function WhyCard({
           <Box>
             <Typography variant="subtitle2" gutterBottom>
               By site
-              <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                newest {data.site_runs.a} / {data.site_runs.b} runs re-derived from raw (cap {data.site_run_limit} a side)
-              </Typography>
+              {data.site_run_limit > 0 ? (
+                <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                  newest {data.site_runs.a} / {data.site_runs.b} runs re-derived from raw (cap {data.site_run_limit} a side)
+                </Typography>
+              ) : null}
             </Typography>
-            <SitesTable sites={data.sites} legs={data.legs} />
+            {data.site_run_limit > 0 ? (
+              <SitesTable sites={data.sites} legs={data.legs} />
+            ) : (
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={sitesLoading || loading || stale}
+                  startIcon={sitesLoading ? <CircularProgress size={14} /> : undefined}
+                  onClick={() => void load(SITE_RUNS)}
+                >
+                  Price per site ({SITE_RUNS} runs a side)
+                </Button>
+                <Typography variant="caption" color="text.secondary">
+                  Re-derives every page of the newest {SITE_RUNS} runs on each side from stored raw — a few
+                  seconds of server work, so it runs only when asked.
+                </Typography>
+              </Stack>
+            )}
           </Box>
           <Box>
             <Typography variant="subtitle2" gutterBottom>
@@ -472,7 +519,7 @@ export default function WhyCard({
         </Stack>
       ) : (
         <Typography variant="body2" color="text.secondary">
-          {err ?? "Nothing to compare yet."}
+          {err ?? "Pick a reference and press Explain. Nothing is read until you do."}
         </Typography>
       )}
     </FoldCard>
