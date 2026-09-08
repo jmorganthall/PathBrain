@@ -37,9 +37,9 @@ import type {
   DuelMatchup,
   DuelSession,
   LeverCampaign,
+  LeverBase,
   LeverCampaignStatus,
   LeverLedger,
-  SettingsProfile,
 } from "../api/types";
 import { FoldCard, HelpTip } from "../components/Explain";
 import LeverLedgerCard from "../components/LeverLedgerCard";
@@ -207,12 +207,12 @@ function PreviewCard({ card, busy, onRefresh }: { card: DuelCard | null; busy: b
         ) : busy ? (
           "Ranking the field…"
         ) : (
-          card?.reason ?? "No preview yet."
+          card?.reason ?? "Not previewed — press Preview to rank the field and list what a session would seat (a few seconds of server work)."
         )
       }
       actions={
         <Button size="small" startIcon={busy ? <CircularProgress size={14} /> : <RefreshIcon />} disabled={busy} onClick={onRefresh}>
-          Refresh
+          {card ? "Refresh" : "Preview"}
         </Button>
       }
     >
@@ -223,9 +223,9 @@ function PreviewCard({ card, busy, onRefresh }: { card: DuelCard | null; busy: b
           {card.incumbent.why ?? "the ring's #1"}.
         </Typography>
       )}
-      {rows.length === 0 ? (
+      {!card ? null : rows.length === 0 ? (
         <Alert severity="info">
-          {card?.reason ??
+          {card.reason ??
             "Nothing to seat: the champion is either unreachable from the live firewall or has no settings on record."}
         </Alert>
       ) : (
@@ -328,7 +328,7 @@ export default function Levers() {
   const [campaigns, setCampaigns] = useState<LeverCampaign[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [campStatus, setCampStatus] = useState<LeverCampaignStatus | null>(null);
-  const [profiles, setProfiles] = useState<SettingsProfile[]>([]);
+  const [profiles, setProfiles] = useState<LeverBase[]>([]);
   const [newBase, setNewBase] = useState<string>("");
   const [status, setStatus] = useState<DuelSession | null>(null);
   const [card, setCard] = useState<DuelCard | null>(null);
@@ -398,16 +398,20 @@ export default function Levers() {
     void loadCampaigns();
     void loadBook();
     void loadHistory();
-    // The base picker for a new campaign: every profile with settings on record, by name.
+    // The base picker for a new campaign: every profile with settings on record, by name,
+    // off the cached profile list — never the full field (`GET /settings/profiles` is a
+    // compute_profiles pass, and this page used to run it on every load).
     api
-      .settingsProfiles(false)
-      .then((r) => setProfiles(r.profiles))
+      .leverBases()
+      .then((r) => setProfiles(r.bases))
       .catch(() => setProfiles([]));
   }, [loadStatus, loadCampaigns, loadBook, loadHistory]);
-  // The preview follows the selected campaign's base (or the champion when there is none).
+  // The preview (what a session would seat) is a field pass on the server, so it is
+  // fetched only from its own Refresh button — never on load, never on a selection change.
+  // When the selected campaign changes, the card on screen is for another base: drop it.
   useEffect(() => {
-    void loadCard();
-  }, [loadCard]);
+    setCard(null);
+  }, [selectedCampaign?.base_fingerprint]);
 
   // Poll while any session holds the ring; when it ends, the book and the history move.
   const running = isRunning(status);

@@ -500,7 +500,7 @@ def apply_warmup(session: Session = Depends(get_session)) -> dict:
 def profile_why(
     fingerprint: str,
     vs: str | None = Query(None, description="Fingerprint to compare against (default: SQM off, else the crown)."),
-    limit: int = Query(why_mod.SITE_RUN_LIMIT, ge=0, le=100, description="Newest runs a side for the per-site pass (0 skips it)."),
+    limit: int = Query(0, ge=0, le=why_mod.SITE_RUN_MAX, description="Newest runs a side for the per-site pass (0, the default, skips it — it re-derives every page of every run from stored raw)."),
     session: Session = Depends(get_session),
 ) -> dict:
     """**Where a win lives**: what the Overall gap between this profile and a reference is made
@@ -2123,6 +2123,15 @@ def _compute_heirs(result: dict, session: Session, live: list[dict] | None = Non
 _FIELD_LOCK = threading.Lock()
 _FIELD_CACHE: "OrderedDict[tuple, tuple[tuple, dict]]" = OrderedDict()
 _FIELD_CACHE_MAX = 6
+# One field pass in flight per (key, stamp): the second caller asking the same question of
+# the same data WAITS for the first one's answer rather than starting its own pass. "Two
+# callers racing a cold cache both compute" was written when the callers were a page and a
+# ladder session an hour apart; once four pages each asked on load, a cold cache meant four
+# concurrent pure-Python passes, each holding the field in memory and each taking the GIL
+# in turn — the whole process going dark on the NAS. Waiting is bounded by one pass, and
+# the waiter re-checks the cache rather than trusting the leader (a leader that raised
+# clears its slot in `finally`, so a waiter then computes for itself).
+_FIELD_INFLIGHT: dict[tuple, threading.Event] = {}
 
 
 def _field_stamp(session: Session) -> tuple:
@@ -2192,23 +2201,42 @@ def compute_profiles(
     """
     key = (complete_only, tz_offset, tuple(custom_crown_metrics or ()), include_weather)
     stamp = _field_stamp(session)
-    with _FIELD_LOCK:
-        hit = _FIELD_CACHE.get(key)
-        if hit is not None and hit[0] == stamp:
-            _FIELD_CACHE.move_to_end(key)
-            return hit[1]
+    flight = (key, stamp)
+    while True:
+        with _FIELD_LOCK:
+            hit = _FIELD_CACHE.get(key)
+            if hit is not None and hit[0] == stamp:
+                _FIELD_CACHE.move_to_end(key)
+                return hit[1]
+            pending = _FIELD_INFLIGHT.get(flight)
+            if pending is None:
+                pending = _FIELD_INFLIGHT[flight] = threading.Event()
+                leader = True
+            else:
+                leader = False
+        if leader:
+            break
+        # Another caller is computing exactly this field: wait for it, then re-check the
+        # cache. The wait is bounded by that one pass (the leader always clears its slot),
+        # and re-checking rather than reading the leader's result keeps this loop correct
+        # if the leader raised — then the slot is gone and the next pass through leads.
+        pending.wait()
     # Computed OUTSIDE the lock: it takes tens of seconds, and holding a mutex across it
-    # would convert "slow" into "serialized", which is the failure we are fixing. Two
-    # callers racing a cold cache both compute — wasteful once, never wrong, and far better
-    # than one blocking the other for half a minute.
-    field = _compute_profiles_uncached(
-        session, complete_only, tz_offset, custom_crown_metrics, include_weather
-    )
-    with _FIELD_LOCK:
-        _FIELD_CACHE[key] = (stamp, field)
-        _FIELD_CACHE.move_to_end(key)
-        while len(_FIELD_CACHE) > _FIELD_CACHE_MAX:
-            _FIELD_CACHE.popitem(last=False)
+    # would convert "slow" into "serialized" for every OTHER key too. Only callers asking
+    # this exact question of this exact data wait, on the in-flight event above.
+    try:
+        field = _compute_profiles_uncached(
+            session, complete_only, tz_offset, custom_crown_metrics, include_weather
+        )
+        with _FIELD_LOCK:
+            _FIELD_CACHE[key] = (stamp, field)
+            _FIELD_CACHE.move_to_end(key)
+            while len(_FIELD_CACHE) > _FIELD_CACHE_MAX:
+                _FIELD_CACHE.popitem(last=False)
+    finally:
+        with _FIELD_LOCK:
+            _FIELD_INFLIGHT.pop(flight, None)
+        pending.set()
     return field
 
 

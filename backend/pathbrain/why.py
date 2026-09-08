@@ -64,7 +64,11 @@ NAV_PHASES: tuple[str, ...] = ("nav_dns", "nav_tcp", "nav_tls", "nav_request", "
 #: (every resource-timing entry of every page), and a median over the recent thirty runs is
 #: the profile's per-site standing; the whole history would be a slower version of the same
 #: number.
-SITE_RUN_LIMIT = 30
+SITE_RUN_LIMIT = 10
+#: Hard ceiling on the per-site pass a request may ask for. Each run is a full browser raw
+#: (every page's Resource Timing + LoAF entries — hundreds of KB) re-derived page by page,
+#: so the pass is priced in raws, not rows.
+SITE_RUN_MAX = 30
 DEFAULT_SIGMA = 2.0
 #: Gaps smaller than this (in Overall points) are reported as level rather than as a win
 #: for either side — below the crown's own 0.1 rounding, so it would be a claim about noise.
@@ -310,17 +314,27 @@ def _site_samples(session: Session, version: str, fp: str, limit: int, keys: tup
     one page, not a second reading of the raw."""
     if limit <= 0:
         return {}, 0
-    q = (
-        select(Run.id, BenchmarkResult.raw)
+    limit = min(int(limit), SITE_RUN_MAX)
+    # Ids first, then ONE raw at a time. A browser raw is every page's Resource Timing and
+    # LoAF entries; selecting ``limit`` of them in one statement materialized all of them
+    # at once (30 a side, twice — the reported unresponsiveness), where the derivation
+    # only ever needs the one it is on. Each raw is dropped before the next is loaded.
+    ids = list(session.execute(
+        select(BenchmarkResult.id)
+        .join(Run, Run.id == BenchmarkResult.run_id)
         .join(Score, Score.run_id == Run.id)
-        .join(BenchmarkResult, _browser_join())
-        .where(*_comparable(version, fp), BenchmarkResult.raw.is_not(None))
+        .where(*_comparable(version, fp), _browser_join(), BenchmarkResult.raw.is_not(None))
         .order_by(Run.id.desc())
         .limit(limit)
-    )
+    ).scalars())
     out: dict[str, dict[str, list[float]]] = {}
     used = 0
-    for _run_id, raw in session.execute(q):
+    for result_id in ids:
+        raw = session.execute(
+            select(BenchmarkResult.raw).where(BenchmarkResult.id == result_id)
+        ).scalar()
+        if not raw:
+            continue
         per_url: dict[str, dict[str, list[float]]] = {}
         for _i, url, obs in browser_url_observations(raw):
             if "nav" not in obs:

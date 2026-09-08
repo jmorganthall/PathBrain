@@ -92,6 +92,7 @@ import type {
   PortableRunCreate,
   ProfileWhy,
   LeverLedger,
+  LeverBase,
   LeverCampaign,
   LeverCampaignStatus,
 } from "./types";
@@ -240,6 +241,9 @@ export const api = {
     request<DuelCard>(
       `/duel/card?limit=${limit}${contenders ? `&contenders=${contenders}` : ""}${base ? `&base=${encodeURIComponent(base)}` : ""}`,
     ),
+  // The base picker for a new campaign: every stored profile by call sign with its pooled
+  // Overall, off the cached profile list and the rollup — never a field pass.
+  leverBases: () => request<{ bases: LeverBase[] }>("/levers/bases"),
   // Lever campaigns: one base profile, measured one setting at a time across sessions.
   leverCampaigns: () => request<{ campaigns: LeverCampaign[]; open_ids: number[] }>("/levers/campaigns"),
   leverCampaignCreate: (baseFingerprint: string) =>

@@ -279,3 +279,80 @@ def test_the_campaign_api_opens_lists_reports_and_closes(client, clean_ring):
         with session_scope() as s:
             s.execute(delete(Run).where(Run.id == run_id).execution_options(synchronize_session=False))
             s.commit()
+
+
+def test_the_base_picker_reads_the_cached_profile_list_not_the_field(client, clean_ring):
+    """The Levers page filled its base picker from `GET /settings/profiles` — a full
+    `compute_profiles` pass with the weather cohort pass, on every page load. It needs a
+    name, a label and a number to sort on; `GET /levers/bases` answers off the cached
+    stored-profile list and the rollup, and never calls the field."""
+    from pathbrain.api import routes_settings as rs
+
+    base_s = _settings(quantum=2000)
+    base_fp = _fp(base_s)
+    with session_scope() as s:
+        r = Run(status=RunStatus.COMPLETE, created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                settings_fingerprint=base_fp, settings=base_s, iterations=1)
+        s.add(r)
+        s.flush()
+        run_id = r.id
+    calls: list[str] = []
+    real = rs.compute_profiles
+
+    def spy(*args, **kwargs):
+        calls.append("compute_profiles")
+        return real(*args, **kwargs)
+
+    try:
+        rs.compute_profiles = spy  # type: ignore[assignment]
+        body = client.get("/api/levers/bases").json()
+    finally:
+        rs.compute_profiles = real  # type: ignore[assignment]
+        with session_scope() as s:
+            s.execute(delete(Run).where(Run.id == run_id).execution_options(synchronize_session=False))
+            s.commit()
+    assert calls == []
+    mine = [b for b in body["bases"] if b["fingerprint"] == base_fp]
+    assert len(mine) == 1 and mine[0]["label"] and "overall" in mine[0] and "iterations" in mine[0]
+
+
+def test_settings_lookup_reads_one_row_per_fingerprint():
+    """The ledger's settings lookup selected every completed run of the profiles it named
+    and kept the first — for the crown, every run it ever took, decoded to keep one. One
+    grouped max-id subquery reads exactly the newest row per fingerprint."""
+    from sqlalchemy import event
+
+    from pathbrain import levers
+
+    older = _settings(quantum=1400)
+    newer = _settings(quantum=1500)
+    fp = "lookup-test-" + _fp(older)[:12]
+    ids: list[int] = []
+    with session_scope() as s:
+        for settings in (older, newer):
+            r = Run(status=RunStatus.COMPLETE, created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                    settings_fingerprint=fp, settings=settings, iterations=1)
+            s.add(r)
+            s.flush()
+            ids.append(r.id)
+        s.commit()
+    statements: list[str] = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        if ".settings" in statement.lower():
+            statements.append(statement.lower())
+
+    try:
+        with session_scope() as s:
+            engine = s.get_bind()
+            event.listen(engine, "before_cursor_execute", _capture)
+            try:
+                out = levers._settings_lookup(s, {fp})
+            finally:
+                event.remove(engine, "before_cursor_execute", _capture)
+    finally:
+        with session_scope() as s:
+            s.execute(delete(Run).where(Run.id.in_(ids)).execution_options(synchronize_session=False))
+            s.commit()
+    assert out[fp] == newer
+    assert len(statements) == 1 and "max(" in statements[0], statements

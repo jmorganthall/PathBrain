@@ -3597,6 +3597,14 @@ export interface LeverLedger {
 }
 
 // ── Lever campaigns (GET/POST /levers/campaigns) ───────────────────────────────
+export interface LeverBase {
+  fingerprint: string;
+  label: string;
+  name: string | null;
+  overall: number | null;
+  iterations: number;
+}
+
 export interface LeverCampaign {
   id: number;
   status: "open" | "closed";

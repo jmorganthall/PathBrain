@@ -567,6 +567,17 @@ LLM-based. See `README.md` for the product overview.
     delta exceeds `correlation.crown_tie_sigma` of it — the same bar the crown uses to call a tie.
     `verdict` is one paragraph with its numbers in it, told from the winner's side whichever
     profile asked. Read-only, bounded by the two profiles; nothing here changes a score.
+    **Nothing is read until asked, and the site pass is priced in raws.** The card fetched on
+    mount with the per-site pass on, and `_site_samples` selected the newest 30 raws a side
+    in one statement — every page's Resource Timing + LoAF entries, materialized twice over,
+    then ~1000 pages re-derived on the request thread — on every Profile Detail load. Two
+    open profile pages was enough to take the server down. Now the card opens with an
+    **Explain** button (legs + phases + burst: SQL scalars and the rollup), the route's
+    `limit` **defaults to 0** (no raw is touched) with a hard ceiling `SITE_RUN_MAX` (30),
+    the card's separate **"Price per site"** action asks for `SITE_RUN_LIMIT` (10) with its
+    cost stated on the button, and the pass fetches ids first and then **one raw per
+    statement**, dropped before the next is loaded, so peak memory is one raw whatever the
+    limit (`test_the_site_pass_loads_one_raw_at_a_time` pins the statement shape).
   - `jobs.py` — in-process background-job registry (progress/status/recent history).
     The heavy score passes (`/api/score/regrade|rescore|rederive`) run as jobs and
     return `202 {job_id}`; `/api/jobs` (`api/routes_jobs.py`) merges them with read-only
@@ -1662,7 +1673,17 @@ LLM-based. See `README.md` for the product overview.
     base_fingerprint=)` previews the campaign the same way. The Levers page leads with the open
     campaigns (per-lever state table, continue / close), opens a new one on any profile, and
     the preview follows the selected campaign's base. Closing is by hand; a closed campaign
-    keeps its record and a new one can be opened on the same base. **Asking**
+    keeps its record and a new one can be opened on the same base. **The page runs no field
+    pass on load.** Its first cut filled the base picker from `GET /settings/profiles` (the
+    full `compute_profiles` field *with* the weather cohort pass, under its own memo key) and
+    fetched the fight-card preview (a second field pass) on mount and again on every campaign
+    selection — beside the Why card, the other half of the unresponsiveness incident. The
+    picker now reads `GET /levers/bases` (the cached stored-profile list + the rollup's pooled
+    Overall, milliseconds), the preview is fetched only from its own **Preview/Refresh**
+    button and is dropped when the selected base changes, and `_settings_lookup` reads
+    **one settings row per fingerprint** (a grouped max-id subquery) instead of every
+    completed run of the profiles it names. `backfill_burst` re-derives at most 25 rows a
+    standings read (was 100). **Asking**
     (`lever_variants` / `next_variant`): in a lever session the belt-holder defends against
     single-lever variants of *itself* — the field's siblings that differ from it in exactly one writable lever first
     (they carry pooled data; the duel matures them), then **generated** steps the firewall can
@@ -2108,8 +2129,16 @@ LLM-based. See `README.md` for the product overview.
     server"*. It is a pure function of the runs, the scores and the methodology, which is
     what makes it cacheable: `_field_stamp` is the cheap identity of that input (two indexed
     aggregates, ~20ms) so a hit can never be stale, and the compute happens **outside** the
-    lock — two callers racing a cold cache both compute, which is wasteful once and far
-    better than one blocking the other for half a minute. `invalidate_profiles_cache()` is
+    lock. **One pass in flight per (key, stamp)** (`_FIELD_INFLIGHT`): a second caller asking
+    the same question of the same data waits on the first's event and re-reads the cache,
+    instead of starting its own pass. "Both compute, wasteful once" was written for a page
+    and a ladder session an hour apart; once several pages asked on load, a cold cache meant
+    that many concurrent pure-Python passes each holding a copy of the field and taking the
+    GIL in turn — the process went dark and the NAS with it (the *"PathBrain became
+    unresponsive"* incident). A leader that raises clears its slot in `finally`, so a waiter
+    then computes for itself rather than waiting forever (`test_field_singleflight`). Other
+    keys still compute concurrently — waiting is only ever bounded by one pass of the
+    identical question. `invalidate_profiles_cache()` is
     called on the two paths that mutate rows *in place* and so change no identity the stamp
     can see: refingerprint and re-grade. The four engines that want only the field
     (duel, challenger race, crown follower, explore) also pass **`include_weather=False`** —

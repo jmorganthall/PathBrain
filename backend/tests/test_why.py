@@ -283,3 +283,48 @@ def test_the_route_refuses_what_it_cannot_compare(client, two_profiles):
     assert body["reference"]["why"] == "chosen" and body["site_run_limit"] == 5
     assert body["site_runs"] == {"a": 5, "b": 5}
     assert {l["metric"] for l in body["legs"]} == set(overall_metrics(two_profiles[1])[0])
+
+
+def test_the_site_pass_is_off_unless_asked_for_and_capped_when_it_is(client, two_profiles):
+    """The per-site pass re-derives every page of every sampled run from stored raw. It
+    used to run by default on every read — and the card fetched on every Profile Detail
+    load — which is how two open profile pages took the server down. Off by default, a
+    hard ceiling when asked for."""
+    r = client.get(f"/api/settings/profiles/{A_FP}/why", params={"vs": B_FP})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["site_run_limit"] == 0 and body["sites"] == [] and body["site_runs"] == {"a": 0, "b": 0}
+    # The cheap readings (SQL scalars + the rollup) are all still there without it.
+    assert body["legs"] and body["phases"] and body["gap"]["points"] is not None
+    over = client.get(f"/api/settings/profiles/{A_FP}/why", params={"vs": B_FP, "limit": why.SITE_RUN_MAX + 1})
+    assert over.status_code == 422
+    assert why.SITE_RUN_LIMIT <= why.SITE_RUN_MAX
+
+
+def test_the_site_pass_loads_one_raw_at_a_time(two_profiles):
+    """Selecting the sampled runs' raws in one statement materialized all of them at once
+    (30 a side, both sides) — every page's Resource Timing and LoAF entries — where the
+    derivation only needs the raw it is on. The pass now fetches ids, then one raw per
+    statement, so peak memory is one raw whatever the limit."""
+    from sqlalchemy import event
+
+    raw_selects: list[str] = []
+
+    table = BenchmarkResult.__tablename__
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        lowered = " ".join(statement.lower().split())
+        # Statements that RETURN a raw (the id query only filters on it being present).
+        if lowered.startswith(f"select {table}.raw"):
+            raw_selects.append(lowered)
+
+    with session_scope() as s:
+        engine = s.get_bind()
+        event.listen(engine, "before_cursor_execute", _capture)
+        try:
+            out = why.explain(s, A_FP, vs=B_FP, site_run_limit=4)
+        finally:
+            event.remove(engine, "before_cursor_execute", _capture)
+    assert out["site_runs"] == {"a": 4, "b": 4}
+    assert len(raw_selects) == 8, raw_selects
+    assert all(f"{table}.id = ?" in stmt and "limit" not in stmt for stmt in raw_selects), raw_selects

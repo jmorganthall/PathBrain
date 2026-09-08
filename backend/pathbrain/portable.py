@@ -1068,8 +1068,10 @@ def _quartiles_of(vals: list[float]) -> tuple[float | None, float | None]:
 
 
 #: Rows re-derived per standings read to pick up the burst metrics — bounded, so a read
-#: stays cheap and the backlog drains over a few page loads rather than in one.
-BURST_BACKFILL_LIMIT = 100
+#: stays cheap and the backlog drains over a few page loads rather than in one. Each row
+#: is a full portable raw loaded and re-derived on the request thread; 25 keeps a
+#: standings read under a second on the NAS where 100 did not.
+BURST_BACKFILL_LIMIT = 25
 
 
 def backfill_burst(session, rows: list[PortableRun], *, limit: int = BURST_BACKFILL_LIMIT) -> int:
