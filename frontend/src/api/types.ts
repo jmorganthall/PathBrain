@@ -2280,6 +2280,10 @@ export interface DuelProfileLedger {
  * the challenger is ahead. Null while a session is between bouts or finished.
  */
 export interface DuelLive {
+  // Set on a seat in a lever session: the one setting this match measures.
+  lever?: DuelLever | null;
+  // Median per-round margin split by crown leg so far (challenger − reference).
+  crown_margins?: Record<string, number>;
   bout: number;
   pairs: number;
   incumbent: { fingerprint: string | null; name: string | null; label: string | null; wins: number };
@@ -2384,6 +2388,9 @@ export interface DuelSession extends QueuePlacement {
   stage: string | null;
   live?: DuelLive | null;
   trigger: string;
+  // The session's kind, fixed at start: "levers" for a lever session (the champion against
+  // single-setting variants of itself), null/absent for the ladder's configured matchmaking.
+  mode?: "ring" | "leaders" | "heirs" | "levers" | null;
   duration_s: number;
   matchups: DuelMatchup[];
   iterations_run: number;

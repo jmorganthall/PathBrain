@@ -7,7 +7,7 @@ ledger. The duel never writes a winner to the firewall — the crowning policy
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .. import duel
@@ -253,9 +253,15 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
             )
         updates["crown_rule"] = payload.crown_rule
     if payload.contenders is not None:
-        if payload.contenders not in ("ring", "leaders", "heirs", "levers"):
+        if payload.contenders == "levers":
             raise HTTPException(
-                status_code=422, detail="contenders must be 'ring', 'leaders', 'heirs' or 'levers'"
+                status_code=422,
+                detail="A lever session is started from the Levers page for one session at a "
+                       "time; it is not a standing matchmaking mode.",
+            )
+        if payload.contenders not in ("ring", "leaders", "heirs"):
+            raise HTTPException(
+                status_code=422, detail="contenders must be 'ring', 'leaders' or 'heirs'"
             )
         updates["contenders"] = payload.contenders
     if payload.contender_top_n is not None:
@@ -305,13 +311,20 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
 
 @router.post("/duel/start", status_code=202)
 def start_duel(payload: DuelStart) -> dict:
-    """Start a duel-ladder session now, or queue it behind whatever holds the pipeline."""
-    try:
-        submission = job_queue.submit(
-            "duel",
-            "Duel ladder session",
-            spec={"duration_minutes": payload.duration_minutes, "trigger": "manual"},
+    """Start a duel session now, or queue it behind whatever holds the pipeline.
+
+    ``contenders`` picks this session's kind: a lever session (``"levers"``, from the
+    Levers page) or the ladder's configured matchmaking (omitted)."""
+    if payload.contenders is not None and payload.contenders not in duel.SESSION_MODES:
+        raise HTTPException(
+            status_code=422, detail=f"contenders must be one of {', '.join(duel.SESSION_MODES)}"
         )
+    label = "Lever duel session" if payload.contenders == "levers" else "Duel ladder session"
+    spec = {"duration_minutes": payload.duration_minutes, "trigger": "manual"}
+    if payload.contenders:
+        spec["contenders"] = payload.contenders
+    try:
+        submission = job_queue.submit("duel", label, spec=spec)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not submission.started:
@@ -379,12 +392,20 @@ def cancel_duel() -> dict:
 
 
 @router.get("/duel/card")
-def duel_card(limit: int = 12, session: Session = Depends(get_session)) -> dict:
+def duel_card(
+    limit: int = 12,
+    contenders: str | None = Query(None, description="Preview a session of this kind (e.g. 'levers') instead of the configured one."),
+    session: Session = Depends(get_session),
+) -> dict:
     """Who would fight whom if a duel started right now, in order.
 
     On demand rather than on page load: it costs a full profile-ranking pass.
     """
-    return duel.fight_card(session, limit=max(1, min(limit, 50)))
+    if contenders is not None and contenders not in duel.SESSION_MODES:
+        raise HTTPException(
+            status_code=422, detail=f"contenders must be one of {', '.join(duel.SESSION_MODES)}"
+        )
+    return duel.fight_card(session, limit=max(1, min(limit, 50)), contenders=contenders)
 
 
 @router.get("/duel/standings")

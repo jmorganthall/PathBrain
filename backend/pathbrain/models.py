@@ -762,6 +762,11 @@ class Duel(Base):
     # Live step readout (ladder position, current matchup, pair count).
     stage: Mapped[str | None] = mapped_column(String(255), nullable=True)
     trigger: Mapped[str] = mapped_column(String(16), default="manual")
+    # The session KIND, chosen at start and stored on the row: None/"ring" for the ladder
+    # (whoever the ring says is most likely to unseat the belt), "levers" for a lever session
+    # (the champion against single-setting variants of itself). A per-session choice, never
+    # a stored config value: the Levers page starts one, the ladder's own config never does.
+    mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     duration_s: Mapped[int] = mapped_column(Integer, default=7200)
     # Pre-duel firewall settings to restore (persisted for crash reconcile).

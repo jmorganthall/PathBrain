@@ -213,18 +213,21 @@ export const api = {
   duelConfig: () => request<DuelConfig>("/duel/config"),
   duelConfigSave: (body: Partial<DuelConfig>) =>
     request<DuelConfig>("/duel/config", { method: "PUT", body: JSON.stringify(body) }),
-  duelStart: (durationMinutes?: number) =>
+  // `contenders` fixes this session's kind ("levers" = a lever session); omitted = the
+  // ladder's configured matchmaking.
+  duelStart: (durationMinutes?: number, contenders?: "levers") =>
     startingJob(
       request<DuelSession>("/duel/start", {
         method: "POST",
-        body: JSON.stringify({ duration_minutes: durationMinutes ?? null }),
+        body: JSON.stringify({ duration_minutes: durationMinutes ?? null, ...(contenders ? { contenders } : {}) }),
       })
     ),
   duelStatus: () => request<DuelSession>("/duel/status"),
   duelCancel: () =>
     request<{ cancelled: boolean; status: string | null }>("/duel/cancel", { method: "POST" }),
   duelHistory: (limit = 10) => request<{ duels: DuelSession[] }>(`/duel/history?limit=${limit}`),
-  duelCard: (limit = 12) => request<DuelCard>(`/duel/card?limit=${limit}`),
+  duelCard: (limit = 12, contenders?: "levers") =>
+    request<DuelCard>(`/duel/card?limit=${limit}${contenders ? `&contenders=${contenders}` : ""}`),
   // Prices raising `belt_every`: severity shift between legs 1–4 apart, from recent duel
   // sessions' own runs. Stamps every leg on demand, so it gets a generous fuse.
   duelWeatherDistance: (sessions = 10, legs = 400) =>

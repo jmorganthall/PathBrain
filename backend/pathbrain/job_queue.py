@@ -235,7 +235,8 @@ def register_engines() -> None:
         ),
     )
     register_starter(
-        "duel", lambda s: duel.start(s.get("duration_minutes"), trigger=s.get("trigger") or "manual")
+        "duel", lambda s: duel.start(s.get("duration_minutes"), trigger=s.get("trigger") or "manual",
+                                     contenders=s.get("contenders"))
     )
 
     # The two self-queueing engines: they own row-level identity their callers need back

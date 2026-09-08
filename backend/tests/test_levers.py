@@ -253,16 +253,16 @@ def _fake_engine(monkeypatch, applied: list[str], scores: dict[str, float], crow
 
 @pytest.fixture()
 def lever_mode():
+    """A lever session is a per-session KIND, never a stored config value: the ladder's
+    config stays on its own matchmaking throughout."""
     with session_scope() as s:
-        prior = dict(get_config(s).get("duel", {}) or {})
-        save_config(s, {"duel": {"settle_seconds": 0, "seats": 1, "belt_every": 2, "contenders": "levers"}})
+        save_config(s, {"duel": {"settle_seconds": 0, "seats": 1, "belt_every": 2, "contenders": "ring"}})
         s.query(Duel).delete()
         s.commit()
     try:
         yield
     finally:
         with session_scope() as s:
-            save_config(s, {"duel": {"contenders": prior.get("contenders", "ring")}})
             s.query(Duel).delete()
             s.commit()
 
@@ -304,9 +304,13 @@ def test_lever_mode_seats_the_defenders_own_variants_and_records_the_lever(monke
     monkeypatch.setattr(duel_mod, "plan_apply", lambda target, live: ([], []))
     assert real_provider is not None
 
-    d = _wait_finish(duel_mod.start(duration_minutes=10))
+    d = _wait_finish(duel_mod.start(duration_minutes=10, contenders="levers"))
     assert d.status == DuelStatus.COMPLETE, d.error
+    assert d.mode == "levers"
     assert d.matchups, "the lever mode seated nothing"
+    # The session's kind lived on its row; the ladder's own config never moved.
+    with session_scope() as s:
+        assert get_config(s)["duel"]["contenders"] == "ring"
     # Every match measured exactly one lever, and says which.
     assert all(m["lever"] for m in d.matchups)
     first = d.matchups[0]
@@ -376,3 +380,54 @@ def test_an_ordinary_ring_match_now_carries_its_crown_split(monkeypatch):
         with session_scope() as s:
             s.query(Duel).delete()
             s.commit()
+
+
+# ── The lever session is a kind chosen at start, never a config switch ─────────────
+
+
+def test_a_lever_session_is_started_as_a_kind_not_stored_as_the_ladders_mode(client, monkeypatch, lever_mode):
+    """The Levers page starts one session of the lever kind through the same queue every Run
+    button uses; the ladder's config refuses to be switched into lever mode, because a
+    lever session measures settings and must not become the standing matchmaking."""
+    import pathbrain.api.routes_settings as rs
+
+    inc_settings, sib_settings = _settings(quantum=1514), _settings(quantum=300)
+    inc_fp, sib_fp = _fp(inc_settings), _fp(sib_settings)
+    fake_field = {
+        "best_fingerprint": inc_fp,
+        "profiles": [
+            {"fingerprint": inc_fp, "label": "incumbent", "settings": inc_settings, "overall": 66.0, "iterations": 40, "confident": True},
+            {"fingerprint": sib_fp, "label": "sibling", "settings": sib_settings, "overall": 60.0, "iterations": 20, "confident": True},
+        ],
+    }
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
+    monkeypatch.setattr(rs, "_compute_heirs", lambda result, session, live=None: {"items": []})
+    applied: list[str] = []
+    _fake_engine(monkeypatch, applied, {inc_fp: 66.0, sib_fp: 60.0}, {})
+    monkeypatch.setattr(duel_mod, "normalize", lambda cfgs: inc_settings)
+    monkeypatch.setattr(duel_mod, "_field_options", lambda provider: {})
+    monkeypatch.setattr(duel_mod, "plan_apply", lambda target, live: ([], []))
+
+    # The config route refuses the switch, and says where lever sessions come from.
+    r = client.put("/api/duel/config", json={"contenders": "levers"})
+    assert r.status_code == 422 and "Levers page" in r.json()["detail"]
+    # The preview can be asked for the lever kind without touching config.
+    card = client.get("/api/duel/card", params={"contenders": "levers"}).json()
+    assert card["contenders"] == "levers"
+    assert card["queue"] and card["queue"][0]["reason"].startswith("lever:")
+    assert card["queue"][0]["fingerprint"] == sib_fp
+    # An unknown kind is refused up front.
+    assert client.post("/api/duel/start", json={"duration_minutes": 5, "contenders": "chaos"}).status_code == 422
+    # Starting the lever kind goes through the queue and stamps the session, not the config.
+    r = client.post("/api/duel/start", json={"duration_minutes": 10, "contenders": "levers"})
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body.get("queued") is False and body["mode"] == "levers"
+    d = _wait_finish(int(body["id"]))
+    assert d.status == DuelStatus.COMPLETE, d.error
+    assert d.mode == "levers" and all(m["lever"] for m in d.matchups)
+    with session_scope() as s:
+        assert get_config(s)["duel"]["contenders"] == "ring"
+    # The history reports the kind, so a lever session reads as one on every page.
+    hist = client.get("/api/duel/history", params={"limit": 3}).json()
+    assert any(x["id"] == d.id and x["mode"] == "levers" for x in hist["duels"])

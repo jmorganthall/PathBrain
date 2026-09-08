@@ -54,6 +54,7 @@ import GavelIcon from "@mui/icons-material/Gavel";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import SportsMmaIcon from "@mui/icons-material/SportsMma";
 
+import { Link as RouterLink } from "react-router-dom";
 import { api } from "../api/client";
 import { useQueuedAction } from "../hooks/useQueuedAction";
 import { Blurb, FoldCard, HelpTip } from "../components/Explain";
@@ -1845,18 +1846,8 @@ export default function Duels() {
           sx={{ mb: 2 }}
           more={
             <>
-              {cfg.contenders === "levers" ? (
-                <>
-                  The champion defends against <b>single-lever variants of itself</b> — measured
-                  siblings first, then steps the firewall can hold — so every round is a paired
-                  reading of one setting,{" "}
-                </>
-              ) : (
-                <>
-                  The champion defends against the top {cfg.contender_top_n}{" "}
-                  {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"},{" "}
-                </>
-              )}
+              The champion defends against the top {cfg.contender_top_n}{" "}
+              {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"},{" "}
               {cfg.seats ?? 2} at a time with a belt leg every {cfg.belt_every ?? 2} legs,{" "}
               {cfg.iterations_per_round ?? 3} iteration(s) a leg. A match ends after{" "}
               {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of margins, then
@@ -2103,17 +2094,14 @@ export default function Duels() {
                 disabled={!cfg || busy}
                 onChange={(e) => void patch({ contenders: e.target.value as DuelConfig["contenders"] })}
                 helperText={
-                  (cfg?.contenders ?? "ring") === "levers"
-                    ? "The champion against single-setting variants of itself. Every round measures one lever; the lever ledger on Explore keeps the book."
-                    : (cfg?.contenders ?? "ring") === "ring"
-                      ? "Whoever the ring's own ratings say is most likely to unseat the belt."
-                      : (cfg?.contenders ?? "ring") === "leaders"
-                        ? "The profiles nearest the crown on the pooled Overall."
-                        : "The exploring order: under-sampled and untested profiles first."
+                  (cfg?.contenders ?? "ring") === "ring"
+                    ? "Whoever the ring's own ratings say is most likely to unseat the belt. To measure one setting at a time, start a lever session from the Lever duels page."
+                    : (cfg?.contenders ?? "ring") === "leaders"
+                      ? "The profiles nearest the crown on the pooled Overall."
+                      : "The exploring order: under-sampled and untested profiles first."
                 }
               >
                 <MenuItem value="ring">Ring rating (most likely to unseat the belt)</MenuItem>
-                <MenuItem value="levers">Levers (one setting at a time from the champion)</MenuItem>
                 <MenuItem value="leaders">Pooled leaders (nearest the crown)</MenuItem>
                 <MenuItem value="heirs">Heirs (exploring order)</MenuItem>
               </TextField>
@@ -2430,6 +2418,22 @@ export default function Duels() {
                   window already spent, ticking on the browser's clock between polls, and
                   how long is left — instead of an indeterminate sweep that read the same
                   at minute one and minute three hundred. */}
+              {status?.mode === "levers" && (
+                <Alert
+                  severity="info"
+                  variant="outlined"
+                  sx={{ mb: 1 }}
+                  action={
+                    <Button size="small" component={RouterLink} to="/levers">
+                      Open
+                    </Button>
+                  }
+                >
+                  A lever session is in the ring: the champion against single-setting variants of
+                  itself, measuring one setting at a time rather than hunting the best profile. The
+                  Lever duels page has its board and its book.
+                </Alert>
+              )}
               <JobProgressBar job={duelJob} sx={{ mb: 1 }} />
               {/* The scoreboard when a match is actually under way; the stage sentence is
                   the fallback for the moments between matches (applying a profile, ranking
