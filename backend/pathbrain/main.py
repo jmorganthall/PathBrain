@@ -147,7 +147,7 @@ def pipeline_health() -> dict:
     import threading
     import traceback
 
-    from . import browser_procs, coordinator, jobs, probes, scheduler
+    from . import browser_procs, coordinator, jobs, probes, resource_guard, scheduler
     from .database import pool_status
     from .plugins import get_plugin
 
@@ -181,6 +181,9 @@ def pipeline_health() -> dict:
             "scheduler_leader": scheduler.is_leader(),
         },
         "processes": processes,
+        # Memory and load against the tightest limit that applies, and the level the
+        # scheduler's guard is acting on (``resource_guard``).
+        "pressure": resource_guard.pressure(),
         "probes": probes.stats(),
         "database": pool_status(),
         "threads": sorted(stacks, key=lambda s: s["thread"]),
