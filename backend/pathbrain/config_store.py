@@ -122,8 +122,11 @@ DEFAULT_CONFIG: dict = {
         # byte still fetched. Most of a person's clicks are warm — a site's next page reuses
         # its connections — and the crown is graded on cold loads only, so this records the
         # repeat-visit reading beside it (`warm_*` metrics, display-only) and the Methodology
-        # page's "Cold vs warm crown" card says whether the two rank the profiles alike. It
-        # roughly doubles a browser iteration's page loads; turn off to keep runs short.
+        # page's "Cold vs warm crown" card says whether the two rank the profiles alike. A
+        # warm load doubles that iteration's page loads, so it runs on a run's FIRST
+        # iteration only (the audit needs a per-profile median across runs, not a reading
+        # on every page of every iteration): True = first iteration, "every" = every
+        # iteration (twice the browser time), False = off.
         "warm_loads": True,
         # Screenshot + HAR feed only the artifacts UI (no scored metric), so they're off by
         # default now — set true to capture them for debugging a specific run.
@@ -219,9 +222,11 @@ DEFAULT_CONFIG: dict = {
     "portable": {
         # This section is ALSO the `portable` plugin's config: the runner reads `enabled`
         # and `iterations` (how many of a run's iterations the plugin runs, one portable
-        # iteration each — so a NAS run and a phone run both carry ≤ this many).
+        # pass each). One per run: the home baseline accrues a sample from every run
+        # anyway, and each pass is the phone's whole recipe (warm-up + waterfalls + a
+        # streamed download), so a second one bought little and cost every run.
         "enabled": True,
-        "iterations": 2,
+        "iterations": 1,
         "min_home_runs": 5,
         # Where the plugin finds its own app (the Away page it drives + the recipe API).
         "self_url": "http://127.0.0.1:8000",

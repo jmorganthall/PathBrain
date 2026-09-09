@@ -284,6 +284,31 @@ LLM-based. See `README.md` for the product overview.
     (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline). The
     swept `param` is validated against `shaper_fields.WRITABLE_FIELDS` at start — an
     experiment on a non-writable field (scheduler/queues) is refused instead of no-op'ing.
+  - `session_runtime.py` — **the job runtime: what every session shares, in one module.**
+    Ten session kinds each own their thread, row and stage line; what none of them may own
+    is the *policy* for the failures they all meet the same way. **(1) A firewall call is
+    retried before it fails anything** (`call_firewall`, `ResilientProvider`; `get_provider()`
+    returns every provider wrapped, so no engine remembers to). One `ReadTimeout` on one
+    leg's apply used to end a whole lever session with 0 rounds (twice in one evening, on
+    the Levers page). A timeout, a dropped connection or a 5xx is retried (`FIREWALL_ATTEMPTS`
+    3, backoff 2 s + 5 s; a reconfigure that already took is re-applied harmlessly); a wrong
+    request (a bad param, a 4xx) is never retried. Spent attempts raise the typed
+    `FirewallUnavailable`. The OPNsense per-call timeout is `PATHBRAIN_OPNSENSE_TIMEOUT_S`
+    (30, was a hard-coded 15). **(2) A failure is described in words once**
+    (`describe_failure`; every engine's `err =` goes through it): the card says what stopped
+    and what was kept, class-aware for the designed failures (firewall quiet, lease handed
+    on, `SessionAbort` — a session stopping itself for a reason it states verbatim). **(3) A
+    run of failures is counted where it happens** (`FailureStreak`). The duel uses all
+    three: `_run_leg` records a leg whose profile could not be applied as a *failed leg* on
+    the tape (`failed`, no run, the seat's `unusable` count) and moves on; a failed opening
+    belt leg skips the cycle rather than spending the challengers' iterations against
+    nothing; only `MAX_CONSECUTIVE_LEG_FAILURES` (3) back to back abort the session, in a
+    sentence. **A restart queues the rest of an interrupted window**
+    (`reconcile_interrupted_duels`, `RESUME_MIN_MINUTES` 15): the window is a wall-clock
+    agreement and the clock did not stop, so a session with that much left writes a pending
+    `QueuedJob` (same kind, campaign and trigger, `duration_minutes` = what remains) that
+    `job_queue.restore` re-queues after every reconcile has put the firewall back — the
+    carried open matches resume in it. `test_session_runtime` + `test_duel_resilience`.
   - `job_queue.py` — **the universal "add a job" contract: every Run button behaves the same.**
     PathBrain runs one firewall/benchmark session at a time and `coordinator` enforces that;
     what was never universal was *what happens when you press a button while it is busy*, and
@@ -526,7 +551,11 @@ LLM-based. See `README.md` for the product overview.
     `warm_load_event` O, `warm_network_stall_all` S, `warm_nav_render` C). `derive-v15` is
     purely additive; old raw has no warm block, so re-deriving changes nothing. Nothing graded
     moves. The plugin times it as its own phase (`warm_ms`, the drift audit's
-    `phase_warm_ms`), since it roughly doubles a browser iteration's page loads. **Whether the
+    `phase_warm_ms`), since it doubles that iteration's page loads — which is why it runs on a
+    run's **first iteration only** (`warm_load_wanted`; the runner stamps `_iteration` on
+    every plugin section; `warm_loads: "every"` restores per-iteration): the audit needs a
+    per-profile median across runs, not a reading on every page of every iteration, and
+    default-on everywhere was half of the 33 s → 111 s iteration report. **Whether the
     crown should ever read them is an empirical question, and `GET
     /api/methodologies/warm-agreement` (the "Cold vs warm crown" card on the Methodology
     page) answers it**: every profile with ≥ `min_runs` runs carrying both readings is ranked
@@ -880,7 +909,9 @@ LLM-based. See `README.md` for the product overview.
     the recipe from its own API first, so
     an unreachable server (the test suite) is a fast failure with no Chromium launched;
     `portable.enabled: false` leaves it out of runs (the runner treats `enabled: false` like
-    `skip`), and `portable.iterations` caps it like the browser's cap (one portable iteration
+    `skip`), and `portable.iterations` caps it like the browser's cap — default **1**, since
+    each pass is the phone's whole recipe and the home baseline accrues a sample from every
+    run anyway (the other half of that iteration report) — (one portable iteration
     per suite iteration). Its metrics are derived by `interpret.derive` like any plugin's but are
     **not methodology metrics** — nothing in scoring reads them.
   - **Burst fairness: the round-robin mechanism, measured** (`interpret/portable.py`
@@ -1689,6 +1720,16 @@ LLM-based. See `README.md` for the product overview.
     (they carry pooled data; the duel matures them), then **generated** steps the firewall can
     hold (the adjacent option on a select via `provider.field_options()`, halve/double on an
     unbounded integer, the flip on a boolean; a bandwidth is never generated — `NO_GENERATE`).
+    **A generated step stays inside the range the lever has already run on this link**
+    (`_measured_span`, over every profile with settings on record; no bound with fewer than
+    two values). A lever session runs on the connection the household is using, for minutes
+    per leg, and a halved queue limit or a halved quantum nobody has ever run here is exactly
+    the step that makes it unusable for those minutes (*"my connection blips out every time I
+    run lever duels"*). Values the field has measured are known to be livable; stepping past
+    the field's edge is Explore's deliberate, one-at-a-time job. The other blip is the
+    **reconfigure itself**: every leg is a `setPipe` + `reconfigure`, which rebuilds the
+    shaper's pipes and drops what is in flight — inherent to measuring on the live firewall,
+    and why the ladder has a nightly window.
     A generated variant is the defender's whole settings deep-copied with one field moved, so it
     hashes as the firewall will echo it and is reachable by construction; it joins the session's
     `settings_by_fp` so the leg can be applied, named and recorded like any profile. Levers are

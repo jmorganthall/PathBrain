@@ -1057,7 +1057,15 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                     if i >= plugin_counts[plugin.name]:
                         ran_full_suite = False  # this plugin opted out of this round
                         continue
-                    section = config.get(plugin.name, {})
+                    # The plugin's section plus WHICH iteration this is: a plugin that does
+                    # something expensive once per run (the browser's repeat-visit load)
+                    # needs to know it is on the first round, and the config is the only
+                    # thing that crosses into the probe worker.
+                    section = {
+                        **config.get(plugin.name, {}),
+                        "_iteration": i,
+                        "_iteration_count": iterations,
+                    }
                     # A probe is the one call that hands control to something we do not
                     # own; bounded so a wedged socket or browser can never park the
                     # pipeline (``probes``). A timeout comes back as an ordinary failed

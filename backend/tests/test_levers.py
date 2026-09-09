@@ -74,13 +74,21 @@ def test_variants_seat_measured_siblings_first_then_steps_the_firewall_can_hold(
     assert by[("quantum", 300)]["source"] == "field" and by[("quantum", 300)]["fingerprint"] == sibling["fingerprint"]
     quantum = [v for v in out if v["lever"]["field"] == "quantum"]
     assert quantum[0]["source"] == "field"
-    # Generated quantum steps halve and double; a select steps to its adjacent options.
-    assert {v["lever"]["to"] for v in quantum if v["source"] == "generated"} == {757, 3028}
+    # Generated quantum steps halve and double — INSIDE the range the field has run: this
+    # field has run quantum 300 and 1514, so 757 is offered and 3028 (nothing on this link
+    # has ever run above 1514) is not. A lever session runs on the live connection, and a
+    # step nobody has measured here is the one that can make it unusable for a leg.
+    assert {v["lever"]["to"] for v in quantum if v["source"] == "generated"} == {757}
+    # A select steps to its adjacent options (the firewall's own list bounds those).
     assert {v["lever"]["to"] for v in out if v["lever"]["field"] == "target"} == {4, 6}
     assert {v["lever"]["to"] for v in out if v["lever"]["field"] == "interval"} == {50, 200}
-    # A boolean flips; an unbounded integer halves and doubles.
+    # A boolean flips; an unbounded integer halves and doubles when the field holds only
+    # one value of it (no range to bound against).
     assert {v["lever"]["to"] for v in out if v["lever"]["field"] == "ecn"} == {False}
     assert {v["lever"]["to"] for v in out if v["lever"]["field"] == "flows"} == {512, 2048}
+    # With no other quantum on record both quantum steps stand.
+    alone = levers.lever_variants(defender, [defender], _settings())
+    assert {v["lever"]["to"] for v in alone if v["lever"]["field"] == "quantum"} == {757, 3028}
     # Bandwidth is never generated (the provider owns its legal forms).
     assert not any(v["lever"]["field"] == "download_bandwidth" for v in out)
     # The two-lever profile is not a variant of anything.
@@ -341,8 +349,9 @@ def test_lever_mode_seats_the_defenders_own_variants_and_records_the_lever(monke
     assert later, "no generated variants were seated"
     assert all("nobody has measured it" in m["challenger_why"] for m in later)
     levers_seen = [(m["lever"]["field"], m["lever"]["to"]) for m in later]
-    assert ("quantum", 757) in levers_seen and ("quantum", 3028) in levers_seen
-    assert levers_seen.index(("quantum", 757)) < levers_seen.index(("quantum", 3028))
+    # 757 lies inside the range this field has run (300..1514); 3028 does not, so a live
+    # session never steps there (the bounded-generation guard in `lever_variants`).
+    assert ("quantum", 757) in levers_seen and ("quantum", 3028) not in levers_seen
     # A generated variant was applied as its own settings and recorded under its fingerprint.
     gen_fp = _fp(_settings(quantum=757))
     assert gen_fp in applied
@@ -351,7 +360,8 @@ def test_lever_mode_seats_the_defenders_own_variants_and_records_the_lever(monke
     with session_scope() as s:
         book = levers.lever_ledger(s)
     q = next(l for l in book["levers"] if (l["pipe"], l["field"]) == ("wan", "quantum"))
-    assert q["seated_as_lever"] >= 3 and q["rounds"] == sum(m["pairs"] for m in d.matchups if m["lever"]["field"] == "quantum")
+    # The measured sibling (300) and the one in-range step (757); 3028 was never seated.
+    assert q["seated_as_lever"] >= 2 and q["rounds"] == sum(m["pairs"] for m in d.matchups if m["lever"]["field"] == "quantum")
 
 
 def test_an_ordinary_ring_match_now_carries_its_crown_split(monkeypatch):
