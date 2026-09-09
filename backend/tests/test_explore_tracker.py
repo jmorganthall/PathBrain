@@ -180,6 +180,12 @@ def test_the_weakest_evidence_decides_the_bucket():
     assert explore_tracker.evidence_kind(_MATCHED + _MARGINAL) == "marginal"
     assert explore_tracker.evidence_kind(["estimated from this profile's own neighbourhood"]) == "conditioned"
     assert explore_tracker.evidence_kind([]) == "unknown"
+    # The ring is the strongest class — and still only as strong as the weakest leg beside it.
+    ring = ["measured in the ring: 512 → 1024 gained 0.80 over 13 paired rounds (p 0.034); claim kept at 87%"]
+    assert explore_tracker.evidence_kind(ring) == "ring"
+    assert explore_tracker.evidence_kind(ring + _MATCHED) == "matched_pair"
+    assert explore_tracker.evidence_kind(ring + _CONFOUNDED) == "confounded"
+    assert explore_tracker.EVIDENCE_ORDER[0] == "ring" and "ring" in explore_tracker.EVIDENCE_LABELS
 
 
 def test_the_summary_splits_calibration_by_evidence_class(client):

@@ -81,6 +81,7 @@ import type {
   ExploreLandscape,
   ExploreLedger,
   ExploreMatchedPairs,
+  ExploreRingTransitions,
   ExploreRecommendation,
 } from "../api/types";
 import { fmtNum, fmtTimeShort } from "../utils/format";
@@ -708,6 +709,25 @@ function CandidateCard({
         ))}
 
         <Stack direction="row" spacing={0.75} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
+          {candidate.ring && candidate.ring.state !== "null" && (
+            <Tooltip
+              title={`The duel ring made this exact move in ${candidate.ring.rounds} paired, same-weather round${candidate.ring.rounds === 1 ? "" : "s"} (median ${candidate.ring.margin >= 0 ? "+" : ""}${fmtNum(candidate.ring.margin, 2)} Overall). Controlled by design, where a matched pair is controlled by coincidence — the strongest evidence on the page. What it cannot promise is that the effect transfers from the bases it fought at to this one; "Was the data right?" grades that as its own class.`}
+            >
+              <Chip
+                size="small"
+                color="success"
+                label={`backed by the ring · ${candidate.ring.rounds} round${candidate.ring.rounds === 1 ? "" : "s"}${
+                  candidate.ring.state === "thin" ? " (thin)" : candidate.ring.state === "unsettled" ? " (no clear direction)" : ""
+                }`}
+                sx={{ height: 20 }}
+              />
+            </Tooltip>
+          )}
+          {candidate.ring && candidate.ring.state === "null" && (
+            <Tooltip title={`The ring measured this move over ${candidate.ring.rounds} paired rounds and found no gain, so the prediction adds nothing for it. Worth measuring only for what is still unknown about the point, not the move.`}>
+              <Chip size="small" variant="outlined" label="ring found no gain" sx={{ height: 20 }} />
+            </Tooltip>
+          )}
           {candidate.evidence.includes("measured directly on a matched pair") && (
             <Tooltip title="This exact move has been made before with everything else held identical, so the predicted change is a controlled measurement rather than an estimate.">
               <Chip size="small" color="success" variant="outlined" label="backed by a matched pair" sx={{ height: 20 }} />
@@ -886,40 +906,95 @@ function GapRow({
 // Everything else is identical by construction, so the difference in Overall is that
 // lever's effect with no confounding — a controlled experiment you already ran without
 // meaning to. Where this disagrees with the marginal curve above, believe this.
-function MatchedPairsCard({ rows }: { rows: ExploreMatchedPairs[] }) {
+// One-lever move measured either way, on one table: the ring's paired rounds (controlled by
+// design) and the matched pairs (controlled by coincidence), each row saying which.
+interface MoveRow {
+  key: string;
+  lever: string;
+  unit: string | null;
+  from: number;
+  to: number;
+  median_delta: number;
+  worst: number | null;
+  best: number | null;
+  count: number;
+  consistent: boolean;
+  source: "ring" | "pairs";
+  p: number | null;
+  significant: boolean;
+  thin: boolean;
+  isNull: boolean;
+  evidence: number;
+}
+
+function MatchedPairsCard({ rows, ring }: { rows: ExploreMatchedPairs[]; ring?: ExploreRingTransitions[] }) {
   // Flattened across levers, because the question is "what do we actually know?", not
   // "what do we know about quantum?" — and grouped by lever the strongest finding in the
   // field can sit halfway down the fourth group.
-  const all = useMemo(
-    () =>
-      rows.flatMap((r) =>
-        r.transitions.map((t) => ({
-          ...t,
-          key: `${r.key}:${t.from}-${t.to}`,
-          lever: `${r.pipe} ${r.field_label}`,
-          unit: r.unit,
-          // Evidence, not effect size. Several pairs that all agree is a finding; one pair
-          // with a dramatic number is an anecdote, and leading with the anecdote is how a
-          // table this long sends you chasing an outlier.
-          evidence: (t.consistent && t.pairs > 1 ? 1e6 : 0) + t.pairs * 1e3 + Math.abs(t.median_delta),
-        })),
-      ),
-    [rows],
-  );
+  const all = useMemo<MoveRow[]>(() => {
+    const pairs: MoveRow[] = rows.flatMap((r) =>
+      r.transitions.map((t) => ({
+        key: `${r.key}:${t.from}-${t.to}`,
+        lever: `${r.pipe} ${r.field_label}`,
+        unit: r.unit,
+        from: t.from,
+        to: t.to,
+        median_delta: t.median_delta,
+        worst: t.worst,
+        best: t.best,
+        count: t.pairs,
+        consistent: t.consistent,
+        source: "pairs" as const,
+        p: null,
+        significant: false,
+        thin: false,
+        isNull: false,
+        // Evidence, not effect size. Several pairs that all agree is a finding; one pair
+        // with a dramatic number is an anecdote, and leading with the anecdote is how a
+        // table this long sends you chasing an outlier.
+        evidence: (t.consistent && t.pairs > 1 ? 1e6 : 0) + t.pairs * 1e3 + Math.abs(t.median_delta),
+      })),
+    );
+    // Ring rows lead: a paired, same-weather round is a controlled comparison by design,
+    // and the pricing above trusts it before any pair. Significant ones first, then by
+    // rounds, then by the size of the effect.
+    const fought: MoveRow[] = (ring ?? []).flatMap((r) =>
+      r.transitions.map((t) => ({
+        key: `ring:${r.key}:${t.from}-${t.to}`,
+        lever: `${r.pipe} ${r.field_label}`,
+        unit: r.unit,
+        from: t.from,
+        to: t.to,
+        median_delta: t.margin_up,
+        worst: null,
+        best: null,
+        count: t.rounds,
+        consistent: t.significant,
+        source: "ring" as const,
+        p: t.paired_p ?? t.sign_p ?? null,
+        significant: t.significant,
+        thin: t.thin,
+        isNull: t.null,
+        evidence: 2e6 + (t.significant ? 1e6 : 0) + t.rounds * 1e3 + Math.abs(t.margin_up),
+      })),
+    );
+    return [...fought, ...pairs];
+  }, [rows, ring]);
   const { orderBy, dir, page, setPage, onSort } = usePagedSort(all, "evidence");
   const sorted = useMemo(() => {
-    const pick = (r: (typeof all)[number]) =>
+    const pick = (r: MoveRow) =>
       orderBy === "lever"
         ? r.lever
         : orderBy === "delta"
           ? Math.abs(r.median_delta)
           : orderBy === "pairs"
-            ? r.pairs
+            ? r.count
             : r.evidence;
     return [...all].sort((a, b) => cmp(pick(a), pick(b), dir));
   }, [all, orderBy, dir]);
   const shown = sorted.slice(page * ROWS_PER_PAGE, page * ROWS_PER_PAGE + ROWS_PER_PAGE);
-  const solid = all.filter((r) => r.consistent && r.pairs > 1).length;
+  const solid = all.filter((r) => r.source === "pairs" && r.consistent && r.count > 1).length;
+  const fought = all.filter((r) => r.source === "ring").length;
 
   return (
     <FoldCard
@@ -928,8 +1003,8 @@ function MatchedPairsCard({ rows }: { rows: ExploreMatchedPairs[] }) {
       summary={
         <>
           {all.length} measured move{all.length === 1 ? "" : "s"} between profiles that differ in
-          exactly one lever.
-          <HelpTip title="Everything else identical, so the gap is that lever's effect with nothing mixed in. Where this disagrees with a curve above, believe this. Sorted by evidence: moves confirmed by several agreeing pairs first." />
+          exactly one lever{fought > 0 ? `, ${fought} of them fought in the ring` : ""}.
+          <HelpTip title="Everything else identical, so the gap is that lever's effect with nothing mixed in. Ring rows are paired, interleaved, same-weather duel rounds on that exact move — controlled by design — and the candidates above are priced from them before any pair. Matched-pair rows are profiles that happen to differ in one lever, measured on different nights. Where either disagrees with a curve above, believe this table. Sorted by evidence: significant ring rows first, then moves confirmed by several agreeing pairs." />
         </>
       }
     >
@@ -941,8 +1016,8 @@ function MatchedPairsCard({ rows }: { rows: ExploreMatchedPairs[] }) {
         ) : (
           <>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
-              {all.length} measured move{all.length === 1 ? "" : "s"} across {rows.length} lever
-              {rows.length === 1 ? "" : "s"}
+              {all.length} measured move{all.length === 1 ? "" : "s"}
+              {fought > 0 ? ` · ${fought} fought in the ring` : ""}
               {solid > 0 ? ` · ${solid} confirmed by more than one agreeing pair` : ""}
             </Typography>
             <TableContainer>
@@ -962,12 +1037,12 @@ function MatchedPairsCard({ rows }: { rows: ExploreMatchedPairs[] }) {
                     />
                     <SortHead
                       id="pairs"
-                      label="Pairs"
+                      label="Rounds / pairs"
                       align="right"
                       orderBy={orderBy}
                       dir={dir}
                       onSort={onSort}
-                      tip="How many matched pairs made this exact move, and the range of outcomes across them."
+                      tip="For a ring row, how many paired rounds fought this exact move. For a matched-pair row, how many pairs made it, and the range of outcomes across them."
                     />
                     <SortHead
                       id="evidence"
@@ -975,7 +1050,7 @@ function MatchedPairsCard({ rows }: { rows: ExploreMatchedPairs[] }) {
                       orderBy={orderBy}
                       dir={dir}
                       onSort={onSort}
-                      tip="The default order: moves confirmed by several agreeing pairs first, then by pair count, then by effect size."
+                      tip="The default order: significant ring rows first, then the rest of the ring by rounds, then moves confirmed by several agreeing pairs, then by pair count, then by effect size."
                     />
                   </TableRow>
                 </TableHead>
@@ -996,22 +1071,53 @@ function MatchedPairsCard({ rows }: { rows: ExploreMatchedPairs[] }) {
                           {fmtNum(t.median_delta, 2)}
                         </TableCell>
                         <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                          {t.pairs}
-                          {t.pairs > 1 && (
+                          {t.count}
+                          {t.source === "ring" ? (
                             <Typography component="span" variant="caption" color="text.secondary">
                               {" "}
-                              ({fmtNum(t.worst, 1)}…{fmtNum(t.best, 1)})
+                              round{t.count === 1 ? "" : "s"}
                             </Typography>
+                          ) : (
+                            t.count > 1 &&
+                            t.worst != null &&
+                            t.best != null && (
+                              <Typography component="span" variant="caption" color="text.secondary">
+                                {" "}
+                                ({fmtNum(t.worst, 1)}…{fmtNum(t.best, 1)})
+                              </Typography>
+                            )
                           )}
                         </TableCell>
                         <TableCell>
-                          {t.consistent && t.pairs > 1 ? (
+                          {t.source === "ring" ? (
+                            <Tooltip
+                              title={
+                                t.isNull
+                                  ? "Enough paired rounds inside the ring's no-effect floor: the ring says this move does nothing here."
+                                  : t.thin
+                                    ? "Fewer paired rounds than the ring needs for a direction — it informs a prediction without steering it."
+                                    : t.significant
+                                      ? "A direction at the ring's alpha over paired, interleaved, same-weather rounds — controlled by design."
+                                      : "Enough rounds, but no significant direction yet; a prediction takes half its claim."
+                              }
+                            >
+                              <Chip
+                                size="small"
+                                color={t.significant ? "success" : "default"}
+                                variant="outlined"
+                                label={`ring${t.isNull ? " · no effect" : t.thin ? " · thin" : ""}${
+                                  t.p != null ? ` · p ${fmtNum(t.p, 3)}` : ""
+                                }`}
+                                sx={{ height: 18 }}
+                              />
+                            </Tooltip>
+                          ) : t.consistent && t.count > 1 ? (
                             <Tooltip title="Every matched pair agreed on the direction — not an average over a mix of outcomes.">
                               <Chip size="small" color="success" variant="outlined" label="every pair agrees" sx={{ height: 18 }} />
                             </Tooltip>
                           ) : (
                             <Typography variant="caption" color="text.secondary">
-                              {t.pairs === 1 ? "single pair" : "pairs disagree"}
+                              {t.count === 1 ? "single pair" : "pairs disagree"}
                             </Typography>
                           )}
                         </TableCell>
@@ -1832,7 +1938,7 @@ export default function Explore() {
           </FoldCard>
 
           {/* ── De-confounded evidence ─────────────────────────────────────────── */}
-          <MatchedPairsCard rows={data.matched_pairs} />
+          <MatchedPairsCard rows={data.matched_pairs} ring={data.ring_transitions} />
           <BasinsCard basins={data.basins} maxOther={data.condition_max_other_changes} />
 
           {/* ── Holes in coverage ──────────────────────────────────────────────── */}

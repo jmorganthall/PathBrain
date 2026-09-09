@@ -1903,6 +1903,41 @@ LLM-based. See `README.md` for the product overview.
     local optimum for a coordinate-wise search. Several basins ≥2 levers apart is the
     demonstration that the levers are **coupled**, that no single change crosses between
     them, and that a marginal curve averaging across them describes none of them.
+    **The ring prices a move before any of these** (`explore.ring_transitions` /
+    `_ring_delta` / `_ring_block`, `RING_SESSIONS` 200, `RING_PRIOR_ROUNDS` 2; the `ring`
+    evidence class in `explore_tracker`; `levers.margin_se`). Asked *"would Explore take the
+    lever ledger into consideration?"* — it did not: `explore.py` imported nothing from
+    `levers`, so the ring's paired, interleaved, same-weather rounds on an exact single-lever
+    move — controlled by **design**, where a matched pair is controlled by coincidence and
+    measured on different nights — never reached a prediction. `landscape` now reads
+    `levers.lever_ledger` once (best-effort: an unreadable ledger is an empty book, never a
+    failed page — the fixtures pass no session) and re-keys it like the axes (both key on
+    the pipe *label* and coerce through `_to_number`, so `"5ms"` and `5` meet), and
+    `_predict` gains tier 0: the exact transition, either direction (a move DOWN takes the
+    margin negated). A **significant** transition (a direction at `levers.ALPHA` over ≥
+    `MIN_ROUNDS`) is applied shrunk by `rounds/(rounds+RING_PRIOR_ROUNDS)` — 8 rounds keep
+    80%, 16 keep 89%, lighter than a pair's `n/(n+1)` because a ring round is same-weather;
+    one the ring has settled as **null** (`NULL_ROUNDS` inside `NULL_MARGIN`) adds nothing
+    and says so; a **thin** one (under `MIN_ROUNDS`) informs without steering, shrunk against
+    the bar it hasn't reached; an unsettled one is halved. Every note starts with *"measured
+    in the ring"*, which is the needle that puts the claim in the ledger's new **`ring`**
+    class, strongest in `EVIDENCE_ORDER` and still weakest-link beside another leg. That
+    class is the point rather than a label: what the ring cannot promise is that a lever's
+    effect at the bases it fought at *transfers* to this parent — the basins say levers
+    couple — and grading ring-priced claims separately is how the recommendation ledger
+    measures whether it does. The ring's own variants never need pricing: a lever leg is a
+    run filed under the variant's fingerprint, so its coordinates are already in
+    `already_tried`; what the book adds is the generalising evidence — "512 → 1024 on the
+    upload limit gained +0.8 over 13 rounds at two bases" priced onto a parent that has
+    never run 1024. Each candidate carries `ring` (per moved leg: rounds, signed margin,
+    state; the candidate's state is its least-measured leg) and the landscape carries
+    `ring_transitions` in the matched pairs' shape; the Explore page shows *backed by the
+    ring · N rounds* / *ring found no gain* on a candidate and merges the ring's rows into
+    "What changing one lever actually did", marked **ring** (rounds, p) beside the pairs and
+    sorted first. Deliberately left alone: the stated band (open space ⊕ anchor SE — a
+    ring-priced move narrows what is known about the *move*, not the *point*; `rank_bets`
+    widens or trusts the class by its measured miss once claims are graded), and the full
+    ledger card, which stays on the Levers page with its mechanism predictions.
     **Candidates are priced from the best evidence available**, in that same order:
     a matched pair for the exact move → the *parent's own* conditioned neighbourhood → the
     marginal curve, **shrunk by `CONFOUNDED_SHRINK`** when that curve is flagged confounded
@@ -2131,7 +2166,10 @@ LLM-based. See `README.md` for the product overview.
     escape; and **Explore keeps branching from the pooled best**, because its response
     curves, predictions and uncertainties are all fitted in pooled-Overall space and
     picking a parent by ring rating would price it against a scale it was never calibrated
-    to. `ranking = "pooled"` restores the former behaviour for comparison.
+    to. (The *move* is a different matter: where the ring has fought an exact single-lever
+    transition, Explore prices that move from the ring's paired margin before any pooled
+    evidence — `explore.ring_transitions`, under `explore.py`.) `ranking = "pooled"` restores
+    the former behaviour for comparison.
   - `refresh.py` — **Re-run profiles**: the batch sibling of `profile_test`. For
     each stored profile it applies the settings, benchmarks a **caller-chosen** number of
     iterations, then moves on — **restoring the baseline at the end** (persisted to a

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import math
 
+from .levers import ALPHA as RING_ALPHA, MIN_ROUNDS as RING_MIN_ROUNDS, NULL_MARGIN as RING_NULL_MARGIN, NULL_ROUNDS as RING_NULL_ROUNDS
 from .logging_config import get_logger
 from .metrics import METRICS
 from .settings_profile import _to_number
@@ -622,6 +623,123 @@ def _shrunk_anchor(parent: dict, points: list[dict]) -> tuple[float, float]:
     return med + (overall - med) * w, se * math.sqrt(w)
 
 
+#: Duel sessions the ring's book is read over when pricing a move. The Levers page reads 50
+#: for display; pricing wants everything a ladder has built up.
+RING_SESSIONS = 200
+#: Virtual rounds a ring claim is shrunk against — 8 rounds keep 80% of the measured
+#: margin, 16 keep 89%. Lighter than the matched pair's ``n/(n+1)`` per pair, because a
+#: ring round is a same-weather comparison where a pair is two medians from different
+#: nights; heavier than nothing, because a median over eight rounds is still ~1.5 points
+#: of noise on this link.
+RING_PRIOR_ROUNDS = 2.0
+
+
+def ring_transitions(session) -> dict[str, dict]:
+    """The ring's book, keyed like the axes — the controlled evidence for pricing a move.
+
+    ``levers.lever_ledger`` already pools every single-lever match on the duel ledger per
+    lever and per transition (``lo → hi``, margin signed as moving UP). This reads it once
+    and re-keys it as ``{"Download::target": {key, pipe, field, field_label, unit,
+    transitions: [{from, to, margin_up, rounds, ...}]}}`` — the same axis key
+    ``_numeric_axes`` builds (both use the pipe *label*), and the same numeric coercion,
+    so a candidate's ``from``/``to`` can be looked up exactly as ``_matched_delta`` looks
+    up a pair. Each transition also carries the three states the pricing reads:
+    ``significant`` (a direction at ``levers.ALPHA`` over at least ``MIN_ROUNDS``),
+    ``null`` (``NULL_ROUNDS`` inside the ``NULL_MARGIN`` floor — the ring says no effect),
+    ``thin`` (under ``MIN_ROUNDS``).
+
+    Best-effort by rule: the ledger is a second data source and must never take the
+    landscape down (the test fixtures pass no session at all), so any failure reads as an
+    empty book and candidates are priced from the pooled record alone.
+    """
+    try:
+        from .levers import lever_ledger
+
+        book = lever_ledger(session, limit_sessions=RING_SESSIONS)
+    except Exception:  # noqa: BLE001 — a second source, never a reason the page fails
+        log.debug("Explore: the lever ledger could not be read; pricing without it", exc_info=True)
+        return {}
+    out: dict[str, dict] = {}
+    for lever in book.get("levers") or []:
+        rows: list[dict] = []
+        for t in lever.get("transitions") or []:
+            margin = t.get("median_margin_up")
+            rounds = int(t.get("rounds") or 0)
+            if margin is None or rounds <= 0 or t.get("from") is None or t.get("to") is None:
+                continue
+            sign_p, paired_p = t.get("sign_p"), t.get("paired_p")
+            sig = (sign_p is not None and sign_p < RING_ALPHA) or (paired_p is not None and paired_p < RING_ALPHA)
+            rows.append({
+                "from": float(t["from"]),
+                "to": float(t["to"]),
+                "margin_up": float(margin),
+                "rounds": rounds,
+                "paired_rounds": int(t.get("paired_rounds") or 0),
+                "matches": int(t.get("matches") or 0),
+                "sign_p": sign_p,
+                "paired_p": paired_p,
+                "margin_se": t.get("margin_se"),
+                "direction": t.get("direction"),
+                "significant": bool(sig and rounds >= RING_MIN_ROUNDS),
+                "null": bool(not sig and rounds >= RING_NULL_ROUNDS and abs(float(margin)) < RING_NULL_MARGIN),
+                "thin": rounds < RING_MIN_ROUNDS,
+            })
+        if not rows:
+            continue
+        key = _axis_key(str(lever.get("pipe")), str(lever.get("field")))
+        out[key] = {
+            "key": key,
+            "pipe": lever.get("pipe"),
+            "field": lever.get("field"),
+            "field_label": lever.get("field_label") or lever.get("field"),
+            "unit": lever.get("unit"),
+            "transitions": sorted(rows, key=lambda r: (-r["rounds"], r["from"], r["to"])),
+            "total_rounds": sum(r["rounds"] for r in rows),
+        }
+    return out
+
+
+def _ring_delta(ring_by_key: dict[str, dict], key: str, before: float, after: float) -> dict | None:
+    """What the RING measured this exact move to do, if it ever has — the transition row
+    with ``delta`` signed for *this* move (the book records moving up; a move down takes
+    the margin negated). Only the exact transition counts, as with a matched pair."""
+    for t in (ring_by_key.get(key) or {}).get("transitions", []):
+        if (t["from"], t["to"]) == (before, after):
+            return {**t, "delta": t["margin_up"]}
+        if (t["from"], t["to"]) == (after, before):
+            return {**t, "delta": -t["margin_up"]}
+    return None
+
+
+def _ring_block(ring_by_key: dict[str, dict] | None, parent: dict, moves: dict[str, float]) -> dict | None:
+    """The ring's word on a candidate's moves, for the page: per moved lever the rounds,
+    the signed margin and its state; None when the ring has never made any of them."""
+    legs: list[dict] = []
+    for key, value in moves.items():
+        hit = _ring_delta(ring_by_key or {}, key, parent["coords"][key], value)
+        if hit is None:
+            continue
+        state = "null" if hit["null"] else "thin" if hit["thin"] else "measured" if hit["significant"] else "unsettled"
+        legs.append({
+            "key": key,
+            "rounds": hit["rounds"],
+            "margin": round(hit["delta"], 2),
+            "margin_se": hit.get("margin_se"),
+            "state": state,
+        })
+    if not legs:
+        return None
+    order = ["null", "thin", "unsettled", "measured"]
+    return {
+        "legs": legs,
+        "rounds": min(l["rounds"] for l in legs),
+        "margin": round(sum(l["margin"] for l in legs), 2),
+        # Weakest-link, like the evidence class: a candidate is only as measured as its
+        # least-measured leg.
+        "state": min((l["state"] for l in legs), key=order.index),
+    }
+
+
 def _matched_delta(pairs_by_key: dict[str, dict], key: str, before: float, after: float) -> tuple[float, int, bool] | None:
     """What the *controlled* record says this exact move did, if it has ever been made.
 
@@ -651,6 +769,7 @@ def _predict(
     pairs_by_key: dict[str, dict] | None = None,
     local_by_key: dict[str, dict] | None = None,
     anchor: float | None = None,
+    ring_by_key: dict[str, dict] | None = None,
 ) -> tuple[float, list[str]]:
     """``(predicted Overall, evidence notes)`` for a candidate, anchored on its parent.
 
@@ -663,6 +782,16 @@ def _predict(
     "What moving the lever does" comes from the best evidence available, in this order,
     because they are not equally believable:
 
+    0. **The ring** — paired, interleaved, same-weather rounds in which exactly this move
+       was made (``ring_transitions``, the lever ledger). Controlled by *design*, where a
+       matched pair is controlled by coincidence and measured on different nights. A
+       significant transition is applied shrunk by its rounds (``RING_PRIOR_ROUNDS``); one
+       the ring has settled as **null** adds nothing, and says so; a thin one (under
+       ``MIN_ROUNDS``) informs without steering, shrunk against the bar it hasn't reached;
+       an unsettled one (enough rounds, no significant direction) is halved. What the ring
+       cannot promise is that a lever's effect at the bases it fought at transfers to this
+       parent — the basins say levers couple — which is why the recommendation ledger
+       grades ring-priced claims as their own class.
     1. **A matched pair** that made this exact move — controlled, nothing else varied.
     2. **The parent's own neighbourhood** — the conditioned curve built from profiles that
        differ from the parent in at most one other lever, so it describes this part of the
@@ -675,6 +804,34 @@ def _predict(
     predicted = parent["overall"] if anchor is None else anchor
     notes: list[str] = []
     for key, value in changes.items():
+        ring = _ring_delta(ring_by_key or {}, key, parent["coords"][key], value)
+        if ring is not None:
+            rounds = int(ring["rounds"])
+            move = f"{parent['coords'][key]:g} → {value:g}"
+            plural = "" if rounds == 1 else "s"
+            if ring["null"]:
+                notes.append(
+                    f"measured in the ring: {move} showed no gain over {rounds} paired rounds "
+                    f"(median {ring['delta']:+.2f}, inside the no-effect floor) — nothing added"
+                )
+                continue
+            if ring["thin"]:
+                shrink = rounds / (rounds + RING_MIN_ROUNDS)
+                standing = f"only {rounds} paired round{plural} so far, so it informs without steering"
+            else:
+                shrink = rounds / (rounds + RING_PRIOR_ROUNDS)
+                standing = f"{rounds} paired round{plural}"
+                if not ring["significant"]:
+                    shrink *= 0.5
+                    standing += ", no significant direction, claim halved"
+            p = ring.get("paired_p") if ring.get("paired_p") is not None else ring.get("sign_p")
+            predicted += ring["delta"] * shrink
+            notes.append(
+                f"measured in the ring: {move} {'gained' if ring['delta'] >= 0 else 'cost'} "
+                f"{abs(ring['delta']):.2f} over {standing}"
+                f"{f' (p {p:.3f})' if isinstance(p, (int, float)) else ''}; claim kept at {shrink:.0%}"
+            )
+            continue
         matched = _matched_delta(pairs_by_key or {}, key, parent["coords"][key], value)
         if matched is not None:
             delta, n_pairs, consistent = matched
@@ -889,6 +1046,7 @@ def _candidate_dict(
     by_key: dict[str, dict],
     pairs_by_key: dict[str, dict],
     local_curve: dict[str, dict] | None,
+    ring_by_key: dict[str, dict] | None = None,
 ) -> dict:
     """One proposed profile: ``parent`` with ``changes`` applied, priced and explained.
 
@@ -907,7 +1065,9 @@ def _candidate_dict(
     # carry the residual (anchor_se) into the stated band rather than pretending the
     # starting point is exact.
     anchor, anchor_se = _shrunk_anchor(parent, points)
-    predicted, evidence = _predict(parent, moves, by_key, pairs_by_key, local_curve, anchor=anchor)
+    predicted, evidence = _predict(
+        parent, moves, by_key, pairs_by_key, local_curve, anchor=anchor, ring_by_key=ring_by_key
+    )
     open_space, nearest = _uncertainty(coords, points, axes)
     # Moving two levers at once is NOT the sum of moving each — that additivity is
     # exactly what the basin structure disproves, and a candidate assuming it is
@@ -959,6 +1119,9 @@ def _candidate_dict(
         # How the prediction was arrived at, so a number backed by a controlled pair is
         # never mistaken for one extrapolated off a confounded average.
         "evidence": evidence,
+        # The ring's own word on these moves (rounds, signed margin, state per leg), so the
+        # page can show "backed by the ring · 12 rounds" without parsing the notes.
+        "ring": _ring_block(ring_by_key, parent, moves),
         "multi_lever": multi,
         "upside": round(upside, 2),
         "nearest_measured": round(nearest, 3),
@@ -1115,6 +1278,7 @@ def _candidates(
     limit: int,
     pairs: list[dict] | None = None,
     already_tried: set | None = None,
+    ring: dict[str, dict] | None = None,
 ) -> list[dict]:
     """Untested profiles worth measuring, best first.
 
@@ -1179,6 +1343,7 @@ def _candidates(
             by_key,
             pairs_by_key,
             local_curves.get(parent["fingerprint"]),
+            ring_by_key=ring,
         ))
 
     # Each parent's own neighbourhood, so a prediction about moving THIS profile is made
@@ -1243,6 +1408,7 @@ def attach_gap_candidates(
     pairs: list[dict] | None = None,
     already_tried: set | None = None,
     best_measured: float | None = None,
+    ring: dict[str, dict] | None = None,
 ) -> None:
     """Give every hole in coverage a profile that would actually fill it, in place.
 
@@ -1313,7 +1479,8 @@ def attach_gap_candidates(
                 continue
             chosen, exhausted = usable[0], True
         candidate = _candidate_dict(
-            chosen, {key: (value, why)}, axes, points, by_key, pairs_by_key, _local(chosen)
+            chosen, {key: (value, why)}, axes, points, by_key, pairs_by_key, _local(chosen),
+            ring_by_key=ring,
         )
         candidate["beats_best_by"] = round(candidate["upside"] - best, 2)
         candidate["summary"] = _candidate_summary(candidate, best)
@@ -1350,6 +1517,7 @@ def crown_legs(
     tried: set,
     best_measured: float,
     crown_metrics: list[str],
+    ring: dict[str, dict] | None = None,
 ) -> dict | None:
     """Per crown metric: who leads it, where the best profile stands on it, and the lever
     moves that would take the best profile toward the leaders — each either already measured
@@ -1375,7 +1543,9 @@ def crown_legs(
         return _snap_allowed(axis, float(raw))
 
     def _priced(changes: dict[str, tuple[float, str]]) -> dict:
-        cand = _candidate_dict(ref_pt, changes, axes, points, by_key, pairs_by_key, local)
+        cand = _candidate_dict(
+            ref_pt, changes, axes, points, by_key, pairs_by_key, local, ring_by_key=ring
+        )
         cand["beats_best_by"] = round(cand["upside"] - best_measured, 2)
         cand["summary"] = _candidate_summary(cand, best_measured)
         return cand
@@ -1962,6 +2132,9 @@ def landscape(
     curves = _response_curves(points, axes)
     gaps = _gaps(points, axes, curves)
     pairs = matched_pairs(pool, axes)
+    # The ring's book: the controlled evidence for a move, read once and keyed like the
+    # axes. Empty (never absent) when the ledger can't be read.
+    ring = ring_transitions(session)
 
     # Everything already tried, so nothing is proposed twice. Two sources, because a profile
     # can be *attempted* without ever appearing in the field:
@@ -1985,7 +2158,7 @@ def landscape(
     # A hole in coverage names a value, not a profile. Attach the profile that would fill
     # it — the best measured one with that single lever moved — so "one run settles it" is
     # something the page can actually offer rather than an observation.
-    attach_gap_candidates(gaps, points, axes, curves, pairs, already_tried=tried)
+    attach_gap_candidates(gaps, points, axes, curves, pairs, already_tried=tried, ring=ring)
 
     by_fp = {p["fingerprint"]: p for p in points}
     ref = by_fp.get(reference or "") or max(points, key=lambda p: p["overall"])
@@ -2009,7 +2182,7 @@ def landscape(
         round(NOISE_SIGMA * math.sqrt(2.0) * _median(settled_ses), 2) if settled_ses else None
     )
     candidates = _candidates(
-        points, axes, curves, gaps, max(1, int(suggestions)), pairs, already_tried=tried
+        points, axes, curves, gaps, max(1, int(suggestions)), pairs, already_tried=tried, ring=ring
     )
     best_established = _best_established(points)
     if noise_floor is not None:
@@ -2020,7 +2193,7 @@ def landscape(
     try:
         legs = crown_legs(
             field, points, axes, curves, pairs, tried, best_established,
-            list(field.get("overall_metrics") or []),
+            list(field.get("overall_metrics") or []), ring=ring,
         )
     except Exception:  # noqa: BLE001
         log.exception("Explore: crown-leg leaders could not be computed")
@@ -2042,6 +2215,12 @@ def landscape(
         "points": points,
         "curves": curves,
         "matched_pairs": pairs,
+        # The ring's transitions, per axis, in the matched pairs' shape — the controlled
+        # rows the page shows beside the observational ones. Only levers the axes carry.
+        "ring_transitions": sorted(
+            (r for k, r in ring.items() if k in axes),
+            key=lambda r: (-r["total_rounds"], r["pipe"], r["field"]),
+        ),
         "conditioned_curves": conditioned_curves(points, axes, ref),
         "basins": basins(points, axes),
         "crown_legs": legs,

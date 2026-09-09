@@ -443,6 +443,24 @@ def _binom_two_sided(k: int, n: int) -> float | None:
     return min(1.0, 2.0 * min(lo, hi))
 
 
+def margin_se(deltas: list[float]) -> float | None:
+    """Standard error of the median per-round margin — ``IQR/√n``, the same convention as
+    ``_overall_se`` on a profile's Overall — or None under four rounds, where a spread is
+    not yet a spread. The noise bar Explore carries beside a ring-priced move."""
+    if len(deltas) < 4:
+        return None
+    s = sorted(deltas)
+    n = len(s)
+
+    def _q(p: float) -> float:
+        pos = p * (n - 1)
+        lo = int(pos)
+        hi = min(lo + 1, n - 1)
+        return s[lo] + (s[hi] - s[lo]) * (pos - lo)
+
+    return round((_q(0.75) - _q(0.25)) / math.sqrt(n), 3)
+
+
 def _direction(wins_hi: int, wins_lo: int, sign_p: float | None, paired_p: float | None,
                margins_hi: list[float]) -> str:
     rounds = wins_hi + wins_lo
@@ -539,6 +557,7 @@ def _summary(readings: list[dict]) -> dict:
         "sign_p": round(sign_p, 4) if sign_p is not None else None,
         "paired_p": round(paired_p, 4) if paired_p is not None else None,
         "paired_rounds": len(deltas),
+        "margin_se": margin_se(deltas),
         "crown_margin_up": crown,
         "direction": _direction(wins_hi, wins_lo, sign_p, paired_p, margins),
         "seated_as_lever": sum(1 for r in readings if r["seated_as_lever"]),
@@ -652,6 +671,7 @@ def lever_ledger(session, *, limit_sessions: int = 50) -> dict:
                 "pipe": pipe, "field": fkey, "field_label": fld.label, "unit": fld.unit,
                 "matches": 0, "rounds": 0, "wins_higher": 0, "wins_lower": 0,
                 "median_margin_up": None, "sign_p": None, "paired_p": None, "paired_rounds": 0,
+                "margin_se": None,
                 "crown_margin_up": {}, "direction": "thin", "seated_as_lever": 0,
                 "prediction": mech["prediction"], "mechanism": mech["mechanism"],
                 "unsaturated": mech["unsaturated"],
