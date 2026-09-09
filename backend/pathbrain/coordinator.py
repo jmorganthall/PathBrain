@@ -48,6 +48,8 @@ from __future__ import annotations
 import threading
 import time
 from contextlib import contextmanager
+from typing import Callable
+
 
 from .logging_config import get_logger
 
@@ -131,6 +133,12 @@ class Lease:
         """Raise if this lease has been evicted. Call at seams where stopping is safe."""
         if self.revoked:
             raise LeaseRevoked(self)
+
+
+class CoordinatorAborted(RuntimeError):
+    """Raised by :func:`hold` when the waiting session's own ``abort`` predicate came true
+    before the lock was acquired — a queued session that was cancelled, and so must leave
+    the line without ever taking the pipeline. Nothing was acquired; nothing to release."""
 
 
 class CoordinatorBusy(RuntimeError):
@@ -342,22 +350,34 @@ def _new_lease(label: str) -> Lease:
         return _lease
 
 
-def _acquire_or_evict(timeout: float | None) -> bool:
+#: How often a waiter with an ``abort`` predicate re-asks it. A cancelled session should
+#: leave the queue in about this long, not at the eviction poll's pace.
+ABORT_POLL_S = 1.0
+
+
+def _acquire_or_evict(timeout: float | None, abort: Callable[[], bool] | None = None) -> bool:
     """Block for the lock, evicting a holder that has gone quiet. True if acquired.
 
     The wait is broken into polls for one reason only: an untimed ``acquire`` on a wedged
-    holder never returns, which is precisely the failure this is here to end.
+    holder never returns, which is precisely the failure this is here to end. With
+    ``abort`` given, the predicate is asked before every poll and the wait raises
+    :class:`CoordinatorAborted` the moment it answers True — a queued session that has been
+    cancelled leaves the line instead of sitting behind a night-long holder to do nothing
+    when its turn comes (and instead of being yielded to, which costs the holder a seam).
     """
     global _waiters
     deadline = None if timeout is None else time.monotonic() + timeout
+    poll = EVICT_POLL_S if abort is None else min(EVICT_POLL_S, ABORT_POLL_S)
     with _waiters_lock:
         _waiters += 1
     try:
         while True:
+            if abort is not None and abort():
+                raise CoordinatorAborted("the wait for the pipeline was abandoned")
             if deadline is None:
-                wait = EVICT_POLL_S
+                wait = poll
             else:
-                wait = min(EVICT_POLL_S, max(deadline - time.monotonic(), 0.0))
+                wait = min(poll, max(deadline - time.monotonic(), 0.0))
                 if wait <= 0:
                     return False
             if _lock.acquire(timeout=wait):
@@ -369,16 +389,20 @@ def _acquire_or_evict(timeout: float | None) -> bool:
 
 
 @contextmanager
-def hold(owner_label: str, *, timeout: float | None = None):
+def hold(owner_label: str, *, timeout: float | None = None,
+         abort: Callable[[], bool] | None = None):
     """Acquire the coordination lock for the duration of the block (blocking).
 
     Queues behind any in-progress session. With ``timeout`` set, raises
-    ``CoordinatorBusy`` if the lock can't be acquired within that many seconds. Yields the
+    ``CoordinatorBusy`` if the lock can't be acquired within that many seconds; with
+    ``abort`` set, raises :class:`CoordinatorAborted` as soon as the predicate answers
+    True while still waiting (a cancelled session leaves the queue). Yields the
     session's :class:`Lease` — a long session should ``check()`` it at its seams so an
     eviction stops it instead of letting it resume over the top of a live session.
     """
-    if not _acquire_or_evict(timeout):
+    if not _acquire_or_evict(timeout, abort):
         raise CoordinatorBusy(owner())
+
     lease = _new_lease(owner_label)
     log.info("Coordinator acquired by %s", owner_label)
     try:

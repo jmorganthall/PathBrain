@@ -10,6 +10,7 @@ thread so the API returns immediately with a run id the UI polls; the run's
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from statistics import mean, median, pstdev
 from time import perf_counter
@@ -44,6 +45,53 @@ CHUNK_ITERATIONS = 5
 
 #: Fallback probe deadline when the config carries none (see ``probes``).
 DEFAULT_PROBE_TIMEOUT_MINUTES = 10.0
+
+#: Runs asked to stop between iterations, ``{run_id: reason}``. A cancel used to be a
+#: status flipped on the row that ``execute_run`` never read back: the loop ran every
+#: remaining iteration and then wrote COMPLETE over the FAILED the cancel had written, so
+#: "cancel" was cosmetic for a running run and a session's cancel had to wait for a whole
+#: leg (three iterations, or thirty minutes of probe deadlines when a browser wedges).
+#: Now the loop asks before every iteration — this in-process request first (free), then
+#: the row itself (so a FAILED written by another process or the watchdog is honoured too)
+#: — and a cancelled run stops with what it has: the row is FAILED with the reason and
+#: how far it got, and nothing from it is scored, exactly as a run cancelled while queued.
+_STOP_REQUESTS: dict[int, str] = {}
+_STOP_LOCK = threading.Lock()
+
+#: Every cancel reason starts with this word — the one convention that lets a caller
+#: (``run_cancelled``) tell a cancelled run from one that failed on its own.
+CANCELLED_PREFIX = "Cancelled"
+
+
+def request_stop(run_id: int, reason: str = "Cancelled by user.") -> None:
+    """Ask a run to stop before its next iteration. Safe on any run id; a run that has
+    already finished ignores it (the request is dropped when its loop ends)."""
+    if not str(reason).startswith(CANCELLED_PREFIX):
+        reason = f"{CANCELLED_PREFIX}: {reason}"
+    with _STOP_LOCK:
+        _STOP_REQUESTS[int(run_id)] = reason
+
+
+def _stop_reason(run_id: int) -> str | None:
+    with _STOP_LOCK:
+        return _STOP_REQUESTS.get(int(run_id))
+
+
+def _clear_stop(run_id: int) -> None:
+    with _STOP_LOCK:
+        _STOP_REQUESTS.pop(int(run_id), None)
+
+
+def run_cancelled(run_id: int) -> bool:
+    """Whether ``run_id`` ended because someone cancelled it (rather than failing on its
+    own) — read off the row, so it answers the same after the loop has forgotten the
+    request. A session that finds the leg it just ran was cancelled from the jobs feed
+    treats that as its own cancel."""
+    with session_scope() as session:
+        row = session.execute(select(Run.status, Run.error).where(Run.id == int(run_id))).first()
+    if row is None:
+        return False
+    return row[0] == RunStatus.FAILED and str(row[1] or "").startswith(CANCELLED_PREFIX)
 
 
 def _probe_timeout_s(config: dict) -> float:
@@ -1049,6 +1097,25 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
             iteration_plugin_metrics: list[dict] = []
 
             for i in range(iterations):
+                # Cancelled? The in-process request first (a session's own cancel, or the
+                # cancel route in this process), then the row — re-read, since this session
+                # does not expire on commit — for a FAILED written by anyone else. Asked
+                # before every iteration so a cancel costs at most the iteration in flight.
+                stop = _stop_reason(run_id)
+                if stop is None and i > 0:
+                    session.refresh(run, attribute_names=["status", "error"])
+                    if run.status == RunStatus.FAILED:
+                        stop = run.error or f"{CANCELLED_PREFIX}."
+                if stop is not None:
+                    run.status = RunStatus.FAILED
+                    run.error = (
+                        f"{stop.rstrip('.')}. Stopped after {i} of {iterations} iteration(s); "
+                        "nothing from this run was scored."
+                    )
+                    run.finished_at = datetime.now(timezone.utc)
+                    session.commit()
+                    log.info("Run %s stopped before iteration %s/%s: %s", run_id, i + 1, iterations, stop)
+                    return
                 it_start = perf_counter()
                 log.info("Run %s: iteration %s/%s", run_id, i + 1, iterations)
                 iter_metrics: dict[str, dict] = {}
@@ -1278,8 +1345,10 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
         # every scheduled monitoring run, every challenger-race iteration, every refresh
         # and sweep variant — accumulating until the host OOMed. ``teardown_plugins`` has
         # always done this correctly; the two paths had simply drifted apart.
+        _clear_stop(run_id)
         if teardown:
             teardown_plugins()
+
 
 
 def apply_warmup_report(session) -> dict:

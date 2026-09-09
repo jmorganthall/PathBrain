@@ -934,6 +934,11 @@ def _active_duel_job() -> list[dict]:
     eta = _eta_ms(started_at=d.get("started_at"), budget_s=d.get("duration_s"), queued=queued)
     owner = f"duel#{d['id']}"
     message = _duel_message(d)
+    cancel_requested = bool(duel.cancel_requested())
+    if cancel_requested and not (d.get("stage") or "").startswith("Cancelling"):
+        # A setup step or a landing leg may have overwritten the "Cancelling" stage; the
+        # request stands regardless, and the row must say so or the X reads as ignored.
+        message = "Cancelling — stops after the iteration in flight · " + message
     stalled_ms = _stalled_ms(owner)
     evicted = None if queued else _evicted(owner, d.get("started_at"))
     if evicted:
@@ -964,6 +969,9 @@ def _active_duel_job() -> list[dict]:
             "href": "/levers" if d.get("mode") == "levers" else "/duels",
             "parent_id": None,
             "cancel_url": "/duel/cancel",
+            # The X is replaced by "stopping…" once a cancel is in: a second press was the
+            # only feedback a person had that the first one was heard.
+            "cancel_requested": cancel_requested,
             "started_at": d.get("started_at") or d.get("created_at"),
             "finished_at": None,
         }, eta, queued=queued, stalled_ms=stalled_ms)
@@ -1019,6 +1027,8 @@ def list_jobs(session: Session = Depends(get_session)) -> dict:
         # (null where there is none) on every entry for the same reason `eta_ms` is.
         entry.setdefault("detail", None)
         entry.setdefault("stalled_ms", None)
+        entry.setdefault("cancel_requested", False)
+
         if entry["status"] != "running":
             entry["eta_ms"] = entry["eta_basis"] = entry["unit_ms"] = None
             entry["queued"] = False

@@ -395,7 +395,20 @@ def duel_status(session: Session = Depends(get_session)) -> dict:
 def cancel_duel() -> dict:
     """Ask the running duel to stop after its current pair (baseline still restored)."""
     cancelled = duel.cancel()
-    return {"cancelled": cancelled, "status": (duel.current() or {}).get("status")}
+    status = (duel.current() or {}).get("status")
+    # The answer in words: the dropdown shows it, because a cancel that "did nothing" for a
+    # minute and one that never happened look identical without it.
+    if not cancelled:
+        message = "Nothing to cancel — no duel session is running."
+    elif status == "pending":
+        message = "Cancelled — it was still waiting for the pipeline, so nothing was applied."
+    else:
+        message = (
+            "Cancel received — the session stops after the iteration in flight and restores "
+            "your original settings."
+        )
+    return {"cancelled": cancelled, "status": status, "message": message}
+
 
 
 @router.get("/duel/card")

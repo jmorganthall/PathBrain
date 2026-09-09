@@ -21,9 +21,11 @@ from ..runner import (
     MAX_ITERATIONS,
     create_run,
     execute_run,
+    request_stop,
     run_chunk,
     teardown_plugins,
 )
+
 from ..schemas import CurrentTestStart, RunCreate, RunDetail
 from .routes_results import _serialize_run
 
@@ -145,7 +147,11 @@ def cancel_run(run_id: int, session: Session = Depends(get_session)) -> RunDetai
         run.error = "Cancelled by user."
         run.finished_at = datetime.now(timezone.utc)
         session.commit()
+        # The row is the record; this is what makes a RUNNING run actually stop — its loop
+        # reads the request before its next iteration instead of finishing every one.
+        request_stop(run_id, "Cancelled by user.")
     return _serialize_run(run)
+
 
 
 # No ``response_model``: the body is a run *plus* the universal queue-placement block, and

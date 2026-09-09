@@ -59,6 +59,18 @@ import { fmtDateTime, fmtNum } from "../utils/format";
 
 const isRunning = (s: DuelSession | null) => !!s && (s.status === "running" || s.status === "pending");
 
+// "3480" is what the engine counts; "2d 10h" is what a person reads. Past an hour the
+// window is spelled out, so a typo in the minutes field is visible before the button.
+const fmtWindow = (minutes: number): string => {
+  const d = Math.floor(minutes / 1440);
+  const h = Math.floor((minutes % 1440) / 60);
+  const m = minutes % 60;
+  if (d) return `${d}d${h ? ` ${h}h` : ""}${m ? ` ${m}m` : ""}`;
+  if (h) return `${h}h${m ? ` ${m}m` : ""}`;
+  return `${m} min`;
+};
+
+
 function leverText(l: DuelLever | null | undefined): string {
   if (!l) return "";
   return `${l.pipe} ${l.field_label} ${String(l.from)} → ${String(l.to)}`;
@@ -437,7 +449,7 @@ export default function Levers() {
 
   const start = () =>
     queue.submit({
-      label: `Lever session · ${selectedCampaign?.base_name ?? selectedCampaign?.base_label ?? "campaign"} · ${minutes} min`,
+      label: `Lever session · ${selectedCampaign?.base_name ?? selectedCampaign?.base_label ?? "campaign"} · ${fmtWindow(minutes)}`,
       run: async () => {
         const started = await api.duelStart(minutes, "levers", selected != null ? { campaign_id: selected } : undefined);
         if (!started.queued) setStatus(started);
@@ -568,8 +580,13 @@ export default function Levers() {
                   value={minutes}
                   onChange={(e) => setMinutes(Math.max(5, Math.round(Number(e.target.value) || 0)))}
                   inputProps={{ min: 5, step: 5 }}
+                  // Minutes are what the engine counts, but nobody reads 3480 as two and a
+                  // half days: past two hours the window is spelled out in hours beside
+                  // the field, so a typo is visible before the button, not in the jobs feed.
+                  helperText={minutes >= 120 ? `That is ${fmtWindow(minutes)} on the live connection.` : undefined}
                   sx={{ width: 170 }}
                 />
+
                 <Button
                   variant="contained"
                   startIcon={<PlayArrowIcon />}
