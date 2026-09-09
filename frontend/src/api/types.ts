@@ -1453,6 +1453,10 @@ export interface Job {
   // When set, POST here to cancel this job (a chunk cancels itself; a parent cancels the whole
   // operation). Absent → not cancellable.
   cancel_url?: string | null;
+  // True once a cancel has been received and the job is stopping at its next seam: the X
+  // gives way to "stopping…", so a second press isn't the only sign the first was heard.
+  cancel_requested?: boolean;
+
   started_at: string;
   finished_at: string | null;
   // Milliseconds remaining as of this response — deliberately a duration, not a formatted

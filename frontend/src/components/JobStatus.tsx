@@ -8,6 +8,7 @@ import IconButton from "@mui/material/IconButton";
 import LinearProgress from "@mui/material/LinearProgress";
 import Link from "@mui/material/Link";
 import Popover from "@mui/material/Popover";
+import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
@@ -286,7 +287,8 @@ function JobRow({
   onCancel?: (job: Job) => void;
 }) {
   const { determinate, pct } = useSmoothProgress(job);
-  const canCancel = job.status === "running" && !!job.cancel_url;
+  const stopping = job.status === "running" && !!job.cancel_requested;
+  const canCancel = job.status === "running" && !!job.cancel_url && !stopping;
   return (
     <Box
       sx={{
@@ -317,6 +319,13 @@ function JobRow({
         <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
           {fmtTimeShort(job.finished_at ?? job.started_at)}
         </Typography>
+        {stopping && (
+          <Tooltip title="A cancel has been received — the job stops at its next seam (after the iteration in flight).">
+            <Typography variant="caption" color="warning.main" sx={{ whiteSpace: "nowrap" }}>
+              stopping…
+            </Typography>
+          </Tooltip>
+        )}
         {canCancel && onCancel && (
           <Tooltip title={indent ? "Cancel this chunk" : "Cancel this job"}>
             <IconButton
@@ -381,6 +390,9 @@ export default function JobStatus() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [running, setRunning] = useState(0);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  // The server's answer to a cancel, in words. Without it a cancel that takes a minute to
+  // land and one that never happened look identical from the dropdown.
+  const [notice, setNotice] = useState<string | null>(null);
   const open = Boolean(anchor);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -403,9 +415,17 @@ export default function JobStatus() {
         : `Cancel this chunk of "${job.label}"? (its broader job will stop too)`;
       if (!window.confirm(msg)) return;
       try {
-        await api.cancelJob(job.cancel_url);
-      } catch {
-        /* best-effort; the next poll reflects reality */
+        const r = await api.cancelJob(job.cancel_url);
+        const said = typeof r.message === "string" ? r.message : null;
+        const heard = r.cancelled !== false;
+        setNotice(
+          said ??
+            (heard
+              ? `Cancel received for "${job.label}" — it stops at its next seam (after the iteration in flight).`
+              : `Nothing to cancel — "${job.label}" had already stopped.`),
+        );
+      } catch (e) {
+        setNotice(`Couldn't cancel "${job.label}": ${e instanceof Error ? e.message : String(e)}`);
       }
       void poll();
     },
@@ -486,6 +506,13 @@ export default function JobStatus() {
           })()
         )}
       </Popover>
+      <Snackbar
+        open={notice != null}
+        autoHideDuration={8000}
+        onClose={() => setNotice(null)}
+        message={notice ?? ""}
+      />
     </>
   );
 }
+

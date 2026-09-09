@@ -260,3 +260,43 @@ def test_status_reports_who_holds_it_and_how_long_they_have_been_quiet():
         assert st["busy"] is True
         assert st["stalled_for_s"] >= 600
         assert st["stale_after_s"] == coordinator.STALE_HOLDER_S
+
+
+# ── a cancelled waiter leaves the line ─────────────────────────────────────────────────
+
+
+def test_a_waiter_whose_abort_predicate_comes_true_leaves_without_the_lock(monkeypatch):
+    """A queued session that is cancelled must not sit behind a night-long holder to do
+    nothing when its turn comes — and must not be yielded to meanwhile. It abandons the
+    wait, counts as no waiter, and holds nothing."""
+    monkeypatch.setattr(coordinator, "ABORT_POLL_S", 0.02)
+    cancelled = threading.Event()
+    outcome: list[str] = []
+
+    def waiter():
+        try:
+            with coordinator.hold("duel#2", abort=cancelled.is_set):
+                outcome.append("acquired")
+        except coordinator.CoordinatorAborted:
+            outcome.append("aborted")
+
+    with coordinator.hold("duel#1"):
+        t = threading.Thread(target=waiter)
+        t.start()
+        deadline = time.time() + 2.0
+        while coordinator.waiting() == 0 and time.time() < deadline:
+            time.sleep(0.005)
+        assert coordinator.waiting() == 1
+        cancelled.set()
+        t.join(2.0)
+        assert outcome == ["aborted"]
+        assert coordinator.waiting() == 0, "an abandoned wait is no longer a waiter"
+        assert coordinator.owner() == "duel#1", "the holder was never disturbed"
+    assert not coordinator.busy()
+
+
+def test_an_abort_that_is_already_true_never_touches_the_lock():
+    with pytest.raises(coordinator.CoordinatorAborted):
+        with coordinator.hold("duel#2", abort=lambda: True):
+            pass
+    assert not coordinator.busy()

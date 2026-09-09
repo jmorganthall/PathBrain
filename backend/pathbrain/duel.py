@@ -49,13 +49,15 @@ from .methodology import overall_metrics
 from .models import Duel, DuelStatus, LeverCampaign, Methodology, Score
 from .rating import ELO_SCALE, PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
 from .providers import get_provider
-from .runner import run_chunk, teardown_plugins
+from .runner import request_stop, run_cancelled, run_chunk, teardown_plugins
 from .settings_profile import fingerprint, normalize, plan_apply
 from .settings_profile import summarize as summarize_settings
 
 log = get_logger("duel")
 
-_state: dict = {"active": False, "id": None, "cancel": False, "thread": None}
+#: ``run_id`` is the run measuring the leg in flight (set the moment it exists, cleared when
+#: it lands), so a cancel can stop that run rather than wait for the leg to finish.
+_state: dict = {"active": False, "id": None, "cancel": False, "thread": None, "run_id": None}
 
 # Give up on a matchup after this many consecutive unusable pairs (failed runs /
 # missing Overalls) — the environment isn't stable enough to adjudicate right now.
@@ -71,12 +73,45 @@ def active() -> bool:
 
 
 def cancel() -> bool:
-    """Ask the running duel to stop after its current pair (baseline still restored)."""
+    """Ask the running session to stop — and make it stop soon.
+
+    The flag alone was read only between legs, and a leg is an apply, a settle and
+    ``iterations_per_round`` iterations — minutes when all goes well, half an hour of probe
+    deadlines when a browser wedges — during which the feed showed the same "running" row
+    with the same X, which reads as "can't cancel". So three things happen here, and the
+    request costs an iteration rather than a leg or a night: the ring's flag (read at every
+    seam), a **stop request on the run measuring the leg in flight** (``runner.request_stop``:
+    the run ends before its next iteration, the leg returns, the ring reads the flag and
+    restores the baseline), and — while the session is still **waiting for the pipeline** —
+    the wait itself, which ``_drive`` opened with this flag as its abort predicate, so a
+    queued session leaves the line without ever taking the lock. The stage says which of
+    the two is happening, since the feed reads it. Returns False when nothing is running.
+    """
     if not active():
         return False
     _state["cancel"] = True
-    log.info("Duel %s: cancel requested", _state.get("id"))
+    duel_id = _state.get("id")
+    run_id = _state.get("run_id")
+    if run_id:
+        request_stop(run_id, "Cancelled with the duel session.")
+    queued = False
+    if duel_id is not None:
+        with session_scope() as session:
+            d = session.get(Duel, duel_id)
+            queued = d is not None and d.status == DuelStatus.PENDING
+        _set_stage(
+            duel_id,
+            "Cancelling — leaving the queue; nothing was applied" if queued
+            else "Cancelling — stops after the iteration in flight, then your original settings are restored",
+        )
+    log.info("Duel %s: cancel requested%s", duel_id,
+             f" (stopping run {run_id})" if run_id else (" (still queued)" if queued else ""))
     return True
+
+
+def cancel_requested() -> bool:
+    """Whether the running session has been asked to stop (the feed shows it stopping)."""
+    return active() and bool(_state.get("cancel"))
 
 
 # ── Sequential stopping rule (Wald SPRT on the pair-win rate) ─────────────────────────
@@ -2606,6 +2641,11 @@ def _run_ring(
         _set_live(duel_id, dict(last_live))
 
     def _leg_run_created(run_id: int) -> None:
+        # The run a cancel would have to stop. A cancel that landed during the apply or
+        # the settle found no run to stop; it stops this one before its first iteration.
+        _state["run_id"] = run_id
+        if _state.get("cancel"):
+            request_stop(run_id, "Cancelled with the duel session.")
         # Same board, one fact added: the leg is now measuring, and this is its run.
         if leg_state is None:
             return
@@ -2664,6 +2704,12 @@ def _run_ring(
             config_overrides=overrides,
             on_created=_leg_run_created,
         )
+        _state["run_id"] = None
+        if run_cancelled(run_id):
+            # Cancelled from the jobs feed by the chunk's own X. The feed promises that the
+            # broader job stops too, and for the ring the broader job is this session —
+            # not the next leg with a fresh run.
+            _state["cancel"] = True
         run_ids.append(run_id)
         counters["iterations"] += completed
         counters["legs"] += 1
@@ -3202,11 +3248,18 @@ def _drive(duel_id: int) -> None:
 
     provider = get_provider()
     final_status = DuelStatus.COMPLETE
+    final_stage: str | None = None
     err: str | None = None
     run_ids: list[int] = []
     iterations_run = 0
     try:
-        with coordinator.hold(f"duel#{duel_id}") as lease:
+        # A cancel while queued abandons the wait (``CoordinatorAborted``): the session
+        # leaves the line without taking the pipeline, instead of sitting behind a
+        # night-long holder to do nothing when its turn finally comes.
+        with coordinator.hold(f"duel#{duel_id}", abort=lambda: bool(_state.get("cancel"))) as lease:
+            if _state.get("cancel"):
+                # Landed between the wait's last poll and the acquire.
+                raise coordinator.CoordinatorAborted("cancelled before it started")
             _set_stage(duel_id, "Reading current firewall settings")
             baseline = normalize(provider.discover())
             with session_scope() as session:
@@ -3263,6 +3316,10 @@ def _drive(duel_id: int) -> None:
             )
             log.info("Duel %s: ring closed — %d match(es), %d iteration(s)",
                      duel_id, len(matchups), iterations_run)
+            # The ring leaves on the deadline or a cancel without asking the lease, and the
+            # restore below is a firewall write: an evicted session must never make it over
+            # whoever holds the pipeline now. Raises into the LeaseRevoked path (no restore).
+            lease.check()
 
             # The session's champion is the title holder over the ledger this session just
             # extended — the same replay the standings badge and `latest_champion` run, so
@@ -3295,6 +3352,10 @@ def _drive(duel_id: int) -> None:
                 _apply_all(provider, restore)
             except Exception:  # noqa: BLE001 — never raise out of cleanup
                 log.exception("Duel %s: baseline restore failed", duel_id)
+    except coordinator.CoordinatorAborted:
+        log.info("Duel %s cancelled before it started — nothing was applied", duel_id)
+        final_status = DuelStatus.CANCELLED
+        final_stage = "Cancelled before it started — nothing was applied"
     except coordinator.LeaseRevoked as exc:
         # The ladder went quiet long enough for the pipeline to be handed on (a wedged
         # probe, most likely). It is not a duel failure so much as a duel that was
@@ -3327,13 +3388,14 @@ def _drive(duel_id: int) -> None:
             if d is not None:
                 d.status = final_status
                 d.error = err
-                d.stage = {
+                d.stage = final_stage or {
                     DuelStatus.COMPLETE: "Done — baseline restored",
                     DuelStatus.CANCELLED: "Cancelled — baseline restored",
                 }.get(final_status, err or "Failed")
                 d.finished_at = datetime.now(timezone.utc)
-        _state.update({"active": False, "id": None, "cancel": False})
+        _state.update({"active": False, "id": None, "cancel": False, "run_id": None})
         try:  # let continuous mode leave a gap before the next session
+
             from . import scheduler
 
             scheduler._state["duel_last_finished"] = time.monotonic()

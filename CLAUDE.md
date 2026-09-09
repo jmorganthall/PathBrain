@@ -382,9 +382,47 @@ LLM-based. See `README.md` for the product overview.
     naming the holder and what is already waiting, and phrases the outcome identically
     everywhere (`describePlacement`). Every Run button on Dashboard, Shotgun Sweep, Baseline,
     Duels, Settings (race / re-run / test), Explore, AI and Profile Detail goes through it.
+  - **A cancel takes effect within an ITERATION, and says so** (`runner.request_stop` /
+    `run_cancelled` / `CANCELLED_PREFIX`, `duel.cancel` / `cancel_requested`,
+    `coordinator.hold(abort=)` / `CoordinatorAborted`, the feed's `cancel_requested`).
+    Reported as *"Can't cancel this parent job"* on a running lever session. Three gaps,
+    each of which read the same from the dropdown — the row stayed *running* with the same
+    X. **(1) The runner never read a cancel.** `POST /runs/{id}/cancel` flipped the row to
+    FAILED and `execute_run` ran every remaining iteration and wrote COMPLETE over it: a
+    cancel was cosmetic for a running run. The loop now asks **before every iteration** —
+    the in-process request first (`request_stop`, free), then the row itself (re-read,
+    since `session_scope` never expires on commit, so a FAILED written by another process
+    or the watchdog is honoured too) — and a cancelled run stops with what it has: FAILED,
+    the reason and how far it got, nothing scored, the same as a run cancelled while queued.
+    Every cancel reason starts with `Cancelled` — the one convention `run_cancelled` reads.
+    **(2) The duel's flag was read only between legs.** A leg is an apply, a settle and
+    `iterations_per_round` iterations — minutes, or half an hour of probe deadlines when a
+    browser wedges. `cancel()` now also stops the run measuring the leg in flight
+    (`_state["run_id"]`, set the moment `_leg_run_created` fires and cleared when the leg
+    lands; a cancel that arrives during the apply is remembered and stops the run before its
+    first iteration), writes a *Cancelling —* stage, and the ring reads the flag at its next
+    seam and restores the baseline. Cancelling a duel's **chunk** from the feed (the nested
+    X, which promises "its broader job will stop too") now cancels the session, not one leg.
+    **(3) A cancel while queued waited out the holder.** The thread sat in `coordinator.hold`
+    behind whatever held the pipeline — a night-long ladder — and, when its turn came, took
+    the lock to do nothing (having been yielded to meanwhile, which costs the holder a seam).
+    `hold` takes an `abort` predicate (polled at `ABORT_POLL_S`), the duel passes its cancel
+    flag, and a cancelled waiter raises `CoordinatorAborted` and leaves the line: the row
+    ends CANCELLED, stage *"Cancelled before it started — nothing was applied"*, no discover,
+    no apply. And one bug found on the way: the ring leaves on its deadline or a cancel
+    without asking the lease, and the restore after it is a firewall write — an **evicted**
+    session would have restored its baseline over whoever held the pipeline. `_drive` now
+    `lease.check()`s before the restore, so an evicted session takes the no-restore path.
+    The route answers in words (`message`) and the feed row carries `cancel_requested` — the
+    dropdown shows the answer and replaces the X with *stopping…*, because a cancel that takes
+    a minute to land and one that never happened were indistinguishable. Deliberately **not**
+    a kill: Python cannot interrupt a blocked probe, so the iteration in flight always
+    finishes (bounded by the probe deadline); the promise is "the next one never starts".
+    `test_run_cancel`, `test_duel_cancel`, `test_coordinator`.
   - `coordinator.py` — process-wide lock that serializes any apply-firewall + benchmark
     session (sweep, profile test, experiment, monitoring, manual run): user-triggered
     ones `hold` (queue), periodic ones `try_hold` (defer).
+
     **The zipper merge** (`waiting()` / `yield_if_waiting()`): the duel ladder holds the lock
     for its **whole window** — hours — so an Explore "Test now" pressed at midnight would
     otherwise queue behind the entire night, with cancelling the session the only escape (and
