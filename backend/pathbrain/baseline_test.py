@@ -37,6 +37,7 @@ from sqlalchemy import select
 from . import coordinator
 from .database import session_scope
 from .logging_config import get_logger
+from .session_runtime import describe_failure
 from .models import BaselineTest, BaselineTestStatus
 from .providers import get_provider
 from .runner import CHUNK_ITERATIONS, run_chunk, teardown_plugins
@@ -213,7 +214,7 @@ def _drive(bt_id: int) -> None:
             except Exception as exc:  # noqa: BLE001 — record + restore, never crash the thread
                 log.exception("Baseline test %s failed", bt_id)
                 final_status = BaselineTestStatus.FAILED
-                err = f"{type(exc).__name__}: {exc}"
+                err = describe_failure(exc)
             finally:
                 # Chromium was kept warm across the benchmark chunks; close it once now.
                 teardown_plugins()
@@ -224,7 +225,7 @@ def _drive(bt_id: int) -> None:
     except Exception as exc:  # noqa: BLE001
         log.exception("Baseline test %s: unexpected failure", bt_id)
         final_status = BaselineTestStatus.FAILED
-        err = f"{type(exc).__name__}: {exc}"
+        err = describe_failure(exc)
     finally:
         with session_scope() as session:
             bt = session.get(BaselineTest, bt_id)

@@ -45,8 +45,8 @@ def test_create_run_bakes_the_scope_into_config_used():
             assert cfg[name]["skip"] is True, name
         # The browser's per-plugin cap is lifted: every iteration measures the crown.
         assert cfg["browser"].get("iterations") is None
-        # The portable reference keeps its own cap and is not skipped.
-        assert cfg["portable"].get("skip") is not True and cfg["portable"]["iterations"] == 2
+        # The portable reference keeps its own cap (one pass per run) and is not skipped.
+        assert cfg["portable"].get("skip") is not True and cfg["portable"]["iterations"] == 1
         # The decision is on the record.
         assert cfg["measurement"]["applied"]["required"] == ["browser"]
         assert set(cfg["measurement"]["applied"]["skipped"]) == {"icmp", "dns", "tcp", "tls", "http"}

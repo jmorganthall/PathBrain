@@ -23,6 +23,7 @@ from sqlalchemy import select
 from . import coordinator
 from .database import session_scope
 from .logging_config import get_logger
+from .session_runtime import describe_failure
 from .models import CurrentTest, CurrentTestStatus
 from .providers import get_provider
 from .runner import CHUNK_ITERATIONS, run_chunk, teardown_plugins
@@ -143,7 +144,7 @@ def _drive(ct_id: int) -> None:
     except Exception as exc:  # noqa: BLE001 — record, never crash the thread
         log.exception("Test-current %s: unexpected failure", ct_id)
         final_status = CurrentTestStatus.FAILED
-        err = f"{type(exc).__name__}: {exc}"
+        err = describe_failure(exc)
     finally:
         # Chromium was kept warm across the session's chunks; close it once now.
         teardown_plugins()

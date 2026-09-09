@@ -30,6 +30,7 @@ from sqlalchemy import func, select
 from . import coordinator
 from .database import session_scope
 from .logging_config import get_logger
+from .session_runtime import describe_failure
 from .models import Methodology, ProfileRefresh, ProfileRefreshStatus, Run, RunStatus, Score
 from .profile_names import names_for
 from .profile_test import _apply_all
@@ -532,7 +533,7 @@ def _drive(refresh_id: int) -> None:
     except Exception as exc:  # noqa: BLE001 — record + (best-effort) restore, never crash the thread
         log.exception("Profile refresh %s failed", refresh_id)
         final_status = ProfileRefreshStatus.FAILED
-        err = f"{type(exc).__name__}: {exc}"
+        err = describe_failure(exc)
         try:
             if baseline:
                 restore, _ = plan_apply(baseline, get_provider().discover())

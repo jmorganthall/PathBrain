@@ -138,6 +138,29 @@ def build_chromium_args(config: dict) -> list[str]:
     return args
 
 
+def warm_load_wanted(config: dict) -> bool:
+    """Should THIS iteration load each page a second time, warm?
+
+    ``warm_loads`` True (the default) means the run's first iteration only — the runner
+    stamps ``_iteration`` on the section it hands the plugin — because the warm reading
+    feeds a per-profile median across runs (the cold-vs-warm audit), not a per-iteration
+    number, and a warm load doubles the iteration's page loads. ``"every"`` asks for it on
+    every iteration; False (or 0) turns it off. A call with no iteration stamp (a direct
+    plugin invocation) counts as the first.
+    """
+    mode = config.get("warm_loads", True)
+    if isinstance(mode, str):
+        key = mode.strip().lower()
+        if key == "every":
+            return True
+        if key in ("", "0", "false", "off", "no", "none"):
+            return False
+        return int(config.get("_iteration", 0) or 0) == 0
+    if not mode:
+        return False
+    return int(config.get("_iteration", 0) or 0) == 0
+
+
 def headless_mode(config: dict) -> str:
     """``"new"`` (default) or ``"legacy"`` — which Chromium headless mode to run."""
     mode = str(config.get("headless_mode", "new") or "new").strip().lower()
@@ -647,8 +670,9 @@ class BrowserBenchmark(BenchmarkPlugin):
         # feeds the pixel-based Speed Index / paint-cadence diagnostics. Off by
         # default — scored SOPS smoothness now comes from the byte-arrival metrics.
         want_filmstrip = bool(config.get("filmstrip", False))
-        # The repeat-visit load (see `config_store`): same context, cache disabled.
-        want_warm = bool(config.get("warm_loads", True))
+        # The repeat-visit load (see `config_store`): same context, cache disabled — on the
+        # run's first iteration only unless asked for every one (`warm_load_wanted`).
+        want_warm = warm_load_wanted(config)
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         base_dir = os.path.abspath(get_settings().artifact_dir)

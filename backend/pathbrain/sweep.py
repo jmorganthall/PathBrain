@@ -19,6 +19,7 @@ from sqlalchemy import select
 from . import coordinator
 from .database import session_scope
 from .logging_config import get_logger
+from .session_runtime import describe_failure
 from .models import Run, RunStatus, Sweep, SweepStatus
 from .providers import get_provider
 from .runner import create_run, execute_run
@@ -332,7 +333,7 @@ def _drive(sweep_id: int) -> None:
             except Exception as exc:  # noqa: BLE001 — record + restore, never crash the thread
                 log.exception("Sweep %s failed", sweep_id)
                 final_status = SweepStatus.FAILED
-                err = f"{type(exc).__name__}: {exc}"
+                err = describe_failure(exc)
             finally:
                 _restore(provider, sweep_id)
     finally:

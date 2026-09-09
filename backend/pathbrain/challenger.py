@@ -38,6 +38,7 @@ from . import coordinator
 from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
+from .session_runtime import describe_failure
 from .models import ChallengerRace, ChallengerRaceStatus
 from .profile_test import _apply_all
 from .providers import get_provider
@@ -436,7 +437,7 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
     except Exception as exc:  # noqa: BLE001 — record + (best-effort) restore, never crash the thread
         log.exception("Challenger race %s failed", race_id)
         final_status = ChallengerRaceStatus.FAILED
-        err = f"{type(exc).__name__}: {exc}"
+        err = describe_failure(exc)
         try:
             if baseline:
                 restore, _ = plan_apply(baseline, get_provider().discover())

@@ -230,6 +230,23 @@ def _generated_values(fkey: str, current: float, allowed: list[float] | None) ->
     return out
 
 
+def _measured_span(profiles: list[dict], label: str, fkey: str) -> tuple[float, float] | None:
+    """The range of values pipe ``label``'s lever ``fkey`` has ever RUN on this link — over
+    every profile with settings on record — or None when fewer than two distinct values
+    have (nothing to bound against)."""
+    vals: set[float] = set()
+    for p in profiles:
+        for pipe in p.get("settings") or []:
+            if str(pipe.get("label") or "pipe") != label:
+                continue
+            v = _numeric(fkey, pipe.get(fkey))
+            if v is not None:
+                vals.add(v)
+    if len(vals) < 2:
+        return None
+    return (min(vals), max(vals))
+
+
 def _with_value(settings: list[dict], pipe: str, fkey: str, value) -> list[dict]:
     """A deep copy of ``settings`` with one lever moved — every other field, writable or
     not, kept byte for byte so the variant hashes as the firewall will echo it."""
@@ -310,11 +327,21 @@ def lever_variants(
                         abs((to_num if to_num is not None else 0.0) - (cur_num or 0.0)),
                     ),
                 })
-            # 2. Generated steps the firewall can hold.
+            # 2. Generated steps the firewall can hold — INSIDE the range this lever has
+            #    already run on this link. A lever session runs on the connection the
+            #    household is using, for minutes per leg, and a halved queue limit or a
+            #    halved quantum that nobody has ever run here is exactly the step that can
+            #    make it unusable for those minutes ("my connection blips out every time I
+            #    run lever duels"). Values the field has measured are known to be livable;
+            #    stepping past the field's edge is Explore's deliberate, one-at-a-time job.
+            #    With fewer than two values on record there is no range, and the step stands.
             if cur_num is None or fkey in NO_GENERATE:
                 continue
+            span = _measured_span(profiles, label, fkey)
             for value in _generated_values(fkey, cur_num, allowed.get(fkey)):
                 if value in values_taken:
+                    continue
+                if span is not None and not (span[0] <= value <= span[1]):
                     continue
                 new_value: object = bool(value) if (fld and fld.kind == "bool") else value
                 settings = _with_value(base_settings, label, fkey, new_value)

@@ -44,6 +44,7 @@ from . import profile_names
 from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
+from .session_runtime import FailureStreak, FirewallUnavailable, SessionAbort, describe_failure
 from .methodology import overall_metrics
 from .models import Duel, DuelStatus, LeverCampaign, Methodology, Score
 from .rating import ELO_SCALE, PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
@@ -59,6 +60,10 @@ _state: dict = {"active": False, "id": None, "cancel": False, "thread": None}
 # Give up on a matchup after this many consecutive unusable pairs (failed runs /
 # missing Overalls) — the environment isn't stable enough to adjudicate right now.
 MAX_CONSECUTIVE_BAD_PAIRS = 3
+#: Legs in a row whose profile could not be applied before the session gives up: past this
+#: the firewall, not the leg, is what is failing (each apply is already retried by the
+#: provider), and measuring on is measuring nothing.
+MAX_CONSECUTIVE_LEG_FAILURES = 3
 
 
 def active() -> bool:
@@ -2530,7 +2535,9 @@ def _run_ring(
     draining = False
     lead: _Leg | None = None
     legs_tape: list[dict] = []
-    counters = {"legs": 0, "iterations": 0, "cycles": 0, "reseeds": 0}
+    counters = {"legs": 0, "iterations": 0, "cycles": 0, "reseeds": 0, "leg_failures": 0}
+    # Legs whose profile could not be applied, back to back (cleared by any leg that could).
+    apply_streak = FailureStreak(MAX_CONSECUTIVE_LEG_FAILURES)
     seat_kw = dict(p1=p1, alpha=alpha, min_margin=min_margin, min_pairs=min_pairs,
                    max_pairs=max_pairs, streak_wins=streak_wins)
     # Open matches the previous session (or a crashed one) left behind, moved onto this
@@ -2609,7 +2616,41 @@ def _run_ring(
 
     def _run_leg(fp: str, profile: dict, role: str, position: int, seat: _Seat | None) -> _Leg:
         lease.check()  # never write the firewall on an evicted lease
-        _apply_profile(provider, profile["settings"], fp)
+        # A leg whose profile cannot be applied is a FAILED LEG, not a failed session: it
+        # is recorded on the tape with its reason and the ring moves on, exactly as a leg
+        # whose run failed is. The session gives up only when legs fail back to back
+        # (``MAX_CONSECUTIVE_LEG_FAILURES``) — then the firewall, not the leg, is the
+        # problem. The first cut let one slow reconfigure (one ReadTimeout past the
+        # provider's own retries) end a whole lever session with 0 rounds.
+        try:
+            _apply_profile(provider, profile["settings"], fp)
+        except (FirewallUnavailable, RuntimeError) as exc:
+            why = (
+                f"could not apply {profile.get('name') or profile['label']}: {exc}"
+                if isinstance(exc, RuntimeError) and not isinstance(exc, FirewallUnavailable)
+                else str(exc)
+            )
+            counters["legs"] += 1
+            counters["leg_failures"] = counters.get("leg_failures", 0) + 1
+            log.warning("Duel %s: leg %d (%s, %s) not measured — %s",
+                        duel_id, counters["legs"], role, fp, why)
+            legs_tape.append({
+                "index": counters["legs"], "fingerprint": fp, "name": profile.get("name"),
+                "label": profile.get("label"), "role": role, "position": position,
+                "overall": None, "severity": None, "run_id": None, "crown": None,
+                "failed": why,
+            })
+            if seat is not None:
+                seat.legs += 1
+            if apply_streak.hit(why):
+                raise SessionAbort(
+                    f"{apply_streak.count} legs in a row could not be applied to the firewall "
+                    f"(last: {why}). The session stopped early and your settings were restored; "
+                    "matches already decided are kept and any open match is carried to the "
+                    "next session."
+                ) from exc
+            return _Leg(fp, role, None, None, None, why, counters["legs"], position)
+        apply_streak.clear()
         # Let the link settle after the reconfigure before believing what we measure.
         if settle_s > 0:
             time.sleep(settle_s)
@@ -2937,6 +2978,13 @@ def _run_ring(
             lead = _run_leg(incumbent_fp, inc, "belt", 0, None)
             if _stopped():
                 break
+            if lead.run_id is None:
+                # The opening belt leg could not even be applied: every challenger leg this
+                # cycle would resolve against nothing and burn its iterations. Try the
+                # reference again next cycle (the apply streak bounds how many times).
+                lead = None
+                lease.beat()
+                continue
         pending: list[tuple[_Seat, _Leg]] = []
         cycle = counters["cycles"]
         slots = min(cadence - 1, len(seated))
@@ -3271,7 +3319,7 @@ def _drive(duel_id: int) -> None:
     except Exception as exc:  # noqa: BLE001 — record, never crash the thread
         log.exception("Duel %s failed", duel_id)
         final_status = DuelStatus.FAILED
-        err = f"{type(exc).__name__}: {exc}"
+        err = describe_failure(exc)
     finally:
         teardown_plugins()  # Chromium was kept warm across the whole ladder
         with session_scope() as session:
@@ -4361,12 +4409,44 @@ def history(limit: int = 10, matchup_limit: int | None = 25) -> list[dict]:
         return [_serialize(d, session, matchup_limit) for d in rows]
 
 
-def reconcile_interrupted_duels() -> int:
-    """Restore the baseline for any duel left RUNNING/PENDING by a dead process."""
-    from .challenger import _apply_all
+#: An interrupted session with at least this much of its window left is queued again for
+#: the remainder. Less than this is not a night's run in any meaningful sense — by the time
+#: the field is ranked and the first reference leg lands, the window would be closing.
+RESUME_MIN_MINUTES = 15
 
+
+def _window_remaining_minutes(d: Duel, now: datetime) -> int:
+    """Minutes of ``d``'s window still ahead of ``now`` (0 when unknown or spent)."""
+    opened = d.started_at or d.created_at
+    if opened is None or not d.duration_s:
+        return 0
+    if opened.tzinfo is None:
+        opened = opened.replace(tzinfo=timezone.utc)
+    left = (opened + timedelta(seconds=int(d.duration_s))) - now
+    return max(0, int(left.total_seconds() // 60))
+
+
+def reconcile_interrupted_duels(*, now: datetime | None = None) -> int:
+    """Restore the baseline for any duel left RUNNING/PENDING by a dead process — and
+    **queue the rest of its window**.
+
+    A restart (a self-update after every merged PR, an OOM kill, a compose restart) used to
+    end the night: the row was closed FAILED with its open matches carried, and nothing ran
+    again until the next scheduled window. The window is a wall-clock agreement about when
+    the ladder may run, and the clock has not stopped — so when ``RESUME_MIN_MINUTES`` or
+    more of it remain, a pending ``QueuedJob`` for a session of exactly that length (same
+    kind, same campaign, same trigger) is written here. ``job_queue.restore`` — which runs
+    after every engine's reconcile, so the firewall is back on its baseline first — picks it
+    up like any ticket a previous process left pending, and the carried open matches resume
+    in it with their rounds. The old row says so in its error text.
+    """
+    from .challenger import _apply_all
+    from .models import QueuedJob
+
+    now = now or datetime.now(timezone.utc)
     provider = None
     restored = 0
+    requeued = 0
     with session_scope() as session:
         rows = session.scalars(
             select(Duel).where(Duel.status.in_([DuelStatus.RUNNING, DuelStatus.PENDING]))
@@ -4380,15 +4460,38 @@ def reconcile_interrupted_duels() -> int:
                     _apply_all(provider, changes)
                 except Exception:  # noqa: BLE001
                     log.exception("Duel %s: restore on reconcile failed", d.id)
+            remaining = _window_remaining_minutes(d, now)
+            resumed = ""
+            if remaining >= RESUME_MIN_MINUTES:
+                kind = "Lever session" if d.mode == "levers" else "Duel ladder session"
+                session.add(QueuedJob(
+                    kind="duel",
+                    label=f"{kind} · {remaining} min left of the interrupted window",
+                    spec={
+                        "duration_minutes": remaining,
+                        "trigger": d.trigger or "manual",
+                        "contenders": d.mode,
+                        "campaign_id": d.campaign_id,
+                    },
+                    submitted_at=now,
+                    state="pending",
+                ))
+                requeued += 1
+                resumed = (
+                    f" {remaining} minutes of its window remained, so a session for that "
+                    "long was queued to finish it."
+                )
             d.status = DuelStatus.FAILED
             d.error = (
                 "Interrupted — service restarted mid-duel; baseline restored (best-effort). "
                 "Any match still open carries over to the next session with its rounds."
+                + resumed
             )
-            d.finished_at = datetime.now(timezone.utc)
+            d.finished_at = now
             restored += 1
     if restored:
-        log.warning("Reconciled %s interrupted duel(s); baseline restored", restored)
+        log.warning("Reconciled %s interrupted duel(s); baseline restored; %s re-queued for the "
+                    "rest of their window", restored, requeued)
     return restored
 
 

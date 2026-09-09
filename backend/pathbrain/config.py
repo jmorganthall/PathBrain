@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     opnsense_api_key: str = ""
     opnsense_api_secret: str = ""
     opnsense_verify_tls: bool = False
+    # Per-call HTTP timeout. A shaper reconfigure on a busy firewall runs past the old
+    # hard-coded 15 s; each call is also retried (``session_runtime``), so this bounds one
+    # attempt, not the session's patience.
+    opnsense_timeout_s: float = 30.0
 
     # Version / update awareness. ``git_sha`` is stamped into the image at build time
     # (Dockerfile ARG → ENV PATHBRAIN_GIT_SHA, fed github.sha by CI); empty in dev.
