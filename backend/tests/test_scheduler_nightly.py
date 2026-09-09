@@ -83,3 +83,43 @@ def test_a_busy_pipeline_no_longer_skips_the_nightly_duel(monkeypatch):
     # And only once for the day, however many ticks land inside the catch-up window.
     assert scheduler._maybe_run_duel() is False
     scheduler._state.pop("duel_last_date", None)
+
+
+def test_a_window_that_opens_on_a_running_duel_is_said_once_not_swallowed(monkeypatch, caplog):
+    """A nightly window that opens while a session already holds the ring (a resumed
+    remainder, a lever session) used to return silently — which reads, the next morning, as
+    "our overnight duel didn't fire at all". It is now logged once per window."""
+    import logging
+
+    from pathbrain import duel
+    from pathbrain.config_store import save_config
+    from pathbrain.database import session_scope
+
+    monkeypatch.setattr(duel, "active", lambda: True)
+    monkeypatch.setattr(duel, "current", lambda: {"id": 77})
+    monkeypatch.setattr(duel, "start", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not start")))
+    now = datetime.now(timezone.utc)
+    with session_scope() as s:
+        save_config(s, {"duel": {
+            "enabled": True, "continuous": False, "timezone": "UTC",
+            "hour": now.hour, "minute": now.minute, "duration_minutes": 120,
+        }})
+    scheduler._state.pop("duel_last_date", None)
+    scheduler._state.pop("duel_skip_logged", None)
+    try:
+        with caplog.at_level(logging.WARNING, logger="pathbrain.scheduler"):
+            assert scheduler._maybe_run_duel() is False
+            assert scheduler._maybe_run_duel() is False
+        said = [r for r in caplog.records if "already running (duel #77)" in r.getMessage()]
+        assert len(said) == 1, "said once per window, not every tick"
+        # Outside the window an active duel is simply an active duel — nothing to say.
+        caplog.clear()
+        with session_scope() as s:
+            save_config(s, {"duel": {"hour": (now.hour + 12) % 24, "minute": now.minute}})
+        scheduler._state.pop("duel_skip_logged", None)
+        with caplog.at_level(logging.WARNING, logger="pathbrain.scheduler"):
+            assert scheduler._maybe_run_duel() is False
+        assert not [r for r in caplog.records if "already running" in r.getMessage()]
+    finally:
+        scheduler._state.pop("duel_skip_logged", None)
+        scheduler._state.pop("duel_last_date", None)

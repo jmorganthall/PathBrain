@@ -461,11 +461,22 @@ LLM-based. See `README.md` for the product overview.
     (`HIGH_MEMORY_PCT` 80 / `CRITICAL_MEMORY_PCT` 92 of the container's own limit when it
     has one, else of the host's total; load 2×/4× CPUs). `GET /api/health/pipeline` reports
     it as `pressure`, so "the NAS is struggling" is a number. The scheduler watchdog calls
-    `relieve` every tick: at `high` it reaps stray Chromium, asks the browser to recycle and
-    drops the field memo (rate-limited to once a minute); at `critical` it also holds **this
+    `relieve` every tick, and it acts at most once per `RELIEF_INTERVAL_S` (10 min): at
+    `high` it reaps leaked Chromium **only while the pipeline is idle**; at `critical` it also
+    asks the browser to recycle at its next seam, drops the field memo, and holds **this
     tick's** scheduled monitoring run (re-read next tick, never latched, so external pressure
-    can't starve measurement for good). Dependency-free, never raises, every reading degrades
-    to `None` where a file is missing. `test_resource_guard` + `test_browser_recycle`.
+    can't starve measurement for good). **The reap is refused while the pipeline is busy, and
+    keeps the browser plugin's own driver pid regardless** — the first cut reaped every tree
+    with nothing kept, once a minute, and under sustained pressure that killed the browser a
+    duel leg was measuring with, so every leg failed and the nightly session produced nothing
+    (the *"overnight duels didn't fire at all"* report the morning after it shipped);
+    `reap_orphans` cannot tell a leaked tree from a live one, so the caller must know it holds
+    no browser, and a scheduler tick never knows that while a session runs
+    (`test_the_reap_never_runs_while_a_session_may_be_measuring`). Dependency-free, never
+    raises, every reading degrades to `None` where a file is missing. `test_resource_guard` +
+    `test_browser_recycle`. The scheduler also now **says** when a nightly window opens while
+    a duel is already running (a resumed remainder, a lever session): that path returned
+    silently and read as the ladder not firing.
   - `browser_procs.py` — **process-tree accounting + orphan reaping: the leak that ate the
     host.** A dropped Playwright handle raises nothing, logs nothing and moves no number
     PathBrain reports; its only symptom is the *host's* memory hours later, as an OOM kill
