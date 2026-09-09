@@ -1049,3 +1049,162 @@ def test_a_batch_really_lines_up_queued_profile_tests(client, monkeypatch):
             break
         time.sleep(0.02)
     mock_mod._OVERRIDES.clear()
+
+
+# ── The ring prices a move before any matched pair ───────────────────────────────
+#
+# The duel ring's lever ledger is paired, interleaved, same-weather evidence on an exact
+# single-lever move — controlled by design, where a matched pair is controlled by
+# coincidence and measured on different nights. Explore reads it once per landscape and
+# prices a move from it first; the ledger grades those claims as their own class.
+
+
+def _ledger_with(monkeypatch, *levers: dict) -> None:
+    """Stand in for the duel ledger's book (``levers.lever_ledger``) with lever rows in its
+    own shape, so ``ring_transitions`` does the keying and the state reading for real."""
+    import pathbrain.levers as levers_mod
+
+    monkeypatch.setattr(
+        levers_mod, "lever_ledger", lambda session, limit_sessions=50: {"levers": list(levers)}
+    )
+
+
+def _fought(pipe: str, field: str, lo: float, hi: float, margin_up: float, rounds: int,
+            *, p: float | None = 0.01) -> dict:
+    """One lever with one transition, as ``lever_ledger`` reports it: ``lo → hi`` with the
+    margin signed as moving UP."""
+    return {
+        "pipe": pipe, "field": field, "field_label": field, "unit": None,
+        "transitions": [{
+            "from": lo, "to": hi, "median_margin_up": margin_up, "rounds": rounds,
+            "paired_rounds": rounds, "matches": 1, "sign_p": p, "paired_p": p,
+            "direction": "higher" if margin_up > 0 else "lower", "margin_se": 0.4,
+        }],
+    }
+
+
+def _book(monkeypatch) -> dict:
+    """A significant, a null and a thin transition on three different levers."""
+    _ledger_with(
+        monkeypatch,
+        _fought("Download", "target", 4, 5, 2.0, 12, p=0.01),        # significant
+        _fought("Upload", "limit", 512, 1024, 0.2, 16, p=0.6),        # null: 16 rounds inside the floor
+        _fought("Download", "quantum", 1400, 5200, 1.5, 3, p=None),  # thin: under MIN_ROUNDS
+        {"pipe": "Download", "field": "ecn", "transitions": []},      # never fought: no key
+    )
+    return explore.ring_transitions(None)
+
+
+def test_ring_transitions_are_keyed_like_the_axes_and_carry_their_state(monkeypatch):
+    book = _book(monkeypatch)
+    assert set(book) == {"Download::target", "Upload::limit", "Download::quantum"}
+    t = book["Download::target"]["transitions"][0]
+    assert (t["from"], t["to"], t["margin_up"]) == (4.0, 5.0, 2.0)
+    assert t["significant"] and not t["null"] and not t["thin"]
+    u = book["Upload::limit"]["transitions"][0]
+    assert u["null"] and not u["significant"] and not u["thin"]
+    q = book["Download::quantum"]["transitions"][0]
+    assert q["thin"] and not q["significant"] and not q["null"]
+    assert book["Download::target"]["total_rounds"] == 12
+
+
+def test_an_unreadable_ledger_is_an_empty_book_never_an_error(monkeypatch):
+    import pathbrain.levers as levers_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("no database here")
+
+    monkeypatch.setattr(levers_mod, "lever_ledger", boom)
+    assert explore.ring_transitions(None) == {}
+    # And the landscape still prices from the pooled record alone.
+    out = _landscape(monkeypatch, _hole_profiles())
+    assert out["ring_transitions"] == [] and out["candidates"]
+
+
+def test_the_rings_three_states_price_a_move_three_ways(monkeypatch):
+    """Significant: the margin shrunk by rounds/(rounds+2). Null: nothing added, said in
+    words. Thin: informs without steering, shrunk against the bar it hasn't reached."""
+    book = _book(monkeypatch)
+    parent = {
+        "overall": 50.0,
+        "coords": {"Download::target": 4.0, "Upload::limit": 512.0, "Download::quantum": 1400.0},
+    }
+    pred, notes = explore._predict(parent, {"Download::target": 5.0}, {}, ring_by_key=book)
+    assert abs(pred - (50.0 + 2.0 * 12 / 14)) < 1e-9
+    assert notes[0].startswith("measured in the ring") and "gained 2.00" in notes[0] and "86%" in notes[0]
+
+    pred, notes = explore._predict(parent, {"Upload::limit": 1024.0}, {}, ring_by_key=book)
+    assert pred == 50.0 and "no gain" in notes[0] and "nothing added" in notes[0]
+
+    pred, notes = explore._predict(parent, {"Download::quantum": 5200.0}, {}, ring_by_key=book)
+    assert abs(pred - (50.0 + 1.5 * 3 / (3 + explore.RING_MIN_ROUNDS))) < 1e-9
+    assert "informs without steering" in notes[0]
+
+
+def test_a_move_down_takes_the_ring_margin_with_its_sign_flipped(monkeypatch):
+    """The book records moving UP; a candidate moving the lever DOWN pays the same margin
+    the other way — the move is the same experiment read from the other end."""
+    book = _book(monkeypatch)
+    parent = {"overall": 50.0, "coords": {"Download::target": 5.0}}
+    pred, notes = explore._predict(parent, {"Download::target": 4.0}, {}, ring_by_key=book)
+    assert abs(pred - (50.0 - 2.0 * 12 / 14)) < 1e-9
+    assert "cost 2.00" in notes[0]
+
+
+def test_the_ring_prices_a_move_before_any_matched_pair(monkeypatch):
+    """The pairs say 4 → 5 is +1.0; the ring fought the same move and says +2.0. The ring
+    prices it, the candidate says so, and the pair is not consulted for that leg."""
+    profiles = [
+        _pair("a1", dl_q=7313, dl_t=4, ul_q=500, overall=81.0),
+        _pair("a2", dl_q=7313, dl_t=5, ul_q=500, overall=82.0),
+        _pair("b1", dl_q=1257, dl_t=4, ul_q=500, overall=59.0),
+        _pair("b2", dl_q=1257, dl_t=5, ul_q=500, overall=60.0),
+        _pair("c1", dl_q=3000, dl_t=4, ul_q=750, overall=90.0),
+        _pair("c2", dl_q=3000, dl_t=6, ul_q=750, overall=20.0),
+    ]
+    out = _landscape(monkeypatch, profiles)
+    axes = {a["key"]: a for a in out["axes"]}
+    by_key = {c["key"]: c for c in out["curves"]}
+    pairs_by_key = {m["key"]: m for m in out["matched_pairs"]}
+    assert "Download::target" in pairs_by_key, "the fixture must carry the matched pair"
+    parent = next(p for p in out["points"] if p["fingerprint"] == "c1")  # target 4, never at 5
+    move = {"Download::target": (5.0, "test")}
+    book = _book(monkeypatch)
+
+    priced = explore._candidate_dict(
+        parent, move, axes, out["points"], by_key, pairs_by_key, None, ring_by_key=book
+    )
+    assert priced["evidence"][0].startswith("measured in the ring")
+    assert not any("matched pair" in n for n in priced["evidence"])
+    assert priced["ring"]["rounds"] == 12 and priced["ring"]["state"] == "measured"
+    assert priced["ring"]["margin"] == 2.0 and priced["ring"]["legs"][0]["key"] == "Download::target"
+    assert abs(priced["predicted"] - (priced["anchor"] + 2.0 * 12 / 14)) < 0.02
+
+    plain = explore._candidate_dict(parent, move, axes, out["points"], by_key, pairs_by_key, None)
+    assert any("matched pair" in n for n in plain["evidence"]) and plain["ring"] is None
+    assert priced["predicted"] > plain["predicted"]
+
+
+def test_the_landscape_threads_the_ring_into_every_priced_proposal(monkeypatch):
+    """A gap's runnable variant is priced by the same machinery as a headline candidate, so
+    it must read the ring too; and the payload carries the ring's rows only for levers the
+    axes actually have."""
+    profiles = _hole_profiles()
+    first = _landscape(monkeypatch, profiles)
+    gap = next(g for g in first["gaps"] if g["key"] == "Download::quantum" and g["kind"] == "gap")
+    parent_value = gap["candidate"]["changes"][0]["from"]
+    suggest = gap["suggest"]
+    lo, hi = sorted((parent_value, suggest))
+    # The book records moving UP; the variant should GAIN 1.2 whichever way it moves.
+    _ledger_with(
+        monkeypatch,
+        _fought("Download", "quantum", lo, hi, 1.2 if suggest == hi else -1.2, 10, p=0.02),
+        _fought("Upload", "flows", 1024, 2048, 0.5, 9),  # a lever these profiles don't carry
+    )
+    out = _landscape(monkeypatch, profiles)
+    gap = next(g for g in out["gaps"] if g["key"] == "Download::quantum" and g["kind"] == "gap")
+    cand = gap["candidate"]
+    assert cand["evidence"][0].startswith("measured in the ring")
+    assert cand["ring"]["rounds"] == 10 and cand["ring"]["margin"] == 1.2
+    assert [r["key"] for r in out["ring_transitions"]] == ["Download::quantum"]
+    assert out["ring_transitions"][0]["transitions"][0]["rounds"] == 10

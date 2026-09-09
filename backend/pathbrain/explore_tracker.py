@@ -57,8 +57,14 @@ MIN_BAND = 1.0
 
 # Evidence classes, strongest first. The bucket a candidate is scored in is the *weakest*
 # of the classes its legs were priced from.
-EVIDENCE_ORDER = ["matched_pair", "conditioned", "marginal", "confounded", "unknown"]
+EVIDENCE_ORDER = ["ring", "matched_pair", "conditioned", "marginal", "confounded", "unknown"]
 EVIDENCE_LABELS = {
+    # The duel ring's paired, interleaved, same-weather rounds on that exact lever move —
+    # controlled by design, where a matched pair is controlled by coincidence and measured on
+    # different nights. Its own class so the ledger can say whether a lever effect measured
+    # at one base actually transfers to another, which is the claim a ring-priced candidate
+    # rests on.
+    "ring": "the duel ring (paired rounds on this move)",
     "matched_pair": "controlled matched pair",
     "conditioned": "the parent's own neighbourhood",
     "marginal": "the marginal curve",
@@ -67,6 +73,7 @@ EVIDENCE_LABELS = {
 }
 # What the model wrote in ``explore._predict`` → the class it belongs to.
 _EVIDENCE_MATCH = [
+    ("measured in the ring", "ring"),
     ("matched pair", "matched_pair"),
     ("own neighbourhood", "conditioned"),
     ("confounded", "confounded"),

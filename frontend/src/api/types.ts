@@ -2490,6 +2490,46 @@ export interface ExploreMatchedPairs {
   }[];
 }
 
+// The duel ring's book, keyed like the axes: every single-lever transition the ring has
+// fought, pooled over its paired, interleaved, same-weather rounds. Controlled by design,
+// where a matched pair is controlled by coincidence — the strongest evidence for a move.
+export interface ExploreRingTransitions {
+  key: string;
+  pipe: string;
+  field: string;
+  field_label: string;
+  unit: string | null;
+  total_rounds: number;
+  transitions: {
+    from: number;
+    to: number;
+    // Median Overall margin of moving UP (higher value minus lower), in points.
+    margin_up: number;
+    rounds: number;
+    paired_rounds: number;
+    matches: number;
+    sign_p: number | null;
+    paired_p: number | null;
+    margin_se: number | null;
+    direction: string | null;
+    // A direction at the ring's alpha over at least its minimum rounds.
+    significant: boolean;
+    // Enough rounds inside the no-effect floor: the ring says this move does nothing.
+    null: boolean;
+    // Under the minimum rounds — informs a prediction without steering it.
+    thin: boolean;
+  }[];
+}
+
+// The ring's word on a candidate's moves: per moved lever, the paired rounds, the margin
+// signed for THIS move, and its state; the candidate's state is its least-measured leg.
+export interface ExploreRingNote {
+  legs: { key: string; rounds: number; margin: number; margin_se: number | null; state: string }[];
+  rounds: number;
+  margin: number;
+  state: "measured" | "unsettled" | "thin" | "null";
+}
+
 // A lever's curve restricted to profiles that are otherwise like the reference — "what
 // happens if I change THIS profile", rather than "how do profiles with this value score".
 export interface ExploreConditionedCurve {
@@ -2580,9 +2620,12 @@ export interface ExploreCandidate {
   upside: number;
   beats_best_by: number;
   nearest_measured: number;
-  // How the prediction was arrived at, per changed lever: a controlled matched pair beats
-  // the marginal curve, and a number from the latter must never read like a measurement.
+  // How the prediction was arrived at, per changed lever: the ring beats a controlled
+  // matched pair, which beats the marginal curve, and a number from the latter must never
+  // read like a measurement.
   evidence: string[];
+  // The ring's own word on these moves, when it has made any of them (null otherwise).
+  ring?: ExploreRingNote | null;
   // Moves two levers at once — the prediction adds their effects, which the basin
   // structure shows they may not do. Its uncertainty is widened to say so.
   multi_lever: boolean;
@@ -2890,6 +2933,8 @@ export interface ExploreLandscape {
   gaps: ExploreGap[];
   candidates: ExploreCandidate[];
   matched_pairs: ExploreMatchedPairs[];
+  // The ring's transitions on the levers the axes carry — shown beside the matched pairs.
+  ring_transitions?: ExploreRingTransitions[];
   conditioned_curves: ExploreConditionedCurve[];
   basins: ExploreBasin[];
   reference: { fingerprint: string; name: string | null; label: string; overall: number } | null;
