@@ -128,6 +128,14 @@ DEFAULT_CONFIG: dict = {
         # on every page of every iteration): True = first iteration, "every" = every
         # iteration (twice the browser time), False = off.
         "warm_loads": True,
+        # Chromium is reused across a run's iterations — and across a whole duel window —
+        # and a browser process that lives for hours bloats: context setup and close grew
+        # 5–9× over a day in the drift audit while the network phases stayed flat. So the
+        # plugin RECYCLES it (close + relaunch, ~1 s) after this many page loads or this
+        # many minutes since launch, whichever comes first, at the next seam between runs.
+        # 0 disables either bound.
+        "recycle_after_pages": 60,
+        "recycle_after_minutes": 30,
         # Screenshot + HAR feed only the artifacts UI (no scored metric), so they're off by
         # default now — set true to capture them for debugging a specific run.
         "screenshot": False,

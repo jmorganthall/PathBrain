@@ -388,9 +388,11 @@ def test_teardown_on_the_owning_thread_closes_normally(monkeypatch):
     plugin.teardown()
 
     assert browser.closed and pw.closed
-    assert plugin.cleanup_stats() == {
+    stats = plugin.cleanup_stats()
+    assert {k: stats[k] for k in ("cleanup_failures", "cross_thread_calls", "reaped", "driver_pid")} == {
         "cleanup_failures": 0, "cross_thread_calls": 0, "reaped": 0, "driver_pid": None,
     }
+    assert stats["recycled"] == 0 and stats["browser_age_s"] is None  # nothing live after teardown
 
 
 # -- process reaping details -------------------------------------------------

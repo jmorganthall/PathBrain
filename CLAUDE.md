@@ -440,6 +440,32 @@ LLM-based. See `README.md` for the product overview.
     handles (`_abandon_all_plugins`) — a cheap probe timing out used to strand the
     browser's Chromium on a dead thread, which the next run then "closed" cross-thread and
     leaked. `cleanup_failures` counts closes that did not free what they claimed to.
+  - `resource_guard.py` + **browser recycling** — **the app polices its own footprint, in
+    code.** The drift audit's first real day showed the browser's host-side phases growing
+    while the network phases stayed flat: context setup 421 ms → 3.7 s, context close 2.4 →
+    5.2 s (ρ 0.84 with time), timing reads ×4 — the machine PathBrain measures *from* getting
+    steadily slower, and every graded number that includes render sliding with it (LCP
+    stepped 715 ms → 1.7 s in the first lever session's hour). A `mem_limit` on the container
+    only turns that slide into an OOM kill; the fix is the app noticing it is the thing eating
+    the host and backing off. **(1) Chromium is recycled by age** (`benchmark_browser.
+    should_recycle`, `browser.recycle_after_pages` 60 / `recycle_after_minutes` 30, 0 = off):
+    the reused browser is closed and relaunched at the next seam before a run's browser work
+    (~1 s cold start against a tens-of-seconds iteration) once it has served that many page
+    loads (cold + warm; a borrow by the portable plugin counts one) or lived that long — a
+    browser process that lives for a whole duel window bloats, and this is what stops it.
+    `request_recycle(reason)` lets the guard ask for one from any thread; the owning thread
+    honours it at its seam (`cleanup_stats` reports `recycled`, `pages_since_launch`,
+    `browser_age_s`). **(2) The guard** (`resource_guard.pressure`) reads what the kernel
+    already exposes — the cgroup's `memory.current`/`memory.max` (v2, then v1), the host's
+    `MemAvailable`, the 1-min load per CPU — and grades it `ok`/`high`/`critical`
+    (`HIGH_MEMORY_PCT` 80 / `CRITICAL_MEMORY_PCT` 92 of the container's own limit when it
+    has one, else of the host's total; load 2×/4× CPUs). `GET /api/health/pipeline` reports
+    it as `pressure`, so "the NAS is struggling" is a number. The scheduler watchdog calls
+    `relieve` every tick: at `high` it reaps stray Chromium, asks the browser to recycle and
+    drops the field memo (rate-limited to once a minute); at `critical` it also holds **this
+    tick's** scheduled monitoring run (re-read next tick, never latched, so external pressure
+    can't starve measurement for good). Dependency-free, never raises, every reading degrades
+    to `None` where a file is missing. `test_resource_guard` + `test_browser_recycle`.
   - `browser_procs.py` — **process-tree accounting + orphan reaping: the leak that ate the
     host.** A dropped Playwright handle raises nothing, logs nothing and moves no number
     PathBrain reports; its only symptom is the *host's* memory hours later, as an OOM kill

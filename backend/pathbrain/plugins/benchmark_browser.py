@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -159,6 +160,30 @@ def warm_load_wanted(config: dict) -> bool:
     if not mode:
         return False
     return int(config.get("_iteration", 0) or 0) == 0
+
+
+def should_recycle(pages: int, age_s: float, config: dict) -> str | None:
+    """Why the reused Chromium should be closed and relaunched now — or None.
+
+    A browser process that lives for hours bloats (the drift audit's context setup ×9 and
+    context close ×5 over a day, network phases flat), so it is recycled after
+    ``browser.recycle_after_pages`` page loads or ``browser.recycle_after_minutes`` since
+    launch, whichever first; 0 disables either bound. The check runs only at the seam
+    before a run's browser work, never mid-iteration.
+    """
+    try:
+        max_pages = int(config.get("recycle_after_pages", 60) or 0)
+    except (TypeError, ValueError):
+        max_pages = 60
+    try:
+        max_minutes = float(config.get("recycle_after_minutes", 30) or 0)
+    except (TypeError, ValueError):
+        max_minutes = 30.0
+    if max_pages > 0 and pages >= max_pages:
+        return f"{pages} page loads since launch (bound {max_pages})"
+    if max_minutes > 0 and age_s >= max_minutes * 60.0:
+        return f"{age_s / 60.0:.0f} min since launch (bound {max_minutes:g})"
+    return None
 
 
 def headless_mode(config: dict) -> str:
@@ -441,6 +466,25 @@ class BrowserBenchmark(BenchmarkPlugin):
         self._cleanup_failures = 0
         self._reaped = 0
         self._cross_thread = 0
+        # Age of the reused Chromium (``should_recycle``): when it was launched, how many
+        # page loads it has served, and an outside request (the resource guard) to recycle
+        # it at the next seam whatever the bounds say.
+        self._launched_at: float | None = None
+        self._pages_since_launch = 0
+        self._recycle_requested: str | None = None
+        self._recycled = 0
+
+    def request_recycle(self, reason: str) -> None:
+        """Ask for the browser to be closed and relaunched before its next use (the
+        resource guard calls this under memory pressure). Safe from any thread: it only
+        sets a flag that the owning thread reads at its next seam."""
+        self._recycle_requested = reason
+
+    def _recycle_due(self, config: dict) -> str | None:
+        if self._recycle_requested:
+            return self._recycle_requested
+        age = (time.monotonic() - self._launched_at) if self._launched_at is not None else 0.0
+        return should_recycle(self._pages_since_launch, age, config)
 
     def _owns_handles(self) -> bool:
         """True iff the current thread is the one that created the live Playwright."""
@@ -483,11 +527,21 @@ class BrowserBenchmark(BenchmarkPlugin):
                 # out a browser this thread cannot use. Check ownership FIRST.
                 self._drop_foreign_handles("_ensure_browser")
             else:
+                connected = False
                 try:
-                    if self._browser.is_connected():
-                        return self._browser
+                    connected = bool(self._browser.is_connected())
                 except Exception:  # noqa: BLE001 — stale handle; relaunch
-                    pass
+                    connected = False
+                if connected:
+                    why = self._recycle_due(config)
+                    if why is None:
+                        return self._browser
+                    # Bloat control: a long-lived Chromium is closed and relaunched at
+                    # this seam. One cold start (~1 s) against an iteration of tens of
+                    # seconds, and it is what keeps context setup/close from growing
+                    # for the length of a duel window.
+                    log.info("Recycling the reused Chromium: %s", why)
+                    self._recycled += 1
                 self._close_browser()
         from playwright.sync_api import sync_playwright
 
@@ -528,6 +582,9 @@ class BrowserBenchmark(BenchmarkPlugin):
         self._pw = pw
         self._browser = browser
         self._owner_thread = threading.get_ident()
+        self._launched_at = time.monotonic()
+        self._pages_since_launch = 0
+        self._recycle_requested = None
         # Exactly one driver is alive at this point (we reaped the rest above), so the
         # single remaining pid is this playwright's.
         pids = browser_procs.driver_pids()
@@ -602,7 +659,9 @@ class BrowserBenchmark(BenchmarkPlugin):
         browser section; ``None`` = a plain default Chromium) only when none is alive — an
         existing one is returned as-is — and it is closed by this plugin's own teardown, so
         process-tree accounting stays in one place. Raises when Playwright is unavailable."""
-        return self._ensure_browser(config or {})
+        browser = self._ensure_browser(config or {})
+        self._pages_since_launch += 1  # the borrower loads one page of its own
+        return browser
 
     def teardown(self) -> None:
         """Close the reused Chromium at the end of a run (never raises)."""
@@ -638,11 +697,18 @@ class BrowserBenchmark(BenchmarkPlugin):
 
     def cleanup_stats(self) -> dict:
         """Closes that did not free their process tree, and trees reaped since start."""
+        age = (time.monotonic() - self._launched_at) if (self._launched_at is not None and self._browser is not None) else None
         return {
             "cleanup_failures": self._cleanup_failures,
             "cross_thread_calls": self._cross_thread,
             "reaped": self._reaped,
             "driver_pid": self._driver_pid,
+            # Bloat control (``should_recycle``): how old the live Chromium is and how
+            # many times one has been recycled since start.
+            "recycled": self._recycled,
+            "pages_since_launch": self._pages_since_launch if self._browser is not None else 0,
+            "browser_age_s": round(age, 1) if age is not None else None,
+            "recycle_requested": self._recycle_requested,
         }
 
     def run(self, config: dict) -> PluginResult:
@@ -673,6 +739,8 @@ class BrowserBenchmark(BenchmarkPlugin):
         # The repeat-visit load (see `config_store`): same context, cache disabled — on the
         # run's first iteration only unless asked for every one (`warm_load_wanted`).
         want_warm = warm_load_wanted(config)
+        # Age accounting for the recycle bound: every page this iteration will load.
+        self._pages_since_launch += len(urls) * (2 if want_warm else 1)
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         base_dir = os.path.abspath(get_settings().artifact_dir)

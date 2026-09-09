@@ -306,6 +306,15 @@ def _loop(stop: threading.Event) -> None:
 
             _coordinator.evict_if_stalled()
 
+            # The app polices its own footprint (``resource_guard``): when the container
+            # or the host is short of memory or saturated, reap stray Chromium, recycle
+            # the browser at its next seam and drop the field memo — and at the critical
+            # level hold THIS tick's scheduled run back (re-read next tick, never latched).
+            from . import resource_guard
+
+            relief = resource_guard.relieve(**resource_guard.default_relievers())
+            hold_scheduled = bool(relief.get("hold_scheduled"))
+
             # The nightly schedules are checked BEFORE the busy gate below, because they
             # do not need the pipeline free: both engines take the coordination lock on
             # their own thread and queue behind whatever is running. Checking them after
@@ -354,6 +363,10 @@ def _loop(stop: threading.Event) -> None:
             interval_s = max(interval_min * 60.0, 30.0)
             last = _state["last_run_at"]
             due = enabled and (last is None or (time.time() - last) >= interval_s)
+            if due and hold_scheduled:
+                log.warning("Scheduler: monitoring run due but held this tick — %s",
+                            "; ".join((resource_guard.last() or {}).get("reasons") or []))
+                due = False
             if due and not _active_run_exists():
                 # Non-blocking: a periodic run should defer (try next tick) rather
                 # than queue behind a long session and stall the watchdog.
