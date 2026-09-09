@@ -179,35 +179,67 @@ def last() -> dict | None:
     return _state["last"]
 
 
+#: Relief actions run at most this often. The first cut ran them every minute, and one of
+#: them (the reap) could not tell a leaked Chromium from the one a duel leg was measuring
+#: with — under sustained pressure it killed the live browser once a minute and every leg
+#: failed. Relief is now rare, and the reap is refused while the pipeline is busy.
+RELIEF_INTERVAL_S = 600.0
+
+
 def relieve(
     reading: dict | None = None,
     *,
     reap: Callable[[], dict] | None = None,
     recycle: Callable[[], None] | None = None,
     drop_caches: Callable[[], None] | None = None,
+    busy: Callable[[], bool] | None = None,
     now: Callable[[], float] = time.monotonic,
-    min_interval_s: float = 60.0,
+    min_interval_s: float = RELIEF_INTERVAL_S,
 ) -> dict:
-    """Act on a reading. Returns ``{level, acted, hold_scheduled}``.
+    """Act on a reading. Returns ``{level, acted, hold_scheduled, skipped}``.
 
-    ``hold_scheduled`` is True when the caller should not start a scheduled run this
-    tick. Relief actions (reap, recycle, drop caches) run at most once per
-    ``min_interval_s`` so a tick loop does not thrash them; the hold is re-evaluated
-    every tick from the fresh reading, never latched.
+    What each level does, and why no more:
+
+    - ``high``: **reap** leaked Chromium — but only when ``busy()`` is False. A busy
+      pipeline means a session may be measuring with a live browser, and the reap cannot
+      tell that tree from a leaked one; a measurement is never sacrificed to housekeeping.
+      Nothing else: the browser's own age bounds already recycle it, and the field memo is
+      worth more than the memory it holds while the host is merely tight.
+    - ``critical``: the reap (same rule), plus **recycle** the browser at its next seam
+      (honoured by the owning thread between runs, never mid-measurement) and **drop the
+      field memo**; and ``hold_scheduled`` asks the caller not to start a *scheduled* run
+      this tick. The hold is re-evaluated every tick from the fresh reading, never latched.
+
+    Actions run at most once per ``min_interval_s`` so a tick loop does not thrash them.
     """
     reading = reading or pressure()
     level = reading.get("level", "ok")
     acted = False
+    skipped: list[str] = []
     if level in ("high", "critical") and now() - _state["relieved_at"] >= min_interval_s:
         _state["relieved_at"] = now()
         _state["actions"] += 1
         acted = True
+        pipeline_busy = False
+        if busy is not None:
+            try:
+                pipeline_busy = bool(busy())
+            except Exception:  # noqa: BLE001 — unknown reads as busy: never reap blind
+                pipeline_busy = True
+        actions: list[tuple[str, Callable | None]] = []
+        if pipeline_busy:
+            skipped.append("reap (a session may be measuring with a live browser)")
+        else:
+            actions.append(("reap", reap))
+        if level == "critical":
+            actions.extend((("recycle", recycle), ("drop_caches", drop_caches)))
         log.warning(
-            "Resource pressure %s (%s): reaping stray Chromium, recycling the browser at "
-            "its next seam, dropping the field memo",
+            "Resource pressure %s (%s): %s%s",
             level, "; ".join(reading.get("reasons") or []) or "no detail",
+            ", ".join(name for name, fn in actions if fn is not None) or "nothing to do",
+            f"; skipped {', '.join(skipped)}" if skipped else "",
         )
-        for label, fn in (("reap", reap), ("recycle", recycle), ("drop_caches", drop_caches)):
+        for label, fn in actions:
             if fn is None:
                 continue
             try:
@@ -217,15 +249,27 @@ def relieve(
     hold = level == "critical"
     if hold:
         _state["held_ticks"] += 1
-    return {"level": level, "acted": acted, "hold_scheduled": hold}
+    return {"level": level, "acted": acted, "hold_scheduled": hold, "skipped": skipped}
 
 
 def default_relievers() -> dict[str, Callable]:
     """The real relief actions, resolved lazily so this module imports nothing heavy."""
     def _reap() -> dict:
         from . import browser_procs
+        from .plugins import get_plugin
 
-        return browser_procs.reap_orphans()
+        # Belt and braces with the busy check: whatever driver the browser plugin says it
+        # holds is kept even if the pipeline read as idle a moment ago.
+        keep: list[int] = []
+        plugin = get_plugin("browser")
+        if plugin is not None and hasattr(plugin, "cleanup_stats"):
+            try:
+                pid = plugin.cleanup_stats().get("driver_pid")
+                if pid:
+                    keep.append(int(pid))
+            except Exception:  # noqa: BLE001 — keep nothing rather than fail the reap
+                pass
+        return browser_procs.reap_orphans(keep=keep)
 
     def _recycle() -> None:
         from .plugins import get_plugin
@@ -239,7 +283,12 @@ def default_relievers() -> dict[str, Callable]:
 
         invalidate_profiles_cache()
 
-    return {"reap": _reap, "recycle": _recycle, "drop_caches": _drop}
+    def _busy() -> bool:
+        from . import coordinator
+
+        return bool(coordinator.busy())
+
+    return {"reap": _reap, "recycle": _recycle, "drop_caches": _drop, "busy": _busy}
 
 
 __all__ = [
@@ -247,6 +296,7 @@ __all__ = [
     "CRITICAL_MEMORY_PCT",
     "HIGH_LOAD_PER_CPU",
     "HIGH_MEMORY_PCT",
+    "RELIEF_INTERVAL_S",
     "default_relievers",
     "last",
     "pressure",

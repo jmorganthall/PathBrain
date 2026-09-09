@@ -160,11 +160,28 @@ def _maybe_run_duel() -> bool:
     from . import coordinator, duel
     from .timezones import schedule_zone
 
-    if duel.active():
-        return False
     with session_scope() as session:
         cfg = get_config(session).get("duel", {}) or {}
     if not cfg.get("enabled"):
+        return False
+    if duel.active():
+        # A session already holds the ring (a resumed window, a lever session, a manual
+        # start). Silent before; a nightly window that passes this way is exactly the
+        # "our overnight duel didn't run at all" report, so it is said once per window.
+        if not cfg.get("continuous"):
+            now = datetime.now(schedule_zone(cfg))
+            try:
+                due = _schedule_due(now, int(cfg.get("hour", 3)), int(cfg.get("minute", 0)))
+            except (TypeError, ValueError):
+                due = False
+            today = now.date().isoformat()
+            if due and _state.get("duel_skip_logged") != today:
+                _state["duel_skip_logged"] = today
+                log.warning(
+                    "Scheduler: the nightly duel window is open but a duel session is already "
+                    "running (duel #%s) — the scheduled session is not started while it runs",
+                    (duel.current() or {}).get("id"),
+                )
         return False
 
     if cfg.get("continuous"):
