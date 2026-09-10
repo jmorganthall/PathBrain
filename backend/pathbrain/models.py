@@ -953,6 +953,10 @@ class PortableRun(Base):
     # Home runs only: the firewall profile in effect (best-effort), the third stamp.
     settings_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     settings_summary: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Who the network belongs to — ISP / organisation / ASN and the rough place — looked up
+    # server-side from the egress address at upload (``portable.lookup_network``). Best-effort
+    # and null when unknown; a run is never refused for it.
+    network: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # A sample taken by PathBrain's own `portable` plugin keeps ONE copy of its raw — in that

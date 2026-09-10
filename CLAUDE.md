@@ -989,6 +989,30 @@ LLM-based. See `README.md` for the product overview.
     run anyway (the other half of that iteration report) — (one portable iteration
     per suite iteration). Its metrics are derived by `interpret.derive` like any plugin's but are
     **not methodology metrics** — nothing in scoring reads them.
+  - **Every Away run says WHOSE network it ran on** (`PortableRun.network`,
+    `portable.lookup_network` / `parse_network_info` / `network_for_egress` / `describe_network`
+    / `backfill_network`, `portable.isp_lookup_url`). Asked for ISP capture on the Away test.
+    The page already learns the device's public egress address (for home detection), and the
+    owner of a public address is a public fact any IP-info service answers, so the lookup is
+    done **by the server, from that address** — never by the browser, whose CORS rules would
+    decide which service can be asked from a hotel tab — at upload (a stamp on the run, never
+    a condition of it: a private/CGNAT address, a disabled lookup or a silent service leave it
+    null and the run is recorded) and on the detection preview (`GET /portable/home` carries
+    `network`, so the caption reads *"Detected: away … On Comcast Cable · Denver, Colorado"*
+    before the run). `isp_lookup_url` is a template with `{ip}` (default `https://ipwho.is/{ip}`)
+    and the parser reads the four common answer shapes — ipwho.is (`connection.isp`), ipapi.co
+    (`org`/`asn`), ip-api.com (`isp`/`as`), ipinfo.io (`org` = `"AS15169 Google LLC"`, the ASN
+    read out of it) — into one `{isp, org, asn, city, region, country, source, looked_up_at}`;
+    an error answer or one naming no owner is None, never a fabricated ISP. Cached per address
+    (`NETWORK_TTL_S` 24 h; a failure `NETWORK_FAIL_TTL_S` 1 h, so a dead or rate-limited service
+    is not re-asked on every page load). The location map stamps rows recorded before the lookup
+    existed (`backfill_network`, ≤ `NETWORK_BACKFILL_LIMIT` = 5 lookups a read, own transaction)
+    and reports per place the ISP seen most often plus every one seen (`isp` / `isps`), shown as
+    a table column and in the dot's tooltip; the result card carries an ISP chip and the history
+    list names it. **Not verified against a live service from the build sandbox** (its egress
+    allowlist blocks them): the shapes are the services' documented ones, pinned by
+    `test_parse_network_info_reads_every_common_service_shape`; the first real upload is the
+    check, and the log line names what was stamped.
   - **The location map: every place measured, on one chart against home** (`portable.location_map`,
     `GET /api/portable/locations`, `components/LocationQuadrant.tsx`, the **"Every place vs home"**
     card on the Away test page). The Away readout was one run on one device against that

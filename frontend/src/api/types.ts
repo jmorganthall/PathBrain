@@ -3240,6 +3240,18 @@ export interface PortableStandings {
   note: string;
 }
 
+// Who owns the network a run was taken on, looked up server-side from the egress address.
+export interface PortableNetwork {
+  isp: string | null;
+  org: string | null;
+  asn: number | null;
+  city: string | null;
+  region: string | null;
+  country: string | null;
+  source?: string | null;
+  looked_up_at?: string | null;
+}
+
 export interface PortableRun {
   id: number;
   created_at: string | null;
@@ -3255,6 +3267,7 @@ export interface PortableRun {
   tz_offset_minutes: number | null;
   settings_fingerprint: string | null;
   settings_summary: string | null;
+  network: PortableNetwork | null;
   metrics: Record<string, number>;
   per_origin: Record<string, Record<string, number>>;
   coverage: {
@@ -3300,6 +3313,9 @@ export interface PortableLocation {
   crown_score: number | null;
   metrics: Record<string, number>;
   devices: { device_id: string; label: string | null; runs: number }[];
+  // The ISP seen most often at this place ("Comcast Cable · Denver, Colorado"), and every one seen.
+  isp: string | null;
+  isps: { name: string; runs: number }[];
   networks: number;
   first_seen: string | null;
   last_seen: string | null;
@@ -3363,6 +3379,8 @@ export interface PortableHome {
   // address (IPv4 exactly, IPv6 by prefix). A suggestion the page pre-fills, never a
   // decision — the user can type over it.
   venue: PortableVenueRecall | null;
+  // Who owns the network the passed egress address is on — "away, on Comcast in Denver".
+  network: PortableNetwork | null;
 }
 
 export interface PortableVenueRecall {

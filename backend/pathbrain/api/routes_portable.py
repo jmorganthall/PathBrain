@@ -98,9 +98,16 @@ def portable_home(
         "detected_by": None,
         "reason": None,
         "venue": None,
+        "network": None,
     }
     if egress_ip or egress_ip_v6:
         egress = portable.split_families(egress_ip, egress_ip_v6)
+        # Who owns this network — shown beside the verdict so a person sees "away, on
+        # Comcast in Denver" before running. Cached per address; best-effort by rule.
+        try:
+            out["network"] = portable.network_for_egress(egress, cfg)
+        except Exception:  # noqa: BLE001
+            log.debug("Portable: network lookup failed", exc_info=True)
         try:
             is_home, by = portable.decide_home(None, egress, home, v6_prefix=out["v6_prefix"])
         except ValueError as exc:
@@ -134,8 +141,13 @@ def portable_upload(body: PortableRunCreate, session: Session = Depends(get_sess
     current = portable.recipe(cfg)["instrument_version"]
     home = portable.home_addresses(cfg) if body.is_home is None else None
     v6_prefix = int(portable.portable_config(cfg).get("home_ipv6_prefix") or 64)
+    network = None
     try:
-        run = portable.build_run(body.model_dump(), current, home=home, v6_prefix=v6_prefix)
+        network = portable.network_for_egress(portable.split_families(body.egress_ip, body.egress_ip_v6), cfg)
+    except Exception:  # noqa: BLE001 — a stamp on the run, never a condition of it
+        log.debug("Portable: network lookup at upload failed", exc_info=True)
+    try:
+        run = portable.build_run(body.model_dump(), current, home=home, v6_prefix=v6_prefix, network=network)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not run.device_id:
@@ -146,8 +158,8 @@ def portable_upload(body: PortableRunCreate, session: Session = Depends(get_sess
         s.flush()
         run_id = run.id
     log.info(
-        "Portable run #%s stored: device=%s home=%s (%s) venue=%r score=%s",
-        run_id, run.device_id, run.is_home, run.home_detection, run.venue, run.score,
+        "Portable run #%s stored: device=%s home=%s (%s) venue=%r network=%r score=%s",
+        run_id, run.device_id, run.is_home, run.home_detection, run.venue, portable.describe_network(run.network), run.score,
     )
     session.expire_all()
     stored = session.get(PortableRun, run_id)

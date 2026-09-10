@@ -38,6 +38,7 @@ import hashlib
 import ipaddress
 import json
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from statistics import median
@@ -117,6 +118,13 @@ DEFAULT_CONFIG: dict = {
     # them up (a server whose own egress isn't the home WAN — say a NAS behind its own
     # tunnel). One or two addresses, IPv4 and/or IPv6, separated by a comma or space.
     "home_ip": "",
+    # Who owns the network a run was taken on: the ISP / organisation / ASN behind the
+    # device's egress address, looked up by the SERVER (so a browser's CORS rules never
+    # decide it) from a public IP-info service, with ``{ip}`` standing for the address.
+    # Any JSON service answering with the usual fields works — ``lookup_network`` reads the
+    # shapes of ipwho.is (``connection.isp``), ipapi.co (``org``/``asn``), ip-api.com
+    # (``isp``/``as``) and ipinfo.io (``org`` = "AS15169 Google LLC"). Empty disables it.
+    "isp_lookup_url": "https://ipwho.is/{ip}",
     "resources": DEFAULT_RESOURCES,
     "stream": DEFAULT_STREAM,
     "rtt": DEFAULT_RTT,
@@ -263,6 +271,182 @@ def _lookup_egress(url: str, timeout: float = 5.0) -> str | None:
     except (ValueError, AttributeError):
         ip = body
     return ip if is_public_ip(ip) else None
+
+
+# ── who owns the network: the ISP behind an egress address ───────────────────
+
+#: A looked-up network is remembered this long per address (an address's owner does not
+#: change between two runs at the same hotel), and a failed lookup this long, so a dead or
+#: rate-limited service is not asked again on every upload and page load.
+NETWORK_TTL_S = 24 * 3600.0
+NETWORK_FAIL_TTL_S = 3600.0
+NETWORK_TIMEOUT_S = 4.0
+#: How many unstamped rows a single read of the location map will look up (best-effort,
+#: bounded so a page load can never wait on more than this many network calls).
+NETWORK_BACKFILL_LIMIT = 5
+_network_cache: dict[str, tuple[float, dict | None]] = {}
+
+
+def _asn_number(value) -> int | None:
+    """``"AS15169"`` / ``15169`` / ``"AS15169 Google LLC"`` → 15169."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value).strip().upper()
+    if text.startswith("AS"):
+        text = text[2:]
+    digits = ""
+    for ch in text:
+        if ch.isdigit():
+            digits += ch
+        else:
+            break
+    return int(digits) if digits else None
+
+
+def _asn_org(value) -> str | None:
+    """``"AS15169 Google LLC"`` → ``"Google LLC"`` (ipinfo.io / ip-api.com's ``as``)."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.upper().startswith("AS") and len(text) > 2 and text[2].isdigit():
+        rest = text[2:].lstrip("0123456789").strip()
+        return rest or None
+    return text or None
+
+
+def parse_network_info(body) -> dict | None:
+    """Read the ISP / organisation / ASN and rough place out of a public IP-info service's
+    answer, whichever of the common shapes it uses:
+
+    * ipwho.is — ``{"success": true, "connection": {"isp", "org", "asn"}, "city", "region", "country"}``
+    * ipapi.co — ``{"org", "asn": "AS15169", "city", "region", "country_name"}`` (``error`` on failure)
+    * ip-api.com — ``{"status": "success", "isp", "org", "as": "AS15169 …", "city", "regionName", "country"}``
+    * ipinfo.io — ``{"org": "AS15169 Google LLC", "city", "region", "country"}``
+
+    ``None`` when the answer is an error or names no owner at all. Nothing is fabricated:
+    an absent field is absent."""
+    if not isinstance(body, dict):
+        return None
+    if body.get("success") is False or body.get("error") is True or body.get("status") == "fail":
+        return None
+    conn = body.get("connection") if isinstance(body.get("connection"), dict) else {}
+    isp = conn.get("isp") or body.get("isp")
+    org = conn.get("org") or body.get("org")
+    asn = _asn_number(conn.get("asn") if conn.get("asn") is not None else (body.get("asn") if body.get("asn") is not None else body.get("as")))
+    # ipinfo.io folds the ASN into ``org``; ip-api.com puts the operator in ``as``.
+    if isinstance(org, str) and org.upper().startswith("AS") and len(org) > 2 and org[2].isdigit():
+        if asn is None:
+            asn = _asn_number(org)
+        org = _asn_org(org)
+    if not isp:
+        isp = _asn_org(body.get("as")) or org
+    country = body.get("country_name") or body.get("country")
+    out = {
+        "isp": str(isp).strip() if isp else None,
+        "org": str(org).strip() if org else None,
+        "asn": asn,
+        "city": str(body.get("city")).strip() if body.get("city") else None,
+        "region": str(body.get("regionName") or body.get("region") or "").strip() or None,
+        "country": str(country).strip() if country else None,
+    }
+    return out if (out["isp"] or out["org"] or out["asn"] is not None) else None
+
+
+def _fetch_network(url: str, timeout: float = NETWORK_TIMEOUT_S) -> dict | None:
+    req = urllib.request.Request(url, headers={"User-Agent": "PathBrain/portable", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — configured service
+        body = resp.read(16384).decode("utf-8", "replace")
+    return parse_network_info(json.loads(body))
+
+
+def lookup_network(ip: str | None, cfg: dict | None, *, now: float | None = None) -> dict | None:
+    """The network behind a public address — ``{isp, org, asn, city, region, country,
+    source, looked_up_at}`` — from the configured ``portable.isp_lookup_url``, cached per
+    address (``NETWORK_TTL_S``; a failure for ``NETWORK_FAIL_TTL_S``). ``None`` when the
+    address is private, the lookup is disabled, or the service did not answer: a run is
+    recorded either way, this is a stamp on it, never a condition of it."""
+    if not is_public_ip(ip):
+        return None
+    template = str(portable_config(cfg).get("isp_lookup_url") or "").strip()
+    if not template or "{ip}" not in template:
+        return None
+    t = time.time() if now is None else now
+    cached = _network_cache.get(ip)
+    if cached is not None:
+        stamped, info = cached
+        ttl = NETWORK_TTL_S if info is not None else NETWORK_FAIL_TTL_S
+        if t - stamped < ttl:
+            return dict(info) if info is not None else None
+    url = template.replace("{ip}", urllib.parse.quote(ip, safe=":"))
+    info = None
+    try:
+        info = _fetch_network(url)
+    except Exception as exc:  # noqa: BLE001 — a stamp, never a failed upload
+        log.warning("Portable: ISP lookup for %s failed: %s", ip, exc)
+    if info is not None:
+        info["source"] = urllib.parse.urlsplit(url).hostname
+        info["looked_up_at"] = datetime.fromtimestamp(t, tz=timezone.utc).isoformat()
+    _network_cache[ip] = (t, info)
+    return dict(info) if info is not None else None
+
+
+def reset_network_cache() -> None:
+    _network_cache.clear()
+
+
+def network_for_egress(egress: dict | None, cfg: dict | None) -> dict | None:
+    """The network stamp for a device's egress: the IPv4 address when it has one (services
+    answer v4 more reliably), else the IPv6 address."""
+    if not egress:
+        return None
+    for fam in ("v4", "v6"):
+        ip = egress.get(fam)
+        if is_public_ip(ip):
+            info = lookup_network(ip, cfg)
+            if info is not None:
+                return info
+    return None
+
+
+def describe_network(info: dict | None) -> str | None:
+    """``"Comcast Cable · Denver, Colorado"`` — one line for a chip."""
+    if not info:
+        return None
+    who = info.get("isp") or info.get("org") or (f"AS{info['asn']}" if info.get("asn") is not None else None)
+    where = ", ".join(x for x in (info.get("city"), info.get("region")) if x)
+    if who and where:
+        return f"{who} · {where}"
+    return who or where or None
+
+
+def backfill_network(session, rows: list[PortableRun], cfg: dict | None, *, limit: int = NETWORK_BACKFILL_LIMIT) -> int:
+    """Stamp the network onto rows recorded before the lookup existed — newest first, at most
+    ``limit`` lookups a call, each written in its own transaction. Best-effort: a service that
+    does not answer costs one bounded attempt per address per ``NETWORK_FAIL_TTL_S``."""
+    if not str(portable_config(cfg).get("isp_lookup_url") or "").strip():
+        return 0
+    done = 0
+    for r in sorted((x for x in rows if x.network is None and x.egress_ip), key=lambda x: -x.id):
+        if done >= limit:
+            break
+        egress = split_families(r.egress_ip)
+        info = network_for_egress(egress, cfg)
+        done += 1
+        if info is None:
+            continue
+        try:
+            with session_scope() as s:
+                row = s.get(PortableRun, r.id)
+                if row is not None and row.network is None:
+                    row.network = info
+            r.network = info
+        except Exception:  # noqa: BLE001
+            log.debug("Portable: network backfill for #%s failed", r.id, exc_info=True)
+    return done
 
 
 def home_addresses(cfg: dict | None, *, now: float | None = None) -> dict:
@@ -461,7 +645,8 @@ def home_stamp() -> tuple[str | None, str | None]:
         return None, None
 
 
-def build_run(payload: dict, current_version: str, *, home: dict | None = None, v6_prefix: int = 64) -> PortableRun:
+def build_run(payload: dict, current_version: str, *, home: dict | None = None, v6_prefix: int = 64,
+              network: dict | None = None) -> PortableRun:
     """Derive + score an uploaded raw document into a ``PortableRun`` row (not added to a
     session). ``home`` is the home WAN address for detection (see ``decide_home``). Raises
     ``ValueError`` when the upload's instrument version isn't the current recipe's — a stale
@@ -502,6 +687,7 @@ def build_run(payload: dict, current_version: str, *, home: dict | None = None, 
         tz_offset_minutes=tz,
         settings_fingerprint=fp,
         settings_summary=summary,
+        network=network,
         raw=raw,
         metrics=derived["metrics"],
         per_origin=derived["per_origin"],
@@ -998,6 +1184,7 @@ def serialize_run(run: PortableRun, *, include_raw: bool = False) -> dict:
         "tz_offset_minutes": run.tz_offset_minutes,
         "settings_fingerprint": run.settings_fingerprint,
         "settings_summary": run.settings_summary,
+        "network": run.network,
         "metrics": run.metrics or {},
         "per_origin": run.per_origin or {},
         "coverage": run.coverage or {},
@@ -1207,9 +1394,13 @@ def _aggregate(rows: list[PortableRun], legs: list[dict] | None = None) -> dict:
     metrics: dict[str, list[float]] = {}
     devices: dict[str, dict] = {}
     spellings: dict[str, int] = {}
+    isps: dict[str, int] = {}
     egress_v4: set[str] = set()
     first = last = None
     for r in rows:
+        who = describe_network(r.network)
+        if who:
+            isps[who] = isps.get(who, 0) + 1
         sc, _ = score_metrics(r.metrics or {})
         if sc is not None:
             scores.append(sc)
@@ -1242,6 +1433,8 @@ def _aggregate(rows: list[PortableRun], legs: list[dict] | None = None) -> dict:
         "metrics": {k: round(median(v), 3) for k, v in metrics.items() if v},
         "devices": sorted(devices.values(), key=lambda d: -d["runs"]),
         "spelling": max(spellings, key=spellings.get) if spellings else None,
+        "isp": max(isps, key=isps.get) if isps else None,
+        "isps": [{"name": k, "runs": v} for k, v in sorted(isps.items(), key=lambda kv: -kv[1])],
         "networks": len(egress_v4),
         "first_seen": first.isoformat() if first else None,
         "last_seen": last.isoformat() if last else None,
@@ -1278,6 +1471,7 @@ def location_map(session, cfg: dict | None, *, home_fingerprint: str | None = No
     all_rows = session.scalars(select(PortableRun).order_by(PortableRun.id)).all()
     rows = [r for r in all_rows if r.instrument_version == version]
     excluded_version = len(all_rows) - len(rows)
+    backfill_network(session, rows, cfg)
 
     homes = [r for r in rows if r.is_home]
     if home_fingerprint is None:

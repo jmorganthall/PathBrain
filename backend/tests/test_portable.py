@@ -915,3 +915,93 @@ def test_crown_stand_in_score_is_the_weighted_mean_of_the_legs_subscores():
     # A leg without a stand-in reading, or an unscored leg, means no score — never a default.
     assert portable.crown_stand_in_score({"first_complete_ms": 100.0}, legs) is None
     assert portable.crown_stand_in_score(metrics, legs + [{"portable_metric": "throughput_mbps", "weight": 1, "scored": False}]) is None
+
+
+# ── who owns the network: the ISP stamp ──────────────────────────────────────
+
+
+def test_parse_network_info_reads_every_common_service_shape():
+    ipwho = {"success": True, "city": "Denver", "region": "Colorado", "country": "United States",
+             "connection": {"asn": 7922, "org": "Comcast Cable", "isp": "Comcast Cable Communications", "domain": "comcast.net"}}
+    ipapi = {"org": "COMCAST-7922", "asn": "AS7922", "city": "Denver", "region": "Colorado", "country_name": "United States"}
+    ip_api = {"status": "success", "isp": "Comcast Cable", "org": "Comcast Business", "as": "AS7922 Comcast Cable Communications, LLC",
+              "city": "Denver", "regionName": "Colorado", "country": "United States"}
+    ipinfo = {"ip": "1.2.3.4", "org": "AS7922 Comcast Cable Communications, LLC", "city": "Denver", "region": "Colorado", "country": "US"}
+    for body in (ipwho, ipapi, ip_api, ipinfo):
+        info = portable.parse_network_info(body)
+        assert info and info["asn"] == 7922 and info["city"] == "Denver" and info["region"] == "Colorado", body
+        assert info["isp"] and "comcast" in info["isp"].lower(), body
+    # ipinfo folds the ASN into org: the number is read out and the name kept.
+    assert portable.parse_network_info(ipinfo)["org"] == "Comcast Cable Communications, LLC"
+    # Errors and empty answers are None, never a fabricated owner.
+    assert portable.parse_network_info({"success": False, "message": "reserved range"}) is None
+    assert portable.parse_network_info({"error": True, "reason": "RateLimited"}) is None
+    assert portable.parse_network_info({"status": "fail", "message": "private range"}) is None
+    assert portable.parse_network_info({"city": "Denver"}) is None
+    assert portable.parse_network_info("not json") is None
+
+
+def test_lookup_network_is_cached_per_address_and_never_asks_about_private_ones(monkeypatch):
+    portable.reset_network_cache()
+    calls: list[str] = []
+
+    def fake_fetch(url, timeout=4.0):
+        calls.append(url)
+        if "9.9.9.9" in url:
+            raise OSError("service down")
+        return {"isp": "Quad9", "asn": 19281, "city": "Zürich"}
+
+    monkeypatch.setattr(portable, "_fetch_network", fake_fetch)
+    cfg = {"portable": {"isp_lookup_url": "https://example.test/{ip}"}}
+    a = portable.lookup_network("1.1.1.1", cfg, now=1000.0)
+    b = portable.lookup_network("1.1.1.1", cfg, now=1500.0)
+    assert a == b and a["isp"] == "Quad9" and a["source"] == "example.test" and a["looked_up_at"]
+    assert calls == ["https://example.test/1.1.1.1"]           # the second read was the cache
+    assert portable.lookup_network("1.1.1.1", cfg, now=1000.0 + portable.NETWORK_TTL_S + 1)["isp"] == "Quad9"
+    assert len(calls) == 2                                      # expired → asked again
+    # A failure is remembered for its own, shorter, TTL.
+    assert portable.lookup_network("9.9.9.9", cfg, now=2000.0) is None
+    assert portable.lookup_network("9.9.9.9", cfg, now=2001.0) is None
+    assert calls.count("https://example.test/9.9.9.9") == 1
+    assert portable.lookup_network("9.9.9.9", cfg, now=2000.0 + portable.NETWORK_FAIL_TTL_S + 1) is None
+    assert calls.count("https://example.test/9.9.9.9") == 2
+    # Private, CGNAT and absent addresses are never sent anywhere; an empty template disables it.
+    for ip in ("192.168.1.5", "100.64.0.9", None, ""):
+        assert portable.lookup_network(ip, cfg) is None
+    assert portable.lookup_network("1.1.1.1", {"portable": {"isp_lookup_url": ""}}, now=5000.0) is None  # disabled: not even the cache
+    assert len(calls) == 4
+
+
+def test_describe_network_is_one_line():
+    assert portable.describe_network({"isp": "Comcast Cable", "city": "Denver", "region": "Colorado"}) == "Comcast Cable · Denver, Colorado"
+    assert portable.describe_network({"org": "Google LLC"}) == "Google LLC"
+    assert portable.describe_network({"asn": 15169, "city": "Mountain View"}) == "AS15169 · Mountain View"
+    assert portable.describe_network(None) is None and portable.describe_network({}) is None
+
+
+def test_api_stamps_the_network_on_upload_and_on_the_preview(client, clean, monkeypatch):
+    portable.reset_network_cache()
+    monkeypatch.setattr(
+        portable, "home_addresses",
+        lambda cfg, now=None: {"v4": "8.8.8.8", "v6": None, "source": "config", "checked_at": None, "errors": {}},
+    )
+    monkeypatch.setattr(portable, "_fetch_network", lambda url, timeout=4.0: {"isp": "Hotel Net", "asn": 64512, "city": "Denver"})
+    body = {"device_id": "auto-phone", "instrument_version": VERSION, "raw": make_raw()}
+    away = client.post("/api/portable/runs", json={**body, "egress_ip": "1.1.1.1", "venue": "Hotel"}).json()
+    assert away["network"]["isp"] == "Hotel Net" and away["network"]["asn"] == 64512
+    preview = client.get("/api/portable/home", params={"egress_ip": "1.1.1.1"}).json()
+    assert preview["detected"] is False and preview["network"]["isp"] == "Hotel Net"
+    # A private address gets no stamp, and the run is still recorded.
+    manual = client.post("/api/portable/runs", json={**body, "egress_ip": "10.0.0.5", "is_home": False, "venue": "Lan"}).json()
+    assert manual["network"] is None and manual["is_home"] is False
+    # The location map reads the ISP per place, and backfills rows stamped before it existed.
+    with session_scope() as s:
+        row = s.get(PortableRun, away["id"])
+        row.network = None
+    portable.reset_network_cache()
+    with session_scope() as s:
+        m = portable.location_map(s, {}, home_fingerprint=None)
+    hotel = next(loc for loc in m["locations"] if loc["label"] == "Hotel")
+    assert hotel["isp"] == "Hotel Net · Denver" and hotel["isps"] == [{"name": "Hotel Net · Denver", "runs": 1}]
+    with session_scope() as s:
+        assert s.get(PortableRun, away["id"]).network["isp"] == "Hotel Net"

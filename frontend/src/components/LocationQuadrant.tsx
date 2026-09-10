@@ -216,6 +216,12 @@ function MapTooltip({
       <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
         {loc.runs} run{loc.runs === 1 ? "" : "s"}{loc.confident ? "" : " — limited data"} · {devices}
       </Typography>
+      {loc.isp && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+          {loc.isp}
+          {loc.isps.length > 1 ? ` (+${loc.isps.length - 1} other network${loc.isps.length > 2 ? "s" : ""})` : ""}
+        </Typography>
+      )}
       {loc.setup_comparable === false && loc.setup_note && (
         <Typography variant="caption" color="warning.main" sx={{ display: "block" }}>
           Setup-bound metrics not comparable with home: {loc.setup_note}.
@@ -484,6 +490,7 @@ export default function LocationQuadrant({ map }: { map: PortableLocationMap }) 
                 </TableCell>
               ))}
               {crown.complete ? <TableCell align="right">Score</TableCell> : null}
+              <TableCell>ISP</TableCell>
               <TableCell>Devices</TableCell>
             </TableRow>
           </TableHead>
@@ -510,6 +517,10 @@ export default function LocationQuadrant({ map }: { map: PortableLocationMap }) 
                     </TableCell>
                   ))}
                   {crown.complete ? <TableCell align="right">{loc.score == null ? "—" : Math.round(loc.score)}</TableCell> : null}
+                  <TableCell sx={{ color: "text.secondary", whiteSpace: "nowrap" }}>
+                    {loc.isp ?? "—"}
+                    {loc.isps.length > 1 ? ` +${loc.isps.length - 1}` : ""}
+                  </TableCell>
                   <TableCell sx={{ color: "text.secondary", whiteSpace: "nowrap" }}>
                     {loc.devices.map((dv) => `${dv.label || dv.device_id.slice(0, 8)} ×${dv.runs}`).join(", ")}
                   </TableCell>

@@ -28,6 +28,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import FlightTakeoffIcon from "@mui/icons-material/FlightTakeoff";
 import HomeIcon from "@mui/icons-material/Home";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import PublicIcon from "@mui/icons-material/Public";
 import StopIcon from "@mui/icons-material/Stop";
 
 import { api, tzOffsetMinutes } from "../api/client";
@@ -36,6 +37,7 @@ import type {
   PortableHome,
   PortableLocationMap,
   PortableMetricMeta,
+  PortableNetwork,
   PortableRecipe,
   PortableReference,
   PortableRun,
@@ -74,6 +76,14 @@ function fmtDelta(m: PortableCompareMetric, unit: string): string {
 
 function verdictColor(v: PortableCompareMetric["verdict"]): "success" | "error" | "default" {
   return v === "better" ? "success" : v === "worse" ? "error" : "default";
+}
+
+function describeNetwork(n: PortableNetwork | null | undefined): string | null {
+  if (!n) return null;
+  const who = n.isp || n.org || (n.asn != null ? `AS${n.asn}` : null);
+  const where = [n.city, n.region].filter(Boolean).join(", ");
+  if (who && where) return `${who} · ${where}`;
+  return who || where || null;
 }
 
 function shortId(id: string): string {
@@ -691,7 +701,7 @@ export default function Away() {
                     : detected === true
                       ? `Detected: home — ${homeInfo?.reason}.`
                       : detected === false
-                        ? `Detected: away — ${homeInfo?.reason}.`
+                        ? `Detected: away — ${homeInfo?.reason}.${describeNetwork(homeInfo?.network) ? ` On ${describeNetwork(homeInfo?.network)}.` : ""}`
                         : homeInfo?.home_ip || homeInfo?.home_ip_v6
                           ? egress?.v4 || egress?.v6
                             ? `Couldn't compare: ${homeInfo?.reason ?? "no address family is known on both sides"}. Choose Home or Away.`
@@ -788,6 +798,13 @@ export default function Away() {
                 />
               </Tooltip>
               {result.settings_summary && <Chip size="small" variant="outlined" label={result.settings_summary} />}
+              {describeNetwork(result.network) && (
+                <Tooltip
+                  title={`ISP ${result.network!.isp ?? "—"} · org ${result.network!.org ?? "—"} · AS${result.network!.asn ?? "?"} · ${[result.network!.city, result.network!.region, result.network!.country].filter(Boolean).join(", ") || "location unknown"}${result.network!.source ? ` · via ${result.network!.source}` : ""}`}
+                >
+                  <Chip size="small" variant="outlined" icon={<PublicIcon />} label={describeNetwork(result.network)!} />
+                </Tooltip>
+              )}
             </Stack>
             {canToggle && (
               <Box sx={{ mb: 1.5 }}>
@@ -897,7 +914,7 @@ export default function Away() {
                         )}
                       </Stack>
                     }
-                    secondary={`${fmtDateTime(r.created_at)}${r.settings_summary ? ` · ${r.settings_summary}` : ""}`}
+                    secondary={`${fmtDateTime(r.created_at)}${r.settings_summary ? ` · ${r.settings_summary}` : ""}${describeNetwork(r.network) ? ` · ${describeNetwork(r.network)}` : ""}`}
                   />
                   <IconButton
                     edge="end"
