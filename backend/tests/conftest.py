@@ -37,3 +37,20 @@ def _db():
 @pytest.fixture()
 def client() -> TestClient:
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _firewall_guard_isolated():
+    """The firewall guard trips hands-off on any simulated outage and keeps it across tests
+    (that persistence is the feature). A test that simulates a dead firewall must not refuse
+    every later test's writes, so the guard is re-armed after each test that tripped it."""
+    yield
+    from pathbrain import firewall_guard as fg
+
+    try:
+        fg._last_ok_stamp = 0.0
+        fg._outage_pending = False
+        if fg.state()["hands_off"]:
+            fg.arm(by="test-isolation")
+    except Exception:  # noqa: BLE001 — a test's own DB teardown may have run first
+        pass
