@@ -77,6 +77,8 @@ import type {
 } from "../api/types";
 import { Countdown, JobProgressBar, useSmoothProgress } from "../components/JobStatus";
 import { fmtDateTime, fmtNum } from "../utils/format";
+import { legMedians, readSeat, ringOrder, ringSpan } from "../utils/ringReading";
+import type { SeatReading } from "../utils/ringReading";
 
 const isRunning = (d: DuelSession | null) =>
   !!d && !!d.status && ["pending", "running"].includes(d.status);
@@ -1060,9 +1062,24 @@ function LegStrip({
     if (i >= 0) return SEAT_COLORS[i % SEAT_COLORS.length];
     return fp === reference?.fingerprint ? HOLDER_COLOR : "text.disabled";
   };
+  // Height is the leg's Overall, scaled to the spread of the legs on the strip — so a
+  // challenger leg standing above the belt legs beside it IS the round it won, visible
+  // without a tooltip. The strip used to encode role as height, which drew every belt
+  // leg tall and every seat leg short whatever they measured, so the picture said nothing
+  // about how the profiles compared. Role is carried by color (and the belt's cap).
+  const usable = legs.map((l) => l.overall).filter((v): v is number => v != null);
+  const lo = usable.length ? Math.min(...usable) : 0;
+  const hi = usable.length ? Math.max(...usable) : 0;
+  const MIN_H = 6;
+  const MAX_H = 26;
+  const heightOf = (v: number | null) => {
+    if (v == null) return MIN_H;
+    if (hi <= lo) return (MIN_H + MAX_H) / 2;
+    return MIN_H + ((v - lo) / (hi - lo)) * (MAX_H - MIN_H);
+  };
   return (
     <Box sx={{ mb: 1 }}>
-      <Box sx={{ display: "flex", gap: "3px", alignItems: "flex-end", height: 34 }}>
+      <Box sx={{ display: "flex", gap: "3px", alignItems: "flex-end", height: MAX_H + 8 }}>
         {legs.map((leg) => (
           <Tooltip
             key={leg.index}
@@ -1073,13 +1090,20 @@ function LegStrip({
               }${leg.severity != null ? ` · weather ${Math.round(leg.severity)}/100` : ""}`
             }
           >
-            <Box sx={{ flex: 1, minWidth: 6, display: "flex", flexDirection: "column", gap: "2px" }}>
+            <Box
+              sx={{
+                flex: 1, minWidth: 6, display: "flex", flexDirection: "column",
+                justifyContent: "flex-end", gap: "2px",
+              }}
+            >
               <Box
                 sx={{
-                  height: leg.role === "belt" ? 22 : 15,
+                  height: heightOf(leg.overall),
                   borderRadius: 0.5,
                   bgcolor: colorOf(leg.fingerprint),
                   opacity: leg.overall == null ? 0.25 : 0.9,
+                  borderTop: leg.role === "belt" ? 2 : 0,
+                  borderColor: "common.white",
                 }}
               />
               <Box
@@ -1095,7 +1119,10 @@ function LegStrip({
         ))}
       </Box>
       <Typography variant="caption" color="text.secondary">
-        Legs in run order · tall = belt · the bar under each leg is its measured weather.
+        Legs in run order · height = that leg&apos;s Overall
+        {usable.length > 1 && hi > lo ? ` (${fmtNum(lo, 1)}–${fmtNum(hi, 1)})` : ""} ·{" "}
+        <SideDot color={HOLDER_COLOR} />
+        belt legs carry a white cap · the bar under each leg is its measured weather.
       </Typography>
     </Box>
   );
@@ -1193,6 +1220,7 @@ function SeatRow({
   const inc = board.incumbent;
   const chaName = cha.name || cha.label || "challenger";
   const margin = board.median_margin;
+  const tooEarly = board.pairs < board.min_pairs;
   return (
     <Box sx={{ pt: 1, mt: 1, borderTop: 1, borderColor: "divider" }}>
       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
@@ -1241,16 +1269,26 @@ function SeatRow({
             </Typography>
           </Typography>
         </Tooltip>
-        {board.p_value != null && (
+        {tooEarly ? (
+          <Tooltip title={`A match can't be called before ${board.min_pairs} rounds, however the early ones went. The p-value below that is not informative, so it isn't shown.`}>
+            <Typography variant="body2" color="text.secondary">
+              too early to call{" "}
+              <Typography component="span" variant="caption" color="text.secondary">
+                · {board.min_pairs - board.pairs} more round{board.min_pairs - board.pairs === 1 ? "" : "s"} before a call
+              </Typography>
+            </Typography>
+          </Tooltip>
+        ) : board.p_value != null ? (
           <Tooltip title={`How unlikely this run of margins would be if the two were equal. Called at ${fmtNum(board.alpha, 3)} or below.`}>
             <Typography variant="body2" sx={{ fontWeight: board.p_value <= board.alpha ? 700 : 400 }}>
               p {fmtNum(board.p_value, 3)}{" "}
               <Typography component="span" variant="caption" color="text.secondary">
                 needs ≤ {fmtNum(board.alpha, 3)}
+                {board.p_value <= board.alpha ? " — reached" : ""}
               </Typography>
             </Typography>
           </Tooltip>
-        )}
+        ) : null}
         {(board.weather?.shifted_rounds ?? 0) > 0 && (
           <Tooltip title="Rounds whose challenger leg and belt leg differed by a measurable weather shift. They still count; trust those margins less.">
             <Chip size="small" variant="outlined" color="warning" label={`weather ×${board.weather!.shifted_rounds}`} sx={{ height: 20 }} />
@@ -1289,6 +1327,193 @@ function SeatRow({
           })}
         </Box>
       )}
+    </Box>
+  );
+}
+
+// ── Where things stand: every profile in the ring on ONE scale ──────────────────────
+//
+// The board shows each seat's tally, margin, streak and p-value, and the reported
+// failure was that a person still could not see how the three profiles in the ring
+// stood against each other — every number was relative to the belt and none of them
+// was drawn. This is the reading: a number line in Overall points with the belt at 0,
+// each seat placed at its median margin with the spread of its rounds behind it, then
+// the order that implies (best first) and one sentence per seat saying whether it is
+// ahead or behind, by how much, and whether that is settled yet. Seats are only ever
+// measured against the belt, so two seats' order against each other is inferred through
+// it — and the caption says so rather than letting the picture claim a head-to-head.
+function RingStanding({
+  seats,
+  readings,
+  belt,
+  legs,
+}: {
+  seats: DuelLive[];
+  readings: SeatReading[];
+  belt: { name: string; fingerprint: string | null };
+  legs?: DuelLeg[];
+}) {
+  const span = ringSpan(readings);
+  const x = (v: number) => 50 + (50 * v) / span;
+  const { order, inferred } = ringOrder(readings, belt);
+  const medians = legs && legs.length ? legMedians(legs) : null;
+  const beltMedian = belt.fingerprint && medians ? medians.get(belt.fingerprint) : undefined;
+  const colorOf = (fp: string | null) => {
+    const i = seats.findIndex((s) => s.challenger.fingerprint === fp);
+    return i >= 0 ? SEAT_COLORS[i % SEAT_COLORS.length] : HOLDER_COLOR;
+  };
+  const measured = readings.filter((r) => r.margin != null);
+  return (
+    <Box sx={{ mt: 1.5, mb: 1 }}>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+        <Typography variant="body2" sx={{ fontWeight: 700 }}>
+          Where things stand
+        </Typography>
+        <HelpTip title="Every profile in the ring on one scale: Overall points relative to the belt, which sits at 0. A seat's dot is its typical (median) round margin so far; the line behind it spans its best and worst round. Right of the belt is better. The order below is read off the same numbers — seats are only measured against the belt, so their order against each other is inferred through it." />
+      </Stack>
+
+      {/* The number line. One row per seat so labels never collide; the belt is the
+          shared zero line running through all of them. */}
+      <Box sx={{ position: "relative", pt: 0.5, pb: 2.25 }}>
+        <Box
+          sx={{
+            position: "absolute", top: 0, bottom: 18, left: "50%", borderLeft: "2px solid",
+            borderColor: HOLDER_COLOR, opacity: 0.8, pointerEvents: "none",
+          }}
+        />
+        {readings.map((r) => {
+          const color = colorOf(r.fingerprint);
+          const m = r.margin;
+          return (
+            <Box key={r.fingerprint ?? r.name} sx={{ position: "relative", height: 40 }}>
+              {/* The label lives in its own line above the track, on the dot's side of
+                  the belt line and clamped to the card — a label anchored to the dot
+                  ran off the edge on a phone whenever a margin was large. */}
+              {m != null && (
+                <Typography
+                  variant="caption"
+                  noWrap
+                  component="div"
+                  sx={{
+                    position: "absolute", top: 0, left: 0, right: 0, lineHeight: "16px",
+                    textAlign: m >= 0 ? "right" : "left", color, fontWeight: 600,
+                    pr: m >= 0 ? 0 : "52%", pl: m >= 0 ? "52%" : 0,
+                  }}
+                >
+                  {r.name} {m > 0 ? "+" : ""}{fmtNum(m, 2)}
+                </Typography>
+              )}
+              <Box
+                sx={{
+                  position: "absolute", left: 0, right: 0, top: 28,
+                  borderTop: "1px solid", borderColor: "divider", opacity: 0.6,
+                }}
+              />
+              {m == null ? (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ position: "absolute", left: "50%", top: 28, transform: "translate(6px, -50%)" }}
+                >
+                  <SideDot color={color} />
+                  {r.name} · no rounds yet
+                </Typography>
+              ) : (
+                <Tooltip
+                  title={`${r.name}: typical round margin ${m > 0 ? "+" : ""}${fmtNum(m, 2)} vs the belt over ${r.rounds} round${r.rounds === 1 ? "" : "s"}${
+                    r.lo != null && r.hi != null && r.lo !== r.hi
+                      ? ` · rounds ranged ${r.lo > 0 ? "+" : ""}${fmtNum(r.lo, 2)} to ${r.hi > 0 ? "+" : ""}${fmtNum(r.hi, 2)}`
+                      : ""
+                  }`}
+                >
+                  <Box sx={{ position: "absolute", left: 0, right: 0, top: 16, height: 24 }}>
+                    {r.lo != null && r.hi != null && (
+                      <Box
+                        sx={{
+                          position: "absolute", top: "50%", height: 4, mt: "-2px", borderRadius: 2,
+                          left: `${Math.min(x(r.lo), x(r.hi))}%`,
+                          width: `${Math.abs(x(r.hi) - x(r.lo))}%`,
+                          bgcolor: color, opacity: 0.3,
+                        }}
+                      />
+                    )}
+                    <Box
+                      sx={{
+                        position: "absolute", top: "50%", left: `${x(m)}%`, width: 12, height: 12,
+                        borderRadius: "50%", bgcolor: color, transform: "translate(-50%, -50%)",
+                        border: "2px solid", borderColor: "background.paper",
+                      }}
+                    />
+                  </Box>
+                </Tooltip>
+              )}
+            </Box>
+          );
+        })}
+        {/* Axis */}
+        <Typography variant="caption" color="text.secondary" sx={{ position: "absolute", left: 0, bottom: 0 }}>
+          −{fmtNum(span, 1)} worse
+        </Typography>
+        <Typography
+          variant="caption"
+          sx={{ position: "absolute", left: "50%", bottom: 0, transform: "translateX(-50%)", color: HOLDER_COLOR, fontWeight: 600 }}
+          noWrap
+        >
+          {belt.name} (belt)
+        </Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ position: "absolute", right: 0, bottom: 0 }}>
+          +{fmtNum(span, 1)} better
+        </Typography>
+      </Box>
+
+      {/* The order, best first, and what it rests on. */}
+      {measured.length > 0 && (
+        <Typography variant="body2" sx={{ mt: 0.5 }}>
+          <Typography component="span" variant="caption" color="text.secondary">
+            On the rounds so far:{" "}
+          </Typography>
+          {order.map((e, i) => (
+            <Typography component="span" variant="body2" key={e.fingerprint ?? e.name}>
+              {i > 0 && (
+                <Typography component="span" variant="caption" color="text.secondary">
+                  {"  ›  "}
+                </Typography>
+              )}
+              <SideDot color={e.isBelt ? HOLDER_COLOR : colorOf(e.fingerprint)} />
+              <b>{e.name}</b>
+              {e.isBelt ? (
+                <Typography component="span" variant="caption" color="text.secondary">
+                  {" "}(belt{beltMedian ? ` · Overall ${fmtNum(beltMedian.median, 1)} over ${beltMedian.n} leg${beltMedian.n === 1 ? "" : "s"}` : ""})
+                </Typography>
+              ) : (
+                <Typography component="span" variant="caption" color="text.secondary">
+                  {" "}({e.relative > 0 ? "+" : ""}{fmtNum(e.relative, 2)})
+                </Typography>
+              )}
+            </Typography>
+          ))}
+          {inferred && (
+            <Typography component="span" variant="caption" color="text.secondary">
+              {" "}— the seats never meet each other, so their order against one another is inferred through the belt.
+            </Typography>
+          )}
+        </Typography>
+      )}
+      <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+        {readings.map((r) => (
+          <Typography
+            component="li"
+            variant="caption"
+            key={r.fingerprint ?? r.name}
+            sx={{
+              color: r.verdict === "called" ? "text.primary" : "text.secondary",
+              fontWeight: r.verdict === "called" ? 600 : 400,
+            }}
+          >
+            {r.sentence}
+          </Typography>
+        ))}
+      </Box>
     </Box>
   );
 }
@@ -1333,6 +1558,7 @@ function RingBoard({ live }: { live: DuelLive }) {
     );
   }
   const d = live.design;
+  const readings = seats.map((b) => readSeat(b, incName));
   return (
     <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 1, border: 1, borderColor: "divider" }}>
       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
@@ -1354,6 +1580,12 @@ function RingBoard({ live }: { live: DuelLive }) {
         <HelpTip title="A cycle is a belt leg, then the seats' legs in turn, then the belt leg that closes it. Each challenger leg becomes one margin against the mean of the belt legs flanking it, so every seat is measured in the same weather window. Each name's bar shows whether that profile is the one on the firewall right now, and how far its run has got." />
       </Stack>
       <ProfileLegBar fingerprint={live.reference?.fingerprint ?? live.incumbent.fingerprint} leg={leg} color={HOLDER_COLOR} />
+      <RingStanding
+        seats={seats}
+        readings={readings}
+        belt={{ name: incName, fingerprint: live.reference?.fingerprint ?? live.incumbent.fingerprint }}
+        legs={live.legs}
+      />
       {live.legs && live.legs.length > 0 && (
         <Box sx={{ mt: 1 }}>
           <LegStrip legs={live.legs} seats={seats} reference={live.reference} />
