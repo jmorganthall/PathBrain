@@ -150,7 +150,9 @@ def _migrate() -> None:
             "methodology_version": "VARCHAR(64)",
             "job_group": "VARCHAR(64)",
             "job_group_total": "INTEGER",
+            "instrument_health": "JSON",
         },
+
         "benchmark_results": {
             "raw": "JSON",
         },

@@ -1344,6 +1344,7 @@ def at_measure_comparability(metric_values: dict | None) -> tuple[str, list[str]
 SITE_SET_MARKER = "site_set"  #: the `missing_metrics` token for "measured against other sites"
 CLIENT_SET_MARKER = "client_set"  #: … and for "measured as a different browser client"
 SITE_COVERAGE_MARKER = "site_coverage"  #: … and for "a declared page failed to load"
+INSTRUMENT_MARKER = "instrument"  #: … and for "the machine was degraded while measuring"
 
 
 def comparability(
@@ -1352,7 +1353,9 @@ def comparability(
     site_set: str | None = None,
     client_set: str | None = None,
     pages_missing: list[str] | None = None,
+    instrument: str | None = None,
 ) -> tuple[str, list[str]]:
+
     """Can a run's raw reproduce this methodology's metrics? (the at-present check)
 
     ``exact`` (every scored metric present), ``partial`` (some optional metrics
@@ -1394,7 +1397,19 @@ def comparability(
     # what was asked for, this says whether it was delivered.
     if pages_missing:
         tokens.append(SITE_COVERAGE_MARKER)
+    # The instrument itself. Every check above asks whether the run measured the same
+    # *thing*; this asks whether the thing doing the measuring was working. A degraded
+    # host makes the browser slower, which lands inside FCP and LCP through the render
+    # phase — so the numbers are worse with nothing about the link having changed, and
+    # the profile that happened to be live wears it in its pooled median forever. Only a
+    # `degraded` verdict quarantines: `strained` is recorded and shown and still counts
+    # (flag-and-steer, as the weather stamp does), and no opinion never quarantines —
+    # the gate removes measurements taken on a machine we can *show* was sick, and
+    # "we could not tell" is not that. See `instrument_health`.
+    if instrument == "degraded":
+        tokens.append(INSTRUMENT_MARKER)
     if tokens:
+
         return "incomparable", tokens
     missing = [k for k in scored if mv.get(k) is None]
     if missing:

@@ -8,8 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from .. import instrument_health
 from ..config_store import get_config
 from ..database import get_session
+
 from ..methodology import ensure_current_methodology
 from ..interpret.smoothness import longest_void_diagnostic
 from ..metrics import has_latest_metrics
@@ -93,7 +95,10 @@ def _serialize_run(run: Run, overall: float | None = None) -> RunDetail:
         score=_serialize_score(run.score),
         overall=overall,
         pause_diagnostics=_pause_diagnostics(run),
+        instrument_health=run.instrument_health,
+        instrument_health_why=instrument_health.explain(run.instrument_health),
     )
+
 
 
 @router.get("/results/latest", response_model=RunDetail)

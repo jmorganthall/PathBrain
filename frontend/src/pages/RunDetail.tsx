@@ -76,9 +76,24 @@ const QUARANTINE_TOKENS: Record<string, string> = {
   client_set: "it was measured as a different browser client than this version declares",
   site_coverage:
     "a configured page failed to load, so its browser means cover a subset of the pages (see the per-URL errors below)",
+  instrument:
+    "the machine itself was degraded while measuring — its host-side work (browser context setup and close, timing reads, render) ran far slower than this machine does when it is well, and that lands inside FCP and LCP, so this run measures the host rather than the link",
+};
+
+
+const fmtMs = (x?: number) => (x == null ? "—" : `${Math.round(x).toLocaleString()} ms`);
+
+// The host-side readings, in the words the run's own card uses.
+
+const HOST_QUANTITY_LABELS: Record<string, string> = {
+  context_ms: "Browser context setup",
+  close_ms: "Browser context close",
+  reads_ms: "Timing reads + interaction",
+  nav_render_ms: "Render to first paint",
 };
 
 function comparabilityTip(s: RunScore): string {
+
   if (s.comparability === "incomparable") {
     const tokens = s.missing_metrics.filter((m) => m in QUARANTINE_TOKENS);
     const metrics = s.missing_metrics.filter((m) => !(m in QUARANTINE_TOKENS));
@@ -402,7 +417,72 @@ export default function RunDetail() {
         );
       })()}
 
+      {/* Was the machine healthy? Shown only when there is something to say — a healthy
+          run needs no card, and a quarantined one must say why in the same place the
+          reader is asking "why doesn't this run count?". */}
+      {run.instrument_health && run.instrument_health.verdict !== "healthy" && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
+              <Typography variant="h6">The machine, while this ran</Typography>
+              <Chip
+                size="small"
+                color={run.instrument_health.verdict === "degraded" ? "error" : "warning"}
+                label={
+                  run.instrument_health.verdict === "degraded"
+                    ? `degraded · ${run.instrument_health.ratio.toFixed(1)}× healthy`
+                    : `strained · ${run.instrument_health.ratio.toFixed(1)}× healthy`
+                }
+              />
+              <HelpTip title="These are the readings the shaper cannot move: the browser's own context setup and close, its timing reads, and render to first paint. They are compared against what this machine does when it is well (the 25th percentile of recent history). When they run far slow, the host is inside FCP and LCP through the render phase — so the run measures the machine, not the link." />
+            </Stack>
+            {run.instrument_health_why && (
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                {run.instrument_health_why}
+              </Typography>
+            )}
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Host-side work</TableCell>
+                    <TableCell align="right">This run</TableCell>
+                    <TableCell align="right">Healthy</TableCell>
+                    <TableCell align="right">Ratio</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {Object.entries(run.instrument_health.ratios)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([key, ratio]) => (
+                      <TableRow key={key} hover>
+                        <TableCell sx={{ whiteSpace: "nowrap" }}>
+                          {HOST_QUANTITY_LABELS[key] ?? key}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontFamily: "monospace" }}>
+                          {fmtMs(run.instrument_health?.readings[key])}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontFamily: "monospace" }} color="text.secondary">
+                          {fmtMs(run.instrument_health?.baseline[key])}
+                        </TableCell>
+
+                        <TableCell
+                          align="right"
+                          sx={{ fontWeight: ratio >= 3 ? 600 : 400, color: ratio >= 3 ? "error.main" : undefined }}
+                        >
+                          {ratio.toFixed(1)}×
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </CardContent>
+        </Card>
+      )}
+
       {run.pause_diagnostics && run.pause_diagnostics.length > 0 && (
+
         <Card sx={{ mb: 2 }}>
           <CardContent>
             <Typography variant="h6" gutterBottom>

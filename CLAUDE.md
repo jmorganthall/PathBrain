@@ -2851,7 +2851,52 @@ docker compose up --build   # -> http://localhost:8000
   will fail if it fabricates. After a change like this, re-derive (drop the bogus values from raw)
   then re-grade (re-quarantine), then optionally **Re-run top-N profiles** (Settings → Re-run
   profiles, winner-first `top`+`rank_by`) to collect fresh comparable data on the best performers.
-- **Data-integrity audit (recipe vs. ingredients).** `GET /api/runs/{id}/verify-derivation`
+- **Instrument health is part of comparability — a run measured on a sick machine is not a
+  measurement of the link** (`instrument_health.py`, `Run.instrument_health`,
+  `methodology.INSTRUMENT_MARKER`, `config.instrument`,
+  `GET /api/methodologies/instrument-health`). Every other comparability check asks whether
+  a run measured the same *thing* (sites, client, page coverage, the metrics the crown
+  needs); none asked whether the thing doing the measuring was **working**. When the host
+  degrades — leaked Chromium, a swapping NAS, a wedged session — the browser itself gets
+  slower, and that lands **inside FCP and LCP through the render phase**: the link was fine,
+  the numbers are worse, and the profile that happened to be on the firewall wears it in its
+  pooled median forever, because the crown pools all history with no window and no
+  weighting. Reported as *"profiles showing bad results that weren't actually bad"* after a
+  stretch of NAS trouble — and those runs were on the record and counting.
+  **What it reads**: only quantities the shaper cannot move (`HOST_QUANTITIES`) — the
+  browser plugin's own host-side phases (context setup, context close, the timing reads,
+  which touch no network at all) plus `nav_render_ms`, the ledger's client-role metric that
+  sits inside the crown's own FCP and LCP. **How it grades**: deliberately *not* a percentile
+  of the field, because the recent history being ranked against **is** the contaminated
+  stretch, so a bad run among mostly-bad runs reads as normal. Each quantity is a **ratio
+  against a robust baseline** — the 25th percentile of recent history (`BASELINE_PERCENTILE`),
+  "what this machine does when it is well" — which holds until more than three quarters of
+  history is bad, where a median gives up at half; and a ratio is absolute, so the verdict
+  does not drift as the field grows. The run's reading is the **median ratio** across its
+  quantities, so one noisy phase cannot condemn a run and one flattering one cannot rescue
+  it. A baseline under `FLOOR_MS` is dropped outright: a 3 ms close against a 1 ms baseline
+  is a 3× ratio that says nothing. **What it decides**: `healthy` / `strained` / `degraded`
+  against two configured ratios. Only **degraded** quarantines, under its own token
+  (`instrument`) through the one `comparability()` gate every scored view already filters on
+  — so the crown, the standings, the rollup, Explore and the weather cohorts all drop it with
+  no further edits. `strained` is recorded and shown and **still counts**, the same
+  flag-and-steer discipline the weather stamp follows, and **no opinion never quarantines**:
+  the gate removes measurements taken on a machine we can *show* was sick, and "we could not
+  tell" is not that. **Why the record heals**: the readings have been written since the
+  browser began timing its phases, so a run's health is derivable from what is already on
+  disk. It is stamped at capture, and a run **without** the stamp has it computed and written
+  back the first time it is graded — so one re-grade under the current methodology
+  retroactively stamps and re-quarantines the bad stretch, with **nothing re-measured**,
+  exactly as a new crown metric re-derives from stored raw. **The threshold is an evidence
+  question, not a guess**: the audit endpoint reports the baseline, the spread of ratios over
+  recent runs, and *how many runs each candidate threshold would quarantine* — a gate nobody
+  can price is a gate nobody should arm. Run Detail carries the card (per-quantity this-run /
+  healthy / ratio, and the verdict as a sentence with its numbers in it) and the
+  comparability tip spells the token out. Best-effort throughout: an unreadable baseline, a
+  run with too few host readings, or the gate switched off all degrade to `None` — a guess
+  about the machine must never cost a real measurement. `test_instrument_health`.
+- **Data-integrity audit (recipe vs. ingredients).**
+ `GET /api/runs/{id}/verify-derivation`
   (`runner.verify_run_derivation`) and `GET /api/settings/profiles/{fp}/verify-derivation` are
   **read-only** audits that answer "are we keeping the same data the same?" without changing any
   score. The **recipe** check re-derives every metric from a run's immutable raw and diffs against
