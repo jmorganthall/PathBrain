@@ -1274,9 +1274,25 @@ LLM-based. See `README.md` for the product overview.
     runs then stop contributing Completion metrics to the pooled record. The live payload
     (`_ring_live`) carries `seats` (each seat's own scoreboard), `legs` (the recent legs in
     run order), `reference` and `design`, with the top level mirroring the seat being
-    measured so one-match readers keep working; the page renders the **leg strip** (tall =
-    belt, a weather-severity bar under each leg) and one row per seated match (`RingBoard`
-    / `LegStrip` / `SeatRow`).
+    measured so one-match readers keep working; the page renders the **leg strip** (height =
+    that leg's Overall, belt legs capped, a weather-severity bar under each leg) and one row
+    per seated match (`RingBoard` / `LegStrip` / `SeatRow`).
+    **The board READS the ring for a person** (`utils/ringReading.ts`, `RingStanding`).
+    Reported as *"very hard to visually understand the relationship of the three profiles —
+    lots of data but not a lot of interpretation"*: every seat's numbers were relative to the
+    belt and none of them was drawn, so a reader had a tally, a signed margin, a streak and a
+    `p 1.000` per row and no picture of who stood where. `readSeat` turns a seat's board into
+    a standing (ahead / behind / level), a verdict (`called` / `too_early` / `unproven` /
+    `inside_floor`) and one sentence with its numbers in it; `ringOrder` puts every profile in
+    the ring, belt included, on ONE scale (Overall points relative to the belt at 0), best
+    first. The **Where things stand** block draws that scale — one row per seat, the dot at its
+    median margin, the whisker its best-to-worst round, the belt a zero line through all of
+    them — then the order and the sentences. Two honesties stated on the block: seats never
+    meet each other, so their order against one another is *inferred through the belt* (the
+    caption says so whenever two seats are measured); and a p-value under `min_pairs` is not
+    informative, so the seat row prints *too early to call · N more rounds* in its place
+    rather than `p 1.000`. Pure functions over the live payload; nothing here reads the API
+    or changes a score.
     **Every participant has its own status bar** (`_leg_in_flight`, `live["leg"]`,
     `routes_duel._leg_progress`, `ProfileLegBar`). The board used to mark a *seat* as
     "measuring", which said nothing while the belt's own leg ran (the belt is not a seat)
