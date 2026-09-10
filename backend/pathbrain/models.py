@@ -79,6 +79,16 @@ class Run(Base):
     job_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
     job_group_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Was the MACHINE healthy while this run measured? (`instrument_health`) — the
+    # host-side readings the shaper cannot move (the browser's own context setup/close and
+    # timing reads, plus render-to-first-paint) as a ratio against what this machine does
+    # when it is well, with a verdict. A `degraded` run is quarantined by the comparability
+    # gate, because a slow host lands inside FCP and LCP through the render phase and would
+    # otherwise sit in a profile's pooled median forever. NULL until assessed; the first
+    # grading of a run stamps it, so a re-grade heals history without re-measuring.
+    instrument_health: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
     # Firewall/SQM settings in effect during this run, for settings-vs-score
     # attribution. ``settings`` is the normalized pipe list; ``settings_fingerprint``
     # is a stable hash so runs can be grouped by configuration profile.

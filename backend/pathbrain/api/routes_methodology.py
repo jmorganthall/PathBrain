@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import idle_audit, instrument_drift, jobs, warm_agreement
+from .. import idle_audit, instrument_drift, instrument_health, jobs, warm_agreement
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
 from ..logging_config import get_logger
@@ -77,6 +77,73 @@ def instrument_drift_audit(
     grading, since FCP and LCP contain render). Adds the live browser-process snapshot and
     a count of stale-derivation runs in the window. Nothing here changes a score."""
     return instrument_drift.instrument_drift(session, days=days, limit=limit)
+
+
+@router.get("/methodologies/instrument-health")
+def instrument_health_audit(
+    limit: int = instrument_health.DEFAULT_BASELINE_RUNS,
+    session: Session = Depends(get_session),
+) -> dict:
+    """What the machine has been doing to the measurements — and what each threshold costs.
+
+    The instrument gate quarantines a run whose host-side work ran far slower than this
+    machine does when it is well, because that slowness lands inside FCP and LCP through
+    the render phase. Choosing where to put that line should be an evidence question
+    rather than a guess, so this reports the baseline it grades against, the spread of
+    ratios over recent runs, and — the part that decides it — **how many runs each
+    candidate threshold would quarantine**. Read-only: nothing here changes a score, and
+    the live thresholds are the config's.
+    """
+    from statistics import median as _median
+
+    cfg = instrument_health.config_block(get_config(session))
+    samples = instrument_health._sample_history(session, int(limit))
+    base = instrument_health.build_baseline(samples)
+    ratios: list[float] = []
+    for reading in samples:
+        assessed = instrument_health.assess(
+            reading, base,
+            strained_ratio=cfg["strained_ratio"], degraded_ratio=cfg["degraded_ratio"],
+            min_quantities=cfg["min_quantities"],
+        )
+        if assessed is not None:
+            ratios.append(assessed["ratio"])
+    ranked = sorted(ratios)
+    n = len(ranked)
+    # What each candidate line would cost, over the same runs — the number that settles
+    # the threshold. A gate nobody can price is a gate nobody should arm.
+    candidates = [1.5, 1.8, 2.0, 2.5, 3.0, 4.0, 5.0]
+    return {
+        "enabled": cfg["enabled"],
+        "thresholds": {"strained": cfg["strained_ratio"], "degraded": cfg["degraded_ratio"]},
+        "baseline": {
+            "percentile": instrument_health.BASELINE_PERCENTILE,
+            "values": {k: round(v, 1) for k, v in base.values.items()},
+            "dropped": [k for k in instrument_health.HOST_QUANTITIES if k not in base.values],
+            "samples": base.samples,
+        },
+        "runs_assessed": n,
+        "ratio": {
+            "median": round(_median(ranked), 3) if ranked else None,
+            "p90": round(ranked[int(0.9 * (n - 1))], 3) if n else None,
+            "max": round(ranked[-1], 3) if n else None,
+        },
+        "would_quarantine": [
+            {
+                "ratio": c,
+                "runs": sum(1 for r in ranked if r >= c),
+                "share": round(sum(1 for r in ranked if r >= c) / n, 3) if n else None,
+                "live": abs(c - cfg["degraded_ratio"]) < 1e-9,
+            }
+            for c in candidates
+        ],
+        "note": (
+            "Ratios are each run's host-side readings against the 25th percentile of recent "
+            "history — what this machine does when it is well. A p25 rather than a median "
+            "because the history being measured against may itself be the bad stretch, and a "
+            "p25 holds until more than three quarters of it is contaminated."
+        ),
+    }
 
 
 @router.get("/methodologies/warm-agreement")

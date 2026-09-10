@@ -346,9 +346,17 @@ class RunDetail(BaseModel):
     # load, which phase it falls in (pre_fcp / fcp_lcp / lcp_load / post_load), and its network-vs-
     # render attribution — so the felt pause is locatable without guessing at a crown metric.
     pause_diagnostics: list[dict[str, Any]] | None = None
+    # Was the MACHINE healthy while this run measured? The host-side readings the shaper
+    # cannot move, as a ratio against what this machine does when it is well, with a
+    # verdict (healthy / strained / degraded) and a sentence. A degraded run is quarantined
+    # by the comparability gate. None when never assessed (no browser readings, or the gate
+    # is off) — no opinion, which never quarantines.
+    instrument_health: dict[str, Any] | None = None
+    instrument_health_why: str | None = None
 
 
 class RunBaselineOut(BaseModel):
+
     """Average plugin metrics for the best-scoring settings profile, for comparison.
 
     ``metrics`` maps plugin name -> {metric_key: mean_value} across the runs of the

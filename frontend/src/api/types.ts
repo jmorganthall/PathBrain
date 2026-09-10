@@ -876,7 +876,26 @@ export interface RunDetail extends RunSummary, QueuePlacement {
   results: BenchmarkResult[];
   score: ScoreOut | null;
   pause_diagnostics?: PauseDiagnostic[] | null;
+  // Was the MACHINE healthy while this run measured? The host-side readings the shaper
+  // cannot move (browser context setup/close, timing reads, render to first paint) as a
+  // ratio against what this machine does when it is well. A `degraded` run is quarantined
+  // by the comparability gate; `strained` is noted and still counts. Null = never assessed,
+  // which never quarantines.
+  instrument_health?: InstrumentHealth | null;
+  instrument_health_why?: string | null;
 }
+
+export interface InstrumentHealth {
+  verdict: "healthy" | "strained" | "degraded";
+  // The run's median ratio across its comparable host-side readings — what the verdict is on.
+  ratio: number;
+  ratios: Record<string, number>;
+  readings: Record<string, number>;
+  baseline: Record<string, number>;
+  quantities: number;
+  baseline_samples?: number;
+}
+
 
 export interface SeriesPoint {
   run_id: number;

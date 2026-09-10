@@ -186,8 +186,29 @@ DEFAULT_CONFIG: dict = {
     },
     # Settings-vs-responsiveness correlation: flag a settings change as
     # significant when the median SOPS moves by at least this percent.
+    # Was the MACHINE healthy while a run measured? A degraded host makes the browser
+    # itself slower, and that lands inside FCP and LCP through the render phase — so the
+    # run's graded numbers are the machine, not the link, and the profile that happened to
+    # be live wears it in its pooled median forever. Each run's host-side readings (the
+    # browser's own context setup/close and timing reads, plus render-to-first-paint — all
+    # shaping-immune) are read as a ratio against what this machine does when it is well
+    # (the 25th percentile of recent history, robust to a contaminated stretch). Past
+    # `degraded_ratio` the run is quarantined by the comparability gate; past
+    # `strained_ratio` it is flagged and still counts. See `instrument_health`.
+    "instrument": {
+        "enabled": True,
+        "strained_ratio": 1.8,
+        "degraded_ratio": 3.0,
+        # Host readings a run needs before it can be judged at all — one slow phase is
+        # not a sick machine, and no opinion never quarantines.
+        "min_quantities": 2,
+        # Recent runs the healthy baseline is built from: bounded by the question ("what
+        # does this machine do lately?"), never by all of time.
+        "baseline_runs": 400,
+    },
     "correlation": {
         "significant_change_pct": 5,
+
         # A profile needs at least this many runs before it's treated as
         # confident (legacy; superseded by min_iterations below).
         "min_runs": 5,

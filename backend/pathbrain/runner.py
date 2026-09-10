@@ -720,7 +720,7 @@ def missing_pages(config: dict | None, browser_raw: dict | None) -> list[str]:
 
 def score_metrics_under(
     session, run_id, run_methodology_version, methodology, iter_metrics, site_set=None,
-    client_set=None, pages_missing=None,
+    client_set=None, pages_missing=None, run=None,
 ):
     """Score per-iteration ``{plugin: metrics}`` under a methodology's frozen rubric,
     across every axis it defines, and upsert the (run × methodology) Score.
@@ -732,6 +732,11 @@ def score_metrics_under(
     (`methodology.site_set_from_config` over its ``config_used``), which comparability
     holds against the version's declared sites. Returns the Score, or ``None`` when
     nothing was scorable. Caller commits.
+
+    ``run`` (when given) is assessed for **instrument health** — was the machine itself
+    healthy while it measured? — and a degraded run is quarantined by the same gate. The
+    assessment is stamped back onto the run, so a re-grade both heals history and records
+    why, without anything being re-measured (:mod:`instrument_health`).
     """
     from statistics import pstdev as _pstdev
 
@@ -787,9 +792,19 @@ def score_metrics_under(
     if overall is not None:
         axis_scores["overall"] = overall
 
+    from . import instrument_health as _health
+    from .config_store import get_config as _get_config
+
+    health = None
+    if run is not None:
+        try:
+            health = _health.assess_run(session, run, _get_config(session))
+        except Exception:  # noqa: BLE001 — never let a machine verdict fail a scoring pass
+            log.debug("Run %s: instrument health unavailable", run_id, exc_info=True)
     comp_tag, missing = comparability(
         definition, metric_values, site_set=site_set, client_set=client_set,
         pages_missing=pages_missing,
+        instrument=(health or {}).get("verdict"),
     )
     return upsert_score(
         session,
@@ -866,7 +881,9 @@ def score_run_under(session, run, methodology, artifact_base: str | None = None)
         site_set=site_set_from_config(run.config_used),
         client_set=client_set_from_config(run.config_used),
         pages_missing=missing_pages(run.config_used, browser_raw),
+        run=run,
     )
+
 
 
 # Commit the re-grade in batches of this many runs (each run is savepoint-isolated), so a
@@ -1262,6 +1279,11 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
             from .methodology import client_set_from_config, site_set_from_config
 
             browser_results = per_plugin.get("browser") or []
+            # The result rows were added above but not yet flushed, and the instrument-health
+            # assessment reads them off `run.results` (autoflush is off on this session). One
+            # flush, so a run is graded against the readings it just produced rather than
+            # against whatever the relationship last loaded.
+            session.flush()
             score_metrics_under(
                 session, run_id, methodology.version, methodology, iteration_plugin_metrics,
                 site_set=site_set_from_config(config),
@@ -1269,7 +1291,9 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                 pages_missing=missing_pages(
                     config, {"iterations": [r.raw for r in browser_results]} if browser_results else None
                 ),
+                run=run,
             )
+
 
             run.per_iteration_ms = (
                 round(mean(iteration_durations), 3) if iteration_durations else None
