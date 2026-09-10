@@ -16,7 +16,7 @@ from pathbrain import session_runtime
 from pathbrain.database import session_scope
 from pathbrain.models import FirewallGuardState, FirewallWrite
 from pathbrain.providers import get_provider
-from pathbrain.providers.mock import _OVERRIDES
+from pathbrain.providers.mock import _OVERRIDES, _PIPE_ENABLED
 from pathbrain.session_runtime import FirewallUnavailable, ResilientProvider
 
 from .faults import FaultyProvider
@@ -29,17 +29,30 @@ def guard(monkeypatch):
     monkeypatch.setattr(fg, "config", lambda: dict(cfg))
     monkeypatch.setattr(fg, "_build_sha", lambda: "")
     monkeypatch.setattr(session_runtime, "FIREWALL_BACKOFF_S", (0.0, 0.0))   # reads still retry, without the wait
-    with session_scope() as s:
-        for r in s.scalars(select(FirewallWrite)).all():
-            s.delete(r)
-        row = s.get(FirewallGuardState, 1)
-        if row is not None:
-            s.delete(row)
+    def reset():
+        with session_scope() as s:
+            for r in s.scalars(select(FirewallWrite)).all():
+                s.delete(r)
+            row = s.get(FirewallGuardState, 1)
+            if row is not None:
+                s.delete(row)
+        fg._last_ok_stamp = 0.0
+        fg._outage_pending = False
+
+    # The mock provider's state is shared by the whole suite: save it and put it back, so a
+    # value written here never changes what a later test discovers.
+    saved = dict(_OVERRIDES)
+    saved_enabled = dict(_PIPE_ENABLED)
+    reset()
     _OVERRIDES.clear()
-    fg._last_ok_stamp = 0.0
-    fg._outage_pending = False
     yield cfg
+    # Leave the guard armed and clean: a hands-off left behind would refuse every later
+    # test's writes, which is exactly what it is for and exactly what a suite must not see.
+    reset()
     _OVERRIDES.clear()
+    _OVERRIDES.update(saved)
+    _PIPE_ENABLED.clear()
+    _PIPE_ENABLED.update(saved_enabled)
 
 
 def _ledger() -> list[dict]:
