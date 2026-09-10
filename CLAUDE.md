@@ -989,6 +989,48 @@ LLM-based. See `README.md` for the product overview.
     run anyway (the other half of that iteration report) — (one portable iteration
     per suite iteration). Its metrics are derived by `interpret.derive` like any plugin's but are
     **not methodology metrics** — nothing in scoring reads them.
+  - **The location map: every place measured, on one chart against home** (`portable.location_map`,
+    `GET /api/portable/locations`, `components/LocationQuadrant.tsx`, the **"Every place vs home"**
+    card on the Away test page). The Away readout was one run on one device against that
+    device's own home runs — "how did this hotel do?" and nothing wider; six networks measured
+    over a month were six separate answers and no picture (*"I need the same view as the
+    Settings Impact quadrant — location by location, current home profile vs all third-party
+    locations"*). So: the quadrant asked of **places**. Each dot is one venue — every away run
+    taken there, on any device, pooled to a median (`_venue_key` folds case and whitespace so the
+    label recall's one-place-one-spelling holds; the display label is the most-used spelling; no
+    venue → one `UNNAMED_VENUE` bucket) — on any two portable metrics (+ the portable score),
+    beside **home on the current home profile**: the runs stamped with the profile the firewall
+    is on *now* (`home_stamp`, `home_profile.source = live`), else the pooled crown (`crown`),
+    else every home run with the fact stated (`any`) — never a blend of every profile home has
+    ever been on, and the runs left out are counted (`excluded.home_other_profiles`). Home is
+    **two dots, never one**: the phones'/laptops' own home runs (the device class every away run
+    comes from — the ringed dot, and the reference the quadrant's lines run through) and
+    PathBrain's wired Chromium (`SERVER_DEVICE_ID`, the triangle), kept apart as everywhere else
+    on this instrument. Gated on the current `instrument_version` like every comparison here,
+    with the excluded count reported. Each away location also carries `setup_comparable` — the
+    `warmth_compare` rule applied pool to pool (`_setup_comparable`): a warm tab and a cold
+    context are two instruments on the setup-bound metrics whatever the link did, so when such
+    an axis is plotted the failing places are drawn dashed and named in a warning. Same grammar
+    as `ProfileQuadrant` (ringed reference, triangle for the other device class, grey under
+    `LOCATION_MIN_RUNS` = 3, a third metric as opacity by rank), plus a name on every dot (the
+    field is small enough) and a table with each place's runs, devices, score and score vs home.
+    **The map is WIRED to the crown** (`CROWN_STAND_INS`, `crown_stand_ins`, `crown_stand_in_score`,
+    `map.crown`, each location's `crown_score`): asked to focus on the methodology's core (FCP,
+    LCP, the smoothness leg), and a browser tab cannot read a real page's paint timing — so each
+    crown metric is translated to the nearest reading the synthetic waterfall measures (FCP →
+    first resource complete, LCP → largest resource complete, `network_stall_all` and its
+    predecessors → stall energy, `load_event` → waterfall complete, …), read off the **live**
+    methodology's `overall` spec at request time so a publish re-points the map with no code
+    change. The **crown stand-in score** is the methodology's own weights over the portable
+    subscores of those stand-ins — the weighted crown's arithmetic on this instrument's readings
+    — computed per run and medianed per location, and only when every leg has a scored stand-in
+    (`crown.complete`; a leg with none is named on the page, never defaulted). The chart opens on
+    the crown legs (X = the first leg's stand-in, Y = the second's, Shade = the stand-in score), the
+    axis pickers label each stand-in with the leg it stands for, the table pins the crown legs
+    beside the stand-in score (as Settings Impact pins the crown metrics), and *vs home* reads on
+    it. Stated on the card as a stand-in, never as FCP/LCP: nothing here is on the Overall scale.
+    Read-only; nothing here reaches the crown, the duel or the pooled record.
+    `test_location_map_*` + `test_the_map_is_wired_to_the_methodology_crown` in `test_portable`.
   - **Burst fairness: the round-robin mechanism, measured** (`interpret/portable.py`
     `_burst_metrics` / `BURST_METRICS`, the **"Under a burst"** section of the Why-it-wins card
     via `why.burst_block`, the **Interleave** column on the Dueling Champions phone-standing card,

@@ -34,12 +34,14 @@ import { api, tzOffsetMinutes } from "../api/client";
 import type {
   PortableCompareMetric,
   PortableHome,
+  PortableLocationMap,
   PortableMetricMeta,
   PortableRecipe,
   PortableReference,
   PortableRun,
 } from "../api/types";
-import { Blurb } from "../components/Explain";
+import { Blurb, HelpTip } from "../components/Explain";
+import LocationQuadrant from "../components/LocationQuadrant";
 import { fmtDateTime } from "../utils/format";
 import { clientInfo, deviceId, egressIp, runPortableTest } from "../utils/portableTest";
 import type { PortableProgress } from "../utils/portableTest";
@@ -380,6 +382,9 @@ export default function Away() {
   const [refKind, setRefKind] = useState<"device" | "server" | null>(null);
   const embedded = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("embedded") === "1";
   const [history, setHistory] = useState<PortableRun[]>([]);
+  // The location map: every place measured, pooled across devices, beside home on the
+  // profile the firewall is on now. Re-read whenever a run lands or is deleted.
+  const [locations, setLocations] = useState<PortableLocationMap | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const device = useMemo(() => deviceId(), []);
@@ -445,6 +450,11 @@ export default function Away() {
       setHistory(await api.portableRuns(device, 40));
     } catch {
       /* transient */
+    }
+    try {
+      setLocations(await api.portableLocations());
+    } catch {
+      /* transient — the map is a reading, never the reason the page fails */
     }
   }, [device]);
 
@@ -806,6 +816,52 @@ export default function Away() {
           </CardContent>
         </Card>
       )}
+
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+              Every place vs home
+            </Typography>
+            <HelpTip title="The Settings-Impact quadrant, asked of places instead of profiles. Each dot is one network — every Away run taken there, on any device, pooled to a median — on any two portable metrics, beside home on the profile the firewall is on now. Home is the phones' and laptops' own runs; PathBrain's wired Chromium is kept as its own dot because a wired headless browser and a phone on Wi-Fi measure the same recipe differently. Only runs on the current test version are drawn." />
+          </Stack>
+          {locations ? (
+            <>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                Home reference:{" "}
+                {locations.home_profile.fingerprint ? (
+                  <>
+                    <b>{locations.home_profile.name || locations.home_profile.summary || locations.home_profile.fingerprint.slice(0, 8)}</b>
+                    {locations.home_profile.source === "live"
+                      ? " — the profile on the firewall now"
+                      : locations.home_profile.source === "crown"
+                        ? " — the pooled crown (the firewall could not be read)"
+                        : ""}
+                    {locations.home_profile.name && locations.home_profile.summary ? (
+                      <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+                        {locations.home_profile.summary}
+                      </Typography>
+                    ) : null}
+                  </>
+                ) : (
+                  <>every home run, on any profile (no profile could be read)</>
+                )}
+                {locations.excluded.home_other_profiles > 0 ? (
+                  <> · {locations.excluded.home_other_profiles} home run{locations.excluded.home_other_profiles === 1 ? "" : "s"} on other profiles left out</>
+                ) : null}
+                {locations.excluded.older_version > 0 ? (
+                  <> · {locations.excluded.older_version} run{locations.excluded.older_version === 1 ? "" : "s"} on an older test version left out</>
+                ) : null}
+              </Typography>
+              <LocationQuadrant map={locations} />
+            </>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              Loading the location map…
+            </Typography>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardContent>

@@ -3271,6 +3271,68 @@ export interface PortableRun {
   compare?: PortableCompare;
 }
 
+// ── The location map: every place measured, as one dot each beside home ──
+export interface PortableLocationMetric {
+  key: string;
+  label: string;
+  unit: string;
+  lower_is_better: boolean;
+  scored: boolean;
+  // First/largest/waterfall complete + byte earliness: comparable across two pools only
+  // when their connection warmth matches (see `setup_comparable` on a location).
+  setup_bound: boolean;
+}
+
+export interface PortableLocation {
+  key: string;
+  label: string;
+  // `home`: phones/laptops at home on the home profile; `home_server`: PathBrain's own wired
+  // Chromium on it (a different device class, so a separate dot); `away`: one venue.
+  kind: "home" | "home_server" | "away";
+  runs: number;
+  confident: boolean;
+  score: number | null;
+  score_p25: number | null;
+  score_p75: number | null;
+  // The crown stand-in score: the methodology's own weights over the portable subscores of
+  // each crown leg's stand-in (see `PortableLocationMap.crown`). Null unless every leg has
+  // a scored stand-in.
+  crown_score: number | null;
+  metrics: Record<string, number>;
+  devices: { device_id: string; label: string | null; runs: number }[];
+  networks: number;
+  first_seen: string | null;
+  last_seen: string | null;
+  warmth: { reused_share: number | null; runs_with_warmth: number; protocol: string | null; engine: string | null };
+  // Whether this pool's setup-bound metrics may be read against the phone-class home dot;
+  // null when either side predates the warmth stamp.
+  setup_comparable: boolean | null;
+  setup_note: string | null;
+}
+
+// The methodology's crown translated onto this instrument: one leg per crown metric and the
+// portable reading that stands in for it (a browser tab can't read a real page's FCP/LCP).
+export interface PortableCrownLeg {
+  crown_metric: string;
+  crown_label: string;
+  portable_metric: string | null;
+  portable_label: string | null;
+  weight: number;
+  scored: boolean;
+}
+
+export interface PortableLocationMap {
+  instrument_version: string;
+  crown: { methodology: string | null; method: string | null; legs: PortableCrownLeg[]; complete: boolean };
+  home_profile: { fingerprint: string | null; name: string | null; summary: string | null; source: "live" | "crown" | "any" };
+  min_home_runs: number;
+  min_location_runs: number;
+  metrics: PortableLocationMetric[];
+  locations: PortableLocation[];
+  excluded: { older_version: number; home_other_profiles: number };
+  note: string;
+}
+
 export interface PortableDevice {
   device_id: string;
   label: string | null;

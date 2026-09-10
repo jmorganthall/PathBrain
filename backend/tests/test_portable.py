@@ -806,3 +806,112 @@ def test_profile_standings_rank_each_devices_profiles_and_check_the_crown(clean,
 def test_standings_endpoint(client, clean):
     body = client.get("/api/portable/standings").json()
     assert body["devices"] == [] and body["min_home_runs"] == 5 and "instrument_version" in body
+
+
+# ── the location map ─────────────────────────────────────────────────────────
+
+
+def _place(device: str, venue: str | None, *, ends=None, rtt=None, when=None) -> int:
+    run_id = _store(device, home=False, ends=ends, rtt=rtt, when=when)
+    with session_scope() as s:
+        s.get(PortableRun, run_id).venue = venue
+    return run_id
+
+
+def test_location_map_pools_venues_across_devices_and_keeps_home_apart(clean):
+    slow = {"doc": 300, "font": 500, "lib": 600, "hero": 2200, "data": 1200}
+    for _ in range(5):
+        _store("phone", home=True, fp="fp-live")
+    _store("phone", home=True, fp="fp-other")           # another profile: not the home dot
+    _store(portable.SERVER_DEVICE_ID, home=True, fp="fp-live")
+    _place("phone", "Hotel Wifi", ends=slow, rtt=[80] * 8)
+    _place("laptop", " hotel wifi ", ends=slow, rtt=[90] * 8)   # same place, another spelling
+    _place("phone", "Office")
+    _place("phone", None)
+    with session_scope() as s:
+        m = portable.location_map(s, {"portable": {"min_home_runs": 3}}, home_fingerprint="fp-live")
+    by_key = {loc["key"]: loc for loc in m["locations"]}
+    assert m["home_profile"]["fingerprint"] == "fp-live" and m["home_profile"]["source"] == "live"
+    home = by_key["home"]
+    assert home["runs"] == 5 and home["confident"] and home["kind"] == "home"
+    assert m["excluded"]["home_other_profiles"] == 1
+    server = by_key["home-server"]
+    assert server["kind"] == "home_server" and server["runs"] == 1
+    hotel = by_key["venue:hotel wifi"]
+    assert hotel["runs"] == 2 and hotel["label"] == "Hotel Wifi" and not hotel["confident"]
+    assert {d["device_id"] for d in hotel["devices"]} == {"phone", "laptop"}
+    assert hotel["metrics"]["rtt_ms"] > home["metrics"]["rtt_ms"]
+    assert by_key["venue:office"]["runs"] == 1
+    assert by_key[f"venue:{portable.UNNAMED_VENUE.casefold()}"]["label"] == portable.UNNAMED_VENUE
+    # Home first, then the places, the unnamed bucket last whatever its score.
+    assert [loc["kind"] for loc in m["locations"]][:2] == ["home", "home_server"]
+    assert m["locations"][-1]["label"] == portable.UNNAMED_VENUE
+    assert m["metrics"][0]["key"] == "score" and any(x["key"] == "rtt_ms" for x in m["metrics"])
+
+
+def test_location_map_gates_on_the_instrument_version_and_says_so(clean):
+    _store("phone", home=True, fp="fp-live")
+    run_id = _place("phone", "Cafe")
+    with session_scope() as s:
+        s.get(PortableRun, run_id).instrument_version = "older"
+    with session_scope() as s:
+        m = portable.location_map(s, {}, home_fingerprint="fp-live")
+    assert [loc["key"] for loc in m["locations"]] == ["home"]
+    assert m["excluded"]["older_version"] == 1
+
+
+def test_location_map_without_a_known_profile_uses_every_home_run(clean):
+    _store("phone", home=True, fp="fp-a")
+    _store("phone", home=True, fp="fp-b")
+    with session_scope() as s:
+        m = portable.location_map(s, {}, home_fingerprint=None)
+    assert m["home_profile"]["source"] == "any"
+    assert m["locations"][0]["runs"] == 2
+
+
+def test_api_location_map(client, clean, monkeypatch):
+    monkeypatch.setattr(portable, "home_stamp", lambda: ("fp-live", "wan: q1514"))
+    for _ in range(2):
+        _store("phone", home=True, fp="fp-live")
+    _place("phone", "Hotel")
+    body = client.get("/api/portable/locations").json()
+    assert body["home_profile"]["fingerprint"] == "fp-live"
+    assert body["home_profile"]["summary"] == "wan: q1514" and body["home_profile"]["source"] == "live"
+    assert [loc["kind"] for loc in body["locations"]] == ["home", "away"]
+
+
+def test_the_map_is_wired_to_the_methodology_crown(clean):
+    from pathbrain.methodology import CURRENT_METHODOLOGY
+
+    for _ in range(3):
+        _store("phone", home=True, fp="fp-live")
+    _place("phone", "Hotel", ends={"doc": 300, "font": 500, "lib": 600, "hero": 2200, "data": 1200})
+    with session_scope() as s:
+        crown = portable.crown_stand_ins(s, {})
+        m = portable.location_map(s, {}, home_fingerprint="fp-live")
+    assert crown["methodology"] == CURRENT_METHODOLOGY and crown["legs"]
+    # Every current crown leg has a stand-in on this instrument, and it is a scored reading,
+    # so the crown stand-in score exists and reads off the same rubric arithmetic.
+    for leg in crown["legs"]:
+        assert leg["portable_metric"] == portable.CROWN_STAND_INS[leg["crown_metric"]]
+        assert leg["scored"], leg
+    assert crown["complete"] and m["crown"] == crown
+    home, hotel = m["locations"][0], m["locations"][1]
+    assert home["crown_score"] is not None and hotel["crown_score"] is not None
+    assert hotel["crown_score"] < home["crown_score"]
+    assert any(x["key"] == "crown_score" for x in m["metrics"])
+
+
+def test_crown_stand_in_score_is_the_weighted_mean_of_the_legs_subscores():
+    legs = [
+        {"portable_metric": "first_complete_ms", "weight": 1.0, "scored": True},
+        {"portable_metric": "largest_complete_ms", "weight": 1.0, "scored": True},
+        {"portable_metric": "stall_energy_ms", "weight": 0.5, "scored": True},
+    ]
+    metrics = {"first_complete_ms": 100.0, "largest_complete_ms": 500.0, "stall_energy_ms": 200.0, "rtt_ms": 20.0}
+    _, subs = portable.score_metrics(metrics)
+    want = (subs["first_complete_ms"] + subs["largest_complete_ms"] + 0.5 * subs["stall_energy_ms"]) / 2.5
+    assert portable.crown_stand_in_score(metrics, legs) == round(want, 1)
+    # A leg without a stand-in reading, or an unscored leg, means no score — never a default.
+    assert portable.crown_stand_in_score({"first_complete_ms": 100.0}, legs) is None
+    assert portable.crown_stand_in_score(metrics, legs + [{"portable_metric": "throughput_mbps", "weight": 1, "scored": False}]) is None

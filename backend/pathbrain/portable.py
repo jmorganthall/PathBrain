@@ -1058,6 +1058,311 @@ def metric_catalog() -> list[dict]:
     ]
 
 
+# ── the location map: every place measured, on one chart against home ─────────
+
+#: An away location is *confident* on the map once this many runs stand behind its dot; a
+#: single run still gets a dot (it is the only reading anyone has of that place) but grey.
+LOCATION_MIN_RUNS = 3
+#: The label an away run with no venue is filed under — one bucket, not one per run.
+UNNAMED_VENUE = "Unnamed location"
+
+
+def _venue_key(venue: str | None) -> str:
+    """Case- and whitespace-insensitive identity, so "Hotel Wifi" and "hotel wifi " are one
+    place. The display label is the spelling used most often (``_aggregate``)."""
+    v = " ".join((venue or "").split()).casefold()
+    return v or UNNAMED_VENUE.casefold()
+
+
+def _location_warmth(rows: list[PortableRun]) -> dict:
+    """The pool's warmth as one reading: median reused-connection share, dominant transport,
+    dominant engine — the same three facts ``warmth_compare`` reads off a home pool."""
+    shares: list[float] = []
+    protocols: dict[str, int] = {}
+    engines: dict[str, int] = {}
+    for r in rows:
+        w = _run_warmth(r)
+        if w.get("reused_share") is not None:
+            shares.append(float(w["reused_share"]))
+        if w.get("protocol"):
+            protocols[w["protocol"]] = protocols.get(w["protocol"], 0) + 1
+        if w.get("engine") and w["engine"] != "unknown":
+            engines[w["engine"]] = engines.get(w["engine"], 0) + 1
+    return {
+        "reused_share": round(median(shares), 3) if shares else None,
+        "runs_with_warmth": len(shares),
+        "protocol": max(protocols, key=protocols.get) if protocols else None,
+        "engine": max(engines, key=engines.get) if engines else None,
+    }
+
+
+def _setup_comparable(a: dict, b: dict) -> tuple[bool | None, str | None]:
+    """Whether two pools' setup-bound metrics may be read against each other — the
+    ``warmth_compare`` rule applied pool-to-pool. ``None`` when either side is unstamped."""
+    a_share, b_share = a.get("reused_share"), b.get("reused_share")
+    if a_share is None or b_share is None:
+        return None, "connection warmth is not recorded on one side"
+    reasons: list[str] = []
+    if abs(a_share - b_share) > WARMTH_TOLERANCE:
+        reasons.append(
+            f"reused {a_share:.0%} of its connections against home's {b_share:.0%} — one side is paying "
+            "handshakes the other is not"
+        )
+    if a.get("protocol") and b.get("protocol") and a["protocol"] != b["protocol"]:
+        reasons.append(f"different transports ({a['protocol']} there, {b['protocol']} at home)")
+    return (not reasons), ("; ".join(reasons) or None)
+
+
+#: Which portable reading STANDS IN for each crown metric. The methodology crowns on what a
+#: real page paints (FCP, LCP) and how its network dead-air adds up; a browser tab on a hotel
+#: Wi-Fi cannot load those pages and read their paint timing (same-origin policy), so this
+#: instrument measures a synthetic waterfall whose milestones are the nearest thing it can
+#: see: the first resource landing for FCP, the largest for LCP, the whole recipe for the load
+#: event, and the byte-arrival stall statistics — network by construction, since the recipe
+#: does no render work — for the crown's smoothness leg. Keyed by crown metric so the map
+#: follows whatever the methodology crowns on now (``crown_stand_ins`` reads the live spec);
+#: a crown metric with no entry here has no stand-in and the page says so.
+CROWN_STAND_INS: dict[str, str] = {
+    "fcp": "first_complete_ms",
+    "lcp": "largest_complete_ms",
+    "load_event": "last_complete_ms",
+    "perceived_time": "last_complete_ms",
+    "nav_response": "last_complete_ms",
+    "network_stall_all": "stall_energy_ms",
+    "stall_energy": "stall_energy_ms",
+    "stall_time": "stall_energy_ms",
+    "total_stall": "stall_energy_ms",
+    "longest_stall": "longest_stall_ms",
+    "worst_void_fraction": "longest_stall_ms",
+    "byte_earliness": "byte_earliness_ms",
+    "jank_fraction": "cadence_cov",
+}
+
+
+def crown_stand_ins(session, cfg: dict | None) -> dict:
+    """The current methodology's crown, translated onto this instrument: one leg per crown
+    metric with the portable reading that stands in for it, its weight, and whether that
+    reading is scored on the portable rubric. ``complete`` is True only when every leg has a
+    scored stand-in — the condition for the crown stand-in score to exist. Read from the
+    live methodology at request time, so a publish that changes the crown re-wires the map
+    with no code change. Best-effort: an unreadable methodology is an empty crown."""
+    try:
+        from .config_store import get_config
+        from .methodology import ensure_current_methodology, overall_method, overall_metrics, overall_weights
+        from .metrics import METRICS
+
+        methodology = ensure_current_methodology(session, cfg or get_config(session))
+        definition = methodology.definition or {}
+        keys, _required = overall_metrics(definition)
+        weights = overall_weights(definition)
+        method = overall_method(definition)
+        version = methodology.version
+    except Exception:  # noqa: BLE001 — the crown is context for the map, never why it fails
+        log.debug("crown_stand_ins: methodology unavailable", exc_info=True)
+        return {"methodology": None, "method": None, "legs": [], "complete": False}
+    labels = {m.key: m.label for m in METRICS}
+    legs = []
+    for k in keys:
+        stand_in = CROWN_STAND_INS.get(k)
+        meta = PORTABLE_METRICS.get(stand_in) if stand_in else None
+        legs.append({
+            "crown_metric": k,
+            "crown_label": labels.get(k, k),
+            "portable_metric": stand_in,
+            "portable_label": meta[0] if meta else None,
+            "weight": float(weights.get(k, 1.0)),
+            "scored": bool(stand_in and stand_in in PORTABLE_RUBRIC),
+        })
+    return {
+        "methodology": version,
+        "method": method,
+        "legs": legs,
+        "complete": bool(legs) and all(leg["scored"] for leg in legs),
+    }
+
+
+def crown_stand_in_score(metrics: dict, legs: list[dict]) -> float | None:
+    """One run's crown stand-in score: the weighted mean of its portable subscores over the
+    crown legs' stand-ins, with the methodology's own weights — the same arithmetic as the
+    weighted crown, on this instrument's readings. ``None`` unless every leg is present."""
+    if not legs or not all(leg["scored"] for leg in legs):
+        return None
+    _, subs = score_metrics(metrics or {})
+    total = weight_sum = 0.0
+    for leg in legs:
+        v = subs.get(leg["portable_metric"])
+        if v is None:
+            return None
+        total += float(v) * leg["weight"]
+        weight_sum += leg["weight"]
+    return round(total / weight_sum, 1) if weight_sum else None
+
+
+def _aggregate(rows: list[PortableRun], legs: list[dict] | None = None) -> dict:
+    """One location's dot: medians over its runs (re-scored from stored metrics, so a rubric
+    change applies to every run on record), the IQR of its score, which devices measured it
+    and how often, when, and the pool's warmth."""
+    scores: list[float] = []
+    crown_scores: list[float] = []
+    metrics: dict[str, list[float]] = {}
+    devices: dict[str, dict] = {}
+    spellings: dict[str, int] = {}
+    egress_v4: set[str] = set()
+    first = last = None
+    for r in rows:
+        sc, _ = score_metrics(r.metrics or {})
+        if sc is not None:
+            scores.append(sc)
+        cs = crown_stand_in_score(r.metrics or {}, legs or [])
+        if cs is not None:
+            crown_scores.append(cs)
+        for k, v in (r.metrics or {}).items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                metrics.setdefault(k, []).append(float(v))
+        d = devices.setdefault(r.device_id, {"device_id": r.device_id, "label": None, "runs": 0})
+        d["label"] = d["label"] or r.device_label
+        d["runs"] += 1
+        label = " ".join((r.venue or "").split())
+        if label:
+            spellings[label] = spellings.get(label, 0) + 1
+        fam = split_families(r.egress_ip)
+        if fam.get("v4"):
+            egress_v4.add(fam["v4"])
+        created = _as_utc(r.created_at)
+        if created:
+            first = created if first is None or created < first else first
+            last = created if last is None or created > last else last
+    p25, p75 = _quartiles_of(scores)
+    return {
+        "runs": len(rows),
+        "score": round(median(scores), 1) if scores else None,
+        "score_p25": p25,
+        "score_p75": p75,
+        "crown_score": round(median(crown_scores), 1) if crown_scores else None,
+        "metrics": {k: round(median(v), 3) for k, v in metrics.items() if v},
+        "devices": sorted(devices.values(), key=lambda d: -d["runs"]),
+        "spelling": max(spellings, key=spellings.get) if spellings else None,
+        "networks": len(egress_v4),
+        "first_seen": first.isoformat() if first else None,
+        "last_seen": last.isoformat() if last else None,
+        "warmth": _location_warmth(rows),
+    }
+
+
+def location_map(session, cfg: dict | None, *, home_fingerprint: str | None = None,
+                 home_summary: str | None = None, home_source: str = "live") -> dict:
+    """Every place the Away test has measured, as one dot each, beside home on the **current
+    home profile** — the Settings-Impact quadrant's question asked of locations instead of
+    profiles: on any two portable metrics, where does each network stand against the one the
+    firewall is tuning?
+
+    Home is two dots and never one: the phones' and laptops' own home runs (a warm Wi-Fi
+    browser, the device class every away run comes from) and PathBrain's wired Chromium
+    (``SERVER_DEVICE_ID``), kept apart as everywhere else on this instrument because a wired
+    headless browser and a phone on Wi-Fi measure the same recipe differently. Both are
+    restricted to runs stamped with ``home_fingerprint`` — the profile the firewall is on now
+    (``home_source`` = ``"live"``), else the pooled crown (``"crown"``), else every home run
+    with a note saying so (``"any"``) — so the comparison is against what home *is*, not a
+    blend of every profile it has ever been on.
+
+    Away runs are pooled by **venue**, across devices (the label recall keeps one place under
+    one spelling; ``_venue_key`` folds case and whitespace), and read as medians. Every dot
+    is gated on the current ``instrument_version`` like every other comparison here — a
+    changed recipe is a different ruler, and the count it excludes is reported rather than
+    silently dropped. Each away location also says whether its **setup-bound** metrics may be
+    read against the phone-class home (``setup_comparable``: the warmth rule from
+    ``warmth_compare``, pool to pool), because a warm tab and a cold context are two
+    instruments on first-complete and byte-earliness whatever the link did. Read-only;
+    nothing here reaches the crown, the duel or the pooled record."""
+    version = recipe(cfg)["instrument_version"]
+    all_rows = session.scalars(select(PortableRun).order_by(PortableRun.id)).all()
+    rows = [r for r in all_rows if r.instrument_version == version]
+    excluded_version = len(all_rows) - len(rows)
+
+    homes = [r for r in rows if r.is_home]
+    if home_fingerprint is None:
+        home_source = "any"
+    home_rows = [r for r in homes if home_fingerprint is None or r.settings_fingerprint == home_fingerprint]
+    home_other = len(homes) - len(home_rows)
+    device_home = [r for r in home_rows if r.device_id != SERVER_DEVICE_ID]
+    server_home = [r for r in home_rows if r.device_id == SERVER_DEVICE_ID]
+
+    name = None
+    if home_fingerprint:
+        try:
+            from .profile_names import names_for
+
+            name = names_for(session, [home_fingerprint]).get(home_fingerprint)
+        except Exception:  # noqa: BLE001 — naming must never be why the map fails
+            name = None
+        if not home_summary:
+            home_summary = next((r.settings_summary for r in home_rows if r.settings_summary), None)
+
+    pc = portable_config(cfg)
+    min_home = int(pc.get("min_home_runs") or 5)
+    crown = crown_stand_ins(session, cfg)
+    legs = crown["legs"] if crown["complete"] else []
+    locations: list[dict] = []
+    home_ref = _aggregate(device_home, legs) if device_home else None
+    if home_ref:
+        locations.append({
+            "key": "home", "label": "Home", "kind": "home",
+            "confident": home_ref["runs"] >= min_home, "setup_comparable": True, "setup_note": None,
+            **{k: v for k, v in home_ref.items() if k != "spelling"},
+        })
+    if server_home:
+        agg = _aggregate(server_home, legs)
+        comparable, note = (_setup_comparable(agg["warmth"], home_ref["warmth"]) if home_ref else (None, None))
+        locations.append({
+            "key": "home-server", "label": f"Home · {SERVER_DEVICE_LABEL}", "kind": "home_server",
+            "confident": agg["runs"] >= min_home, "setup_comparable": comparable, "setup_note": note,
+            **{k: v for k, v in agg.items() if k != "spelling"},
+        })
+
+    by_venue: dict[str, list[PortableRun]] = {}
+    for r in rows:
+        if not r.is_home:
+            by_venue.setdefault(_venue_key(r.venue), []).append(r)
+    for key, group in by_venue.items():
+        agg = _aggregate(group, legs)
+        comparable, note = (_setup_comparable(agg["warmth"], home_ref["warmth"]) if home_ref else (None, None))
+        locations.append({
+            "key": f"venue:{key}", "label": agg["spelling"] or UNNAMED_VENUE, "kind": "away",
+            "confident": agg["runs"] >= LOCATION_MIN_RUNS, "setup_comparable": comparable, "setup_note": note,
+            **{k: v for k, v in agg.items() if k != "spelling"},
+        })
+    # Home first, then the places by score (best-feeling first), unnamed last.
+    order = {"home": 0, "home_server": 1, "away": 2}
+    locations.sort(key=lambda loc: (
+        order[loc["kind"]], loc["label"] == UNNAMED_VENUE,
+        -(loc["score"] if loc["score"] is not None else -1.0), -loc["runs"],
+    ))
+
+    metrics = [{"key": "score", "label": "Portable score", "unit": "score", "lower_is_better": False,
+                "scored": False, "setup_bound": False}]
+    if crown["complete"]:
+        metrics.append({"key": "crown_score", "label": "Crown stand-in score", "unit": "score",
+                        "lower_is_better": False, "scored": False, "setup_bound": False})
+    metrics += metric_catalog()
+    return {
+        "instrument_version": version,
+        "crown": crown,
+        "home_profile": {
+            "fingerprint": home_fingerprint, "name": name, "summary": home_summary, "source": home_source,
+        },
+        "min_home_runs": min_home,
+        "min_location_runs": LOCATION_MIN_RUNS,
+        "metrics": metrics,
+        "locations": locations,
+        "excluded": {"older_version": excluded_version, "home_other_profiles": home_other},
+        "note": (
+            "Each dot is one network's median over every run taken there, on this device class's own "
+            "instrument — never the Overall. Home is the runs stamped with the profile the firewall is "
+            "on now; PathBrain's wired readings are kept as a separate dot."
+        ),
+    }
+
+
 # ── per-profile standing: what each device measured under each profile ───────
 
 

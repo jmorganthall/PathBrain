@@ -194,6 +194,19 @@ def portable_standings(device_id: str | None = Query(None), session: Session = D
     return portable.profile_standings(session, get_config(session), device_id=device_id)
 
 
+@router.get("/portable/locations")
+def portable_locations(session: Session = Depends(get_session)) -> dict:
+    """Every measured location as one dot beside home on the current home profile — the
+    Settings-Impact quadrant asked of places instead of profiles. Home is the profile the
+    firewall is on right now (best-effort read), else the pooled crown. Read-only."""
+    fp, summary = portable.home_stamp()
+    source = "live"
+    if fp is None:
+        fp, source = _crown_fp(session), "crown"
+    return portable.location_map(session, get_config(session), home_fingerprint=fp, home_summary=summary,
+                                 home_source=source if fp else "any")
+
+
 @router.get("/portable/devices")
 def portable_devices(session: Session = Depends(get_session)) -> list[dict]:
     return portable.devices(session)

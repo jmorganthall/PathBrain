@@ -86,6 +86,7 @@ import type {
   WarmAgreement,
   PortableDevice,
   PortableStandings,
+  PortableLocationMap,
   PortableHome,
   PortableRecipe,
   PortableRun,
@@ -747,6 +748,7 @@ export const api = {
   portableDelete: (id: number) => request<void>(`/portable/runs/${id}`, { method: "DELETE" }),
   portableDevices: () => request<PortableDevice[]>("/portable/devices"),
   portableStandings: () => request<PortableStandings>("/portable/standings"),
+  portableLocations: () => request<PortableLocationMap>("/portable/locations"),
   portableDeviceRename: (deviceId: string, label: string | null) =>
     request<{ device_id: string; label: string | null }>(
       `/portable/devices/${encodeURIComponent(deviceId)}`,
