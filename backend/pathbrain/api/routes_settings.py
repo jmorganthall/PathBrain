@@ -3115,30 +3115,30 @@ def apply_profile(
 
 
 def _write_changes(provider, changes: list[dict]) -> list[dict]:
-    """Apply a planned change list to the firewall via ``provider.apply()`` (the only sanctioned
-    write path), returning the applied summaries. Raises ``HTTPException`` on the first failure —
-    reporting how many writes already landed so a partial apply is visible. Shared by the
-    apply-profile and apply-settings endpoints."""
-    applied: list[dict] = []
-    for ch in changes:
-        try:
-            provider.apply({"pipe_uuid": ch["pipe_uuid"], "param": ch["param"], "value": ch["value"]})
-        except NotImplementedError as exc:
-            raise HTTPException(
-                status_code=400, detail=f"The {provider.name} provider can't write changes.",
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            log.exception("apply write failed on %s after %s change(s)", ch["param"], len(applied))
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    f"Applied {len(applied)} change(s), then failed on "
-                    f"{ch['field_label']}: {type(exc).__name__}: {exc}. The firewall may be "
-                    "partially changed — re-apply once the issue is resolved."
-                ),
-            ) from exc
-        applied.append({"label": ch["label"], "field_label": ch["field_label"], "to": ch["to"]})
-    return applied
+    """Apply a planned change list to the firewall as ONE switch — ``provider.apply_many``,
+    every field on every pipe and a single reconfigure — returning the applied summaries.
+    Raises ``HTTPException`` on failure. Shared by the apply-profile and apply-settings
+    endpoints. (It used to write one field per call, each with its own shaper reload; the
+    reload is what the firewall feels, so a switch now costs exactly one.)"""
+    if not changes:
+        return []
+    batch = [{"pipe_uuid": ch["pipe_uuid"], "param": ch["param"], "value": ch["value"]} for ch in changes]
+    try:
+        provider.apply_many(batch)
+    except NotImplementedError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"The {provider.name} provider can't write changes.",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("apply write failed (%d change(s) in one switch)", len(batch))
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Applying {len(batch)} change(s) failed: {type(exc).__name__}: {exc}. "
+                "The firewall may be partially changed — re-apply once the issue is resolved."
+            ),
+        ) from exc
+    return [{"label": ch["label"], "field_label": ch["field_label"], "to": ch["to"]} for ch in changes]
 
 
 @router.post("/settings/apply-settings")

@@ -419,6 +419,57 @@ LLM-based. See `README.md` for the product overview.
     a kill: Python cannot interrupt a blocked probe, so the iteration in flight always
     finishes (bounded by the probe deadline); the promise is "the next one never starts".
     `test_run_cancel`, `test_duel_cancel`, `test_coordinator`.
+  - `firewall_guard.py` — **every firewall write is ledgered, paced, budgeted and refusable; a
+    write that times out is never reissued; a new build starts hands-off.** Written after the
+    reload-storm incident: the duel ladder wrote one `setPipe` + one full shaper reconfigure
+    **per differing field** on **every leg** (the ring, #220, made every leg a profile switch),
+    and the job runtime (#251) **retried a timed-out write two seconds later** — a second
+    `shaper.reload` while the first was still running inside OPNsense, and a `setPipe` landing
+    seconds after `sshd` came up on a firewall mid-boot. It coincided with OPNsense reboots and
+    a WAN dropping several times a day, and nothing in PathBrain could have caught it, because
+    the write path was the one part of the platform with **no instrument on it**: every metric a
+    run produces is measured, versioned and audited; the reconfigure rate was recorded nowhere.
+    Four rules, enforced in `session_runtime.ResilientProvider` (the only thing `get_provider()`
+    returns — `test_get_provider_is_always_the_guarded_wrapper` and a source scan pin that no
+    module builds a raw provider or writes a change list one field at a time):
+    **(1) The ledger** (`models.FirewallWrite`, `GET /api/firewall/writes`, the top-bar chip's
+    table): when, which engine held the pipeline, which pipe and fields, how many reconfigures
+    it cost, the firewall's latency, and the outcome — `ok`, `verified` (timed out, re-read
+    showed it took), `failed`, `refused`. "What did PathBrain do in the five minutes before the
+    drop?" is one query; `reconfigures_last_hour` is on `GET /api/health/pipeline` as
+    `firewall`. **(2) Hands-off is a persistent state** (`models.FirewallGuardState`,
+    `trip`/`arm`/`hands_off`, `GET /api/firewall/guard`, `POST …/arm`, `POST …/hands-off`, the
+    **top-bar guard chip** `FirewallGuard.tsx`): while set, every write is refused and recorded
+    as refused — **a baseline restore included**, because a restore is a write into a firewall
+    that may be mid-boot, which is exactly what hurt; the session card says so
+    (`describe_failure` for `FirewallHandsOff`). Set by an **outage** (any `FirewallUnavailable`,
+    on a read or a write), by the **budget**, by a **new build** (`startup_check`, before any
+    reconcile: a container on a different `git_sha` than the one last armed runs read-only —
+    measurements run, nothing is applied or restored — until a person arms it, so every deploy
+    is a canary hour on the household's own monitoring; a dev build with no sha is left alone),
+    or **by hand**. Cleared only by `arm`, which stamps the build. It survives a restart on
+    purpose. **(3) Pacing and budget** (`config.firewall`: `min_reconfigure_gap_s` 15,
+    `max_reconfigures_per_hour` 60, `cooldown_after_outage_s` 300, `arm_required_after_deploy`):
+    the gap is waited out (refused past `MAX_GAP_WAIT_S`), the hourly cap trips hands-off (a
+    session stops, the network does not), and after an outage writes are refused until the
+    firewall has been back for the cooldown. **(4) A write is attempted ONCE.** Reads still
+    retry; a write that times out, drops, or draws a 5xx is followed by a **re-read**
+    (`_verify_applied`, numeric `_field_equal` per change; `pipe_states` for a toggle) — it took
+    (`verified`) or the firewall is treated as gone and hands-off trips. Never reissued.
+    **One reconfigure per profile switch** (`ConfigProvider.apply_many`; OPNsense sets every
+    changed field on every pipe, one `setPipe` per pipe, then reconfigures once — the mock and
+    the base fall back to a loop): `profile_test._apply_all` (every engine's switch and every
+    restore) and `routes_settings._write_changes` go through it, so a switch differing in three
+    fields across two pipes costs one shaper reload where it cost three. `note_contact` stamps
+    a successful read at most every `CONTACT_STAMP_S` (a row write per firewall read would be
+    amplification); an outage and the first success after one are always written.
+    **The gate on the repo** (`.github/workflows/firewall-gate.yml`, the PR template's
+    **Firewall interaction** section): a PR touching the providers, the session runtime, the
+    guard, an engine's apply path or the settings/config/sweep routes does not merge unless its
+    body states writes per session before and after (measured with `tests/faults.py`'s
+    `FaultyProvider`, which times out, refuses connections, answers 502 and goes dark like a
+    rebooting box, counting every call) and the behaviour on a timeout and on a reboot, and the
+    guard's tests are green. Prose asks; CI refuses. `test_firewall_guard`.
   - `coordinator.py` — process-wide lock that serializes any apply-firewall + benchmark
     session (sweep, profile test, experiment, monitoring, manual run): user-triggered
     ones `hold` (queue), periodic ones `try_hold` (defer).

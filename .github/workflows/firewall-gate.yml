@@ -1,0 +1,58 @@
+# The firewall gate: a change to anything that can write the firewall does not merge on a
+# green build alone. It needs the "Firewall interaction" section of the PR body filled in
+# (writes per session before and after, measured with the fault-injecting provider; the
+# behaviour on a timeout and on a reboot) and the guard's own tests green. Prose asks;
+# this refuses. Written after the reload-storm incident, in which a change to the retry
+# policy on the only write path merged and auto-deployed the same day as six others.
+name: firewall-gate
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Does this PR touch the firewall path?
+        id: touch
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          changed=$(git diff --name-only "$base" "$head")
+          echo "$changed"
+          pattern='^backend/pathbrain/(providers/|session_runtime\.py|firewall_guard\.py|duel\.py|profile_test\.py|challenger\.py|refresh\.py|sweep\.py|experiment\.py|crown_follower\.py|baseline_test\.py|api/routes_settings\.py|api/routes_config\.py|api/routes_sweep\.py|api/routes_firewall\.py|main\.py)'
+          if echo "$changed" | grep -Eq "$pattern"; then
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Require the Firewall interaction section
+        if: steps.touch.outputs.touched == 'true'
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          body = os.environ.get("BODY") or ""
+          m = re.search(r"^##\s*Firewall interaction\s*$(.*?)(?=^##\s|\Z)", body, re.M | re.S)
+          if not m:
+              print("This PR touches the firewall write path but has no '## Firewall interaction' section."); sys.exit(1)
+          section = re.sub(r"<!--.*?-->", "", m.group(1), flags=re.S).strip()
+          required = ["writes per session", "timeout", "reboot"]
+          missing = [k for k in required if k not in section.lower()]
+          if len(section) < 120 or missing:
+              print("The Firewall interaction section must state writes per session before/after, and the behaviour on a timeout and on a reboot."); print("missing:", missing); sys.exit(1)
+          print("Firewall interaction section present.")
+          PY
+      - uses: actions/setup-python@v5
+        if: steps.touch.outputs.touched == 'true'
+        with:
+          python-version: "3.11"
+      - name: The guard's own tests
+        if: steps.touch.outputs.touched == 'true'
+        working-directory: backend
+        run: |
+          pip install -q -r requirements-dev.txt
+          python -m pytest -q tests/test_firewall_guard.py tests/test_session_runtime.py

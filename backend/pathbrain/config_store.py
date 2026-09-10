@@ -195,6 +195,20 @@ DEFAULT_CONFIG: dict = {
     # (the 25th percentile of recent history, robust to a contaminated stretch). Past
     # `degraded_ratio` the run is quarantined by the comparability gate; past
     # `strained_ratio` it is flagged and still counts. See `instrument_health`.
+    # The firewall guard (``firewall_guard.py``): every write is on a ledger, paced and
+    # budgeted, and refusable. Written after the reload-storm incident.
+    "firewall": {
+        # Minimum seconds between two shaper reconfigures; the guard waits it out.
+        "min_reconfigure_gap_s": 15,
+        # Reconfigures allowed per rolling hour; exceeding it trips hands-off (every engine
+        # stops, nothing is written until a person arms again). A duel leg is one reconfigure.
+        "max_reconfigures_per_hour": 60,
+        # After the firewall stops answering and comes back, writes are refused for this long
+        # — a firewall that has just rebooted is not written into mid-boot.
+        "cooldown_after_outage_s": 300,
+        # A container that comes up on a new build runs read-only until armed from the top bar.
+        "arm_required_after_deploy": True,
+    },
     "instrument": {
         "enabled": True,
         "strained_ratio": 1.8,

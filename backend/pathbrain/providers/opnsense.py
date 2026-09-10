@@ -198,36 +198,52 @@ class OPNsenseProvider(ConfigProvider):
         return {"provider": self.name, "base_url": self.base_url, "trafficshaper": data}
 
     def apply(self, changes: dict) -> dict:
-        """Set one pipe field and reconfigure the shaper.
+        """Set one pipe field and reconfigure the shaper — ``apply_many`` with one change.
+        Prefer ``apply_many`` for a profile switch: every field costs a full shaper reload
+        otherwise, and the reload is what the firewall feels."""
+        out = self.apply_many([changes])
+        first = (out.get("applied") or [{}])[0]
+        return {"provider": self.name, "ok": True, "uuid": first.get("uuid"), "applied": first.get("applied", {})}
 
-        NOTE: written against the documented OPNsense API but not yet exercised
-        against live hardware — validate with the experiment engine's dry-run mode
-        before arming it for real.
-        """
-        param = changes.get("param")
-        value = changes.get("value")
-        field = _PARAM_FIELD.get(param or "")
-        if not field:
-            raise ValueError(f"Unknown/unsupported param '{param}'")
+    def apply_many(self, changes: list[dict]) -> dict:
+        """Set every requested field on every requested pipe, then reconfigure ONCE.
 
+        One ``getSettings`` read, one ``setPipe`` per distinct pipe (all of that pipe's
+        changed fields in one payload), one ``reconfigure``. A profile switch that differs
+        in three fields across two pipes is therefore two setPipe calls and one shaper
+        reload, where it used to be three of each."""
+        if not changes:
+            return {"provider": self.name, "ok": True, "applied": [], "reconfigures": 0}
         data = self._get(_SETTINGS_GET)
         pipes = (((data or {}).get("ts") or {}).get("pipes") or {}).get("pipe") or {}
-        uuid = changes.get("pipe_uuid") or (next(iter(pipes)) if pipes else None)
-        if not uuid or uuid not in pipes:
+        if not pipes:
             raise RuntimeError("Target shaper pipe not found")
-
-        pipe = pipes[uuid]
-        # Flatten OPNsense's select fields ({key:{selected}}) to settable scalars.
-        payload = {k: (_selected(v) if isinstance(v, dict) else v) or "" for k, v in pipe.items()}
-        payload[field] = str(value)
-
+        # Group by pipe, resolving each change's param to the wire field first so a bad
+        # param fails before anything is written.
+        payloads: dict[str, dict] = {}
+        applied: list[dict] = []
+        for ch in changes:
+            param = ch.get("param")
+            field = _PARAM_FIELD.get(param or "")
+            if not field:
+                raise ValueError(f"Unknown/unsupported param '{param}'")
+            uuid = ch.get("pipe_uuid") or next(iter(pipes))
+            if uuid not in pipes:
+                raise RuntimeError("Target shaper pipe not found")
+            if uuid not in payloads:
+                pipe = pipes[uuid]
+                payloads[uuid] = {k: (_selected(v) if isinstance(v, dict) else v) or "" for k, v in pipe.items()}
+            payloads[uuid][field] = str(ch.get("value"))
+            applied.append({"uuid": uuid, "applied": {field: ch.get("value")}})
         with self._client() as client:
-            resp = client.post(f"{_SET_PIPE}/{uuid}", json={"pipe": payload})
-            resp.raise_for_status()
+            for uuid, payload in payloads.items():
+                resp = client.post(f"{_SET_PIPE}/{uuid}", json={"pipe": payload})
+                resp.raise_for_status()
             rc = client.post(_RECONFIGURE, json={})
             rc.raise_for_status()
-        log.info("OPNsense applied %s=%s to pipe %s", field, value, uuid)
-        return {"provider": self.name, "ok": True, "uuid": uuid, "applied": {field: value}}
+        log.info("OPNsense applied %d field(s) on %d pipe(s) with one reconfigure: %s",
+                 len(applied), len(payloads), [a["applied"] for a in applied])
+        return {"provider": self.name, "ok": True, "applied": applied, "reconfigures": 1}
 
     def set_pipe_enabled(self, pipe_uuid: str | None, enabled: bool) -> dict:
         """Toggle one pipe's ``enabled`` flag and reconfigure (turn SQM off/on).

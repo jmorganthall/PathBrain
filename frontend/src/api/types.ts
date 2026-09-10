@@ -3816,3 +3816,48 @@ export interface LeverCampaignStatus {
   alpha: number;
   note: string;
 }
+
+
+// ── The firewall guard (firewall_guard.py): every write ledgered, paced, budgeted, refusable ──
+export interface FirewallWriteRow {
+  id: number;
+  at: string | null;
+  op: "apply" | "apply_many" | "set_pipe_enabled" | string;
+  owner: string | null;
+  pipe_uuid: string | null;
+  field: string | null;
+  value: string | null;
+  changes: Record<string, unknown>[] | null;
+  reconfigures: number;
+  outcome: "ok" | "verified" | "failed" | "refused";
+  error: string | null;
+  latency_ms: number | null;
+  git_sha: string | null;
+}
+
+export interface FirewallGuardStatus {
+  hands_off: boolean;
+  reason: string | null;
+  kind: "hands_off" | "manual" | "outage" | "budget" | "deploy" | "cooldown" | "gap" | null;
+  tripped_at: string | null;
+  tripped_by: string | null;
+  armed_sha: string | null;
+  armed_at: string | null;
+  last_contact_at: string | null;
+  unreachable_since: string | null;
+  reachable_since: string | null;
+  refused_count: number;
+  last_refusal: string | null;
+  build_sha: string | null;
+  config: {
+    min_reconfigure_gap_s: number;
+    max_reconfigures_per_hour: number;
+    cooldown_after_outage_s: number;
+    arm_required_after_deploy: boolean;
+  };
+  reconfigures_last_hour: number;
+  reconfigures_last_24h: number;
+  refused_last_hour: number;
+  last_reconfigure_at: string | null;
+  writes: FirewallWriteRow[];
+}

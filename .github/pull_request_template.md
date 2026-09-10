@@ -19,6 +19,22 @@
 - [ ] Added a crown/required metric → its derive function omits on absent input, never defaults to a sentinel
 - [ ] Added a shaper field or metric → one entry in the registry (`shaper_fields.py` / `metrics.py`); no call site re-lists it
 
+## Firewall interaction
+
+<!-- REQUIRED when the diff touches anything that can write the firewall (providers/,
+     session_runtime.py, firewall_guard.py, any engine's apply path, routes_settings /
+     routes_config / routes_sweep). CI (firewall-gate) refuses the PR without it. State,
+     measured with tests/faults.py's FaultyProvider, not asserted:
+     - Writes per session before / after: how many setPipe calls and how many reconfigures
+       a leg, a profile switch, and a restore cost, before this change and after it.
+     - On a timeout: what happens when a write does not answer. (The answer must never be
+       "it is reissued".)
+     - On a reboot: what happens when the firewall goes away mid-session and comes back. -->
+
+- Writes per session before / after:
+- On a timeout:
+- On a reboot:
+
 ## Pinned by
 
 <!-- The test that fails if this regresses. Prefer an executable invariant over a comment. -->

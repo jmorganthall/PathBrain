@@ -117,8 +117,15 @@ def cancel(test_id: int | None = None) -> bool:
 
 
 def _apply_all(provider, changes: list[dict]) -> None:
-    for ch in changes:
-        provider.apply({"pipe_uuid": ch["pipe_uuid"], "param": ch["param"], "value": ch["value"]})
+    """Write a planned change list as ONE profile switch: every field on every pipe, one
+    reconfigure (``provider.apply_many``). Used by every engine that switches profiles —
+    the profile test, the refresh, the challenger race, the duel and its restores — so a
+    switch costs the firewall one shaper reload however many fields differ."""
+    if not changes:
+        return
+    provider.apply_many([
+        {"pipe_uuid": ch["pipe_uuid"], "param": ch["param"], "value": ch["value"]} for ch in changes
+    ])
 
 
 def _set_stage(pt_id: int, stage: str) -> None:

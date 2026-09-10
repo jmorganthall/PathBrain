@@ -87,6 +87,7 @@ import type {
   PortableDevice,
   PortableStandings,
   PortableLocationMap,
+  FirewallGuardStatus,
   PortableHome,
   PortableRecipe,
   PortableRun,
@@ -749,6 +750,10 @@ export const api = {
   portableDevices: () => request<PortableDevice[]>("/portable/devices"),
   portableStandings: () => request<PortableStandings>("/portable/standings"),
   portableLocations: () => request<PortableLocationMap>("/portable/locations"),
+  firewallGuard: (limit = 25) => request<FirewallGuardStatus>(`/firewall/guard?limit=${limit}`),
+  firewallArm: () => request<FirewallGuardStatus>("/firewall/guard/arm", { method: "POST" }),
+  firewallHandsOff: (reason?: string) =>
+    request<FirewallGuardStatus>("/firewall/guard/hands-off", { method: "POST", body: JSON.stringify({ reason: reason ?? null }) }),
   portableDeviceRename: (deviceId: string, label: string | null) =>
     request<{ device_id: string; label: string | null }>(
       `/portable/devices/${encodeURIComponent(deviceId)}`,
