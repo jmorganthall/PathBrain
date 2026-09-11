@@ -17,7 +17,8 @@ log = get_logger("api.write_probe")
 
 class ProbeBody(BaseModel):
     changes: list[dict]
-    firewall_target: str
+    # Omitted → the address PathBrain already talks to. Only supply one to override it.
+    firewall_target: str | None = None
     through_target: str = "1.1.1.1"
     baseline_s: float = write_probe.DEFAULT_BASELINE_S
     settle_s: float = write_probe.DEFAULT_SETTLE_S
@@ -44,8 +45,19 @@ def start_probe(body: ProbeBody = Body(...)) -> dict:
 
 @router.get("/firewall/write-probe")
 def probe_status() -> dict:
-    """The running probe (with its timeline so far) plus the recent ones."""
-    return {"current": write_probe.current(), "recent": write_probe.recent()}
+    """The running probe (with its timeline so far), the recent ones, and the defaults.
+
+    ``defaults.firewall_target`` is read from the provider PathBrain is already configured
+    with, so the page can fill it in rather than asking for an address the application
+    knows perfectly well."""
+    return {
+        "current": write_probe.current(),
+        "recent": write_probe.recent(),
+        "defaults": {
+            "firewall_target": write_probe.firewall_address(),
+            "through_target": "1.1.1.1",
+        },
+    }
 
 
 @router.get("/firewall/write-probe/{probe_id}")
