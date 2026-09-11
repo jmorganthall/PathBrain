@@ -303,6 +303,32 @@ def test_api_guard_status_arm_and_hands_off(client, guard):
     assert client.post("/api/firewall/guard/arm").json()["hands_off"] is False
 
 
+def test_the_config_write_test_is_ledgered_and_refusable_like_any_other_write(client, guard):
+    """`POST /config/test-apply` proves the write path works by nudging quantum +1 and
+    setting it back. It holds no special status: both writes are on the ledger at one
+    reconfigure each, and while hands-off is set it is refused before anything is
+    written — so the reversible test can never be the one write that slips the guard."""
+    body = client.post("/api/config/test-apply").json()
+    assert body["ok"] is True
+    rows = client.get("/api/firewall/guard").json()["writes"]
+    assert [(r["field"], r["outcome"], r["reconfigures"]) for r in rows] == [
+        ("quantum", "ok", 1),
+        ("quantum", "ok", 1),
+    ], "the nudge and the restore are each one ledgered reconfigure"
+
+    fg.hands_off("testing", by="test")
+    refused = client.post("/api/config/test-apply").json()
+    assert refused["changed"] is False and refused["restored"] is False
+    # It stops at the nudge, so there is nothing to restore and no manual fix to report.
+    assert [s["step"] for s in refused["steps"]] == ["discover", "apply +1"]
+    # And it says so in words, not as a class name: this is the first thing a person
+    # presses after a deploy, when the build gate has left writes hands-off.
+    assert "Stopped by the firewall guard" in refused["error"]
+    assert "Arm writes from the top bar" in refused["error"]
+    # The ledger reads newest first, so the refusal is row 0.
+    assert client.get("/api/firewall/guard").json()["writes"][0]["outcome"] == "refused"
+
+
 # ── 9. OPNsense: one reconfigure per switch, however many fields ───────────────
 
 
