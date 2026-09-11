@@ -3240,6 +3240,18 @@ export interface PortableStandings {
   note: string;
 }
 
+// Who owns the network a run was taken on, looked up server-side from the egress address.
+export interface PortableNetwork {
+  isp: string | null;
+  org: string | null;
+  asn: number | null;
+  city: string | null;
+  region: string | null;
+  country: string | null;
+  source?: string | null;
+  looked_up_at?: string | null;
+}
+
 export interface PortableRun {
   id: number;
   created_at: string | null;
@@ -3255,6 +3267,7 @@ export interface PortableRun {
   tz_offset_minutes: number | null;
   settings_fingerprint: string | null;
   settings_summary: string | null;
+  network: PortableNetwork | null;
   metrics: Record<string, number>;
   per_origin: Record<string, Record<string, number>>;
   coverage: {
@@ -3269,6 +3282,71 @@ export interface PortableRun {
   source_run_id?: number | null;
   iterations: number;
   compare?: PortableCompare;
+}
+
+// ── The location map: every place measured, as one dot each beside home ──
+export interface PortableLocationMetric {
+  key: string;
+  label: string;
+  unit: string;
+  lower_is_better: boolean;
+  scored: boolean;
+  // First/largest/waterfall complete + byte earliness: comparable across two pools only
+  // when their connection warmth matches (see `setup_comparable` on a location).
+  setup_bound: boolean;
+}
+
+export interface PortableLocation {
+  key: string;
+  label: string;
+  // `home`: phones/laptops at home on the home profile; `home_server`: PathBrain's own wired
+  // Chromium on it (a different device class, so a separate dot); `away`: one venue.
+  kind: "home" | "home_server" | "away";
+  runs: number;
+  confident: boolean;
+  score: number | null;
+  score_p25: number | null;
+  score_p75: number | null;
+  // The crown stand-in score: the methodology's own weights over the portable subscores of
+  // each crown leg's stand-in (see `PortableLocationMap.crown`). Null unless every leg has
+  // a scored stand-in.
+  crown_score: number | null;
+  metrics: Record<string, number>;
+  devices: { device_id: string; label: string | null; runs: number }[];
+  // The ISP seen most often at this place ("Comcast Cable · Denver, Colorado"), and every one seen.
+  isp: string | null;
+  isps: { name: string; runs: number }[];
+  networks: number;
+  first_seen: string | null;
+  last_seen: string | null;
+  warmth: { reused_share: number | null; runs_with_warmth: number; protocol: string | null; engine: string | null };
+  // Whether this pool's setup-bound metrics may be read against the phone-class home dot;
+  // null when either side predates the warmth stamp.
+  setup_comparable: boolean | null;
+  setup_note: string | null;
+}
+
+// The methodology's crown translated onto this instrument: one leg per crown metric and the
+// portable reading that stands in for it (a browser tab can't read a real page's FCP/LCP).
+export interface PortableCrownLeg {
+  crown_metric: string;
+  crown_label: string;
+  portable_metric: string | null;
+  portable_label: string | null;
+  weight: number;
+  scored: boolean;
+}
+
+export interface PortableLocationMap {
+  instrument_version: string;
+  crown: { methodology: string | null; method: string | null; legs: PortableCrownLeg[]; complete: boolean };
+  home_profile: { fingerprint: string | null; name: string | null; summary: string | null; source: "live" | "crown" | "any" };
+  min_home_runs: number;
+  min_location_runs: number;
+  metrics: PortableLocationMetric[];
+  locations: PortableLocation[];
+  excluded: { older_version: number; home_other_profiles: number };
+  note: string;
 }
 
 export interface PortableDevice {
@@ -3301,6 +3379,8 @@ export interface PortableHome {
   // address (IPv4 exactly, IPv6 by prefix). A suggestion the page pre-fills, never a
   // decision — the user can type over it.
   venue: PortableVenueRecall | null;
+  // Who owns the network the passed egress address is on — "away, on Comcast in Denver".
+  network: PortableNetwork | null;
 }
 
 export interface PortableVenueRecall {
@@ -3735,4 +3815,49 @@ export interface LeverCampaignStatus {
   null_margin: number;
   alpha: number;
   note: string;
+}
+
+
+// ── The firewall guard (firewall_guard.py): every write ledgered, paced, budgeted, refusable ──
+export interface FirewallWriteRow {
+  id: number;
+  at: string | null;
+  op: "apply" | "apply_many" | "set_pipe_enabled" | string;
+  owner: string | null;
+  pipe_uuid: string | null;
+  field: string | null;
+  value: string | null;
+  changes: Record<string, unknown>[] | null;
+  reconfigures: number;
+  outcome: "ok" | "verified" | "failed" | "refused";
+  error: string | null;
+  latency_ms: number | null;
+  git_sha: string | null;
+}
+
+export interface FirewallGuardStatus {
+  hands_off: boolean;
+  reason: string | null;
+  kind: "hands_off" | "manual" | "outage" | "budget" | "deploy" | "cooldown" | "gap" | null;
+  tripped_at: string | null;
+  tripped_by: string | null;
+  armed_sha: string | null;
+  armed_at: string | null;
+  last_contact_at: string | null;
+  unreachable_since: string | null;
+  reachable_since: string | null;
+  refused_count: number;
+  last_refusal: string | null;
+  build_sha: string | null;
+  config: {
+    min_reconfigure_gap_s: number;
+    max_reconfigures_per_hour: number;
+    cooldown_after_outage_s: number;
+    arm_required_after_deploy: boolean;
+  };
+  reconfigures_last_hour: number;
+  reconfigures_last_24h: number;
+  refused_last_hour: number;
+  last_reconfigure_at: string | null;
+  writes: FirewallWriteRow[];
 }

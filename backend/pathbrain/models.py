@@ -953,6 +953,10 @@ class PortableRun(Base):
     # Home runs only: the firewall profile in effect (best-effort), the third stamp.
     settings_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     settings_summary: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Who the network belongs to — ISP / organisation / ASN and the rough place — looked up
+    # server-side from the egress address at upload (``portable.lookup_network``). Best-effort
+    # and null when unknown; a run is never refused for it.
+    network: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # A sample taken by PathBrain's own `portable` plugin keeps ONE copy of its raw — in that
@@ -1069,3 +1073,54 @@ class QueuedJob(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class FirewallWrite(Base):
+    """One write to the firewall — every ``setPipe``/reconfigure/pipe toggle PathBrain issues,
+    with who issued it, what it cost the firewall, and how it went (``firewall_guard``).
+
+    The write path was the one part of PathBrain with no instrument on it; this is the
+    ledger that makes "what did PathBrain do before the drop?" one query. ``outcome`` is
+    ``ok``, ``verified`` (the call timed out and a re-read showed it took — never reissued),
+    ``failed``, or ``refused`` (the guard was hands-off, cooling down or over budget).
+    """
+
+    __tablename__ = "firewall_writes"
+    __table_args__ = (Index("ix_firewall_writes_at", "at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    op: Mapped[str] = mapped_column(String(24))
+    # The coordination-lock holder at the time ("duel#412", "profile_test#9"), best-effort.
+    owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pipe_uuid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    field: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    value: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    changes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    reconfigures: Mapped[int] = mapped_column(Integer, default=1)
+    outcome: Mapped[str] = mapped_column(String(16), default="ok")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    git_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class FirewallGuardState(Base):
+    """The one row of guard state (``id`` = 1): hands-off and why, the build last armed,
+    and the firewall's reachability as the guard last saw it. Persistent on purpose — a
+    restart must not clear a hands-off that an outage or a deploy set."""
+
+    __tablename__ = "firewall_guard_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    hands_off: Mapped[bool] = mapped_column(Boolean, default=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    tripped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tripped_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    armed_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    armed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_contact_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    unreachable_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reachable_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    refused_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_refusal: Mapped[str | None] = mapped_column(Text, nullable=True)

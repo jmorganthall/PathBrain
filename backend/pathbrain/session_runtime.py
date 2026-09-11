@@ -91,8 +91,8 @@ def call_firewall(
     op: str,
     fn: Callable[..., Any],
     *args: Any,
-    attempts: int = FIREWALL_ATTEMPTS,
-    backoff_s: tuple[float, ...] = FIREWALL_BACKOFF_S,
+    attempts: int | None = None,
+    backoff_s: tuple[float, ...] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     **kwargs: Any,
 ) -> Any:
@@ -101,7 +101,9 @@ def call_firewall(
     Raises :class:`FirewallUnavailable` once the attempts are spent, and re-raises any
     non-transient error immediately and unchanged.
     """
-    attempts = max(1, int(attempts))
+    # Resolved at call time so the module constants can be tuned (and patched in tests).
+    attempts = max(1, int(FIREWALL_ATTEMPTS if attempts is None else attempts))
+    backoff_s = FIREWALL_BACKOFF_S if backoff_s is None else backoff_s
     last: BaseException | None = None
     for n in range(1, attempts + 1):
         try:
@@ -144,7 +146,18 @@ class ResilientProvider(ConfigProvider):
         return self._inner
 
     def discover(self) -> list[FqCodelConfig]:
-        return call_firewall("discover", self._inner.discover)
+        return self._read("discover", self._inner.discover)
+
+    def _read(self, op: str, fn: Callable[..., Any], *args: Any) -> Any:
+        from . import firewall_guard
+
+        try:
+            out = call_firewall(op, fn, *args)
+        except FirewallUnavailable as exc:
+            firewall_guard.note_contact(False, str(exc.last) if hasattr(exc, "last") else str(exc))
+            raise
+        firewall_guard.note_contact(True)
+        return out
 
     def snapshot(self) -> dict:
         return call_firewall("snapshot", self._inner.snapshot)
@@ -159,13 +172,90 @@ class ResilientProvider(ConfigProvider):
         return self._inner.field_options()
 
     def pipe_states(self) -> list[dict]:
-        return call_firewall("pipe_states", self._inner.pipe_states)
+        return self._read("pipe_states", self._inner.pipe_states)
+
+    # ── writes: gated, paced, ledgered, never reissued ──────────────────────────
+    #
+    # Reads may be retried; a write may not. A reconfigure that timed out may still be
+    # running inside the firewall, and reissuing it was the new behaviour that put two
+    # shaper reloads in flight at once. So a write is attempted ONCE; if the transport
+    # fails, the firewall is re-read and the write is either found to have taken
+    # (``verified``) or the firewall is treated as gone and the guard trips hands-off.
 
     def set_pipe_enabled(self, pipe_uuid: str | None, enabled: bool) -> dict:
-        return call_firewall("set_pipe_enabled", self._inner.set_pipe_enabled, pipe_uuid, enabled)
+        def verify() -> bool:
+            for st in self.pipe_states():
+                if (st.get("uuid") or None) == (pipe_uuid or st.get("uuid")):
+                    return bool(st.get("enabled")) == bool(enabled)
+            return False
+        return self._write("set_pipe_enabled", lambda: self._inner.set_pipe_enabled(pipe_uuid, enabled),
+                           changes=[{"pipe_uuid": pipe_uuid, "param": "enabled", "value": enabled}],
+                           reconfigures=1, verify=verify)
 
     def apply(self, changes: dict) -> dict:
-        return call_firewall("apply", self._inner.apply, changes)
+        return self._write("apply", lambda: self._inner.apply(changes), changes=[dict(changes)],
+                           reconfigures=1, verify=lambda: self._verify_applied([changes]))
+
+    def apply_many(self, changes: list[dict]) -> dict:
+        batch = [dict(c) for c in changes]
+        if not batch:
+            return {"provider": self.name, "ok": True, "applied": [], "reconfigures": 0}
+        return self._write("apply_many", lambda: self._inner.apply_many(batch), changes=batch,
+                           reconfigures=1, verify=lambda: self._verify_applied(batch))
+
+    def _verify_applied(self, changes: list[dict]) -> bool:
+        """Did every change take? Read back and compare numerically (``_field_equal``), never
+        by reissuing. A read that fails is "could not tell", which is False."""
+        from .settings_profile import _field_equal
+
+        try:
+            live = self.discover()
+        except Exception:  # noqa: BLE001
+            return False
+        by_uuid = {(c.extra or {}).get("uuid"): c for c in live}
+        first = live[0] if live else None
+        for ch in changes:
+            cfg = by_uuid.get(ch.get("pipe_uuid")) if ch.get("pipe_uuid") else first
+            if cfg is None:
+                return False
+            if not _field_equal(str(ch.get("param")), cfg.to_dict().get(str(ch.get("param"))), ch.get("value")):
+                return False
+        return True
+
+    def _write(self, op: str, fn: Callable[[], Any], *, changes: list[dict], reconfigures: int,
+               verify: Callable[[], bool]) -> Any:
+        from . import firewall_guard
+
+        firewall_guard.before_write(op, changes, reconfigures=reconfigures)  # raises FirewallHandsOff
+        t0 = time.monotonic()
+        try:
+            result = fn()
+        except Exception as exc:  # noqa: BLE001 — classified below
+            elapsed = (time.monotonic() - t0) * 1000.0
+            if not is_transient(exc):
+                firewall_guard.record(op, changes=changes, reconfigures=reconfigures, outcome="failed",
+                                      error=f"{type(exc).__name__}: {exc}", latency_ms=elapsed)
+                raise
+            log.warning("Firewall '%s' did not answer (%s: %s); re-reading to see whether it took — never reissuing",
+                        op, type(exc).__name__, exc)
+            took = False
+            try:
+                took = bool(verify())
+            except Exception:  # noqa: BLE001
+                took = False
+            if took:
+                firewall_guard.record(op, changes=changes, reconfigures=reconfigures, outcome="verified",
+                                      error=f"{type(exc).__name__}: {exc}", latency_ms=elapsed)
+                firewall_guard.note_contact(True)
+                return {"provider": self.name, "ok": True, "verified_after_timeout": True, "reconfigures": reconfigures}
+            firewall_guard.record(op, changes=changes, reconfigures=reconfigures, outcome="failed",
+                                  error=f"{type(exc).__name__}: {exc}", latency_ms=elapsed)
+            firewall_guard.note_contact(False, f"{type(exc).__name__}: {exc}")
+            raise FirewallUnavailable(op, 1, exc) from exc
+        firewall_guard.record(op, changes=changes, reconfigures=reconfigures, outcome="ok",
+                              latency_ms=(time.monotonic() - t0) * 1000.0)
+        firewall_guard.note_contact(True)
+        return result
 
     def __getattr__(self, item: str) -> Any:
         # Anything this wrapper does not define (a provider-specific helper, ``base_url``)
@@ -191,6 +281,14 @@ def describe_failure(exc: BaseException) -> str:
 
     if isinstance(exc, SessionAbort):
         return str(exc)
+    from .firewall_guard import FirewallHandsOff
+
+    if isinstance(exc, FirewallHandsOff):
+        return (
+            f"Stopped by the firewall guard — {exc.reason} Nothing was written, including any "
+            "restore: the firewall is exactly as it was before this write. Arm writes from the "
+            "top bar once the network is known good."
+        )
     if isinstance(exc, FirewallUnavailable):
         return (
             f"The firewall stopped answering: {exc} The session stopped early and your "

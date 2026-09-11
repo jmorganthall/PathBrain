@@ -41,6 +41,14 @@ async def lifespan(app: FastAPI):
 
     register_engines()  # one queue in front of every user-triggered session
 
+    # BEFORE any reconcile writes a baseline back: a new build never writes the firewall
+    # until a person arms it, and every restore below goes through the same gate.
+    from . import firewall_guard
+
+    guard = firewall_guard.startup_check()
+    if guard.get("hands_off"):
+        log.warning("Firewall guard is HANDS-OFF at startup: %s", guard.get("reason"))
+
     reconcile_interrupted_runs()  # fail any runs orphaned by a previous restart
     from .methodology import seed_current_methodology
 
@@ -171,8 +179,17 @@ def pipeline_health() -> dict:
         except Exception:  # noqa: BLE001 — a diagnostic must never be the failure
             pass
     coord = coordinator.status()
+    from . import firewall_guard
+
+    try:
+        firewall = firewall_guard.summary()
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must never be the failure
+        firewall = {"error": str(exc)}
     return {
         "coordinator": coord,
+        # The firewall guard: hands-off and why, the write budget, and the reconfigure
+        # rate over the last hour — the number that was invisible during the reload storm.
+        "firewall": firewall,
         "jobs": {
             "running": jobs.running_count(),
             # Sessions parked on the coordination lock. Queue depth and active work are

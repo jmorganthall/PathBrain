@@ -99,6 +99,17 @@ class ConfigProvider(ABC):
         firewall override this; the default cannot."""
         raise NotImplementedError("This provider cannot toggle a shaper pipe on/off")
 
+    def apply_many(self, changes: list[dict]) -> dict:
+        """Apply several shaper parameter changes with ONE reconfigure.
+
+        The default applies them one by one (a provider that cannot batch still works);
+        a provider that can — OPNsense — sets every pipe's fields first and reloads the
+        shaper once, which is the difference between one reload per profile switch and
+        one per field. ``changes`` are ``apply()`` dicts. Returns ``{"ok", "applied": [...],
+        "reconfigures": n}``."""
+        applied = [self.apply(ch) for ch in changes]
+        return {"provider": self.name, "ok": True, "applied": applied, "reconfigures": len(applied)}
+
     def apply(self, changes: dict) -> dict:
         """Apply a single shaper parameter change and reconfigure.
 

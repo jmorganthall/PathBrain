@@ -419,6 +419,57 @@ LLM-based. See `README.md` for the product overview.
     a kill: Python cannot interrupt a blocked probe, so the iteration in flight always
     finishes (bounded by the probe deadline); the promise is "the next one never starts".
     `test_run_cancel`, `test_duel_cancel`, `test_coordinator`.
+  - `firewall_guard.py` — **every firewall write is ledgered, paced, budgeted and refusable; a
+    write that times out is never reissued; a new build starts hands-off.** Written after the
+    reload-storm incident: the duel ladder wrote one `setPipe` + one full shaper reconfigure
+    **per differing field** on **every leg** (the ring, #220, made every leg a profile switch),
+    and the job runtime (#251) **retried a timed-out write two seconds later** — a second
+    `shaper.reload` while the first was still running inside OPNsense, and a `setPipe` landing
+    seconds after `sshd` came up on a firewall mid-boot. It coincided with OPNsense reboots and
+    a WAN dropping several times a day, and nothing in PathBrain could have caught it, because
+    the write path was the one part of the platform with **no instrument on it**: every metric a
+    run produces is measured, versioned and audited; the reconfigure rate was recorded nowhere.
+    Four rules, enforced in `session_runtime.ResilientProvider` (the only thing `get_provider()`
+    returns — `test_get_provider_is_always_the_guarded_wrapper` and a source scan pin that no
+    module builds a raw provider or writes a change list one field at a time):
+    **(1) The ledger** (`models.FirewallWrite`, `GET /api/firewall/writes`, the top-bar chip's
+    table): when, which engine held the pipeline, which pipe and fields, how many reconfigures
+    it cost, the firewall's latency, and the outcome — `ok`, `verified` (timed out, re-read
+    showed it took), `failed`, `refused`. "What did PathBrain do in the five minutes before the
+    drop?" is one query; `reconfigures_last_hour` is on `GET /api/health/pipeline` as
+    `firewall`. **(2) Hands-off is a persistent state** (`models.FirewallGuardState`,
+    `trip`/`arm`/`hands_off`, `GET /api/firewall/guard`, `POST …/arm`, `POST …/hands-off`, the
+    **top-bar guard chip** `FirewallGuard.tsx`): while set, every write is refused and recorded
+    as refused — **a baseline restore included**, because a restore is a write into a firewall
+    that may be mid-boot, which is exactly what hurt; the session card says so
+    (`describe_failure` for `FirewallHandsOff`). Set by an **outage** (any `FirewallUnavailable`,
+    on a read or a write), by the **budget**, by a **new build** (`startup_check`, before any
+    reconcile: a container on a different `git_sha` than the one last armed runs read-only —
+    measurements run, nothing is applied or restored — until a person arms it, so every deploy
+    is a canary hour on the household's own monitoring; a dev build with no sha is left alone),
+    or **by hand**. Cleared only by `arm`, which stamps the build. It survives a restart on
+    purpose. **(3) Pacing and budget** (`config.firewall`: `min_reconfigure_gap_s` 15,
+    `max_reconfigures_per_hour` 60, `cooldown_after_outage_s` 300, `arm_required_after_deploy`):
+    the gap is waited out (refused past `MAX_GAP_WAIT_S`), the hourly cap trips hands-off (a
+    session stops, the network does not), and after an outage writes are refused until the
+    firewall has been back for the cooldown. **(4) A write is attempted ONCE.** Reads still
+    retry; a write that times out, drops, or draws a 5xx is followed by a **re-read**
+    (`_verify_applied`, numeric `_field_equal` per change; `pipe_states` for a toggle) — it took
+    (`verified`) or the firewall is treated as gone and hands-off trips. Never reissued.
+    **One reconfigure per profile switch** (`ConfigProvider.apply_many`; OPNsense sets every
+    changed field on every pipe, one `setPipe` per pipe, then reconfigures once — the mock and
+    the base fall back to a loop): `profile_test._apply_all` (every engine's switch and every
+    restore) and `routes_settings._write_changes` go through it, so a switch differing in three
+    fields across two pipes costs one shaper reload where it cost three. `note_contact` stamps
+    a successful read at most every `CONTACT_STAMP_S` (a row write per firewall read would be
+    amplification); an outage and the first success after one are always written.
+    **The gate on the repo** (`.github/workflows/firewall-gate.yml`, the PR template's
+    **Firewall interaction** section): a PR touching the providers, the session runtime, the
+    guard, an engine's apply path or the settings/config/sweep routes does not merge unless its
+    body states writes per session before and after (measured with `tests/faults.py`'s
+    `FaultyProvider`, which times out, refuses connections, answers 502 and goes dark like a
+    rebooting box, counting every call) and the behaviour on a timeout and on a reboot, and the
+    guard's tests are green. Prose asks; CI refuses. `test_firewall_guard`.
   - `coordinator.py` — process-wide lock that serializes any apply-firewall + benchmark
     session (sweep, profile test, experiment, monitoring, manual run): user-triggered
     ones `hold` (queue), periodic ones `try_hold` (defer).
@@ -989,6 +1040,72 @@ LLM-based. See `README.md` for the product overview.
     run anyway (the other half of that iteration report) — (one portable iteration
     per suite iteration). Its metrics are derived by `interpret.derive` like any plugin's but are
     **not methodology metrics** — nothing in scoring reads them.
+  - **Every Away run says WHOSE network it ran on** (`PortableRun.network`,
+    `portable.lookup_network` / `parse_network_info` / `network_for_egress` / `describe_network`
+    / `backfill_network`, `portable.isp_lookup_url`). Asked for ISP capture on the Away test.
+    The page already learns the device's public egress address (for home detection), and the
+    owner of a public address is a public fact any IP-info service answers, so the lookup is
+    done **by the server, from that address** — never by the browser, whose CORS rules would
+    decide which service can be asked from a hotel tab — at upload (a stamp on the run, never
+    a condition of it: a private/CGNAT address, a disabled lookup or a silent service leave it
+    null and the run is recorded) and on the detection preview (`GET /portable/home` carries
+    `network`, so the caption reads *"Detected: away … On Comcast Cable · Denver, Colorado"*
+    before the run). `isp_lookup_url` is a template with `{ip}` (default `https://ipwho.is/{ip}`)
+    and the parser reads the four common answer shapes — ipwho.is (`connection.isp`), ipapi.co
+    (`org`/`asn`), ip-api.com (`isp`/`as`), ipinfo.io (`org` = `"AS15169 Google LLC"`, the ASN
+    read out of it) — into one `{isp, org, asn, city, region, country, source, looked_up_at}`;
+    an error answer or one naming no owner is None, never a fabricated ISP. Cached per address
+    (`NETWORK_TTL_S` 24 h; a failure `NETWORK_FAIL_TTL_S` 1 h, so a dead or rate-limited service
+    is not re-asked on every page load). The location map stamps rows recorded before the lookup
+    existed (`backfill_network`, ≤ `NETWORK_BACKFILL_LIMIT` = 5 lookups a read, own transaction)
+    and reports per place the ISP seen most often plus every one seen (`isp` / `isps`), shown as
+    a table column and in the dot's tooltip; the result card carries an ISP chip and the history
+    list names it. **Not verified against a live service from the build sandbox** (its egress
+    allowlist blocks them): the shapes are the services' documented ones, pinned by
+    `test_parse_network_info_reads_every_common_service_shape`; the first real upload is the
+    check, and the log line names what was stamped.
+  - **The location map: every place measured, on one chart against home** (`portable.location_map`,
+    `GET /api/portable/locations`, `components/LocationQuadrant.tsx`, the **"Every place vs home"**
+    card on the Away test page). The Away readout was one run on one device against that
+    device's own home runs — "how did this hotel do?" and nothing wider; six networks measured
+    over a month were six separate answers and no picture (*"I need the same view as the
+    Settings Impact quadrant — location by location, current home profile vs all third-party
+    locations"*). So: the quadrant asked of **places**. Each dot is one venue — every away run
+    taken there, on any device, pooled to a median (`_venue_key` folds case and whitespace so the
+    label recall's one-place-one-spelling holds; the display label is the most-used spelling; no
+    venue → one `UNNAMED_VENUE` bucket) — on any two portable metrics (+ the portable score),
+    beside **home on the current home profile**: the runs stamped with the profile the firewall
+    is on *now* (`home_stamp`, `home_profile.source = live`), else the pooled crown (`crown`),
+    else every home run with the fact stated (`any`) — never a blend of every profile home has
+    ever been on, and the runs left out are counted (`excluded.home_other_profiles`). Home is
+    **two dots, never one**: the phones'/laptops' own home runs (the device class every away run
+    comes from — the ringed dot, and the reference the quadrant's lines run through) and
+    PathBrain's wired Chromium (`SERVER_DEVICE_ID`, the triangle), kept apart as everywhere else
+    on this instrument. Gated on the current `instrument_version` like every comparison here,
+    with the excluded count reported. Each away location also carries `setup_comparable` — the
+    `warmth_compare` rule applied pool to pool (`_setup_comparable`): a warm tab and a cold
+    context are two instruments on the setup-bound metrics whatever the link did, so when such
+    an axis is plotted the failing places are drawn dashed and named in a warning. Same grammar
+    as `ProfileQuadrant` (ringed reference, triangle for the other device class, grey under
+    `LOCATION_MIN_RUNS` = 3, a third metric as opacity by rank), plus a name on every dot (the
+    field is small enough) and a table with each place's runs, devices, score and score vs home.
+    **The map is WIRED to the crown** (`CROWN_STAND_INS`, `crown_stand_ins`, `crown_stand_in_score`,
+    `map.crown`, each location's `crown_score`): asked to focus on the methodology's core (FCP,
+    LCP, the smoothness leg), and a browser tab cannot read a real page's paint timing — so each
+    crown metric is translated to the nearest reading the synthetic waterfall measures (FCP →
+    first resource complete, LCP → largest resource complete, `network_stall_all` and its
+    predecessors → stall energy, `load_event` → waterfall complete, …), read off the **live**
+    methodology's `overall` spec at request time so a publish re-points the map with no code
+    change. The **crown stand-in score** is the methodology's own weights over the portable
+    subscores of those stand-ins — the weighted crown's arithmetic on this instrument's readings
+    — computed per run and medianed per location, and only when every leg has a scored stand-in
+    (`crown.complete`; a leg with none is named on the page, never defaulted). The chart opens on
+    the crown legs (X = the first leg's stand-in, Y = the second's, Shade = the stand-in score), the
+    axis pickers label each stand-in with the leg it stands for, the table pins the crown legs
+    beside the stand-in score (as Settings Impact pins the crown metrics), and *vs home* reads on
+    it. Stated on the card as a stand-in, never as FCP/LCP: nothing here is on the Overall scale.
+    Read-only; nothing here reaches the crown, the duel or the pooled record.
+    `test_location_map_*` + `test_the_map_is_wired_to_the_methodology_crown` in `test_portable`.
   - **Burst fairness: the round-robin mechanism, measured** (`interpret/portable.py`
     `_burst_metrics` / `BURST_METRICS`, the **"Under a burst"** section of the Why-it-wins card
     via `why.burst_block`, the **Interleave** column on the Dueling Champions phone-standing card,

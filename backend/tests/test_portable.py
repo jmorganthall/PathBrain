@@ -806,3 +806,202 @@ def test_profile_standings_rank_each_devices_profiles_and_check_the_crown(clean,
 def test_standings_endpoint(client, clean):
     body = client.get("/api/portable/standings").json()
     assert body["devices"] == [] and body["min_home_runs"] == 5 and "instrument_version" in body
+
+
+# ── the location map ─────────────────────────────────────────────────────────
+
+
+def _place(device: str, venue: str | None, *, ends=None, rtt=None, when=None) -> int:
+    run_id = _store(device, home=False, ends=ends, rtt=rtt, when=when)
+    with session_scope() as s:
+        s.get(PortableRun, run_id).venue = venue
+    return run_id
+
+
+def test_location_map_pools_venues_across_devices_and_keeps_home_apart(clean):
+    slow = {"doc": 300, "font": 500, "lib": 600, "hero": 2200, "data": 1200}
+    for _ in range(5):
+        _store("phone", home=True, fp="fp-live")
+    _store("phone", home=True, fp="fp-other")           # another profile: not the home dot
+    _store(portable.SERVER_DEVICE_ID, home=True, fp="fp-live")
+    _place("phone", "Hotel Wifi", ends=slow, rtt=[80] * 8)
+    _place("laptop", " hotel wifi ", ends=slow, rtt=[90] * 8)   # same place, another spelling
+    _place("phone", "Office")
+    _place("phone", None)
+    with session_scope() as s:
+        m = portable.location_map(s, {"portable": {"min_home_runs": 3}}, home_fingerprint="fp-live")
+    by_key = {loc["key"]: loc for loc in m["locations"]}
+    assert m["home_profile"]["fingerprint"] == "fp-live" and m["home_profile"]["source"] == "live"
+    home = by_key["home"]
+    assert home["runs"] == 5 and home["confident"] and home["kind"] == "home"
+    assert m["excluded"]["home_other_profiles"] == 1
+    server = by_key["home-server"]
+    assert server["kind"] == "home_server" and server["runs"] == 1
+    hotel = by_key["venue:hotel wifi"]
+    assert hotel["runs"] == 2 and hotel["label"] == "Hotel Wifi" and not hotel["confident"]
+    assert {d["device_id"] for d in hotel["devices"]} == {"phone", "laptop"}
+    assert hotel["metrics"]["rtt_ms"] > home["metrics"]["rtt_ms"]
+    assert by_key["venue:office"]["runs"] == 1
+    assert by_key[f"venue:{portable.UNNAMED_VENUE.casefold()}"]["label"] == portable.UNNAMED_VENUE
+    # Home first, then the places, the unnamed bucket last whatever its score.
+    assert [loc["kind"] for loc in m["locations"]][:2] == ["home", "home_server"]
+    assert m["locations"][-1]["label"] == portable.UNNAMED_VENUE
+    assert m["metrics"][0]["key"] == "score" and any(x["key"] == "rtt_ms" for x in m["metrics"])
+
+
+def test_location_map_gates_on_the_instrument_version_and_says_so(clean):
+    _store("phone", home=True, fp="fp-live")
+    run_id = _place("phone", "Cafe")
+    with session_scope() as s:
+        s.get(PortableRun, run_id).instrument_version = "older"
+    with session_scope() as s:
+        m = portable.location_map(s, {}, home_fingerprint="fp-live")
+    assert [loc["key"] for loc in m["locations"]] == ["home"]
+    assert m["excluded"]["older_version"] == 1
+
+
+def test_location_map_without_a_known_profile_uses_every_home_run(clean):
+    _store("phone", home=True, fp="fp-a")
+    _store("phone", home=True, fp="fp-b")
+    with session_scope() as s:
+        m = portable.location_map(s, {}, home_fingerprint=None)
+    assert m["home_profile"]["source"] == "any"
+    assert m["locations"][0]["runs"] == 2
+
+
+def test_api_location_map(client, clean, monkeypatch):
+    monkeypatch.setattr(portable, "home_stamp", lambda: ("fp-live", "wan: q1514"))
+    for _ in range(2):
+        _store("phone", home=True, fp="fp-live")
+    _place("phone", "Hotel")
+    body = client.get("/api/portable/locations").json()
+    assert body["home_profile"]["fingerprint"] == "fp-live"
+    assert body["home_profile"]["summary"] == "wan: q1514" and body["home_profile"]["source"] == "live"
+    assert [loc["kind"] for loc in body["locations"]] == ["home", "away"]
+
+
+def test_the_map_is_wired_to_the_methodology_crown(clean):
+    from pathbrain.methodology import CURRENT_METHODOLOGY
+
+    for _ in range(3):
+        _store("phone", home=True, fp="fp-live")
+    _place("phone", "Hotel", ends={"doc": 300, "font": 500, "lib": 600, "hero": 2200, "data": 1200})
+    with session_scope() as s:
+        crown = portable.crown_stand_ins(s, {})
+        m = portable.location_map(s, {}, home_fingerprint="fp-live")
+    assert crown["methodology"] == CURRENT_METHODOLOGY and crown["legs"]
+    # Every current crown leg has a stand-in on this instrument, and it is a scored reading,
+    # so the crown stand-in score exists and reads off the same rubric arithmetic.
+    for leg in crown["legs"]:
+        assert leg["portable_metric"] == portable.CROWN_STAND_INS[leg["crown_metric"]]
+        assert leg["scored"], leg
+    assert crown["complete"] and m["crown"] == crown
+    home, hotel = m["locations"][0], m["locations"][1]
+    assert home["crown_score"] is not None and hotel["crown_score"] is not None
+    assert hotel["crown_score"] < home["crown_score"]
+    assert any(x["key"] == "crown_score" for x in m["metrics"])
+
+
+def test_crown_stand_in_score_is_the_weighted_mean_of_the_legs_subscores():
+    legs = [
+        {"portable_metric": "first_complete_ms", "weight": 1.0, "scored": True},
+        {"portable_metric": "largest_complete_ms", "weight": 1.0, "scored": True},
+        {"portable_metric": "stall_energy_ms", "weight": 0.5, "scored": True},
+    ]
+    metrics = {"first_complete_ms": 100.0, "largest_complete_ms": 500.0, "stall_energy_ms": 200.0, "rtt_ms": 20.0}
+    _, subs = portable.score_metrics(metrics)
+    want = (subs["first_complete_ms"] + subs["largest_complete_ms"] + 0.5 * subs["stall_energy_ms"]) / 2.5
+    assert portable.crown_stand_in_score(metrics, legs) == round(want, 1)
+    # A leg without a stand-in reading, or an unscored leg, means no score — never a default.
+    assert portable.crown_stand_in_score({"first_complete_ms": 100.0}, legs) is None
+    assert portable.crown_stand_in_score(metrics, legs + [{"portable_metric": "throughput_mbps", "weight": 1, "scored": False}]) is None
+
+
+# ── who owns the network: the ISP stamp ──────────────────────────────────────
+
+
+def test_parse_network_info_reads_every_common_service_shape():
+    ipwho = {"success": True, "city": "Denver", "region": "Colorado", "country": "United States",
+             "connection": {"asn": 7922, "org": "Comcast Cable", "isp": "Comcast Cable Communications", "domain": "comcast.net"}}
+    ipapi = {"org": "COMCAST-7922", "asn": "AS7922", "city": "Denver", "region": "Colorado", "country_name": "United States"}
+    ip_api = {"status": "success", "isp": "Comcast Cable", "org": "Comcast Business", "as": "AS7922 Comcast Cable Communications, LLC",
+              "city": "Denver", "regionName": "Colorado", "country": "United States"}
+    ipinfo = {"ip": "1.2.3.4", "org": "AS7922 Comcast Cable Communications, LLC", "city": "Denver", "region": "Colorado", "country": "US"}
+    for body in (ipwho, ipapi, ip_api, ipinfo):
+        info = portable.parse_network_info(body)
+        assert info and info["asn"] == 7922 and info["city"] == "Denver" and info["region"] == "Colorado", body
+        assert info["isp"] and "comcast" in info["isp"].lower(), body
+    # ipinfo folds the ASN into org: the number is read out and the name kept.
+    assert portable.parse_network_info(ipinfo)["org"] == "Comcast Cable Communications, LLC"
+    # Errors and empty answers are None, never a fabricated owner.
+    assert portable.parse_network_info({"success": False, "message": "reserved range"}) is None
+    assert portable.parse_network_info({"error": True, "reason": "RateLimited"}) is None
+    assert portable.parse_network_info({"status": "fail", "message": "private range"}) is None
+    assert portable.parse_network_info({"city": "Denver"}) is None
+    assert portable.parse_network_info("not json") is None
+
+
+def test_lookup_network_is_cached_per_address_and_never_asks_about_private_ones(monkeypatch):
+    portable.reset_network_cache()
+    calls: list[str] = []
+
+    def fake_fetch(url, timeout=4.0):
+        calls.append(url)
+        if "9.9.9.9" in url:
+            raise OSError("service down")
+        return {"isp": "Quad9", "asn": 19281, "city": "Zürich"}
+
+    monkeypatch.setattr(portable, "_fetch_network", fake_fetch)
+    cfg = {"portable": {"isp_lookup_url": "https://example.test/{ip}"}}
+    a = portable.lookup_network("1.1.1.1", cfg, now=1000.0)
+    b = portable.lookup_network("1.1.1.1", cfg, now=1500.0)
+    assert a == b and a["isp"] == "Quad9" and a["source"] == "example.test" and a["looked_up_at"]
+    assert calls == ["https://example.test/1.1.1.1"]           # the second read was the cache
+    assert portable.lookup_network("1.1.1.1", cfg, now=1000.0 + portable.NETWORK_TTL_S + 1)["isp"] == "Quad9"
+    assert len(calls) == 2                                      # expired → asked again
+    # A failure is remembered for its own, shorter, TTL.
+    assert portable.lookup_network("9.9.9.9", cfg, now=2000.0) is None
+    assert portable.lookup_network("9.9.9.9", cfg, now=2001.0) is None
+    assert calls.count("https://example.test/9.9.9.9") == 1
+    assert portable.lookup_network("9.9.9.9", cfg, now=2000.0 + portable.NETWORK_FAIL_TTL_S + 1) is None
+    assert calls.count("https://example.test/9.9.9.9") == 2
+    # Private, CGNAT and absent addresses are never sent anywhere; an empty template disables it.
+    for ip in ("192.168.1.5", "100.64.0.9", None, ""):
+        assert portable.lookup_network(ip, cfg) is None
+    assert portable.lookup_network("1.1.1.1", {"portable": {"isp_lookup_url": ""}}, now=5000.0) is None  # disabled: not even the cache
+    assert len(calls) == 4
+
+
+def test_describe_network_is_one_line():
+    assert portable.describe_network({"isp": "Comcast Cable", "city": "Denver", "region": "Colorado"}) == "Comcast Cable · Denver, Colorado"
+    assert portable.describe_network({"org": "Google LLC"}) == "Google LLC"
+    assert portable.describe_network({"asn": 15169, "city": "Mountain View"}) == "AS15169 · Mountain View"
+    assert portable.describe_network(None) is None and portable.describe_network({}) is None
+
+
+def test_api_stamps_the_network_on_upload_and_on_the_preview(client, clean, monkeypatch):
+    portable.reset_network_cache()
+    monkeypatch.setattr(
+        portable, "home_addresses",
+        lambda cfg, now=None: {"v4": "8.8.8.8", "v6": None, "source": "config", "checked_at": None, "errors": {}},
+    )
+    monkeypatch.setattr(portable, "_fetch_network", lambda url, timeout=4.0: {"isp": "Hotel Net", "asn": 64512, "city": "Denver"})
+    body = {"device_id": "auto-phone", "instrument_version": VERSION, "raw": make_raw()}
+    away = client.post("/api/portable/runs", json={**body, "egress_ip": "1.1.1.1", "venue": "Hotel"}).json()
+    assert away["network"]["isp"] == "Hotel Net" and away["network"]["asn"] == 64512
+    preview = client.get("/api/portable/home", params={"egress_ip": "1.1.1.1"}).json()
+    assert preview["detected"] is False and preview["network"]["isp"] == "Hotel Net"
+    # A private address gets no stamp, and the run is still recorded.
+    manual = client.post("/api/portable/runs", json={**body, "egress_ip": "10.0.0.5", "is_home": False, "venue": "Lan"}).json()
+    assert manual["network"] is None and manual["is_home"] is False
+    # The location map reads the ISP per place, and backfills rows stamped before it existed.
+    with session_scope() as s:
+        row = s.get(PortableRun, away["id"])
+        row.network = None
+    portable.reset_network_cache()
+    with session_scope() as s:
+        m = portable.location_map(s, {}, home_fingerprint=None)
+    hotel = next(loc for loc in m["locations"] if loc["label"] == "Hotel")
+    assert hotel["isp"] == "Hotel Net · Denver" and hotel["isps"] == [{"name": "Hotel Net · Denver", "runs": 1}]
+    with session_scope() as s:
+        assert s.get(PortableRun, away["id"]).network["isp"] == "Hotel Net"

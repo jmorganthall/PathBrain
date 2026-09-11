@@ -76,23 +76,45 @@ def test_every_engine_gets_the_resilient_provider_through_the_one_seam():
     assert provider.writable_fields() == provider.inner.writable_fields()
 
 
-def test_the_wrapped_provider_retries_its_calls(monkeypatch):
+def test_the_wrapped_provider_retries_reads_but_never_reissues_a_write(monkeypatch):
+    """Reads are retried. A WRITE is attempted once: a timed-out reconfigure may still be
+    running inside the firewall, and reissuing it put two shaper reloads in flight at once
+    (the reload-storm incident). The wrapper re-reads instead and reports the write as
+    verified when it took."""
+    from pathbrain import firewall_guard as fg
+
+    monkeypatch.setattr(fg, "config", lambda: dict(fg.DEFAULTS, min_reconfigure_gap_s=0,
+                                                   max_reconfigures_per_hour=0, cooldown_after_outage_s=0))
+    fg.arm()
     inner = MockProvider()
     attempts: list[int] = []
     real_apply = inner.apply
 
-    def apply_once_late(changes):
+    def apply_late_but_landed(changes):
         attempts.append(1)
-        if len(attempts) == 1:
-            raise _timeout()
-        return real_apply(changes)
+        real_apply(changes)          # the write reached the firewall...
+        raise _timeout()             # ...only the answer was late
 
-    monkeypatch.setattr(inner, "apply", apply_once_late)
+    monkeypatch.setattr(inner, "apply", apply_late_but_landed)
     monkeypatch.setattr(rt.time, "sleep", lambda s: None)
     wrapped = rt.resilient(inner)
     pipe = inner.discover()[0]
-    out = wrapped.apply({"pipe_uuid": pipe.extra.get("uuid"), "param": "quantum", "value": 1514})
-    assert out.get("ok") is True and len(attempts) == 2
+    out = wrapped.apply({"pipe_uuid": pipe.extra.get("uuid"), "param": "quantum", "value": 1234})
+    assert out.get("ok") is True and out.get("verified_after_timeout") is True
+    assert len(attempts) == 1                     # ONE attempt — never a second reload
+
+    # A read still gets the retry policy.
+    reads: list[int] = []
+    real_discover = inner.discover
+
+    def discover_once_late():
+        reads.append(1)
+        if len(reads) == 1:
+            raise _timeout()
+        return real_discover()
+
+    monkeypatch.setattr(inner, "discover", discover_once_late)
+    assert wrapped.discover() and len(reads) == 2
 
 
 def test_failures_are_described_in_words():
