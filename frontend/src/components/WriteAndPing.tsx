@@ -79,7 +79,15 @@ function StepRow({ step }: { step: WriteProbeStep }) {
   );
 }
 
-export default function WriteAndPing({ pipes }: { pipes: FqCodelPipe[] }) {
+export default function WriteAndPing({
+  pipes,
+  onLoadPipes,
+  loadingPipes,
+}: {
+  pipes: FqCodelPipe[];
+  onLoadPipes: () => void | Promise<void>;
+  loadingPipes?: boolean;
+}) {
   const [probe, setProbe] = useState<WriteProbe | null>(null);
   const [recent, setRecent] = useState<WriteProbe[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -155,9 +163,25 @@ export default function WriteAndPing({ pipes }: { pipes: FqCodelPipe[] }) {
           different failures: only the second is what a queue rebuild looks like.
         </Typography>
 
+        {pipes.length === 0 && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            The shaper pipes aren't loaded yet — this needs to read them from the firewall
+            before it can write one.
+            <Button
+              size="small"
+              sx={{ ml: 1 }}
+              disabled={loadingPipes}
+              onClick={() => void onLoadPipes()}
+            >
+              {loadingPipes ? "Reading…" : "Read the pipes"}
+            </Button>
+          </Alert>
+        )}
+
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 2 }} flexWrap="wrap">
           <TextField
-            select size="small" label="Pipe" value={pipeUuid} sx={{ minWidth: 180 }}
+            select size="small" label="Pipe" value={pipeUuid} disabled={pipes.length === 0}
+            sx={{ minWidth: 180 }}
             onChange={(e) => setPipeUuid(e.target.value)}
           >
             {pipes.map((p) => (
