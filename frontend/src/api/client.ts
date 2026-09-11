@@ -37,6 +37,7 @@ import type {
   DuelSession,
   DuelCard,
   DuelProfileLedger,
+  AlertAck,
   DuelHealth,
   DuelWeatherDistance,
   DuelStandings,
@@ -262,6 +263,20 @@ export const api = {
     ),
   duelHealth: (sessions = 50) =>
     request<DuelHealth>(`/duel/health?sessions=${sessions}`, undefined, { timeoutMs: 30_000 }),
+
+  // Clearing a diagnostic banner. The signature the caller passes back is the one it was
+  // shown, so acknowledging a reading that has since moved records what the person actually
+  // read and the next poll shows them what changed.
+  alertAcks: () => request<{ acks: AlertAck[] }>("/alerts"),
+  ackAlert: (key: string, signature: string, state?: Record<string, unknown> | null) =>
+    request<AlertAck>(`/alerts/${encodeURIComponent(key)}/ack`, {
+      method: "POST",
+      body: JSON.stringify({ signature, state: state ?? null }),
+    }),
+  unackAlert: (key: string) =>
+    request<{ key: string; cleared: boolean }>(`/alerts/${encodeURIComponent(key)}/ack`, {
+      method: "DELETE",
+    }),
   // A bounded wait, because the alternative is worse than a slow page: with no timeout the
   // Duels card spins on "Loading the ladder…" forever when a request is lost, and the
   // failure is indistinguishable from an empty ledger. Measured at ~0.4s on a real-sized

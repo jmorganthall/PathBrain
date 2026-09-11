@@ -2091,6 +2091,33 @@ export interface DuelHealth {
   // could not resume.
   abort_reasons?: { reason: string; matches: number }[];
   sessions_analyzed: number;
+  // The banner is a condition, not an event — it stays true for weeks — so it carries the
+  // means to be cleared. `signature` identifies the *situation* (which causes, with the
+  // profile-specific parts folded away), never the counts, which move every session on a
+  // continuously running ladder. `why` is set when a cleared alert comes back, because
+  // "this is new" and "this got worse" are different answers.
+  alert?: AlertState | null;
+}
+
+// ── Acknowledging a diagnostic banner (GET /alerts, POST|DELETE /alerts/{key}/ack) ───
+
+export interface AlertState {
+  key: string;
+  acknowledged: boolean;
+  signature: string;
+  acked_at: string | null;
+  why: string | null;
+  // Whatever the alert needs in order to judge later that things got materially worse —
+  // passed straight back when acknowledging, never interpreted by the client.
+  state?: Record<string, unknown> | null;
+}
+
+export interface AlertAck {
+  key: string;
+  signature: string;
+  state: Record<string, unknown>;
+  acked_at: string | null;
+  acked_by: string | null;
 }
 
 // ── The head-to-head league table (GET /duel/standings) ──────────────────────────────

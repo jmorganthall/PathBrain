@@ -1706,6 +1706,32 @@ export default function Duels() {
   const [untilClock, setUntilClock] = useState<string | null>(null);
   const [liveFp, setLiveFp] = useState<string | null>(null);
   const [health, setHealth] = useState<DuelHealth | null>(null);
+  const [dismissing, setDismissing] = useState(false);
+
+  /** Clear the round-health banner for the situation we were actually shown, then re-read
+   *  so the muted line reflects the server's answer rather than an optimistic guess. */
+  const dismissHealth = useCallback(async () => {
+    if (!health?.alert) return;
+    setDismissing(true);
+    try {
+      await api.ackAlert(health.alert.key, health.alert.signature, health.alert.state ?? null);
+      setHealth(await api.duelHealth());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDismissing(false);
+    }
+  }, [health]);
+
+  const restoreHealth = useCallback(async () => {
+    if (!health?.alert) return;
+    try {
+      await api.unackAlert(health.alert.key);
+      setHealth(await api.duelHealth());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [health]);
   const [standingsError, setStandingsError] = useState<string | null>(null);
   const [askDuration, setAskDuration] = useState(false);
   const [dialogMinutes, setDialogMinutes] = useState(120);
@@ -2031,8 +2057,32 @@ export default function Duels() {
           abort the match. That used to be recorded as a draw, so a ladder burning its
           nights on unusable rounds was indistinguishable from a field of evenly matched
           profiles. Shown only when it is actually happening. */}
-      {health && health.aborted > 0 && (health.aborted_share ?? 0) >= 0.1 && (
-        <Alert severity="warning" sx={{ mb: 2 }}>
+      {health && health.aborted > 0 && (health.aborted_share ?? 0) >= 0.1 &&
+        !health.alert?.acknowledged && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 2 }}
+          action={
+            health.alert ? (
+              <Button
+                size="small"
+                color="inherit"
+                disabled={dismissing}
+                onClick={() => void dismissHealth()}
+              >
+                Dismiss
+              </Button>
+            ) : undefined
+          }
+        >
+          {/* Why a cleared banner is back. A warning that reappears without saying what
+              changed teaches the reader to ignore it, which is the failure mode this whole
+              dismissal exists to fix. */}
+          {health.alert?.why && (
+            <Typography variant="caption" display="block" sx={{ mb: 0.5, fontStyle: "italic" }}>
+              {health.alert.why}
+            </Typography>
+          )}
           <b>
             {Math.round((health.aborted_share ?? 0) * 100)}% of matches produced no result
           </b>{" "}
@@ -2069,7 +2119,24 @@ export default function Duels() {
               No causes recorded yet — the next session will say why.
             </Typography>
           )}
+          <Typography variant="caption" display="block" sx={{ mt: 1, opacity: 0.75 }}>
+            Dismissing clears this until a new kind of failure appears, or the share gets
+            materially worse — not merely until the counts move.
+          </Typography>
         </Alert>
+      )}
+
+      {/* A cleared alert is muted, never invisible: it says what it is hiding and offers the
+          way back, so "no warnings" can't mean "somebody silenced this in March". */}
+      {health?.alert?.acknowledged && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+          Round-health alert cleared
+          {health.alert.acked_at ? ` ${fmtDateTime(health.alert.acked_at)}` : ""} —{" "}
+          {Math.round((health.aborted_share ?? 0) * 100)}% of matches still produce no result.{" "}
+          <Link component="button" type="button" onClick={() => void restoreHealth()}>
+            Show it again
+          </Link>
+        </Typography>
       )}
 
       {cfg && !active && (

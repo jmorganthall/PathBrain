@@ -1124,3 +1124,27 @@ class FirewallGuardState(Base):
     reachable_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     refused_count: Mapped[int] = mapped_column(Integer, default=0)
     last_refusal: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AlertAck(Base):
+    """One acknowledgement: "I have seen this, stop showing it until it changes."
+
+    A diagnostic banner is worth showing the first time and noise every time after, and
+    PathBrain has several that stay true for weeks (the ladder's round health, a fading
+    crown, a saturated threshold). Dismissing one in the browser only would be per-device
+    and forgotten on the next deploy, so the acknowledgement is a row: which alert
+    (``key``), the *situation* it was acknowledged for (``signature``), and enough of that
+    situation (``state``) for the alert to decide later whether things have got materially
+    worse — see ``alerts.status``.
+    """
+
+    __tablename__ = "alert_acks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    signature: Mapped[str] = mapped_column(String(64))
+    state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    acked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    acked_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
