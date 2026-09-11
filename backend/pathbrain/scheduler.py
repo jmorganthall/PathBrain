@@ -24,6 +24,7 @@ from sqlalchemy import select
 
 from .config_store import get_config
 from .database import session_scope
+from . import firewall_guard
 from .logging_config import get_logger
 from .models import Run, RunStatus
 from .runner import create_run, execute_run, fail_stale_runs
@@ -114,6 +115,22 @@ def _reset_leadership_for_tests() -> None:
     _leader_fd, _leader = None, None
 
 
+def _writes_blocked(kind: str, what: str) -> str | None:
+    """The guard's reason a scheduled profile-switching session must not start, logged once
+    per distinct reason so a hands-off week is one line rather than one a minute.
+
+    Deliberately checked **before** the once-a-day stamp: being hands-off is not the
+    night's run having happened, and consuming the slot would mean arming writes at 03:05
+    lost the whole night. Left unstamped, the catch-up window (``SCHEDULE_CATCHUP_MINUTES``)
+    does the right thing — arm within the hour and the ladder still fires.
+    """
+    blocked = firewall_guard.blocked_reason(kind)
+    if blocked and _state.get("guard_skip_logged") != (kind, blocked):
+        _state["guard_skip_logged"] = (kind, blocked)
+        log.warning("Scheduler: not starting %s — %s", what, blocked)
+    return blocked
+
+
 def _baseline_config() -> dict:
     with session_scope() as session:
         return get_config(session).get("baseline_test", {}) or {}
@@ -184,6 +201,9 @@ def _maybe_run_duel() -> bool:
                 )
         return False
 
+    if _writes_blocked("duel", "the duel ladder"):
+        return False
+
     if cfg.get("continuous"):
         if coordinator.busy():  # someone else is using the pipeline; try again next tick
             return False
@@ -241,6 +261,8 @@ def _maybe_run_baseline() -> bool:
         return False
     cfg = _baseline_config()
     if not cfg.get("enabled"):
+        return False
+    if _writes_blocked("baseline_test", "the nightly baseline (SQM off) test"):
         return False
     now = datetime.now(schedule_zone(cfg))  # wall-clock in the schedule's own zone
     today = now.date().isoformat()

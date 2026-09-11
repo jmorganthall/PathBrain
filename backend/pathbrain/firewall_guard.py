@@ -177,6 +177,39 @@ def hands_off(reason: str, *, by: str = "user") -> dict:
     return trip(reason or "set by hand", by=by, kind="manual")
 
 
+#: Session kinds whose work *is* switching the firewall's profile. A session of one of
+#: these kinds started while writes are refused cannot do its job — it can only measure
+#: whatever profile the firewall happens to be sitting on, fail its legs and stop — so it
+#: is refused at the door rather than allowed to burn the pipeline discovering that. The
+#: kinds left out are the ones that still mean something read-only: ``current_test``
+#: measures the live profile and never writes, and a manual run is a measurement.
+WRITING_KINDS = frozenset({"sweep", "race", "refresh", "baseline_test", "duel", "profile_test"})
+
+
+def blocked_reason(kind: str | None = None) -> str | None:
+    """Why a profile-switching session must not start, or None if it may.
+
+    The guard's enforcement is at the write itself, which is the right place for it: it
+    cannot be forgotten and it catches a write from anywhere. But refusing writes one at a
+    time is a poor way to stop a *session* whose every leg is a write — it starts, measures
+    the profile it was already on, is refused on the first leg that needs a change, and
+    aborts three legs later, having spent the pipeline and produced nothing. So the kinds
+    in :data:`WRITING_KINDS` ask this first and decline in a sentence naming the remedy.
+    """
+    if kind is not None and kind not in WRITING_KINDS:
+        return None
+    st = state()
+    if not st.get("hands_off"):
+        return None
+    why = st.get("reason") or "writes are refused"
+    return (
+        f"The firewall guard is hands-off — {why} A session that switches profiles cannot "
+        "run until writes are armed: it would measure whichever profile the firewall is "
+        "already on and fail every leg that needs a change. Arm writes from the top bar "
+        "once the network is known good."
+    )
+
+
 def startup_check() -> dict:
     """A new build never writes the firewall until a person arms it. Compares the running
     ``git_sha`` with the one last armed; a dev build with no sha is left alone (there is no
@@ -384,6 +417,7 @@ def summary() -> dict:
 
 
 __all__ = [
-    "DEFAULTS", "FirewallHandsOff", "arm", "before_write", "config", "hands_off", "note_contact",
-    "recent_writes", "record", "startup_check", "state", "summary", "trip",
+    "DEFAULTS", "FirewallHandsOff", "WRITING_KINDS", "arm", "before_write", "blocked_reason",
+    "config", "hands_off", "note_contact", "recent_writes", "record", "startup_check", "state",
+    "summary", "trip",
 ]

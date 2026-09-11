@@ -463,6 +463,26 @@ LLM-based. See `README.md` for the product overview.
     fields across two pipes costs one shaper reload where it cost three. `note_contact` stamps
     a successful read at most every `CONTACT_STAMP_S` (a row write per firewall read would be
     amplification); an outage and the first success after one are always written.
+    **A session that can only switch profiles does not START while writes are refused**
+    (`WRITING_KINDS`, `blocked_reason`, checked in each engine's `start()`, in
+    `job_queue.submit`, in the ticket dispatcher and in the scheduler's nightly gates).
+    Enforcing only at the write is correct and insufficient, and the gap read as an alarm:
+    the chip said **Hands off** while the board showed a duel measuring a profile. Nothing
+    had escaped the guard — a leg whose profile is the one the firewall is already on plans
+    no changes, so `_apply_all` returns without calling the provider and there is no write
+    to refuse — but the session had started anyway, and could only measure the live profile,
+    fail the first leg needing a change, and abort three legs later having spent the
+    pipeline to produce nothing. So the six kinds whose work *is* a profile switch (sweep,
+    race, refresh, baseline_test, duel, profile_test) ask first and decline in a sentence
+    naming the remedy; `current_test` and manual runs are untouched, because measuring the
+    profile the firewall is already on is exactly what hands-off leaves possible. This is
+    the one refusal the job-queue contract allows — the job would apply nothing, which is a
+    genuinely bad request, not "the pipeline is busy". The scheduler checks **before** its
+    once-a-day stamp: being hands-off is not the night's run having happened, and consuming
+    the slot would mean arming at 03:05 lost the whole night, so the catch-up window still
+    fires an armed ladder. `POST /config/test-apply` needs no gate — it is two writes with
+    no measurement between them, so it is refused at the write and says so through
+    `describe_failure` like any session.
     **The gate on the repo** (`.github/workflows/firewall-gate.yml`, the PR template's
     **Firewall interaction** section): a PR touching the providers, the session runtime, the
     guard, an engine's apply path or the settings/config/sweep routes does not merge unless its

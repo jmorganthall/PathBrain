@@ -43,6 +43,7 @@ from . import coordinator
 from . import profile_names
 from .config_store import get_config
 from .database import session_scope
+from . import firewall_guard
 from .logging_config import get_logger
 from .session_runtime import FailureStreak, FirewallUnavailable, SessionAbort, describe_failure
 from .methodology import overall_metrics
@@ -625,8 +626,13 @@ def start(duration_minutes: int | None = None, *, trigger: str = "manual",
     (``levers.resolve_campaign``: the one named, else the open one on ``base_fingerprint``,
     else the newest open campaign, else a new one on the pooled crown), whose base it is
     pinned to and whose open matches it resumes. Raises ``RuntimeError`` if one is already
-    running; ``ValueError`` for a bad duration, an unknown kind, or an unresolvable campaign.
+    running; ``ValueError`` for a bad duration, an unknown kind, an unresolvable campaign,
+    or the firewall guard being hands-off (a ladder cannot switch profiles, so it would
+    measure the live one and fail every leg that needs a change).
     """
+    blocked = firewall_guard.blocked_reason("duel")
+    if blocked:
+        raise ValueError(blocked)
     if active():
         raise RuntimeError("A duel is already running.")
     if contenders is not None and contenders not in SESSION_MODES:

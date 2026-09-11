@@ -36,6 +36,7 @@ from sqlalchemy import select
 
 from . import coordinator
 from .database import session_scope
+from . import firewall_guard
 from .logging_config import get_logger
 from .session_runtime import describe_failure
 from .models import BaselineTest, BaselineTestStatus
@@ -72,6 +73,9 @@ def start(iterations: int, settle_seconds: int, *, trigger: str = "manual") -> i
     ``RuntimeError`` if a baseline test is already running. The pipe-state baseline is
     snapshotted inside the driver (under the lock) so it reflects the true pre-disable state.
     """
+    blocked = firewall_guard.blocked_reason("baseline_test")
+    if blocked:
+        raise ValueError(blocked)
     iterations = int(iterations)
     settle_seconds = int(settle_seconds)
     if iterations <= 0:
