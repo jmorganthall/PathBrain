@@ -366,6 +366,7 @@ def test_no_profile_switching_session_starts_while_writes_are_refused(kind, guar
     import pathbrain.profile_test as profile_test
     import pathbrain.refresh as refresh
     import pathbrain.sweep as sweep
+    import pathbrain.write_probe as write_probe
 
     calls = {
         "duel": lambda: duel.start(30, trigger="scheduled"),
@@ -374,6 +375,9 @@ def test_no_profile_switching_session_starts_while_writes_are_refused(kind, guar
         "sweep": lambda: sweep.start({"quantum": [300]}, 1, 0.0, False, None),
         "baseline_test": lambda: baseline_test.start(5, 0, trigger="scheduled"),
         "profile_test": lambda: profile_test.start("fp", [], "label", 5),
+        "write_probe": lambda: write_probe.start(
+            [{"param": "quantum", "value": 3000}], firewall_target="10.0.0.1"
+        ),
     }
     fg.hands_off("the WAN dropped", by="test")
     with pytest.raises(ValueError) as err:

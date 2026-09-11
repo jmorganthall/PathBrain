@@ -81,11 +81,20 @@ class FaultyProvider(MockProvider):
     def apply(self, changes: dict) -> dict:
         return self._write("apply", lambda: super(FaultyProvider, self).apply(changes))
 
-    def apply_many(self, changes: list[dict]) -> dict:
+    def apply_many(self, changes: list[dict], *, reload: bool = True) -> dict:
         def run():
             applied = [MockProvider.apply(self, ch) for ch in changes]
-            return {"provider": self.name, "ok": True, "applied": applied, "reconfigures": 1}
+            return {"provider": self.name, "ok": True, "applied": applied,
+                    "reconfigures": 1 if reload else 0}
         return self._write("apply_many", run)
+
+    def reconfigure(self) -> dict:
+        """The shaper reload alone — counted and faultable like any other write, so a probe
+        that times out on the reload can be exercised."""
+        return self._write(
+            "reconfigure",
+            lambda: {"provider": self.name, "ok": True, "applied": [], "reconfigures": 1},
+        )
 
     def set_pipe_enabled(self, pipe_uuid, enabled: bool) -> dict:
         return self._write("set_pipe_enabled", lambda: super(FaultyProvider, self).set_pipe_enabled(pipe_uuid, enabled))

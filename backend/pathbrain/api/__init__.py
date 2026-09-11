@@ -5,6 +5,7 @@ from fastapi import APIRouter
 
 from . import (
     routes_alerts,
+    routes_write_probe,
     routes_ai,
     routes_baseline,
     routes_duel,
@@ -51,3 +52,4 @@ api_router.include_router(routes_explore.router, tags=["explore"])
 api_router.include_router(routes_portable.router, tags=["portable"])
 api_router.include_router(routes_firewall.router, tags=["firewall"])
 api_router.include_router(routes_alerts.router, tags=["alerts"])
+api_router.include_router(routes_write_probe.router, tags=["firewall"])

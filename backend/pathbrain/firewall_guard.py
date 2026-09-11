@@ -183,7 +183,8 @@ def hands_off(reason: str, *, by: str = "user") -> dict:
 #: is refused at the door rather than allowed to burn the pipeline discovering that. The
 #: kinds left out are the ones that still mean something read-only: ``current_test``
 #: measures the live profile and never writes, and a manual run is a measurement.
-WRITING_KINDS = frozenset({"sweep", "race", "refresh", "baseline_test", "duel", "profile_test"})
+WRITING_KINDS = frozenset({"sweep", "race", "refresh", "baseline_test", "duel", "profile_test",
+                           "write_probe"})
 
 
 def blocked_reason(kind: str | None = None) -> str | None:
