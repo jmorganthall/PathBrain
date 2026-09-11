@@ -20,6 +20,7 @@ const ShotgunSweep = lazy(() => import("./pages/ShotgunSweep"));
 const RunDetail = lazy(() => import("./pages/RunDetail"));
 const Compare = lazy(() => import("./pages/Compare"));
 const Config = lazy(() => import("./pages/Config"));
+const Firewall = lazy(() => import("./pages/Firewall"));
 const Plugins = lazy(() => import("./pages/Plugins"));
 const Methodology = lazy(() => import("./pages/Methodology"));
 const Settings = lazy(() => import("./pages/Settings"));
@@ -55,6 +56,7 @@ export default function App() {
           <Route path="/baseline" element={<Baseline />} />
           <Route path="/away" element={<Away />} />
           <Route path="/config" element={<Config />} />
+          <Route path="/firewall" element={<Firewall />} />
           <Route path="/methodology" element={<Methodology />} />
           <Route path="/plugins" element={<Plugins />} />
           <Route path="/data-dump" element={<DataDump />} />

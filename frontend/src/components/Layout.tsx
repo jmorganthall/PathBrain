@@ -28,6 +28,7 @@ import HistoryIcon from "@mui/icons-material/Timeline";
 import TrendsIcon from "@mui/icons-material/CalendarMonth";
 import CompareIcon from "@mui/icons-material/CompareArrows";
 import WeatherIcon from "@mui/icons-material/Thermostat";
+import SecurityIcon from "@mui/icons-material/Security";
 import SettingsIcon from "@mui/icons-material/Tune";
 import InsightsIcon from "@mui/icons-material/Insights";
 import ScienceIcon from "@mui/icons-material/Science";
@@ -339,6 +340,7 @@ const NAV: NavItem[] = [
   { label: "Explore", to: "/explore", icon: <ExploreIcon /> },
   { label: "Baseline (SQM off)", to: "/baseline", icon: <PowerOffIcon /> },
   { label: "Away test", to: "/away", icon: <FlightTakeoffIcon /> },
+  { label: "Firewall", to: "/firewall", icon: <SecurityIcon /> },
   { label: "Config", to: "/config", icon: <SettingsIcon /> },
   { label: "Methodology", to: "/methodology", icon: <RuleIcon /> },
   { label: "Plugins", to: "/plugins", icon: <ExtensionIcon /> },
