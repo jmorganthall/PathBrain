@@ -490,6 +490,59 @@ LLM-based. See `README.md` for the product overview.
     `FaultyProvider`, which times out, refuses connections, answers 502 and goes dark like a
     rebooting box, counting every call) and the behaviour on a timeout and on a reboot, and the
     guard's tests are green. Prose asks; CI refuses. `test_firewall_guard`.
+  - `write_probe.py` — **write-and-ping: what one firewall write costs the household.**
+    Every other instrument measures the *link*; the one thing never on an instrument was the
+    write path's effect on the network, so *"the internet blipped"* was the only evidence
+    anyone had — and that cannot tell a 200 ms hiccup from a thirty-second outage, nor say
+    which half of a write caused it. **A profile switch is two operations with very different
+    costs**: writing the fields (`setPipe`) edits configuration and touches nothing running,
+    while reloading the shaper (`reconfigure`) rebuilds the dummynet queues, which is what
+    drops flows in flight. They could only ever be issued together, so the cost could not be
+    attributed; `ConfigProvider.apply_many(reload=False)` and a standalone
+    `ConfigProvider.reconfigure()` split them, and **only this probe uses the split** — a
+    switch is always both. **Two ping targets, never one**, because they separate the
+    diagnosis: the firewall's own address (if it stops answering the *box* is wedged — no
+    configuration API should ever do that) and a target **through** it (the box healthy while
+    forwarding is dead is what a queue rebuild looks like); one target cannot tell them apart
+    and they call for opposite responses. Steps — baseline → set fields → reload → restore
+    (a full switch, the operation the engines actually perform) — each followed by a settle
+    window, because how long the network takes to *recover* is as much the cost as the drop.
+    The reading is the **worst continuous gap** (`summarize`), not a loss rate: twenty
+    scattered drops and two seconds of nothing are the same percentage and only the second is
+    an outage; `MIN_GAP_MS` (250) keeps ordinary flicker from being named an event. Sampled at
+    10 Hz on its own thread per target (`_Sampler`, `icmplib` unprivileged like the ICMP
+    plugin), raw per-packet series persisted beside the derived summary — the same
+    raw-then-derive discipline the plugins follow. `verdict` says which half cost what in one
+    sentence with its numbers in it, and leads with the box going silent whenever both
+    happened. Guarded like any other write — ledgered, paced, budgeted, refused while
+    hands-off (`WRITING_KINDS`): a diagnostic that bypassed the guard to study the guard's own
+    subject would be the one unsupervised write path in the system. Holds the coordinator lock
+    and restores in a `finally`. `/api/firewall/write-probe`, the **Write and ping** card on
+    the Config page beside the reversible write-path test. `test_write_probe`.
+  - `alerts.py` — **an alert you have read stays read until the SITUATION changes.**
+    PathBrain's diagnostic banners are conditions, not events — "56% of matches produced no
+    result", a fading crown, a saturated threshold — each worth showing once and noise every
+    time after, because the condition is still true tomorrow and the banner cannot tell
+    "nobody has looked" from "somebody looked and is working on it". So every one was
+    permanent furniture, which is the same as not alerting at all. **The obvious
+    implementation is wrong here in a way that looks right in a test**: hashing the payload
+    and re-showing when the hash moves re-fires constantly, because the ladder runs
+    continuously and 577 of 1027 becomes 578 of 1030 within the hour; nor is the text stable,
+    since the causes carry profile names and fingerprints, so the same failure meeting a
+    different challenger reads as new. An alert is therefore identified by a **signature over
+    the *kinds* of cause** (`duel._reason_class` folds away the profile-specific parts;
+    `_health_signature`) plus a **state** the alert chooses, which a `supersedes` predicate
+    reads to decide whether today is materially *worse* than what was acknowledged
+    (`duel.HEALTH_REALERT_DELTA`, 10 points). An acknowledged 56% that drifts to 57% stays
+    quiet; one that reaches 75%, or grows a new kind of failure, comes back **and says
+    which**. Getting better never re-fires — the concern is resolved, and that is not an
+    alert. Both halves belong to the alert; this module only stores the acknowledgement and
+    asks the question (`acknowledge`/`clear`/`acks`/`status`, `GET /api/alerts`,
+    `POST|DELETE /api/alerts/{key}/ack`). Fails **open**: an unreadable ack shows the alert,
+    because one banner too many beats a diagnostic silently lost. A cleared alert is **muted,
+    never invisible** — the page says what it is hiding and offers the way back, so "no
+    warnings" can't mean "somebody silenced this in March". Nothing here is a score, a gate or
+    a measurement. `test_alerts`.
   - `coordinator.py` — process-wide lock that serializes any apply-firewall + benchmark
     session (sweep, profile test, experiment, monitoring, manual run): user-triggered
     ones `hold` (queue), periodic ones `try_hold` (defer).
