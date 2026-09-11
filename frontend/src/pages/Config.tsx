@@ -1208,7 +1208,11 @@ export default function Config() {
             </Alert>
           )}
 
-          {pipes && <WriteAndPing pipes={pipes} />}
+          <WriteAndPing
+            pipes={pipes ?? []}
+            onLoadPipes={handleDiscover}
+            loadingPipes={discovering}
+          />
 
           {pipes && (
             <Box sx={{ mb: 3 }}>
