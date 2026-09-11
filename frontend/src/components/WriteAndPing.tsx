@@ -113,8 +113,10 @@ export default function WriteAndPing({
         prefilled.current = true;
         setFirewallTarget((cur) => cur || s.defaults!.firewall_target!);
       }
-    } catch {
-      /* a diagnostic must never be why the page fails */
+    } catch (e) {
+      // Never silent. This swallow is exactly why "I hit the test and nothing came
+      // back" had no explanation anywhere on the page.
+      setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
@@ -254,9 +256,48 @@ export default function WriteAndPing({
           </>
         )}
 
-        {shown && (shown.steps?.length ?? 0) > 0 && (
+        {!shown && !running && (
+          <Typography variant="body2" color="text.secondary">
+            No probe has been run yet. The result appears here — one row per operation,
+            with what each cost on both targets.
+          </Typography>
+        )}
+
+        {shown && (
           <Box>
-            {shown.steps!.map((s) => (
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+              <Chip
+                size="small"
+                label={shown.status}
+                color={
+                  shown.status === "complete" ? "success"
+                    : shown.status === "failed" ? "error" : "default"
+                }
+              />
+              <Typography variant="caption" color="text.secondary">
+                probe #{shown.id}
+                {shown.changes?.[0] &&
+                  ` · ${shown.changes[0].param} → ${String(shown.changes[0].value)}`}
+                {shown.firewall_target ? ` · pinging ${shown.firewall_target}` : ""}
+              </Typography>
+            </Stack>
+
+            {/* A failure before the first step has no timeline at all, and its reason is
+                the only thing worth showing — so it renders above the steps, not inside
+                a block that exists only when there are steps. */}
+            {shown.error && (
+              <Alert severity="error" sx={{ mb: 1 }}>
+                {shown.error}
+              </Alert>
+            )}
+            {(shown.steps?.length ?? 0) === 0 && !shown.error && !running && (
+              <Typography variant="body2" color="text.secondary">
+                This probe recorded no steps and gave no reason — that is a bug worth
+                reporting, not a result.
+              </Typography>
+            )}
+
+            {(shown.steps ?? []).map((s) => (
               <StepRow key={s.step} step={s} />
             ))}
             {shown.verdict && (
@@ -274,11 +315,6 @@ export default function WriteAndPing({
               >
                 {shown.verdict}
               </Alert>
-            )}
-            {shown.error && (
-              <Typography variant="caption" color="error" sx={{ display: "block", mt: 1 }}>
-                {shown.error}
-              </Typography>
             )}
           </Box>
         )}

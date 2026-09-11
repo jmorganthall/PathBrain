@@ -160,3 +160,60 @@ def test_the_status_endpoint_offers_the_address_so_the_page_can_fill_it_in(clien
     body = client.get("/api/firewall/write-probe").json()
     assert "defaults" in body and "firewall_target" in body["defaults"]
     assert body["defaults"]["through_target"] == "1.1.1.1"
+
+
+# ── a failure always has a reason, and never costs a write ────────────────────
+
+
+def test_a_dead_ping_aborts_before_anything_is_written(_db, monkeypatch):
+    """The reading this prevents is a false catastrophe. If ICMP cannot leave the
+    container, every step reads as total loss and the probe would report the write as
+    having destroyed the network — having spent a real firewall write to say it."""
+    from pathbrain import write_probe as wp
+
+    class DeadSampler(wp._Sampler):
+        def start(self):  # every send is a loss, as a blocked ICMP socket behaves
+            self.error = "icmplib unavailable: permission denied"
+            self.samples = [{"t": 0.0, "rtt_ms": None}, {"t": 0.1, "rtt_ms": None}]
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(wp, "_Sampler", DeadSampler)
+    monkeypatch.setattr(wp, "DEFAULT_BASELINE_S", 1.0)
+    writes: list = []
+    prov = wp.get_provider()
+    monkeypatch.setattr(type(prov), "apply_many",
+                        lambda self, ch, **k: writes.append(ch) or {"reconfigures": 0})
+
+    probe_id = wp.start([{"param": "quantum", "value": 9999}],
+                        firewall_target="10.0.0.1", baseline_s=1.0, settle_s=1.0)
+    thread = wp._state.get("thread")
+    if thread is not None:
+        thread.join(timeout=30)
+
+    row = wp.get(probe_id)
+    assert row is not None
+    assert row["status"] == "failed"
+    # Either guard may catch it (no replies, or no packets at all) — what matters is that
+    # it refused before writing and said what the sampler reported.
+    assert "nothing was applied" in (row["error"] or "")
+    assert "permission denied" in (row["error"] or ""), "it says what the sampler reported"
+    assert writes == [], "a measurement that cannot be taken must not cost a write"
+
+
+def test_a_failed_probe_always_carries_a_reason(_db, monkeypatch):
+    """Whatever goes wrong, the row a page reads must say why. A test whose failure mode
+    is an empty result is worse than no test."""
+    from pathbrain import write_probe as wp
+
+    monkeypatch.setattr(wp, "_Sampler", lambda label, target: (_ for _ in ()).throw(
+        RuntimeError("sampler exploded")))
+    probe_id = wp.start([{"param": "quantum", "value": 9999}], firewall_target="10.0.0.1",
+                        baseline_s=1.0, settle_s=1.0)
+    thread = wp._state.get("thread")
+    if thread is not None:
+        thread.join(timeout=30)
+    row = wp.get(probe_id)
+    assert row is not None and row["status"] == "failed"
+    assert row["error"], "a failed probe with no reason is the bug this pins"

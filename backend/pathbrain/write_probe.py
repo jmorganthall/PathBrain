@@ -318,11 +318,13 @@ def _publish(probe_id: int, steps: list[dict], samplers: dict) -> None:
 
 def _drive(probe_id: int, changes: list[dict], firewall_target: str, through_target: str,
            baseline_s: float, settle_s: float) -> None:  # noqa: C901 — one linear lifecycle
-    provider = get_provider()
-    samplers = {
-        "firewall": _Sampler("firewall", firewall_target),
-        "through": _Sampler("through", through_target),
-    }
+    # Everything that can fail lives inside the try below, including building the provider
+    # and the samplers. Constructing them out here meant an exception escaped the thread
+    # entirely: the row stayed RUNNING forever with no reason, and because the module flag
+    # was never cleared, every later probe was refused as "already running". A diagnostic
+    # that dies without saying so is the failure this whole module exists to stop.
+    provider = None
+    samplers: dict[str, _Sampler] = {}
     steps: list[dict] = []
     err: str | None = None
     status = WriteProbeStatus.COMPLETE
@@ -359,6 +361,11 @@ def _drive(probe_id: int, changes: list[dict], firewall_target: str, through_tar
         return step
 
     try:
+        provider = get_provider()
+        samplers = {
+            "firewall": _Sampler("firewall", firewall_target),
+            "through": _Sampler("through", through_target),
+        }
         for s in samplers.values():
             s.start()
         with coordinator.hold(f"write_probe#{probe_id}", abort=lambda: bool(_state.get("cancel"))):
@@ -380,7 +387,31 @@ def _drive(probe_id: int, changes: list[dict], firewall_target: str, through_tar
                     "and nothing to measure. Pick a value it is not currently on."
                 )
 
-            run_step("baseline", "Baseline — nothing is being written", None, baseline_s)
+            base = run_step("baseline", "Baseline — nothing is being written", None, baseline_s)
+            # Never write the firewall for a measurement that cannot be taken. If the
+            # baseline got no replies at all, the ping is broken — ICMP blocked from the
+            # container, a wrong address, a host that does not answer — and every step
+            # after this would read as total loss and be reported as a catastrophic
+            # result. That false positive is worse than no probe, and it would have cost
+            # a real write to produce.
+            dead = [
+                name for name, t in (base.get("targets") or {}).items()
+                if (t.get("sent") or 0) > 0 and (t.get("lost") or 0) == (t.get("sent") or 0)
+            ]
+            why_ping = "; ".join(f"{k}: {v}" for k, v in
+                                 ((k, s.error) for k, s in samplers.items()) if v)
+            if dead:
+                raise ValueError(
+                    f"No ping replies from {', '.join(dead)} before anything was written, so "
+                    "there is nothing to measure against — nothing was applied to the "
+                    "firewall. Check the address, and that the container can send ICMP"
+                    + (f". The sampler said: {why_ping}" if why_ping else ".")
+                )
+            if not any((t.get("sent") or 0) for t in (base.get("targets") or {}).values()):
+                raise ValueError(
+                    "The ping sampler produced no packets at all, so nothing was applied"
+                    + (f": {why_ping}" if why_ping else ".")
+                )
             if not _state.get("cancel"):
                 wrote = True
                 run_step("set_fields", "Writing the fields (no shaper reload)",
@@ -405,7 +436,10 @@ def _drive(probe_id: int, changes: list[dict], firewall_target: str, through_tar
                 err = f"{err + ' | ' if err else ''}Restore failed: {restore_err}"
                 status = WriteProbeStatus.FAILED
         for s in samplers.values():
-            s.stop()
+            try:
+                s.stop()
+            except Exception:  # noqa: BLE001 — never let cleanup hide the result
+                log.debug("Write probe %s: a sampler would not stop", probe_id, exc_info=True)
         if _state.get("cancel") and status is WriteProbeStatus.COMPLETE:
             status = WriteProbeStatus.CANCELLED
         ping_errors = {k: s.error for k, s in samplers.items() if s.error}
@@ -417,9 +451,13 @@ def _drive(probe_id: int, changes: list[dict], firewall_target: str, through_tar
                     p.steps = list(steps)
                     p.samples = {k: list(s.samples) for k, s in samplers.items()}
                     p.verdict = verdict(steps) if steps else None
+                    # A failed probe ALWAYS carries a reason. "It failed" with an empty
+                    # error is the unfalsifiable result this module was written against.
                     p.error = err or (
                         "; ".join(f"{k}: {v}" for k, v in ping_errors.items()) or None
                     )
+                    if p.status is WriteProbeStatus.FAILED and not p.error:
+                        p.error = "Failed before any step, with no reason recorded — a bug."
                     p.finished_at = datetime.now(timezone.utc)
                     p.stage = "Done" if status is WriteProbeStatus.COMPLETE else str(status.value)
         except Exception:  # noqa: BLE001

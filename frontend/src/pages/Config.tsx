@@ -30,7 +30,6 @@ import { Link as RouterLink } from "react-router-dom";
 import Link from "@mui/material/Link";
 
 import { api } from "../api/client";
-import WriteAndPing from "../components/WriteAndPing";
 import type {
   BenchmarkConfig,
   ConfigSnapshot,
@@ -1208,11 +1207,6 @@ export default function Config() {
             </Alert>
           )}
 
-          <WriteAndPing
-            pipes={pipes ?? []}
-            onLoadPipes={handleDiscover}
-            loadingPipes={discovering}
-          />
 
           {pipes && (
             <Box sx={{ mb: 3 }}>
