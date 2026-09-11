@@ -41,6 +41,7 @@ from sqlalchemy import func, select
 
 from . import coordinator
 from .database import session_scope
+from . import firewall_guard
 from .logging_config import get_logger
 from .session_runtime import describe_failure
 from .models import ProfileTest, ProfileTestStatus
@@ -143,11 +144,16 @@ def _set_stage(pt_id: int, stage: str) -> None:
 def start(fingerprint_: str, target_settings: list[dict], label: str, iterations: int) -> int:
     """Enqueue a profile test. Returns the ``ProfileTest`` id.
 
-    Never refuses: the row is written PENDING and a single worker drains the queue
-    oldest-first. The baseline is snapshotted inside the driver (under the coordination
+    Refuses on exactly one ground: the firewall guard is hands-off, so a test could
+    apply nothing and would only re-measure whichever profile the firewall is already on.
+    Otherwise it never refuses — the row is written PENDING and a single worker drains the
+    queue oldest-first. The baseline is snapshotted inside the driver (under the coordination
     lock) so it reflects the true pre-apply state — which is also why a queued test is
     harmless: it has read nothing and applied nothing until its turn comes.
     """
+    blocked = firewall_guard.blocked_reason("profile_test")
+    if blocked:
+        raise ValueError(blocked)
     with session_scope() as session:
         ahead = int(
             session.scalar(

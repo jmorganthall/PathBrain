@@ -82,6 +82,17 @@ class MockProvider(ConfigProvider):
         _OVERRIDES[param] = value
         return {"provider": self.name, "applied": {param: value}, "ok": True}
 
+    def apply_many(self, changes: list[dict], *, reload: bool = True) -> dict:
+        """The mock has no running shaper, so ``reload`` only changes what it reports —
+        which is what ``write_probe``'s tests read."""
+        for ch in changes:
+            self.apply(dict(ch))
+        return {"provider": self.name, "ok": True, "applied": list(changes),
+                "reconfigures": 1 if reload else 0}
+
+    def reconfigure(self) -> dict:
+        return {"provider": self.name, "ok": True, "applied": [], "reconfigures": 1}
+
     def set_pipe_enabled(self, pipe_uuid: str | None, enabled: bool) -> dict:
         # Key by uuid where present; a uuid-less pipe (the mock upload) can't be targeted,
         # mirroring apply()'s own limitation — so its toggle is a recorded no-op.

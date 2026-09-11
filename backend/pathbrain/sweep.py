@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from . import coordinator
 from .database import session_scope
+from . import firewall_guard
 from .logging_config import get_logger
 from .session_runtime import describe_failure
 from .models import Run, RunStatus, Sweep, SweepStatus
@@ -223,6 +224,9 @@ def start(spec: dict, iterations: int, dwell_s: float, dry_run: bool, pipe_uuid:
     Raises ``RuntimeError`` if a sweep is already running, ``ValueError`` for an
     invalid spec, or propagates provider discovery errors.
     """
+    blocked = firewall_guard.blocked_reason("sweep")
+    if blocked:
+        raise ValueError(blocked)
     if active():
         raise RuntimeError("A sweep is already running.")
     variants = generate_variants(spec)

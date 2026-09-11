@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from pathbrain import firewall_guard as fg
 from pathbrain import session_runtime
+from pathbrain.config_store import save_config
 from pathbrain.database import session_scope
 from pathbrain.models import FirewallGuardState, FirewallWrite
 from pathbrain.providers import get_provider
@@ -301,6 +302,138 @@ def test_api_guard_status_arm_and_hands_off(client, guard):
     assert r["hands_off"] and r["reason"] == "testing"
     assert client.get("/api/health/pipeline").json()["firewall"]["hands_off"] is True
     assert client.post("/api/firewall/guard/arm").json()["hands_off"] is False
+
+
+def test_the_config_write_test_is_ledgered_and_refusable_like_any_other_write(client, guard):
+    """`POST /config/test-apply` proves the write path works by nudging quantum +1 and
+    setting it back. It holds no special status: both writes are on the ledger at one
+    reconfigure each, and while hands-off is set it is refused before anything is
+    written — so the reversible test can never be the one write that slips the guard."""
+    body = client.post("/api/config/test-apply").json()
+    assert body["ok"] is True
+    rows = client.get("/api/firewall/guard").json()["writes"]
+    assert [(r["field"], r["outcome"], r["reconfigures"]) for r in rows] == [
+        ("quantum", "ok", 1),
+        ("quantum", "ok", 1),
+    ], "the nudge and the restore are each one ledgered reconfigure"
+
+    fg.hands_off("testing", by="test")
+    refused = client.post("/api/config/test-apply").json()
+    assert refused["changed"] is False and refused["restored"] is False
+    # It stops at the nudge, so there is nothing to restore and no manual fix to report.
+    assert [s["step"] for s in refused["steps"]] == ["discover", "apply +1"]
+    # And it says so in words, not as a class name: this is the first thing a person
+    # presses after a deploy, when the build gate has left writes hands-off.
+    assert "Stopped by the firewall guard" in refused["error"]
+    assert "Arm writes from the top bar" in refused["error"]
+    # The ledger reads newest first, so the refusal is row 0.
+    assert client.get("/api/firewall/guard").json()["writes"][0]["outcome"] == "refused"
+
+
+# ── 8b. a session that can only switch profiles does not start hands-off ───────
+
+
+def test_a_no_op_apply_writes_nothing_so_it_is_never_refused(guard):
+    """Why a duel could be seen measuring while the chip read "Hands off".
+
+    The guard refuses *writes*, and a leg whose profile is the one the firewall is
+    already on plans no changes — so ``_apply_all`` returns without calling the
+    provider, nothing is written, nothing is refused, and the leg measures the profile
+    that was already there. Nothing was set; the belt leg simply needed no write. This
+    pins that reading, because it is the difference between a benign screenshot and a
+    write that escaped the guard.
+    """
+    from pathbrain.profile_test import _apply_all
+
+    prov = get_provider()
+    fg.hands_off("testing", by="test")
+    _apply_all(prov, [])  # a no-op switch: must not raise, must not write
+    assert fg.recent_writes() == [], "a no-op switch touches the firewall not at all"
+    with pytest.raises(fg.FirewallHandsOff):
+        _apply_all(prov, [{"pipe_uuid": "wan-download", "param": "quantum", "value": 777}])
+    assert [w["outcome"] for w in fg.recent_writes()] == ["refused"]
+
+
+@pytest.mark.parametrize("kind", sorted(fg.WRITING_KINDS))
+def test_no_profile_switching_session_starts_while_writes_are_refused(kind, guard, monkeypatch):
+    """A session whose every leg is a write is refused at the door, not three failed
+    legs later. Enforcing only at the write is correct and insufficient: the session
+    starts, measures the profile it was already on, is refused on the first leg that
+    needs a change and aborts — having spent the pipeline to produce nothing."""
+    import pathbrain.baseline_test as baseline_test
+    import pathbrain.challenger as challenger
+    import pathbrain.duel as duel
+    import pathbrain.profile_test as profile_test
+    import pathbrain.refresh as refresh
+    import pathbrain.sweep as sweep
+    import pathbrain.write_probe as write_probe
+
+    calls = {
+        "duel": lambda: duel.start(30, trigger="scheduled"),
+        "race": lambda: challenger.start(600),
+        "refresh": lambda: refresh.start(5),
+        "sweep": lambda: sweep.start({"quantum": [300]}, 1, 0.0, False, None),
+        "baseline_test": lambda: baseline_test.start(5, 0, trigger="scheduled"),
+        "profile_test": lambda: profile_test.start("fp", [], "label", 5),
+        "write_probe": lambda: write_probe.start(
+            [{"param": "quantum", "value": 3000}], firewall_target="10.0.0.1"
+        ),
+    }
+    fg.hands_off("the WAN dropped", by="test")
+    with pytest.raises(ValueError) as err:
+        calls[kind]()
+    assert "hands-off" in str(err.value) and "Arm writes from the top bar" in str(err.value)
+
+
+def test_the_queue_refuses_a_switching_job_and_still_takes_a_read_only_one(guard):
+    """``job_queue.submit`` is the one seam every Run button shares, so the refusal lands
+    there too — before a useless ticket is queued. It is the one refusal this contract
+    allows, because it is a genuinely bad request (the job would apply nothing), not
+    "the pipeline is busy". A session that never writes is unaffected: measuring the
+    profile the firewall is already on is exactly what hands-off leaves possible."""
+    from pathbrain import job_queue
+
+    fg.hands_off("testing", by="test")
+    with pytest.raises(ValueError, match="hands-off"):
+        job_queue.submit("duel", "Duel ladder", lambda: 1)
+    assert job_queue.submit("current_test", "Test current", lambda: 42).result == 42
+
+
+def test_the_scheduler_skips_the_nightly_ladder_without_burning_the_night(guard, monkeypatch):
+    """Hands-off is not "the night's run happened". The nightly gate stamps the day on a
+    failed start so it does not retry every tick — so refusing inside that try would mean
+    arming writes at 03:05 lost the whole night. The guard is checked first and leaves the
+    stamp alone, so the existing catch-up window lets an armed ladder still fire."""
+    from pathbrain import scheduler
+
+    started: list[int] = []
+    monkeypatch.setattr("pathbrain.duel.start", lambda *a, **k: started.append(1) or 1)
+    monkeypatch.setattr("pathbrain.duel.active", lambda: False)
+    monkeypatch.setattr("pathbrain.duel.current", lambda: None)
+    # The window is open and the ladder is armed to fire: without the guard check this
+    # call starts a session, which is what makes the refusal below a real assertion.
+    monkeypatch.setattr(scheduler, "_schedule_due", lambda *a, **k: True)
+    with session_scope() as s:
+        save_config(s, {"duel": {"enabled": True, "continuous": False, "hour": 3, "minute": 0,
+                                 "duration_minutes": 30}})
+
+    def _reset():
+        scheduler._state.pop("duel_last_date", None)
+        scheduler._state.pop("guard_skip_logged", None)
+
+    _reset()
+    assert scheduler._maybe_run_duel() is True and started == [1], "armed: the ladder fires"
+
+    _reset()
+    started.clear()
+    fg.hands_off("the WAN dropped", by="test")
+    assert scheduler._maybe_run_duel() is False
+    assert started == []
+    assert "duel_last_date" not in scheduler._state, "the night is not spent"
+
+    # Arming inside the catch-up window still gets the night's run.
+    fg.arm(by="test")
+    assert scheduler._maybe_run_duel() is True and started == [1]
 
 
 # ── 9. OPNsense: one reconfigure per switch, however many fields ───────────────

@@ -29,6 +29,7 @@ from sqlalchemy import func, select
 
 from . import coordinator
 from .database import session_scope
+from . import firewall_guard
 from .logging_config import get_logger
 from .session_runtime import describe_failure
 from .models import Methodology, ProfileRefresh, ProfileRefreshStatus, Run, RunStatus, Score
@@ -437,6 +438,9 @@ def start(
     profiles. ``iterations`` is clamped to ``1..MAX_ITERATIONS``. The baseline is
     snapshotted inside the driver (under the lock) so it reflects the true pre-refresh
     state."""
+    blocked = firewall_guard.blocked_reason("refresh")
+    if blocked:
+        raise ValueError(blocked)
     if active():
         raise RuntimeError("A profile refresh is already running.")
     iters = max(1, min(MAX_ITERATIONS, int(iterations)))

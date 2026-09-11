@@ -196,12 +196,25 @@ class ResilientProvider(ConfigProvider):
         return self._write("apply", lambda: self._inner.apply(changes), changes=[dict(changes)],
                            reconfigures=1, verify=lambda: self._verify_applied([changes]))
 
-    def apply_many(self, changes: list[dict]) -> dict:
+    def apply_many(self, changes: list[dict], *, reload: bool = True) -> dict:
         batch = [dict(c) for c in changes]
         if not batch:
             return {"provider": self.name, "ok": True, "applied": [], "reconfigures": 0}
-        return self._write("apply_many", lambda: self._inner.apply_many(batch), changes=batch,
-                           reconfigures=1, verify=lambda: self._verify_applied(batch))
+        # ``reload=False`` costs the firewall no shaper reload, and the ledger says so: the
+        # pacing gap and the hourly budget are about reconfigures, and charging one for a
+        # write that did not reload would ration the cheap half out of existence.
+        return self._write("apply_many" if reload else "set_fields",
+                           lambda: self._inner.apply_many(batch, reload=reload), changes=batch,
+                           reconfigures=1 if reload else 0,
+                           verify=lambda: self._verify_applied(batch))
+
+    def reconfigure(self) -> dict:
+        """The shaper reload on its own. A write like any other — ledgered, paced, budgeted,
+        refusable, attempted once. There is nothing to verify by re-reading (no field
+        changed), so a timeout is treated as the firewall being gone, which is the honest
+        reading: a reload that did not answer is exactly the event this guard exists for."""
+        return self._write("reconfigure", self._inner.reconfigure, changes=[],
+                           reconfigures=1, verify=lambda: False)
 
     def _verify_applied(self, changes: list[dict]) -> bool:
         """Did every change take? Read back and compare numerically (``_field_equal``), never

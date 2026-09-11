@@ -99,7 +99,7 @@ class ConfigProvider(ABC):
         firewall override this; the default cannot."""
         raise NotImplementedError("This provider cannot toggle a shaper pipe on/off")
 
-    def apply_many(self, changes: list[dict]) -> dict:
+    def apply_many(self, changes: list[dict], *, reload: bool = True) -> dict:
         """Apply several shaper parameter changes with ONE reconfigure.
 
         The default applies them one by one (a provider that cannot batch still works);
@@ -109,6 +109,20 @@ class ConfigProvider(ABC):
         "reconfigures": n}``."""
         applied = [self.apply(ch) for ch in changes]
         return {"provider": self.name, "ok": True, "applied": applied, "reconfigures": len(applied)}
+
+    def reconfigure(self) -> dict:
+        """Reload the shaper without changing anything — the other half of a write.
+
+        A profile switch is two distinct operations against the firewall: writing the new
+        field values (cheap, config only) and reloading the shaper so they take effect
+        (which rebuilds the dummynet queues and drops what is in flight). ``apply_many``
+        does both because that is what a switch means, but they cost the network very
+        different amounts, and until they could be issued separately there was no way to
+        measure which one the household actually feels. ``write_probe`` issues them one at
+        a time with a ping running; nothing else should.
+        """
+        raise NotImplementedError(f"{self.name} cannot reload the shaper")
+
 
     def apply(self, changes: dict) -> dict:
         """Apply a single shaper parameter change and reconfigure.

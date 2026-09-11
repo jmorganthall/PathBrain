@@ -39,10 +39,12 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
+from . import alerts
 from . import coordinator
 from . import profile_names
 from .config_store import get_config
 from .database import session_scope
+from . import firewall_guard
 from .logging_config import get_logger
 from .session_runtime import FailureStreak, FirewallUnavailable, SessionAbort, describe_failure
 from .methodology import overall_metrics
@@ -625,8 +627,13 @@ def start(duration_minutes: int | None = None, *, trigger: str = "manual",
     (``levers.resolve_campaign``: the one named, else the open one on ``base_fingerprint``,
     else the newest open campaign, else a new one on the pooled crown), whose base it is
     pinned to and whose open matches it resumes. Raises ``RuntimeError`` if one is already
-    running; ``ValueError`` for a bad duration, an unknown kind, or an unresolvable campaign.
+    running; ``ValueError`` for a bad duration, an unknown kind, an unresolvable campaign,
+    or the firewall guard being hands-off (a ladder cannot switch profiles, so it would
+    measure the live one and fail every leg that needs a change).
     """
+    blocked = firewall_guard.blocked_reason("duel")
+    if blocked:
+        raise ValueError(blocked)
     if active():
         raise RuntimeError("A duel is already running.")
     if contenders is not None and contenders not in SESSION_MODES:
@@ -4173,7 +4180,7 @@ def round_health(limit_sessions: int = 50) -> dict:
             for reason, count in reasons.items():
                 why[str(reason)] = why.get(str(reason), 0) + int(count or 0)
 
-    return {
+    health = {
         "matches": matches,
         "decided": decided,
         "drawn": drawn,
@@ -4195,6 +4202,29 @@ def round_health(limit_sessions: int = 50) -> dict:
         ],
         "sessions_analyzed": len(sessions_data),
     }
+    # The banner is a condition, not an event: it stays true for weeks, so it carries the
+    # means to be cleared. The signature is the set of causes and the ack's state the share,
+    # so clearing it survives the ladder's counts moving but not a new cause or a materially
+    # worse reading. Best-effort — a health readout must never fail over its own bookkeeping.
+    try:
+        sig = _health_signature(health)
+        share = health["aborted_share"]
+        health["alert"] = {
+            "key": HEALTH_ALERT_KEY,
+            **alerts.status(
+                HEALTH_ALERT_KEY, sig,
+                supersedes=lambda st: (
+                    share is not None
+                    and st.get("aborted_share") is not None
+                    and share > float(st["aborted_share"]) + HEALTH_REALERT_DELTA
+                ),
+            ),
+            "state": {"aborted_share": share},
+        }
+    except Exception:  # noqa: BLE001
+        log.warning("round_health: could not resolve the alert acknowledgement", exc_info=True)
+        health["alert"] = None
+    return health
 
 
 def _abort_bucket(reason) -> str:
@@ -4208,6 +4238,64 @@ def _abort_bucket(reason) -> str:
     if "unusable" in low or "no overall" in low:
         return "rounds unusable — no Overall to compare"
     return text[:80] if text else "no reason recorded"
+
+
+#: How much worse the no-result share must get before an acknowledged health alert comes
+#: back on the same causes. 10 points: below that, a continuously running ladder's rolling
+#: share wanders on its own and re-alerting would say nothing a reader could act on.
+HEALTH_REALERT_DELTA = 0.10
+#: The acknowledgement key for the round-health banner.
+HEALTH_ALERT_KEY = "duel.round_health"
+
+
+def _reason_class(reason) -> str:
+    """The *kind* of a round-discard cause, with the profile-specific parts folded away.
+
+    The raw causes name the profile and its fingerprint — "could not apply Focused Falcon:
+    Could not apply challenger profile ea5a70ab147c: quantum, target did not take" — which
+    is exactly what a reader wants on the card and exactly wrong as an identity: the same
+    failure meeting a different challenger an hour later would read as a new problem, so an
+    alert keyed on the raw strings would never stay acknowledged. The class is what a person
+    would do about it, which is the same for every profile the firewall refuses.
+
+    Used only for the alert's signature; the card still lists the causes in full, because
+    *which* profile failed is the first thing you would want to know once you are looking.
+    """
+    low = str(reason or "").strip().lower()
+    if not low:
+        return "unrecorded"
+    if "hands-off" in low or "firewall guard" in low:
+        return "writes refused by the firewall guard"
+    if "did not answer" in low or "timed out" in low or "stopped answering" in low:
+        return "the firewall did not answer"
+    if "did not take" in low or "could not apply" in low:
+        return "a profile could not be applied"
+    if low.startswith("incomparable") or "missing" in low:
+        # Which metrics are missing IS the finding here — a run short of LCP and one short
+        # of a stall metric are different instrument problems — so the metric set stays in
+        # the class, sorted so the order the reason happened to list them cannot matter.
+        tail = low.split("missing", 1)[1] if "missing" in low else ""
+        metrics = ", ".join(sorted(m.strip() for m in tail.split(",") if m.strip()))
+        return f"incomparable: missing {metrics}" if metrics else "incomparable"
+    if "cancel" in low:
+        return "cancelled"
+    return low[:60]
+
+
+def _health_signature(health: dict) -> str:
+    """What makes this round-health reading *the same situation* as the last one.
+
+    Deliberately not the counts. The ladder runs continuously, so 577 of 1027 is 578 of 1030
+    within the hour and a signature over the numbers would bring a dismissed banner straight
+    back having told the reader nothing. What a person actually acknowledged is the set of
+    *causes*: while those are the same, the banner stays cleared, and the share is carried in
+    the ack's state so a materially worse reading can still re-open it (see
+    ``HEALTH_REALERT_DELTA``).
+    """
+    return alerts.signature(
+        sorted({_abort_bucket(r.get("reason")) for r in health.get("abort_reasons") or []}),
+        sorted({_reason_class(r.get("reason")) for r in health.get("reasons") or []}),
+    )
 
 
 def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:

@@ -205,8 +205,13 @@ class OPNsenseProvider(ConfigProvider):
         first = (out.get("applied") or [{}])[0]
         return {"provider": self.name, "ok": True, "uuid": first.get("uuid"), "applied": first.get("applied", {})}
 
-    def apply_many(self, changes: list[dict]) -> dict:
+    def apply_many(self, changes: list[dict], *, reload: bool = True) -> dict:
         """Set every requested field on every requested pipe, then reconfigure ONCE.
+
+        ``reload=False`` writes the fields and stops — the values are in the firewall's
+        config but the running shaper is untouched, so nothing the household is doing
+        moves. Only ``write_probe`` uses it, to time the two halves of a switch
+        separately; a profile switch is always both.
 
         One ``getSettings`` read, one ``setPipe`` per distinct pipe (all of that pipe's
         changed fields in one payload), one ``reconfigure``. A profile switch that differs
@@ -239,11 +244,21 @@ class OPNsenseProvider(ConfigProvider):
             for uuid, payload in payloads.items():
                 resp = client.post(f"{_SET_PIPE}/{uuid}", json={"pipe": payload})
                 resp.raise_for_status()
+            if reload:
+                rc = client.post(_RECONFIGURE, json={})
+                rc.raise_for_status()
+        log.info("OPNsense applied %d field(s) on %d pipe(s) with %d reconfigure(s): %s",
+                 len(applied), len(payloads), 1 if reload else 0, [a["applied"] for a in applied])
+        return {"provider": self.name, "ok": True, "applied": applied,
+                "reconfigures": 1 if reload else 0}
+
+    def reconfigure(self) -> dict:
+        """Reload the shaper alone — no field is written. See ``ConfigProvider.reconfigure``."""
+        with self._client() as client:
             rc = client.post(_RECONFIGURE, json={})
             rc.raise_for_status()
-        log.info("OPNsense applied %d field(s) on %d pipe(s) with one reconfigure: %s",
-                 len(applied), len(payloads), [a["applied"] for a in applied])
-        return {"provider": self.name, "ok": True, "applied": applied, "reconfigures": 1}
+        log.info("OPNsense reloaded the shaper (no fields changed)")
+        return {"provider": self.name, "ok": True, "applied": [], "reconfigures": 1}
 
     def set_pipe_enabled(self, pipe_uuid: str | None, enabled: bool) -> dict:
         """Toggle one pipe's ``enabled`` flag and reconfigure (turn SQM off/on).

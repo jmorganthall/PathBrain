@@ -2091,6 +2091,33 @@ export interface DuelHealth {
   // could not resume.
   abort_reasons?: { reason: string; matches: number }[];
   sessions_analyzed: number;
+  // The banner is a condition, not an event — it stays true for weeks — so it carries the
+  // means to be cleared. `signature` identifies the *situation* (which causes, with the
+  // profile-specific parts folded away), never the counts, which move every session on a
+  // continuously running ladder. `why` is set when a cleared alert comes back, because
+  // "this is new" and "this got worse" are different answers.
+  alert?: AlertState | null;
+}
+
+// ── Acknowledging a diagnostic banner (GET /alerts, POST|DELETE /alerts/{key}/ack) ───
+
+export interface AlertState {
+  key: string;
+  acknowledged: boolean;
+  signature: string;
+  acked_at: string | null;
+  why: string | null;
+  // Whatever the alert needs in order to judge later that things got materially worse —
+  // passed straight back when acknowledging, never interpreted by the client.
+  state?: Record<string, unknown> | null;
+}
+
+export interface AlertAck {
+  key: string;
+  signature: string;
+  state: Record<string, unknown>;
+  acked_at: string | null;
+  acked_by: string | null;
 }
 
 // ── The head-to-head league table (GET /duel/standings) ──────────────────────────────
@@ -3860,4 +3887,49 @@ export interface FirewallGuardStatus {
   refused_last_hour: number;
   last_reconfigure_at: string | null;
   writes: FirewallWriteRow[];
+}
+
+
+// ── Write and ping (GET|POST /firewall/write-probe) ──────────────────────────
+//
+// What one firewall write cost the network. `worst_gap_ms` is the headline rather than a
+// loss rate: twenty scattered drops and two seconds of nothing are the same percentage and
+// only the second is an outage.
+
+export interface WriteProbeTarget {
+  sent: number;
+  lost: number;
+  loss_pct: number | null;
+  worst_gap_ms: number | null;
+  gap_started_at: number | null;
+  rtt_median_ms: number | null;
+  rtt_max_ms: number | null;
+}
+
+export interface WriteProbeStep {
+  step: string;
+  label: string;
+  started_at: number;
+  acted_at: number;
+  ended_at: number;
+  action_ms: number;
+  failed: string | null;
+  // "firewall" = the box's own address; "through" = a target beyond it. The pair is the
+  // diagnosis: box silent means wedged, through-only means forwarding broke.
+  targets: Record<string, WriteProbeTarget>;
+}
+
+export interface WriteProbe {
+  id: number;
+  status: "running" | "complete" | "failed" | "cancelled";
+  stage: string | null;
+  changes: { pipe_uuid?: string | null; param: string; value: unknown }[];
+  firewall_target: string | null;
+  through_target: string | null;
+  steps: WriteProbeStep[];
+  verdict: string | null;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  samples?: Record<string, { t: number; rtt_ms: number | null }[]>;
 }

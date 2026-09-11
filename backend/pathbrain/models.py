@@ -1124,3 +1124,63 @@ class FirewallGuardState(Base):
     reachable_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     refused_count: Mapped[int] = mapped_column(Integer, default=0)
     last_refusal: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AlertAck(Base):
+    """One acknowledgement: "I have seen this, stop showing it until it changes."
+
+    A diagnostic banner is worth showing the first time and noise every time after, and
+    PathBrain has several that stay true for weeks (the ladder's round health, a fading
+    crown, a saturated threshold). Dismissing one in the browser only would be per-device
+    and forgotten on the next deploy, so the acknowledgement is a row: which alert
+    (``key``), the *situation* it was acknowledged for (``signature``), and enough of that
+    situation (``state``) for the alert to decide later whether things have got materially
+    worse — see ``alerts.status``.
+    """
+
+    __tablename__ = "alert_acks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    signature: Mapped[str] = mapped_column(String(64))
+    state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    acked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    acked_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class WriteProbeStatus(str, enum.Enum):
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class WriteProbe(Base):
+    """One write-and-ping run: what a firewall write cost the network, measured.
+
+    ``samples`` is the raw per-packet series per target (``{t, rtt_ms}``, rtt_ms None for a
+    loss) and ``steps`` the per-operation summary derived from it. The raw series is kept
+    because the summary answers today's question and the series answers tomorrow's — the
+    same raw-then-derive discipline the benchmark plugins follow.
+    """
+
+    __tablename__ = "write_probes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[WriteProbeStatus] = mapped_column(
+        Enum(WriteProbeStatus), default=WriteProbeStatus.RUNNING
+    )
+    stage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    changes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    firewall_target: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    through_target: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    steps: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    samples: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    verdict: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
