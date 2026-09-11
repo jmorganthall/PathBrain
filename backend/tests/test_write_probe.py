@@ -105,3 +105,58 @@ def test_the_api_reports_a_bad_request_as_400_not_500(client, _db):
     r = client.post("/api/firewall/write-probe",
                     json={"changes": [], "firewall_target": "10.0.0.1"})
     assert r.status_code == 400 and "Nothing to write" in r.json()["detail"]
+
+
+# ── the address is known, not asked for ───────────────────────────────────────
+
+
+def test_the_firewall_address_comes_from_the_provider_already_configured(monkeypatch):
+    """Asking a person to retype the address of the box PathBrain talks to all day is
+    asking for something the application already has."""
+    from pathbrain.config import get_settings
+
+    for url, want in [
+        ("https://192.168.2.1:8443", "192.168.2.1"),
+        ("http://fw.lan", "fw.lan"),
+        ("192.168.2.1", "192.168.2.1"),       # no scheme, still an address
+        ("", None),                            # nothing configured → no guess
+    ]:
+        monkeypatch.setenv("PATHBRAIN_OPNSENSE_URL", url)
+        get_settings.cache_clear()
+        assert write_probe.firewall_address() == want, url
+    get_settings.cache_clear()
+
+
+def test_a_probe_without_an_address_uses_the_configured_one(_db, monkeypatch):
+    """`firewall_target` is optional: supplying one is an override, not a requirement.
+    The driver is stubbed, so this tests the address resolution and nothing else."""
+    from pathbrain.config import get_settings
+
+    monkeypatch.setenv("PATHBRAIN_OPNSENSE_URL", "https://192.168.2.1")
+    get_settings.cache_clear()
+    seen: dict = {}
+    monkeypatch.setattr(write_probe, "_drive", lambda *a, **k: seen.update(target=a[2]))
+
+    probe_id = write_probe.start([{"param": "quantum", "value": 3000}])
+    assert isinstance(probe_id, int)
+    write_probe._state.update({"active": False, "id": None, "thread": None})
+    get_settings.cache_clear()
+
+    stored = write_probe.get(probe_id)
+    assert stored is not None and stored["firewall_target"] == "192.168.2.1"
+
+
+def test_with_nothing_configured_it_says_so_instead_of_guessing(_db, monkeypatch):
+    from pathbrain.config import get_settings
+
+    monkeypatch.setenv("PATHBRAIN_OPNSENSE_URL", "")
+    get_settings.cache_clear()
+    with pytest.raises(ValueError, match="No firewall address"):
+        write_probe.start([{"param": "quantum", "value": 3000}])
+    get_settings.cache_clear()
+
+
+def test_the_status_endpoint_offers_the_address_so_the_page_can_fill_it_in(client, _db):
+    body = client.get("/api/firewall/write-probe").json()
+    assert "defaults" in body and "firewall_target" in body["defaults"]
+    assert body["defaults"]["through_target"] == "1.1.1.1"

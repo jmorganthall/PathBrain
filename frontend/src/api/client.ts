@@ -270,10 +270,16 @@ export const api = {
   // read and the next poll shows them what changed.
   // Write and ping: measure what one firewall write costs the network.
   writeProbeStatus: () =>
-    request<{ current: WriteProbe | null; recent: WriteProbe[] }>("/firewall/write-probe"),
+    request<{
+      current: WriteProbe | null;
+      recent: WriteProbe[];
+      // The firewall address PathBrain is already configured with — the page fills it in
+      // rather than asking for something the application knows.
+      defaults?: { firewall_target: string | null; through_target: string };
+    }>("/firewall/write-probe"),
   startWriteProbe: (body: {
     changes: { pipe_uuid?: string | null; param: string; value: unknown }[];
-    firewall_target: string;
+    firewall_target?: string;
     through_target?: string;
     baseline_s?: number;
     settle_s?: number;

@@ -100,11 +100,19 @@ export default function WriteAndPing({
   const [throughTarget, setThroughTarget] = useState("1.1.1.1");
   const timer = useRef<number | null>(null);
 
+  const prefilled = useRef(false);
+
   const poll = useCallback(async () => {
     try {
       const s = await api.writeProbeStatus();
       setProbe(s.current);
       setRecent(s.recent ?? []);
+      // PathBrain already talks to this firewall, so fill its address in rather than
+      // asking for it. Once only, so it can never overwrite what someone is typing.
+      if (!prefilled.current && s.defaults?.firewall_target) {
+        prefilled.current = true;
+        setFirewallTarget((cur) => cur || s.defaults!.firewall_target!);
+      }
     } catch {
       /* a diagnostic must never be why the page fails */
     }
@@ -203,8 +211,9 @@ export default function WriteAndPing({
             onChange={(e) => setValue(e.target.value)}
           />
           <TextField
-            size="small" label="Firewall IP" value={firewallTarget} sx={{ width: 160 }}
-            placeholder="192.168.1.1"
+            size="small" label="Firewall" value={firewallTarget} sx={{ width: 160 }}
+            placeholder="from your provider config"
+            helperText={firewallTarget ? "from your provider config" : "none configured"}
             onChange={(e) => setFirewallTarget(e.target.value)}
           />
           <TextField

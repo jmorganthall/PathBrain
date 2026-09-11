@@ -218,10 +218,34 @@ def verdict(steps: list[dict]) -> str:
     )
 
 
+def firewall_address() -> str | None:
+    """The firewall's own address, taken from the provider it is already configured with.
+
+    PathBrain talks to this box constantly; asking a person to retype its address into a
+    diagnostic about that same box is asking them for something the application already
+    knows. Parsed from ``opnsense_url`` — a hostname is fine, ``icmplib`` resolves it — and
+    None for a provider with no address (the mock), where the field stays empty and says so
+    rather than offering a default that would ping nothing.
+    """
+    try:
+        from urllib.parse import urlsplit
+
+        from .config import get_settings
+
+        url = (get_settings().opnsense_url or "").strip()
+        if not url:
+            return None
+        host = urlsplit(url if "//" in url else f"//{url}").hostname
+        return host or None
+    except Exception:  # noqa: BLE001 — a convenience default must never raise
+        log.debug("write_probe: could not read the firewall's address", exc_info=True)
+        return None
+
+
 def start(
     changes: list[dict],
     *,
-    firewall_target: str,
+    firewall_target: str | None = None,
     through_target: str = "1.1.1.1",
     baseline_s: float = DEFAULT_BASELINE_S,
     settle_s: float = DEFAULT_SETTLE_S,
@@ -236,8 +260,12 @@ def start(
         raise ValueError("A write probe is already running.")
     if not changes:
         raise ValueError("Nothing to write — a probe needs at least one field to change.")
+    firewall_target = (firewall_target or "").strip() or firewall_address()
     if not firewall_target:
-        raise ValueError("A probe needs the firewall's address to ping.")
+        raise ValueError(
+            "No firewall address to ping — PathBrain has none configured (set "
+            "PATHBRAIN_OPNSENSE_URL), so give one explicitly."
+        )
     blocked = firewall_guard.blocked_reason("write_probe")
     if blocked:
         raise ValueError(blocked)
@@ -437,4 +465,5 @@ def _serialize(p: WriteProbe, with_samples: bool = True) -> dict:
     return out
 
 
-__all__ = ["active", "cancel", "current", "get", "recent", "start", "summarize", "verdict"]
+__all__ = ["active", "cancel", "current", "firewall_address", "get", "recent", "start",
+           "summarize", "verdict"]
