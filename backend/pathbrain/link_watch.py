@@ -70,6 +70,10 @@ PRE_S = 3.0
 #: Seconds after a write returns that still count as its window. Recovery is part of the
 #: cost, and a queue rebuild's damage outlives the API call that caused it.
 POST_S = 12.0
+#: How close two sightings must be to be the same gap. Both paths derive the start from
+#: the same samples, so one event arrives twice with the same instant — while two genuinely
+#: distinct gaps need an answered ping between them and so cannot start this close.
+DEDUP_S = 0.3
 #: How often the sweep looks for gaps nobody wrote for.
 SWEEP_S = 30.0
 #: Default send rate per target. 5 Hz resolves a 250 ms gap as one or two missed packets
@@ -78,6 +82,10 @@ SWEEP_S = 30.0
 DEFAULT_HZ = 5.0
 
 _lock = threading.Lock()
+#: Guards ``_state["pending"]`` alone. Writes append to it from whichever thread is writing
+#: the firewall while the worker drains it: a rebuild that straddles an append would drop
+#: that window, leaving a write unmeasured — the one thing this must never do.
+_pending_lock = threading.Lock()
 _state: dict = {
     "running": False,
     "targets": {},          # label -> _Target
@@ -337,11 +345,12 @@ def note_write(write_id: int | None, op: str, started_at: float, ended_at: float
     try:
         if not _state.get("running"):
             return
-        _state["pending"].append({
-            "write_id": write_id, "op": op, "owner": owner,
-            "start": float(started_at) - PRE_S, "end": float(ended_at) + POST_S,
-            "due": float(ended_at) + POST_S,
-        })
+        with _pending_lock:
+            _state["pending"].append({
+                "write_id": write_id, "op": op, "owner": owner,
+                "start": float(started_at) - PRE_S, "end": float(ended_at) + POST_S,
+                "due": float(ended_at) + POST_S,
+            })
     except Exception:  # noqa: BLE001
         log.debug("link_watch: could not register a write window", exc_info=True)
 
@@ -363,12 +372,13 @@ def _work() -> None:
 def _settle_due() -> None:
     """Score every write whose recovery window has elapsed."""
     now = time.time()
-    pending = _state.get("pending") or []
-    due = [p for p in pending if p["due"] <= now]
-    if not due:
-        return
-    _state["pending"] = [p for p in pending if p["due"] > now]
-    for p in due:
+    with _pending_lock:
+        pending = _state.get("pending") or []
+        due = [p for p in pending if p["due"] <= now]
+        if not due:
+            return
+        _state["pending"] = [p for p in pending if p["due"] > now]
+    for p in due:  # scoring reads the DB; never hold the lock across it
         _score_write(p)
 
 
@@ -431,7 +441,8 @@ def _sweep() -> None:
     if settled_to <= since:
         return
     _state["swept_to"] = settled_to
-    claimed = [(p["start"], p["end"]) for p in list(_state.get("pending") or [])]
+    with _pending_lock:
+        claimed = [(p["start"], p["end"]) for p in list(_state.get("pending") or [])]
     claimed += list(_state.get("recent_windows") or [])
     for label, t in targets.items():
         # Read a little either side so a gap straddling the boundary is seen whole, then
@@ -455,8 +466,8 @@ def _record_gap(target: str, gap: dict, *, write_id: int | None, op: str | None,
             dup = s.scalars(
                 select(LinkGap).where(
                     LinkGap.target == target,
-                    LinkGap.at >= at - timedelta(seconds=1),
-                    LinkGap.at <= at + timedelta(seconds=1),
+                    LinkGap.at >= at - timedelta(seconds=DEDUP_S),
+                    LinkGap.at <= at + timedelta(seconds=DEDUP_S),
                 ).limit(1)
             ).first()
             if dup is not None:

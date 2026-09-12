@@ -397,3 +397,31 @@ def test_the_watch_never_touches_the_firewall(watching, monkeypatch):
 
     assert provider.calls == [], f"the link watch called the firewall: {provider.calls}"
     assert provider.reconfigures == 0
+
+
+def test_two_distinct_gaps_close_together_are_two_rows(watching):
+    """The de-dup must not swallow real events.
+
+    Both paths derive a gap's start from the same samples, so one event seen twice arrives
+    with the same instant — while two genuinely separate gaps need an answered ping between
+    them and so start further apart than the de-dup window.
+    """
+    wid = _write_row()
+    t = time.time()
+    # "..XXXX.XXXX.." — two gaps with a single answered ping between them.
+    watching({"through": _FakeTarget("through", series("..XXXX.XXXX..", t0=t))})
+    link_watch._score_write({"write_id": wid, "op": "apply_many", "owner": None,
+                             "start": t, "end": t + 10.0})
+    with session_scope() as s:
+        assert s.query(LinkGap).count() == 2
+
+
+def test_a_write_registered_while_the_worker_drains_is_not_dropped(watching):
+    """The pending list is appended from the write thread and rebuilt on the worker; a
+    rebuild straddling an append would drop that window, leaving a write unmeasured."""
+    watching({"through": _FakeTarget("through", series("." * 10, t0=time.time()))})
+    now = time.time()
+    link_watch.note_write(1, "apply", now - 100.0, now - 100.0)   # already due
+    link_watch.note_write(2, "apply", now, now)                   # not due for POST_S
+    link_watch._settle_due()
+    assert [p["write_id"] for p in link_watch._state["pending"]] == [2]
