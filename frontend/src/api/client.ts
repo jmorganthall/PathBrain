@@ -90,6 +90,8 @@ import type {
   PortableStandings,
   PortableLocationMap,
   FirewallGuardStatus,
+  LinkWatchResponse,
+  LinkWatchStatus,
   PortableHome,
   PortableRecipe,
   PortableRun,
@@ -790,6 +792,10 @@ export const api = {
   portableStandings: () => request<PortableStandings>("/portable/standings"),
   portableLocations: () => request<PortableLocationMap>("/portable/locations"),
   firewallGuard: (limit = 25) => request<FirewallGuardStatus>(`/firewall/guard?limit=${limit}`),
+  linkWatch: (limit = 100, hours = 24) =>
+    request<LinkWatchResponse>(`/firewall/watch?limit=${limit}&hours=${hours}`),
+  setLinkWatch: (enabled: boolean) =>
+    request<LinkWatchStatus>("/firewall/watch", { method: "POST", body: JSON.stringify({ enabled }) }),
   firewallArm: () => request<FirewallGuardStatus>("/firewall/guard/arm", { method: "POST" }),
   firewallHandsOff: (reason?: string) =>
     request<FirewallGuardStatus>("/firewall/guard/hands-off", { method: "POST", body: JSON.stringify({ reason: reason ?? null }) }),

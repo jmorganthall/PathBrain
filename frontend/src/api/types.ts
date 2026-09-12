@@ -3859,7 +3859,81 @@ export interface FirewallWriteRow {
   outcome: "ok" | "verified" | "failed" | "refused";
   error: string | null;
   latency_ms: number | null;
+  /** What the guard spent pacing before the call went out — PathBrain's own rate limiting,
+   *  never the firewall being slow. Kept apart from latency for exactly that reason. */
+  waited_ms: number | null;
+  /** What this write cost the household, from the link watch: the worst continuous ping gap
+   *  in the window around it. **null means nothing was watching**, which is not zero. */
+  gap_ms: number | null;
+  /** The firewall's own address going quiet — the box was busy. */
+  box_gap_ms: number | null;
+  /** Traffic through the firewall stopping while the box answered — a queue rebuild. */
+  through_gap_ms: number | null;
+  watch: {
+    window: { start: number; end: number };
+    targets: Record<string, LinkWatchWindow>;
+    verdict: string;
+  } | null;
   git_sha: string | null;
+}
+
+// ── Link watch (GET|POST /firewall/watch) ────────────────────────────────────
+//
+// The continuous ping beside every write. The reading that matters is the SPLIT: of the
+// gaps seen, how many had a write in flight. A count of gaps alone says the link is
+// unstable; only the split says whether PathBrain is why.
+
+export interface LinkWatchWindow {
+  sent: number;
+  lost: number;
+  loss_pct: number | null;
+  worst_gap_ms: number | null;
+  rtt_median_ms: number | null;
+  rtt_max_ms: number | null;
+  gaps?: { started_at: number; duration_ms: number; open: boolean }[];
+}
+
+export interface LinkWatchTarget {
+  address: string;
+  error: string | null;
+  sent_total: number;
+  lost_total: number;
+  last_minute: LinkWatchWindow;
+}
+
+export interface LinkWatchStatus {
+  running: boolean;
+  error: string | null;
+  hz: number | null;
+  retain_s: number;
+  min_gap_ms: number;
+  window: { pre_s: number; post_s: number };
+  started_at: number | null;
+  targets: Record<string, LinkWatchTarget>;
+}
+
+export interface LinkGapRow {
+  id: number;
+  at: string | null;
+  target: "firewall" | "through" | string;
+  duration_ms: number;
+  /** The write in flight at the time, or null — the control. */
+  write_id: number | null;
+  op: string | null;
+  owner: string | null;
+}
+
+export interface LinkWatchResponse {
+  status: LinkWatchStatus;
+  summary: {
+    hours: number;
+    gaps: number;
+    during_a_write: number;
+    unattributed: number;
+    worst_ms: number;
+    worst_during_a_write_ms: number;
+  };
+  gaps: LinkGapRow[];
 }
 
 export interface FirewallGuardStatus {

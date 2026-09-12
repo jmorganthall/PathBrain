@@ -88,11 +88,18 @@ async def lifespan(app: FastAPI):
     # A self-update recreates this container, so startup is the moment of truth: compare the
     # build that was running when "Update now" was pressed against the one running now.
     verify_pending_updates()
+    # The link watch starts before the scheduler, so the first write any engine makes
+    # already has a ping series around it. Read-only; it never writes the firewall.
+    from . import link_watch
+
+    if link_watch.config()["enabled"]:
+        link_watch.start()
     from .scheduler import start_scheduler, stop_scheduler
 
     start_scheduler()
     yield
     stop_scheduler()
+    link_watch.stop()
     log.info("PathBrain shutting down")
 
 

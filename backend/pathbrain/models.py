@@ -1101,7 +1101,42 @@ class FirewallWrite(Base):
     outcome: Mapped[str] = mapped_column(String(16), default="ok")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # What the guard spent pacing before the call went out. Separate from ``latency_ms`` on
+    # purpose: a wait PathBrain chose is not a cost the firewall imposed, and a card that
+    # adds them together reports its own rate limiting as firewall slowness.
+    waited_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # What this write cost the household, measured by ``link_watch``: the worst continuous
+    # ping gap in the window around it, split by target (the box itself vs through it).
+    # None means nothing was watching, which is not the same as zero and must not read as it.
+    gap_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    box_gap_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    through_gap_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    watch: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     git_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+
+class LinkGap(Base):
+    """One continuous run of lost pings, whether or not PathBrain caused it.
+
+    The unattributed rows are the point. A ledger that only recorded the gaps around writes
+    could only ever conclude that writes cause gaps — it never looked anywhere else. Filing
+    every gap the watch sees, with ``write_id`` set only when a write was actually in
+    flight, is what turns "PathBrain broke the internet" from an impression into a ratio.
+    """
+
+    __tablename__ = "link_gaps"
+    __table_args__ = (Index("ix_link_gaps_at", "at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: When the gap started (UTC, naive, like every other timestamp here).
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    #: "firewall" (its own address) or "through" (a public address beyond it).
+    target: Mapped[str] = mapped_column(String(16))
+    duration_ms: Mapped[float] = mapped_column(Float)
+    #: The write in flight at the time, or None — the control.
+    write_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    op: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class FirewallGuardState(Base):

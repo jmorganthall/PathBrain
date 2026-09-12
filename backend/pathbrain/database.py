@@ -180,6 +180,13 @@ def _migrate() -> None:
             "reached_fingerprint": "VARCHAR(40)",
             "target": "JSON",
         },
+        "firewall_writes": {
+            "waited_ms": "FLOAT",
+            "gap_ms": "FLOAT",
+            "box_gap_ms": "FLOAT",
+            "through_gap_ms": "FLOAT",
+            "watch": "JSON",
+        },
         "explore_recommendations": {
             "unreachable": "BOOLEAN DEFAULT 0",
         },
@@ -208,6 +215,7 @@ def _migrate() -> None:
         ("ix_runs_job_group", "runs", "job_group"),
         ("ix_benchmark_results_run_id", "benchmark_results", "run_id"),
         ("ix_scores_methodology_version", "scores", "methodology_version"),
+        ("ix_link_gaps_at", "link_gaps", "at"),
     ]
     with engine.begin() as conn:
         for table, columns in new_columns.items():

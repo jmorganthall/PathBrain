@@ -208,6 +208,16 @@ DEFAULT_CONFIG: dict = {
         "cooldown_after_outage_s": 300,
         # A container that comes up on a new build runs read-only until armed from the top bar.
         "arm_required_after_deploy": True,
+        # Link watch (``link_watch.py``): a continuous ping beside every write, so each
+        # ledger row says what it cost — and, crucially, so the gaps with NO write in
+        # flight are on the same record. Read-only ICMP; it never touches the firewall.
+        "watch_enabled": True,
+        # Sends per second per target. 5 Hz resolves a 250 ms gap while costing ten packets
+        # a second across both targets.
+        "watch_hz": 5,
+        # The address pinged *through* the firewall. The firewall's own address is read from
+        # the configured provider — nobody should have to retype what PathBrain already knows.
+        "watch_through_target": "1.1.1.1",
     },
     "instrument": {
         "enabled": True,

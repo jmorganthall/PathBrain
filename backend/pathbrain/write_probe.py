@@ -337,6 +337,7 @@ def _drive(probe_id: int, changes: list[dict], firewall_target: str, through_tar
         _stage(probe_id, label)
         t0 = time.time()
         failed: str | None = None
+        firewall_guard.take_wait_ms()  # clear anything a previous step left on this thread
         if action is not None:
             try:
                 action()
@@ -344,6 +345,11 @@ def _drive(probe_id: int, changes: list[dict], firewall_target: str, through_tar
                 failed = describe_failure(exc)
                 log.warning("Write probe %s: %s failed — %s", probe_id, name, failed)
         acted = time.time()
+        # The guard paces reconfigures, and that wait is inside the span just timed. It is
+        # PathBrain's own rate limiting, not the firewall being slow — reporting them as one
+        # number sent a reader after a five-second "firewall cost" that was a five-second
+        # wait PathBrain chose, so the two are separated here.
+        paced_ms = firewall_guard.take_wait_ms()
         # Settle with the samplers still running; cancel cuts it short.
         deadline = acted + seconds
         while time.time() < deadline and not _state.get("cancel"):
@@ -352,7 +358,8 @@ def _drive(probe_id: int, changes: list[dict], firewall_target: str, through_tar
         step = {
             "step": name, "label": label,
             "started_at": round(t0, 3), "acted_at": round(acted, 3), "ended_at": round(t1, 3),
-            "action_ms": round((acted - t0) * 1000.0, 1),
+            "action_ms": round(max(0.0, (acted - t0) * 1000.0 - paced_ms), 1),
+            "paced_ms": round(paced_ms, 1),
             "failed": failed,
             "targets": {k: summarize(s.samples, t0, t1) for k, s in samplers.items()},
         }

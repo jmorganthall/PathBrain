@@ -533,6 +533,52 @@ LLM-based. See `README.md` for the product overview.
     firewall, since otherwise every step reads as total loss and the probe reports the write
     as having destroyed the network, having spent a real write to say it. The firewall's
     address is read from the configured provider rather than typed in. `test_write_probe`.
+  - `link_watch.py` — **a continuous ping beside every write, so the ledger says WHICH
+    write broke the firewall.** `write_probe` answers "what does *a* write cost?" on demand,
+    under supervision, on a value you pick — the right instrument for a controlled
+    experiment and the wrong one for the question actually being asked, which is *which of
+    the writes PathBrain already makes is the one that hurts*. That is a question about
+    writes that have already happened, on a link nobody was watching at the time, at 03:00
+    while a ladder ran; you cannot answer it by running a probe, because the probe is not
+    the write that hurt. So the probe's instrument runs **all the time**: two targets (the
+    firewall's own address — going quiet means the *box* is wedged — and a public address
+    *through* it — going quiet alone means forwarding broke while the box stayed healthy;
+    one target cannot separate them and they call for opposite responses), sampled at
+    `firewall.watch_hz` (5 Hz) into a rolling `RETAIN_S` (15 min) buffer, so a write's
+    window is **already on record when the write lands** — a measurement cannot be started
+    after the event it measures. Every write registers its span from inside
+    `ResilientProvider._write`'s `finally` (so a **failed** write — the one most likely to
+    have cost something — is measured too), and a worker scores it once the recovery window
+    has passed, writing `gap_ms`/`box_gap_ms`/`through_gap_ms` + a `watch` block with a
+    sentence onto that write's own `FirewallWrite` row. The headline is the **worst
+    continuous gap** (`find_gaps`, `MIN_GAP_MS` 250), never a loss rate: twenty scattered
+    drops and two seconds of nothing are the same percentage and only the second is an
+    outage. `None` is **"nothing was watching"** and is never rendered as clean.
+    **The gaps nobody wrote for are the control, and they are the point** (`models.LinkGap`,
+    `_sweep`): an instrument that only looked at write windows could only ever conclude that
+    writes cause gaps, because it never looked anywhere else. The sweep walks the *whole*
+    settled timeline and files each gap against the write in flight at the time or as
+    unattributed, so `gap_summary` reports the **split** — "six gaps last night, five with
+    nothing running" and "six gaps, every one during a reconfigure" are opposite findings
+    that a gap count alone renders identically. One gap is one row whichever path sees it
+    first (`_record_gap` dedups by target and second; `recent_windows` keeps a scored span
+    so the sweep, which runs behind the settling by design, cannot re-file it as
+    unattributed and invert the control). Attribution is deliberately **a window, not a
+    cause** — contemporaneous within [write − `PRE_S`, return + `POST_S`] is evidence, not
+    proof — and the recovery window is part of the cost because how long the network takes
+    to come *back* is as much what the household feels as the drop. Read-only throughout:
+    ICMP out, its own rows in, so no guard, no coordinator lock and no arming
+    (`test_the_watch_never_touches_the_firewall` pins it with the fault provider). Nothing
+    it does can fail a write — `note_write` appends a tuple and returns, every expensive
+    step is on the worker, and every path swallows. `GET|POST /api/firewall/watch`, the
+    **Link watch** card and the ledger's **Cost** column on the Firewall page.
+    **The guard's pacing is ledgered apart from the firewall's latency** (`waited_ms`,
+    `firewall_guard.take_wait_ms`): a wait PathBrain chose is not the firewall being slow,
+    and the write probe's first real reading reported a 5 s `min_reconfigure_gap_s` wait as
+    a 5.5 s firewall cost — the one number that sends a reader after entirely the wrong
+    thing. `before_write` now returns what it paced and stamps it thread-locally, the
+    ledger carries both, and the probe's `action_ms` subtracts it (`paced_ms` beside it).
+    `test_link_watch`.
   - `alerts.py` — **an alert you have read stays read until the SITUATION changes.**
     PathBrain's diagnostic banners are conditions, not events — "56% of matches produced no
     result", a fading crown, a saturated threshold — each worth showing once and noise every

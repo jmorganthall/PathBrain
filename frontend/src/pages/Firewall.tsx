@@ -20,6 +20,7 @@ import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
 import { api } from "../api/client";
+import LinkWatchCard, { fmtGap } from "../components/LinkWatchCard";
 import WriteAndPing from "../components/WriteAndPing";
 import type { FirewallGuardStatus, FirewallWriteRow, FqCodelPipe } from "../api/types";
 import { fmtDateTime } from "../utils/format";
@@ -92,6 +93,8 @@ export default function FirewallPage() {
         </Alert>
       )}
 
+      <LinkWatchCard />
+
       <WriteAndPing pipes={pipes} onLoadPipes={loadPipes} loadingPipes={loadingPipes} />
 
       <Card>
@@ -107,8 +110,10 @@ export default function FirewallPage() {
           </Stack>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
             "What did PathBrain do in the five minutes before the drop?" — one query.
-            <b> Took</b> is how long the firewall held the call; a write that timed out is
-            never reissued, only re-read.
+            <b> Took</b> is how long the firewall held the call (the guard's own pacing wait
+            is excluded — a wait PathBrain chose is not the firewall being slow). <b>Cost</b>
+            is the worst ping gap around the write, from the link watch above: "—" means
+            nothing was watching, which is not the same as clean.
           </Typography>
           {writes.length === 0 ? (
             <Typography variant="body2" color="text.secondary">
@@ -124,6 +129,7 @@ export default function FirewallPage() {
                     <TableCell>Fields</TableCell>
                     <TableCell align="right">Reloads</TableCell>
                     <TableCell align="right">Took</TableCell>
+                    <TableCell align="right">Cost</TableCell>
                     <TableCell>Outcome</TableCell>
                   </TableRow>
                 </TableHead>
@@ -134,8 +140,28 @@ export default function FirewallPage() {
                       <TableCell>{w.owner ?? "—"}</TableCell>
                       <TableCell>{w.field ?? "—"}</TableCell>
                       <TableCell align="right">{w.reconfigures}</TableCell>
-                      <TableCell align="right">
+                      <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
                         {w.latency_ms == null ? "—" : `${Math.round(w.latency_ms)} ms`}
+                        {!!w.waited_ms && (
+                          <Typography variant="caption" display="block" color="text.secondary">
+                            +{(w.waited_ms / 1000).toFixed(0)}s paced
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell
+                        align="right"
+                        sx={{
+                          whiteSpace: "nowrap",
+                          color: w.gap_ms ? "error.main" : undefined,
+                          fontWeight: w.gap_ms ? 600 : undefined,
+                        }}
+                      >
+                        {fmtGap(w.gap_ms)}
+                        {!!w.gap_ms && (
+                          <Typography variant="caption" display="block" color="text.secondary">
+                            {w.box_gap_ms ? "the box went quiet" : "through-traffic"}
+                          </Typography>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Chip
@@ -146,6 +172,11 @@ export default function FirewallPage() {
                         {w.error && (
                           <Typography variant="caption" display="block" color="text.secondary">
                             {w.error}
+                          </Typography>
+                        )}
+                        {w.watch?.verdict && !!w.gap_ms && (
+                          <Typography variant="caption" display="block" color="text.secondary">
+                            {w.watch.verdict}
                           </Typography>
                         )}
                       </TableCell>
