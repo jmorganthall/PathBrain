@@ -237,38 +237,55 @@ class ResilientProvider(ConfigProvider):
 
     def _write(self, op: str, fn: Callable[[], Any], *, changes: list[dict], reconfigures: int,
                verify: Callable[[], bool]) -> Any:
-        from . import firewall_guard
+        from . import firewall_guard, link_watch
 
-        firewall_guard.before_write(op, changes, reconfigures=reconfigures)  # raises FirewallHandsOff
+        # The pacing wait happens BEFORE the stopwatch and is ledgered as its own number:
+        # a gap PathBrain chose to wait is not the firewall being slow.
+        waited = firewall_guard.before_write(op, changes, reconfigures=reconfigures)  # raises FirewallHandsOff
+        waited_ms = float(waited or 0.0) * 1000.0
         t0 = time.monotonic()
+        # Wall clock, because ``link_watch``'s samples are wall clock: the window this write
+        # occupied has to line up with packets sent by another thread.
+        w0 = time.time()
+        write_id: int | None = None
+
+        def ledger(outcome: str, *, error: str | None = None, latency_ms: float | None = None) -> None:
+            nonlocal write_id
+            write_id = firewall_guard.record(op, changes=changes, reconfigures=reconfigures,
+                                             outcome=outcome, error=error, latency_ms=latency_ms,
+                                             waited_ms=waited_ms)
+
         try:
-            result = fn()
-        except Exception as exc:  # noqa: BLE001 — classified below
-            elapsed = (time.monotonic() - t0) * 1000.0
-            if not is_transient(exc):
-                firewall_guard.record(op, changes=changes, reconfigures=reconfigures, outcome="failed",
-                                      error=f"{type(exc).__name__}: {exc}", latency_ms=elapsed)
-                raise
-            log.warning("Firewall '%s' did not answer (%s: %s); re-reading to see whether it took — never reissuing",
-                        op, type(exc).__name__, exc)
-            took = False
             try:
-                took = bool(verify())
-            except Exception:  # noqa: BLE001
+                result = fn()
+            except Exception as exc:  # noqa: BLE001 — classified below
+                elapsed = (time.monotonic() - t0) * 1000.0
+                if not is_transient(exc):
+                    ledger("failed", error=f"{type(exc).__name__}: {exc}", latency_ms=elapsed)
+                    raise
+                log.warning("Firewall '%s' did not answer (%s: %s); re-reading to see whether it took — never reissuing",
+                            op, type(exc).__name__, exc)
                 took = False
-            if took:
-                firewall_guard.record(op, changes=changes, reconfigures=reconfigures, outcome="verified",
-                                      error=f"{type(exc).__name__}: {exc}", latency_ms=elapsed)
-                firewall_guard.note_contact(True)
-                return {"provider": self.name, "ok": True, "verified_after_timeout": True, "reconfigures": reconfigures}
-            firewall_guard.record(op, changes=changes, reconfigures=reconfigures, outcome="failed",
-                                  error=f"{type(exc).__name__}: {exc}", latency_ms=elapsed)
-            firewall_guard.note_contact(False, f"{type(exc).__name__}: {exc}")
-            raise FirewallUnavailable(op, 1, exc) from exc
-        firewall_guard.record(op, changes=changes, reconfigures=reconfigures, outcome="ok",
-                              latency_ms=(time.monotonic() - t0) * 1000.0)
-        firewall_guard.note_contact(True)
-        return result
+                try:
+                    took = bool(verify())
+                except Exception:  # noqa: BLE001
+                    took = False
+                if took:
+                    ledger("verified", error=f"{type(exc).__name__}: {exc}", latency_ms=elapsed)
+                    firewall_guard.note_contact(True)
+                    return {"provider": self.name, "ok": True, "verified_after_timeout": True,
+                            "reconfigures": reconfigures}
+                ledger("failed", error=f"{type(exc).__name__}: {exc}", latency_ms=elapsed)
+                firewall_guard.note_contact(False, f"{type(exc).__name__}: {exc}")
+                raise FirewallUnavailable(op, 1, exc) from exc
+            ledger("ok", latency_ms=(time.monotonic() - t0) * 1000.0)
+            firewall_guard.note_contact(True)
+            return result
+        finally:
+            # Every write registers its window, on every path — a write that FAILED is the
+            # one most likely to have cost the household something, so leaving the unhappy
+            # paths unmeasured would blind the instrument exactly where it matters.
+            link_watch.note_write(write_id, op, w0, time.time(), owner=firewall_guard._owner())
 
     def __getattr__(self, item: str) -> Any:
         # Anything this wrapper does not define (a provider-specific helper, ``base_url``)

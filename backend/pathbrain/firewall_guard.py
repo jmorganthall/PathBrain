@@ -271,6 +271,19 @@ def note_contact(ok: bool, error: str | None = None) -> None:
     trip(f"the firewall stopped answering: {error or 'unreachable'}", by="outage", kind="outage")
 
 
+#: The pacing wait the current thread last spent in :func:`before_write`. Thread-local
+#: because a diagnostic that times its own call needs to subtract *its* wait, not whatever
+#: another engine happened to be waiting out on another thread.
+_WAIT = threading.local()
+
+
+def take_wait_ms() -> float:
+    """The pacing the calling thread waited on its last write, and clears it."""
+    ms = float(getattr(_WAIT, "ms", 0.0) or 0.0)
+    _WAIT.ms = 0.0
+    return ms
+
+
 def _owner() -> str | None:
     try:
         from . import coordinator
@@ -281,13 +294,18 @@ def _owner() -> str | None:
 
 
 def record(op: str, *, changes: list[dict] | None, reconfigures: int, outcome: str,
-           error: str | None = None, latency_ms: float | None = None) -> None:
-    """One ledger row. Never raises — the ledger must not be why a write fails."""
+           error: str | None = None, latency_ms: float | None = None,
+           waited_ms: float | None = None) -> int | None:
+    """One ledger row; returns its id (None if the ledger could not be written).
+
+    The id is what lets ``link_watch`` come back a few seconds later and attach what this
+    write cost the household. Never raises — the ledger must not be why a write fails.
+    """
     try:
         first = (changes or [{}])[0] if changes else {}
         fields = sorted({str(c.get("param") or c.get("field") or "") for c in (changes or []) if c})
         with session_scope() as s:
-            s.add(FirewallWrite(
+            row = FirewallWrite(
                 op=op,
                 owner=_owner(),
                 pipe_uuid=str(first.get("pipe_uuid") or "")[:64] or None,
@@ -298,10 +316,15 @@ def record(op: str, *, changes: list[dict] | None, reconfigures: int, outcome: s
                 outcome=outcome,
                 error=(error or None),
                 latency_ms=latency_ms,
+                waited_ms=waited_ms,
                 git_sha=(_build_sha() or None),
-            ))
+            )
+            s.add(row)
+            s.flush()
+            return int(row.id)
     except Exception:  # noqa: BLE001
         log.debug("firewall_guard: ledger write failed", exc_info=True)
+        return None
 
 
 def reconfigures_since(since: datetime) -> int:
@@ -334,11 +357,26 @@ def _refuse(op: str, changes: list[dict] | None, reconfigures: int, reason: str,
     raise FirewallHandsOff(reason, kind=kind)
 
 
+def _sleep(seconds: float) -> None:
+    """The pacing wait, as its own function so it can be replaced. A ``sleep=time.sleep``
+    default argument binds at import and cannot be patched — a test that thought it had
+    waited a real thirty seconds before failing."""
+    time.sleep(seconds)
+
+
 def before_write(op: str, changes: list[dict] | None = None, *, reconfigures: int = 1,
-                 sleep=time.sleep) -> None:
-    """The gate every write passes. Raises :class:`FirewallHandsOff` (recorded as a refusal)
-    when hands-off is set, the post-outage cooldown has not elapsed, or the write would
-    exceed the hourly budget (which also trips hands-off). Waits out the minimum gap."""
+                 sleep=None) -> float:
+    """The gate every write passes; returns the seconds it spent pacing.
+
+    Raises :class:`FirewallHandsOff` (recorded as a refusal) when hands-off is set, the
+    post-outage cooldown has not elapsed, or the write would exceed the hourly budget
+    (which also trips hands-off). Waits out the minimum gap.
+
+    The wait is **returned and ledgered separately** because it is PathBrain's own rate
+    limiting, not a cost the firewall imposed: a diagnostic that timed the whole call
+    reported the guard's fifteen-second gap as the firewall taking fifteen seconds, which
+    sends the reader after the wrong thing entirely.
+    """
     cfg = config()
     st = state()
     if st["hands_off"]:
@@ -369,7 +407,11 @@ def before_write(op: str, changes: list[dict] | None = None, *, reconfigures: in
                     _refuse(op, changes, reconfigures,
                             f"minimum gap between reconfigures is {gap:.0f}s and the next slot is {wait:.0f}s away", "gap")
                 log.info("firewall_guard: pacing %s — waiting %.1fs for the %.0fs reconfigure gap", op, wait, gap)
-                sleep(wait)
+                (sleep or _sleep)(wait)
+                _WAIT.ms = float(wait) * 1000.0
+                return float(wait)
+    _WAIT.ms = 0.0
+    return 0.0
 
 
 def recent_writes(limit: int = LEDGER_LIMIT) -> list[dict]:
@@ -388,6 +430,11 @@ def recent_writes(limit: int = LEDGER_LIMIT) -> list[dict]:
             "outcome": r.outcome,
             "error": r.error,
             "latency_ms": r.latency_ms,
+            "waited_ms": r.waited_ms,
+            "gap_ms": r.gap_ms,
+            "box_gap_ms": r.box_gap_ms,
+            "through_gap_ms": r.through_gap_ms,
+            "watch": r.watch,
             "git_sha": r.git_sha,
         } for r in rows]
 
