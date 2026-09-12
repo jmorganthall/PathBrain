@@ -518,7 +518,21 @@ LLM-based. See `README.md` for the product overview.
     hands-off (`WRITING_KINDS`): a diagnostic that bypassed the guard to study the guard's own
     subject would be the one unsupervised write path in the system. Holds the coordinator lock
     and restores in a `finally`. `/api/firewall/write-probe`, the **Write and ping** card on
-    the Config page beside the reversible write-path test. `test_write_probe`.
+    its own **Firewall** page beside the write ledger — Config is where settings live, not
+    where a diagnostic you actively run belongs, and below the fold of a long page behind a
+    button you had to press first it was simply unfindable (*"no such card in Config"*).
+    **A failure is never silent**, which took three fixes of one kind: the error lived inside
+    a block gated on there being steps, so a probe that failed before completing one rendered
+    nothing at all; the poll swallowed every error; and the provider and samplers were built
+    outside the `try`, so an exception there left the row RUNNING forever with no reason and
+    refused every later probe as "already running". A diagnostic whose failure mode is
+    silence is unfalsifiable — worse than not having it — so status and error render whenever
+    a probe exists, and a FAILED row with no reason is backfilled saying that is a bug. It
+    also **refuses to write for a measurement it cannot take**: no ping replies in the
+    baseline (ICMP blocked from the container, a wrong address) aborts before touching the
+    firewall, since otherwise every step reads as total loss and the probe reports the write
+    as having destroyed the network, having spent a real write to say it. The firewall's
+    address is read from the configured provider rather than typed in. `test_write_probe`.
   - `alerts.py` — **an alert you have read stays read until the SITUATION changes.**
     PathBrain's diagnostic banners are conditions, not events — "56% of matches produced no
     result", a fading crown, a saturated threshold — each worth showing once and noise every
