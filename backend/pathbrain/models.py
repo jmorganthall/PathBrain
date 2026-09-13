@@ -1208,6 +1208,11 @@ class WriteProbe(Base):
         Enum(WriteProbeStatus), default=WriteProbeStatus.RUNNING
     )
     stage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: ``"single"`` — one write, decomposed into its field-write and reload halves; or
+    #: ``"sweep"`` — every writable field stepped and reverted in turn. The steps differ in
+    #: shape (a sweep's carry ``param``/``phase``/``index``), so a reader has to be told
+    #: which question the row answers rather than inferring it from the step names.
+    mode: Mapped[str | None] = mapped_column(String(16), nullable=True, default="single")
     changes: Mapped[list | None] = mapped_column(JSON, nullable=True)
     firewall_target: Mapped[str | None] = mapped_column(String(64), nullable=True)
     through_target: Mapped[str | None] = mapped_column(String(64), nullable=True)

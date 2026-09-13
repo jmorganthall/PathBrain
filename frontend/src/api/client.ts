@@ -39,6 +39,7 @@ import type {
   DuelProfileLedger,
   AlertAck,
   WriteProbe,
+  WriteSweepPlan,
   DuelHealth,
   DuelWeatherDistance,
   DuelStandings,
@@ -287,6 +288,25 @@ export const api = {
     settle_s?: number;
   }) =>
     request<{ id: number; status: string }>("/firewall/write-probe", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  writeSweepPreview: (params: { pipe_uuid?: string; fields?: string; reload?: boolean }) =>
+    request<WriteSweepPlan>(
+      `/firewall/write-probe/sweep/preview?${new URLSearchParams(
+        Object.entries(params).flatMap(([k, v]) =>
+          v === undefined || v === "" ? [] : [[k, String(v)]],
+        ),
+      ).toString()}`,
+    ),
+  startWriteSweep: (body: {
+    pipe_uuid?: string | null;
+    fields?: string[] | null;
+    reload?: boolean;
+    firewall_target?: string | null;
+    through_target?: string;
+  }) =>
+    request<{ id: number; status: string; mode: string }>("/firewall/write-probe/sweep", {
       method: "POST",
       body: JSON.stringify(body),
     }),

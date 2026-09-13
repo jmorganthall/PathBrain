@@ -175,6 +175,9 @@ def _migrate() -> None:
         "current_tests": {
             "target_fingerprint": "VARCHAR(40)",
         },
+        "write_probes": {
+            "mode": "VARCHAR(16)",
+        },
         "profile_tests": {
             "stage": "VARCHAR(255)",
             "reached_fingerprint": "VARCHAR(40)",

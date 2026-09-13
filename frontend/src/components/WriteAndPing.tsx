@@ -18,20 +18,36 @@ import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
+import Divider from "@mui/material/Divider";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import LinearProgress from "@mui/material/LinearProgress";
 import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
+import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { api } from "../api/client";
-import type { FqCodelPipe, WriteProbe, WriteProbeStep } from "../api/types";
+import type {
+  FqCodelPipe,
+  WriteProbe,
+  WriteProbeStep,
+  WriteSweepPlan,
+} from "../api/types";
 
 const POLL_MS = 2000;
 
-/** Fields worth probing. `flows` leads because it is the one fq_codel parameter that makes
- *  dummynet allocate per-scheduler state at configure time — the prime suspect. */
-const FIELDS = ["flows", "limit", "quantum", "target", "interval", "ecn"] as const;
+// No hardcoded field list. It had drifted from the registry (six entries, no bandwidth) and
+// nothing tied it to the value box, so switching the field left the previous field's number
+// behind — which is how `ecn` came to be offered a value of 4096. The server proposes a
+// minimal step per field from the live pipe, and the box follows the dropdown.
+//
+// The list this replaces led with `flows`, on the reasoning that it is the one fq_codel
+// parameter making dummynet allocate per-scheduler state at configure time. That reasoning
+// was right and the conclusion was backwards: it makes `flows` the field an unattended sweep
+// must never touch, not the one to lead with. Measured — setting it was free, putting it
+// back took 35.3s and tripped hands-off. It stays available to the single probe, where
+// somebody is watching.
 
 function gapChip(ms: number | null | undefined) {
   if (ms === null || ms === undefined) return <Chip size="small" label="no data" />;
@@ -94,8 +110,12 @@ export default function WriteAndPing({
   const [busy, setBusy] = useState(false);
 
   const [pipeUuid, setPipeUuid] = useState("");
-  const [field, setField] = useState<string>("flows");
-  const [value, setValue] = useState("4096");
+  const [field, setField] = useState<string>("quantum");
+  const [value, setValue] = useState("");
+  const [plan, setPlan] = useState<WriteSweepPlan | null>(null);
+  const [sweepFields, setSweepFields] = useState<string[] | null>(null);
+  const [sweepReload, setSweepReload] = useState(false);
+  const [touched, setTouched] = useState(false);
   const [firewallTarget, setFirewallTarget] = useState("");
   const [throughTarget, setThroughTarget] = useState("1.1.1.1");
   const timer = useRef<number | null>(null);
@@ -138,6 +158,26 @@ export default function WriteAndPing({
     if (!pipeUuid && pipes.length) setPipeUuid(pipeId(pipes[0]));
   }, [pipes, pipeUuid]);
 
+  // The plan is read-only — it discovers the firewall and prices a sweep, it writes nothing —
+  // and it carries the per-field proposals the single probe's value box reads.
+  useEffect(() => {
+    let live = true;
+    void api
+      .writeSweepPreview({ pipe_uuid: pipeUuid || undefined, reload: !sweepReload ? true : false })
+      .then((p) => live && setPlan(p))
+      .catch(() => live && setPlan(null));
+    return () => {
+      live = false;
+    };
+  }, [pipeUuid, sweepReload]);
+
+  // Switching the field proposes that field's own step. A value the user typed is never
+  // overwritten — the fix is for the box to stop lying, not to fight whoever is using it.
+  const proposal = plan?.proposals?.[field];
+  useEffect(() => {
+    if (!touched && proposal) setValue(String(proposal.to));
+  }, [proposal, touched]);
+
   const running = probe?.status === "running";
 
   const run = async () => {
@@ -146,6 +186,25 @@ export default function WriteAndPing({
     try {
       await api.startWriteProbe({
         changes: [{ pipe_uuid: pipeUuid || null, param: field, value: Number(value) || value }],
+        firewall_target: firewallTarget.trim(),
+        through_target: throughTarget.trim() || "1.1.1.1",
+      });
+      await poll();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runSweep = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.startWriteSweep({
+        pipe_uuid: pipeUuid || null,
+        fields: sweepFields,
+        reload: !sweepReload,
         firewall_target: firewallTarget.trim(),
         through_target: throughTarget.trim() || "1.1.1.1",
       });
@@ -202,15 +261,22 @@ export default function WriteAndPing({
           </TextField>
           <TextField
             select size="small" label="Field" value={field} sx={{ minWidth: 130 }}
-            onChange={(e) => setField(e.target.value)}
+            onChange={(e) => {
+              setField(e.target.value);
+              setTouched(false);
+            }}
           >
-            {FIELDS.map((f) => (
-              <MenuItem key={f} value={f}>{f}</MenuItem>
+            {Object.values(plan?.proposals ?? {}).map((f) => (
+              <MenuItem key={f.param} value={f.param}>{f.param}</MenuItem>
             ))}
           </TextField>
           <TextField
-            size="small" label="Value" value={value} sx={{ width: 120 }}
-            onChange={(e) => setValue(e.target.value)}
+            size="small" label="Value" value={value} sx={{ width: 150 }}
+            helperText={proposal ? `now ${String(proposal.from)} · ${proposal.how}` : " "}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setTouched(true);
+            }}
           />
           <TextField
             size="small" label="Firewall" value={firewallTarget} sx={{ width: 160 }}
@@ -239,6 +305,93 @@ export default function WriteAndPing({
           <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center" }}>
             ~1 minute. Applies a real change and restores it. Writes must be armed.
           </Typography>
+        </Stack>
+
+        <Divider sx={{ my: 2 }} />
+
+        <Typography variant="subtitle2" gutterBottom>
+          Sweep every field
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          Steps each field by the smallest write that is still a write — <b>+1</b>, a toggle,
+          or the next value the firewall's own option list allows — puts it straight back, and
+          measures the gap after every step. Exactly one field is ever away from its original
+          value. The flow table is deliberately left out: changing it rebuilds every queue
+          rather than re-reading a parameter, which on this link cost 35s and tripped hands-off.
+        </Typography>
+
+        <Stack direction="row" spacing={1} sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
+          {(plan?.all_fields ?? []).map((f) => {
+            const on = sweepFields === null || sweepFields.includes(f);
+            return (
+              <Chip
+                key={f}
+                size="small"
+                label={f}
+                color={on ? "primary" : "default"}
+                variant={on ? "filled" : "outlined"}
+                onClick={() => {
+                  const base = sweepFields ?? (plan?.all_fields ?? []);
+                  setSweepFields(on ? base.filter((x) => x !== f) : [...base, f]);
+                }}
+              />
+            );
+          })}
+        </Stack>
+
+        <FormControlLabel
+          control={
+            <Switch
+              size="small"
+              checked={sweepReload}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSweepReload(e.target.checked)}
+            />
+          }
+          label={
+            <Typography variant="caption">
+              Cheap pass — write and revert each field with <b>no shaper reload</b>. Costs zero
+              reconfigures, so it is exempt from the hourly budget and the pacing gap, and it
+              answers whether a bare write costs anything at all before you spend the reloads.
+            </Typography>
+          }
+          sx={{ alignItems: "flex-start", mb: 1 }}
+        />
+
+        {plan && (
+          <Alert severity={plan.blocked ? "warning" : "info"} sx={{ mb: 1 }}>
+            {plan.blocked ? (
+              plan.blocked
+            ) : (
+              <>
+                <b>
+                  {plan.steps.length} field{plan.steps.length === 1 ? "" : "s"} ·{" "}
+                  {plan.reconfigures} reconfigure{plan.reconfigures === 1 ? "" : "s"} · about{" "}
+                  {Math.round(plan.seconds / 60)} min
+                </b>
+                {plan.reconfigures > 0 && (
+                  <> — most of it spent settling, and some of it as no internet.</>
+                )}
+                {!!plan.skipped.length && (
+                  <Typography variant="caption" sx={{ display: "block", mt: 0.5 }}>
+                    Not stepped: {plan.skipped.map((s) => `${s.param} (${s.why})`).join("; ")}
+                  </Typography>
+                )}
+              </>
+            )}
+          </Alert>
+        )}
+
+        <Stack direction="row" spacing={1} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
+          <Button
+            variant="outlined"
+            onClick={() => void runSweep()}
+            disabled={
+              busy || running || !!plan?.blocked || !plan?.steps.length ||
+              !firewallTarget.trim() || !pipeUuid
+            }
+          >
+            Sweep {sweepFields === null ? "every field" : `${sweepFields.length} field(s)`}
+          </Button>
         </Stack>
 
         {error && (

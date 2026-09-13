@@ -3983,6 +3983,15 @@ export interface WriteProbeTarget {
 export interface WriteProbeStep {
   step: string;
   label: string;
+  // Present on a sweep's steps only: which field this step moved, which way round (the
+  // step or the revert) and its position in the sweep — position being what the verdict
+  // checks before it dares name a field as the expensive one.
+  param?: string;
+  phase?: "set" | "revert";
+  index?: number;
+  from?: unknown;
+  to?: unknown;
+  how?: string;
   started_at: number;
   acted_at: number;
   ended_at: number;
@@ -3996,6 +4005,9 @@ export interface WriteProbeStep {
 export interface WriteProbe {
   id: number;
   status: "running" | "complete" | "failed" | "cancelled";
+  // "single" — one write split into its field-write and reload halves; "sweep" — every
+  // sweepable field stepped and reverted in turn. Rows predating the sweep carry "single".
+  mode: "single" | "sweep";
   stage: string | null;
   changes: { pipe_uuid?: string | null; param: string; value: unknown }[];
   firewall_target: string | null;
@@ -4006,4 +4018,31 @@ export interface WriteProbe {
   started_at: string | null;
   finished_at: string | null;
   samples?: Record<string, { t: number; rtt_ms: number | null }[]>;
+}
+
+/** One field's proposed minimal step, computed server-side from the live pipe. */
+export interface WriteProbeProposal {
+  param: string;
+  label: string;
+  from: unknown;
+  to: unknown;
+  how: string;
+  /** False for a field an automated sweep never touches (the flow table). */
+  sweepable: boolean;
+}
+
+/** What a sweep would do and what it would cost, before anything is written. */
+export interface WriteSweepPlan {
+  pipe_uuid: string | null;
+  steps: { pipe_uuid: string | null; param: string; label: string; from: unknown; to: unknown; how: string }[];
+  skipped: { param: string; label: string; why: string }[];
+  proposals: Record<string, WriteProbeProposal>;
+  reconfigures: number;
+  seconds: number;
+  reload: boolean;
+  settle_s: number;
+  pipes: { uuid: string; label: string }[];
+  all_fields: string[];
+  /** Why this sweep must not start (the guard's hourly budget), or null. */
+  blocked: string | null;
 }

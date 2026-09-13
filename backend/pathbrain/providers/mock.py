@@ -5,6 +5,7 @@ snapshot → store) runs without a live firewall.
 """
 from __future__ import annotations
 
+from ..shaper_fields import coerce_value
 from .base import ConfigProvider, FqCodelConfig
 
 # Module-level so applied changes persist across get_provider() calls and are
@@ -26,6 +27,13 @@ class MockProvider(ConfigProvider):
             "limit": int(_OVERRIDES.get("limit", 10240)),
             "target": str(_OVERRIDES.get("target", "5ms")),
             "interval": str(_OVERRIDES.get("interval", "100ms")),
+            # ``ecn`` and ``flows`` are writable fields like the rest, and until the per-field
+            # sweep exercised every one of them this mock accepted a write to either and went
+            # on reporting the hardcoded value — so a test could apply a change, read it back
+            # unchanged, and conclude the write path worked. A mock that silently drops a
+            # write is worse than one that cannot take it.
+            "ecn": coerce_value("ecn", _OVERRIDES.get("ecn", True)),
+            "flows": int(_OVERRIDES.get("flows", 1024)),
         }
         return [
             FqCodelConfig(
@@ -35,8 +43,8 @@ class MockProvider(ConfigProvider):
                 limit=first["limit"],
                 target=first["target"],
                 interval=first["interval"],
-                ecn=True,
-                flows=1024,
+                ecn=first["ecn"],
+                flows=first["flows"],
                 queues=1,
                 scheduler="fq_codel",
                 extra={

@@ -533,6 +533,56 @@ LLM-based. See `README.md` for the product overview.
     firewall, since otherwise every step reads as total loss and the probe reports the write
     as having destroyed the network, having spent a real write to say it. The firewall's
     address is read from the configured provider rather than typed in. `test_write_probe`.
+    **A costly RESTORE leads the verdict** — it used to be invisible. `verdict()` read only
+    the `set_fields` and `reload` steps, so a probe whose restore took the box off the
+    network for 33 s printed *"this write was cheap"* under a step showing a 33.3 s gap
+    (observed, probe #5). An instrument that can render the outage and the all-clear on one
+    screen is worse than none, because the all-clear is the line people act on — and the
+    restore is a full profile switch, the same operation every duel leg performs, so it is
+    the cost the household actually pays.
+    **The per-field sweep: which field's write costs the outage?** (`step_value` /
+    `plan_sweep` / `start_sweep` / `sweep_verdict`, `POST /firewall/write-probe/sweep`,
+    `GET …/sweep/preview`, the **Sweep every field** panel.) The probe above answers "the
+    fields or the reload?" and cannot answer "*which* field?" — different answers with
+    different fixes, since a reload costing the same whatever moved is inherent to
+    reconfiguring a live shaper while one that only hurts for a particular field is a lead.
+    So each field is stepped on its own, put straight back, and both writes measured
+    (`phase` `set`/`revert`), with **at most one field away from its original value at any
+    instant** — a failure can therefore always name exactly what is still moved and to what,
+    and the `finally` says so in capitals when it cannot put it back. The step is the
+    *smallest write that is still a write*: `+1`, a bool toggled, the next value on the
+    firewall's own option list for a select (`+1` off that list is accepted and silently does
+    nothing, so it would time a write that never happened). Deliberately **not**
+    `levers._generated_values`, which halves and doubles because it is hunting a better
+    value; this is measuring what a write costs, and a halved queue limit is the failure the
+    sweep investigates rather than one it should cause.
+    Three things make it safe to point at a live firewall. **(1) `flows` is never swept**
+    (`NEVER_STEP`) — every other writable field is a parameter the shaper *reads*, while the
+    flow table decides how many queues it allocates, so any change to it (`1024 → 1025`
+    included) forces a full rebuild rather than a re-read. Measured on this link: setting it
+    was free, putting it back took **35.3 s**, timed out the `apply_many`, took the box off
+    the network for 33 s and tripped hands-off. Naming it explicitly does not override the
+    exclusion, because the reason does not depend on who asked; the single probe still
+    reaches it, where somebody is watching. **(2) The settle outlasts the outage**
+    (`SWEEP_SETTLE_S` 45 s): `summarize` reports the worst gap *inside* the step window and a
+    run still lost at its close is measured only to the last sample in it, so the single
+    probe's 10 s settle would read a 35 s outage as 10 s and truncate the finding. **(3) The
+    cost is priced before the first write** (`budget_shortfall`): exceeding
+    `max_reconfigures_per_hour` trips hands-off, hands-off refuses *every* write including a
+    restore, and a sweep stopped there is holding a field it cannot put back — so a sweep
+    that cannot finish inside the remaining budget is refused rather than started. A field
+    costs 2 reconfigures (step + revert) and `reload=False` costs **none**, which makes the
+    cheap pass — write and revert each field with no reload — exempt from both the budget and
+    the pacing gap and the right thing to run first.
+    `sweep_verdict` checks the gap against each step's **position** before it dares name a
+    field: one pass gives one sample each, so "this field is expensive" and "the fourth
+    reload of a session is expensive" produce identical tables, and a ranking nobody can
+    trust is worse than no ranking. `plan_sweep` also returns `proposals` — the same step
+    rule over *every* writable field — which the single probe's value box reads, so the
+    dropdown and the number agree. They did not: the field list was hardcoded in the
+    frontend (drifted from the registry, no bandwidth) and the value box kept whatever was
+    last typed, so selecting `ecn` offered it a value of **4096** left over from `flows`.
+    `test_write_probe_sweep`.
   - `link_watch.py` — **a continuous ping beside every write, so the ledger says WHICH
     write broke the firewall.** `write_probe` answers "what does *a* write cost?" on demand,
     under supervision, on a value you pick — the right instrument for a controlled
