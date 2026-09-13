@@ -468,3 +468,39 @@ def test_opnsense_apply_many_reconfigures_once(monkeypatch):
     posts.clear()
     prov.apply({"pipe_uuid": "u-up", "param": "quantum", "value": 600})
     assert posts.count("/api/trafficshaper/service/reconfigure") == 1
+
+
+# ------------------------------------------------- one concept, one response shape
+
+def test_every_guard_endpoint_returns_the_same_shape(client):
+    """Arm and hands-off answer with exactly what the GET answers with.
+
+    The chip sets its whole state from whichever endpoint replied, so a POST that
+    returned the bare state row — no ``config``, no ``writes`` — made the next render
+    read ``info.config.max_reconfigures_per_hour`` on an object with no ``config``. In a
+    React tree with no error boundary that throws and unmounts everything: pressing
+    **Arm** blanked the page. A shape is part of the contract, not an implementation
+    detail of whichever function happened to be nearest.
+    """
+    get = client.get("/api/firewall/guard").json()
+    armed = client.post("/api/firewall/guard/arm").json()
+    off = client.post("/api/firewall/guard/hands-off", json={"reason": "test"}).json()
+    try:
+        assert set(armed) == set(get), f"arm is missing {set(get) - set(armed)}"
+        assert set(off) == set(get), f"hands-off is missing {set(get) - set(off)}"
+        # Named outright, because these are the two the chip dereferences without a guard.
+        for body in (armed, off):
+            assert isinstance(body.get("config"), dict)
+            assert isinstance(body.get("writes"), list)
+            assert "reconfigures_last_hour" in body
+    finally:
+        client.post("/api/firewall/guard/arm")
+
+
+def test_the_posts_report_the_state_they_just_set(client):
+    """The response is fresh, not the state from before the call."""
+    try:
+        assert client.post("/api/firewall/guard/hands-off", json={"reason": "test"}).json()["hands_off"] is True
+        assert client.post("/api/firewall/guard/arm").json()["hands_off"] is False
+    finally:
+        client.post("/api/firewall/guard/arm")

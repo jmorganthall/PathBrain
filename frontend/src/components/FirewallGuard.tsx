@@ -61,7 +61,11 @@ export default function FirewallGuard() {
   }, [load]);
 
   const handsOff = info?.hands_off ?? false;
-  const cap = info?.config.max_reconfigures_per_hour ?? 0;
+  // Every field below is read defensively, because this chip is mounted on EVERY page:
+  // one undefined dereference here unmounts the whole app (there is no error boundary),
+  // so a payload that is merely incomplete must degrade to a dash, never to a blank page.
+  const cap = info?.config?.max_reconfigures_per_hour ?? 0;
+  const writes = info?.writes ?? [];
 
   const arm = async () => {
     setBusy(true);
@@ -92,7 +96,7 @@ export default function FirewallGuard() {
     ? "guard"
     : handsOff
       ? "Hands off"
-      : `${info.reconfigures_last_hour} reload${info.reconfigures_last_hour === 1 ? "" : "s"}/h`;
+      : `${info.reconfigures_last_hour ?? 0} reload${info.reconfigures_last_hour === 1 ? "" : "s"}/h`;
 
   return (
     <>
@@ -102,7 +106,7 @@ export default function FirewallGuard() {
             ? "Firewall guard"
             : handsOff
               ? `Firewall writes are OFF: ${info.reason ?? ""}`
-              : `Firewall writes armed · ${info.reconfigures_last_hour} shaper reloads in the last hour${cap ? ` (cap ${cap})` : ""}`
+              : `Firewall writes armed · ${info.reconfigures_last_hour ?? 0} shaper reloads in the last hour${cap ? ` (cap ${cap})` : ""}`
         }
       >
         <Chip
@@ -138,7 +142,7 @@ export default function FirewallGuard() {
                 <br />
                 {info.reason}
                 {info.tripped_at ? ` (${fmtTimeShort(info.tripped_at)}, by ${info.tripped_by ?? "?"})` : ""}
-                {info.refused_count > 0 ? ` · ${info.refused_count} write${info.refused_count === 1 ? "" : "s"} refused since` : ""}
+                {(info.refused_count ?? 0) > 0 ? ` · ${info.refused_count} write${info.refused_count === 1 ? "" : "s"} refused since` : ""}
               </Alert>
             ) : (
               <Alert severity="success" sx={{ mb: 1 }}>
@@ -153,22 +157,22 @@ export default function FirewallGuard() {
               <Box>
                 <Typography variant="caption" color="text.secondary">Reloads, last hour</Typography>
                 <Typography variant="body1">
-                  {info.reconfigures_last_hour}
+                  {info.reconfigures_last_hour ?? "—"}
                   {cap ? <Typography component="span" variant="caption" color="text.secondary"> / {cap} cap</Typography> : null}
                 </Typography>
               </Box>
               <Box>
                 <Typography variant="caption" color="text.secondary">Last 24 h</Typography>
-                <Typography variant="body1">{info.reconfigures_last_24h}</Typography>
+                <Typography variant="body1">{info.reconfigures_last_24h ?? "—"}</Typography>
               </Box>
               <Box>
                 <Typography variant="caption" color="text.secondary">Refused, last hour</Typography>
-                <Typography variant="body1">{info.refused_last_hour}</Typography>
+                <Typography variant="body1">{info.refused_last_hour ?? "—"}</Typography>
               </Box>
               <Box>
                 <Typography variant="caption" color="text.secondary">Min gap · cooldown</Typography>
                 <Typography variant="body1">
-                  {info.config.min_reconfigure_gap_s}s · {info.config.cooldown_after_outage_s}s
+                  {info.config?.min_reconfigure_gap_s ?? "—"}s · {info.config?.cooldown_after_outage_s ?? "—"}s
                 </Typography>
               </Box>
             </Stack>
@@ -187,7 +191,7 @@ export default function FirewallGuard() {
             <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 0.5 }}>
               Last writes — newest first
             </Typography>
-            {info.writes.length === 0 ? (
+            {writes.length === 0 ? (
               <Typography variant="caption" color="text.secondary">No writes on record yet.</Typography>
             ) : (
               <Box sx={{ overflowX: "auto", maxHeight: 280 }}>
@@ -203,7 +207,7 @@ export default function FirewallGuard() {
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {info.writes.map((w) => (
+                    {writes.map((w) => (
                       <TableRow key={w.id}>
                         <TableCell sx={{ whiteSpace: "nowrap" }}>{w.at ? fmtTimeShort(w.at) : "—"}</TableCell>
                         <TableCell sx={{ whiteSpace: "nowrap" }}>{w.owner ?? "—"}</TableCell>
