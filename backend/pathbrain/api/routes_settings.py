@@ -43,12 +43,14 @@ from .. import profile_names
 from ..settings_profile import (
     _field_equal,
     _to_number,
+    describe_unreachable,
     diff_profiles,
     environment_signature,
     fingerprint,
     normalize,
     plan_apply,
     summarize,
+    unreachable_fields,
     unwritable_diffs,
 )
 from ..shaper_fields import SHAPER_FIELDS, SWEEPABLE_FIELDS, WRITABLE_FIELDS, coerce_value, field as shaper_field
@@ -1637,13 +1639,13 @@ def build_optimizer_export(
             "sweepable_fields": list(SWEEPABLE_FIELDS),
             # The shaper has a SEPARATE pipe per direction. Each profile's `settings` is a list
             # of pipes (typically a Download and an Upload pipe, by `label`); every pipe has its
-            # OWN tunable quantum/target/interval/ecn/limit/flows and its own bandwidth (in that
+            # OWN tunable quantum/target/interval/ecn/limit and its own bandwidth (in that
             # pipe's `download_bandwidth` field regardless of direction — `upload_bandwidth` is
             # unused/null). Upload shaping matters as much as download — tune both pipes.
             "pipes_note": (
                 "Each profile has one pipe per direction (see each pipe's 'label', e.g. Download "
                 "and Upload). Tune BOTH: every pipe has independent quantum/target/interval/ecn/"
-                "limit/flows and its own bandwidth (the pipe's 'download_bandwidth' field is that "
+                "limit and its own bandwidth (the pipe's 'download_bandwidth' field is that "
                 "pipe's bandwidth for either direction; 'upload_bandwidth' is unused). Upload "
                 "shaping affects responsiveness under load as much as download."
             ),
@@ -3064,6 +3066,16 @@ def apply_profile(
         ) from exc
 
     changes, warnings = plan_apply(target, live)
+    # A one-way apply is the user's call, so this is stated rather than refused: the fields
+    # PathBrain never writes are listed in the confirm dialog, and whatever else the profile
+    # asks for is still applied. Without it the apply reports success while the firewall
+    # settles on a profile with a different fingerprint, and nothing on screen says why.
+    for drop in unreachable_fields(target, live):
+        warnings.append(
+            f"{drop['label']}·{drop['field_label']} stays at {drop.get('from')} "
+            f"(this profile wants {drop.get('to')}) — {drop['reason']}. The firewall will "
+            "end up on a different profile than the one named."
+        )
 
     if preview:
         return {
@@ -3248,6 +3260,28 @@ def test_profile(
     target = _profile_settings(session, fp)
     if not target:
         raise HTTPException(status_code=404, detail="No stored settings for that profile")
+
+    # Refused rather than warned, because this test is a loop that would never terminate.
+    # ``plan_apply`` writes only writable fields, so a profile differing in one PathBrain
+    # never writes (``flows``, ``scheduler``, ``queues``, ``upload_bandwidth``) applies
+    # cleanly onto a firewall that stays on a DIFFERENT profile; the runs are filed under
+    # that profile's fingerprint — correctly — so "top up to the minimum" would add
+    # iterations to the wrong profile and this one would never reach confidence. Best-effort:
+    # a firewall we cannot read is not a reason to refuse a test.
+    unreachable: list[dict] = []
+    try:
+        unreachable = unreachable_fields(target, get_provider().discover())
+    except Exception:  # noqa: BLE001
+        log.debug("test-profile: could not check reachability", exc_info=True)
+    if unreachable:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unreachable: {describe_unreachable(unreachable)}. "
+                f"{unreachable[0]['reason']}, so the firewall cannot be put on this profile — "
+                "testing it would measure whichever profile it settled on instead."
+            ),
+        )
 
     min_iterations = _min_iterations(session)
     current_iters = _profile_iterations(session, fp)

@@ -214,7 +214,7 @@ function PreviewCard({ card, busy, onRefresh }: { card: DuelCard | null; busy: b
           <>
             <b>{card.incumbent.name ?? card.incumbent.label}</b> defends against {card.total ?? rows.length}{" "}
             single-setting variant{(card.total ?? rows.length) === 1 ? "" : "s"} of itself.
-            <HelpTip title="Measured siblings first (a profile already on record that differs from the champion in exactly one setting — the session matures it), then generated steps the firewall can hold: the next option on a select, halve and double on quantum, limit or flows, the flip on ECN. Levers with the least paired evidence on the ledger are asked first. A projection: the engine re-reads the ledger each cycle." />
+            <HelpTip title="Measured siblings first (a profile already on record that differs from the champion in exactly one setting — the session matures it), then generated steps the firewall can hold: the next option on a select, halve and double on quantum or limit, the flip on ECN. Levers with the least paired evidence on the ledger are asked first. A projection: the engine re-reads the ledger each cycle." />
           </>
         ) : busy ? (
           "Ranking the field…"

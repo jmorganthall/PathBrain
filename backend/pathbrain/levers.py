@@ -126,6 +126,13 @@ MECHANISM: dict[str, dict] = {
             "are rare; the interleave should not change measurably. A larger effect than "
             "quantum's would be surprising."
         ),
+        # Kept as the record of the prediction, and no longer reachable: `flows` is captured
+        # but never written (`shaper_fields`), so it is not in WRITABLE_FIELDS and neither
+        # `lever_variants` nor `lever_ledger` will ever ask about it. Writing it rebuilds
+        # dummynet's queues rather than handing the shaper a value to read, which cost this
+        # link 30-35s of no internet on every write that carried it — and the prediction
+        # above says the field buys nothing on an unsaturated link anyway. That pair is the
+        # whole argument: all of the cost, none of the effect.
     },
     "ecn": {
         "prediction": "null",

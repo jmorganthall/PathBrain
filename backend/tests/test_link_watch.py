@@ -122,8 +122,8 @@ def watching(monkeypatch):
 
 
 def _write_row() -> int:
-    wid = firewall_guard.record("apply_many", changes=[{"pipe_uuid": "p1", "param": "flows",
-                                                        "value": 1024}],
+    wid = firewall_guard.record("apply_many", changes=[{"pipe_uuid": "p1", "param": "quantum",
+                                                        "value": 1514}],
                                 reconfigures=1, outcome="ok", latency_ms=120.0)
     assert wid is not None
     return wid
@@ -272,7 +272,7 @@ def test_a_real_write_registers_its_window_and_lands_a_cost(watching, monkeypatc
         "through": _FakeTarget("through", series("." * 30 + "X" * 15 + "." * 60, t0=t - 5.0)),
     })
 
-    provider.apply_many([{"pipe_uuid": uuid, "param": "flows", "value": 1024}])
+    provider.apply_many([{"pipe_uuid": uuid, "param": "quantum", "value": 1514}])
 
     pending = list(link_watch._state["pending"])
     assert len(pending) == 1, "the write did not register a window with the watch"
@@ -306,7 +306,7 @@ def test_a_failed_write_is_measured_too(watching, monkeypatch):
     monkeypatch.setattr(provider._inner, "apply_many", boom)
     monkeypatch.setattr(provider, "_verify_applied", lambda *_a, **_k: False)
     with pytest.raises((FirewallUnavailable, requests.exceptions.ReadTimeout)):
-        provider.apply_many([{"pipe_uuid": "p1", "param": "flows", "value": 1024}])
+        provider.apply_many([{"pipe_uuid": "p1", "param": "quantum", "value": 1514}])
 
     assert len(link_watch._state["pending"]) == 1
     assert link_watch._state["pending"][0]["write_id"] is not None
@@ -330,8 +330,8 @@ def test_the_ledger_separates_the_guards_pacing_from_the_firewalls_own_latency(m
 
     provider = get_provider()
     uuid = (provider.discover()[0].extra or {}).get("uuid")
-    provider.apply_many([{"pipe_uuid": uuid, "param": "flows", "value": 2048}])  # sets "last"
-    provider.apply_many([{"pipe_uuid": uuid, "param": "flows", "value": 4096}])  # must be paced
+    provider.apply_many([{"pipe_uuid": uuid, "param": "quantum", "value": 2048}])  # sets "last"
+    provider.apply_many([{"pipe_uuid": uuid, "param": "quantum", "value": 4096}])  # must be paced
 
     assert slept and slept[-1] > 0, "the guard did not pace the second write"
     with session_scope() as s:

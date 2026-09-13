@@ -173,6 +173,34 @@ def test_test_profile_endpoint_already_at_minimum(client):
     assert resp.status_code == 400
 
 
+def test_test_profile_refuses_a_profile_the_firewall_cannot_be_put_on(client):
+    """Refused, not warned — because the top-up is a loop that would never end.
+
+    A profile differing in a field PathBrain never writes (``flows``) applies cleanly onto a
+    firewall that stays on a DIFFERENT profile, and the runs are filed under that profile's
+    fingerprint, which is correct. So "top up to the minimum" would add iterations to the
+    wrong profile for ever and this one would never reach confidence: the button has to say
+    no rather than spend the pipeline.
+    """
+    from pathbrain.database import session_scope
+    from pathbrain.models import Run, RunStatus
+
+    settings = [{
+        "download_bandwidth": "900Mbit", "upload_bandwidth": "40Mbit", "quantum": 4000,
+        "limit": 10240, "target": "5ms", "interval": "100ms", "ecn": True,
+        "flows": 6,  # the mock reports 1024 and nothing may write it
+        "queues": 1, "scheduler": "fq_codel", "label": "wan-download",
+    }]
+    with session_scope() as s:
+        s.add(Run(status=RunStatus.COMPLETE, settings_fingerprint="unreachfp", settings=settings))
+
+    resp = client.post("/api/settings/test-profile",
+                       json={"fingerprint": "unreachfp", "iterations": 1})
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "Unreachable" in detail and "Flows" in detail and "1024" in detail and "6" in detail
+
+
 def test_profile_test_cancel_endpoint_when_idle(client):
     # Cancel is wired and safe to call with nothing running.
     assert pt_mod.cancel() is False

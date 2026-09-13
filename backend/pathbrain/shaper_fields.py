@@ -36,7 +36,8 @@ class ShaperField:
 # Declared once, in canonical (display + fingerprint) order. ``writable=False`` means
 # ``apply()`` can't drive the field: ``upload_bandwidth`` because OPNsense pipes are
 # directional via rules (always None on read), ``queues``/``scheduler`` because they're
-# structural pipe properties with no setPipe mapping.
+# structural pipe properties with no setPipe mapping, and ``flows`` because writing it
+# takes the household off the network (see the entry below).
 SHAPER_FIELDS: list[ShaperField] = [
     ShaperField("download_bandwidth", "Download bandwidth", writable=True),
     ShaperField("upload_bandwidth", "Upload bandwidth"),
@@ -48,7 +49,28 @@ SHAPER_FIELDS: list[ShaperField] = [
     ShaperField("interval", "CoDel interval", writable=True, sweepable=True, unit="ms",
                 sweep_default={"enabled": False, "min": 20, "max": 100, "step": 20}),
     ShaperField("ecn", "ECN", kind="bool", writable=True),
-    ShaperField("flows", "Flows", kind="int", writable=True),
+    # ``flows`` is CAPTURED but NEVER WRITTEN. Every other shaper parameter is a value the
+    # running shaper *reads*; the flow-table size decides how many queues dummynet
+    # allocates, so changing it — ``1024 -> 1025`` included — forces a full rebuild rather
+    # than a re-read, and the rebuild takes the link down while it happens. Measured on this
+    # link, from the write ledger: every write carrying ``flows`` timed out the 30s
+    # ``apply_many`` and took the box off the network for 30-35s (the write probe's restore:
+    # 35.3s, box silent 33.3s, the through-target silent 34.2s; a duel leg's
+    # ``flows,quantum``: 30.2s, box silent 30.6s, the leg FAILED). Every write in the same
+    # hours that did *not* carry it was clean and sub-second — a bare shaper reload 420/449/
+    # 492ms, ``quantum`` + reload 521ms, ``limit`` + reload 498ms. Twenty ledger rows, no
+    # exceptions. ``levers.MECHANISM`` predicts the field moves nothing measurable on an
+    # unsaturated link, so the outage buys nothing either.
+    #
+    # ``identity=True`` is the other half of "capture but never change": the field stays in
+    # the fingerprint, so it is still discovered, still recorded on every run, and still
+    # tells two profiles apart. What it does *instead* of being written is join
+    # ``NON_WRITABLE_FIELDS``, and so ``environment_signature`` — which means a profile whose
+    # flows differs from the live firewall now reads as **unreachable**, and the duel, the
+    # challenger race and the heirs card leave it alone rather than trying to switch to it.
+    # That is the point: the write that hurt was never a deliberate "set flows", it was a
+    # profile switch whose diff happened to contain it.
+    ShaperField("flows", "Flows", kind="int"),
     ShaperField("queues", "Queues", kind="int"),
     ShaperField("scheduler", "Scheduler"),
 ]

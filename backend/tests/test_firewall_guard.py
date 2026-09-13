@@ -129,6 +129,55 @@ def test_describe_failure_says_nothing_was_written(guard):
     assert "Nothing was written" in text and "restore" in text and "because" in text
 
 
+# ── 2b. a field the registry does not mark writable is never written ──────────
+
+
+def test_a_write_to_a_field_the_registry_never_writes_is_refused(guard):
+    """The flow table is captured on every run and never changed.
+
+    ``shaper_fields`` is where that decision lives and ``plan_apply`` honours it, so no
+    engine can *plan* such a change — but a hand-built change list, a route, or a job spec
+    queued before the registry changed still reaches the provider, and this field costs a
+    30-second outage rather than a wasted call. So the last thing between a change list and
+    the firewall checks it too, and nothing is written.
+    """
+    p, inner = _provider()
+    flows = {"pipe_uuid": None, "param": "flows", "value": 2048}
+    for call in (lambda: p.apply(flows), lambda: p.apply_many([flows]),
+                 lambda: p.apply_many([CH, flows])):   # one bad change condemns the batch
+        with pytest.raises(fg.FirewallHandsOff) as ei:
+            call()
+        assert ei.value.kind == "protected_field"
+        assert "flows" in ei.value.reason and "never written" in ei.value.reason
+    assert inner.reconfigures == 0 and not [c for c in inner.calls if c != "discover"]
+    assert [r["outcome"] for r in _ledger()] == ["refused"] * 3
+    # It is refused as itself, not as hands-off: arming clears the guard and changes nothing
+    # here, because this refusal is about what the field is, not about the guard's state.
+    assert fg.state()["hands_off"] is False
+    fg.arm()
+    with pytest.raises(fg.FirewallHandsOff):
+        p.apply(flows)
+    # ...and an ordinary writable field still writes.
+    p.apply(CH)
+    assert inner.reconfigures == 1
+
+
+def test_the_pipe_toggle_is_not_a_shaper_field_and_is_untouched(guard):
+    """``set_pipe_enabled`` writes ``param: "enabled"``, which the registry has never heard
+    of — a separate, documented write path (the baseline test's SQM-off). Refusing every
+    unrecognised param would have taken it out with the flow table."""
+    p, inner = _provider()
+    assert fg.protected_params([{"param": "enabled", "value": False}]) == []
+    p.set_pipe_enabled(None, False)
+    assert inner.reconfigures == 1
+
+
+def test_the_protected_refusal_points_at_no_remedy_it_does_not_have(guard):
+    text = session_runtime.describe_failure(
+        fg.FirewallHandsOff("Flows is captured but never written", kind="protected_field"))
+    assert "does not lift" in text and "Arm" not in text
+
+
 # ── 3. outage → trip; cooldown after the firewall returns ─────────────────────
 
 

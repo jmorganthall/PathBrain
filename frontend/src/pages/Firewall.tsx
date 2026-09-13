@@ -25,6 +25,39 @@ import WriteAndPing from "../components/WriteAndPing";
 import type { FirewallGuardStatus, FirewallWriteRow, FqCodelPipe } from "../api/types";
 import { fmtDateTime } from "../utils/format";
 
+/**
+ * What a write actually changed, values included — `flows 1024 → 6`, not `flows`.
+ *
+ * The row has carried the full change list since the ledger existed (`changes`, every
+ * `{param, from, to, value}` the planner emitted); the table printed only the field names,
+ * so a reader asking "what was PathBrain doing when the link dropped?" got the noun and not
+ * the number. On the write that mattered here, the difference between "flows" and
+ * "flows 1024 → 6" is the difference between a field name and a cause.
+ *
+ * A hand-built change carries no `from`, so it reads `param → value`. Long lists are cut
+ * to the first few with a count; the full list is the row's title.
+ */
+const MAX_SHOWN = 3;
+
+function describeChange(ch: Record<string, unknown>): string {
+  const param = String(ch.param ?? ch.field ?? "");
+  const show = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
+  if (!param) return "";
+  if (ch.from !== undefined && ch.to !== undefined) return `${param} ${show(ch.from)} → ${show(ch.to)}`;
+  if (ch.value !== undefined) return `${param} → ${show(ch.value)}`;
+  return param;
+}
+
+function describeWrite(w: FirewallWriteRow): { text: string; title: string } {
+  const parts = (w.changes ?? []).map(describeChange).filter(Boolean);
+  if (!parts.length) return { text: w.field ?? w.op, title: w.field ?? w.op };
+  const title = parts.join(", ");
+  const text = parts.length > MAX_SHOWN
+    ? `${parts.slice(0, MAX_SHOWN).join(", ")} +${parts.length - MAX_SHOWN} more`
+    : title;
+  return { text, title };
+}
+
 const OUTCOME_COLOR: Record<string, "success" | "warning" | "error" | "default"> = {
   ok: "success",
   verified: "warning",
@@ -138,7 +171,7 @@ export default function FirewallPage() {
                     <TableRow key={w.id} hover>
                       <TableCell sx={{ whiteSpace: "nowrap" }}>{fmtDateTime(w.at)}</TableCell>
                       <TableCell>{w.owner ?? "—"}</TableCell>
-                      <TableCell>{w.field ?? "—"}</TableCell>
+                      <TableCell title={describeWrite(w).title}>{describeWrite(w).text}</TableCell>
                       <TableCell align="right">{w.reconfigures}</TableCell>
                       <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
                         {w.latency_ms == null ? "—" : `${Math.round(w.latency_ms)} ms`}

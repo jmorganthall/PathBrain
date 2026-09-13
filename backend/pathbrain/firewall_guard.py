@@ -30,6 +30,17 @@ else):
    hands-off trips. Two shaper reloads overlapping inside OPNsense was the new behaviour
    that the retry policy introduced, and this is the rule that removes it.
 
+And one rule about *what* may be written, not how often:
+
+5. **A field the registry does not mark writable is never written.** ``shaper_fields`` is
+   where that decision lives and ``plan_apply`` already honours it, so no engine can plan
+   such a change — but a hand-built change list, a route, or a spec queued before the
+   registry changed can still reach the provider, and the field that made this rule
+   necessary (``flows``, whose every write took the link down for half a minute) costs an
+   outage, not a wasted call. So the last thing between a change list and the firewall
+   checks it too. The pipe on/off toggle (``param: "enabled"``) is not a shaper field at
+   all and is unaffected; it is its own documented write path.
+
 Read-only diagnostics are best-effort; the refusals are not. A guard that cannot read its
 own state refuses to write.
 """
@@ -44,6 +55,7 @@ from sqlalchemy import func, select
 from .database import session_scope
 from .logging_config import get_logger
 from .models import FirewallGuardState, FirewallWrite
+from .shaper_fields import FIELD_LABELS, WRITABLE_FIELDS, field as shaper_field
 
 log = get_logger("firewall_guard")
 
@@ -65,8 +77,10 @@ _lock = threading.Lock()
 
 
 class FirewallHandsOff(RuntimeError):
-    """A write was refused: the guard is hands-off, cooling down after an outage, or over
-    budget. ``reason`` is the sentence a session card shows."""
+    """A write was refused: the guard is hands-off, cooling down after an outage, over
+    budget, or aimed at a field PathBrain never writes. ``reason`` is the sentence a session
+    card shows; ``kind`` says which of those it was, because arming clears three of them and
+    does nothing at all for the fourth."""
 
     def __init__(self, reason: str, *, kind: str = "hands_off") -> None:
         super().__init__(reason)
@@ -364,19 +378,46 @@ def _sleep(seconds: float) -> None:
     time.sleep(seconds)
 
 
+def protected_params(changes: list[dict] | None) -> list[str]:
+    """The params in ``changes`` that are shaper fields the registry does not mark writable.
+
+    A param the registry has never heard of is *not* protected: the pipe on/off toggle
+    writes ``param: "enabled"``, which is a separate, documented write path and not a shaper
+    parameter at all. Only a field PathBrain declares — and declares unwritable — is refused,
+    so the registry stays the one place the decision is made.
+    """
+    seen: list[str] = []
+    for ch in changes or []:
+        key = str((ch or {}).get("param") or "")
+        if key and key not in WRITABLE_FIELDS and shaper_field(key) is not None and key not in seen:
+            seen.append(key)
+    return seen
+
+
 def before_write(op: str, changes: list[dict] | None = None, *, reconfigures: int = 1,
                  sleep=None) -> float:
     """The gate every write passes; returns the seconds it spent pacing.
 
-    Raises :class:`FirewallHandsOff` (recorded as a refusal) when hands-off is set, the
-    post-outage cooldown has not elapsed, or the write would exceed the hourly budget
-    (which also trips hands-off). Waits out the minimum gap.
+    Raises :class:`FirewallHandsOff` (recorded as a refusal) when the change touches a field
+    the registry does not mark writable, when hands-off is set, when the post-outage cooldown
+    has not elapsed, or when the write would exceed the hourly budget (which also trips
+    hands-off). Waits out the minimum gap.
 
     The wait is **returned and ledgered separately** because it is PathBrain's own rate
     limiting, not a cost the firewall imposed: a diagnostic that timed the whole call
     reported the guard's fifteen-second gap as the firewall taking fifteen seconds, which
     sends the reader after the wrong thing entirely.
     """
+    # Checked before anything else, and deliberately: hands-off and the budget are states
+    # that pass, and naming one of them would report a temporary reason for a permanent
+    # refusal. This never lifts.
+    protected = protected_params(changes)
+    if protected:
+        names = ", ".join(FIELD_LABELS.get(k, k) for k in protected)
+        _refuse(op, changes, reconfigures,
+                f"{names} is captured but never written — PathBrain does not change it "
+                f"({'/'.join(protected)} is not a writable shaper field). Nothing was applied.",
+                "protected_field")
     cfg = config()
     st = state()
     if st["hands_off"]:
@@ -466,6 +507,7 @@ def summary() -> dict:
 
 __all__ = [
     "DEFAULTS", "FirewallHandsOff", "WRITING_KINDS", "arm", "before_write", "blocked_reason",
+    "protected_params",
     "config", "hands_off", "note_contact", "recent_writes", "record", "startup_check", "state",
     "summary", "trip",
 ]
