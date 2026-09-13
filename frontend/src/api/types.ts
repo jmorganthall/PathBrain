@@ -4011,24 +4011,19 @@ export interface WriteProbeProposal {
   from: unknown;
   to: unknown;
   how: string;
-  /** False for a field an automated sweep never touches (the flow table). */
-  sweepable: boolean;
+  /** False for a field this module never proposes stepping (the flow table). */
+  steppable: boolean;
 }
 
-/** What a sweep would do and what it would cost, before anything is written. */
-export interface WriteSweepPlan {
+/** The pipes and each writable field's smallest real step. Read-only; writes nothing.
+ *
+ *  This replaced `WriteSweepPlan`, which also priced an automated pass that stepped every
+ *  field of a live firewall in turn. That pass is gone — its question ("which field's write
+ *  is expensive?") was answered, and re-asking it meant writing to everything. */
+export interface WriteProbeFields {
   pipe_uuid: string | null;
-  steps: { pipe_uuid: string | null; param: string; label: string; from: unknown; to: unknown; how: string }[];
-  skipped: { param: string; label: string; why: string }[];
   proposals: Record<string, WriteProbeProposal>;
-  reconfigures: number;
-  seconds: number;
-  reload: boolean;
-  settle_s: number;
   pipes: { uuid: string; label: string }[];
-  all_fields: string[];
-  /** Why this sweep must not start (the guard's hourly budget), or null. */
-  blocked: string | null;
 }
 
 

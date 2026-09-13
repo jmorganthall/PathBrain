@@ -417,3 +417,21 @@ def test_a_write_registered_while_the_worker_drains_is_not_dropped(watching):
     link_watch.note_write(2, "apply", now, now)                   # not due for POST_S
     link_watch._settle_due()
     assert [p["write_id"] for p in link_watch._state["pending"]] == [2]
+
+
+def test_the_watch_is_off_unless_somebody_turns_it_on(_db):
+    """It runs continuously when enabled: 10 ICMP packets a second forever, three threads,
+    and a growing `link_gaps` table — feeding one page, no score and no decision.
+
+    It was built to answer "which of the writes PathBrain already makes is the one that
+    hurts?", and it answered: the ones carrying `flows`, which is no longer a writable
+    field. A continuous instrument for a closed question is a permanent cost, so it is a
+    thing you switch on while a write path is under suspicion. The capability stays; the
+    default does not.
+    """
+    from pathbrain.config_store import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["firewall"]["watch_enabled"] is False
+    # And with nothing stored, the module itself agrees — a default that lives in two
+    # places is a default that will disagree with itself.
+    assert link_watch.config()["enabled"] is False

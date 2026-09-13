@@ -218,3 +218,41 @@ def test_a_failed_probe_always_carries_a_reason(_db, monkeypatch):
     row = wp.get(probe_id)
     assert row is not None and row["status"] == "failed"
     assert row["error"], "a failed probe with no reason is the bug this pins"
+
+
+# ── what was removed, and why it must not come back ───────────────────────────
+
+
+def test_the_per_field_sweep_is_gone(_db):
+    """It stepped every writable field of a live firewall in turn to answer "which field's
+    write is expensive?". It answered — the flow table, which is no longer writable — and
+    the only way to re-ask was to write to everything.
+
+    What is kept is the part that is reusable: choosing the smallest real step for ONE
+    field, on a value a person picks, while they watch.
+    """
+    for gone in ("plan_sweep", "start_sweep", "sweep_fields", "sweep_verdict",
+                 "SWEEP_SETTLE_S", "_drive_sweep"):
+        assert not hasattr(write_probe, gone), f"write_probe still exposes {gone}"
+    assert hasattr(write_probe, "step_value") and hasattr(write_probe, "field_proposals")
+
+
+def test_the_value_box_is_still_served_from_the_registry(_db, client):
+    """The one thing the sweep's preview was genuinely load-bearing for: the field list and
+    the proposed value. A hardcoded list in the frontend is what offered `ecn` a value of
+    4096, kept over from `flows`."""
+    body = client.get("/api/firewall/write-probe/fields").json()
+    assert body["pipes"], "the caller can pick a pipe"
+    proposals = body["proposals"]
+    assert proposals, "every writable field gets a proposed step"
+    assert "flows" not in proposals, "a field that is not writable is never proposed"
+    for key, prop in proposals.items():
+        assert prop["to"] != prop["from"], f"{key}: a proposal that changes nothing is not a write"
+        assert prop["steppable"] is True
+    # And the sweep's own endpoints are unrouted (asserted on the route table, not by
+    # POSTing: an unrouted path is answered by whatever catch-all is mounted).
+    from pathbrain.main import app
+
+    paths = {getattr(r, "path", "") for r in app.routes}
+    assert "/api/firewall/write-probe/sweep" not in paths
+    assert "/api/firewall/write-probe/sweep/preview" not in paths

@@ -207,7 +207,14 @@ DEFAULT_CONFIG: dict = {
         # Link watch (``link_watch.py``): a continuous ping beside every write, so each
         # ledger row says what it cost — and, crucially, so the gaps with NO write in
         # flight are on the same record. Read-only ICMP; it never touches the firewall.
-        "watch_enabled": True,
+        #
+        # **Default OFF, deliberately.** It was built to answer "which of the writes
+        # PathBrain already makes is the one that hurts?", and it answered: the ones
+        # carrying `flows`, which is now not writable at all. Left on it costs 10 ICMP
+        # packets a second forever — 864,000 a day — plus three permanent threads and a
+        # growing `link_gaps` table, and it feeds one page: no score, no gate, no decision.
+        # Turn it on from the Firewall page when a write path is actually under suspicion.
+        "watch_enabled": False,
         # Sends per second per target. 5 Hz resolves a 250 ms gap while costing ten packets
         # a second across both targets.
         "watch_hz": 5,

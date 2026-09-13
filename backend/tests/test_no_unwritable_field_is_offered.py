@@ -100,12 +100,37 @@ def _surfaces(fp: str) -> list[tuple[str, str]]:
         # What the Shotgun Sweep offers as a grid.
         ("sweep fields", "/api/sweep/fields"),
         # What the write probe proposes stepping, per field.
-        ("write-probe sweep preview", "/api/firewall/write-probe/sweep/preview"),
+        ("write-probe fields", "/api/firewall/write-probe/fields"),
         # The two reachability readings — the ones that know which fields are unwritable and
         # could therefore most easily be tempted into naming a change.
         ("reachability audit", "/api/methodologies/reachability"),
         ("per-profile settings", f"/api/settings/profiles/{fp}/settings"),
     ]
+
+
+def test_this_guard_is_actually_watching_the_surfaces_it_names(client, unreachable_profile):
+    """A guard that silently stops watching is worse than no guard.
+
+    Every surface above is addressed by URL, and this app mounts the built frontend as a
+    catch-all — so an endpoint that is renamed or removed does not 404 here, it answers
+    **200 with index.html**. A checker that skips non-200 responses would then police a
+    surface that no longer exists and report itself green. (That is not hypothetical: the
+    write probe's sweep preview was removed and this file kept asking for it.)
+
+    So the paths are checked against the route table, which cannot be satisfied by HTML.
+    """
+    from pathbrain.main import app
+
+    routed = {getattr(r, "path", "") for r in app.routes}
+    for label, url in _surfaces(unreachable_profile):
+        path = url.split("?")[0]
+        # A path-parameter route registers its template, not the filled-in path.
+        ok = path in routed or any(
+            "{" in r and len(r.split("/")) == len(path.split("/")) and
+            all(a == b or "{" in a for a, b in zip(r.split("/"), path.split("/")))
+            for r in routed
+        )
+        assert ok, f"{label}: {path} is not a route — this guard is watching nothing"
 
 
 def test_no_surface_offers_a_field_pathbrain_never_writes(client, unreachable_profile):

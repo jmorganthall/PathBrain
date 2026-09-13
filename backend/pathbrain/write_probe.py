@@ -30,11 +30,18 @@ One target cannot tell those apart, and they call for completely different respo
 The restore is deliberately a full switch: it is the operation the engines actually
 perform, so its cost belongs on the same timeline as the decomposed halves.
 
-Every write goes through ``get_provider()`` like any other, so the guard ledgers, paces,
-budgets and can refuse it — a diagnostic that bypassed the guard to study the guard's
-subject would be the one unsupervised write path in the system. It holds the coordinator
-lock (it applies profiles and must not overlap a benchmark) and restores what it changed
-in a ``finally``.
+Every write goes through ``get_provider()`` like any other, so it is ledgered and can be
+refused — a diagnostic that bypassed the write path to study the write path would be the
+one unsupervised writer in the system. It holds the coordinator lock (it applies profiles
+and must not overlap a benchmark) and restores what it changed in a ``finally``.
+
+**Scope, deliberately narrowed.** This module also carried an automated per-field sweep:
+step every writable field in turn, revert each, measure the gap after each step. It did its
+job — the flow table, and nothing else, was expensive — and that field is no longer writable
+at all. A one-time survey whose only re-run means writing to every field of a live
+production firewall is not a thing to keep lying around, so it was removed; the probe below,
+aimed at one field on a value a person chooses while they watch, is the surviving form of
+the same question and the reusable one.
 """
 from __future__ import annotations
 
@@ -71,12 +78,6 @@ MIN_GAP_MS = 250.0
 DEFAULT_SETTLE_S = 10.0
 DEFAULT_BASELINE_S = 15.0
 MAX_SETTLE_S = 120.0
-#: A sweep step's settle must OUTLAST the outage it is measuring. ``summarize`` reports the
-#: worst gap *inside* the step's window, and a run still lost when the window closes is
-#: measured only to the last sample in it — so a 35 s outage read through the single probe's
-#: 10 s settle reports 10 s and silently truncates the finding. The link watch measured
-#: 33–35 s of silence per reconfigure on this link, so a sweep settles well past that.
-SWEEP_SETTLE_S = 45.0
 #: A number with a unit the provider owns ("880Mbit"). A bandwidth is stepped by moving the
 #: number and keeping the suffix, because the legal forms of that string are the firewall's
 #: business and not this module's. (``shaper_fields`` parses the same shape for its own
@@ -254,13 +255,18 @@ def verdict(steps: list[dict]) -> str:
     )
 
 
-# ── The per-field sweep: which field's write costs the household the outage? ─────
+# ── Choosing the value: the smallest write that is still a write ─────────────────
 #
-# The probe above answers "the fields or the reload?". It cannot answer "*which* field?",
-# and those have different fixes: a reload whose cost is the same whatever changed is
-# inherent to reconfiguring a live shaper, while a reload that only hurts when one
-# particular field moved is a lead. So the sweep steps each writable field on its own,
-# puts it straight back, and measures both.
+# An automated **per-field sweep** lived here — it stepped every writable field on its own,
+# put each straight back, and measured both, to answer "*which* field's write costs the
+# outage?" when the probe above could only answer "the fields or the reload?". It answered:
+# the flow table, and only the flow table, which is no longer writable.
+#
+# It is gone, and the removal is the point. Its question was a one-time survey, but the only
+# way to re-ask it was to write to every field of a live production firewall in sequence —
+# the most invasive operation the product had. For a field that comes under suspicion later,
+# the single probe answers the same question for that one field, on a value a person picks,
+# while they watch. What is kept here is the part both needed: how to choose that value.
 
 
 def step_value(field_key: str, current, options: list[float] | None = None):
@@ -270,7 +276,7 @@ def step_value(field_key: str, current, options: list[float] | None = None):
     function is hunting a better value and wants a step big enough to move the Overall;
     this one is measuring what a write *costs*, so the ideal step is the one that changes
     the network least while still being a real ``setPipe`` — anything larger risks making
-    the link genuinely worse for the settle window, which is the complaint the sweep exists
+    the link genuinely worse for the settle window, which is the complaint the probe exists
     to investigate rather than reproduce.
 
     * a bool is toggled,
@@ -311,7 +317,7 @@ def step_value(field_key: str, current, options: list[float] | None = None):
     return (f"{stepped}{m.group(2)}", "+1")
 
 
-#: Fields an automated sweep never touches, whatever the registry says is writable.
+#: Fields this module never proposes stepping, whatever the registry says is writable.
 #:
 #: ``flows`` is the flow-table size, and this list is where its cost was first written down:
 #: every other writable field is a parameter the shaper *reads*, while this one decides how
@@ -322,76 +328,29 @@ def step_value(field_key: str, current, options: list[float] | None = None):
 #:
 #: The ledger then showed the same cost on every *ordinary* write that carried the field —
 #: duel legs, not probes — so the decision moved to where it belongs: ``flows`` is no longer
-#: a writable field at all (``shaper_fields``), which takes it out of ``WRITABLE_FIELDS`` and
-#: therefore out of ``sweep_fields`` and the single probe's proposals on its own. This stays
-#: as the second lock and as the record of why, and it is what makes the refusal *say
-#: something*: a caller naming the field gets the flow-table reason rather than a bare "not
-#: writable". The registry is the decision; the guard refuses the write; this refuses the
-#: step.
+#: a writable field at all (``shaper_fields``), which takes it out of ``WRITABLE_FIELDS``
+#: and out of the proposals below on its own. This stays as the second lock and as the
+#: record of why, and it is what makes the refusal *say something*: a caller naming the
+#: field gets the flow-table reason rather than a bare "not writable". The registry is the
+#: decision; the guard refuses the write; this refuses to suggest it.
 NEVER_STEP = frozenset({"flows"})
 
 
-def sweep_fields() -> list[str]:
-    """The fields a sweep may step: the registry's writable set minus :data:`NEVER_STEP`.
+def field_proposals(live: dict, pipe_uuid: str | None, *, options: dict | None = None) -> dict:
+    """Each writable field's smallest real step, for the probe's value box. Writes nothing.
 
-    Read from ``shaper_fields`` rather than listed here, so marking a field writable puts it
-    in the sweep with no edit — the same rule the Shotgun Sweep follows for sweepable fields.
-    """
-    return [f for f in WRITABLE_FIELDS if f not in NEVER_STEP]
+    Computed here rather than in the frontend because "what is a sensible next value for
+    this field" is the firewall's answer, not a component's: a hardcoded list is how the
+    value box came to offer ``ecn`` a value of **4096**, having kept the number left over
+    from ``flows``.
 
-
-def plan_sweep(live: dict, pipe_uuid: str | None, fields: list[str] | None = None, *,
-               options: dict | None = None, reload: bool = True,
-               settle_s: float = SWEEP_SETTLE_S) -> dict:
-    """What a sweep would do and what it would cost, before anything is written.
-
-    ``live`` is ``{pipe uuid: field dict}`` as ``_drive`` builds it. Returns the ordered
-    steps, the fields skipped and why, and the price: reconfigures (which the guard budgets)
-    and wall clock (which the household notices). Pure — no writes, no clock, no provider —
-    so the preview endpoint and the engine cannot disagree about what is about to happen.
+    This is what remains of ``plan_sweep``, which also priced and ordered a pass that
+    stepped *every* field of a live firewall in turn. That pass is gone — its question
+    ("which field's write is expensive?") is answered, and re-asking it meant writing to
+    everything. One field at a time, chosen by a person, is the surviving form.
     """
     pipe_uuid = pipe_uuid or next(iter(live), None)
     pipe = live.get(pipe_uuid) or {}
-    allowed = set(sweep_fields())
-    wanted = list(fields or sweep_fields())
-    steps: list[dict] = []
-    skipped: list[dict] = []
-    for key in wanted:
-        if key not in allowed:
-            # Named explicitly by a caller, and still refused: NEVER_STEP is not a default
-            # to be overridden by passing the field, because the reason it is on that list
-            # does not change with who asked.
-            skipped.append({
-                "param": key, "label": FIELD_LABELS.get(key, key),
-                "why": ("a sweep never steps it — a change forces a full flow-table rebuild, "
-                        "measured at 35s of outage per step"
-                        if key in NEVER_STEP else "not a writable field"),
-            })
-            continue
-        stepped = step_value(key, pipe.get(key), (options or {}).get(key))
-        if stepped is None:
-            skipped.append({
-                "param": key, "label": FIELD_LABELS.get(key, key),
-                "why": ("the firewall reports no value for it"
-                        if pipe.get(key) is None else "no smaller step this firewall can hold"),
-            })
-            continue
-        value, how = stepped
-        steps.append({
-            "pipe_uuid": pipe_uuid, "param": key, "label": FIELD_LABELS.get(key, key),
-            "from": pipe.get(key), "to": value, "how": how,
-        })
-    # Each field costs two writes — step it, put it back — and only a reload is a
-    # reconfigure, which is what makes the cheap ``reload=False`` pass worth running first.
-    # The estimate is settle time alone: writes are no longer paced, so there is no gap to
-    # add (there was, and it was the larger half of a sweep's predicted duration).
-    reconfigures = len(steps) * 2 if reload else 0
-    seconds = len(steps) * 2 * settle_s
-    # Every writable field's proposed step, NEVER_STEP ones included — what the *single*
-    # probe should offer when a person picks that field by hand. It is the same rule the
-    # sweep runs, computed once here, because the alternative is a second implementation of
-    # "what is a sensible value for this field" in the frontend: that is how the value box
-    # came to offer 4096 for `ecn`, having simply kept the number left over from `flows`.
     proposals: dict[str, dict] = {}
     for key in WRITABLE_FIELDS:
         stepped = step_value(key, pipe.get(key), (options or {}).get(key))
@@ -400,69 +359,10 @@ def plan_sweep(live: dict, pipe_uuid: str | None, fields: list[str] | None = Non
         value, how = stepped
         proposals[key] = {
             "param": key, "label": FIELD_LABELS.get(key, key), "from": pipe.get(key),
-            "to": value, "how": how, "sweepable": key not in NEVER_STEP,
+            "to": value, "how": how, "steppable": key not in NEVER_STEP,
         }
-    return {
-        "pipe_uuid": pipe_uuid, "steps": steps, "skipped": skipped, "proposals": proposals,
-        "reconfigures": reconfigures, "seconds": round(seconds, 1), "reload": bool(reload),
-        "settle_s": settle_s,
-    }
+    return {"pipe_uuid": pipe_uuid, "proposals": proposals}
 
-
-def sweep_verdict(steps: list[dict]) -> str:
-    """Which field cost what — and whether that reading is about the field at all.
-
-    One pass gives one sample per field, so "this field is expensive" and "the fourth reload
-    of a session is expensive" produce identical tables. The verdict therefore checks the
-    gap against the step's **position** before it names a field, and says so when position
-    explains it better: a ranking nobody can trust is worse than no ranking, and the reader
-    cannot see the confound from the rows.
-    """
-    measured = [s for s in steps if s.get("param") and not s.get("failed")]
-    if not measured:
-        return "No field was stepped, so there is nothing to compare."
-
-    def worst(step: dict) -> float:
-        t = step.get("targets") or {}
-        return max(float((t.get(k) or {}).get("worst_gap_ms") or 0.0) for k in ("firewall", "through")) \
-            if t else 0.0
-
-    by_field: dict[str, float] = {}
-    for s in measured:
-        key = str(s["param"])
-        by_field[key] = max(by_field.get(key, 0.0), worst(s))
-    if not any(by_field.values()):
-        return (
-            f"No field's write produced a gap above {MIN_GAP_MS:.0f}ms on either target. "
-            "On this evidence the cost is not in any one field."
-        )
-
-    rho = spearman([float(s.get("index") or 0) for s in measured], [worst(s) for s in measured])
-    ranked = sorted(by_field.items(), key=lambda kv: -kv[1])
-    top, top_ms = ranked[0]
-    top_label = FIELD_LABELS.get(top, top)
-    rest = [f"{FIELD_LABELS.get(k, k)} {v / 1000:.1f}s" for k, v in ranked[1:4]]
-    tail = f" Next: {', '.join(rest)}." if rest else ""
-    if rho is not None and abs(rho) >= 0.6:
-        return (
-            f"{top_label} showed the worst gap ({top_ms / 1000:.1f}s), but the gap tracked each "
-            f"step's POSITION in the sweep (ρ {rho:+.2f}), not which field moved — so this "
-            "ranking is about when the write happened, not what it wrote. Re-run with the "
-            f"fields in a different order before believing it.{tail}"
-        )
-    box = max((float(((s.get('targets') or {}).get('firewall') or {}).get('worst_gap_ms') or 0.0)
-               for s in measured), default=0.0)
-    lead = (
-        f"The firewall itself stopped answering — worst {box / 1000:.1f}s — so this is the box "
-        "going away, not just its traffic. "
-        if box > 0 else ""
-    )
-    return (
-        f"{lead}{top_label} cost the most: {top_ms / 1000:.1f}s. Position does not explain the "
-        f"spread (ρ {rho:+.2f}), so the difference is about which field moved.{tail}"
-        if rho is not None else
-        f"{lead}{top_label} cost the most: {top_ms / 1000:.1f}s.{tail}"
-    )
 
 
 def firewall_address() -> str | None:
@@ -536,189 +436,6 @@ def start(
     return probe_id
 
 
-def start_sweep(
-    pipe_uuid: str | None = None,
-    fields: list[str] | None = None,
-    *,
-    reload: bool = True,
-    firewall_target: str | None = None,
-    through_target: str = "1.1.1.1",
-    baseline_s: float = DEFAULT_BASELINE_S,
-    settle_s: float = SWEEP_SETTLE_S,
-) -> int:
-    """Step each writable field in turn, put it straight back, and measure both.
-
-    At most one field is away from its original value at any instant, so a failure can
-    always name exactly what is still moved and to what.
-    """
-    if active():
-        raise ValueError("A write probe is already running.")
-    firewall_target = (firewall_target or "").strip() or firewall_address()
-    if not firewall_target:
-        raise ValueError(
-            "No firewall address to ping — PathBrain has none configured (set "
-            "PATHBRAIN_OPNSENSE_URL), so give one explicitly."
-        )
-    settle_s = max(1.0, min(float(settle_s), MAX_SETTLE_S))
-    baseline_s = max(1.0, min(float(baseline_s), MAX_SETTLE_S))
-
-    provider = get_provider()
-    live = {(c.extra or {}).get("uuid"): c.to_dict() for c in provider.discover()}
-    if not live:
-        raise ValueError("The firewall reports no pipes, so there is nothing to sweep.")
-    plan = plan_sweep(live, pipe_uuid, fields, options=provider.field_options(),
-                      reload=reload, settle_s=settle_s)
-    if not plan["steps"]:
-        why = "; ".join(f"{s['label']}: {s['why']}" for s in plan["skipped"][:4])
-        raise ValueError(
-            "No field on this pipe can be stepped, so there is nothing to measure"
-            + (f" — {why}." if why else ".")
-        )
-    with session_scope() as session:
-        probe = WriteProbe(
-            status=WriteProbeStatus.RUNNING,
-            mode="sweep",
-            changes=[dict(s) for s in plan["steps"]],
-            firewall_target=firewall_target,
-            through_target=through_target,
-            stage="Starting",
-        )
-        session.add(probe)
-        session.flush()
-        probe_id = probe.id
-
-    _state.update({"active": True, "id": probe_id, "cancel": False})
-    t = threading.Thread(
-        target=_drive_sweep,
-        args=(probe_id, plan, firewall_target, through_target, baseline_s, settle_s),
-        name=f"write-sweep-{probe_id}", daemon=True)
-    _state["thread"] = t
-    t.start()
-    return probe_id
-
-
-def _drive_sweep(probe_id: int, plan: dict, firewall_target: str, through_target: str,
-                 baseline_s: float, settle_s: float) -> None:  # noqa: C901 — one lifecycle
-    provider = None
-    samplers: dict[str, _Sampler] = {}
-    steps: list[dict] = []
-    err: str | None = None
-    status = WriteProbeStatus.COMPLETE
-    reload = bool(plan.get("reload", True))
-    #: The field currently stepped away from its original value, if any. At most one at a
-    #: time by construction — every step is reverted before the next begins — so a failure
-    #: can always name exactly what is still moved and what it should be.
-    outstanding: dict | None = None
-
-    try:
-        provider = get_provider()
-        samplers = {
-            "firewall": _Sampler("firewall", firewall_target),
-            "through": _Sampler("through", through_target),
-        }
-        for s in samplers.values():
-            s.start()
-        with coordinator.hold(f"write_probe#{probe_id}", abort=lambda: bool(_state.get("cancel"))):
-            base = _run_step(probe_id, steps, samplers, "baseline",
-                             "Baseline — nothing is being written", None, baseline_s)
-            refusal = _baseline_refusal(base, samplers)
-            if refusal:
-                raise ValueError(refusal)
-
-            total = len(plan["steps"])
-            for i, planned in enumerate(plan["steps"], start=1):
-                if _state.get("cancel"):
-                    break
-                label = planned["label"]
-                change = {"pipe_uuid": planned["pipe_uuid"], "param": planned["param"],
-                          "value": planned["to"]}
-                back = {"pipe_uuid": planned["pipe_uuid"], "param": planned["param"],
-                        "value": planned["from"]}
-                tag = {"index": i, "param": planned["param"], "label": label,
-                       "pipe_uuid": planned["pipe_uuid"], "from": planned["from"],
-                       "to": planned["to"], "how": planned["how"]}
-
-                outstanding = dict(back)
-                step = _run_step(
-                    probe_id, steps, samplers, "field_set",
-                    f"{i}/{total} · {label}: {planned['how']}"
-                    + ("" if reload else " (no shaper reload)"),
-                    lambda c=change: provider.apply_many([c], reload=reload),
-                    settle_s, {**tag, "phase": "set"})
-                if step.get("failed"):
-                    # The write did not take, so nothing is outstanding — but a failure here
-                    # is usually the guard or the firewall, and pressing on would spend the
-                    # rest of the budget discovering the same thing N more times.
-                    outstanding = None
-                    raise ValueError(
-                        f"Stepping {label} failed, so the sweep stopped there: {step['failed']}"
-                    )
-                # Always put it back before the next field moves, so exactly one field is
-                # ever away from its original value — and measure the restore too, since it
-                # is a real write and the second sample for this field is free.
-                revert = _run_step(
-                    probe_id, steps, samplers, "field_revert",
-                    f"{i}/{total} · {label}: back to {planned['from']}",
-                    lambda c=back: provider.apply_many([c], reload=reload),
-                    settle_s, {**tag, "phase": "revert", "to": planned["from"],
-                               "from": planned["to"]})
-                if revert.get("failed"):
-                    raise ValueError(
-                        f"Could not put {label} back to {planned['from']}: {revert['failed']}"
-                    )
-                outstanding = None
-    except Exception as exc:  # noqa: BLE001
-        err = describe_failure(exc)
-        status = WriteProbeStatus.FAILED
-        log.warning("Write sweep %s failed: %s", probe_id, err)
-    finally:
-        if outstanding is not None:
-            # One last attempt, outside the loop's own error handling, and if it does not
-            # work the reason says exactly which field is still moved and to what. A sweep
-            # that leaves the firewall changed without saying so is the one outcome this
-            # module may never produce.
-            try:
-                with coordinator.hold(f"write_probe#{probe_id}-restore"):
-                    _run_step(probe_id, steps, samplers, "field_revert",
-                              f"Restoring {outstanding['param']}",
-                              lambda: provider.apply_many([outstanding], reload=True),
-                              settle_s, {"param": outstanding["param"], "phase": "revert"})
-            except Exception as exc:  # noqa: BLE001
-                restore_err = describe_failure(exc)
-                log.error("Write sweep %s: RESTORE FAILED — %s", probe_id, restore_err)
-                err = (f"{err + ' | ' if err else ''}THE FIREWALL IS STILL CHANGED: "
-                       f"{outstanding['param']} on pipe {outstanding.get('pipe_uuid')} should be "
-                       f"{outstanding['value']!r} and could not be put back ({restore_err}). "
-                       "Set it by hand.")
-                status = WriteProbeStatus.FAILED
-        for s in samplers.values():
-            try:
-                s.stop()
-            except Exception:  # noqa: BLE001 — never let cleanup hide the result
-                log.debug("Write sweep %s: a sampler would not stop", probe_id, exc_info=True)
-        if _state.get("cancel") and status is WriteProbeStatus.COMPLETE:
-            status = WriteProbeStatus.CANCELLED
-        ping_errors = {k: s.error for k, s in samplers.items() if s.error}
-        try:
-            with session_scope() as session:
-                p = session.get(WriteProbe, probe_id)
-                if p is not None:
-                    p.status = status
-                    p.steps = list(steps)
-                    p.samples = {k: list(s.samples) for k, s in samplers.items()}
-                    p.verdict = sweep_verdict(steps) if steps else None
-                    p.error = err or (
-                        "; ".join(f"{k}: {v}" for k, v in ping_errors.items()) or None
-                    )
-                    if p.status is WriteProbeStatus.FAILED and not p.error:
-                        p.error = "Failed before any step, with no reason recorded — a bug."
-                    p.finished_at = datetime.now(timezone.utc)
-                    p.stage = "Done" if status is WriteProbeStatus.COMPLETE else str(status.value)
-        except Exception:  # noqa: BLE001
-            log.exception("Write sweep %s: could not record the result", probe_id)
-        _state.update({"active": False, "id": None, "thread": None, "cancel": False})
-
-
 def _stage(probe_id: int, stage: str) -> None:
     log.info("Write probe %s: %s", probe_id, stage)
     try:
@@ -747,8 +464,8 @@ def _run_step(probe_id: int, steps: list[dict], samplers: dict, name: str, label
     """One operation, then a settle window — both inside the measured span, because how long
     the network takes to *recover* is as much the cost as the drop itself.
 
-    Module-level rather than a closure so the single probe and the sweep measure a step the
-    same way by construction: two definitions would agree until one of them was edited.
+    Module-level rather than a closure: it was shared with the per-field sweep so the two
+    could not drift, and it stays module-level so the next caller inherits the same shape.
     """
     _stage(probe_id, label)
     t0 = time.time()
@@ -934,7 +651,8 @@ def _serialize(p: WriteProbe, with_samples: bool = True) -> dict:
         "id": p.id,
         "status": p.status.value if hasattr(p.status, "value") else str(p.status),
         "stage": p.stage,
-        # Rows written before the sweep existed carry no mode and are all single probes.
+        # Rows written before, during and after the per-field sweep's lifetime are all
+        # read the same way; a swept row keeps its mode and renders as the history it is.
         "mode": p.mode or "single",
         "changes": p.changes or [],
         "firewall_target": p.firewall_target,
@@ -950,6 +668,5 @@ def _serialize(p: WriteProbe, with_samples: bool = True) -> dict:
     return out
 
 
-__all__ = ["active", "cancel", "current", "firewall_address", "get",
-           "plan_sweep", "recent", "start", "start_sweep", "step_value", "summarize",
-           "sweep_fields", "sweep_verdict", "verdict"]
+__all__ = ["active", "cancel", "current", "field_proposals", "firewall_address", "get",
+           "recent", "start", "step_value", "summarize", "verdict"]

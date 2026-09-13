@@ -615,58 +615,38 @@ LLM-based. See `README.md` for the product overview.
     screen is worse than none, because the all-clear is the line people act on — and the
     restore is a full profile switch, the same operation every duel leg performs, so it is
     the cost the household actually pays.
-    **The per-field sweep: which field's write costs the outage?** (`step_value` /
-    `plan_sweep` / `start_sweep` / `sweep_verdict`, `POST /firewall/write-probe/sweep`,
-    `GET …/sweep/preview`, the **Sweep every field** panel.) The probe above answers "the
-    fields or the reload?" and cannot answer "*which* field?" — different answers with
-    different fixes, since a reload costing the same whatever moved is inherent to
-    reconfiguring a live shaper while one that only hurts for a particular field is a lead.
-    So each field is stepped on its own, put straight back, and both writes measured
-    (`phase` `set`/`revert`), with **at most one field away from its original value at any
-    instant** — a failure can therefore always name exactly what is still moved and to what,
-    and the `finally` says so in capitals when it cannot put it back. The step is the
-    *smallest write that is still a write*: `+1`, a bool toggled, the next value on the
-    firewall's own option list for a select (`+1` off that list is accepted and silently does
-    nothing, so it would time a write that never happened). Deliberately **not**
-    `levers._generated_values`, which halves and doubles because it is hunting a better
-    value; this is measuring what a write costs, and a halved queue limit is the failure the
-    sweep investigates rather than one it should cause.
-    Three things make it safe to point at a live firewall. **(1) `flows` is never swept**
-    (`NEVER_STEP`) — every other writable field is a parameter the shaper *reads*, while the
-    flow table decides how many queues it allocates, so any change to it (`1024 → 1025`
-    included) forces a full rebuild rather than a re-read. Measured on this link: setting it
-    was free, putting it back took **35.3 s**, timed out the `apply_many`, took the box off
-    the network for 33 s. Naming it explicitly does not override the
-    exclusion, because the reason does not depend on who asked. This list is where that cost
-    was first written down; the ledger then showed the same cost on every *ordinary* write
-    carrying the field, so the decision moved to the registry — `flows` is no longer writable
-    at all, which takes it out of `sweep_fields` and out of the single probe's `proposals` on
-    its own. `NEVER_STEP` stays as the second lock and as what makes the refusal *say
-    something*: a caller naming the field gets the flow-table reason rather than a bare "not
-    a writable field". **(2) The settle outlasts the outage**
-    (`SWEEP_SETTLE_S` 45 s): `summarize` reports the worst gap *inside* the step window and a
-    run still lost at its close is measured only to the last sample in it, so the single
-    probe's 10 s settle would read a 35 s outage as 10 s and truncate the finding. **(3) At most
-    one field is away from its original value at any instant**, so a failure can always name
-    exactly what is still moved and to what, and the `finally` says so in capitals when it
-    cannot put it back. That — not a budget — is what stops a sweep stranding a field: a
-    `budget_shortfall` check once refused any sweep that would not fit inside
-    `max_reconfigures_per_hour`, because exceeding the cap tripped hands-off and hands-off
-    refused restores too; with the valve gone there is no cap to exceed and no state to trip.
-    A field costs 2 reconfigures (step + revert) and `reload=False` costs **none**, which is
-    what makes the cheap pass — write and revert each field with no reload, disturbing no
-    flow — the right thing to run first.
-    `sweep_verdict` checks the gap against each step's **position** before it dares name a
-    field: one pass gives one sample each, so "this field is expensive" and "the fourth
-    reload of a session is expensive" produce identical tables, and a ranking nobody can
-    trust is worse than no ranking. `plan_sweep` also returns `proposals` — the same step
-    rule over *every* writable field — which the single probe's value box reads, so the
-    dropdown and the number agree. They did not: the field list was hardcoded in the
-    frontend (drifted from the registry, no bandwidth) and the value box kept whatever was
-    last typed, so selecting `ecn` offered it a value of **4096** left over from `flows`.
-    `test_write_probe_sweep`.
+    **The per-field sweep was REMOVED, and the removal is the entry.** It stepped every
+    writable field on its own, put each straight back and measured both (`plan_sweep` /
+    `start_sweep` / `sweep_verdict`, the *Sweep every field* panel), to answer the question
+    the single probe cannot: not "the fields or the reload?" but "*which* field?". It
+    answered — **the flow table, and only the flow table** — and that field is no longer
+    writable at all, so the finding is now a registry line rather than a capability. What
+    was left was a one-time survey whose only way of being re-asked was to write to **every
+    writable field of a live production firewall in sequence**: the most invasive operation
+    the product had, aimed at the household's own link, for a question already closed. For a
+    field that comes under suspicion later the single probe answers the same thing for that
+    one field, on a value a person picks, while they watch — which is the reusable form and
+    always was. Kept from it: `step_value` (the smallest write that is still a write — `+1`,
+    a bool toggled, the next value on the firewall's own option list for a select) and
+    `field_proposals` (`GET /firewall/write-probe/fields`), which is read-only and feeds the
+    probe's field dropdown and value box, because "what is a sensible next value for this
+    field" is the registry's answer and not a component's — a hardcoded frontend list is how
+    the value box came to offer `ecn` a value of **4096**, kept over from `flows`.
+    `NEVER_STEP` stays as the second lock and the record of why: naming `flows` explicitly
+    gets the flow-table reason rather than a bare "not writable". `test_write_probe`
+    (`test_the_per_field_sweep_is_gone`).
   - `link_watch.py` — **a continuous ping beside every write, so the ledger says WHICH
-    write broke the firewall.** `write_probe` answers "what does *a* write cost?" on demand,
+    write broke the firewall — now OFF by default, because it said.**
+    It answered: the writes carrying `flows`, which is no longer a writable field. Left
+    running it costs **10 ICMP packets a second forever** (864,000 a day), three permanent
+    threads and a growing `link_gaps` table, and it feeds exactly one card — no score, no
+    gate, no decision anywhere reads it. A continuous instrument for a closed question is a
+    permanent cost paid for a finding already banked, so `firewall.watch_enabled` defaults
+    **false** and the Firewall page's switch turns it on for as long as a write path is
+    actually under suspicion. The capability is what is worth keeping; the habit is not.
+    (`test_link_watch.test_the_watch_is_off_unless_somebody_turns_it_on` pins the default
+    in both places it is written, since a default that lives in two places will disagree
+    with itself.) What it does when armed: `write_probe` answers "what does *a* write cost?" on demand,
     under supervision, on a value you pick — the right instrument for a controlled
     experiment and the wrong one for the question actually being asked, which is *which of
     the writes PathBrain already makes is the one that hurts*. That is a question about

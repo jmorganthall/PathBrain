@@ -43,29 +43,14 @@ def start_probe(body: ProbeBody = Body(...)) -> dict:
     return {"id": probe_id, "status": "running"}
 
 
-class SweepBody(BaseModel):
-    pipe_uuid: str | None = None
-    #: Omitted → every writable field the registry declares. Named → just those.
-    fields: list[str] | None = None
-    #: False runs the cheap pass: each field written and reverted with NO shaper reload, so
-    #: it costs zero reconfigures, is exempt from the guard's pacing and hourly budget, and
-    #: answers whether a bare ``setPipe`` costs the network anything at all.
-    reload: bool = True
-    firewall_target: str | None = None
-    through_target: str = "1.1.1.1"
-    baseline_s: float = write_probe.DEFAULT_BASELINE_S
-    settle_s: float = write_probe.SWEEP_SETTLE_S
+@router.get("/firewall/write-probe/fields")
+def probe_fields(pipe_uuid: str | None = None) -> dict:
+    """The pipes, and each writable field's smallest real step. Writes nothing.
 
-
-@router.get("/firewall/write-probe/sweep/preview")
-def sweep_preview(pipe_uuid: str | None = None, fields: str | None = None,
-                  reload: bool = True,
-                  settle_s: float = write_probe.SWEEP_SETTLE_S) -> dict:
-    """What a sweep would step and what it would cost — before anything is written.
-
-    Read-only: it discovers the firewall and plans, but writes nothing. The estimate matters
-    because the sweep's price is paid by the household in seconds of no internet, and a
-    button that does not state that is asking for a decision nobody can make.
+    Feeds the probe's field dropdown and value box, so the number offered is the one that
+    will actually be written. It replaces ``/sweep/preview``, which priced a pass that
+    stepped every field of a live firewall in turn; that pass is gone (see ``write_probe``)
+    and what the page still needs from it is this.
     """
     from ..providers import get_provider
 
@@ -73,32 +58,12 @@ def sweep_preview(pipe_uuid: str | None = None, fields: str | None = None,
         provider = get_provider()
         live = {(c.extra or {}).get("uuid"): c.to_dict() for c in provider.discover()}
         options = provider.field_options()
-    except Exception as exc:  # noqa: BLE001 — a preview must explain, never 500
+    except Exception as exc:  # noqa: BLE001 — a read-only preview must explain, never 500
         raise HTTPException(status_code=502, detail=f"Could not read the firewall: {exc}") from exc
-    wanted = [f.strip() for f in (fields or "").split(",") if f.strip()] or None
-    plan = write_probe.plan_sweep(live, pipe_uuid, wanted, options=options,
-                                  reload=reload, settle_s=settle_s)
-    plan["pipes"] = [{"uuid": uuid, "label": (p or {}).get("label") or uuid}
-                     for uuid, p in live.items()]
-    plan["all_fields"] = write_probe.sweep_fields()
-    return plan
-
-
-@router.post("/firewall/write-probe/sweep")
-def start_sweep(body: SweepBody = Body(...)) -> dict:
-    """Step every selected field in turn, revert each, measure the gap after each step.
-
-    A 400 covers the bad request — an unknown pipe, or no field on it that can be stepped.
-    """
-    try:
-        probe_id = write_probe.start_sweep(
-            body.pipe_uuid, body.fields, reload=body.reload,
-            firewall_target=body.firewall_target, through_target=body.through_target,
-            baseline_s=body.baseline_s, settle_s=body.settle_s,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"id": probe_id, "status": "running", "mode": "sweep"}
+    out = write_probe.field_proposals(live, pipe_uuid, options=options)
+    out["pipes"] = [{"uuid": uuid, "label": (p or {}).get("label") or uuid}
+                    for uuid, p in live.items()]
+    return out
 
 
 @router.get("/firewall/write-probe")
