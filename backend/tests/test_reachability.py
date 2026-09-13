@@ -87,13 +87,10 @@ def test_a_profile_differing_in_the_flow_table_is_unreachable_and_named(client, 
     assert out["by_field"][0]["profiles"] == 1
 
 
-def test_the_audit_names_the_change_that_brings_back_the_most_measurement(client, field):
-    """A list of unreachable profiles is a fact; the move is the decision.
-
-    Profiles are grouped by the exact change that would restore them, ranked by the
-    iterations of evidence each group carries — because a hundred thin profiles and a few
-    well-measured ones are not the same loss.
-    """
+def test_the_audit_groups_by_what_they_were_measured_at(client, field):
+    """Grouped by the setup each set of profiles was measured on, ranked by the evidence
+    each group carries — because a hundred thin profiles and a few well-measured ones are
+    not the same loss. A description of the record, never a change to make."""
     # Two profiles waiting on flows=512 (one heavily measured), one on flows=2048.
     field("many_a", _settings(flows=512, quantum=4000), runs=6)
     field("many_b", _settings(flows=512, quantum=5000), runs=1)
@@ -102,26 +99,49 @@ def test_the_audit_names_the_change_that_brings_back_the_most_measurement(client
         out = reachability.audit(s, _live())
 
     assert out["unreachable"] == 3
-    assert len(out["moves"]) == 2
-    best = out["moves"][0]
-    assert best["profiles"] == 2                       # the flows=512 pair
-    assert all(c["field"] == "flows" and c["to"] == 512 for c in best["changes"])
-    assert best["iterations"] > out["moves"][1]["iterations"]
-    assert "512" in out["verdict"] and "cannot be applied" in out["verdict"]
+    assert len(out["measured_at"]) == 2
+    biggest = out["measured_at"][0]
+    assert biggest["profiles"] == 2                    # the flows=512 pair
+    assert all(c["field"] == "flows" and c["to"] == 512 for c in biggest["changes"])
+    assert biggest["iterations"] > out["measured_at"][1]["iterations"]
+    # Phrased about the past, never as an instruction.
+    assert "the firewall is on 1024" in biggest["describe"]
+    assert "change" not in biggest["describe"].lower()
 
 
-def test_the_audit_refuses_to_offer_the_change_as_an_action(client, field):
-    """The move it names is a write to a field the registry forbids, and the reason it is
-    forbidden is that writing it took the link down for ~30s every time. The card says what
-    to change; it never offers to do it."""
-    field("no_button", _settings(flows=512))
+def test_the_audit_never_recommends_changing_an_unwritable_field(client, field):
+    """The card reports; it does not prescribe.
+
+    The first cut ranked "the change that would bring them back" and led with it — no
+    button, and still the one thing this must not do: the field is unwritable *because*
+    writing it took the link down for ~30s every time, so a computed, ranked list of
+    flow-table changes is the hazard re-created as a recommendation.
+    """
+    field("no_advice", _settings(flows=512), runs=4)
     with session_scope() as s:
         out = reachability.audit(s, _live())
-    assert "PathBrain will not make that change itself" in out["verdict"]
-    # Nothing in the payload is an instruction to a writer: no pipe uuid, no wire value.
-    for move in out["moves"]:
-        for change in move["changes"]:
+
+    verdict = out["verdict"].lower()
+    for phrase in ("change the", "set the", "would bring back", "biggest single fix",
+                   "make it at the firewall", "by hand", "fix is"):
+        assert phrase not in verdict, f"the verdict recommends a change: {phrase!r}"
+    # It still says what it costs and what to do instead.
+    assert "out of the running" in verdict and "iterations" in verdict
+    # And nothing in the payload is an instruction a writer could act on.
+    for group in out["measured_at"]:
+        assert "change the" not in group["describe"].lower()
+        for change in group["changes"]:
             assert "pipe_uuid" not in change and "value" not in change
+
+
+def test_the_per_profile_card_does_not_prescribe_either(client, field):
+    field("no_advice_2", _settings(flows=512))
+    with session_scope() as s:
+        view = reachability.profile_view(s, "no_advice_2", _live())
+    verdict = view["verdict"].lower()
+    assert "out of the running" in verdict and "nothing needs doing" in verdict
+    for phrase in ("set to match", "by hand", "change the"):
+        assert phrase not in verdict, f"the per-profile verdict prescribes: {phrase!r}"
 
 
 def test_the_audit_reads_the_firewall_as_it_stands(client, field):
@@ -143,7 +163,7 @@ def test_the_audit_reads_the_firewall_as_it_stands(client, field):
 def test_the_endpoint_serves_it(client, field):
     field("via_api", _settings(flows=512))
     body = client.get("/api/methodologies/reachability").json()
-    assert body["unreachable"] == 1 and body["moves"]
+    assert body["unreachable"] == 1 and body["measured_at"]
     assert body["live"]["non_writable"], "the card must say what the firewall is on"
     assert any(f["field"] == "flows" for f in body["live"]["non_writable"])
 

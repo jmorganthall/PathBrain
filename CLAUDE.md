@@ -92,17 +92,24 @@ LLM-based. See `README.md` for the product overview.
     hundreds becomes a ladder of a dozen with nothing on screen saying why. Two causes, named
     apart: `field` (a non-writable field differs — `settings_profile.unreachable_fields`) and
     `pipe` (the planner can't address the pipe at all — `unwritable_diffs`).
-    **The output is the move, not the list.** "87 profiles are unreachable" is a fact nobody
-    can act on; "they are all waiting on one value, and setting the Download pipe's flow
-    table to 512 brings back 87 profiles and 4,300 iterations" is a decision. So unreachable
-    profiles are grouped by the **exact change set** that would restore them, biggest first,
-    priced in profiles *and* in measured iterations — a hundred thin profiles and six
-    well-measured ones are not the same loss. Iterations are read from the **runs**, not the
-    scored rollup: the rollup counts only what the current methodology grades, so a profile a
-    publish quarantined would report zero and understate exactly the loss being priced.
-    **Deliberately no button**: the change it names is a write to a field the registry
-    forbids *because* writing it took the link down for ~30 s every time, so the card names
-    it and a person makes it at the firewall, once. Read-only — the cached stored-profile
+    **It reports, and it never prescribes.** The first cut led with the *move*: unreachable
+    profiles grouped by the exact change set that would restore them, ranked by the
+    measurement each one brought back, the top row reading *Flows 1024 → 512*, on the
+    reasoning that "87 profiles are unreachable" is a fact nobody can act on while a named
+    change is a decision. It had no button and it was still the one thing this card must not
+    do — the field is unwritable **because** writing it took the link down for ~30 s every
+    time, so computing the most valuable flow-table change and putting it on screen
+    re-creates the hazard as a recommendation, and a change PathBrain works out is one
+    PathBrain is answerable for. The grouping survives; the framing does not. Profiles are
+    grouped by **what they were measured at** (`measured_at`), biggest first, priced in
+    profiles *and* in measured iterations — a hundred thin profiles and six well-measured
+    ones are not the same loss — each group stated about the past (*"wan-download · Flows 512
+    (the firewall is on 1024)"*), with no target presented as an action and no ranking of
+    what to change first. The verdict ends where the evidence does: those profiles are out of
+    the running, and anything worth having among them can be measured again as a reachable
+    profile. Iterations are read from the **runs**, not the scored rollup: the rollup counts
+    only what the current methodology grades, so a profile a publish quarantined would report
+    zero and understate exactly the loss being priced. Read-only — the cached stored-profile
     list, one rollup read, one ledger read (the ring rounds already fought on a profile that
     can no longer be extended). The per-profile view answers the same question for one
     profile, laying out every registry field per pipe with what the firewall is on and
@@ -110,7 +117,8 @@ LLM-based. See `README.md` for the product overview.
     writable is the registry's answer, not a component's (a hardcoded list is what offered
     the ECN field a value of 4096), and formatted with `format_display` so a CoDel target
     never renders "5msms". Both run the one primitive, so the field audit and the profile
-    card can never disagree about what is out of reach. `test_reachability`.
+    card can never disagree about what is out of reach. `test_reachability` +
+    `test_no_unwritable_field_is_offered` (below).
   - `metrics.py` — **single source of truth for metrics.** Each `MetricDef` (key,
     plugin+source_key, axis, default weight/thresholds, label/description/unit/
     direction, `marks_latest`) is defined once; `METRIC_SOURCES`, the config
@@ -3605,6 +3613,27 @@ pipe on/off toggle `provider.set_pipe_enabled()` — used only by the **baseline
 restore, persisted + reconciled on startup). It's deliberately separate because `enabled`
 isn't a profile-identity/writable shaper field; it still obeys the same snapshot/restore +
 coordinator-lock discipline.
+
+⚠️ **A field PathBrain never writes is never OFFERED either — not as a proposal, a range, a
+step or a computed recommendation** (`test_no_unwritable_field_is_offered`). The registry
+stops the *write path*: `plan_apply` emits only writable fields, `firewall_guard.before_write`
+refuses a change naming anything else, `write_probe.NEVER_STEP` keeps `flows` out of the
+sweep, `experiment._start` refuses a non-writable `param`, and a leg whose firewall settled on
+another profile raises rather than measuring it. None of that stops a **reading** surface from
+putting the hazard back on screen, and one did: the reachability card shipped with a *"What
+would bring them back / Change the firewall to: Flows 1024 → 512"* table, ranked by the
+measurement each change restored. No button, and still a "change this" that PathBrain computed
+and is therefore answerable for — for a field that is unwritable precisely because writing it
+took the household off the network for ~30 s every time. Naming the value is **capture** and
+is fine (the optimizer export carries it with `writable: false` and no range or example; the
+Profile Detail Settings card shows it with a *read only* chip); telling anyone to change it is
+not. The guard walks the real API surfaces whose job is to say what can be changed — the
+optimizer export, the sweep grid, the write-probe sweep preview, the reachability audit, the
+per-profile settings view — and fails on a non-writable field appearing under an offer key
+(`writable_fields`/`sweepable_fields`/`all_fields`/`proposals`/`steps`) or on prescriptive
+prose beside one. It keys on `NON_WRITABLE_FIELDS`, so a field made unwritable tomorrow is
+covered the day it changes, and it proves itself by asserting the detector fires on the exact
+phrasing that shipped.
 
 ⚠️ Any **apply-firewall + benchmark** session must hold the `coordinator.py` lock so
 two never overlap (user-triggered ones — sweep, profile test, challenger race, profile
