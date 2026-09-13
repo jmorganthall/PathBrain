@@ -86,6 +86,8 @@ import type {
   WeightsResponse,
   IdleAudit,
   InstrumentDrift,
+  ProfileSettingsView,
+  ReachabilityAudit,
   WarmAgreement,
   PortableDevice,
   PortableStandings,
@@ -378,6 +380,9 @@ export const api = {
   idleAudit: (limit = 200) => request<IdleAudit>(`/methodologies/idle-audit?limit=${limit}`),
   instrumentDrift: (days = 14) => request<InstrumentDrift>(`/methodologies/instrument-drift?days=${days}`),
   warmAgreement: (minRuns = 5) => request<WarmAgreement>(`/methodologies/warm-agreement?min_runs=${minRuns}`),
+  reachabilityAudit: () => request<ReachabilityAudit>(`/methodologies/reachability`),
+  profileSettingsView: (fp: string) =>
+    request<ProfileSettingsView>(`/settings/profiles/${encodeURIComponent(fp)}/settings`),
   methodology: (version: string) =>
     request<MethodologyDetail>(`/methodologies/${encodeURIComponent(version)}`),
   runScores: (id: number) => request<RunScoresResponse>(`/score/${id}/methodologies`),

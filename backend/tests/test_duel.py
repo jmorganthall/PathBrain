@@ -2887,6 +2887,10 @@ def test_a_round_medians_several_iterations_and_lifts_the_browser_cap(monkeypatc
     field = _field(("aaa", 80.0), ("bbb", 70.0), best="aaa")
     monkeypatch.setattr(duel_mod, "run_chunk", fake_chunk)
     monkeypatch.setattr(duel_mod, "_run_overall", lambda run_id, ver: 80.0)
+    # Stub the apply like every other mocked-engine test here: this one is about how many
+    # iterations a round medians, and the harness's fingerprints ("aaa") are synthetic, so
+    # the real apply would (correctly) refuse to measure a profile the firewall is not on.
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: None)
     import pathbrain.api.routes_settings as rs
 
     monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: field)

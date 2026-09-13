@@ -3009,6 +3009,36 @@ def _profile_settings(session: Session, fingerprint_: str) -> list[dict] | None:
     return run.settings if run else None
 
 
+@router.get("/settings/profiles/{fingerprint_}/settings")
+def profile_settings_view(fingerprint_: str, session: Session = Depends(get_session)) -> dict:
+    """What this profile actually **is** — every shaper field, per pipe, against the live
+    firewall — and whether the firewall can be put on it.
+
+    Profile Detail led with a call sign, a grade and a bout tape and never showed the
+    settings, which is the one thing a profile *is*; the technical summary in the subtitle
+    is a lossy one-liner with no units, no per-pipe split and nothing to compare against.
+
+    Served from the server rather than rendered off the settings blob the page already
+    holds because **which fields are writable is the registry's answer**: a hardcoded list
+    in a component is the drift that offered the ECN field a value of 4096, and it would
+    leave "can this profile exist?" answered in two places. This runs the same
+    ``unreachable_fields`` primitive as the Methodology page's audit, so the two can never
+    disagree about which profiles are out of reach.
+    """
+    from .. import reachability
+
+    try:
+        live = get_provider().discover()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"Could not read the live firewall: {exc}"
+        ) from exc
+    out = reachability.profile_view(session, fingerprint_, live)
+    if out is None:
+        raise HTTPException(status_code=404, detail="No stored settings for that profile")
+    return out
+
+
 def _profile_iterations(session: Session, fingerprint_: str) -> int:
     """Total iterations a profile has accumulated across its *comparable* completed
     runs — the same count ``settings_profiles`` uses for the confidence flag."""
