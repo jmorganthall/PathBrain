@@ -118,14 +118,6 @@ export default function FirewallPage() {
         </Alert>
       )}
 
-      {guard?.hands_off && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          <b>Writes are hands-off</b>
-          {guard.reason ? ` — ${guard.reason}` : ""}. Nothing will be applied, including a
-          restore, until you arm writes from the chip in the top bar.
-        </Alert>
-      )}
-
       <LinkWatchCard />
 
       <WriteAndPing pipes={pipes} onLoadPipes={loadPipes} loadingPipes={loadingPipes} />
@@ -142,11 +134,12 @@ export default function FirewallPage() {
             )}
           </Stack>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            "What did PathBrain do in the five minutes before the drop?" — one query.
-            <b> Took</b> is how long the firewall held the call (the guard's own pacing wait
-            is excluded — a wait PathBrain chose is not the firewall being slow). <b>Cost</b>
-            is the worst ping gap around the write, from the link watch above: "—" means
-            nothing was watching, which is not the same as clean.
+            "What did PathBrain do in the five minutes before the drop?" — one query, and
+            the one that found the real cause: every write carrying the flow table cost
+            30-35 seconds, every write without it was sub-second.
+            <b> Took</b> is how long the firewall held the call. <b>Cost</b> is the worst
+            ping gap around the write, from the link watch above: "—" means nothing was
+            watching, which is not the same as clean.
           </Typography>
           {writes.length === 0 ? (
             <Typography variant="body2" color="text.secondary">
@@ -175,11 +168,6 @@ export default function FirewallPage() {
                       <TableCell align="right">{w.reconfigures}</TableCell>
                       <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
                         {w.latency_ms == null ? "—" : `${Math.round(w.latency_ms)} ms`}
-                        {!!w.waited_ms && (
-                          <Typography variant="caption" display="block" color="text.secondary">
-                            +{(w.waited_ms / 1000).toFixed(0)}s paced
-                          </Typography>
-                        )}
                       </TableCell>
                       <TableCell
                         align="right"

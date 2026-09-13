@@ -312,33 +312,25 @@ def test_a_failed_write_is_measured_too(watching, monkeypatch):
     assert link_watch._state["pending"][0]["write_id"] is not None
 
 
-def test_the_ledger_separates_the_guards_pacing_from_the_firewalls_own_latency(monkeypatch):
-    """A wait PathBrain chose is not the firewall being slow.
+def test_the_ledgered_latency_is_the_firewalls_own_cost(monkeypatch):
+    """``latency_ms`` is the call and nothing else.
 
-    The write probe timed the whole call and reported a five-second guard gap as a
-    five-second firewall cost, which sends the reader after entirely the wrong thing.
+    It used to have a sibling, ``waited_ms``, because the guard slept out a pacing gap
+    inside the same span and the write probe reported a five-second wait PathBrain chose as
+    five seconds of firewall. Nothing paces a write now, so there is one number again and it
+    means what it says.
     """
-    from pathbrain import firewall_guard as fg
     from pathbrain.providers import get_provider
-
-    monkeypatch.setattr(fg, "config", lambda: dict(
-        fg.DEFAULTS, min_reconfigure_gap_s=30, max_reconfigures_per_hour=0,
-        cooldown_after_outage_s=0, arm_required_after_deploy=False,
-    ))
-    slept: list[float] = []
-    monkeypatch.setattr(fg, "_sleep", lambda s: slept.append(s))
 
     provider = get_provider()
     uuid = (provider.discover()[0].extra or {}).get("uuid")
-    provider.apply_many([{"pipe_uuid": uuid, "param": "quantum", "value": 2048}])  # sets "last"
-    provider.apply_many([{"pipe_uuid": uuid, "param": "quantum", "value": 4096}])  # must be paced
+    provider.apply_many([{"pipe_uuid": uuid, "param": "quantum", "value": 2048}])
+    provider.apply_many([{"pipe_uuid": uuid, "param": "quantum", "value": 4096}])
 
-    assert slept and slept[-1] > 0, "the guard did not pace the second write"
     with session_scope() as s:
         row = s.query(FirewallWrite).order_by(FirewallWrite.id.desc()).first()
-        assert row.waited_ms == pytest.approx(slept[-1] * 1000.0, rel=0.01)
-        # The firewall's own latency is the call alone, and the mock answers instantly.
-        assert row.latency_ms < 1000.0
+        # The mock answers instantly, and no wait is folded in.
+        assert row.latency_ms is not None and row.latency_ms < 1000.0
 
 
 # ------------------------------------------------------------------------------- the API
@@ -425,3 +417,21 @@ def test_a_write_registered_while_the_worker_drains_is_not_dropped(watching):
     link_watch.note_write(2, "apply", now, now)                   # not due for POST_S
     link_watch._settle_due()
     assert [p["write_id"] for p in link_watch._state["pending"]] == [2]
+
+
+def test_the_watch_is_off_unless_somebody_turns_it_on(_db):
+    """It runs continuously when enabled: 10 ICMP packets a second forever, three threads,
+    and a growing `link_gaps` table — feeding one page, no score and no decision.
+
+    It was built to answer "which of the writes PathBrain already makes is the one that
+    hurts?", and it answered: the ones carrying `flows`, which is no longer a writable
+    field. A continuous instrument for a closed question is a permanent cost, so it is a
+    thing you switch on while a write path is under suspicion. The capability stays; the
+    default does not.
+    """
+    from pathbrain.config_store import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["firewall"]["watch_enabled"] is False
+    # And with nothing stored, the module itself agrees — a default that lives in two
+    # places is a default that will disagree with itself.
+    assert link_watch.config()["enabled"] is False

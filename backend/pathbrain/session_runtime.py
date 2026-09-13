@@ -149,15 +149,11 @@ class ResilientProvider(ConfigProvider):
         return self._read("discover", self._inner.discover)
 
     def _read(self, op: str, fn: Callable[..., Any], *args: Any) -> Any:
-        from . import firewall_guard
-
-        try:
-            out = call_firewall(op, fn, *args)
-        except FirewallUnavailable as exc:
-            firewall_guard.note_contact(False, str(exc.last) if hasattr(exc, "last") else str(exc))
-            raise
-        firewall_guard.note_contact(True)
-        return out
+        # A read is retried and then reported. It used to also stamp a reachability state
+        # the guard measured an outage cooldown from; nothing consults that now, and the
+        # link watch pings the firewall five times a second, which is a far better answer
+        # to "is it up?" than a throttled row write on whichever read happened to notice.
+        return call_firewall(op, fn, *args)
 
     def snapshot(self) -> dict:
         return call_firewall("snapshot", self._inner.snapshot)
@@ -174,13 +170,18 @@ class ResilientProvider(ConfigProvider):
     def pipe_states(self) -> list[dict]:
         return self._read("pipe_states", self._inner.pipe_states)
 
-    # ── writes: gated, paced, ledgered, never reissued ──────────────────────────
+    # ── writes: ledgered, never reissued ────────────────────────────────────────
     #
     # Reads may be retried; a write may not. A reconfigure that timed out may still be
     # running inside the firewall, and reissuing it was the new behaviour that put two
     # shaper reloads in flight at once. So a write is attempted ONCE; if the transport
     # fails, the firewall is re-read and the write is either found to have taken
-    # (``verified``) or the firewall is treated as gone and the guard trips hands-off.
+    # (``verified``) or reported gone, as a failure of that session.
+    #
+    # This is the rule about *correctness* — never issue the same reconfigure twice — and
+    # it is deliberately all that is left of the old guard's four. The pacing gap, the
+    # hourly budget and the hands-off state were rules about *frequency*, and the ledger
+    # showed frequency was never the hazard (see ``firewall_guard``).
 
     def set_pipe_enabled(self, pipe_uuid: str | None, enabled: bool) -> dict:
         def verify() -> bool:
@@ -239,10 +240,10 @@ class ResilientProvider(ConfigProvider):
                verify: Callable[[], bool]) -> Any:
         from . import firewall_guard, link_watch
 
-        # The pacing wait happens BEFORE the stopwatch and is ledgered as its own number:
-        # a gap PathBrain chose to wait is not the firewall being slow.
-        waited = firewall_guard.before_write(op, changes, reconfigures=reconfigures)  # raises FirewallHandsOff
-        waited_ms = float(waited or 0.0) * 1000.0
+        # Raises FirewallWriteRefused if the change names a field PathBrain never writes.
+        # It never sleeps and never consults a budget, so the stopwatch below times the
+        # firewall and nothing else.
+        firewall_guard.before_write(op, changes, reconfigures=reconfigures)
         t0 = time.monotonic()
         # Wall clock, because ``link_watch``'s samples are wall clock: the window this write
         # occupied has to line up with packets sent by another thread.
@@ -252,8 +253,7 @@ class ResilientProvider(ConfigProvider):
         def ledger(outcome: str, *, error: str | None = None, latency_ms: float | None = None) -> None:
             nonlocal write_id
             write_id = firewall_guard.record(op, changes=changes, reconfigures=reconfigures,
-                                             outcome=outcome, error=error, latency_ms=latency_ms,
-                                             waited_ms=waited_ms)
+                                             outcome=outcome, error=error, latency_ms=latency_ms)
 
         try:
             try:
@@ -272,14 +272,11 @@ class ResilientProvider(ConfigProvider):
                     took = False
                 if took:
                     ledger("verified", error=f"{type(exc).__name__}: {exc}", latency_ms=elapsed)
-                    firewall_guard.note_contact(True)
                     return {"provider": self.name, "ok": True, "verified_after_timeout": True,
                             "reconfigures": reconfigures}
                 ledger("failed", error=f"{type(exc).__name__}: {exc}", latency_ms=elapsed)
-                firewall_guard.note_contact(False, f"{type(exc).__name__}: {exc}")
                 raise FirewallUnavailable(op, 1, exc) from exc
             ledger("ok", latency_ms=(time.monotonic() - t0) * 1000.0)
-            firewall_guard.note_contact(True)
             return result
         finally:
             # Every write registers its window, on every path — a write that FAILED is the
@@ -311,22 +308,16 @@ def describe_failure(exc: BaseException) -> str:
 
     if isinstance(exc, SessionAbort):
         return str(exc)
-    from .firewall_guard import FirewallHandsOff
+    from .firewall_guard import FirewallWriteRefused
 
-    if isinstance(exc, FirewallHandsOff):
-        if getattr(exc, "kind", None) == "protected_field":
-            # Deliberately does NOT offer arming as the remedy: this refusal is permanent,
-            # and a card that points at the Arm button for it would send a person to press
-            # something that changes nothing.
-            return (
-                f"Stopped by the firewall guard — {exc.reason} This one does not lift: the "
-                "field is recorded on every run but is never written, so the profile that "
-                "needs it cannot be applied at all. Nothing was written, including any restore."
-            )
+    if isinstance(exc, FirewallWriteRefused):
+        # Deliberately offers no remedy, because there is none to offer: this refusal is
+        # permanent and there is no longer any state a person could clear. Naming a button
+        # here would send someone to press something that changes nothing.
         return (
-            f"Stopped by the firewall guard — {exc.reason} Nothing was written, including any "
-            "restore: the firewall is exactly as it was before this write. Arm writes from the "
-            "top bar once the network is known good."
+            f"Stopped by the firewall guard — {exc.reason} This does not lift: the field is "
+            "recorded on every run but is never written, so the profile that needs it cannot "
+            "be applied at all. Nothing was written, including any restore."
         )
     if isinstance(exc, FirewallUnavailable):
         return (

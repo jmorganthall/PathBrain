@@ -184,7 +184,9 @@ def _migrate() -> None:
             "target": "JSON",
         },
         "firewall_writes": {
-            "waited_ms": "FLOAT",
+            # ``waited_ms`` (the guard's pacing wait) was here. Nothing paces a write now
+            # and the model does not map it, so it is not added to new databases; existing
+            # ones keep the column and its rows.
             "gap_ms": "FLOAT",
             "box_gap_ms": "FLOAT",
             "through_gap_ms": "FLOAT",

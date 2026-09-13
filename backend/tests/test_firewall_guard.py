@@ -1,10 +1,18 @@
-"""The firewall guard: every write ledgered, paced, budgeted, refusable — and a write that
-times out is never reissued. Written after the reload-storm incident; each test pins one of
-the rules that would have contained it."""
+"""The firewall write path: every write ledgered, one kind refused, and a write that times
+out never reissued.
+
+There used to be twice as many tests here, and their absence is the subject. The guard
+also paced writes, budgeted them by the hour, cooled down after an outage, held a new build
+read-only until somebody armed it, and refused whole sessions at the door. That was a rate
+limit built on the theory that how *often* PathBrain wrote was the hazard — and the ledger,
+the one part of it that was an instrument rather than a valve, disproved it: the cost was
+one field (``flows``, now non-writable), never the rate. So the valve is gone and the tests
+for it went with it, replaced by two that pin the rollback: nothing throttles, and no
+session is turned away.
+"""
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -13,9 +21,8 @@ from sqlalchemy import select
 
 from pathbrain import firewall_guard as fg
 from pathbrain import session_runtime
-from pathbrain.config_store import save_config
 from pathbrain.database import session_scope
-from pathbrain.models import FirewallGuardState, FirewallWrite
+from pathbrain.models import FirewallWrite
 from pathbrain.providers import get_provider
 from pathbrain.providers.mock import _OVERRIDES, _PIPE_ENABLED
 from pathbrain.session_runtime import FirewallUnavailable, ResilientProvider
@@ -25,20 +32,14 @@ from .faults import FaultyProvider
 
 @pytest.fixture()
 def guard(monkeypatch):
-    """A clean guard with pacing off and a known config; tests override ``cfg`` as needed."""
-    cfg = dict(fg.DEFAULTS, min_reconfigure_gap_s=0, max_reconfigures_per_hour=0, cooldown_after_outage_s=0)
-    monkeypatch.setattr(fg, "config", lambda: dict(cfg))
+    """A clean ledger. There is no longer any guard *state* to reset — which is the point."""
     monkeypatch.setattr(fg, "_build_sha", lambda: "")
-    monkeypatch.setattr(session_runtime, "FIREWALL_BACKOFF_S", (0.0, 0.0))   # reads still retry, without the wait
+    monkeypatch.setattr(session_runtime, "FIREWALL_BACKOFF_S", (0.0, 0.0))   # reads retry, without the wait
+
     def reset():
         with session_scope() as s:
             for r in s.scalars(select(FirewallWrite)).all():
                 s.delete(r)
-            row = s.get(FirewallGuardState, 1)
-            if row is not None:
-                s.delete(row)
-        fg._last_ok_stamp = 0.0
-        fg._outage_pending = False
 
     # The mock provider's state is shared by the whole suite: save it and put it back, so a
     # value written here never changes what a later test discovers.
@@ -46,9 +47,7 @@ def guard(monkeypatch):
     saved_enabled = dict(_PIPE_ENABLED)
     reset()
     _OVERRIDES.clear()
-    yield cfg
-    # Leave the guard armed and clean: a hands-off left behind would refuse every later
-    # test's writes, which is exactly what it is for and exactly what a suite must not see.
+    yield
     reset()
     _OVERRIDES.clear()
     _OVERRIDES.update(saved)
@@ -68,7 +67,7 @@ def _provider() -> tuple[ResilientProvider, FaultyProvider]:
 CH = {"pipe_uuid": None, "param": "quantum", "value": 1514}
 
 
-# ── 1. the ledger ──────────────────────────────────────────────────────────────
+# ── 1. the ledger — the instrument that found the real cause ───────────────────
 
 
 def test_every_write_lands_on_the_ledger_with_its_cost(guard):
@@ -85,57 +84,52 @@ def test_every_write_lands_on_the_ledger_with_its_cost(guard):
     assert inner.reconfigures == 3
 
 
-def test_a_wrong_request_is_recorded_as_failed_and_never_trips(guard):
+def test_a_wrong_request_is_recorded_as_failed(guard):
     p, inner = _provider()
     inner.fail_next("400")
     with pytest.raises(httpx.HTTPStatusError):
         p.apply(CH)
     assert _ledger()[-1]["outcome"] == "failed"
-    assert fg.state()["hands_off"] is False
 
 
-# ── 2. hands-off is persistent, universal, and refuses restores too ────────────
+def test_the_rate_is_reported_and_never_enforced(guard):
+    """``summary`` counts reconfigures per hour. That number is a *reading*.
 
-
-def test_hands_off_refuses_every_write_and_records_the_refusal(guard):
+    It was a cap, and the cap is what this rollback removes: a burst of writes now simply
+    happens, is counted, and is visible. Fifty in a row here against the old default of
+    sixty an hour — the old guard would have tripped hands-off part way through and left
+    every engine unable to write, including to restore.
+    """
     p, inner = _provider()
-    fg.hands_off("network under investigation")
-    for call in (lambda: p.apply(CH), lambda: p.apply_many([CH]), lambda: p.set_pipe_enabled(None, True)):
-        with pytest.raises(fg.FirewallHandsOff) as ei:
-            call()
-        assert "network under investigation" in ei.value.reason
-    assert inner.reconfigures == 0 and not [c for c in inner.calls if c != "discover"]
-    st = fg.state()
-    assert st["hands_off"] and st["kind"] == "manual" and st["refused_count"] == 3
-    assert [r["outcome"] for r in _ledger()] == ["refused"] * 3
-    # Reads still work — measurement is never what hands-off stops.
-    assert p.discover()
-    # Only arming clears it, and arming stamps the build.
-    fg.arm()
-    assert fg.state()["hands_off"] is False
+    for _ in range(50):
+        p.apply(CH)
+    assert inner.reconfigures == 50, "every write went through"
+    assert [r["outcome"] for r in _ledger()] == ["ok"] * 50
+    assert fg.summary()["reconfigures_last_hour"] == 50
+    assert "hands_off" not in fg.summary(), "there is no state left to report"
+
+
+def test_nothing_paces_a_write(guard, monkeypatch):
+    """``before_write`` used to sleep out a minimum gap between reconfigures. It cannot
+    sleep now — it has no clock to consult and takes no ``sleep`` argument at all."""
+    import time as time_mod
+
+    slept: list[float] = []
+    monkeypatch.setattr(time_mod, "sleep", lambda s: slept.append(s))
+    p, _ = _provider()
     p.apply(CH)
-    assert inner.reconfigures == 1
+    p.apply(CH)
+    assert slept == [], "a write waited for something"
 
 
-def test_hands_off_survives_a_restart(guard):
-    fg.hands_off("set before a restart")
-    # A fresh read of the state row (what a new process would do) still says hands-off.
-    assert fg.state()["hands_off"] and fg.state()["reason"] == "set before a restart"
-    assert fg.startup_check()["hands_off"]
-
-
-def test_describe_failure_says_nothing_was_written(guard):
-    text = session_runtime.describe_failure(fg.FirewallHandsOff("hands-off: because", kind="manual"))
-    assert "Nothing was written" in text and "restore" in text and "because" in text
-
-
-# ── 2b. a field the registry does not mark writable is never written ──────────
+# ── 2. a field the registry does not mark writable is never written ────────────
 
 
 def test_a_write_to_a_field_the_registry_never_writes_is_refused(guard):
-    """The flow table is captured on every run and never changed.
+    """The flow table is captured on every run and never changed — the one rule the
+    evidence actually supports, and the reason the rate valve was never needed.
 
-    ``shaper_fields`` is where that decision lives and ``plan_apply`` honours it, so no
+    ``shaper_fields`` is where the decision lives and ``plan_apply`` honours it, so no
     engine can *plan* such a change — but a hand-built change list, a route, or a job spec
     queued before the registry changed still reaches the provider, and this field costs a
     30-second outage rather than a wasted call. So the last thing between a change list and
@@ -145,19 +139,13 @@ def test_a_write_to_a_field_the_registry_never_writes_is_refused(guard):
     flows = {"pipe_uuid": None, "param": "flows", "value": 2048}
     for call in (lambda: p.apply(flows), lambda: p.apply_many([flows]),
                  lambda: p.apply_many([CH, flows])):   # one bad change condemns the batch
-        with pytest.raises(fg.FirewallHandsOff) as ei:
+        with pytest.raises(fg.FirewallWriteRefused) as ei:
             call()
         assert ei.value.kind == "protected_field"
         assert "flows" in ei.value.reason and "never written" in ei.value.reason
     assert inner.reconfigures == 0 and not [c for c in inner.calls if c != "discover"]
     assert [r["outcome"] for r in _ledger()] == ["refused"] * 3
-    # It is refused as itself, not as hands-off: arming clears the guard and changes nothing
-    # here, because this refusal is about what the field is, not about the guard's state.
-    assert fg.state()["hands_off"] is False
-    fg.arm()
-    with pytest.raises(fg.FirewallHandsOff):
-        p.apply(flows)
-    # ...and an ordinary writable field still writes.
+    # ...and an ordinary writable field still writes, immediately.
     p.apply(CH)
     assert inner.reconfigures == 1
 
@@ -172,61 +160,16 @@ def test_the_pipe_toggle_is_not_a_shaper_field_and_is_untouched(guard):
     assert inner.reconfigures == 1
 
 
-def test_the_protected_refusal_points_at_no_remedy_it_does_not_have(guard):
+def test_the_refusal_points_at_no_remedy_it_does_not_have(guard):
+    """There is no Arm button any more, and there was never one that helped here: this
+    refusal is about what the field *is*, so the card must not send anyone to press
+    something."""
     text = session_runtime.describe_failure(
-        fg.FirewallHandsOff("Flows is captured but never written", kind="protected_field"))
-    assert "does not lift" in text and "Arm" not in text
+        fg.FirewallWriteRefused("Flows is captured but never written"))
+    assert "does not lift" in text and "Arm" not in text and "Nothing was written" in text
 
 
-# ── 3. outage → trip; cooldown after the firewall returns ─────────────────────
-
-
-def test_an_outage_on_a_write_trips_hands_off_and_no_write_is_reissued(guard):
-    p, inner = _provider()
-    inner.fail_next("connect")            # the box is rebooting: the write cannot reach it
-    inner.dark(2)                          # ...and the verifying re-read fails too
-    with pytest.raises(FirewallUnavailable):
-        p.apply({"pipe_uuid": None, "param": "quantum", "value": 777})   # a value the mock is NOT on
-    assert inner.calls.count("apply") == 1                   # ONE attempt, never a retry
-    st = fg.state()
-    assert st["hands_off"] and st["kind"] == "outage" and st["unreachable_since"]
-    assert _ledger()[-1]["outcome"] == "failed"
-    # Every later write is refused until a person arms — a baseline restore included.
-    with pytest.raises(fg.FirewallHandsOff):
-        p.apply_many([CH])
-    assert inner.reconfigures == 0
-
-
-def test_an_outage_seen_on_a_read_trips_too(guard, monkeypatch):
-    monkeypatch.setattr(session_runtime, "FIREWALL_BACKOFF_S", (0.0, 0.0))
-    p, inner = _provider()
-    inner.dark(10)
-    with pytest.raises(FirewallUnavailable):
-        p.discover()
-    assert fg.state()["hands_off"] and fg.state()["kind"] == "outage"
-
-
-def test_writes_cool_down_after_the_firewall_comes_back(guard):
-    guard["cooldown_after_outage_s"] = 300
-    p, inner = _provider()
-    inner.dark(3)                            # exactly the read's three attempts
-    with pytest.raises(FirewallUnavailable):
-        p.discover()
-    fg.arm()                                # a person arms straight after the reboot
-    assert p.discover()                     # reachable again → reachable_since stamped
-    with pytest.raises(fg.FirewallHandsOff) as ei:
-        p.apply(CH)
-    assert ei.value.kind == "cooldown" and "cooldown" in ei.value.reason
-    assert inner.reconfigures == 0
-    # ...and once the cooldown has elapsed the same write goes through.
-    with session_scope() as s:
-        row = s.get(FirewallGuardState, 1)
-        row.reachable_since = datetime.now(timezone.utc) - timedelta(seconds=301)
-    p.apply(CH)
-    assert inner.reconfigures == 1
-
-
-# ── 4. a timed-out write is verified by re-reading, never reissued ────────────
+# ── 3. a timed-out write is verified by re-reading, never reissued ─────────────
 
 
 def test_a_timed_out_write_that_took_is_verified_not_reissued(guard):
@@ -237,16 +180,21 @@ def test_a_timed_out_write_that_took_is_verified_not_reissued(guard):
     assert inner.calls.count("apply") == 1 and inner.calls.count("discover") >= 1
     assert inner.reconfigures == 1                            # exactly one reload reached the box
     assert _ledger()[-1]["outcome"] == "verified"
-    assert fg.state()["hands_off"] is False
 
 
-def test_a_timed_out_write_that_did_not_take_is_an_outage(guard):
+def test_a_timed_out_write_that_did_not_take_fails_that_session_only(guard):
+    """The write is attempted once and reported gone. It used to also trip hands-off, which
+    stopped every *other* engine too and refused the restores they were holding — one
+    session's bad minute becoming the whole platform's."""
     p, inner = _provider()
     inner.fail_next("timeout", land=False)
     with pytest.raises(FirewallUnavailable):
         p.apply({"pipe_uuid": None, "param": "quantum", "value": 300})
-    assert inner.calls.count("apply") == 1
-    assert fg.state()["hands_off"] and fg.state()["kind"] == "outage"
+    assert inner.calls.count("apply") == 1, "ONE attempt, never a retry"
+    assert _ledger()[-1]["outcome"] == "failed"
+    # The very next write is allowed: nothing latched.
+    p.apply(CH)
+    assert _ledger()[-1]["outcome"] == "ok"
 
 
 def test_a_502_on_a_write_is_never_retried_either(guard):
@@ -257,68 +205,48 @@ def test_a_502_on_a_write_is_never_retried_either(guard):
     assert inner.calls.count("set_pipe_enabled") == 1
 
 
-# ── 5. pacing and budget ───────────────────────────────────────────────────────
-
-
-def test_the_minimum_gap_is_waited_out_not_skipped(guard, monkeypatch):
-    guard["min_reconfigure_gap_s"] = 20
-    waited: list[float] = []
+def test_an_outage_on_a_read_is_retried_and_then_raised(guard):
+    """Reads may be retried — only writes may not — and a failed read is now just a failed
+    read: there is no state for it to set."""
     p, inner = _provider()
-    p.apply(CH)
-    fg.before_write("apply", [CH], reconfigures=1, sleep=waited.append)
-    assert len(waited) == 1 and 18 < waited[0] <= 20
-    # A gap that would mean minutes on the pipeline is refused instead of slept.
-    guard["min_reconfigure_gap_s"] = fg.MAX_GAP_WAIT_S + 60
-    with pytest.raises(fg.FirewallHandsOff) as ei:
-        fg.before_write("apply", [CH], reconfigures=1, sleep=waited.append)
-    assert ei.value.kind == "gap" and len(waited) == 1
+    inner.dark(10)
+    with pytest.raises(FirewallUnavailable):
+        p.discover()
+    assert inner.calls.count("discover") == session_runtime.FIREWALL_ATTEMPTS
 
 
-def test_the_hourly_budget_trips_hands_off_and_stops_the_session(guard):
-    guard["max_reconfigures_per_hour"] = 3
-    p, inner = _provider()
-    for _ in range(3):
-        p.apply(CH)
-    with pytest.raises(fg.FirewallHandsOff) as ei:
-        p.apply(CH)
-    assert ei.value.kind == "budget" and "3 reconfigures" in ei.value.reason
-    st = fg.state()
-    assert st["hands_off"] and st["kind"] == "budget"
-    assert inner.reconfigures == 3
-    assert fg.summary()["reconfigures_last_hour"] == 3
+# ── 4. the rollback: no session is refused at the door ─────────────────────────
 
 
-# ── 6. a new build starts hands-off ───────────────────────────────────────────
+def test_no_session_asks_the_write_path_for_permission_to_start():
+    """Six engines, the job queue, the ticket dispatcher and both nightly scheduler gates
+    each asked the guard before starting. That check existed only because hands-off
+    existed, and it is what turned one tripped valve into a night with nothing measured.
+
+    Asserted at the source, like the raw-provider scan above, because the alternative is
+    actually starting seven sessions to watch them not be refused. Both halves are checked:
+    nobody calls the door check, and the door check does not exist to be called.
+    """
+    root = Path(__file__).resolve().parents[1] / "pathbrain"
+    callers = [p.relative_to(root).as_posix() for p in root.rglob("*.py")
+               if "blocked_reason" in p.read_text()]
+    assert not callers, f"these still ask the write path for permission: {callers}"
+    for gone in ("blocked_reason", "WRITING_KINDS", "arm", "hands_off", "trip",
+                 "startup_check", "state", "note_contact", "take_wait_ms", "DEFAULTS"):
+        assert not hasattr(fg, gone), f"firewall_guard still exposes {gone}"
 
 
-def test_a_new_build_starts_hands_off_until_armed(guard, monkeypatch):
-    monkeypatch.setattr(fg, "_build_sha", lambda: "abc1234def")
-    st = fg.startup_check()
-    assert st["hands_off"] and st["kind"] == "deploy" and "abc1234" in st["reason"]
-    p, inner = _provider()
-    with pytest.raises(fg.FirewallHandsOff):
-        p.apply(CH)
-    fg.arm()
-    assert fg.state()["armed_sha"] == "abc1234def"
-    # The same build restarting (a crash, a compose restart) does NOT trip again.
-    assert fg.startup_check()["hands_off"] is False
-    # A different build does.
-    monkeypatch.setattr(fg, "_build_sha", lambda: "fedcba9876")
-    assert fg.startup_check()["hands_off"]
+def test_the_queue_takes_every_job(guard):
+    """``job_queue.submit`` carried the one refusal the queueing contract allowed. With no
+    guard state there is no bad request left to refuse, so the contract is unconditional
+    again: a job starts now or it queues."""
+    from pathbrain import job_queue
+
+    assert job_queue.submit("duel", "Duel ladder", lambda: 1).result == 1
+    assert job_queue.submit("current_test", "Test current", lambda: 42).result == 42
 
 
-def test_a_dev_build_with_no_sha_is_left_alone(guard, monkeypatch):
-    monkeypatch.setattr(fg, "_build_sha", lambda: "")
-    assert fg.startup_check()["hands_off"] is False
-
-
-def test_the_deploy_gate_can_be_switched_off(guard, monkeypatch):
-    guard["arm_required_after_deploy"] = False
-    monkeypatch.setattr(fg, "_build_sha", lambda: "abc1234def")
-    assert fg.startup_check()["hands_off"] is False
-
-
-# ── 7. the chokepoint: every provider is the guarded one ───────────────────────
+# ── 5. the chokepoint: every provider is the guarded one ───────────────────────
 
 
 def test_get_provider_is_always_the_guarded_wrapper():
@@ -341,23 +269,29 @@ def test_no_module_builds_a_raw_provider_or_bypasses_apply_many():
     assert not offenders, offenders
 
 
-# ── 8. the API ─────────────────────────────────────────────────────────────────
+# ── 6. the API ─────────────────────────────────────────────────────────────────
 
 
-def test_api_guard_status_arm_and_hands_off(client, guard):
+def test_the_guard_endpoint_reports_the_rate_and_nothing_to_arm(client, guard):
     body = client.get("/api/firewall/guard").json()
-    assert body["hands_off"] is False and "reconfigures_last_hour" in body and body["writes"] == []
-    r = client.post("/api/firewall/guard/hands-off", json={"reason": "testing"}).json()
-    assert r["hands_off"] and r["reason"] == "testing"
-    assert client.get("/api/health/pipeline").json()["firewall"]["hands_off"] is True
-    assert client.post("/api/firewall/guard/arm").json()["hands_off"] is False
+    assert "reconfigures_last_hour" in body and body["writes"] == []
+    assert "hands_off" not in body and "config" not in body
+    assert "reconfigures_last_hour" in client.get("/api/health/pipeline").json()["firewall"]
+    # The POSTs are gone with the state they set. Asserted against the route table rather
+    # than by POSTing and reading the status: an unrouted path is answered by whatever
+    # catch-all is mounted, and this app mounts the built frontend as one — so the same
+    # request is 405 on a machine that has run `npm run build` and 404 on one that has not.
+    # That is a test of whether the frontend was built, which is not the question.
+    from pathbrain.main import app
+
+    gone = {"/api/firewall/guard/arm", "/api/firewall/guard/hands-off"}
+    assert not (gone & {getattr(r, "path", "") for r in app.routes})
 
 
-def test_the_config_write_test_is_ledgered_and_refusable_like_any_other_write(client, guard):
+def test_the_config_write_test_is_ledgered_like_any_other_write(client, guard):
     """`POST /config/test-apply` proves the write path works by nudging quantum +1 and
     setting it back. It holds no special status: both writes are on the ledger at one
-    reconfigure each, and while hands-off is set it is refused before anything is
-    written — so the reversible test can never be the one write that slips the guard."""
+    reconfigure each."""
     body = client.post("/api/config/test-apply").json()
     assert body["ok"] is True
     rows = client.get("/api/firewall/guard").json()["writes"]
@@ -366,126 +300,18 @@ def test_the_config_write_test_is_ledgered_and_refusable_like_any_other_write(cl
         ("quantum", "ok", 1),
     ], "the nudge and the restore are each one ledgered reconfigure"
 
-    fg.hands_off("testing", by="test")
-    refused = client.post("/api/config/test-apply").json()
-    assert refused["changed"] is False and refused["restored"] is False
-    # It stops at the nudge, so there is nothing to restore and no manual fix to report.
-    assert [s["step"] for s in refused["steps"]] == ["discover", "apply +1"]
-    # And it says so in words, not as a class name: this is the first thing a person
-    # presses after a deploy, when the build gate has left writes hands-off.
-    assert "Stopped by the firewall guard" in refused["error"]
-    assert "Arm writes from the top bar" in refused["error"]
-    # The ledger reads newest first, so the refusal is row 0.
-    assert client.get("/api/firewall/guard").json()["writes"][0]["outcome"] == "refused"
 
-
-# ── 8b. a session that can only switch profiles does not start hands-off ───────
-
-
-def test_a_no_op_apply_writes_nothing_so_it_is_never_refused(guard):
-    """Why a duel could be seen measuring while the chip read "Hands off".
-
-    The guard refuses *writes*, and a leg whose profile is the one the firewall is
-    already on plans no changes — so ``_apply_all`` returns without calling the
-    provider, nothing is written, nothing is refused, and the leg measures the profile
-    that was already there. Nothing was set; the belt leg simply needed no write. This
-    pins that reading, because it is the difference between a benign screenshot and a
-    write that escaped the guard.
-    """
+def test_a_no_op_apply_writes_nothing(guard):
+    """A leg whose profile is the one the firewall is already on plans no changes, so
+    ``_apply_all`` returns without calling the provider at all."""
     from pathbrain.profile_test import _apply_all
 
     prov = get_provider()
-    fg.hands_off("testing", by="test")
-    _apply_all(prov, [])  # a no-op switch: must not raise, must not write
+    _apply_all(prov, [])
     assert fg.recent_writes() == [], "a no-op switch touches the firewall not at all"
-    with pytest.raises(fg.FirewallHandsOff):
-        _apply_all(prov, [{"pipe_uuid": "wan-download", "param": "quantum", "value": 777}])
-    assert [w["outcome"] for w in fg.recent_writes()] == ["refused"]
 
 
-@pytest.mark.parametrize("kind", sorted(fg.WRITING_KINDS))
-def test_no_profile_switching_session_starts_while_writes_are_refused(kind, guard, monkeypatch):
-    """A session whose every leg is a write is refused at the door, not three failed
-    legs later. Enforcing only at the write is correct and insufficient: the session
-    starts, measures the profile it was already on, is refused on the first leg that
-    needs a change and aborts — having spent the pipeline to produce nothing."""
-    import pathbrain.baseline_test as baseline_test
-    import pathbrain.challenger as challenger
-    import pathbrain.duel as duel
-    import pathbrain.profile_test as profile_test
-    import pathbrain.refresh as refresh
-    import pathbrain.sweep as sweep
-    import pathbrain.write_probe as write_probe
-
-    calls = {
-        "duel": lambda: duel.start(30, trigger="scheduled"),
-        "race": lambda: challenger.start(600),
-        "refresh": lambda: refresh.start(5),
-        "sweep": lambda: sweep.start({"quantum": [300]}, 1, 0.0, False, None),
-        "baseline_test": lambda: baseline_test.start(5, 0, trigger="scheduled"),
-        "profile_test": lambda: profile_test.start("fp", [], "label", 5),
-        "write_probe": lambda: write_probe.start(
-            [{"param": "quantum", "value": 3000}], firewall_target="10.0.0.1"
-        ),
-    }
-    fg.hands_off("the WAN dropped", by="test")
-    with pytest.raises(ValueError) as err:
-        calls[kind]()
-    assert "hands-off" in str(err.value) and "Arm writes from the top bar" in str(err.value)
-
-
-def test_the_queue_refuses_a_switching_job_and_still_takes_a_read_only_one(guard):
-    """``job_queue.submit`` is the one seam every Run button shares, so the refusal lands
-    there too — before a useless ticket is queued. It is the one refusal this contract
-    allows, because it is a genuinely bad request (the job would apply nothing), not
-    "the pipeline is busy". A session that never writes is unaffected: measuring the
-    profile the firewall is already on is exactly what hands-off leaves possible."""
-    from pathbrain import job_queue
-
-    fg.hands_off("testing", by="test")
-    with pytest.raises(ValueError, match="hands-off"):
-        job_queue.submit("duel", "Duel ladder", lambda: 1)
-    assert job_queue.submit("current_test", "Test current", lambda: 42).result == 42
-
-
-def test_the_scheduler_skips_the_nightly_ladder_without_burning_the_night(guard, monkeypatch):
-    """Hands-off is not "the night's run happened". The nightly gate stamps the day on a
-    failed start so it does not retry every tick — so refusing inside that try would mean
-    arming writes at 03:05 lost the whole night. The guard is checked first and leaves the
-    stamp alone, so the existing catch-up window lets an armed ladder still fire."""
-    from pathbrain import scheduler
-
-    started: list[int] = []
-    monkeypatch.setattr("pathbrain.duel.start", lambda *a, **k: started.append(1) or 1)
-    monkeypatch.setattr("pathbrain.duel.active", lambda: False)
-    monkeypatch.setattr("pathbrain.duel.current", lambda: None)
-    # The window is open and the ladder is armed to fire: without the guard check this
-    # call starts a session, which is what makes the refusal below a real assertion.
-    monkeypatch.setattr(scheduler, "_schedule_due", lambda *a, **k: True)
-    with session_scope() as s:
-        save_config(s, {"duel": {"enabled": True, "continuous": False, "hour": 3, "minute": 0,
-                                 "duration_minutes": 30}})
-
-    def _reset():
-        scheduler._state.pop("duel_last_date", None)
-        scheduler._state.pop("guard_skip_logged", None)
-
-    _reset()
-    assert scheduler._maybe_run_duel() is True and started == [1], "armed: the ladder fires"
-
-    _reset()
-    started.clear()
-    fg.hands_off("the WAN dropped", by="test")
-    assert scheduler._maybe_run_duel() is False
-    assert started == []
-    assert "duel_last_date" not in scheduler._state, "the night is not spent"
-
-    # Arming inside the catch-up window still gets the night's run.
-    fg.arm(by="test")
-    assert scheduler._maybe_run_duel() is True and started == [1]
-
-
-# ── 9. OPNsense: one reconfigure per switch, however many fields ───────────────
+# ── 7. OPNsense: one reconfigure per switch, however many fields ───────────────
 
 
 def test_opnsense_apply_many_reconfigures_once(monkeypatch):
@@ -517,39 +343,3 @@ def test_opnsense_apply_many_reconfigures_once(monkeypatch):
     posts.clear()
     prov.apply({"pipe_uuid": "u-up", "param": "quantum", "value": 600})
     assert posts.count("/api/trafficshaper/service/reconfigure") == 1
-
-
-# ------------------------------------------------- one concept, one response shape
-
-def test_every_guard_endpoint_returns_the_same_shape(client):
-    """Arm and hands-off answer with exactly what the GET answers with.
-
-    The chip sets its whole state from whichever endpoint replied, so a POST that
-    returned the bare state row — no ``config``, no ``writes`` — made the next render
-    read ``info.config.max_reconfigures_per_hour`` on an object with no ``config``. In a
-    React tree with no error boundary that throws and unmounts everything: pressing
-    **Arm** blanked the page. A shape is part of the contract, not an implementation
-    detail of whichever function happened to be nearest.
-    """
-    get = client.get("/api/firewall/guard").json()
-    armed = client.post("/api/firewall/guard/arm").json()
-    off = client.post("/api/firewall/guard/hands-off", json={"reason": "test"}).json()
-    try:
-        assert set(armed) == set(get), f"arm is missing {set(get) - set(armed)}"
-        assert set(off) == set(get), f"hands-off is missing {set(get) - set(off)}"
-        # Named outright, because these are the two the chip dereferences without a guard.
-        for body in (armed, off):
-            assert isinstance(body.get("config"), dict)
-            assert isinstance(body.get("writes"), list)
-            assert "reconfigures_last_hour" in body
-    finally:
-        client.post("/api/firewall/guard/arm")
-
-
-def test_the_posts_report_the_state_they_just_set(client):
-    """The response is fresh, not the state from before the call."""
-    try:
-        assert client.post("/api/firewall/guard/hands-off", json={"reason": "test"}).json()["hands_off"] is True
-        assert client.post("/api/firewall/guard/arm").json()["hands_off"] is False
-    finally:
-        client.post("/api/firewall/guard/arm")

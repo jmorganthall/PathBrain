@@ -76,10 +76,10 @@ LLM-based. See `README.md` for the product overview.
     firewall settled on, files those runs under *its* fingerprint — correctly — and so would
     add iterations to the wrong profile for ever while this one never reached confidence.
     The decision lives here, and two locks sit behind it: `firewall_guard.before_write`
-    refuses any change naming a shaper field the registry doesn't mark writable (checked
-    first, before hands-off and the budget, because those are states that pass and naming one
-    would report a temporary reason for a permanent refusal; `describe_failure` says so
-    without offering the Arm button, which would do nothing), and `write_probe.NEVER_STEP`
+    refuses any change naming a shaper field the registry doesn't mark writable — the only
+    thing it refuses, and a **permanent** refusal, which is why `describe_failure` states it
+    without offering any remedy (there is no state to clear; the rate valve that once sat
+    beside it is gone — see `firewall_guard`) — and `write_probe.NEVER_STEP`
     keeps the field out of the sweep with the flow-table reason attached. The pipe on/off
     toggle (`param: "enabled"`) is not a shaper field and is untouched.
   - `reachability.py` — **"Can this profile exist?"** (`GET /api/methodologies/reachability`,
@@ -492,70 +492,70 @@ LLM-based. See `README.md` for the product overview.
     a kill: Python cannot interrupt a blocked probe, so the iteration in flight always
     finishes (bounded by the probe deadline); the promise is "the next one never starts".
     `test_run_cancel`, `test_duel_cancel`, `test_coordinator`.
-  - `firewall_guard.py` — **every firewall write is ledgered, paced, budgeted and refusable; a
-    write that times out is never reissued; a new build starts hands-off.** Written after the
-    reload-storm incident: the duel ladder wrote one `setPipe` + one full shaper reconfigure
-    **per differing field** on **every leg** (the ring, #220, made every leg a profile switch),
-    and the job runtime (#251) **retried a timed-out write two seconds later** — a second
-    `shaper.reload` while the first was still running inside OPNsense, and a `setPipe` landing
-    seconds after `sshd` came up on a firewall mid-boot. It coincided with OPNsense reboots and
-    a WAN dropping several times a day, and nothing in PathBrain could have caught it, because
-    the write path was the one part of the platform with **no instrument on it**: every metric a
-    run produces is measured, versioned and audited; the reconfigure rate was recorded nowhere.
-    Four rules, enforced in `session_runtime.ResilientProvider` (the only thing `get_provider()`
-    returns — `test_get_provider_is_always_the_guarded_wrapper` and a source scan pin that no
-    module builds a raw provider or writes a change list one field at a time):
-    **(1) The ledger** (`models.FirewallWrite`, `GET /api/firewall/writes`, the top-bar chip's
-    table): when, which engine held the pipeline, which pipe and fields, how many reconfigures
-    it cost, the firewall's latency, and the outcome — `ok`, `verified` (timed out, re-read
-    showed it took), `failed`, `refused`. "What did PathBrain do in the five minutes before the
-    drop?" is one query; `reconfigures_last_hour` is on `GET /api/health/pipeline` as
-    `firewall`. **(2) Hands-off is a persistent state** (`models.FirewallGuardState`,
-    `trip`/`arm`/`hands_off`, `GET /api/firewall/guard`, `POST …/arm`, `POST …/hands-off`, the
-    **top-bar guard chip** `FirewallGuard.tsx`): while set, every write is refused and recorded
-    as refused — **a baseline restore included**, because a restore is a write into a firewall
-    that may be mid-boot, which is exactly what hurt; the session card says so
-    (`describe_failure` for `FirewallHandsOff`). Set by an **outage** (any `FirewallUnavailable`,
-    on a read or a write), by the **budget**, by a **new build** (`startup_check`, before any
-    reconcile: a container on a different `git_sha` than the one last armed runs read-only —
-    measurements run, nothing is applied or restored — until a person arms it, so every deploy
-    is a canary hour on the household's own monitoring; a dev build with no sha is left alone),
-    or **by hand**. Cleared only by `arm`, which stamps the build. It survives a restart on
-    purpose. **(3) Pacing and budget** (`config.firewall`: `min_reconfigure_gap_s` 15,
-    `max_reconfigures_per_hour` 60, `cooldown_after_outage_s` 300, `arm_required_after_deploy`):
-    the gap is waited out (refused past `MAX_GAP_WAIT_S`), the hourly cap trips hands-off (a
-    session stops, the network does not), and after an outage writes are refused until the
-    firewall has been back for the cooldown. **(4) A write is attempted ONCE.** Reads still
-    retry; a write that times out, drops, or draws a 5xx is followed by a **re-read**
+  - `firewall_guard.py` — **every firewall write is ledgered and one kind is refused; a
+    write that times out is never reissued.** This module used to be four rules and is now
+    two, and **the rollback is the entry worth reading**.
+    It was written after the reload-storm incident: the duel ladder wrote one `setPipe` + one
+    full shaper reconfigure **per differing field** on **every leg** (the ring, #220, made every
+    leg a profile switch), and the job runtime (#251) **retried a timed-out write two seconds
+    later** — a second `shaper.reload` while the first was still running inside OPNsense, and a
+    `setPipe` landing seconds after `sshd` came up on a firewall mid-boot. It coincided with
+    OPNsense reboots and a WAN dropping several times a day, and nothing in PathBrain could have
+    caught it, because the write path was the one part of the platform with **no instrument on
+    it**: every metric a run produces is measured, versioned and audited; the reconfigure rate was
+    recorded nowhere.
+    The response was an instrument *and* a valve, and only one of them was right. The valve — a
+    `min_reconfigure_gap_s` the guard slept out, a `max_reconfigures_per_hour` budget, a
+    `cooldown_after_outage_s`, an `arm_required_after_deploy` gate that left every new build
+    read-only, and a persistent `hands_off` state (`FirewallGuardState`) that any of those could
+    trip and only a person could clear — rested on the theory that **how often** PathBrain wrote
+    was the hazard. **The ledger disproved it.** Twenty rows, no exceptions: every write carrying
+    `flows` timed out the 30 s call and took the box off the network for 30–35 s; every write in
+    the same hours that did not carry it was clean and sub-second (a bare shaper reload 420/449/
+    492 ms, `quantum` + reload 521 ms, `limit` + reload 498 ms). The cost was **one field in a
+    handful of writes**, and `flows` is non-writable now (`shaper_fields`), which removes it.
+    So the valve is gone, and it was not free while it stood: it refused writes that could not
+    have hurt, stopped whole sessions at the door (`WRITING_KINDS`/`blocked_reason` in six
+    engines, `job_queue.submit`, the ticket dispatcher and both nightly scheduler gates), turned
+    one session's bad minute into every engine's — a tripped budget refused **restores** too, so
+    a session could be left holding a profile it could not put back — and made an unattended
+    deploy a night with nothing applied, since `startup_check` ran before every reconcile. The
+    suite needed an autouse fixture to defuse it between every test, which is its own reading of
+    the cost. **PathBrain is ready to write, as it was before.** What was needed was diligence
+    about *what* gets injected into a production firewall, not a throttle on how often — and the
+    two rules that remain are exactly that, each earned in the incident rather than assumed:
+    **(1) The ledger** (`models.FirewallWrite`, `GET /api/firewall/writes`, the **Firewall**
+    page's table): when, which engine held the pipeline, which pipe and fields, how many
+    reconfigures it cost, the firewall's latency, and the outcome — `ok`, `verified` (timed out,
+    re-read showed it took), `failed`, `refused`. "What did PathBrain do in the five minutes
+    before the drop?" is one query, and it is the query that found the real cause.
+    `reconfigures_last_hour` is on `GET /api/health/pipeline` as `firewall` — a **reading**, never
+    a limit; nothing consults it to decide whether a write may happen.
+    **(2) A field the registry does not mark writable is never written** (`protected_params`,
+    checked first and last in `before_write`, raising `FirewallWriteRefused`). `shaper_fields`
+    is where the decision lives and `plan_apply` honours it, so no engine can *plan* such a
+    change — but a hand-built change list, a route, or a job spec queued before the registry
+    changed still reaches the provider, and this field costs an outage rather than a wasted call.
+    The refusal is **permanent** and `describe_failure` says so without offering a remedy, since
+    there is no longer any state a person could clear. The pipe on/off toggle (`param: "enabled"`)
+    is not a shaper field and is untouched.
+    Beside them, in `session_runtime` where the call is: **a write is attempted ONCE.** Reads
+    still retry; a write that times out, drops, or draws a 5xx is followed by a **re-read**
     (`_verify_applied`, numeric `_field_equal` per change; `pipe_states` for a toggle) — it took
-    (`verified`) or the firewall is treated as gone and hands-off trips. Never reissued.
+    (`verified`), or that session reports the firewall gone and stops. Never reissued, and
+    deliberately never latched: it fails the session that met it, not the platform. This is the
+    rule about *correctness*, which is why it survived the rollback of the rules about frequency.
+    All of it is enforced in `session_runtime.ResilientProvider` (the only thing `get_provider()`
+    returns — `test_get_provider_is_always_the_guarded_wrapper` and a source scan pin that no
+    module builds a raw provider or writes a change list one field at a time).
     **One reconfigure per profile switch** (`ConfigProvider.apply_many`; OPNsense sets every
     changed field on every pipe, one `setPipe` per pipe, then reconfigures once — the mock and
     the base fall back to a loop): `profile_test._apply_all` (every engine's switch and every
     restore) and `routes_settings._write_changes` go through it, so a switch differing in three
-    fields across two pipes costs one shaper reload where it cost three. `note_contact` stamps
-    a successful read at most every `CONTACT_STAMP_S` (a row write per firewall read would be
-    amplification); an outage and the first success after one are always written.
-    **A session that can only switch profiles does not START while writes are refused**
-    (`WRITING_KINDS`, `blocked_reason`, checked in each engine's `start()`, in
-    `job_queue.submit`, in the ticket dispatcher and in the scheduler's nightly gates).
-    Enforcing only at the write is correct and insufficient, and the gap read as an alarm:
-    the chip said **Hands off** while the board showed a duel measuring a profile. Nothing
-    had escaped the guard — a leg whose profile is the one the firewall is already on plans
-    no changes, so `_apply_all` returns without calling the provider and there is no write
-    to refuse — but the session had started anyway, and could only measure the live profile,
-    fail the first leg needing a change, and abort three legs later having spent the
-    pipeline to produce nothing. So the six kinds whose work *is* a profile switch (sweep,
-    race, refresh, baseline_test, duel, profile_test) ask first and decline in a sentence
-    naming the remedy; `current_test` and manual runs are untouched, because measuring the
-    profile the firewall is already on is exactly what hands-off leaves possible. This is
-    the one refusal the job-queue contract allows — the job would apply nothing, which is a
-    genuinely bad request, not "the pipeline is busy". The scheduler checks **before** its
-    once-a-day stamp: being hands-off is not the night's run having happened, and consuming
-    the slot would mean arming at 03:05 lost the whole night, so the catch-up window still
-    fires an armed ladder. `POST /config/test-apply` needs no gate — it is two writes with
-    no measurement between them, so it is refused at the write and says so through
-    `describe_failure` like any session.
+    fields across two pipes costs one shaper reload where it cost three. That is a real reduction
+    in writes, achieved by writing *better* rather than by writing *less often*, and it is the
+    shape a future fix here should take. `test_firewall_guard` pins both surviving rules and the
+    rollback itself — no module asks for permission to start, and the valve's API is gone.
     **The gate on the repo** (`.github/workflows/firewall-gate.yml`, the PR template's
     **Firewall interaction** section): a PR touching the providers, the session runtime, the
     guard, an engine's apply path or the settings/config/sweep routes does not merge unless its
@@ -587,9 +587,11 @@ LLM-based. See `README.md` for the product overview.
     plugin), raw per-packet series persisted beside the derived summary — the same
     raw-then-derive discipline the plugins follow. `verdict` says which half cost what in one
     sentence with its numbers in it, and leads with the box going silent whenever both
-    happened. Guarded like any other write — ledgered, paced, budgeted, refused while
-    hands-off (`WRITING_KINDS`): a diagnostic that bypassed the guard to study the guard's own
-    subject would be the one unsupervised write path in the system. Holds the coordinator lock
+    happened. Guarded like any other write — ledgered, watched, and refused if it names a
+    field PathBrain never writes: a diagnostic that bypassed the write path to study the
+    write path would be the one unsupervised writer in the system. It has no exemption and
+    needs none, and it is no longer refused for *rate* reasons either — a diagnostic you are
+    watching is the last thing that should need permission. Holds the coordinator lock
     and restores in a `finally`. `/api/firewall/write-probe`, the **Write and ping** card on
     its own **Firewall** page beside the write ledger — Config is where settings live, not
     where a diagnostic you actively run belongs, and below the fold of a long page behind a
@@ -613,56 +615,38 @@ LLM-based. See `README.md` for the product overview.
     screen is worse than none, because the all-clear is the line people act on — and the
     restore is a full profile switch, the same operation every duel leg performs, so it is
     the cost the household actually pays.
-    **The per-field sweep: which field's write costs the outage?** (`step_value` /
-    `plan_sweep` / `start_sweep` / `sweep_verdict`, `POST /firewall/write-probe/sweep`,
-    `GET …/sweep/preview`, the **Sweep every field** panel.) The probe above answers "the
-    fields or the reload?" and cannot answer "*which* field?" — different answers with
-    different fixes, since a reload costing the same whatever moved is inherent to
-    reconfiguring a live shaper while one that only hurts for a particular field is a lead.
-    So each field is stepped on its own, put straight back, and both writes measured
-    (`phase` `set`/`revert`), with **at most one field away from its original value at any
-    instant** — a failure can therefore always name exactly what is still moved and to what,
-    and the `finally` says so in capitals when it cannot put it back. The step is the
-    *smallest write that is still a write*: `+1`, a bool toggled, the next value on the
-    firewall's own option list for a select (`+1` off that list is accepted and silently does
-    nothing, so it would time a write that never happened). Deliberately **not**
-    `levers._generated_values`, which halves and doubles because it is hunting a better
-    value; this is measuring what a write costs, and a halved queue limit is the failure the
-    sweep investigates rather than one it should cause.
-    Three things make it safe to point at a live firewall. **(1) `flows` is never swept**
-    (`NEVER_STEP`) — every other writable field is a parameter the shaper *reads*, while the
-    flow table decides how many queues it allocates, so any change to it (`1024 → 1025`
-    included) forces a full rebuild rather than a re-read. Measured on this link: setting it
-    was free, putting it back took **35.3 s**, timed out the `apply_many`, took the box off
-    the network for 33 s and tripped hands-off. Naming it explicitly does not override the
-    exclusion, because the reason does not depend on who asked. This list is where that cost
-    was first written down; the ledger then showed the same cost on every *ordinary* write
-    carrying the field, so the decision moved to the registry — `flows` is no longer writable
-    at all, which takes it out of `sweep_fields` and out of the single probe's `proposals` on
-    its own. `NEVER_STEP` stays as the second lock and as what makes the refusal *say
-    something*: a caller naming the field gets the flow-table reason rather than a bare "not
-    a writable field". **(2) The settle outlasts the outage**
-    (`SWEEP_SETTLE_S` 45 s): `summarize` reports the worst gap *inside* the step window and a
-    run still lost at its close is measured only to the last sample in it, so the single
-    probe's 10 s settle would read a 35 s outage as 10 s and truncate the finding. **(3) The
-    cost is priced before the first write** (`budget_shortfall`): exceeding
-    `max_reconfigures_per_hour` trips hands-off, hands-off refuses *every* write including a
-    restore, and a sweep stopped there is holding a field it cannot put back — so a sweep
-    that cannot finish inside the remaining budget is refused rather than started. A field
-    costs 2 reconfigures (step + revert) and `reload=False` costs **none**, which makes the
-    cheap pass — write and revert each field with no reload — exempt from both the budget and
-    the pacing gap and the right thing to run first.
-    `sweep_verdict` checks the gap against each step's **position** before it dares name a
-    field: one pass gives one sample each, so "this field is expensive" and "the fourth
-    reload of a session is expensive" produce identical tables, and a ranking nobody can
-    trust is worse than no ranking. `plan_sweep` also returns `proposals` — the same step
-    rule over *every* writable field — which the single probe's value box reads, so the
-    dropdown and the number agree. They did not: the field list was hardcoded in the
-    frontend (drifted from the registry, no bandwidth) and the value box kept whatever was
-    last typed, so selecting `ecn` offered it a value of **4096** left over from `flows`.
-    `test_write_probe_sweep`.
+    **The per-field sweep was REMOVED, and the removal is the entry.** It stepped every
+    writable field on its own, put each straight back and measured both (`plan_sweep` /
+    `start_sweep` / `sweep_verdict`, the *Sweep every field* panel), to answer the question
+    the single probe cannot: not "the fields or the reload?" but "*which* field?". It
+    answered — **the flow table, and only the flow table** — and that field is no longer
+    writable at all, so the finding is now a registry line rather than a capability. What
+    was left was a one-time survey whose only way of being re-asked was to write to **every
+    writable field of a live production firewall in sequence**: the most invasive operation
+    the product had, aimed at the household's own link, for a question already closed. For a
+    field that comes under suspicion later the single probe answers the same thing for that
+    one field, on a value a person picks, while they watch — which is the reusable form and
+    always was. Kept from it: `step_value` (the smallest write that is still a write — `+1`,
+    a bool toggled, the next value on the firewall's own option list for a select) and
+    `field_proposals` (`GET /firewall/write-probe/fields`), which is read-only and feeds the
+    probe's field dropdown and value box, because "what is a sensible next value for this
+    field" is the registry's answer and not a component's — a hardcoded frontend list is how
+    the value box came to offer `ecn` a value of **4096**, kept over from `flows`.
+    `NEVER_STEP` stays as the second lock and the record of why: naming `flows` explicitly
+    gets the flow-table reason rather than a bare "not writable". `test_write_probe`
+    (`test_the_per_field_sweep_is_gone`).
   - `link_watch.py` — **a continuous ping beside every write, so the ledger says WHICH
-    write broke the firewall.** `write_probe` answers "what does *a* write cost?" on demand,
+    write broke the firewall — now OFF by default, because it said.**
+    It answered: the writes carrying `flows`, which is no longer a writable field. Left
+    running it costs **10 ICMP packets a second forever** (864,000 a day), three permanent
+    threads and a growing `link_gaps` table, and it feeds exactly one card — no score, no
+    gate, no decision anywhere reads it. A continuous instrument for a closed question is a
+    permanent cost paid for a finding already banked, so `firewall.watch_enabled` defaults
+    **false** and the Firewall page's switch turns it on for as long as a write path is
+    actually under suspicion. The capability is what is worth keeping; the habit is not.
+    (`test_link_watch.test_the_watch_is_off_unless_somebody_turns_it_on` pins the default
+    in both places it is written, since a default that lives in two places will disagree
+    with itself.) What it does when armed: `write_probe` answers "what does *a* write cost?" on demand,
     under supervision, on a value you pick — the right instrument for a controlled
     experiment and the wrong one for the question actually being asked, which is *which of
     the writes PathBrain already makes is the one that hurts*. That is a question about
@@ -700,13 +684,13 @@ LLM-based. See `README.md` for the product overview.
     it does can fail a write — `note_write` appends a tuple and returns, every expensive
     step is on the worker, and every path swallows. `GET|POST /api/firewall/watch`, the
     **Link watch** card and the ledger's **Cost** column on the Firewall page.
-    **The guard's pacing is ledgered apart from the firewall's latency** (`waited_ms`,
-    `firewall_guard.take_wait_ms`): a wait PathBrain chose is not the firewall being slow,
-    and the write probe's first real reading reported a 5 s `min_reconfigure_gap_s` wait as
-    a 5.5 s firewall cost — the one number that sends a reader after entirely the wrong
-    thing. `before_write` now returns what it paced and stamps it thread-locally, the
-    ledger carries both, and the probe's `action_ms` subtracts it (`paced_ms` beside it).
-    `test_link_watch`.
+    **`latency_ms` is the firewall's own cost, full stop.** It briefly had a sibling,
+    `waited_ms`, because the guard slept out a pacing gap inside the same span: the write
+    probe's first real reading reported a 5 s `min_reconfigure_gap_s` wait as a 5.5 s
+    firewall cost — the one number that sends a reader after entirely the wrong thing. The
+    split was the right fix for a wait that should not have existed; nothing paces a write
+    now, so there is one number again and it means what it says. (The column is unmapped
+    rather than dropped, so existing rows keep their data.) `test_link_watch`.
   - `alerts.py` — **an alert you have read stays read until the SITUATION changes.**
     PathBrain's diagnostic banners are conditions, not events — "56% of matches produced no
     result", a fading crown, a saturated threshold — each worth showing once and noise every
@@ -3065,24 +3049,23 @@ LLM-based. See `README.md` for the product overview.
   routes, one around each top-bar chip). React unmounts the **entire tree** when any
   component throws during render, and with no boundary anywhere that is a white page with
   no message, no component name and no way back. Reported as *"why does arm writes on this
-  build launch a blank page?"*, and the cause was one missing key: `POST /firewall/guard/arm`
-  returned the bare state row while `GET /firewall/guard` returns `summary()` + the ledger,
-  the chip sets its whole state from whichever endpoint answered
-  (`setInfo(await api.firewallArm())`), and the next render read `info?.config.max_…` —
-  optional chaining guards `info`, not `config` — so the deref threw and took every page
-  with it. The chip is mounted on all of them, which is the asymmetry that makes this
-  catastrophic rather than local. Three fixes, in increasing order of generality: every
-  guard endpoint returns the one `_status()` shape (`routes_firewall._status`;
-  `test_every_guard_endpoint_returns_the_same_shape` asserts key-for-key equality across
-  all three and names `config`/`writes`, the two the chip dereferences unguarded); the chip
-  reads every field defensively, so an incomplete payload degrades to a dash; and the
+  build launch a blank page?"*: `POST /firewall/guard/arm` returned the bare state row while
+  `GET /firewall/guard` returned `summary()` + the ledger, the top-bar guard chip set its
+  whole state from whichever endpoint answered, and the next render read `info?.config.max_…`
+  — optional chaining guards `info`, not `config` — so the deref threw and took every page
+  with it. The chip was mounted on all of them, which is the asymmetry that makes this
+  catastrophic rather than local. (That chip and its Arm button are gone now, with the rate
+  valve they controlled — so this particular deref cannot recur, and the general lesson is
+  what is left.) Two fixes, in increasing order of generality: one shape per concept, so a
+  component never has to ask which endpoint answered; and the
   boundaries make the blast radius match the failure — a **widget** fails to a small `⚠`
   chip carrying its error (one reading unavailable, not the application), a **page** fails
   to a card with the message and a reload while the shell and navigation stay usable, so
   you can leave the broken page. Deliberately **not** a silent swallow: a boundary that
   renders nothing is a blank page with extra steps, so the message and the component stack
-  are both shown and both logged. The deploy gate is why this surfaced now — a new build
-  trips hands-off, which makes **Arm** the button pressed after every update.
+  are both shown and both logged. The deploy gate is why this surfaced at all — a new build
+  came up hands-off, which made **Arm** the button pressed after every update, on every
+  page, by a person who had just deployed.
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). **Resource
   guardrails**, so PathBrain fails locally rather than taking the NAS with it: `init: true`

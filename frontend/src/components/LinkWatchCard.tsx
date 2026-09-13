@@ -1,8 +1,15 @@
 /**
  * Link watch — the continuous ping beside every firewall write.
  *
- * The card exists to answer one question that a ledger of writes cannot answer on its
- * own: **which write broke the firewall?** So the headline is not "how many gaps" — a
+ * **Off by default**, and that is the interesting part. It was built to answer one
+ * question a ledger of writes cannot answer on its own: **which write broke the
+ * firewall?** It answered — the ones carrying `flows`, which is no longer a writable
+ * field — and a continuous instrument for a closed question is a permanent cost: ten ICMP
+ * packets a second forever, three threads, a growing table, feeding this card and no
+ * score, gate or decision anywhere. So it is a thing you switch on while a write path is
+ * under suspicion, not a thing that runs because it once was.
+ *
+ * When it IS on, the headline is not "how many gaps" — a
  * count of gaps says only that the link is unstable, which anyone watching Netflix
  * already knew. It is the **split**: of the gaps seen, how many had a PathBrain write in
  * flight and how many had nothing at all going on. Those are opposite findings and they
@@ -101,10 +108,11 @@ export default function LinkWatchCard() {
         </Stack>
 
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          A continuous ping runs beside every write, so each row in the ledger below says
-          what it cost. Two targets, because they separate the diagnosis: the firewall's
-          own address going quiet means the <b>box</b> was wedged, while traffic stopping
-          <i> through</i> it while the box still answers is a queue rebuild dropping flows.
+          Switch this on while a write path is under suspicion and a continuous ping runs
+          beside every write, so each row in the ledger below says what it cost. Two
+          targets, because they separate the diagnosis: the firewall's own address going
+          quiet means the <b>box</b> was wedged, while traffic stopping <i>through</i> it
+          while the box still answers is a queue rebuild dropping flows.
         </Typography>
 
         {error && (
@@ -117,7 +125,9 @@ export default function LinkWatchCard() {
           <Alert severity="info" sx={{ mb: 2 }}>
             {status.error
               ? `Not watching — ${status.error}`
-              : "Not watching. Writes are still ledgered, but nothing measures what they cost."}
+              : "Off by default. Writes are still ledgered; what they cost the household is "
+                + "only measured while this is on. Turn it on if you suspect a write path — "
+                + "that is the job it was built for, and it has already done it once."}
           </Alert>
         )}
 

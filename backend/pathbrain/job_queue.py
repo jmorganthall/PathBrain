@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import coordinator, firewall_guard
+from . import coordinator
 from .logging_config import get_logger
 
 log = get_logger("job_queue")
@@ -343,13 +343,9 @@ def submit(
     callers) and queues in memory only.
     """
     global _seq
-    # A session whose work is switching profiles cannot run while the guard refuses writes.
-    # This is a genuinely bad request — the job would apply nothing — not "the pipeline is
-    # busy", so it is the one refusal this contract allows (see ``firewall_guard.blocked_reason``).
-    blocked = firewall_guard.blocked_reason(kind)
-    if blocked:
-        log.warning("Job %s (%s) refused: %s", kind, label, blocked)
-        raise ValueError(blocked)
+    # Nothing is refused here any more. A profile-switching session used to be turned away
+    # while the guard was hands-off — correct while that state existed, and it no longer
+    # does, so submitting a job is once again unconditional: it starts now or it queues.
     if start is None:
         starter = _starter_for(kind)
         if starter is None:
@@ -559,12 +555,7 @@ def _drain() -> None:
             continue
 
         ticket.started_at = datetime.now(timezone.utc)
-        # The guard may have tripped while this ticket waited — a queued job's validation
-        # runs at its turn, and "can the firewall be written?" is part of it.
-        blocked = firewall_guard.blocked_reason(ticket.kind)
         try:
-            if blocked:
-                raise ValueError(blocked)
             ticket.result = ticket.start()
             ticket.state = "started"
             log.info("Queued job %s (%s) started", ticket.kind, ticket.label)

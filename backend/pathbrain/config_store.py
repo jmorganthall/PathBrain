@@ -195,23 +195,26 @@ DEFAULT_CONFIG: dict = {
     # (the 25th percentile of recent history, robust to a contaminated stretch). Past
     # `degraded_ratio` the run is quarantined by the comparability gate; past
     # `strained_ratio` it is flagged and still counts. See `instrument_health`.
-    # The firewall guard (``firewall_guard.py``): every write is on a ledger, paced and
-    # budgeted, and refusable. Written after the reload-storm incident.
+    # The write path (``firewall_guard.py`` + ``link_watch.py``): every write is on a
+    # ledger and every write's window is pinged. Deliberately **no rate settings**: this
+    # section carried a minimum reconfigure gap, an hourly reconfigure budget, a
+    # post-outage cooldown and a deploy gate, all on the theory that how *often* PathBrain
+    # wrote was the hazard. The ledger disproved it — the cost was one field (``flows``,
+    # now non-writable), not the rate — so the throttles are gone and what remains only
+    # measures. If a write rate ever needs limiting again, the evidence for it should come
+    # from the ledger first, as this did.
     "firewall": {
-        # Minimum seconds between two shaper reconfigures; the guard waits it out.
-        "min_reconfigure_gap_s": 15,
-        # Reconfigures allowed per rolling hour; exceeding it trips hands-off (every engine
-        # stops, nothing is written until a person arms again). A duel leg is one reconfigure.
-        "max_reconfigures_per_hour": 60,
-        # After the firewall stops answering and comes back, writes are refused for this long
-        # — a firewall that has just rebooted is not written into mid-boot.
-        "cooldown_after_outage_s": 300,
-        # A container that comes up on a new build runs read-only until armed from the top bar.
-        "arm_required_after_deploy": True,
         # Link watch (``link_watch.py``): a continuous ping beside every write, so each
         # ledger row says what it cost — and, crucially, so the gaps with NO write in
         # flight are on the same record. Read-only ICMP; it never touches the firewall.
-        "watch_enabled": True,
+        #
+        # **Default OFF, deliberately.** It was built to answer "which of the writes
+        # PathBrain already makes is the one that hurts?", and it answered: the ones
+        # carrying `flows`, which is now not writable at all. Left on it costs 10 ICMP
+        # packets a second forever — 864,000 a day — plus three permanent threads and a
+        # growing `link_gaps` table, and it feeds one page: no score, no gate, no decision.
+        # Turn it on from the Firewall page when a write path is actually under suspicion.
+        "watch_enabled": False,
         # Sends per second per target. 5 Hz resolves a 250 ms gap while costing ten packets
         # a second across both targets.
         "watch_hz": 5,

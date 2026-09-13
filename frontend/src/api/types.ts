@@ -3859,9 +3859,6 @@ export interface FirewallWriteRow {
   outcome: "ok" | "verified" | "failed" | "refused";
   error: string | null;
   latency_ms: number | null;
-  /** What the guard spent pacing before the call went out — PathBrain's own rate limiting,
-   *  never the firewall being slow. Kept apart from latency for exactly that reason. */
-  waited_ms: number | null;
   /** What this write cost the household, from the link watch: the worst continuous ping gap
    *  in the window around it. **null means nothing was watching**, which is not zero. */
   gap_ms: number | null;
@@ -3936,26 +3933,13 @@ export interface LinkWatchResponse {
   gaps: LinkGapRow[];
 }
 
+/** The write path as a reading. Every field here describes what PathBrain has written;
+ *  none of them is a limit. It used to carry `hands_off`, the build last armed, the
+ *  reachability the outage cooldown was measured from, and a `config` block of rate
+ *  settings — a valve built on the theory that the write *rate* was the hazard, which the
+ *  ledger below it disproved (one field, not the rate). Nothing is armed any more. */
 export interface FirewallGuardStatus {
-  hands_off: boolean;
-  reason: string | null;
-  kind: "hands_off" | "manual" | "outage" | "budget" | "deploy" | "cooldown" | "gap" | null;
-  tripped_at: string | null;
-  tripped_by: string | null;
-  armed_sha: string | null;
-  armed_at: string | null;
-  last_contact_at: string | null;
-  unreachable_since: string | null;
-  reachable_since: string | null;
-  refused_count: number;
-  last_refusal: string | null;
   build_sha: string | null;
-  config: {
-    min_reconfigure_gap_s: number;
-    max_reconfigures_per_hour: number;
-    cooldown_after_outage_s: number;
-    arm_required_after_deploy: boolean;
-  };
   reconfigures_last_hour: number;
   reconfigures_last_24h: number;
   refused_last_hour: number;
@@ -4027,24 +4011,19 @@ export interface WriteProbeProposal {
   from: unknown;
   to: unknown;
   how: string;
-  /** False for a field an automated sweep never touches (the flow table). */
-  sweepable: boolean;
+  /** False for a field this module never proposes stepping (the flow table). */
+  steppable: boolean;
 }
 
-/** What a sweep would do and what it would cost, before anything is written. */
-export interface WriteSweepPlan {
+/** The pipes and each writable field's smallest real step. Read-only; writes nothing.
+ *
+ *  This replaced `WriteSweepPlan`, which also priced an automated pass that stepped every
+ *  field of a live firewall in turn. That pass is gone — its question ("which field's write
+ *  is expensive?") was answered, and re-asking it meant writing to everything. */
+export interface WriteProbeFields {
   pipe_uuid: string | null;
-  steps: { pipe_uuid: string | null; param: string; label: string; from: unknown; to: unknown; how: string }[];
-  skipped: { param: string; label: string; why: string }[];
   proposals: Record<string, WriteProbeProposal>;
-  reconfigures: number;
-  seconds: number;
-  reload: boolean;
-  settle_s: number;
   pipes: { uuid: string; label: string }[];
-  all_fields: string[];
-  /** Why this sweep must not start (the guard's hourly budget), or null. */
-  blocked: string | null;
 }
 
 

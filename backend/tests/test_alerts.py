@@ -51,7 +51,7 @@ def test_a_new_kind_of_failure_is_a_new_situation(_db):
     before = _health(0.5, reasons=("The firewall did not answer 'apply' in 3 attempts.",))
     after = _health(0.5, reasons=(
         "The firewall did not answer 'apply' in 3 attempts.",
-        "Stopped by the firewall guard — hands-off: the WAN dropped.",
+        "Stopped by the firewall guard — Flows is captured but never written.",
     ))
     assert duel._health_signature(before) != duel._health_signature(after)
 

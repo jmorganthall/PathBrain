@@ -244,7 +244,10 @@ def config() -> dict:
         log.debug("link_watch: could not read config; using defaults", exc_info=True)
         cfg = {}
     return {
-        "enabled": bool(cfg.get("watch_enabled", True)),
+        # Default OFF. The watch answered its question — see the module docstring — and a
+        # continuous instrument for a closed question is a permanent cost. Turn it on from
+        # the Firewall page while investigating a write path, which is what it is for.
+        "enabled": bool(cfg.get("watch_enabled", False)),
         "hz": float(cfg.get("watch_hz") or DEFAULT_HZ),
         "through_target": str(cfg.get("watch_through_target") or "1.1.1.1"),
     }

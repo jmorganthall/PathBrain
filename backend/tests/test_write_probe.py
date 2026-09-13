@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import pytest
 
-from pathbrain import firewall_guard as fg
 from pathbrain import write_probe
 from pathbrain.providers.mock import MockProvider
 
@@ -84,14 +83,16 @@ def test_the_two_halves_are_issued_separately_and_only_the_reload_is_charged(_db
     assert prov.reconfigure()["reconfigures"] == 1
 
 
-def test_a_probe_is_refused_while_writes_are_hands_off(_db):
-    """A supervised diagnostic is the case for arming writes deliberately, never a way
-    around the guard — the one write path that studied the guard's own subject must not be
-    the one that bypasses it."""
-    fg.hands_off("the WAN dropped", by="test")
-    with pytest.raises(ValueError, match="hands-off"):
-        write_probe.start([{"param": "quantum", "value": 3000}], firewall_target="10.0.0.1")
-    assert "write_probe" in fg.WRITING_KINDS
+def test_a_probe_goes_through_the_same_write_path_as_any_engine(_db):
+    """The one write path that studies the write path must not be the one that bypasses it.
+
+    It has no exemption and needs none: its writes are ledgered and its changes are checked
+    like any other. It used to *also* be refused while the guard was hands-off, which is
+    gone with the state — a diagnostic you are watching is the last thing that should have
+    needed permission.
+    """
+    assert write_probe.start.__module__ == "pathbrain.write_probe"
+    assert "flows" in write_probe.NEVER_STEP, "the sweep still refuses the flow table"
 
 
 def test_a_probe_needs_something_to_write_and_somewhere_to_ping(_db):
@@ -217,3 +218,41 @@ def test_a_failed_probe_always_carries_a_reason(_db, monkeypatch):
     row = wp.get(probe_id)
     assert row is not None and row["status"] == "failed"
     assert row["error"], "a failed probe with no reason is the bug this pins"
+
+
+# ── what was removed, and why it must not come back ───────────────────────────
+
+
+def test_the_per_field_sweep_is_gone(_db):
+    """It stepped every writable field of a live firewall in turn to answer "which field's
+    write is expensive?". It answered — the flow table, which is no longer writable — and
+    the only way to re-ask was to write to everything.
+
+    What is kept is the part that is reusable: choosing the smallest real step for ONE
+    field, on a value a person picks, while they watch.
+    """
+    for gone in ("plan_sweep", "start_sweep", "sweep_fields", "sweep_verdict",
+                 "SWEEP_SETTLE_S", "_drive_sweep"):
+        assert not hasattr(write_probe, gone), f"write_probe still exposes {gone}"
+    assert hasattr(write_probe, "step_value") and hasattr(write_probe, "field_proposals")
+
+
+def test_the_value_box_is_still_served_from_the_registry(_db, client):
+    """The one thing the sweep's preview was genuinely load-bearing for: the field list and
+    the proposed value. A hardcoded list in the frontend is what offered `ecn` a value of
+    4096, kept over from `flows`."""
+    body = client.get("/api/firewall/write-probe/fields").json()
+    assert body["pipes"], "the caller can pick a pipe"
+    proposals = body["proposals"]
+    assert proposals, "every writable field gets a proposed step"
+    assert "flows" not in proposals, "a field that is not writable is never proposed"
+    for key, prop in proposals.items():
+        assert prop["to"] != prop["from"], f"{key}: a proposal that changes nothing is not a write"
+        assert prop["steppable"] is True
+    # And the sweep's own endpoints are unrouted (asserted on the route table, not by
+    # POSTing: an unrouted path is answered by whatever catch-all is mounted).
+    from pathbrain.main import app
+
+    paths = {getattr(r, "path", "") for r in app.routes}
+    assert "/api/firewall/write-probe/sweep" not in paths
+    assert "/api/firewall/write-probe/sweep/preview" not in paths

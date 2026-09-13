@@ -131,9 +131,9 @@ def test_apply(
             result["error"] = f"The {provider.name} provider cannot apply changes."
             return False
         except Exception as exc:  # noqa: BLE001
-            # The firewall guard's designed refusals (hands-off, budget, an outage) get
-            # their own sentence; everything else keeps the exception's own words, which
-            # is what the generic tail of describe_failure already produced here.
+            # A refused write (a field PathBrain never writes) gets its own sentence;
+            # everything else keeps the exception's own words, which is what the generic
+            # tail of describe_failure already produced here.
             why = describe_failure(exc)
             steps.append({"step": step, "ok": False, "detail": why})
             result["error"] = why
