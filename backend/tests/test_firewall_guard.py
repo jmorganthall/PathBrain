@@ -276,10 +276,16 @@ def test_the_guard_endpoint_reports_the_rate_and_nothing_to_arm(client, guard):
     body = client.get("/api/firewall/guard").json()
     assert "reconfigures_last_hour" in body and body["writes"] == []
     assert "hands_off" not in body and "config" not in body
-    # The POSTs are gone with the state they set.
-    assert client.post("/api/firewall/guard/arm").status_code == 405
-    assert client.post("/api/firewall/guard/hands-off", json={"reason": "x"}).status_code == 405
     assert "reconfigures_last_hour" in client.get("/api/health/pipeline").json()["firewall"]
+    # The POSTs are gone with the state they set. Asserted against the route table rather
+    # than by POSTing and reading the status: an unrouted path is answered by whatever
+    # catch-all is mounted, and this app mounts the built frontend as one — so the same
+    # request is 405 on a machine that has run `npm run build` and 404 on one that has not.
+    # That is a test of whether the frontend was built, which is not the question.
+    from pathbrain.main import app
+
+    gone = {"/api/firewall/guard/arm", "/api/firewall/guard/hands-off"}
+    assert not (gone & {getattr(r, "path", "") for r in app.routes})
 
 
 def test_the_config_write_test_is_ledgered_like_any_other_write(client, guard):
