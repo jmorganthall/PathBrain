@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import idle_audit, instrument_drift, instrument_health, jobs, warm_agreement
+from .. import idle_audit, instrument_drift, instrument_health, jobs, reachability, warm_agreement
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
 from ..logging_config import get_logger
@@ -170,6 +170,33 @@ def idle_wait_audit(limit: int = 200, session: Session = Depends(get_session)) -
     except (TypeError, ValueError):
         cap = None
     return idle_audit.idle_wait_audit(session, limit=limit, current_cap_s=cap)
+
+
+@router.get("/methodologies/reachability")
+def reachability_audit(limit: int = reachability.PROFILE_LIMIT,
+                       session: Session = Depends(get_session)) -> dict:
+    """Which measured profiles the firewall **cannot be driven to**, and what would fix it.
+
+    A profile differing from the live firewall in a field PathBrain never writes (``flows``,
+    ``scheduler``, ``queues``, ``upload_bandwidth``), or living on a pipe the planner cannot
+    address, can't be applied — so the duel, the challenger race and the heirs card skip it,
+    silently. This is that silence, counted: the split, which field explains it, and the
+    unreachable profiles grouped by the exact change that would bring each group back,
+    priced in profiles and in iterations of measurement.
+
+    Read-only, and deliberately without a "fix it" button: the change it names is a write to
+    a field the registry forbids precisely because writing it took the link down for about
+    half a minute every time. It is a supervised change at the firewall, not a page action.
+    """
+    from ..providers import get_provider
+
+    try:
+        live = get_provider().discover()
+    except Exception as exc:  # noqa: BLE001 — an audit explains, never 500s
+        raise HTTPException(
+            status_code=502, detail=f"Could not read the live firewall: {exc}"
+        ) from exc
+    return reachability.audit(session, live, limit=limit)
 
 
 @router.get("/methodologies/current")

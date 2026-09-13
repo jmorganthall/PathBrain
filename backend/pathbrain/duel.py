@@ -1596,8 +1596,16 @@ def build_queue(
     heir_items = [h for h in (heirs.get("items") or []) if h.get("fingerprint") in profiles]
     heir_order = [h["fingerprint"] for h in heir_items]
     pooled_fp = field.get("best_fingerprint")
-    if pooled_fp and pooled_fp != incumbent_fp and pooled_fp in profiles:
+    # Hoisted to the front — but only when the firewall can actually be put on it. Filtering
+    # the crown out of the queue and then re-inserting it here would undo the check one line
+    # later, which is the shape this kind of bug takes.
+    if (
+        pooled_fp and pooled_fp != incumbent_fp and pooled_fp in profiles
+        and _reachable(profiles[pooled_fp].get("settings"), baseline)
+    ):
         heir_order = [pooled_fp] + [fp for fp in heir_order if fp != pooled_fp]
+    elif pooled_fp in profiles and not _reachable((profiles.get(pooled_fp) or {}).get("settings"), baseline):
+        heir_order = [fp for fp in heir_order if fp != pooled_fp]
     if contenders == "ring":
         order = contender_order(
             field, ratings or {}, incumbent_fp, baseline=baseline, heirs=heirs
@@ -1621,8 +1629,9 @@ def build_queue(
         if fp == incumbent_fp or p.get("overall") is None:
             return False
         # The heirs pass already applied the environment check, so anything it surfaced is
-        # known-reachable; everything else is tested directly against the live settings.
-        return fp in heir_order or fp == pooled_fp or _reachable(p.get("settings"), baseline)
+        # known-reachable; everything else is tested directly against the live settings —
+        # the pooled crown included, for the reason given in ``contender_order``.
+        return fp in heir_order or _reachable(p.get("settings"), baseline)
 
     ranked = [
         fp
@@ -1634,7 +1643,10 @@ def build_queue(
         if _eligible(fp, p)
     ]
     leaders = ranked[: max(int(top_n or 0), 1)]
-    if pooled_fp and pooled_fp != incumbent_fp and pooled_fp in profiles:
+    if (
+        pooled_fp and pooled_fp != incumbent_fp and pooled_fp in profiles
+        and _reachable(profiles[pooled_fp].get("settings"), baseline)
+    ):
         leaders = [pooled_fp] + [fp for fp in leaders if fp != pooled_fp]
     # Contenders first, strongest first; everything else the heirs pass surfaced follows,
     # so nothing is lost — it just waits its turn. The final sort is by priority TIER, so a
@@ -1987,8 +1999,13 @@ def contender_order(
         # go and measure, just the last of them. Requiring a pooled Overall here would put
         # the pooled verdict back in charge of who gets checked.
         # The heirs pass already applied the environment check; everything else is tested
-        # against the live settings directly.
-        if fp not in heir_set and fp != pooled_fp and not _reachable(p.get("settings"), baseline):
+        # against the live settings directly — the pooled crown included. It used to be
+        # exempt, on the reasoning that racing it is the most informative bout there is,
+        # which is true and says nothing about whether the bout can be *run*: an unreachable
+        # crown seated at CROWN_TIER is the first entry in the queue every session, and the
+        # firewall cannot be put on it. It is skipped and named in ``_no_contenders_reason``
+        # rather than seated to fail.
+        if fp not in heir_set and not _reachable(p.get("settings"), baseline):
             continue
         rating, ceiling = _ceiling(fp)
         if fp == pooled_fp:
@@ -2866,7 +2883,10 @@ def _run_ring(
                 defender_fp, defender_why = select_incumbent(session, field, baseline, cfg, ratings)
             if defender_fp is None or defender_fp not in settings_by_fp:
                 if not matchups and not seated:
-                    raise RuntimeError("No confident profile to defend — nothing to duel.")
+                    raise RuntimeError(
+                        f"No profile to defend — {defender_why}."
+                        if defender_why else "No confident profile to defend — nothing to duel."
+                    )
                 break
             if incumbent_fp is not None and defender_fp != incumbent_fp and seated:
                 # The belt moved while matches are still seated against the old holder.

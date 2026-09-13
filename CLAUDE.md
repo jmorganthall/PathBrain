@@ -82,6 +82,35 @@ LLM-based. See `README.md` for the product overview.
     without offering the Arm button, which would do nothing), and `write_probe.NEVER_STEP`
     keeps the field out of the sweep with the flow-table reason attached. The pipe on/off
     toggle (`param: "enabled"`) is not a shaper field and is untouched.
+  - `reachability.py` — **"Can this profile exist?"** (`GET /api/methodologies/reachability`,
+    the card of that name on the Methodology page; `GET /api/settings/profiles/{fp}/settings`,
+    the **Settings** card on Profile Detail). Every other audit on that page asks whether a
+    *measurement* is sound; this one asks whether a profile is still **raceable**, which
+    became a live question the day `flows` stopped being writable. A profile differing from
+    the live firewall in a field PathBrain never writes can't be applied, so the duel, the
+    challenger race and the heirs card skip it — correctly, and **silently**: a ledger of
+    hundreds becomes a ladder of a dozen with nothing on screen saying why. Two causes, named
+    apart: `field` (a non-writable field differs — `settings_profile.unreachable_fields`) and
+    `pipe` (the planner can't address the pipe at all — `unwritable_diffs`).
+    **The output is the move, not the list.** "87 profiles are unreachable" is a fact nobody
+    can act on; "they are all waiting on one value, and setting the Download pipe's flow
+    table to 512 brings back 87 profiles and 4,300 iterations" is a decision. So unreachable
+    profiles are grouped by the **exact change set** that would restore them, biggest first,
+    priced in profiles *and* in measured iterations — a hundred thin profiles and six
+    well-measured ones are not the same loss. Iterations are read from the **runs**, not the
+    scored rollup: the rollup counts only what the current methodology grades, so a profile a
+    publish quarantined would report zero and understate exactly the loss being priced.
+    **Deliberately no button**: the change it names is a write to a field the registry
+    forbids *because* writing it took the link down for ~30 s every time, so the card names
+    it and a person makes it at the firewall, once. Read-only — the cached stored-profile
+    list, one rollup read, one ledger read (the ring rounds already fought on a profile that
+    can no longer be extended). The per-profile view answers the same question for one
+    profile, laying out every registry field per pipe with what the firewall is on and
+    whether PathBrain may write it — **served from the server** because which fields are
+    writable is the registry's answer, not a component's (a hardcoded list is what offered
+    the ECN field a value of 4096), and formatted with `format_display` so a CoDel target
+    never renders "5msms". Both run the one primitive, so the field audit and the profile
+    card can never disagree about what is out of reach. `test_reachability`.
   - `metrics.py` — **single source of truth for metrics.** Each `MetricDef` (key,
     plugin+source_key, axis, default weight/thresholds, label/description/unit/
     direction, `marks_latest`) is defined once; `METRIC_SOURCES`, the config
@@ -1393,8 +1422,22 @@ LLM-based. See `README.md` for the product overview.
     params but not `scheduler`/`queues`/`upload_bandwidth` (`settings_profile.NON_WRITABLE_FIELDS`),
     so a profile differing in those is unreproducible — `rank_challengers(reachable_env=…)`
     eliminates it ("unreachable: …") instead of letting `_apply_profile` abort the whole race
-    on a fingerprint it can't reach (`_apply_profile` now verifies the *writable* params took,
-    not the full fingerprint; `environment_signature` hashes the non-writable fields).
+    on a fingerprint it can't reach (`_apply_profile` verifies the *writable* params took **and**
+    that the firewall landed on the profile asked for; `environment_signature` hashes the
+    non-writable fields). **A leg never measures a profile the firewall is not on**: that
+    second check used to be a log line, on the reasoning that a fingerprint mismatch means
+    only non-writable fields differ, "which the reachability filter should have excluded
+    already" — true while the non-writable set was scheduler/queues/upload bandwidth
+    (structural fields that never differ between stored profiles on one firewall, so the
+    branch was dead code), and false the moment `flows` joined it. Flows genuinely differs
+    across a hand-built field, and the pooled crown is deliberately **exempt** from the
+    reachability filter (racing it is the most informative bout there is), so exactly one
+    profile per session could reach the apply unreachable — seated first, every session —
+    be measured under another profile's name, and have that margin recorded against a
+    profile that never entered the ring. It raises now: the leg is recorded as failed on the
+    tape, the seat counts it unusable, and three in a row end the session in a sentence. The
+    crown's exemption is also narrowed to a *reachable* crown in `contender_order` and in
+    both queue hoists, so the ring doesn't spend its top slot on a bout that can't be run.
     Eliminations are tagged **structural vs provisional** (`rank_challengers` sets `structural`):
     only *structural* ones (unreachable — the live environment can't change mid-race) are
     **persisted** across loops; *provisional* ones (optimistic-ceiling < bar / incomplete corner

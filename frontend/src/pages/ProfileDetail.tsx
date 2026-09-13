@@ -51,6 +51,7 @@ import type {
   RunSummary,
   SettingsProfile,
 } from "../api/types";
+import ProfileSettingsCard from "../components/ProfileSettingsCard";
 import SeriesChart from "../components/SeriesChart";
 import Waterfall from "../components/Waterfall";
 import WhyCard from "../components/WhyCard";
@@ -542,6 +543,11 @@ export default function ProfileDetail() {
           . Your current settings are restored when it finishes.
         </Alert>
       )}
+
+      {/* What this profile IS — the settings themselves, against the live firewall, and
+          whether the firewall can be put on them. Above the standings on purpose: a grade
+          means nothing until you know what was graded. */}
+      <ProfileSettingsCard fingerprint={fingerprint} />
 
       {/* Standings: this profile's rank (1 = best) per Overall + headline axis, green→red. */}
       {standings.length > 0 && (

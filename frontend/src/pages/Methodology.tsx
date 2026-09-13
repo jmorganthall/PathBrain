@@ -36,6 +36,7 @@ import type {
 } from "../api/types";
 import Loading from "../components/Loading";
 import { Blurb, FoldCard, HelpTip } from "../components/Explain";
+import ReachabilityCard from "../components/ReachabilityCard";
 import StringListEditor from "../components/config/StringListEditor";
 import { fmtDateTime } from "../utils/format";
 import { vHttpUrl } from "../utils/validate";
@@ -741,6 +742,11 @@ export default function Methodology() {
       <InstrumentDriftAudit autoRun={auditParam === "instrument"} />
 
       <WarmCrownAudit autoRun={auditParam === "warm"} />
+
+      {/* "Can this profile exist?" — the reachability audit. Sits with the other audits
+          because it is the same kind of question: not "is this measurement sound?" but
+          "is this profile still one we can put the firewall on?" */}
+      <ReachabilityCard />
 
       {others.length > 0 && (
         <FoldCard title={`Other versions (${others.length})`} summary="Earlier rubrics, kept frozen for the scores measured under them.">

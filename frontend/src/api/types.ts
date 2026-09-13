@@ -4046,3 +4046,93 @@ export interface WriteSweepPlan {
   /** Why this sweep must not start (the guard's hourly budget), or null. */
   blocked: string | null;
 }
+
+
+// ── Can this profile exist? (GET /methodologies/reachability, /settings/profiles/{fp}/settings)
+//
+// A profile differing from the live firewall in a field PathBrain never writes (`flows`,
+// `scheduler`, `queues`, `upload_bandwidth`) can't be applied — so the duel, the challenger
+// race and the heirs card skip it, silently. These two payloads are that silence made
+// visible: the field-wide audit, and the per-profile answer.
+
+export interface ReachabilityDiff {
+  label: string;              // the pipe
+  field: string;
+  field_label: string;
+  from: unknown;              // what the firewall is on
+  to: unknown;                // what this profile wants
+  reason?: string;
+}
+
+export interface ReachabilityProfile {
+  fingerprint: string;
+  name: string | null;
+  label: string;
+  overall: number | null;
+  runs: number;
+  /** Measurement *spent* — read from the runs, not the scored rollup, so a profile whose
+   *  runs a publish quarantined still prices its own loss honestly. */
+  iterations: number;
+  is_live: boolean;
+  /** `field` — a non-writable field differs. `pipe` — the planner can't address the pipe. */
+  cause: "field" | "pipe";
+  diffs: ReachabilityDiff[];
+  reason: string | null;
+  /** Head-to-head rounds already fought on it, which can no longer be extended. */
+  ring_pairs: number | null;
+}
+
+export interface ReachabilityMove {
+  changes: ReachabilityDiff[];
+  describe: string;
+  profiles: number;
+  iterations: number;
+  best_overall: number | null;
+  examples: Array<{ fingerprint: string; name: string | null; label: string; overall: number | null }>;
+}
+
+export interface ReachabilityAudit {
+  live: {
+    fingerprint: string;
+    label: string;
+    non_writable: Array<{ label: string; field: string; field_label: string; value: unknown }>;
+  };
+  checked: number;
+  reachable: number;
+  unreachable: number;
+  iterations_unreachable: number;
+  by_field: Array<{ field: string; field_label: string; profiles: number; iterations: number }>;
+  /** Unreachable profiles grouped by the exact change that would restore them, biggest
+   *  first. Deliberately never an action: the change is a write to a field the registry
+   *  forbids, so the card names it and a person makes it at the firewall. */
+  moves: ReachabilityMove[];
+  profiles: ReachabilityProfile[];
+  truncated: number;
+  verdict: string;
+}
+
+export interface ProfileSettingsField {
+  field: string;
+  label: string;
+  kind: string;
+  unit: string | null;
+  writable: boolean;
+  value: unknown;
+  live: unknown;
+  /** Formatted by the registry's own formatter — a CoDel target is stored as the bare
+   *  option key, so a component appending the unit itself renders "5msms". */
+  display: string;
+  live_display: string;
+  differs: boolean;
+}
+
+export interface ProfileSettingsView {
+  fingerprint: string;
+  label: string;
+  is_live: boolean;
+  pipes: Array<{ label: string; on_firewall: boolean; fields: ProfileSettingsField[] }>;
+  blocked: ReachabilityDiff[];
+  dropped: ReachabilityDiff[];
+  can_exist: boolean;
+  verdict: string;
+}

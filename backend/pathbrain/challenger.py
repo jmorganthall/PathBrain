@@ -44,7 +44,14 @@ from .models import ChallengerRace, ChallengerRaceStatus
 from .profile_test import _apply_all
 from .providers import get_provider
 from .runner import create_run, execute_run
-from .settings_profile import environment_signature, fingerprint, normalize, plan_apply
+from .settings_profile import (
+    describe_unreachable,
+    environment_signature,
+    fingerprint,
+    normalize,
+    plan_apply,
+    unreachable_fields,
+)
 
 log = get_logger("challenger")
 
@@ -269,15 +276,26 @@ def start(time_budget_s: int, auto_promote: bool = False) -> int:
 
 
 def _apply_profile(provider, target_settings: list[dict], target_fp: str) -> None:
-    """Apply a stored profile's writable params and confirm *those* took.
+    """Apply a stored profile and confirm the firewall is now **on that profile**.
 
-    Only the writable codel/bandwidth params are under our control — scheduler, queue
-    count and upload bandwidth can't be driven (see ``settings_profile.NON_WRITABLE_FIELDS``).
-    So we verify the writable params reached the target (no planned change remains), not the
-    full fingerprint: a residual full-fingerprint mismatch means the profile differs only in
-    non-writable fields, which the reachability filter should have excluded already — we log
-    it rather than aborting the race. Raises only when a *writable* param didn't take (a real
-    apply failure)."""
+    Two checks, and the second used to be a log line. The writable params must take (no
+    planned change remains) — a real apply failure. And the profile the firewall settled on
+    must be the one asked for, because a leg measures whatever the firewall *is*, and its
+    run is filed under the fingerprint read off the firewall while it runs: if those differ,
+    the ring records a margin against a profile that never entered it.
+
+    That second check was written as a warning on the reasoning that a fingerprint mismatch
+    means only non-writable fields differ, "which the reachability filter should have
+    excluded already". The premise was true while the non-writable set was
+    scheduler/queues/upload bandwidth — structural fields that never differ between stored
+    profiles on one firewall, so the branch was effectively dead. It stopped being true when
+    ``flows`` joined that set: flows genuinely differs across a hand-built field, and the
+    pooled crown is deliberately **exempt** from the reachability filter (racing it is the
+    most informative bout there is), so exactly one profile per session could reach here
+    unreachable — seated first, every session. A wrong verdict recorded confidently is worse
+    than a failed leg, and a failed leg is a case the ring already handles in words: it is
+    recorded on the tape, the seat counts it unusable, and three in a row end the session.
+    So this raises."""
     changes, _warnings = plan_apply(target_settings, provider.discover())
     _apply_all(provider, changes)
     live = provider.discover()
@@ -289,10 +307,12 @@ def _apply_profile(provider, target_settings: list[dict], target_fp: str) -> Non
         )
     reached = fingerprint(normalize(live))
     if reached != target_fp:
-        log.warning(
-            "Challenger profile %s applied (writable params took) but fingerprint differs "
-            "(got %s) — non-writable fields (scheduler/queues/upload bandwidth) can't be driven.",
-            target_fp, reached,
+        blocked = unreachable_fields(target_settings, live)
+        detail = describe_unreachable(blocked) if blocked else f"the firewall settled on {reached}"
+        raise RuntimeError(
+            f"Could not apply profile {target_fp}: {detail}. Every writable field took, so "
+            f"the firewall is on a different profile ({reached}) and measuring it here would "
+            f"record the result against {target_fp}, which never ran."
         )
 
 

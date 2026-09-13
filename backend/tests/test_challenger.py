@@ -138,9 +138,23 @@ def test_eliminations_tag_structural_vs_provisional():
     assert newly["E"]["structural"] is False    # incomplete coverage → re-evaluate
 
 
-def test_apply_profile_tolerates_nonwritable_mismatch(monkeypatch):
-    # Writable params took (no planned change remains) but the read-back fingerprint
-    # differs — a non-writable field. Must NOT abort the race; just log and proceed.
+def test_apply_profile_refuses_to_measure_a_profile_the_firewall_is_not_on(monkeypatch):
+    """Writable params took, but the firewall settled on a DIFFERENT profile — so stop.
+
+    This used to log and proceed, on the reasoning that a fingerprint mismatch means only
+    non-writable fields differ, "which the reachability filter should have excluded
+    already". That premise held while the non-writable set was scheduler / queues / upload
+    bandwidth — structural fields that never differ between stored profiles on one firewall
+    — so the branch was effectively dead. It stopped holding when ``flows`` joined that set:
+    flows genuinely differs across a hand-built field, and the pooled crown is deliberately
+    exempt from the reachability filter, so one profile per session could reach here
+    unreachable and be measured under another profile's name. The leg's run is filed under
+    the fingerprint read off the firewall, so the ring would record that margin against a
+    profile that never entered it. A failed leg is a case the ring already handles in words;
+    a confident wrong verdict is not.
+    """
+    import pytest
+
     monkeypatch.setattr(challenger, "plan_apply", lambda target, live: ([], []))
     monkeypatch.setattr(challenger, "_apply_all", lambda provider, changes: None)
     monkeypatch.setattr(challenger, "normalize", lambda x: [])
@@ -150,7 +164,8 @@ def test_apply_profile_tolerates_nonwritable_mismatch(monkeypatch):
         def discover(self):
             return []
 
-    challenger._apply_profile(_P(), [{"label": "x"}], "wanted-fp")  # does not raise
+    with pytest.raises(RuntimeError, match="which never ran"):
+        challenger._apply_profile(_P(), [{"label": "x"}], "wanted-fp")
 
 
 def test_apply_profile_raises_when_writable_did_not_take(monkeypatch):
