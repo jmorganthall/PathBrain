@@ -83,9 +83,12 @@ def test_variants_seat_measured_siblings_first_then_steps_the_firewall_can_hold(
     assert {v["lever"]["to"] for v in out if v["lever"]["field"] == "target"} == {4, 6}
     assert {v["lever"]["to"] for v in out if v["lever"]["field"] == "interval"} == {50, 200}
     # A boolean flips; an unbounded integer halves and doubles when the field holds only
-    # one value of it (no range to bound against).
+    # one value of it (no range to bound against) — `limit` is now the one that shows it,
+    # because `flows` is no longer a lever at all: it is captured but never written, so it
+    # is not in WRITABLE_FIELDS and a lever session can never seat a variant of it.
     assert {v["lever"]["to"] for v in out if v["lever"]["field"] == "ecn"} == {False}
-    assert {v["lever"]["to"] for v in out if v["lever"]["field"] == "flows"} == {512, 2048}
+    assert not any(v["lever"]["field"] == "flows" for v in out)
+    assert {v["lever"]["to"] for v in out if v["lever"]["field"] == "limit"} == {5120, 20480}
     # With no other quantum on record both quantum steps stand.
     alone = levers.lever_variants(defender, [defender], _settings())
     assert {v["lever"]["to"] for v in alone if v["lever"]["field"] == "quantum"} == {757, 3028}

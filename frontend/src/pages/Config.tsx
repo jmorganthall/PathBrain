@@ -55,7 +55,10 @@ import {
 
 const WAIT_UNTIL = ["load", "domcontentloaded", "networkidle", "commit"];
 const EXP_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const EXP_PARAMS = ["quantum", "limit", "target", "interval", "flows", "bandwidth"];
+// The experiment sweeps one writable field. `flows` is deliberately absent: it is captured
+// but never written (see `shaper_fields`), so the engine refuses it at start — offering it
+// here would be a dropdown entry whose only outcome is a failed experiment.
+const EXP_PARAMS = ["quantum", "limit", "target", "interval", "bandwidth"];
 
 // The site list belongs to the methodology once one has been published with it: the sites
 // decide which runs are comparable, so editing them here would silently pool two site sets.

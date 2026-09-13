@@ -26,7 +26,11 @@ _RECONFIGURE = "/api/trafficshaper/service/reconfigure"
 
 # Map PathBrain's normalized parameter names to OPNsense pipe field names. Must cover every
 # ``shaper_fields.WRITABLE_FIELDS`` entry (enforced by test_shaper_fields, not just this
-# comment) — that's the relationship whose silent drift broke the challenger race.
+# comment) — that's the relationship whose silent drift broke the challenger race. It is a
+# superset: ``flows`` is mapped and never written (it left ``WRITABLE_FIELDS`` because
+# writing it rebuilds dummynet's queues and took the link down for 30-35s every time), and
+# the entry stays so this file keeps saying which OPNsense field it is. The decision lives
+# in the registry, and the guard refuses the write before it can reach here.
 _PARAM_FIELD = {
     "quantum": "fqcodel_quantum",
     "limit": "fqcodel_limit",

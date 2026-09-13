@@ -244,6 +244,50 @@ def unwritable_diffs(target: list[dict] | None, live: list[FqCodelConfig]) -> li
     return out
 
 
+def unreachable_fields(target: list[dict] | None, live: list[FqCodelConfig]) -> list[dict]:
+    """The identity fields a target profile differs on that PathBrain **never writes**.
+
+    ``unwritable_diffs`` above answers "which writable fields did the planner drop on a pipe
+    it cannot address?"; this answers the other half — "which differences are not writable at
+    all?" — and the two are kept apart because their callers do different things with them.
+
+    It matters because the planner's silence is the same in both cases. ``plan_apply`` emits
+    changes only for writable fields, so a target differing in ``flows`` (captured, never
+    written), ``scheduler``, ``queues`` or ``upload_bandwidth`` plans nothing for it, applies
+    cleanly, passes the post-apply verify — which re-plans and again sees nothing left — and
+    leaves the firewall on a **different profile** than the one asked for. The benchmark that
+    follows measures that other profile and is filed under *its* fingerprint, which is correct
+    and is not what the caller believes it asked for.
+
+    Empty means every difference is one the firewall can be driven to.
+    """
+    out: list[dict] = []
+    for pipe, match in _match_live_pipes(target or [], live):
+        if match is None:
+            continue  # the pipe itself is unmatched — ``unwritable_diffs``' business
+        current = match.to_dict()
+        for param in NON_WRITABLE_FIELDS:
+            desired = pipe.get(param)
+            if desired is None or _field_equal(param, current.get(param), desired):
+                continue
+            out.append({
+                "label": pipe.get("label") or "pipe",
+                "field": param,
+                "field_label": FIELD_LABELS.get(param, param),
+                "from": current.get(param),
+                "to": desired,
+                "reason": f"PathBrain never writes {FIELD_LABELS.get(param, param)}",
+            })
+    return out
+
+
+def describe_unreachable(diffs: list[dict]) -> str:
+    """One sentence naming what cannot be reached and what the firewall would keep."""
+    parts = [f"{d['label']}·{d['field_label']} is {d.get('from')} and this profile wants "
+             f"{d.get('to')}" for d in diffs]
+    return "; ".join(parts)
+
+
 def plan_apply(target: list[dict] | None, live: list[FqCodelConfig]) -> tuple[list[dict], list[str]]:
     """Plan the writes to make the live firewall match a target profile.
 

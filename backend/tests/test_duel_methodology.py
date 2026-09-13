@@ -22,7 +22,7 @@ from pathbrain.models import Duel, DuelStatus, Methodology, Run, RunStatus, Scor
 
 # The mock provider's environment: two pipes, and reachability is a per-pipe signature over
 # the non-writable fields, so a runnable profile carries both.
-ENV = {"scheduler": "fq_codel", "queues": 1, "upload_bandwidth": "40Mbit"}
+ENV = {"scheduler": "fq_codel", "queues": 1, "upload_bandwidth": "40Mbit", "flows": 1024}
 
 
 def _settings(quantum: int) -> list[dict]:

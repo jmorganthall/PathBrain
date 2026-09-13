@@ -356,6 +356,15 @@ screen.
   default.** Firewall writes go only through `provider.apply()` (experiment, Shotgun
   Sweep, config write-test, profile test, sweep apply-best) — each reversible and
   snapshot/restore, and serialized by the coordination lock above.
+- 🚧 **One field is captured and never changed** — `flows`, the fq_codel flow-table size.
+  Every other shaper parameter is a value the running shaper *reads*; this one decides how
+  many queues dummynet allocates, so changing it (`1024 → 1025` included) forces a full
+  rebuild and takes the link down while it happens. The write ledger settled it: every write
+  carrying `flows` timed out the 30 s call and took the box off the network for 30–35 s, and
+  every write in the same hours that didn't was clean and sub-second. It's still discovered,
+  still recorded on every run and still part of a profile's fingerprint — it just can't be
+  written, which also means a profile whose flows differs from the live firewall reads as
+  *unreachable* and no engine tries to switch to it.
 - 🛡️ **Run-lifecycle safety** — startup reconciliation, a watchdog timeout and manual cancel
   so a restart or hang never leaves a zombie "running" job. No measurement may park the
   pipeline: a probe runs on a worker thread with a deadline, and on expiry it comes back as an

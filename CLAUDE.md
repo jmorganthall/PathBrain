@@ -31,8 +31,9 @@ LLM-based. See `README.md` for the product overview.
     pass-throughs. This is the **only** place interpretation lives, so a new metric or
     changed formula can be re-derived over history without re-collecting.
   - `providers/` — firewall config discovery + **apply** (`opnsense.py`,
-    `mock.py`); pick via `PATHBRAIN_CONFIG_PROVIDER`. OPNsense reads/writes
-    fq_codel fields (`fqcodel_quantum/limit/flows`, `codel_target/interval/ecn`);
+    `mock.py`); pick via `PATHBRAIN_CONFIG_PROVIDER`. OPNsense reads `fqcodel_quantum/limit/
+    flows` + `codel_target/interval/ecn` and writes all but `fqcodel_flows` (captured, never
+    changed — see `shaper_fields`);
     `apply()` does `setPipe` + `reconfigure` and is the **only firewall-write path**.
     `discover()` (read) + `apply()` (write) are the one read/write path; a provider's
     `writable_fields()` is the single accessor for *what it can change*.
@@ -46,6 +47,41 @@ LLM-based. See `README.md` for the product overview.
     import **and** in `test_shaper_fields` — the relationships that used to drift in comments
     and produced the "valid but unappliable profile" challenger bug. Adding a shaper field =
     one entry here.
+    **`flows` is captured but never written**, and one facet on one line is the whole
+    mechanism. Every other shaper parameter is a value the running shaper *reads*; the flow
+    table decides how many queues dummynet allocates, so changing it — `1024 → 1025` included
+    — forces a full rebuild rather than a re-read, and the rebuild takes the link down while
+    it happens. The write ledger settled it: **every** write carrying `flows` timed out the
+    30 s `apply_many` and took the box off the network for 30–35 s (the write probe's restore
+    35.3 s with the box silent 33.3 s and the through-target 34.2 s; a duel leg's
+    `flows,quantum` 30.2 s, box silent 30.6 s, the leg FAILED), and **every** write in the
+    same hours that did not carry it was clean and sub-second (a bare shaper reload 420/449/
+    492 ms, `quantum` + reload 521 ms, `limit` + reload 498 ms). Twenty rows, no exceptions —
+    and `levers.MECHANISM` predicts the field moves nothing measurable on an unsaturated
+    link, so the outage bought nothing either. What made it invisible for months is that
+    nobody ever asked to set it: `plan_apply` writes only the fields that *differ*, so while
+    every profile shared one flows value no switch ever wrote it, and the day a profile with
+    a different one entered the field every switch to or from it rewrote the flow table.
+    `identity=True` stays, which is the "capture" half: the field is still discovered, still
+    stored per run, still part of the fingerprint. Dropping `writable` is the "never change"
+    half, and because it therefore joins `NON_WRITABLE_FIELDS` it joins
+    `environment_signature` too — so a profile whose flows differs from the live firewall now
+    reads as **unreachable**, and the duel, the challenger race and the heirs card leave it
+    alone instead of switching to it. Two seams state the consequence rather than hiding it:
+    `settings_profile.unreachable_fields` (the counterpart to `unwritable_diffs` — that one
+    answers "which writable fields did the planner drop on a pipe it can't address?", this
+    one "which differences are not writable at all?") is **warned** on `apply-profile`, where
+    a partial apply is the user's call and the confirm dialog names what stays put, and
+    **refused** on `test-profile`, where it isn't: a top-up measures whichever profile the
+    firewall settled on, files those runs under *its* fingerprint — correctly — and so would
+    add iterations to the wrong profile for ever while this one never reached confidence.
+    The decision lives here, and two locks sit behind it: `firewall_guard.before_write`
+    refuses any change naming a shaper field the registry doesn't mark writable (checked
+    first, before hands-off and the budget, because those are states that pass and naming one
+    would report a temporary reason for a permanent refusal; `describe_failure` says so
+    without offering the Arm button, which would do nothing), and `write_probe.NEVER_STEP`
+    keeps the field out of the sweep with the flow-table reason attached. The pipe on/off
+    toggle (`param: "enabled"`) is not a shaper field and is untouched.
   - `metrics.py` — **single source of truth for metrics.** Each `MetricDef` (key,
     plugin+source_key, axis, default weight/thresholds, label/description/unit/
     direction, `marks_latest`) is defined once; `METRIC_SOURCES`, the config
@@ -562,8 +598,13 @@ LLM-based. See `README.md` for the product overview.
     included) forces a full rebuild rather than a re-read. Measured on this link: setting it
     was free, putting it back took **35.3 s**, timed out the `apply_many`, took the box off
     the network for 33 s and tripped hands-off. Naming it explicitly does not override the
-    exclusion, because the reason does not depend on who asked; the single probe still
-    reaches it, where somebody is watching. **(2) The settle outlasts the outage**
+    exclusion, because the reason does not depend on who asked. This list is where that cost
+    was first written down; the ledger then showed the same cost on every *ordinary* write
+    carrying the field, so the decision moved to the registry — `flows` is no longer writable
+    at all, which takes it out of `sweep_fields` and out of the single probe's `proposals` on
+    its own. `NEVER_STEP` stays as the second lock and as what makes the refusal *say
+    something*: a caller naming the field gets the flow-table reason rather than a bare "not
+    a writable field". **(2) The settle outlasts the outage**
     (`SWEEP_SETTLE_S` 45 s): `summarize` reports the worst gap *inside* the step window and a
     run still lost at its close is measured only to the last sample in it, so the single
     probe's 10 s settle would read a 35 s outage as 10 s and truncate the finding. **(3) The

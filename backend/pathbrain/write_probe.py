@@ -313,14 +313,21 @@ def step_value(field_key: str, current, options: list[float] | None = None):
 
 #: Fields an automated sweep never touches, whatever the registry says is writable.
 #:
-#: ``flows`` is the flow-table size. Every other writable field is a parameter the shaper
-#: *reads*; this one decides how many queues it allocates, so any change to it — ``1024 →
-#: 1025`` included — forces a full flow-table rebuild rather than a re-read. Measured on
-#: this link (probe #5): setting it was free, and putting it back took **35.3 s**, timed out
-#: the ``apply_many`` call, took the box off the network for 33 s and tripped hands-off. A
-#: field that costs a 35-second outage per step is not one a seven-step unattended sweep may
-#: include: the sweep would spend its whole budget reproducing the outage it was built to
-#: diagnose. Reachable by hand from the single probe, where a person is watching.
+#: ``flows`` is the flow-table size, and this list is where its cost was first written down:
+#: every other writable field is a parameter the shaper *reads*, while this one decides how
+#: many queues it allocates, so any change to it — ``1024 -> 1025`` included — forces a full
+#: flow-table rebuild rather than a re-read. Measured here (probe #5): setting it was free,
+#: putting it back took **35.3 s**, timed out the ``apply_many`` call, took the box off the
+#: network for 33 s and tripped hands-off.
+#:
+#: The ledger then showed the same cost on every *ordinary* write that carried the field —
+#: duel legs, not probes — so the decision moved to where it belongs: ``flows`` is no longer
+#: a writable field at all (``shaper_fields``), which takes it out of ``WRITABLE_FIELDS`` and
+#: therefore out of ``sweep_fields`` and the single probe's proposals on its own. This stays
+#: as the second lock and as the record of why, and it is what makes the refusal *say
+#: something*: a caller naming the field gets the flow-table reason rather than a bare "not
+#: writable". The registry is the decision; the guard refuses the write; this refuses the
+#: step.
 NEVER_STEP = frozenset({"flows"})
 
 

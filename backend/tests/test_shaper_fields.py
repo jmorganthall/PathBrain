@@ -22,9 +22,9 @@ def test_derived_views_match_the_known_model():
         "interval", "ecn", "flows", "queues", "scheduler",
     }
     assert set(sf.WRITABLE_FIELDS) == {
-        "quantum", "limit", "flows", "target", "interval", "ecn", "download_bandwidth",
+        "quantum", "limit", "target", "interval", "ecn", "download_bandwidth",
     }
-    assert set(sf.NON_WRITABLE_FIELDS) == {"upload_bandwidth", "queues", "scheduler"}
+    assert set(sf.NON_WRITABLE_FIELDS) == {"upload_bandwidth", "flows", "queues", "scheduler"}
     assert set(sf.SWEEPABLE_FIELDS) == {"quantum", "target", "interval"}
 
 
@@ -79,3 +79,37 @@ def test_coerce_value_canonicalizes_to_firewall_format():
     # Unparseable numeric input degrades to passthrough (no raise).
     assert sf.coerce_value("target", "fast") == "fast"
     assert sf.coerce_value("quantum", None) is None
+
+
+def test_flows_is_captured_but_never_written():
+    """The flow table is recorded on every run and never changed.
+
+    Writing it forces dummynet to rebuild its queues rather than re-read a value, and every
+    write on this link that carried it took the box off the network for 30-35s while every
+    write that did not was sub-second. So it keeps its identity facet — it is discovered,
+    stored, fingerprinted, and tells two profiles apart — and loses its writable one.
+    """
+    f = sf.field("flows")
+    assert f is not None and f.identity and not f.writable and not f.sweepable
+    assert "flows" in sf.CANON_FIELDS          # still captured, still part of the profile
+    assert "flows" not in sf.WRITABLE_FIELDS   # never written
+    assert "flows" in sf.NON_WRITABLE_FIELDS   # ...and so a differing profile is unreachable
+
+
+def test_no_plan_can_write_the_flow_table():
+    """The registry decision reaches the planner: a target whose flows differs from live
+    plans every other difference and simply omits that one.
+
+    This is the property that matters, because the write that hurt was never a deliberate
+    "set flows" — it was a profile switch whose diff happened to contain it.
+    """
+    from pathbrain.settings_profile import normalize, plan_apply
+
+    live = MockProvider().discover()
+    target = normalize(live)
+    for pipe in target:
+        pipe["flows"] = int(pipe.get("flows") or 1024) * 2
+        pipe["quantum"] = int(pipe.get("quantum") or 1514) + 1
+    changes, _ = plan_apply(target, live)
+    assert changes, "the quantum difference should still be planned"
+    assert "flows" not in {c["param"] for c in changes}

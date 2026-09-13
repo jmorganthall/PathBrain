@@ -813,6 +813,34 @@ def _seed_profile_run(fp: str, settings: list[dict]) -> None:
         session.add(Run(status=RunStatus.COMPLETE, settings_fingerprint=fp, settings=settings))
 
 
+def test_apply_profile_warns_when_a_field_is_never_written(client):
+    """A profile differing in the flow table cannot be reached, and the dialog says so.
+
+    ``plan_apply`` writes only writable fields, and ``flows`` is captured but never written
+    — so the apply succeeds, the firewall keeps its own flow table, and it ends up on a
+    profile with a different fingerprint than the one the button named. Applying is the
+    user's call, so this is stated in the preview rather than refused: everything else the
+    profile asks for is still applied.
+    """
+    from pathbrain.providers.mock import _OVERRIDES
+
+    _OVERRIDES.clear()
+    target = _apply_target_profile()
+    for pipe in target:
+        pipe["flows"] = 6          # the mock reports 1024 and nothing may write it
+    _seed_profile_run("applyflow1", target)
+
+    body = client.post("/api/settings/apply-profile",
+                       json={"fingerprint": "applyflow1", "preview": True}).json()
+    # The writable differences are still planned...
+    assert any(c["param"] == "quantum" for c in body["changes"])
+    assert not any(c["param"] == "flows" for c in body["changes"])
+    # ...and the one that cannot be written is named, with both values and the consequence.
+    warned = [w for w in body["warnings"] if "Flows" in w]
+    assert warned, body["warnings"]
+    assert "1024" in warned[0] and "6" in warned[0] and "different profile" in warned[0]
+
+
 def test_apply_profile_preview_lists_exact_changes(client):
     from pathbrain.providers.mock import _OVERRIDES
 

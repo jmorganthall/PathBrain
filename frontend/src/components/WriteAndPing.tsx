@@ -44,10 +44,12 @@ const POLL_MS = 2000;
 //
 // The list this replaces led with `flows`, on the reasoning that it is the one fq_codel
 // parameter making dummynet allocate per-scheduler state at configure time. That reasoning
-// was right and the conclusion was backwards: it makes `flows` the field an unattended sweep
-// must never touch, not the one to lead with. Measured — setting it was free, putting it
-// back took 35.3s and tripped hands-off. It stays available to the single probe, where
-// somebody is watching.
+// was right and the conclusion was backwards: it makes `flows` the field nothing may touch.
+// Measured — setting it was free, putting it back took 35.3s and tripped hands-off — and the
+// write ledger then showed the same cost on every ordinary profile switch whose diff
+// happened to contain it. So the field is no longer writable at all (`shaper_fields`): it is
+// captured on every run and never changed, which takes it out of the server's proposals and
+// therefore out of this dropdown, with nothing here to remember.
 
 function gapChip(ms: number | null | undefined) {
   if (ms === null || ms === undefined) return <Chip size="small" label="no data" />;

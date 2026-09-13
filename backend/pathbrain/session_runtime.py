@@ -314,6 +314,15 @@ def describe_failure(exc: BaseException) -> str:
     from .firewall_guard import FirewallHandsOff
 
     if isinstance(exc, FirewallHandsOff):
+        if getattr(exc, "kind", None) == "protected_field":
+            # Deliberately does NOT offer arming as the remedy: this refusal is permanent,
+            # and a card that points at the Arm button for it would send a person to press
+            # something that changes nothing.
+            return (
+                f"Stopped by the firewall guard — {exc.reason} This one does not lift: the "
+                "field is recorded on every run but is never written, so the profile that "
+                "needs it cannot be applied at all. Nothing was written, including any restore."
+            )
         return (
             f"Stopped by the firewall guard — {exc.reason} Nothing was written, including any "
             "restore: the firewall is exactly as it was before this write. Arm writes from the "

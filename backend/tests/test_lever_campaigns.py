@@ -226,7 +226,10 @@ def test_evidence_is_read_at_the_base_and_settled_steps_are_raced_last(clean_rin
     assert t["state"] == "no_gain"
     assert by[("wan", "interval")]["state"] == "open"
     assert status["open"] == 1 and status["no_gain"] == 2 and status["improves"] == 0
-    assert {(u["pipe"], u["field"]) for u in status["untested"]} >= {("wan", "ecn"), ("wan", "flows"), ("wan", "limit")}
+    # `flows` is absent on purpose: it is captured but never written, so it is not a lever.
+    untested = {(u["pipe"], u["field"]) for u in status["untested"]}
+    assert untested >= {("wan", "ecn"), ("wan", "limit")}
+    assert ("wan", "flows") not in untested
     assert status["rounds"] == 12 + 16 + 4
     # Settled steps go last when the ring picks the next variant.
     with session_scope() as s:
