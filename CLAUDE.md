@@ -2919,6 +2919,28 @@ LLM-based. See `README.md` for the product overview.
   writes for the shared **`ApplyConfirmDialog`** (the same confirm-diff UI as Settings-Impact "Apply
   this profile"), commit applies via `provider.apply()` + kicks a 1-iteration benchmark. Rejects a
   no-op / unreachable change.
+- **The app must never go blank** (`components/ErrorBoundary.tsx`; one boundary around the
+  routes, one around each top-bar chip). React unmounts the **entire tree** when any
+  component throws during render, and with no boundary anywhere that is a white page with
+  no message, no component name and no way back. Reported as *"why does arm writes on this
+  build launch a blank page?"*, and the cause was one missing key: `POST /firewall/guard/arm`
+  returned the bare state row while `GET /firewall/guard` returns `summary()` + the ledger,
+  the chip sets its whole state from whichever endpoint answered
+  (`setInfo(await api.firewallArm())`), and the next render read `info?.config.max_…` —
+  optional chaining guards `info`, not `config` — so the deref threw and took every page
+  with it. The chip is mounted on all of them, which is the asymmetry that makes this
+  catastrophic rather than local. Three fixes, in increasing order of generality: every
+  guard endpoint returns the one `_status()` shape (`routes_firewall._status`;
+  `test_every_guard_endpoint_returns_the_same_shape` asserts key-for-key equality across
+  all three and names `config`/`writes`, the two the chip dereferences unguarded); the chip
+  reads every field defensively, so an incomplete payload degrades to a dash; and the
+  boundaries make the blast radius match the failure — a **widget** fails to a small `⚠`
+  chip carrying its error (one reading unavailable, not the application), a **page** fails
+  to a card with the message and a reload while the shell and navigation stay usable, so
+  you can leave the broken page. Deliberately **not** a silent swallow: a boundary that
+  renders nothing is a blank page with extra steps, so the message and the component stack
+  are both shown and both logged. The deploy gate is why this surfaced now — a new build
+  trips hands-off, which makes **Arm** the button pressed after every update.
 - `Dockerfile` (Playwright base image) / `docker-compose.yml` +
   `docker-compose.ghcr.yml` — single-container deploy (API serves UI). **Resource
   guardrails**, so PathBrain fails locally rather than taking the NAS with it: `init: true`

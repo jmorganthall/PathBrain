@@ -19,13 +19,25 @@ class WatchBody(BaseModel):
     enabled: bool
 
 
+def _status(limit: int = 25) -> dict:
+    """The guard as the chip renders it: state, budget, rate, and the newest ledger rows.
+
+    **Every guard endpoint returns this**, because the chip sets its whole state from
+    whichever one answered. Arm and hands-off used to return the bare state row — no
+    ``config``, no ``writes`` — so the chip's next render read ``info.config.…`` on an
+    object that had no ``config`` and threw, which in a React tree with no error boundary
+    is a blank page. Pressing Arm blanked the app. One concept, one shape.
+    """
+    out = firewall_guard.summary()
+    out["writes"] = firewall_guard.recent_writes(limit)
+    return out
+
+
 @router.get("/firewall/guard")
 def guard_status(limit: int = Query(default=25, ge=1, le=200)) -> dict:
     """Hands-off and why, the write budget, the reconfigure rate, and the newest ledger
     rows — what the top-bar chip and the Plugins card render."""
-    out = firewall_guard.summary()
-    out["writes"] = firewall_guard.recent_writes(limit)
-    return out
+    return _status(limit)
 
 
 @router.get("/firewall/writes")
@@ -36,14 +48,16 @@ def writes(limit: int = Query(default=100, ge=1, le=1000)) -> list[dict]:
 @router.post("/firewall/guard/arm")
 def arm() -> dict:
     """Clear hands-off and stamp the running build as armed. The only way writes resume."""
-    return firewall_guard.arm(by="user")
+    firewall_guard.arm(by="user")
+    return _status()
 
 
 @router.post("/firewall/guard/hands-off")
 def hands_off(body: HandsOffBody | None = None) -> dict:
     """Refuse every firewall write until armed again. Sessions in flight fail their next
     write and stop; nothing is restored — the firewall stays exactly as it is."""
-    return firewall_guard.hands_off((body.reason if body else None) or "set by hand from the top bar", by="user")
+    firewall_guard.hands_off((body.reason if body else None) or "set by hand from the top bar", by="user")
+    return _status()
 
 
 @router.get("/firewall/watch")

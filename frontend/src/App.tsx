@@ -11,6 +11,7 @@
 import { Suspense, lazy } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Loading from "./components/Loading";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -38,32 +39,36 @@ const Away = lazy(() => import("./pages/Away"));
 export default function App() {
   return (
     <Layout>
-      <Suspense fallback={<Loading />}>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/history" element={<History />} />
-          <Route path="/trends" element={<Trends />} />
-          <Route path="/runs/:id" element={<RunDetail />} />
-          <Route path="/compare" element={<Compare />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/profiles/:fingerprint" element={<ProfileDetail />} />
-          <Route path="/experiments" element={<Experiments />} />
-          <Route path="/sweep" element={<ShotgunSweep />} />
-          <Route path="/duels" element={<Duels />} />
-          <Route path="/levers" element={<Levers />} />
-          <Route path="/explore" element={<Explore />} />
-          <Route path="/weather" element={<Weather />} />
-          <Route path="/baseline" element={<Baseline />} />
-          <Route path="/away" element={<Away />} />
-          <Route path="/config" element={<Config />} />
-          <Route path="/firewall" element={<Firewall />} />
-          <Route path="/methodology" element={<Methodology />} />
-          <Route path="/plugins" element={<Plugins />} />
-          <Route path="/data-dump" element={<DataDump />} />
-          <Route path="/ai" element={<AI />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Suspense>
+      {/* A page that throws must not take the shell with it: the nav stays, so you can
+          leave the broken page instead of reloading a blank window. */}
+      <ErrorBoundary label="This page">
+        <Suspense fallback={<Loading />}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/history" element={<History />} />
+            <Route path="/trends" element={<Trends />} />
+            <Route path="/runs/:id" element={<RunDetail />} />
+            <Route path="/compare" element={<Compare />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/profiles/:fingerprint" element={<ProfileDetail />} />
+            <Route path="/experiments" element={<Experiments />} />
+            <Route path="/sweep" element={<ShotgunSweep />} />
+            <Route path="/duels" element={<Duels />} />
+            <Route path="/levers" element={<Levers />} />
+            <Route path="/explore" element={<Explore />} />
+            <Route path="/weather" element={<Weather />} />
+            <Route path="/baseline" element={<Baseline />} />
+            <Route path="/away" element={<Away />} />
+            <Route path="/config" element={<Config />} />
+            <Route path="/firewall" element={<Firewall />} />
+            <Route path="/methodology" element={<Methodology />} />
+            <Route path="/plugins" element={<Plugins />} />
+            <Route path="/data-dump" element={<DataDump />} />
+            <Route path="/ai" element={<AI />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
+      </ErrorBoundary>
     </Layout>
   );
 }
