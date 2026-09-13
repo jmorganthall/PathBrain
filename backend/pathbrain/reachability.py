@@ -17,23 +17,27 @@ Two causes, one consequence, and the card names which:
 * **``pipe``** — the planner cannot address the pipe at all (no live match, no uuid), so
   even its *writable* differences are dropped (``settings_profile.unwritable_diffs``).
 
-**The useful output is the move, not the list.** "87 profiles are unreachable" is a fact
-nobody can act on; "they are all waiting on one value, and setting the Download pipe's
-flow table to 512 brings back 87 profiles and 4,300 iterations of measurement" is a
-decision. So unreachable profiles are grouped by the **exact set of changes** that would
-make them reachable, biggest group first, priced in profiles *and* in the iterations of
-evidence they carry — because a hundred thin profiles and six well-measured ones are not
-the same loss.
+**It reports, and it never prescribes.** An earlier cut of this module grouped the
+unreachable profiles by "the change that would bring them back" and led with it — *setting
+the Download pipe's flow table to 512 restores 87 profiles*. That reads as useful and it is
+the one thing this card must never say. The field is non-writable **because writing it took
+the household off the network for about thirty seconds every time**, so a card that works
+out the most valuable flow-table change and puts it on screen has re-created the hazard as
+a recommendation: no button, but the same instruction, arrived at automatically and phrased
+as a decision worth making. The value of a lost profile is never worth an outage the
+platform has already decided not to cause, and a suggestion PathBrain computes is one it is
+responsible for.
 
-**This card deliberately offers no button.** The move it names is a write to a
-non-writable field, and the reason that field is non-writable is that writing it took the
-household off the network for thirty seconds every time. A one-click "fix it" here would
-be the platform doing the exact thing the registry now forbids, from a page with nobody
-watching. So it says what to change and leaves the changing to a person at the firewall,
-once, when they can afford the outage.
+So the grouping stays and the **framing does not**: profiles are grouped by *what they were
+measured at*, as a statement about the past, priced in profiles and in the iterations of
+evidence they carry — because a hundred thin profiles and six well-measured ones are not the
+same loss. No target value is presented as an action, nothing is ranked by "what to fix
+first", and the verdict names the honest recourse, which is that those profiles are out of
+the running and the field goes on without them.
 
 Read-only throughout: one cached stored-profile list, one rollup read for the Overalls,
-one ledger read for the ring records. Nothing here changes a score, a setting or a profile.
+one ledger read for the ring records. Nothing here changes a score, a setting or a profile,
+and nothing here asks anyone else to.
 """
 from __future__ import annotations
 
@@ -53,7 +57,7 @@ from .settings_profile import (
 
 log = get_logger(__name__)
 
-#: Unreachable profiles listed in full on the card. The grouped ``moves`` carry the whole
+#: Unreachable profiles listed in full on the card. The grouped ``measured_at`` carries the whole
 #: count, so the list is a sample to recognise them by, not the record.
 PROFILE_LIMIT = 200
 
@@ -62,8 +66,8 @@ def _change_key(diffs: list[dict]) -> tuple:
     """The identity of a required-change set: the pipe, field and target value of each.
 
     Profiles needing the *same* change are one decision, so they group. Deliberately keyed
-    on the value too — two profiles both waiting on ``flows`` but wanting 512 and 2048 are
-    two different moves, and merging them would report a move that helps neither.
+    on the value too — two profiles measured at ``flows`` 512 and 2048 are two different
+    groups, and merging them would describe neither.
     """
     return tuple(sorted(
         (str(d.get("label")), str(d.get("field")), str(d.get("to")))
@@ -72,9 +76,14 @@ def _change_key(diffs: list[dict]) -> tuple:
 
 
 def _describe(diffs: list[dict]) -> str:
-    """The move as a sentence a person can carry to the firewall."""
+    """What this group was measured at, as a statement about the past.
+
+    Deliberately *"was measured at X; the firewall is on Y"* and never *"change Y to X"*:
+    the same two numbers, and only one of them is an instruction to go and cause an outage.
+    """
     parts = [
-        f"{d.get('label')} · {d.get('field_label')} {d.get('from')} → {d.get('to')}"
+        f"{d.get('label')} · {d.get('field_label')} {d.get('to')} "
+        f"(the firewall is on {d.get('from')})"
         for d in diffs
     ]
     return "; ".join(parts)
@@ -163,9 +172,9 @@ def audit(session, live, *, limit: int = PROFILE_LIMIT) -> dict:
             entry["profiles"] += 1
             entry["iterations"] += r["iterations"]
 
-    # The moves: unreachable profiles grouped by the exact change set that would restore
-    # them, priced in profiles and in measured iterations. Only ``field`` causes produce a
-    # move — a pipe the planner cannot address is not fixed by choosing a value.
+    # Grouped by what each set of profiles was measured at — a description of the record,
+    # never a change to make. Only ``field`` causes group: a pipe the planner cannot address
+    # is not characterised by a value.
     groups: dict[tuple, dict] = {}
     for r in rows:
         if r["cause"] != "field":
@@ -186,7 +195,7 @@ def audit(session, live, *, limit: int = PROFILE_LIMIT) -> dict:
         if len(g["examples"]) < 3:
             g["examples"].append({"fingerprint": r["fingerprint"], "name": r["name"],
                                   "label": r["label"], "overall": r["overall"]})
-    moves = sorted(groups.values(), key=lambda g: (-g["iterations"], -g["profiles"]))
+    measured_at = sorted(groups.values(), key=lambda g: (-g["iterations"], -g["profiles"]))
 
     return {
         "live": {
@@ -199,10 +208,11 @@ def audit(session, live, *, limit: int = PROFILE_LIMIT) -> dict:
         "unreachable": len(rows),
         "iterations_unreachable": sum(r["iterations"] for r in rows),
         "by_field": sorted(by_field.values(), key=lambda e: (-e["iterations"], -e["profiles"])),
-        "moves": moves,
+        "measured_at": measured_at,
         "profiles": rows[:max(1, int(limit))],
         "truncated": max(0, len(rows) - max(1, int(limit))),
-        "verdict": _verdict(len(profiles), reachable, len(rows), moves),
+        "verdict": _verdict(len(profiles), reachable, len(rows), measured_at,
+                            sum(r["iterations"] for r in rows)),
     }
 
 
@@ -241,8 +251,17 @@ def _live_non_writable(live_norm: list[dict]) -> list[dict]:
     return out
 
 
-def _verdict(checked: int, reachable: int, unreachable: int, moves: list[dict]) -> str:
-    """One sentence with its numbers in it."""
+def _verdict(checked: int, reachable: int, unreachable: int, groups: list[dict],
+             iterations: int) -> str:
+    """One sentence with its numbers in it — a reading, never an instruction.
+
+    It deliberately stops short of naming a firewall change that would restore these
+    profiles, even though the grouping above makes that change trivial to compute. The
+    field is not writable because writing it took the link down for about half a minute
+    every time, and a recommendation the platform works out and puts on screen is a
+    recommendation the platform is responsible for. So the recourse this names is the one
+    that costs nothing: they are out of the running, and the field goes on without them.
+    """
     if not checked:
         return "No stored profiles yet — nothing to check."
     if not unreachable:
@@ -253,22 +272,20 @@ def _verdict(checked: int, reachable: int, unreachable: int, moves: list[dict]) 
     share = round(100.0 * unreachable / checked)
     lead = (
         f"{unreachable} of {checked} measured profiles ({share}%) cannot be applied to the "
-        f"firewall as it stands, so the duel, the challenger race and the heirs card skip them."
+        f"firewall as it stands, so the duel, the challenger race and the heirs card skip "
+        f"them — {iterations} iterations of measurement that can no longer be extended or "
+        f"re-raced."
     )
-    if not moves:
-        return lead + " None of them is fixed by a value change — the pipes themselves differ."
-    best = moves[0]
-    rest = (
-        f" The other {len(moves) - 1} group(s) need different values again."
-        if len(moves) > 1 else ""
-    )
+    if not groups:
+        return (
+            lead + " Their pipes themselves differ from the live ones, so no value explains it."
+        )
     return (
-        f"{lead} The biggest single fix is {best['describe']}, which would bring back "
-        f"{best['profiles']} profile(s) carrying {best['iterations']} iterations of "
-        f"measurement.{rest} PathBrain will not make that change itself — it is a write to a "
-        "field it never writes, and the reason it never writes it is that doing so took the "
-        "link down for about half a minute every time. Make it at the firewall, once, when "
-        "an outage is affordable."
+        f"{lead} They were measured on a firewall set up differently from this one — "
+        f"{len(groups)} distinct setup(s) — and PathBrain neither changes those fields nor "
+        "recommends changing them, because writing them is what took the link down. Treat "
+        "these profiles as out of the running: anything worth having among them can be "
+        "measured again as a reachable profile."
     )
 
 
@@ -382,9 +399,9 @@ def _profile_verdict(blocked: list[dict], dropped: list[dict]) -> str:
     if blocked:
         return (
             f"The firewall cannot be put on this profile — {describe_unreachable(blocked)}. "
-            "That field is recorded on every run and never written, so this profile is out "
-            "of reach until the firewall is set to match it by hand. The duel, the "
-            "challenger race and the heirs card skip it meanwhile."
+            "That field is recorded on every run and never written — writing it is what took "
+            "the link down — so this profile is out of the running: the duel, the challenger "
+            "race and the heirs card skip it. Nothing needs doing about it."
         )
     names = ", ".join(sorted({str(d.get("field_label")) for d in dropped}))
     return (

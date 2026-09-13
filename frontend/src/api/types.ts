@@ -4082,7 +4082,13 @@ export interface ReachabilityProfile {
   ring_pairs: number | null;
 }
 
-export interface ReachabilityMove {
+/** One set of unreachable profiles and the firewall setup they were measured on.
+ *
+ *  Deliberately NOT "the change that would bring them back", which is what this was: the
+ *  fields involved are unwritable because writing them took the link down, so a computed,
+ *  ranked list of firewall changes is a recommendation the platform should not be making.
+ *  Same grouping, stated about the past. */
+export interface ReachabilityGroup {
   changes: ReachabilityDiff[];
   describe: string;
   profiles: number;
@@ -4102,10 +4108,9 @@ export interface ReachabilityAudit {
   unreachable: number;
   iterations_unreachable: number;
   by_field: Array<{ field: string; field_label: string; profiles: number; iterations: number }>;
-  /** Unreachable profiles grouped by the exact change that would restore them, biggest
-   *  first. Deliberately never an action: the change is a write to a field the registry
-   *  forbids, so the card names it and a person makes it at the firewall. */
-  moves: ReachabilityMove[];
+  /** Unreachable profiles grouped by the firewall setup they were measured on, biggest
+   *  first — a description of the record, never a change to make. */
+  measured_at: ReachabilityGroup[];
   profiles: ReachabilityProfile[];
   truncated: number;
   verdict: string;

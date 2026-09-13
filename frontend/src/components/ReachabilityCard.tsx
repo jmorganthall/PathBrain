@@ -8,15 +8,18 @@
  * it — correctly, and silently. A ledger of hundreds quietly becomes a ladder of a dozen
  * with nothing on screen saying why. This is that silence, counted.
  *
- * The headline is the **move**, not the list: "87 profiles are unreachable" is a fact
- * nobody can act on, while "they are all waiting on one value, and setting the Download
- * pipe's flow table to 512 brings back 87 profiles and 4,300 iterations of measurement" is
- * a decision. So the groups lead and the per-profile table follows.
+ * It **reports, and never prescribes.** The first cut of this card led with "what would
+ * bring them back" — a table of firewall changes, ranked by how much measurement each one
+ * restored, the top row reading *Flows 1024 → 512*. It has no button and it is still the
+ * one thing this card must not do: the field is unwritable *because* writing it took the
+ * link down for about half a minute every time, so computing the most valuable flow-table
+ * change and putting it on screen re-creates the hazard as a recommendation. A suggestion
+ * the platform works out is one the platform is answerable for, and no number of stranded
+ * profiles is worth an outage it already decided not to cause.
  *
- * Deliberately **no button**. The change it names is a write to a field the registry
- * forbids, and the reason it forbids it is that writing it took the link down for about
- * half a minute every time. A one-click fix here would be the platform doing the exact
- * thing it just banned, from a page with nobody watching.
+ * So the grouping survives and the framing does not: profiles are grouped by *what they
+ * were measured at*, stated about the past, with no target presented as an action and no
+ * ranking of what to change first.
  *
  * Fetched on demand like the other audits on this page — it reads the live firewall.
  */
@@ -66,7 +69,7 @@ export default function ReachabilityCard() {
         >
           <Typography variant="h6" sx={{ flexGrow: 1 }}>
             Can this profile exist?
-            <HelpTip title="Which measured profiles the firewall can actually be driven to. A profile differing in a field PathBrain never writes — the flow table, the scheduler, the queue count, the upload bandwidth — can't be applied, so the duel, the challenger race and the heirs card skip it. Read-only: it names the change that would bring the most back, and leaves the change to you." />
+            <HelpTip title="Which measured profiles the firewall can actually be driven to. A profile differing in a field PathBrain never writes — the flow table, the scheduler, the queue count, the upload bandwidth — can't be applied, so the duel, the challenger race and the heirs card skip it. Purely a reading: it says which profiles are out of the running and what they were measured at, and deliberately does not suggest changing those fields — writing them is what took the link down." />
           </Typography>
           <Button size="small" variant="outlined" onClick={run} disabled={busy}>
             {busy ? <CircularProgress size={16} /> : audit ? "Re-check" : "Check the field"}
@@ -109,23 +112,23 @@ export default function ReachabilityCard() {
               ))}
             </Stack>
 
-            {audit.moves.length > 0 && (
+            {audit.measured_at.length > 0 && (
               <Box sx={{ mb: 2 }}>
                 <Typography variant="subtitle2" gutterBottom>
-                  What would bring them back
+                  What they were measured at
                 </Typography>
                 <Box sx={{ overflowX: "auto" }}>
                   <Table size="small">
                     <TableHead>
                       <TableRow>
-                        <TableCell>Change the firewall to</TableCell>
+                        <TableCell>Setup it was measured on</TableCell>
                         <TableCell align="right">Profiles</TableCell>
                         <TableCell align="right">Iterations</TableCell>
                         <TableCell align="right">Best Overall</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {audit.moves.map((m) => (
+                      {audit.measured_at.map((m) => (
                         <TableRow key={m.describe} hover>
                           <TableCell>{m.describe}</TableCell>
                           <TableCell align="right">{m.profiles}</TableCell>
@@ -138,6 +141,11 @@ export default function ReachabilityCard() {
                     </TableBody>
                   </Table>
                 </Box>
+                <Typography variant="caption" color="text.secondary">
+                  A record of how these profiles were measured, not a change to make — those
+                  fields are never written, which is the whole reason these profiles are out
+                  of reach.
+                </Typography>
               </Box>
             )}
 
