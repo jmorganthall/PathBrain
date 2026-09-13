@@ -45,7 +45,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from . import coordinator, firewall_guard
+from . import coordinator
 from .database import session_scope
 from .logging_config import get_logger
 from .models import WriteProbe, WriteProbeStatus
@@ -317,8 +317,8 @@ def step_value(field_key: str, current, options: list[float] | None = None):
 #: every other writable field is a parameter the shaper *reads*, while this one decides how
 #: many queues it allocates, so any change to it — ``1024 -> 1025`` included — forces a full
 #: flow-table rebuild rather than a re-read. Measured here (probe #5): setting it was free,
-#: putting it back took **35.3 s**, timed out the ``apply_many`` call, took the box off the
-#: network for 33 s and tripped hands-off.
+#: putting it back took **35.3 s**, timed out the ``apply_many`` call and took the box off
+#: the network for 33 s.
 #:
 #: The ledger then showed the same cost on every *ordinary* write that carried the field —
 #: duel legs, not probes — so the decision moved to where it belongs: ``flows`` is no longer
@@ -382,11 +382,11 @@ def plan_sweep(live: dict, pipe_uuid: str | None, fields: list[str] | None = Non
             "from": pipe.get(key), "to": value, "how": how,
         })
     # Each field costs two writes — step it, put it back — and only a reload is a
-    # reconfigure. ``reload=False`` is therefore free of both the guard's hourly budget and
-    # its pacing gap, which is what makes the cheap pass worth running first.
-    gap_s = float(firewall_guard.config().get("min_reconfigure_gap_s") or 0.0) if reload else 0.0
+    # reconfigure, which is what makes the cheap ``reload=False`` pass worth running first.
+    # The estimate is settle time alone: writes are no longer paced, so there is no gap to
+    # add (there was, and it was the larger half of a sweep's predicted duration).
     reconfigures = len(steps) * 2 if reload else 0
-    seconds = len(steps) * 2 * (settle_s + gap_s)
+    seconds = len(steps) * 2 * settle_s
     # Every writable field's proposed step, NEVER_STEP ones included — what the *single*
     # probe should offer when a person picks that field by hand. It is the same rule the
     # sweep runs, computed once here, because the alternative is a second implementation of
@@ -407,40 +407,6 @@ def plan_sweep(live: dict, pipe_uuid: str | None, fields: list[str] | None = Non
         "reconfigures": reconfigures, "seconds": round(seconds, 1), "reload": bool(reload),
         "settle_s": settle_s,
     }
-
-
-def budget_shortfall(reconfigures: int) -> str | None:
-    """Why this sweep must not start, or None.
-
-    A sweep that runs out of the guard's hourly budget half way is the worst outcome
-    available here: exceeding the cap trips hands-off, hands-off refuses **every** write
-    including a restore, and the sweep is then holding a field at a value it cannot put
-    back. So the cost is checked against the remaining budget up front and the sweep is
-    refused rather than started — the same "don't start a session that can only fail" rule
-    the write guard already applies elsewhere. Best-effort: an unreadable ledger returns
-    None, because a guess about the budget must not be why a diagnostic is refused.
-    """
-    if reconfigures <= 0:
-        return None
-    try:
-        cap = int(firewall_guard.config().get("max_reconfigures_per_hour") or 0)
-        if cap <= 0:
-            return None
-        used = firewall_guard.reconfigures_since(
-            datetime.now(timezone.utc) - timedelta(hours=1)
-        )
-    except Exception:  # noqa: BLE001 — never refuse a probe over a failed budget read
-        log.debug("write_probe: could not read the reconfigure budget", exc_info=True)
-        return None
-    left = cap - used
-    if reconfigures <= left:
-        return None
-    return (
-        f"This sweep needs {reconfigures} reconfigures and only {max(0, left)} are left in the "
-        f"hourly budget ({used} of {cap} used). Starting it would trip hands-off part way "
-        "through, which refuses restores too — leaving a field on a value PathBrain could not "
-        "put back. Sweep fewer fields, or wait for the hour to roll."
-    )
 
 
 def sweep_verdict(steps: list[dict]) -> str:
@@ -533,9 +499,8 @@ def start(
 ) -> int:
     """Launch a write-and-ping probe. Returns the ``WriteProbe`` id.
 
-    ``changes`` is the write to study, in ``plan_apply`` shape. Refused when the guard is
-    hands-off — a supervised diagnostic is exactly the case for arming writes deliberately,
-    not for a way around the guard.
+    ``changes`` is the write to study, in ``plan_apply`` shape. Guarded like any other
+    write — ledgered, watched, and refused if it names a field PathBrain never writes.
     """
     if active():
         raise ValueError("A write probe is already running.")
@@ -547,9 +512,6 @@ def start(
             "No firewall address to ping — PathBrain has none configured (set "
             "PATHBRAIN_OPNSENSE_URL), so give one explicitly."
         )
-    blocked = firewall_guard.blocked_reason("write_probe")
-    if blocked:
-        raise ValueError(blocked)
     settle_s = max(1.0, min(float(settle_s), MAX_SETTLE_S))
     baseline_s = max(1.0, min(float(baseline_s), MAX_SETTLE_S))
 
@@ -586,9 +548,8 @@ def start_sweep(
 ) -> int:
     """Step each writable field in turn, put it straight back, and measure both.
 
-    The cost is checked against the guard's remaining hourly budget *before* the first write
-    (see :func:`budget_shortfall`), because a sweep stopped half way by the budget cannot
-    restore the field it is holding.
+    At most one field is away from its original value at any instant, so a failure can
+    always name exactly what is still moved and to what.
     """
     if active():
         raise ValueError("A write probe is already running.")
@@ -598,9 +559,6 @@ def start_sweep(
             "No firewall address to ping — PathBrain has none configured (set "
             "PATHBRAIN_OPNSENSE_URL), so give one explicitly."
         )
-    blocked = firewall_guard.blocked_reason("write_probe")
-    if blocked:
-        raise ValueError(blocked)
     settle_s = max(1.0, min(float(settle_s), MAX_SETTLE_S))
     baseline_s = max(1.0, min(float(baseline_s), MAX_SETTLE_S))
 
@@ -616,10 +574,6 @@ def start_sweep(
             "No field on this pipe can be stepped, so there is nothing to measure"
             + (f" — {why}." if why else ".")
         )
-    shortfall = budget_shortfall(plan["reconfigures"])
-    if shortfall:
-        raise ValueError(shortfall)
-
     with session_scope() as session:
         probe = WriteProbe(
             status=WriteProbeStatus.RUNNING,
@@ -799,7 +753,6 @@ def _run_step(probe_id: int, steps: list[dict], samplers: dict, name: str, label
     _stage(probe_id, label)
     t0 = time.time()
     failed: str | None = None
-    firewall_guard.take_wait_ms()  # clear anything a previous step left on this thread
     if action is not None:
         try:
             action()
@@ -807,11 +760,9 @@ def _run_step(probe_id: int, steps: list[dict], samplers: dict, name: str, label
             failed = describe_failure(exc)
             log.warning("Write probe %s: %s failed — %s", probe_id, name, failed)
     acted = time.time()
-    # The guard paces reconfigures, and that wait is inside the span just timed. It is
-    # PathBrain's own rate limiting, not the firewall being slow — reporting them as one
-    # number sent a reader after a five-second "firewall cost" that was a five-second
-    # wait PathBrain chose, so the two are separated here.
-    paced_ms = firewall_guard.take_wait_ms()
+    # ``action_ms`` is the firewall's own cost, full stop. It used to have PathBrain's
+    # pacing wait subtracted out of it, because the guard slept inside this span and a
+    # five-second gap read as a five-second firewall. Nothing sleeps here now.
     # Settle with the samplers still running; cancel cuts it short.
     deadline = acted + seconds
     while time.time() < deadline and not _state.get("cancel"):
@@ -820,8 +771,7 @@ def _run_step(probe_id: int, steps: list[dict], samplers: dict, name: str, label
     step = {
         "step": name, "label": label,
         "started_at": round(t0, 3), "acted_at": round(acted, 3), "ended_at": round(t1, 3),
-        "action_ms": round(max(0.0, (acted - t0) * 1000.0 - paced_ms), 1),
-        "paced_ms": round(paced_ms, 1),
+        "action_ms": round(max(0.0, (acted - t0) * 1000.0), 1),
         "failed": failed,
         "targets": {k: summarize(s.samples, t0, t1) for k, s in samplers.items()},
         **(extra or {}),
@@ -1000,6 +950,6 @@ def _serialize(p: WriteProbe, with_samples: bool = True) -> dict:
     return out
 
 
-__all__ = ["active", "budget_shortfall", "cancel", "current", "firewall_address", "get",
+__all__ = ["active", "cancel", "current", "firewall_address", "get",
            "plan_sweep", "recent", "start", "start_sweep", "step_value", "summarize",
            "sweep_fields", "sweep_verdict", "verdict"]

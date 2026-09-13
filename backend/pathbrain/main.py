@@ -41,14 +41,10 @@ async def lifespan(app: FastAPI):
 
     register_engines()  # one queue in front of every user-triggered session
 
-    # BEFORE any reconcile writes a baseline back: a new build never writes the firewall
-    # until a person arms it, and every restore below goes through the same gate.
-    from . import firewall_guard
-
-    guard = firewall_guard.startup_check()
-    if guard.get("hands_off"):
-        log.warning("Firewall guard is HANDS-OFF at startup: %s", guard.get("reason"))
-
+    # Every reconcile below restores a baseline to the firewall, and they do so
+    # unconditionally. A new build used to come up refusing writes until a person armed
+    # them — a deploy gate on a theory the write ledger disproved, whose real effect was
+    # that an unattended update left the household unable to restore anything.
     reconcile_interrupted_runs()  # fail any runs orphaned by a previous restart
     from .methodology import seed_current_methodology
 
@@ -194,8 +190,8 @@ def pipeline_health() -> dict:
         firewall = {"error": str(exc)}
     return {
         "coordinator": coord,
-        # The firewall guard: hands-off and why, the write budget, and the reconfigure
-        # rate over the last hour — the number that was invisible during the reload storm.
+        # The write path: the reconfigure rate over the last hour and the last 24 — the
+        # number that was invisible during the reload storm. A reading, not a limit.
         "firewall": firewall,
         "jobs": {
             "running": jobs.running_count(),

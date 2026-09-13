@@ -821,9 +821,6 @@ export const api = {
     request<LinkWatchResponse>(`/firewall/watch?limit=${limit}&hours=${hours}`),
   setLinkWatch: (enabled: boolean) =>
     request<LinkWatchStatus>("/firewall/watch", { method: "POST", body: JSON.stringify({ enabled }) }),
-  firewallArm: () => request<FirewallGuardStatus>("/firewall/guard/arm", { method: "POST" }),
-  firewallHandsOff: (reason?: string) =>
-    request<FirewallGuardStatus>("/firewall/guard/hands-off", { method: "POST", body: JSON.stringify({ reason: reason ?? null }) }),
   portableDeviceRename: (deviceId: string, label: string | null) =>
     request<{ device_id: string; label: string | null }>(
       `/portable/devices/${encodeURIComponent(deviceId)}`,

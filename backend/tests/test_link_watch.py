@@ -312,33 +312,25 @@ def test_a_failed_write_is_measured_too(watching, monkeypatch):
     assert link_watch._state["pending"][0]["write_id"] is not None
 
 
-def test_the_ledger_separates_the_guards_pacing_from_the_firewalls_own_latency(monkeypatch):
-    """A wait PathBrain chose is not the firewall being slow.
+def test_the_ledgered_latency_is_the_firewalls_own_cost(monkeypatch):
+    """``latency_ms`` is the call and nothing else.
 
-    The write probe timed the whole call and reported a five-second guard gap as a
-    five-second firewall cost, which sends the reader after entirely the wrong thing.
+    It used to have a sibling, ``waited_ms``, because the guard slept out a pacing gap
+    inside the same span and the write probe reported a five-second wait PathBrain chose as
+    five seconds of firewall. Nothing paces a write now, so there is one number again and it
+    means what it says.
     """
-    from pathbrain import firewall_guard as fg
     from pathbrain.providers import get_provider
-
-    monkeypatch.setattr(fg, "config", lambda: dict(
-        fg.DEFAULTS, min_reconfigure_gap_s=30, max_reconfigures_per_hour=0,
-        cooldown_after_outage_s=0, arm_required_after_deploy=False,
-    ))
-    slept: list[float] = []
-    monkeypatch.setattr(fg, "_sleep", lambda s: slept.append(s))
 
     provider = get_provider()
     uuid = (provider.discover()[0].extra or {}).get("uuid")
-    provider.apply_many([{"pipe_uuid": uuid, "param": "quantum", "value": 2048}])  # sets "last"
-    provider.apply_many([{"pipe_uuid": uuid, "param": "quantum", "value": 4096}])  # must be paced
+    provider.apply_many([{"pipe_uuid": uuid, "param": "quantum", "value": 2048}])
+    provider.apply_many([{"pipe_uuid": uuid, "param": "quantum", "value": 4096}])
 
-    assert slept and slept[-1] > 0, "the guard did not pace the second write"
     with session_scope() as s:
         row = s.query(FirewallWrite).order_by(FirewallWrite.id.desc()).first()
-        assert row.waited_ms == pytest.approx(slept[-1] * 1000.0, rel=0.01)
-        # The firewall's own latency is the call alone, and the mock answers instantly.
-        assert row.latency_ms < 1000.0
+        # The mock answers instantly, and no wait is folded in.
+        assert row.latency_ms is not None and row.latency_ms < 1000.0
 
 
 # ------------------------------------------------------------------------------- the API

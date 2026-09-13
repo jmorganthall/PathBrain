@@ -28,9 +28,9 @@ class ProbeBody(BaseModel):
 def start_probe(body: ProbeBody = Body(...)) -> dict:
     """Run one write with ping running throughout. Returns the probe id.
 
-    A 400 covers the genuinely bad request — nothing to write, no target, the firewall
-    already on these values, or the guard hands-off (arm writes first: this applies a real
-    change to a live firewall and is meant to be watched).
+    A 400 covers the genuinely bad request — nothing to write, no target, or the firewall
+    already on these values. This applies a real change to a live firewall and is meant to
+    be watched while it runs.
     """
     try:
         probe_id = write_probe.start(
@@ -81,7 +81,6 @@ def sweep_preview(pipe_uuid: str | None = None, fields: str | None = None,
     plan["pipes"] = [{"uuid": uuid, "label": (p or {}).get("label") or uuid}
                      for uuid, p in live.items()]
     plan["all_fields"] = write_probe.sweep_fields()
-    plan["blocked"] = write_probe.budget_shortfall(plan["reconfigures"])
     return plan
 
 
@@ -89,9 +88,7 @@ def sweep_preview(pipe_uuid: str | None = None, fields: str | None = None,
 def start_sweep(body: SweepBody = Body(...)) -> dict:
     """Step every selected field in turn, revert each, measure the gap after each step.
 
-    A 400 covers the bad request *and* the sweep that cannot finish inside the guard's
-    remaining hourly budget — refusing up front beats tripping hands-off half way, which
-    would refuse the restore too and leave a field moved.
+    A 400 covers the bad request — an unknown pipe, or no field on it that can be stepped.
     """
     try:
         probe_id = write_probe.start_sweep(

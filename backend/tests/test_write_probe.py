@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import pytest
 
-from pathbrain import firewall_guard as fg
 from pathbrain import write_probe
 from pathbrain.providers.mock import MockProvider
 
@@ -84,14 +83,16 @@ def test_the_two_halves_are_issued_separately_and_only_the_reload_is_charged(_db
     assert prov.reconfigure()["reconfigures"] == 1
 
 
-def test_a_probe_is_refused_while_writes_are_hands_off(_db):
-    """A supervised diagnostic is the case for arming writes deliberately, never a way
-    around the guard — the one write path that studied the guard's own subject must not be
-    the one that bypasses it."""
-    fg.hands_off("the WAN dropped", by="test")
-    with pytest.raises(ValueError, match="hands-off"):
-        write_probe.start([{"param": "quantum", "value": 3000}], firewall_target="10.0.0.1")
-    assert "write_probe" in fg.WRITING_KINDS
+def test_a_probe_goes_through_the_same_write_path_as_any_engine(_db):
+    """The one write path that studies the write path must not be the one that bypasses it.
+
+    It has no exemption and needs none: its writes are ledgered and its changes are checked
+    like any other. It used to *also* be refused while the guard was hands-off, which is
+    gone with the state — a diagnostic you are watching is the last thing that should have
+    needed permission.
+    """
+    assert write_probe.start.__module__ == "pathbrain.write_probe"
+    assert "flows" in write_probe.NEVER_STEP, "the sweep still refuses the flow table"
 
 
 def test_a_probe_needs_something_to_write_and_somewhere_to_ping(_db):

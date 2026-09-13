@@ -47,7 +47,6 @@ import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 import type { ReactNode } from "react";
 
 import ErrorBoundary from "./ErrorBoundary";
-import FirewallGuard from "./FirewallGuard";
 import FollowBest from "./FollowBest";
 import JobStatus from "./JobStatus";
 import { api, ApiError } from "../api/client";
@@ -416,9 +415,11 @@ export default function Layout({ children }: { children: ReactNode }) {
           </Typography>
           {/* Each chip is boundaried on its own: they poll different endpoints, and one
               of them failing to render is one reading unavailable, not the application.
-              An unboundaried chip here unmounts EVERY page, since the top bar is on all
-              of them — which is exactly how a bad Arm response blanked the whole app. */}
-          <ErrorBoundary label="Firewall guard" variant="widget"><FirewallGuard /></ErrorBoundary>
+              An unboundaried chip here unmounts EVERY page, since the top bar is on all of
+              them — which is exactly how a bad Arm response once blanked the whole app.
+              (The firewall-guard chip stood first in this row, carrying Arm and Hands off.
+              It is gone with the state it controlled; the write rate and the ledger live on
+              the Firewall page, which is where you go to read them.) */}
           <ErrorBoundary label="Follow best" variant="widget"><FollowBest /></ErrorBoundary>
           <ErrorBoundary label="Update" variant="widget"><UpdateChip /></ErrorBoundary>
           <ErrorBoundary label="Jobs" variant="widget"><JobStatus /></ErrorBoundary>

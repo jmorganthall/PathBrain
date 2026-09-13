@@ -45,7 +45,8 @@ const POLL_MS = 2000;
 // The list this replaces led with `flows`, on the reasoning that it is the one fq_codel
 // parameter making dummynet allocate per-scheduler state at configure time. That reasoning
 // was right and the conclusion was backwards: it makes `flows` the field nothing may touch.
-// Measured — setting it was free, putting it back took 35.3s and tripped hands-off — and the
+// Measured — setting it was free and putting it back took 35.3s, timing out the call and
+// taking the box off the network for 33s — and the
 // write ledger then showed the same cost on every ordinary profile switch whose diff
 // happened to contain it. So the field is no longer writable at all (`shaper_fields`): it is
 // captured on every run and never changed, which takes it out of the server's proposals and
@@ -319,7 +320,8 @@ export default function WriteAndPing({
           or the next value the firewall's own option list allows — puts it straight back, and
           measures the gap after every step. Exactly one field is ever away from its original
           value. The flow table is deliberately left out: changing it rebuilds every queue
-          rather than re-reading a parameter, which on this link cost 35s and tripped hands-off.
+          rather than re-reading a parameter, which on this link took the box off the network
+          for 33 seconds.
         </Typography>
 
         <Stack direction="row" spacing={1} sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>

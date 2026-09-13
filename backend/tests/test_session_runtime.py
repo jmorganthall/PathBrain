@@ -81,11 +81,6 @@ def test_the_wrapped_provider_retries_reads_but_never_reissues_a_write(monkeypat
     running inside the firewall, and reissuing it put two shaper reloads in flight at once
     (the reload-storm incident). The wrapper re-reads instead and reports the write as
     verified when it took."""
-    from pathbrain import firewall_guard as fg
-
-    monkeypatch.setattr(fg, "config", lambda: dict(fg.DEFAULTS, min_reconfigure_gap_s=0,
-                                                   max_reconfigures_per_hour=0, cooldown_after_outage_s=0))
-    fg.arm()
     inner = MockProvider()
     attempts: list[int] = []
     real_apply = inner.apply

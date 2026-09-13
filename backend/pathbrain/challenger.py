@@ -37,7 +37,6 @@ from sqlalchemy import select
 from . import coordinator
 from .config_store import get_config
 from .database import session_scope
-from . import firewall_guard
 from .logging_config import get_logger
 from .session_runtime import describe_failure
 from .models import ChallengerRace, ChallengerRaceStatus
@@ -248,9 +247,6 @@ def start(time_budget_s: int, auto_promote: bool = False) -> int:
     Raises ``RuntimeError`` if a race is already running. The baseline is snapshotted
     inside the driver (under the lock) so it reflects the true pre-race state.
     """
-    blocked = firewall_guard.blocked_reason("race")
-    if blocked:
-        raise ValueError(blocked)
     if active():
         raise RuntimeError("A challenger race is already running.")
     time_budget_s = max(int(time_budget_s), 30)

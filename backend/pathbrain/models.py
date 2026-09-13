@@ -1082,7 +1082,11 @@ class FirewallWrite(Base):
     The write path was the one part of PathBrain with no instrument on it; this is the
     ledger that makes "what did PathBrain do before the drop?" one query. ``outcome`` is
     ``ok``, ``verified`` (the call timed out and a re-read showed it took — never reissued),
-    ``failed``, or ``refused`` (the guard was hands-off, cooling down or over budget).
+    ``failed``, or ``refused`` (it named a field PathBrain never writes).
+
+    This ledger is also what disproved the theory it was first read against: the cost was
+    one field in a handful of writes, never the rate, which is why the rate valve built
+    around it is gone and this is not.
     """
 
     __tablename__ = "firewall_writes"
@@ -1101,10 +1105,9 @@ class FirewallWrite(Base):
     outcome: Mapped[str] = mapped_column(String(16), default="ok")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # What the guard spent pacing before the call went out. Separate from ``latency_ms`` on
-    # purpose: a wait PathBrain chose is not a cost the firewall imposed, and a card that
-    # adds them together reports its own rate limiting as firewall slowness.
-    waited_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # (``waited_ms`` was the guard's pacing wait, kept apart from ``latency_ms`` so
+    # PathBrain's own rate limiting never read as firewall slowness. Nothing paces writes
+    # now, so it is unmapped; the column stays in existing databases with its old rows.)
     # What this write cost the household, measured by ``link_watch``: the worst continuous
     # ping gap in the window around it, split by target (the box itself vs through it).
     # None means nothing was watching, which is not the same as zero and must not read as it.
@@ -1139,26 +1142,11 @@ class LinkGap(Base):
     owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
-class FirewallGuardState(Base):
-    """The one row of guard state (``id`` = 1): hands-off and why, the build last armed,
-    and the firewall's reachability as the guard last saw it. Persistent on purpose — a
-    restart must not clear a hands-off that an outage or a deploy set."""
-
-    __tablename__ = "firewall_guard_state"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    hands_off: Mapped[bool] = mapped_column(Boolean, default=False)
-    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    tripped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    tripped_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    armed_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    armed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_contact_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    unreachable_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    reachable_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    refused_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_refusal: Mapped[str | None] = mapped_column(Text, nullable=True)
+# ``FirewallGuardState`` stood here: one row holding hands-off, the build last armed and
+# the firewall's reachability, persisted so a restart could not clear a trip. It is gone
+# with the valve it served — the write ledger showed the hazard was one field, not the
+# write rate, so there is no state to keep and nothing to arm. The table is left alone in
+# existing databases rather than dropped; nothing reads it.
 
 
 class AlertAck(Base):

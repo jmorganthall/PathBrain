@@ -1,88 +1,86 @@
-"""The firewall guard: every write is counted, paced, budgeted, and refusable.
+"""The firewall write ledger — and the one refusal that survives it.
 
-Written after the incident in which the duel ladder's writes — one ``setPipe`` plus a full
-shaper reconfigure per differing field, on every leg, retried two seconds after a timeout —
-coincided with OPNsense reboots and a WAN that dropped several times a day. Nothing in
-PathBrain could have caught it, because the firewall write path was the one part of the
-platform with no instrument on it: every metric a run produces is measured, versioned and
-audited, and the reconfigure rate was recorded nowhere. This module is that instrument,
-plus the invariants that stop a regression on the write path from reaching the network.
+Every write PathBrain makes is recorded here, and exactly one class of write is refused:
+a change naming a shaper field the registry does not mark writable. That is the whole
+module now, and the shrinking is the point.
 
-Four rules, enforced here rather than remembered per engine (the ``ResilientProvider`` in
-``session_runtime`` routes every write through them, and ``get_provider()`` returns nothing
-else):
+**What this used to be, and why it is gone.** After an incident in which OPNsense rebooted
+and the WAN dropped several times a day while the duel ladder was running, this module grew
+a safety valve: a minimum gap between reconfigures, an hourly reconfigure budget, a
+post-outage cooldown, a gate that made every new build start read-only until a person armed
+it, and a persistent *hands-off* state that any of those could trip and only a human could
+clear. It was built on the theory that PathBrain's **rate** of writing was the hazard.
+
+That theory was wrong, and the ledger — the one piece of this module that was actually an
+instrument — is what disproved it. Twenty rows, no exceptions: **every** write carrying
+``flows`` timed out the 30 s call and took the box off the network for 30-35 s, and **every**
+write in the same hours that did not carry it was clean and sub-second (a bare shaper reload
+420/449/492 ms, ``quantum`` + reload 521 ms, ``limit`` + reload 498 ms). The hazard was never
+how often PathBrain wrote. It was one field, in a handful of writes, rebuilding the dummynet
+flow table while the link ran through it. ``flows`` is non-writable now (``shaper_fields``),
+which removes the cause.
+
+So the valve was a rate limit on the wrong variable, and it was not free. It refused writes
+that were never going to hurt; it stopped whole sessions at the door; a deploy left the
+household's own monitoring unable to apply anything until somebody noticed a chip in the top
+bar; and every one of those refusals cost a night of measurement to prevent an outage that
+the offending field, not the write count, was causing. **PathBrain is ready to write, as it
+was before.** What was needed was diligence about *what* gets injected into a production
+firewall — not a throttle on how often.
+
+Three rules remain, and each earned its place in that incident rather than being assumed:
 
 1. **Every write is on a ledger** (``FirewallWrite``): when, which engine held the pipeline,
    which pipe and field, how many reconfigures it cost, how long the firewall took, and
    whether it succeeded, was verified after a timeout, failed, or was refused. "What did
-   PathBrain do in the five minutes before the drop?" is one query.
-2. **Hands-off is a persistent state** (``FirewallGuardState``): while it is set, every write
-   is refused and recorded as refused — a baseline restore included, because a restore is a
-   write into a firewall that may be mid-boot, which is exactly what hurt. It is set by an
-   outage (any ``FirewallUnavailable``), by the write budget, by a new build (a container
-   that comes up on a different ``git_sha`` than the one last armed runs read-only until a
-   person arms it: every deploy is a canary hour on the household's own monitoring), or by
-   hand. It is cleared only by hand (``arm``).
-3. **Writes are paced and budgeted**: a minimum gap between reconfigures (the guard waits
-   it out) and a per-hour cap that trips hands-off — a session stops, the network does not.
-4. **A write that times out is never reissued.** The wrapper re-reads the firewall and
-   checks whether the write took; if it cannot tell, the firewall is treated as gone and
-   hands-off trips. Two shaper reloads overlapping inside OPNsense was the new behaviour
-   that the retry policy introduced, and this is the rule that removes it.
-
-And one rule about *what* may be written, not how often:
-
-5. **A field the registry does not mark writable is never written.** ``shaper_fields`` is
+   PathBrain do in the five minutes before the drop?" is one query — and it is the query
+   that found the real cause. It writes nothing and stops nothing.
+2. **A field the registry does not mark writable is never written.** ``shaper_fields`` is
    where that decision lives and ``plan_apply`` already honours it, so no engine can plan
    such a change — but a hand-built change list, a route, or a spec queued before the
    registry changed can still reach the provider, and the field that made this rule
-   necessary (``flows``, whose every write took the link down for half a minute) costs an
-   outage, not a wasted call. So the last thing between a change list and the firewall
-   checks it too. The pipe on/off toggle (``param: "enabled"``) is not a shaper field at
-   all and is unaffected; it is its own documented write path.
+   necessary costs an outage, not a wasted call. So the last thing between a change list and
+   the firewall checks it too. This is a rule about **what**, and it is the one the evidence
+   supports. The pipe on/off toggle (``param: "enabled"``) is not a shaper field at all and
+   is unaffected; it is its own documented write path.
+3. **A write that times out is never reissued** (enforced in ``session_runtime``, beside the
+   call it governs). The wrapper re-reads the firewall and either finds the write took
+   (``verified``) or reports the firewall gone. Two shaper reloads overlapping inside
+   OPNsense was a real new behaviour that a retry policy introduced, and unlike the budget it
+   is a claim about correctness, not about frequency.
 
-Read-only diagnostics are best-effort; the refusals are not. A guard that cannot read its
-own state refuses to write.
+Read-only diagnostics are best-effort; the refusal is not.
 """
 from __future__ import annotations
 
 import threading
-import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 
 from .database import session_scope
 from .logging_config import get_logger
-from .models import FirewallGuardState, FirewallWrite
+from .models import FirewallWrite
 from .shaper_fields import FIELD_LABELS, WRITABLE_FIELDS, field as shaper_field
 
 log = get_logger("firewall_guard")
 
-#: Defaults for ``config.firewall`` (``config_store`` carries the same values; these are the
-#: fallback when the config cannot be read, and are deliberately the cautious side).
-DEFAULTS = {
-    "min_reconfigure_gap_s": 15.0,
-    "max_reconfigures_per_hour": 60,
-    "cooldown_after_outage_s": 300.0,
-    "arm_required_after_deploy": True,
-}
-#: The longest the guard will hold a write to honour the minimum gap before giving up on
-#: pacing and refusing instead — a session should never sit on the pipeline for minutes
-#: because of a mis-set gap.
-MAX_GAP_WAIT_S = 120.0
 LEDGER_LIMIT = 50
 
 _lock = threading.Lock()
 
 
-class FirewallHandsOff(RuntimeError):
-    """A write was refused: the guard is hands-off, cooling down after an outage, over
-    budget, or aimed at a field PathBrain never writes. ``reason`` is the sentence a session
-    card shows; ``kind`` says which of those it was, because arming clears three of them and
-    does nothing at all for the fourth."""
+class FirewallWriteRefused(RuntimeError):
+    """A write was refused because it named a field PathBrain never writes.
 
-    def __init__(self, reason: str, *, kind: str = "hands_off") -> None:
+    The only refusal left. It is **permanent**: there is no state to clear and no button
+    that makes it go away, which is why ``describe_failure`` says so plainly rather than
+    pointing at a remedy. (This was ``FirewallHandsOff`` while the guard also refused for
+    reasons that *did* lift — a budget, a cooldown, an un-armed build. Those are gone, and a
+    name that implied they might come back would be the wrong name.)
+    """
+
+    def __init__(self, reason: str, *, kind: str = "protected_field") -> None:
         super().__init__(reason)
         self.reason = reason
         self.kind = kind
@@ -107,197 +105,6 @@ def _build_sha() -> str:
         return ""
 
 
-def config() -> dict:
-    """The ``firewall`` config section, defaults filled in. Never raises."""
-    out = dict(DEFAULTS)
-    try:
-        from .config_store import get_config
-
-        with session_scope() as s:
-            section = (get_config(s) or {}).get("firewall") or {}
-        for k in DEFAULTS:
-            if k in section and section[k] is not None:
-                out[k] = section[k]
-    except Exception:  # noqa: BLE001 — defaults are the cautious side
-        log.debug("firewall_guard: config unreadable, using defaults", exc_info=True)
-    return out
-
-
-def _state_row(s) -> FirewallGuardState:
-    row = s.get(FirewallGuardState, 1)
-    if row is None:
-        row = FirewallGuardState(id=1, hands_off=False, refused_count=0)
-        s.add(row)
-        s.flush()
-    return row
-
-
-def _snapshot(row: FirewallGuardState) -> dict:
-    return {
-        "hands_off": bool(row.hands_off),
-        "reason": row.reason,
-        "kind": row.kind,
-        "tripped_at": _as_utc(row.tripped_at).isoformat() if row.tripped_at else None,
-        "tripped_by": row.tripped_by,
-        "armed_sha": row.armed_sha,
-        "armed_at": _as_utc(row.armed_at).isoformat() if row.armed_at else None,
-        "last_contact_at": _as_utc(row.last_contact_at).isoformat() if row.last_contact_at else None,
-        "unreachable_since": _as_utc(row.unreachable_since).isoformat() if row.unreachable_since else None,
-        "reachable_since": _as_utc(row.reachable_since).isoformat() if row.reachable_since else None,
-        "refused_count": int(row.refused_count or 0),
-        "last_refusal": row.last_refusal,
-    }
-
-
-def state() -> dict:
-    with session_scope() as s:
-        return _snapshot(_state_row(s))
-
-
-def trip(reason: str, *, by: str = "guard", kind: str = "hands_off") -> dict:
-    """Set hands-off. A guard already hands-off keeps its first reason (the cause), but a
-    new outage still stamps ``unreachable_since`` so the cooldown is measured from it."""
-    with _lock, session_scope() as s:
-        row = _state_row(s)
-        if not row.hands_off:
-            row.hands_off = True
-            row.reason = reason
-            row.kind = kind
-            row.tripped_at = _now()
-            row.tripped_by = by
-            log.error("FIREWALL HANDS-OFF (%s): %s", by, reason)
-        else:
-            log.warning("firewall_guard: already hands-off (%s); new trigger from %s: %s", row.reason, by, reason)
-        return _snapshot(row)
-
-
-def arm(*, by: str = "user") -> dict:
-    """Clear hands-off and stamp the running build as the armed one. The only way back."""
-    sha = _build_sha()
-    with _lock, session_scope() as s:
-        row = _state_row(s)
-        row.hands_off = False
-        row.reason = None
-        row.kind = None
-        row.tripped_at = None
-        row.tripped_by = None
-        row.armed_sha = sha or row.armed_sha
-        row.armed_at = _now()
-        log.warning("Firewall writes ARMED by %s on build %s", by, (sha or "unknown")[:12])
-        return _snapshot(row)
-
-
-def hands_off(reason: str, *, by: str = "user") -> dict:
-    return trip(reason or "set by hand", by=by, kind="manual")
-
-
-#: Session kinds whose work *is* switching the firewall's profile. A session of one of
-#: these kinds started while writes are refused cannot do its job — it can only measure
-#: whatever profile the firewall happens to be sitting on, fail its legs and stop — so it
-#: is refused at the door rather than allowed to burn the pipeline discovering that. The
-#: kinds left out are the ones that still mean something read-only: ``current_test``
-#: measures the live profile and never writes, and a manual run is a measurement.
-WRITING_KINDS = frozenset({"sweep", "race", "refresh", "baseline_test", "duel", "profile_test",
-                           "write_probe"})
-
-
-def blocked_reason(kind: str | None = None) -> str | None:
-    """Why a profile-switching session must not start, or None if it may.
-
-    The guard's enforcement is at the write itself, which is the right place for it: it
-    cannot be forgotten and it catches a write from anywhere. But refusing writes one at a
-    time is a poor way to stop a *session* whose every leg is a write — it starts, measures
-    the profile it was already on, is refused on the first leg that needs a change, and
-    aborts three legs later, having spent the pipeline and produced nothing. So the kinds
-    in :data:`WRITING_KINDS` ask this first and decline in a sentence naming the remedy.
-    """
-    if kind is not None and kind not in WRITING_KINDS:
-        return None
-    st = state()
-    if not st.get("hands_off"):
-        return None
-    why = st.get("reason") or "writes are refused"
-    return (
-        f"The firewall guard is hands-off — {why} A session that switches profiles cannot "
-        "run until writes are armed: it would measure whichever profile the firewall is "
-        "already on and fail every leg that needs a change. Arm writes from the top bar "
-        "once the network is known good."
-    )
-
-
-def startup_check() -> dict:
-    """A new build never writes the firewall until a person arms it. Compares the running
-    ``git_sha`` with the one last armed; a dev build with no sha is left alone (there is no
-    identity to compare, and a test run must not start hands-off)."""
-    cfg = config()
-    sha = _build_sha()
-    with session_scope() as s:
-        row = _state_row(s)
-        armed = row.armed_sha or ""
-        already = bool(row.hands_off)
-    if not cfg.get("arm_required_after_deploy", True) or not sha:
-        return state()
-    if sha != armed and not already:
-        return trip(
-            f"new build {sha[:7]} — firewall writes stay off until you arm them from the top bar "
-            f"(last armed build: {armed[:7] or 'never'}). Measurements run; nothing is applied or restored.",
-            by="deploy", kind="deploy",
-        )
-    return state()
-
-
-#: A successful contact is stamped to the database at most this often; the guard reads the
-#: firewall several times per leg and a row write per read would be pure amplification.
-#: An outage, and the first success after one, are always written.
-CONTACT_STAMP_S = 60.0
-_last_ok_stamp = 0.0
-_outage_pending = False
-
-
-def note_contact(ok: bool, error: str | None = None) -> None:
-    """Record that the firewall answered (or did not). An outage trips hands-off; the
-    return marks ``reachable_since`` so the cooldown can be measured."""
-    global _last_ok_stamp, _outage_pending
-    if ok:
-        mono = time.monotonic()
-        with _lock:
-            if not _outage_pending and mono - _last_ok_stamp < CONTACT_STAMP_S:
-                return
-            _last_ok_stamp = mono
-            pending = _outage_pending
-            _outage_pending = False
-        with _lock, session_scope() as s:
-            row = _state_row(s)
-            now = _now()
-            row.last_contact_at = now
-            if row.unreachable_since is not None or pending:
-                row.reachable_since = now
-                row.unreachable_since = None
-                log.warning("firewall_guard: firewall reachable again; writes cool down for %ss",
-                            config().get("cooldown_after_outage_s"))
-        return
-    with _lock:
-        _outage_pending = True
-    with _lock, session_scope() as s:
-        row = _state_row(s)
-        if row.unreachable_since is None:
-            row.unreachable_since = _now()
-    trip(f"the firewall stopped answering: {error or 'unreachable'}", by="outage", kind="outage")
-
-
-#: The pacing wait the current thread last spent in :func:`before_write`. Thread-local
-#: because a diagnostic that times its own call needs to subtract *its* wait, not whatever
-#: another engine happened to be waiting out on another thread.
-_WAIT = threading.local()
-
-
-def take_wait_ms() -> float:
-    """The pacing the calling thread waited on its last write, and clears it."""
-    ms = float(getattr(_WAIT, "ms", 0.0) or 0.0)
-    _WAIT.ms = 0.0
-    return ms
-
-
 def _owner() -> str | None:
     try:
         from . import coordinator
@@ -308,8 +115,7 @@ def _owner() -> str | None:
 
 
 def record(op: str, *, changes: list[dict] | None, reconfigures: int, outcome: str,
-           error: str | None = None, latency_ms: float | None = None,
-           waited_ms: float | None = None) -> int | None:
+           error: str | None = None, latency_ms: float | None = None) -> int | None:
     """One ledger row; returns its id (None if the ledger could not be written).
 
     The id is what lets ``link_watch`` come back a few seconds later and attach what this
@@ -330,7 +136,6 @@ def record(op: str, *, changes: list[dict] | None, reconfigures: int, outcome: s
                 outcome=outcome,
                 error=(error or None),
                 latency_ms=latency_ms,
-                waited_ms=waited_ms,
                 git_sha=(_build_sha() or None),
             )
             s.add(row)
@@ -342,6 +147,11 @@ def record(op: str, *, changes: list[dict] | None, reconfigures: int, outcome: s
 
 
 def reconfigures_since(since: datetime) -> int:
+    """How many reconfigures landed since ``since`` — a **reading**, not a limit.
+
+    Nothing consults this to decide whether a write may happen; the health endpoint and the
+    Firewall page render it so a person can see the rate PathBrain is actually writing at.
+    """
     with session_scope() as s:
         n = s.execute(
             select(func.coalesce(func.sum(FirewallWrite.reconfigures), 0)).where(
@@ -361,23 +171,6 @@ def last_reconfigure_at() -> datetime | None:
         return _as_utc(at)
 
 
-def _refuse(op: str, changes: list[dict] | None, reconfigures: int, reason: str, kind: str) -> None:
-    with _lock, session_scope() as s:
-        row = _state_row(s)
-        row.refused_count = int(row.refused_count or 0) + 1
-        row.last_refusal = f"{op}: {reason}"
-    record(op, changes=changes, reconfigures=reconfigures, outcome="refused", error=reason)
-    log.warning("firewall_guard: REFUSED %s (%s): %s", op, kind, reason)
-    raise FirewallHandsOff(reason, kind=kind)
-
-
-def _sleep(seconds: float) -> None:
-    """The pacing wait, as its own function so it can be replaced. A ``sleep=time.sleep``
-    default argument binds at import and cannot be patched — a test that thought it had
-    waited a real thirty seconds before failing."""
-    time.sleep(seconds)
-
-
 def protected_params(changes: list[dict] | None) -> list[str]:
     """The params in ``changes`` that are shaper fields the registry does not mark writable.
 
@@ -394,65 +187,25 @@ def protected_params(changes: list[dict] | None) -> list[str]:
     return seen
 
 
-def before_write(op: str, changes: list[dict] | None = None, *, reconfigures: int = 1,
-                 sleep=None) -> float:
-    """The gate every write passes; returns the seconds it spent pacing.
+def before_write(op: str, changes: list[dict] | None = None, *, reconfigures: int = 1) -> None:
+    """The gate every write passes. One rule: nothing may name a non-writable shaper field.
 
-    Raises :class:`FirewallHandsOff` (recorded as a refusal) when the change touches a field
-    the registry does not mark writable, when hands-off is set, when the post-outage cooldown
-    has not elapsed, or when the write would exceed the hourly budget (which also trips
-    hands-off). Waits out the minimum gap.
-
-    The wait is **returned and ledgered separately** because it is PathBrain's own rate
-    limiting, not a cost the firewall imposed: a diagnostic that timed the whole call
-    reported the guard's fifteen-second gap as the firewall taking fifteen seconds, which
-    sends the reader after the wrong thing entirely.
+    Raises :class:`FirewallWriteRefused` (recorded on the ledger as a refusal) and otherwise
+    returns immediately — there is no pacing, no budget and no state to consult, so this
+    costs a dictionary scan and never sleeps. A write that is allowed is allowed *now*.
     """
-    # Checked before anything else, and deliberately: hands-off and the budget are states
-    # that pass, and naming one of them would report a temporary reason for a permanent
-    # refusal. This never lifts.
     protected = protected_params(changes)
-    if protected:
-        names = ", ".join(FIELD_LABELS.get(k, k) for k in protected)
-        _refuse(op, changes, reconfigures,
-                f"{names} is captured but never written — PathBrain does not change it "
-                f"({'/'.join(protected)} is not a writable shaper field). Nothing was applied.",
-                "protected_field")
-    cfg = config()
-    st = state()
-    if st["hands_off"]:
-        _refuse(op, changes, reconfigures, f"hands-off: {st['reason']}", st.get("kind") or "hands_off")
-    cooldown = float(cfg.get("cooldown_after_outage_s") or 0)
-    if st["reachable_since"] and cooldown > 0:
-        since = datetime.fromisoformat(st["reachable_since"])
-        left = cooldown - (_now() - since).total_seconds()
-        if left > 0:
-            _refuse(op, changes, reconfigures,
-                    f"the firewall came back {int(cooldown - left)}s ago; writes resume after a "
-                    f"{int(cooldown)}s cooldown ({int(left)}s left)", "cooldown")
-    cap = int(cfg.get("max_reconfigures_per_hour") or 0)
-    if cap > 0 and reconfigures > 0:
-        used = reconfigures_since(_now() - timedelta(hours=1))
-        if used + reconfigures > cap:
-            reason = (f"write budget exceeded: {used} reconfigures in the last hour, the cap is {cap} "
-                      f"(firewall.max_reconfigures_per_hour). Every engine is stopped until you arm again.")
-            trip(reason, by="budget", kind="budget")
-            _refuse(op, changes, reconfigures, reason, "budget")
-    gap = float(cfg.get("min_reconfigure_gap_s") or 0)
-    if gap > 0 and reconfigures > 0:
-        last = last_reconfigure_at()
-        if last is not None:
-            wait = gap - (_now() - last).total_seconds()
-            if wait > 0:
-                if wait > MAX_GAP_WAIT_S:
-                    _refuse(op, changes, reconfigures,
-                            f"minimum gap between reconfigures is {gap:.0f}s and the next slot is {wait:.0f}s away", "gap")
-                log.info("firewall_guard: pacing %s — waiting %.1fs for the %.0fs reconfigure gap", op, wait, gap)
-                (sleep or _sleep)(wait)
-                _WAIT.ms = float(wait) * 1000.0
-                return float(wait)
-    _WAIT.ms = 0.0
-    return 0.0
+    if not protected:
+        return
+    names = ", ".join(FIELD_LABELS.get(k, k) for k in protected)
+    reason = (
+        f"{names} is captured but never written — PathBrain does not change it "
+        f"({'/'.join(protected)} is not a writable shaper field). Nothing was applied."
+    )
+    with _lock:
+        record(op, changes=changes, reconfigures=reconfigures, outcome="refused", error=reason)
+    log.warning("firewall_guard: REFUSED %s (protected_field): %s", op, reason)
+    raise FirewallWriteRefused(reason)
 
 
 def recent_writes(limit: int = LEDGER_LIMIT) -> list[dict]:
@@ -471,7 +224,6 @@ def recent_writes(limit: int = LEDGER_LIMIT) -> list[dict]:
             "outcome": r.outcome,
             "error": r.error,
             "latency_ms": r.latency_ms,
-            "waited_ms": r.waited_ms,
             "gap_ms": r.gap_ms,
             "box_gap_ms": r.box_gap_ms,
             "through_gap_ms": r.through_gap_ms,
@@ -481,9 +233,12 @@ def recent_writes(limit: int = LEDGER_LIMIT) -> list[dict]:
 
 
 def summary() -> dict:
-    """The guard on one read: state, budget and the last hour — what the pipeline health
-    endpoint and the top-bar chip render."""
-    cfg = config()
+    """The write path on one read: the rate, and what the last hour looked like.
+
+    Every field here is descriptive. There is no state, no cap and nothing to arm — the
+    health endpoint and the Firewall page render this so the write rate is *visible*, which
+    is what was missing when it mattered, rather than *limited*, which is what did not help.
+    """
     now = _now()
     hour = reconfigures_since(now - timedelta(hours=1))
     day = reconfigures_since(now - timedelta(hours=24))
@@ -495,9 +250,7 @@ def summary() -> dict:
             )
         ).scalar_one() or 0)
     return {
-        **state(),
         "build_sha": _build_sha() or None,
-        "config": cfg,
         "reconfigures_last_hour": hour,
         "reconfigures_last_24h": day,
         "refused_last_hour": refused_hour,
@@ -506,8 +259,6 @@ def summary() -> dict:
 
 
 __all__ = [
-    "DEFAULTS", "FirewallHandsOff", "WRITING_KINDS", "arm", "before_write", "blocked_reason",
-    "protected_params",
-    "config", "hands_off", "note_contact", "recent_writes", "record", "startup_check", "state",
-    "summary", "trip",
+    "FirewallWriteRefused", "before_write", "last_reconfigure_at", "protected_params",
+    "reconfigures_since", "recent_writes", "record", "summary",
 ]

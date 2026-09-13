@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from pathbrain import firewall_guard as fg
 from pathbrain import write_probe as wp
 from pathbrain.shaper_fields import WRITABLE_FIELDS
 
@@ -101,9 +100,9 @@ def test_the_flow_table_is_never_stepped_by_a_sweep_even_when_asked_for():
 
 
 def test_a_field_costs_two_reconfigures_and_the_cheap_pass_costs_none():
-    """Step it, put it back. Only a reload is a reconfigure, so `reload=False` is exempt from
-    both the guard's hourly budget and its pacing gap — which is what makes the cheap pass
-    worth running first."""
+    """Step it, put it back. Only a reload is a reconfigure, and a reconfigure is what
+    rebuilds the queues — so the cheap `reload=False` pass writes every field without
+    disturbing a single flow, which is why it is worth running first."""
     plan = wp.plan_sweep(_live(), "pipe-a")
     assert plan["reconfigures"] == 2 * len(plan["steps"])
     cheap = wp.plan_sweep(_live(), "pipe-a", reload=False)
@@ -125,35 +124,22 @@ def test_the_default_settle_outlasts_the_outage_the_link_watch_measured():
     assert wp.SWEEP_SETTLE_S > wp.DEFAULT_SETTLE_S
 
 
-# ── the budget: never start a sweep that cannot put the field back ────────────
+# ── no budget: a sweep is priced in time, and nothing rations it ──────────────
 
 
-def test_a_sweep_that_would_trip_hands_off_part_way_is_refused_before_the_first_write(monkeypatch):
-    """Exceeding the hourly cap trips hands-off, hands-off refuses *every* write including a
-    restore, and the sweep would then be holding a field at a value it cannot put back. That
-    is the worst outcome available here, so the cost is checked up front."""
-    monkeypatch.setattr(fg, "config", lambda: {**fg.DEFAULTS, "max_reconfigures_per_hour": 10})
-    monkeypatch.setattr(fg, "reconfigures_since", lambda since: 8)
-    why = wp.budget_shortfall(14)
-    assert why and "2 are left" in why and "restores" in why
-    assert wp.budget_shortfall(2) is None, "a sweep that fits is allowed"
+def test_a_sweep_is_never_refused_on_a_write_budget():
+    """``budget_shortfall`` stood here: a sweep was priced against the guard's remaining
+    hourly reconfigures and refused if it would not fit, because exceeding the cap tripped
+    hands-off, which refused *every* write including the restore — leaving a field moved.
 
-
-def test_the_cheap_pass_is_never_refused_on_budget(monkeypatch):
-    def boom(*a, **k):
-        raise AssertionError("a zero-reconfigure sweep must not consult the budget")
-
-    monkeypatch.setattr(fg, "reconfigures_since", boom)
-    assert wp.budget_shortfall(0) is None
-
-
-def test_an_unreadable_budget_does_not_refuse_the_probe(monkeypatch):
-    """A guess about the budget must never be why a diagnostic is refused."""
-    def boom(*a, **k):
-        raise RuntimeError("no database")
-
-    monkeypatch.setattr(fg, "config", boom)
-    assert wp.budget_shortfall(99) is None
+    Both halves of that are gone. There is no cap to exceed and no state to trip, so a
+    sweep that visits every field simply runs, and what stops it holding a field is the
+    thing that always actually did: it reverts each step before taking the next, and the
+    ``finally`` says so in capitals when it cannot.
+    """
+    assert not hasattr(wp, "budget_shortfall")
+    plan = wp.plan_sweep(_live(), "pipe-a")
+    assert plan["steps"] and "blocked" not in plan
 
 
 # ── the verdict: name the field, unless position explains it better ───────────
@@ -232,16 +218,6 @@ def test_every_field_is_put_back_and_only_one_is_ever_moved(client, monkeypatch)
     after = {(c.extra or {}).get("uuid"): c.to_dict() for c in provider.discover()}
     for key in WRITABLE_FIELDS:
         assert str(after[uuid].get(key)) == str(before[uuid].get(key)), key
-
-
-def test_starting_a_sweep_over_budget_is_a_400_and_writes_nothing(client, monkeypatch):
-    monkeypatch.setattr(fg, "config", lambda: {**fg.DEFAULTS, "max_reconfigures_per_hour": 1})
-    monkeypatch.setattr(fg, "reconfigures_since", lambda since: 1)
-    monkeypatch.setattr(wp, "firewall_address", lambda: "192.0.2.1")
-    r = client.post("/api/firewall/write-probe/sweep", json={})
-    assert r.status_code == 400
-    assert "hourly budget" in r.json()["detail"]
-    assert not wp.active(), "nothing was started"
 
 
 def test_the_preview_prices_the_sweep_without_writing_anything(client):
