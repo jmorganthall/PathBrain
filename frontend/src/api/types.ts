@@ -1877,6 +1877,52 @@ export interface CrownsOut {
   checked_at: string | null;
 }
 
+// ── The verdict: which profile to run ───────────────────────────────────────────────
+// The one answer, from `GET /settings/verdict`. Everything else on the Dashboard is a
+// reading; this is the decision the readings are for.
+
+export interface VerdictProfile {
+  fingerprint: string;
+  name: string | null;
+  label: string | null;
+  overall: number;
+  iterations: number;
+  // Standard error of the median Overall (IQR/√n). Null when the spread is unmeasurable,
+  // which the pooled bar treats as contributing zero noise — never as "cannot say".
+  se: number | null;
+  is_sqm_off: boolean;
+}
+
+export interface VerdictOut {
+  methodology: string;
+  // How the methodology forms the Overall. A `weighted` crown grades each profile on its
+  // own, which is what lets this card answer off the per-profile rollup; anything
+  // field-relative (a corner) is declined in words with a pointer to the standings, rather
+  // than answered with an ordering that would disagree with them.
+  overall_method: string;
+  min_iterations: number;
+  confident_profiles: number;
+  // The best measured unshaped baseline, and the crown's percentage lead over it — what
+  // shaping is worth at all, next to what picking between profiles is worth.
+  sqm_off_overall: number | null;
+  vs_sqm_off: number | null;
+  best: VerdictProfile | null;
+  runner_up: VerdictProfile | null;
+  lead: number | null;
+  // `crown_tie_sigma` × the pooled SE of the two medians — the bar a lead must clear to be
+  // an ordering rather than run-to-run noise. The same test the standings' "tied" chip uses.
+  noise_bar: number | null;
+  clear: boolean | null;
+  tied: VerdictProfile[];
+  tied_count: number;
+  // The smallest Overall gap the duel ladder can settle, so the card can say whether
+  // racing these profiles would even help. Null when the ledger can't be read.
+  resolves: number | null;
+  live: VerdictProfile | null;
+  on_firewall: boolean | null;
+  verdict: string;
+}
+
 // ── The fight card: who fights whom if a duel started now ───────────────────────────
 
 export interface DuelCardEntry {

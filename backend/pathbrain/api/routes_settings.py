@@ -3757,6 +3757,19 @@ def rename_profile(fingerprint: str, body: dict = Body(...)) -> dict:
     return {"fingerprint": fingerprint, "name": name}
 
 
+@router.get("/settings/verdict")
+def settings_verdict(session: Session = Depends(get_session)) -> dict:
+    """**Which profile should I run?** — the one answer, with how sure and whether it matters.
+
+    Deliberately cheap: the rollup, not a ``compute_profiles`` pass, because this renders on
+    the Dashboard and a cold field pass on page load is the documented way to take the
+    process down. See ``verdict.py`` for why one statement replaces three competing ones.
+    """
+    from ..verdict import verdict
+
+    return verdict(session)
+
+
 @router.get("/settings/crowns")
 def crowns(session: Session = Depends(get_session)) -> dict:
     """**Both verdicts side by side** — the pooled crown and the duel champion.
