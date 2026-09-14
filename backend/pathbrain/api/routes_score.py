@@ -369,16 +369,72 @@ def axis_series(
     fingerprint: str | None = Query(None, description="Restrict to one settings profile (configTag)."),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Per-run axis scores over time (current methodology), oldest→newest, for the
-    dashboard's over-time chart. Only comparable runs appear."""
-    from ..methodology import ensure_current_methodology, scored_axes
+    """Per-run scores over time (current methodology), oldest→newest, for the over-time
+    chart on the Dashboard and Profile Detail. Only comparable runs appear.
 
+    **The headline series are the CROWN LEGS, not the axes** — the same correction the
+    Dashboard's hero card already carries. The Overall has been computed from the crown
+    metrics' subscores since v5, and the axes are a different decomposition: under v16 the
+    three "headline" axes are dominated by metrics the Overall never reads (render,
+    load_event, cadence, evenness, byte earliness, CLS). A chart that trends Overall beside
+    Responsiveness/Smoothness/Speed therefore invites exactly the wrong reading — that the
+    line on top is a roll-up of the three under it — and a dip in a leg that actually moved
+    the Overall can sit in none of them.
+
+    So the crown is read off the methodology's ``overall`` spec **at request time** and each
+    leg is trended as its own headline series, on the same 0-100 perception-calibrated scale
+    as the Overall, from the very subscores the Overall is a weighted mean of. A publish
+    re-points this chart with no code change here and none in the frontend, which filters on
+    ``role`` and never names a metric — the standing rule for crown-driven views.
+
+    The axes are **kept and demoted**, not dropped (``role: "axis"``, still trended in every
+    point): they are a real decomposition, they cost nothing to carry — they are already on
+    the Score row — and removing a series an existing response shape carried would be a
+    silent loss for any caller that wants the graded breakdown over time. No view draws them
+    from here today; the Dashboard's "Axis breakdown" strip reads the rolling payload. Every
+    series says where its value comes from (``source``: ``axis`` for the axis scores and the
+    Overall, ``metric`` for a crown leg's subscore), so one point builder serves both without
+    the caller guessing which dict a key lives in.
+    """
+    from ..methodology import (
+        ensure_current_methodology,
+        overall_method,
+        overall_metrics,
+        overall_weights,
+        scored_axes,
+    )
     methodology = ensure_current_methodology(session, get_config(session))
-    axes = scored_axes(methodology.definition or {})
-    # The first-class Overall (corner roll-up) isn't a scored axis, but it's the headline
-    # figure — prepend it as a synthetic headline series so the over-time chart trends it
-    # alongside the axes (pulled from the same persisted ``axis_scores['overall']``).
-    series_axes = [{"key": "overall", "label": "Overall", "role": "headline"}, *axes]
+    definition = methodology.definition or {}
+    axes = scored_axes(definition)
+    crown_keys, crown_required = overall_metrics(definition)
+    weights = overall_weights(definition)
+    # Labels come from the frozen definition, not the live registry: the definition is the
+    # snapshot this version was published with, so it names its own metrics even after the
+    # registry's wording moves on.
+    labels = {
+        str(m.get("key")): str(m.get("label") or m.get("key"))
+        for m in definition.get("metrics", [])
+        if m.get("key")
+    }
+
+    # The Overall first, then one series per crown leg — what the headline is actually made
+    # of. The axes follow, demoted: still available, no longer presented as the Overall's
+    # parts.
+    series_axes = [
+        {"key": "overall", "label": "Overall", "role": "headline", "source": "axis"},
+        *[
+            {
+                "key": key,
+                "label": labels.get(key, key),
+                "role": "headline",
+                "source": "metric",
+                "weight": weights.get(key),
+                "required": key in crown_required,
+            }
+            for key in crown_keys
+        ],
+        *[{**a, "role": "axis", "source": "axis"} for a in axes],
+    ]
     conds = [
         Run.status == RunStatus.COMPLETE,
         Score.methodology_version == methodology.version,
@@ -395,11 +451,26 @@ def axis_series(
         {
             "run_id": score.run_id,
             "timestamp": run.created_at.isoformat(),
-            **{a["key"]: (score.axis_scores or {}).get(a["key"]) for a in series_axes},
+            **{
+                s["key"]: (
+                    (score.subscores or {}) if s["source"] == "metric"
+                    else (score.axis_scores or {})
+                ).get(s["key"])
+                for s in series_axes
+            },
         }
         for score, run in reversed(rows)
     ]
-    return {"methodology": methodology.version, "axes": series_axes, "points": points}
+    return {
+        "methodology": methodology.version,
+        "axes": series_axes,
+        "points": points,
+        # Stated outright so the card can caption itself with the live rubric rather than a
+        # sentence written when the crown was something else.
+        "overall_metrics": crown_keys,
+        "overall_method": overall_method(definition),
+        "overall_weights": weights,
+    }
 
 
 @router.get("/score/weights")

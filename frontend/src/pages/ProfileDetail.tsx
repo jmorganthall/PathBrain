@@ -74,7 +74,15 @@ const AXIS_COLORS: Record<string, string> = {
   stability: "#81c784",
   completion: "#90a4ae",
 };
-const axisColor = (key: string) => AXIS_COLORS[key] ?? "#4dd0e1";
+// The over-time chart's headline series are the CROWN LEGS, which are metric keys and so
+// are never in the map above — a publish changes them. Falling back to one colour for
+// everything drew three legs in the same cyan, which is a chart of one line pretending to
+// be three, so an unknown key takes a distinct colour by position instead. Deliberately
+// keyed on index rather than hashed off the key: a hash gives two legs near-identical hues
+// often enough to matter, and position here is stable within a render.
+const SERIES_COLORS = ["#4dd0e1", "#ffa726", "#ab47bc", "#81c784", "#f06292", "#90a4ae"];
+const axisColor = (key: string, index = 0) =>
+  AXIS_COLORS[key] ?? SERIES_COLORS[index % SERIES_COLORS.length];
 
 // The short test: one runner chunk (`runner.CHUNK_ITERATIONS`), the same length Explore's
 // "Test now" runs. Sent explicitly with the request, so the label and what runs can't drift.
@@ -363,9 +371,12 @@ export default function ProfileDetail() {
   // vs the profile's own day×hour typical — contextualizes a low recent run ("running below typical"
   // often means the network, not the profile).
   const relDelta = profile?.relative_overall?.delta_median ?? null;
+  // Headline = the Overall and the crown legs it is computed from (the server decides which,
+  // from the live methodology). Never named here: a crown metric key hardcoded in the
+  // frontend is what stops a publish re-pointing the view.
   const headlineLines = (series?.axes ?? [])
     .filter((a) => a.role === "headline")
-    .map((a) => ({ key: a.key, name: a.label, color: axisColor(a.key) }));
+    .map((a, i) => ({ key: a.key, name: a.label, color: axisColor(a.key, i) }));
 
   return (
     <Box>

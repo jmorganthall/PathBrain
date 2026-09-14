@@ -74,7 +74,15 @@ const AXIS_COLORS: Record<string, string> = {
   stability: "#81c784",
   completion: "#90a4ae",
 };
-const axisColor = (key: string) => AXIS_COLORS[key] ?? "#4dd0e1";
+// The over-time chart's headline series are the CROWN LEGS, which are metric keys and so
+// are never in the map above — a publish changes them. Falling back to one colour for
+// everything drew three legs in the same cyan, which is a chart of one line pretending to
+// be three, so an unknown key takes a distinct colour by position instead. Deliberately
+// keyed on index rather than hashed off the key: a hash gives two legs near-identical hues
+// often enough to matter, and position here is stable within a render.
+const SERIES_COLORS = ["#4dd0e1", "#ffa726", "#ab47bc", "#81c784", "#f06292", "#90a4ae"];
+const axisColor = (key: string, index = 0) =>
+  AXIS_COLORS[key] ?? SERIES_COLORS[index % SERIES_COLORS.length];
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
 
@@ -1086,7 +1094,14 @@ export default function Dashboard() {
               <CardContent>
                 <CardTitle
                   title="Scores over time"
-                  help="Each scored run's headline axes, most recent 100 runs, under the current methodology."
+                  help={
+                    "The Overall and the metrics it is actually computed from — the crown legs — " +
+                    "for the most recent 100 scored runs under the current methodology. Not the " +
+                    "Responsiveness/Smoothness/Speed axes: those are a different decomposition " +
+                    "and stopped being the Overall's inputs at v5, so trending them under the " +
+                    "Overall invited reading the top line as a roll-up of the ones below it. " +
+                    "Every series is a 0-100 perception-calibrated subscore, so they share the axis."
+                  }
                 />
                 {axisSeries && axisSeries.points.length > 0 ? (
                   <SeriesChart
@@ -1094,7 +1109,7 @@ export default function Dashboard() {
                     yDomain={[0, 100]}
                     lines={axisSeries.axes
                       .filter((a) => a.role === "headline")
-                      .map((a) => ({ key: a.key, name: a.label, color: axisColor(a.key) }))}
+                      .map((a, i) => ({ key: a.key, name: a.label, color: axisColor(a.key, i) }))}
                   />
                 ) : (
                   <Typography variant="body2" color="text.secondary">
