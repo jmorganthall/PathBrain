@@ -2628,6 +2628,52 @@ LLM-based. See `README.md` for the product overview.
     transition, Explore prices that move from the ring's paired margin before any pooled
     evidence — `explore.ring_transitions`, under `explore.py`.) `ranking = "pooled"` restores
     the former behaviour for comparison.
+  - `verdict.py` — **which profile should I run?** (`GET /api/settings/verdict`, the card at
+    the top of the Dashboard). PathBrain measured a great deal and said so in pieces: the
+    two crowns side by side with *following* / *for reference* chips, the ring's #1 as a
+    third claim on the Duels page, and a standings table of rating, proven floor, match
+    points, win rate, pair rate and median margin — while `crown_confidence`, the one
+    reading that says how *sure* any of it is, was fetched only on Profile Detail, a page
+    you can open only once you already know which profile you meant to ask about. So the
+    platform could tell you a dozen true things and not the one a person opens it for
+    (*"we've got ALL of these metrics and numbers and crowns and win rate and pts and
+    margin — where is the THIS IS THE BEST PROFILE rating?"*). Showing the verdicts apart
+    was right while they disagreed *meaningfully*; what changed is that the ladder can now
+    measure its own resolving power (`decidability.resolving_power`) and on this link that
+    is ~0.85 Overall points against gaps between the top profiles of ~0.1 — three names and
+    no resolution is not richer than one name with an honest error bar, it is the same
+    information arranged so nobody can act on it. **The answer is the argmax, full stop** —
+    the highest Overall among confident profiles, the same `_select_crown` rule, no floor
+    and no hysteresis, because a profile better by 0.000001 is better. What this module adds
+    is not a different verdict but the two facts that make it *usable*: **how sure** (the
+    lead over the runner-up against `crown_tie_sigma` × the pooled SE of the two medians,
+    and every profile that lead does not clear — "Palm Oyster, and fourteen profiles are
+    tied with it" is a complete answer, "Palm Oyster" alone is a precision the data does not
+    have, and three competing names is no answer at all), and **whether it matters** (the
+    crown's margin over the unshaped baseline, so a reader deciding where to spend a night
+    knows shaping is worth ~2 points and the pick between the tied leaders ~0.2). The tie
+    test is `_clearly_better`'s, including its convention that an **unknown** SE contributes
+    zero to the pooled bar rather than "cannot say" (`_pooled`, the counterpart of
+    `routes_settings._finite`) — two components deciding separately what "tied" means is how
+    a card and a chip come to contradict each other on one screen. SQM off is excluded from
+    the crown (disabling shaping is the baseline test's supervised job) but supplies the
+    `% vs SQM off` reading; a thin profile never holds the card, and with nothing confident
+    it says so rather than crowning a lucky five-iteration 99. **Deliberately cheap: no
+    `compute_profiles` pass** — this renders on the Dashboard, and a cold field pass on page
+    load is the documented way to take the process down (`_field_stamp`, the
+    unresponsiveness incident), so everything comes from `profile_aggregates`, one
+    stamp-verified row per profile, graded through the one `_grade_medians`. That
+    equivalence holds because a **weighted** crown grades each profile on its own; a
+    corner/percentile crown is **field-relative** — one run re-ranks everybody — so the same
+    medians would give a different ordering and the headline card would quietly disagree
+    with the standings on the one screen that exists to settle the question. A non-weighted
+    methodology is therefore **declined in words**, pointing at the standings that pay for
+    the field pass: the same line `crown_follower._needs_full_check` draws, for the same
+    reason, and under v16 it never fires. The live
+    profile and the ring's resolving power are both **best-effort**: a firewall that will
+    not answer costs a reading, never the answer. Read-only — rollup in, one sentence out;
+    what to *do* with it is the crowning policy's decision and the card offers no firewall
+    change. `test_verdict`.
   - `refresh.py` — **Re-run profiles**: the batch sibling of `profile_test`. For
     each stored profile it applies the settings, benchmarks a **caller-chosen** number of
     iterations, then moves on — **restoring the baseline at the end** (persisted to a
@@ -2909,7 +2955,11 @@ LLM-based. See `README.md` for the product overview.
   parsed every other page plus recharts — over a second of blank screen on a phone before a
   single request was sent. Now the shell paints immediately, each page is its own small chunk
   (Duels ~40 kB), and the 384 kB chart bundle loads only for the three views that draw charts.
-  Keep new pages lazy. Pages: **Dashboard** (`Dashboard.tsx` — the NOC wall: a status strip
+  Keep new pages lazy. Pages: **Dashboard** (`Dashboard.tsx` — the NOC wall, led by the
+  **verdict card** (`components/dashboard/VerdictCard`, `verdict.py`): which profile to run,
+  how sure, what shaping is worth and whether the firewall is on it — the decision every
+  reading below it is for, which is why it sits above them rather than beside the other
+  verdicts. Then a status strip
   of KPI tiles (`components/dashboard/StatTile` — pipeline lock state from the jobs feed,
   monitoring cadence + next run, the measured per-iteration cost with a 30-run sparkline,
   run/profile counts, Follow-best state + crown churn), the hero 24h Overall gauge beside

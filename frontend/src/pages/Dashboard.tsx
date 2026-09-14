@@ -57,6 +57,7 @@ import { HelpTip } from "../components/Explain";
 import StatTile, { type Tone } from "../components/dashboard/StatTile";
 import Sparkline from "../components/dashboard/Sparkline";
 import Leaderboard from "../components/dashboard/Leaderboard";
+import VerdictCard from "../components/dashboard/VerdictCard";
 import RingCard from "../components/dashboard/RingCard";
 import ActiveJobs from "../components/dashboard/ActiveJobs";
 import { sopsColor } from "../theme";
@@ -592,6 +593,11 @@ export default function Dashboard() {
       )}
 
       {!loading && impact && impact.changed && impact.significant && <ImpactBanner impact={impact} />}
+
+      {/* ── The answer ────────────────────────────────────────────────────────────
+          Everything below this line is a reading; this is the decision the readings
+          are for, so it leads the page rather than sitting beside the other verdicts. */}
+      <VerdictCard />
 
       {/* ── Status strip ──────────────────────────────────────────────────────── */}
       <Box
