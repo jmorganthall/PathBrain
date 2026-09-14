@@ -104,6 +104,7 @@ import type {
   LeverBase,
   LeverCampaign,
   LeverCampaignStatus,
+  DecidabilityReport,
 } from "./types";
 
 // Minutes to add to UTC to reach the viewer's local time. getTimezoneOffset()
@@ -250,6 +251,11 @@ export const api = {
     request<DuelCard>(
       `/duel/card?limit=${limit}${contenders ? `&contenders=${contenders}` : ""}${base ? `&base=${encodeURIComponent(base)}` : ""}`,
     ),
+  // What margin the ring can currently settle, measured from its own stored margins.
+  // Without `card` it is one ledger query — cheap enough for page load; with it, every
+  // queued bout is priced against that number, which costs a profile-ranking pass.
+  duelDecidability: (card = false, limit = 40) =>
+    request<DecidabilityReport>(`/duel/decidability?card=${card}&limit=${limit}`),
   // The base picker for a new campaign: every stored profile by call sign with its pooled
   // Overall, off the cached profile list and the rollup — never a field pass.
   leverBases: () => request<{ bases: LeverBase[] }>("/levers/bases"),

@@ -42,6 +42,7 @@ from sqlalchemy import select
 from . import alerts
 from . import coordinator
 from . import profile_names
+from . import decidability
 from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
@@ -1240,13 +1241,24 @@ def lineal_belt(sessions_data: list[dict]) -> dict | None:
     shared record on both matches and rounds; otherwise the holder retains, which is
     recorded as a defence. Bouts the holder is not in cannot move it.
 
-    Returns ``{fingerprint, defences, title_bouts, changes, since_session, last_bout_at,
-    took_it_from, record_vs_last_challenger}``.
+    Returns ``{fingerprint, defences, drawn_defences, survived_losses,
+    undecided_defences, title_bouts, changes, since_session, last_bout_at, took_it_from,
+    record_vs_last_challenger}`` — the three ways a belt is retained counted apart, because
+    "the holder won", "nobody could tell" and "the holder lost but the shared record held"
+    are different facts and summing them flatters the champion.
     """
     matches: dict[tuple[str, str], int] = {}
     rounds: dict[tuple[str, str], int] = {}
     holder: str | None = None
-    defences = 0
+    # Three different events, counted apart. They were one number, and on a ladder where
+    # most matches cannot reach a verdict that number said something false: a belt "held
+    # through 57 defences" of which ~51 were draws is not a champion fighting off 57
+    # challengers, it is a champion nobody could be shown to have beaten. "Nobody could
+    # tell" and "the holder won" are opposite readings and the card has to be able to
+    # print them apart.
+    defences = 0          # the holder won the bout outright
+    drawn = 0             # the bout was a draw: the challenger did not take it, nor lose
+    survived = 0          # the holder LOST the bout but kept the belt on the shared record
     title_bouts = 0
     changes = 0
     since_session: int | None = None
@@ -1277,7 +1289,7 @@ def lineal_belt(sessions_data: list[dict]) -> dict | None:
         title_bouts += 1
         last_bout_at = m.get("_finished_at") or last_bout_at
         if decided is None:
-            defences += 1  # a drawn title bout: the challenger did not take it
+            drawn += 1  # a drawn title bout: the challenger did not take it
             continue
         winner, loser = decided
         if loser != holder:
@@ -1293,15 +1305,20 @@ def lineal_belt(sessions_data: list[dict]) -> dict | None:
             holder, since_session = winner, m.get("_session_id")
             took_from = loser
             changes += 1
-            defences = 0
+            defences = drawn = survived = 0
         else:
-            defences += 1
+            survived += 1
 
     if holder is None:
         return None
     return {
         "fingerprint": holder,
         "defences": defences,
+        "drawn_defences": drawn,
+        "survived_losses": survived,
+        # Every title bout since it took the belt that was not a win — the honest
+        # denominator beside `defences`.
+        "undecided_defences": drawn + survived,
         "title_bouts": title_bouts,
         "changes": changes,
         "since_session": since_session,
@@ -1545,7 +1562,72 @@ def _no_contenders_reason(
     return "No eligible challengers (nothing left after the rematch cooldown)."
 
 
+def undecidable_bouts(
+    field: dict, incumbent_fp: str, order: list[str]
+) -> dict[str, str]:
+    """Which queued bouts cannot produce a different measurement, and why.
+
+    A *structural* check only (``decidability.cannot_differ``): the two profiles are the
+    same in every writable field, or differ only in fields PathBrain never writes — so the
+    firewall cannot be driven from one to the other and whichever was asked for, the other
+    is what gets measured — or differ by a lever step immaterial against the range the field
+    has actually run that lever over. All three are knowable before a round is fought.
+
+    Deliberately **not** a statistical check. "This gap looks too small to resolve" is a fact
+    about the instrument, not about the profiles, and the cooldown's discipline applies: it
+    orders, it never excludes. Only a bout that cannot differ *at all* is dropped here.
+
+    A profile whose settings are not on the field (a generated lever variant, say) is never
+    refused: this returns a reason only where it has one.
+    """
+    profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
+    inc = (profiles.get(incumbent_fp) or {}).get("settings")
+    if not inc:
+        return {}
+    every = list(profiles.values())
+    out: dict[str, str] = {}
+    for fp in order:
+        if fp == incumbent_fp:
+            continue
+        settings = (profiles.get(fp) or {}).get("settings")
+        if not settings:
+            continue
+        why = decidability.cannot_differ(settings, inc, profiles=every)
+        if why:
+            out[fp] = why
+    return out
+
+
 def build_queue(
+    field: dict,
+    heirs: dict,
+    incumbent_fp: str,
+    *,
+    contenders: str = "ring",
+    top_n: int = 8,
+    baseline: list[dict] | None = None,
+    ratings: dict[str, dict] | None = None,
+) -> list[str]:
+    """Who the champion actually fights, in order — minus the bouts that cannot differ.
+
+    The ordering is ``_queue_for_mode``'s; this wrapper drops the entries a night spent on
+    would teach nothing, for every mode at once rather than in each one separately.
+    """
+    order = _queue_for_mode(
+        field, heirs, incumbent_fp,
+        contenders=contenders, top_n=top_n, baseline=baseline, ratings=ratings,
+    )
+    blocked = undecidable_bouts(field, incumbent_fp, order)
+    if blocked:
+        log.info(
+            "duel: %d queued bout(s) dropped as undecidable — %s",
+            len(blocked),
+            "; ".join(f"{fp[:8]}: {why}" for fp, why in list(blocked.items())[:3]),
+        )
+    return [fp for fp in order if fp not in blocked]
+
+
+def _queue_for_mode(
     field: dict,
     heirs: dict,
     incumbent_fp: str,
@@ -3435,6 +3517,80 @@ def _drive(duel_id: int) -> None:
 # ── The fight card (who fights whom, before a duel starts) ───────────────────────────
 
 
+def decidability_report(session, *, card: bool = False, limit: int = 40) -> dict:
+    """What this ladder can settle tonight — and what it is about to spend a night failing
+    to settle (``GET /api/duel/decidability``).
+
+    Two halves with very different costs, so the caller chooses. The **resolving power** is
+    read from the duel ledger alone — one query over the recent sessions' stored per-round
+    margins — and is the headline number: the smallest margin this ring can call at its
+    current round cap. It is cheap enough to render on page load.
+
+    The **card** prices every bout the engine would actually queue against that number, and
+    costs a ``compute_profiles`` pass like ``fight_card``, so it is fetched on demand. It is
+    deliberately built from the UNFILTERED queue (``_queue_for_mode``): ``build_queue`` now
+    drops the bouts that cannot differ, and a report that could not see them would say the
+    card was clean while quietly hiding its own most useful finding.
+    """
+    cfg = _duel_config(session)
+    max_pairs = int(cfg.get("max_pairs") or 30)
+    sessions_data = _ledger_sessions(session, 200)
+    power = decidability.resolving_power(sessions_data, max_pairs)
+    out: dict = {
+        "power": power,
+        "iterations_per_round": int(cfg.get("iterations_per_round") or 1),
+        "detect_sigma": decidability.DETECT_SIGMA,
+        "card": None,
+    }
+    if not card:
+        return out
+
+    from .api.routes_settings import _compute_heirs, compute_profiles
+    from .providers import get_provider
+
+    live = None
+    try:
+        live = normalize(get_provider().discover())
+    except Exception:  # noqa: BLE001 — reachability is a filter, not a hard requirement
+        log.debug("Decidability: could not read live settings", exc_info=True)
+
+    field = _seeded_field(session, compute_profiles(session, include_weather=False))
+    heirs = _engine_heirs(_compute_heirs(field, session, live))
+    incumbent_fp, incumbent_why = select_incumbent(session, field, live, cfg)
+    profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
+    if incumbent_fp is None or incumbent_fp not in profiles:
+        out["card"] = {"incumbent": None, "verdict": _no_contenders_reason(field, live)}
+        return out
+
+    order = _queue_for_mode(
+        field, heirs, incumbent_fp,
+        contenders=str(cfg.get("contenders") or "ring"),
+        top_n=int(cfg.get("contender_top_n") or 8),
+        baseline=live,
+    )[: max(1, int(limit))]
+    plan = decidability.plan(
+        incumbent_fp, order,
+        power=power,
+        settings_by_fp={fp: (profiles.get(fp) or {}).get("settings") for fp in {*order, incumbent_fp}},
+        sessions_data=sessions_data,
+        overalls={fp: p["overall"] for fp, p in profiles.items() if p.get("overall") is not None},
+        profiles=list(profiles.values()),
+    )
+    names = profile_names.names_for(session, [incumbent_fp, *order])
+    for entry in plan["entries"]:
+        fp = entry["fingerprint"]
+        entry["name"] = names.get(fp)
+        entry["label"] = (profiles.get(fp) or {}).get("label")
+    plan["incumbent"] = {
+        "fingerprint": incumbent_fp,
+        "name": names.get(incumbent_fp),
+        "label": (profiles.get(incumbent_fp) or {}).get("label"),
+        "why": incumbent_why,
+    }
+    out["card"] = plan
+    return out
+
+
 def fight_card(session, limit: int = 12, contenders: str | None = None,
                base_fingerprint: str | None = None) -> dict:
     """The matchups a duel started right now would run, in order, if nothing upsets them.
@@ -4107,6 +4263,13 @@ def standings(limit_sessions: int = 50) -> dict:
             "rank": row.get("rank"),
             "rule": rule,
             "defences": (belt or {}).get("defences"),
+            # Beside the wins: the title bouts that retained the belt without the holder
+            # winning one. On a ladder where most matches cannot reach a verdict this is
+            # usually the larger number, and printing only the sum reads as a dominance
+            # nobody demonstrated.
+            "drawn_defences": (belt or {}).get("drawn_defences"),
+            "survived_losses": (belt or {}).get("survived_losses"),
+            "undecided_defences": (belt or {}).get("undecided_defences"),
             "title_changes": (belt or {}).get("changes"),
             "title_bouts": (belt or {}).get("title_bouts"),
             "took_it_from": (belt or {}).get("took_it_from"),

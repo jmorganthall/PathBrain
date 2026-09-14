@@ -42,6 +42,7 @@ from __future__ import annotations
 import math
 
 from .levers import ALPHA as RING_ALPHA, MIN_ROUNDS as RING_MIN_ROUNDS, NULL_MARGIN as RING_NULL_MARGIN, NULL_ROUNDS as RING_NULL_ROUNDS
+from . import decidability
 from .logging_config import get_logger
 from .metrics import METRICS
 from .settings_profile import _to_number
@@ -634,6 +635,33 @@ RING_SESSIONS = 200
 RING_PRIOR_ROUNDS = 2.0
 
 
+def ring_resolution(session) -> float | None:
+    """The smallest margin the duel could currently confirm, or None when unmeasured.
+
+    Read here so a bet can say whether the ring could ever *demonstrate* the gain it
+    predicts. A proposal below this resolution is not a bad proposal — the pooled crown
+    will crown it by argmax, and a gain of 0.000001 is still a gain — but the controlled
+    experiment will draw, and knowing that before spending the night is the whole point of
+    pricing it.
+
+    Best-effort by the same rule as ``ring_transitions``: bookkeeping must never be why the
+    page fails, so an unreadable ledger simply leaves the bets unpriced against the ring.
+    """
+    try:
+        from . import decidability as dec
+        from .config_store import get_config
+        from .duel import _ledger_sessions
+
+        cfg = (get_config(session).get("duel") or {})
+        power = dec.resolving_power(
+            _ledger_sessions(session, RING_SESSIONS), int(cfg.get("max_pairs") or 30)
+        )
+        return power.get("min_margin")
+    except Exception:  # noqa: BLE001 — a label on a bet, never a reason the page fails
+        log.debug("Explore: the ring's resolving power could not be read", exc_info=True)
+        return None
+
+
 def ring_transitions(session) -> dict[str, dict]:
     """The ring's book, keyed like the axes — the controlled evidence for pricing a move.
 
@@ -1194,6 +1222,7 @@ def rank_bets(
     candidates: list[dict],
     calibration: dict | None = None,
     best_overall: float | None = None,
+    ring_resolution: float | None = None,
 ) -> list[dict]:
     """Re-rank candidates as **bets**: what would we back, not what would we go and look at.
 
@@ -1210,6 +1239,18 @@ def rank_bets(
     stating +/-1.0 while missing by 2.4 is overconfident, and averaging the two keeps half
     of the overconfidence.
 
+    ``ring_resolution`` (``decidability.resolving_power``) closes the loop between proposing
+    and adjudicating. A bet predicting a gain the ring cannot see will be raced, drawn, and
+    recorded as "no result" — the proposal was never wrong, the referee simply could not
+    read it, and a night goes on proving nothing. So each bet is told whether the duel could
+    *confirm* it, and how many rounds that would take.
+
+    It is a **label, never a filter, and never a re-ordering.** A gain of 0.000001 is still a
+    gain and the pooled crown will crown it by argmax with no floor; what this says is only
+    that the controlled experiment cannot demonstrate it, which is a fact about the
+    instrument and a reason to choose where to spend nights — not a reason to withhold a
+    proposal. Same discipline as ``clears_bar`` beside it.
+
     Mutates nothing: each candidate is returned as a copy carrying its bet fields, sorted
     best bet first. With an empty ledger the measured term is simply absent and the stated
     band stands, which the ``calibration_basis`` field says outright — an uncalibrated
@@ -1217,6 +1258,12 @@ def rank_bets(
     those should not read the same.
     """
     calibration = calibration or {}
+    # The resolution is ``DETECT_SIGMA·σ/√max_pairs``, so one round's σ is recoverable from
+    # it — enough to price how many rounds a smaller gain would need, which is the useful
+    # half of the answer when the verdict is "not at this cap".
+    ring_sigma = (
+        float(ring_resolution) / decidability.DETECT_SIGMA if ring_resolution else None
+    )
     out: list[dict] = []
     for c in candidates:
         stated = float(c.get("uncertainty") or 0.0)
@@ -1249,6 +1296,19 @@ def rank_bets(
             else "stated (wider than measured)"
         )
         bet["calibration_graded"] = row.get("graded") or 0
+        # Can the ring ever confirm this? The claim being adjudicated is the gain over the
+        # bar, not the absolute score, so that is what gets priced against the resolution.
+        gain = None if best_overall is None else predicted - float(best_overall)
+        bet["predicted_gain"] = None if gain is None else round(gain, 2)
+        if gain is None or ring_resolution is None:
+            bet["ring_can_confirm"] = None
+            bet["rounds_to_confirm"] = None
+        else:
+            bet["ring_can_confirm"] = bool(gain >= float(ring_resolution))
+            sigma = ring_sigma if ring_sigma else None
+            bet["rounds_to_confirm"] = (
+                decidability.rounds_to_resolve(gain, sigma) if sigma and gain > 0 else None
+            )
         out.append(bet)
     # Best bet first; ties broken by the tighter band, so between two equal floors the
     # better-understood one leads.
@@ -2135,6 +2195,7 @@ def landscape(
     # The ring's book: the controlled evidence for a move, read once and keyed like the
     # axes. Empty (never absent) when the ledger can't be read.
     ring = ring_transitions(session)
+    _ring_floor = ring_resolution(session)
 
     # Everything already tried, so nothing is proposed twice. Two sources, because a profile
     # can be *attempted* without ever appearing in the field:
@@ -2240,7 +2301,13 @@ def landscape(
         # Ranked over EVERY runnable proposal on the page — the headline candidates, the
         # variant attached to each coverage hole, and the crown-leg moves — not just the
         # top section. They are all the same shape and all post the same payload.
-        "bets": rank_bets(runnable_candidates(candidates, gaps, legs), calib, best_established),
+        "bets": rank_bets(
+            runnable_candidates(candidates, gaps, legs), calib, best_established,
+            ring_resolution=_ring_floor,
+        ),
+        # What the duel could confirm tonight, so a proposal and its adjudicator agree on
+        # what counts as a question. None when the ledger cannot yet say.
+        "ring_resolution": _ring_floor,
         "calibration": calib,
         "confidence_sigma": CONFIDENCE_SIGMA,
         "noise_floor": noise_floor,

@@ -430,6 +430,22 @@ def duel_card(
                            base_fingerprint=base if contenders == "levers" else None)
 
 
+@router.get("/duel/decidability")
+def duel_decidability(
+    card: bool = Query(False, description="Also price every queued bout against the resolving power (costs a profile-ranking pass)."),
+    limit: int = 40,
+    session: Session = Depends(get_session),
+) -> dict:
+    """What margin this ladder can actually settle, measured from its own ledger.
+
+    Without ``card`` it is one query over the stored per-round margins — cheap enough for
+    page load, and the number that says whether tonight's bouts are answerable at all. With
+    it, every bout the engine would queue is priced against that number and the ones that
+    cannot conclude are named with their reason, rather than spending the night proving it.
+    """
+    return duel.decidability_report(session, card=card, limit=max(1, min(limit, 100)))
+
+
 # ── Lever campaigns: one base, measured until its levers are settled ──────────────
 
 
