@@ -2127,6 +2127,72 @@ LLM-based. See `README.md` for the product overview.
     than recomputing `compute_profiles` on every dashboard load, and the duel side reads the
     matchup ledger; neither triggers a scoring pass. A duel verdict aged past
     `duel.rematch_days` is still shown, labelled expired, instead of vanishing.
+  - `decidability.py` — **what can this ladder actually SETTLE tonight?** (`GET
+    /api/duel/decidability`, the *"What this ladder can settle"* card on the Dueling
+    Champions page.) Every other part of the duel is machinery for *answering* a question —
+    the SPRT walk, the Wilcoxon signed-rank test, the streak rule, the Bradley-Terry fit,
+    the lineal belt. Nothing asked whether the question was **answerable**: `contender_order`
+    picks *who* fights and never *whether this bout can conclude anything*. Observed on the
+    real ladder as 845 matches across 50 sessions with 342 decisive — 59.5% of every night
+    producing no result — a belt held through 57 "defences" of which ~51 were draws, and
+    three verdicts (belt, ring #1, pooled crown) naming three profiles with no way to
+    converge. None of that is the adjudication failing; it is the adjudication **correctly
+    reporting that it was handed an unanswerable question**, with nothing on screen saying
+    so.
+    **The resolving power is MEASURED, not modelled** (`round_noise` / `resolving_power`).
+    Every match record already carries `deltas`, the per-round margins written so the lever
+    ledger could run a paired test over real evidence, so the ring's own noise is derivable
+    from what is already on disk — nothing to configure and nothing to re-measure. The
+    estimator is the robust spread of **successive margins within a matchup**: consecutive
+    rounds share that match's true edge, so their difference cancels it exactly and leaves
+    `√2·σ` of measurement error. Deliberately not deviations about each match's own median,
+    for two reasons pinned in `test_decidability`: centring spends a degree of freedom on a
+    four-to-thirty-point sample and reads a known σ of 1.0 back as **0.73** — the one
+    direction of error that matters, since it would tell the ladder it can resolve
+    differences it cannot — and it books **drift** as noise, where a successive difference
+    sees one round of it (measured at 0.5 pts/round: 5% inflation against the centred
+    version's 41%). Less sensitive, not immune; the residue is conservative, which is the
+    right direction for a number that decides what to refuse. `min_margin` =
+    `DETECT_SIGMA·σ/√max_pairs`, and `DETECT_SIGMA` is 2.0 — the same bar as `duel.tie_sigma`
+    and `correlation.crown_tie_sigma`, so "the ring can resolve this" and "the crown calls
+    this clearly better" mean the same thing.
+    **Two refusals, and they are not the same fact** (`decidable`). `cannot_differ` is
+    *structural* and needs no statistics: the profiles are identical in every writable
+    field, or differ only in fields PathBrain never writes (so the bout cannot be applied at
+    all and whichever was asked for, the other is measured — the two standings rows printing
+    an identical settings summary), or differ by a lever step immaterial against the range
+    the field has actually run that lever over (`q5799` vs `q5800` on an 880 Mbit link, one
+    part in ten thousand — a variant-generation artifact, not a contender;
+    `IMMATERIAL_SPAN_FRACTION` over `levers._measured_span`, so the scale is the field's own
+    measurements rather than an absolute step, which differs by three orders of magnitude
+    between `quantum` and `target`). `below_resolution` is about the *instrument*: the bout
+    is real and this ladder cannot reach it. **Only `cannot_differ` is refused**
+    (`REFUSED`) — `below_resolution` and `unknown` order, they never exclude, the same
+    discipline the rematch cooldown follows, and `test_only_cannot_differ_is_actually_refused`
+    pins it because widening that tuple is exactly the change that would quietly stop the
+    ladder racing. **`unknown` is never a refusal**: with no measured power or no prior on
+    the gap the bout might settle something, and refusing on an absence of evidence is how a
+    ladder stops racing the pairs nobody has looked at yet.
+    **It never withholds a crown.** A profile better by 0.000001 is better, full stop — the
+    pooled crown is an argmax with no floor (`_select_crown`) and nothing here changes that.
+    Ranking is free; *demonstrating* an ordering is what costs a night, and only the second
+    is rationed. Wired at `duel.build_queue` (which now wraps `_queue_for_mode` and drops
+    undecidable bouts for every mode at once, `undecidable_bouts` naming a reason for each)
+    and at `explore.rank_bets`, where `ring_resolution` closes the propose→adjudicate loop:
+    a bet predicting a gain the ring cannot see will be raced, drawn and recorded as no
+    result, so each carries `ring_can_confirm` / `rounds_to_confirm` / `predicted_gain` —
+    a **label beside `clears_bar`, never a filter and never a re-ordering**. Read-only
+    throughout: the duel ledger, the pooled field and the shaper registry in, numbers and
+    sentences out. `test_decidability`.
+  - **A draw is not a title defence** (`duel.lineal_belt`). `defences` counted three
+    different events as one — the holder won, the bout was a draw, and the holder *lost* but
+    kept the belt on the shared-record gate — which on a ladder where most matches cannot
+    reach a verdict said something false: "held the title through 57 defences" of which ~51
+    were draws is not a champion fighting off 57 challengers, it is a champion nobody could
+    be shown to have beaten. Now `defences` (won) / `drawn_defences` / `survived_losses`,
+    with `undecided_defences` as the honest denominator beside the wins, all reset together
+    when the belt changes hands, and the champion card prints the wins and the non-wins
+    apart.
   - `levers.py` — **what moving ONE setting does: how the ring asks, and the book it keeps**
     (the **Lever duels** page, `Levers.tsx` / `/levers`; `GET /api/explore/levers`). A profile
     is a bundle of levers, and a bout between two bundles that differ in four of them is four

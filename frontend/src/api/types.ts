@@ -2230,13 +2230,58 @@ export interface DuelChampionStanding {
   rank?: number | null;
   // Which rule named it: "lineal" (beat the holder) or "rating_floor" (the ring's #1).
   rule?: string | null;
-  // Successful title defences since it took the belt, and how many times the belt has
-  // changed hands over the whole ledger.
-  defences?: number | null;
+  // Title bouts since it took the belt, counted by what actually happened. They were one
+  // number, and on a ladder where most matches cannot reach a verdict that number said
+  // something false: "57 defences" of which ~51 were draws is not a champion fighting off
+  // 57 challengers, it is a champion nobody could be shown to have beaten.
+  defences?: number | null;          // the holder won the bout
+  drawn_defences?: number | null;    // a draw: the challenger did not take it, nor lose
+  survived_losses?: number | null;   // the holder LOST but kept it on the shared record
+  undecided_defences?: number | null; // drawn + survived: retained without winning
   title_changes?: number | null;
   title_bouts?: number | null;
   // The profile it took the title from.
   took_it_from?: string | null;
+}
+
+/** What margin the ring can currently call, measured from its own stored per-round
+ *  margins. `min_margin` null means the ledger cannot yet say — never "nothing to see". */
+export interface RingResolvingPower {
+  sigma: number | null;
+  max_pairs: number;
+  min_margin: number | null;
+  noise: { sigma: number; matchups: number; rounds: number; method: string } | null;
+  verdict: string;
+}
+
+/** One queued bout, priced against that resolution. `verdict` is "yes" (worth racing),
+ *  "below_resolution" (real, but this ladder cannot reach it), "cannot_differ" (structural
+ *  — the two profiles cannot produce a different measurement) or "unknown" (nothing
+ *  measured says how far apart they are, which is a reason to race them). */
+export interface DecidabilityEntry {
+  fingerprint: string;
+  name?: string | null;
+  label?: string | null;
+  verdict: string;
+  why: string;
+  margin?: number | null;
+  rounds_needed?: number | null;
+  source?: string | null;
+}
+
+export interface DecidabilityReport {
+  power: RingResolvingPower;
+  iterations_per_round: number;
+  detect_sigma: number;
+  card: {
+    incumbent?: { fingerprint: string; name?: string | null; label?: string | null; why?: string } | null;
+    entries?: DecidabilityEntry[];
+    worth_racing?: string[];
+    unknown?: string[];
+    below?: string[];
+    refused?: string[];
+    verdict: string;
+  } | null;
 }
 
 export interface DuelStandings {

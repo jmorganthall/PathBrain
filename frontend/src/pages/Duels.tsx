@@ -50,6 +50,7 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 import MilitaryTechIcon from "@mui/icons-material/MilitaryTech";
 import ScheduleIcon from "@mui/icons-material/Schedule";
+import StraightenIcon from "@mui/icons-material/Straighten";
 import GavelIcon from "@mui/icons-material/Gavel";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import SportsMmaIcon from "@mui/icons-material/SportsMma";
@@ -74,6 +75,7 @@ import type {
   CrownsOut,
   Job,
   PortableStandings,
+  DecidabilityReport,
 } from "../api/types";
 import { Countdown, JobProgressBar, useSmoothProgress } from "../components/JobStatus";
 import { fmtDateTime, fmtNum } from "../utils/format";
@@ -168,6 +170,16 @@ const crossesMidnight = (cfg: DuelConfig): boolean =>
 // the fields they described.
 // Preset cards: one per line on a phone, side by side once there's room.
 // Preset key → the name shown on its card, for the collapsed settings summary.
+/** A verdict word per decidability outcome. "Cannot differ" is a structural fact about
+ *  the two profiles; "below resolution" is a fact about the instrument; "unmeasured" is a
+ *  reason to race, never a refusal — so they must not read alike. */
+const VERDICT_LABEL: Record<string, string> = {
+  yes: "worth racing",
+  below_resolution: "too close to call",
+  cannot_differ: "cannot differ",
+  unknown: "unmeasured",
+};
+
 const PRESET_NAME: Record<string, string> = {
   snap: "Snap call",
   quick: "Quick call",
@@ -1736,6 +1748,10 @@ export default function Duels() {
   const [askDuration, setAskDuration] = useState(false);
   const [dialogMinutes, setDialogMinutes] = useState(120);
   const [card, setCard] = useState<DuelCard | null>(null);
+  // What the ring can currently settle. The power alone is one ledger query, so it loads
+  // with the page; pricing tonight's queue against it costs a field pass and is asked for.
+  const [decide, setDecide] = useState<DecidabilityReport | null>(null);
+  const [decideBusy, setDecideBusy] = useState(false);
   const [cardBusy, setCardBusy] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showRules, setShowRules] = useState(false);
@@ -1877,6 +1893,9 @@ export default function Duels() {
         setLiveFp(cf.status.last_result?.live_fingerprint ?? null);
       })
       .catch(() => undefined);
+    // Cheap by construction — one query over the stored per-round margins. Best-effort:
+    // a ladder that cannot measure itself still runs, it just refuses nothing.
+    api.duelDecidability().then(setDecide).catch(() => undefined);
   }, [loadAll]);
 
   // Poll the live stage while a duel is running; refresh the whole view when it ends.
@@ -1924,6 +1943,19 @@ export default function Duels() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setCardBusy(false);
+    }
+  };
+
+  // Pricing every queued bout against the resolution costs a profile-ranking pass, the
+  // same bargain as the fight card.
+  const priceCard = async () => {
+    setDecideBusy(true);
+    try {
+      setDecide(await api.duelDecidability(true));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDecideBusy(false);
     }
   };
 
@@ -2165,6 +2197,79 @@ export default function Duels() {
           (about {fmtWindow(minutesUntil(untilClock ?? clockIn(cfg.duration_minutes)))}), as many
           matches as fit.
         </Blurb>
+      )}
+
+      {/* ── What can tonight actually settle? ────────────────────────────────────────
+          The ring had machinery for ANSWERING a question and none for deciding whether one
+          was answerable, so it spent its nights on pairs it had no power to separate and
+          recorded a draw — which reads identically to "these two are equal". This says the
+          margin it can call, measured from its own stored per-round margins, and on request
+          prices every queued bout against it. */}
+      {decide && (
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <StraightenIcon fontSize="small" color="action" />
+              <Typography variant="subtitle2">What this ladder can settle</Typography>
+              <HelpTip title="Measured from the per-round margins already on the ledger, not configured: the spread of successive rounds within a match cancels that match's true edge and leaves the measurement error. A real difference smaller than this cannot reach a verdict however long the ladder runs." />
+              {decide.power.min_margin != null && (
+                <Chip
+                  size="small"
+                  color="primary"
+                  variant="outlined"
+                  label={`resolves ${decide.power.min_margin.toFixed(2)} pts`}
+                />
+              )}
+              <Box flexGrow={1} />
+              <Button size="small" onClick={priceCard} disabled={decideBusy}>
+                {decideBusy ? "Pricing…" : decide.card ? "Re-price tonight's card" : "Price tonight's card"}
+              </Button>
+            </Stack>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              {decide.power.verdict}
+            </Typography>
+
+            {decide.card && (
+              <Box sx={{ mt: 1.5 }}>
+                <Typography variant="body2" sx={{ mb: 1 }}>
+                  {decide.card.verdict}
+                </Typography>
+                <Stack spacing={0.75}>
+                  {(decide.card.entries ?? []).map((e) => (
+                    <Stack
+                      key={e.fingerprint}
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      alignItems={{ xs: "flex-start", sm: "center" }}
+                    >
+                      <Chip
+                        size="small"
+                        variant={e.verdict === "yes" ? "filled" : "outlined"}
+                        color={
+                          e.verdict === "yes"
+                            ? "success"
+                            : e.verdict === "cannot_differ"
+                              ? "error"
+                              : e.verdict === "below_resolution"
+                                ? "warning"
+                                : "default"
+                        }
+                        label={VERDICT_LABEL[e.verdict] ?? e.verdict}
+                        sx={{ minWidth: 116 }}
+                      />
+                      <Typography variant="body2" sx={{ minWidth: 0 }}>
+                        <b>{e.name ?? e.fingerprint.slice(0, 8)}</b>{" "}
+                        <Typography component="span" variant="caption" color="text.secondary">
+                          — {e.why}
+                        </Typography>
+                      </Typography>
+                    </Stack>
+                  ))}
+                </Stack>
+              </Box>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {/* ── Settings, right under the button that uses them ──────────────────────── */}
@@ -2645,7 +2750,19 @@ export default function Duels() {
                           ? `Held the title through ${champion.defences} defence${
                               champion.defences === 1 ? "" : "s"
                             }`
-                          : "Took the title in its most recent match"}
+                          : (champion.undecided_defences ?? 0) > 0
+                            ? `Kept the title through ${champion.undecided_defences} undecided title bout${
+                                champion.undecided_defences === 1 ? "" : "s"
+                              } — none of them won`
+                            : "Took the title in its most recent match"}
+                      {/* The wins and the non-wins, apart. They used to be one number, and
+                          on a ladder where most matches cannot reach a verdict that number
+                          read as a dominance nobody demonstrated: "57 defences" of which
+                          ~51 were draws is a champion nobody could be shown to have beaten,
+                          which is a different fact and belongs on screen as one. */}
+                      {(champion.defences ?? 0) > 0 && (champion.undecided_defences ?? 0) > 0
+                        ? ` (and ${champion.undecided_defences} undecided)`
+                        : ""}
                       {champion.consecutive_sessions > 0
                         ? ` · ${champion.consecutive_sessions} consecutive session${
                             champion.consecutive_sessions === 1 ? "" : "s"
