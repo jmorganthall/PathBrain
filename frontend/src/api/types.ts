@@ -84,10 +84,26 @@ export interface AxisSeriesPoint {
   [axis: string]: number | string | null;
 }
 
+/** One trended series. `role: "headline"` is the Overall and the crown legs it is computed
+ *  from; the axes are carried at `role: "axis"`, demoted rather than dropped. `source` says
+ *  which dict the value came from, so one point builder serves both. */
+export interface AxisSeriesEntry {
+  key: string;
+  label: string;
+  role: string;
+  source: "axis" | "metric";
+  weight?: number | null;
+  required?: boolean;
+}
+
 export interface AxisSeriesResponse {
   methodology: string;
-  axes: MethodologyAxis[];
+  axes: AxisSeriesEntry[];
   points: AxisSeriesPoint[];
+  /** The live crown, so a caption can state the rubric rather than assert a stale one. */
+  overall_metrics: string[];
+  overall_method: string;
+  overall_weights: Record<string, number>;
 }
 
 export interface MonitoringStatus {

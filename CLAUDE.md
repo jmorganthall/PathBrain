@@ -3198,7 +3198,23 @@ docker compose up --build   # -> http://localhost:8000
      Completion axis it also rendered had lost every one of its metrics. A headline describing
      a rubric that stopped being current months earlier. `test_scores` pins it: the payload
      carries the crown, the crown is disjoint from the axis keys, and pointing the endpoint at
-     another version re-points the card with no frontend edit. Settings-Impact reads the same
+     another version re-points the card with no frontend edit.
+     **The same correction applies to "Scores over time"** (`GET /score/axis-series`, the chart
+     on the Dashboard and on Profile Detail): it trended the Overall beside Responsiveness /
+     Smoothness / Speed, which invites the one wrong reading available — that the top line is a
+     roll-up of the three under it. It is not, and has not been since v5, so a dip in the leg
+     that actually moved the Overall could sit in none of the lines drawn. The endpoint now
+     returns one list in which every series says what it *is*: `role` (`headline` = the Overall
+     and the legs it is computed from, `axis` = the graded decomposition, kept and demoted) and
+     `source` (`metric` = read from `Score.subscores`, `axis` = from `Score.axis_scores`) — the
+     axes are kept rather than dropped because they are already on the Score row and a caller
+     may want the graded breakdown trended, though no view draws them from here today — plus
+     each leg's `label` and `weight` — both taken from the **frozen definition**, which is the
+     snapshot the version was published with rather than today's registry. The frontend filters
+     on `role` and names no metric, so that is the whole of the wiring. Three tests in
+     `test_scores` pin it: the headline set is `["overall", *crown]`, the axes are present and
+     disjoint from it, and pointing the endpoint at a v6 stub re-points the chart to
+     `fcp`/`total_stall`/`load_event` with no frontend edit. Settings-Impact reads the same
      `overall_metrics` from the profiles response: the pinned **standings columns**, the **quadrant default axes** (X/Y/Shade =
      crown[0]/[1]/[2], until the user manually picks an axis), and the **scatter dot-selection
      panel's** per-metric breakdown all read that one set, so a crown change (new methodology)

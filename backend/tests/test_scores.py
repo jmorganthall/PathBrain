@@ -145,3 +145,81 @@ def test_an_empty_window_still_describes_the_crown(client, monkeypatch):
     body = client.get("/api/score/rolling?hours=24").json()
     assert body["count"] == 0
     assert body["overall_metrics"] == m.overall_metrics(current)[0]
+
+
+# ── the over-time chart trends the crown legs, not the axes ───────────────────
+
+
+def test_the_over_time_series_is_the_crown_not_the_axes(client):
+    """The same correction the hero card carries, applied to "Scores over time".
+
+    It trended Overall beside Responsiveness / Smoothness / Speed, which invites the one
+    wrong reading available: that the top line is a roll-up of the three under it. It
+    stopped being that at v5, and by v16 those axes are dominated by metrics the Overall
+    never reads — so a dip in the leg that actually moved the Overall could sit in none of
+    the lines drawn.
+    """
+    from pathbrain.methodology import (
+        CURRENT_METHODOLOGY,
+        METHODOLOGY_REGISTRY,
+        build_definition_from_spec,
+        overall_metrics,
+        scored_axes,
+    )
+
+    body = client.get("/api/score/axis-series?limit=5").json()
+    definition = build_definition_from_spec(METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY])
+    crown, _required = overall_metrics(definition)
+
+    headline = [s for s in body["axes"] if s["role"] == "headline"]
+    assert [s["key"] for s in headline] == ["overall", *crown], (
+        "the headline series must be the Overall and the legs it is computed from"
+    )
+    # The axes are kept, and demoted — a real decomposition, no longer presented as the
+    # Overall's parts. They are already on the Score row, so carrying them costs nothing and
+    # dropping a series the response shape already had would be a silent loss.
+    axis_keys = {a["key"] for a in scored_axes(definition)}
+    demoted = {s["key"] for s in body["axes"] if s["role"] == "axis"}
+    assert demoted == axis_keys and not axis_keys & {s["key"] for s in headline}
+    # Each series says where its number comes from, so the point builder never has to guess
+    # which dict a key lives in — a crown leg is a subscore, an axis is an axis score.
+    assert {s["source"] for s in headline if s["key"] != "overall"} == {"metric"}
+    assert {s["source"] for s in body["axes"] if s["role"] == "axis"} == {"axis"}
+
+
+def test_the_over_time_series_follows_a_publish_with_no_frontend_edit(client, monkeypatch):
+    """Point the endpoint at another rubric and the chart re-points itself.
+
+    The frontend filters on ``role`` and never names a metric, so this is the whole of the
+    wiring: if the server's headline set follows the methodology, so does the chart.
+    """
+    from pathbrain import methodology as m
+
+    v6 = m.build_definition_from_spec(m.METHODOLOGY_REGISTRY["speed-smoothness-v6"])
+    v6_keys, _ = m.overall_metrics(v6)
+    assert v6_keys == ["fcp", "total_stall", "load_event"]  # a genuinely different set
+
+    class _Stub:
+        version = "speed-smoothness-v6"
+        definition = v6
+
+    # The route imports this inside the function, so the source module is what to patch —
+    # patching the route module would silently not apply and the test would pass on the
+    # current methodology instead, which is the assertion it exists to avoid.
+    monkeypatch.setattr(m, "ensure_current_methodology", lambda *a, **k: _Stub())
+    body = client.get("/api/score/axis-series?limit=5").json()
+    assert [s["key"] for s in body["axes"] if s["role"] == "headline"] == ["overall", *v6_keys]
+    assert body["overall_metrics"] == v6_keys
+    assert body["overall_method"] == m.overall_method(v6)
+
+
+def test_every_crown_leg_is_labelled_and_weighted_from_the_frozen_definition(client):
+    """A chart legend of raw metric keys is not a legend, and the weights are what make
+    "these three, unevenly" legible. Both come from the definition rather than the live
+    registry: the definition is the snapshot the version was published with."""
+    body = client.get("/api/score/axis-series?limit=5").json()
+    legs = [s for s in body["axes"] if s["role"] == "headline" and s["key"] != "overall"]
+    assert legs
+    for leg in legs:
+        assert leg["label"] and leg["label"] != leg["key"], f"{leg['key']} has no label"
+        assert leg["weight"] == body["overall_weights"].get(leg["key"])
