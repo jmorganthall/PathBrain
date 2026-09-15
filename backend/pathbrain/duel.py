@@ -362,16 +362,27 @@ def _rank_sum_counts(n: int) -> list[int]:
     return counts
 
 
+#: Rounds the signed-rank test needs before it can say anything at all. Below this the
+#: smallest attainable one-sided p is 1/2^n > any sane alpha, so ``wilcoxon_p`` returns a
+#: flat 1.0 — **"no opinion", not "no effect"**. Naming it matters because that 1.0 is
+#: printed: a match decided by the streak rule at three rounds used to report
+#: ``p=1.0000 ≤ 0.0214``, which is both false and the opposite of what the sentinel means.
+WILCOXON_MIN_PAIRS = 4
+
+
 def wilcoxon_p(deltas: list[float], direction: int = 1) -> float:
     """One-sided p-value that the paired differences favour ``direction`` (+1 = positive).
 
     Exact for small samples (the regime a duel actually runs in — a normal approximation
     is noticeably conservative under ~25 pairs, which would throw away the sensitivity
     this whole change is about) and the tie-corrected normal approximation beyond.
+
+    Under ``WILCOXON_MIN_PAIRS`` rounds this returns 1.0 meaning *the test cannot speak*,
+    which is not the same claim as a large p-value from a test that could.
     """
     d = [x * direction for x in deltas if x != 0]
     n = len(d)
-    if n < 4:  # too little to distinguish from chance at any sane alpha
+    if n < WILCOXON_MIN_PAIRS:  # too little to distinguish from chance at any sane alpha
         return 1.0
     order = sorted(range(n), key=lambda i: abs(d[i]))
     ranks = [0.0] * n
@@ -467,7 +478,19 @@ class PairedEvidence:
             length += 1
         return length, direction
 
-    def decision(self) -> str | None:
+    def decide(self) -> tuple[str | None, str]:
+        """``(verdict, basis)`` — *which rule ended it*, not only that one did.
+
+        Two independent rules can end a match and they carry very different weight, so the
+        caller has to be able to tell them apart. It could not: ``decision()`` returned a
+        bare verdict, and ``_adjudicate`` wrote the signed-rank sentence over both — so a
+        streak verdict at three rounds was recorded as *"margins consistently one-sided
+        (p=1.0000 ≤ 0.0214)"*, asserting an inequality that is false and crediting a test
+        that never ran. The ledger is the record this platform reasons from; it must not
+        claim significance it does not have.
+
+        ``basis`` is ``"streak"``, ``"signed_rank"`` or ``""`` (undecided).
+        """
         # An explicit streak rule fires first and on its own terms. On a nightly ladder a
         # verdict is cheap and self-correcting, so a short streak is a defensible trade:
         # measured against a true 1-point edge, 3-in-a-row names the better profile ~91%
@@ -478,17 +501,21 @@ class PairedEvidence:
             if length >= self.streak_wins and (
                 not self.min_margin or abs(_median(self.deltas)) >= self.min_margin
             ):
-                return "challenger" if direction > 0 else "incumbent"
+                return ("challenger" if direction > 0 else "incumbent"), "streak"
 
         if self.pairs < self.min_pairs:
-            return None
+            return None, ""
         median = _median(self.deltas)
         if abs(median) < self.min_margin:  # real but not worth acting on
-            return None
+            return None, ""
         direction = 1 if median > 0 else -1
         if self.p_value(direction) <= self.nominal_alpha:
-            return "challenger" if direction > 0 else "incumbent"
-        return None
+            return ("challenger" if direction > 0 else "incumbent"), "signed_rank"
+        return None, ""
+
+    def decision(self) -> str | None:
+        """The verdict alone — ``decide()`` without the basis."""
+        return self.decide()[0]
 
 
 def _median(values: list[float]) -> float:
@@ -1524,7 +1551,11 @@ def _reachable(settings: list[dict] | None, baseline: list[dict] | None) -> bool
 
 
 def _no_contenders_reason(
-    field: dict, heirs: dict, incumbent_fp: str | None, baseline: list[dict] | None
+    field: dict,
+    heirs: dict,
+    incumbent_fp: str | None,
+    baseline: list[dict] | None,
+    dropped: dict[str, str] | None = None,
 ) -> str:
     """Why the queue came out empty, in terms the user can act on.
 
@@ -1534,6 +1565,22 @@ def _no_contenders_reason(
     *nothing else has a comparable score yet*. Both are recoverable, and neither is
     obvious from a bare failure.
     """
+    # Checked first: when the decidability filter emptied the queue, every reason below is
+    # true of the field and none of them is why the ladder has nothing to fight. A correct
+    # sentence about the wrong cause is worse than a vague one, because it sends the reader
+    # to re-measure or wait out a cooldown that was never the problem.
+    if dropped:
+        names = {p["fingerprint"]: (p.get("name") or p.get("label") or p["fingerprint"][:8])
+                 for p in field.get("profiles", [])}
+        sample = "; ".join(
+            f"{names.get(fp, fp[:8])} — {why}" for fp, why in list(dropped.items())[:2]
+        )
+        return (
+            f"Every queued match was dropped as undecidable ({len(dropped)}): a bout whose "
+            f"two profiles cannot produce a different measurement teaches nothing, so the "
+            f"ladder does not spend a night on it. {sample}"
+        )
+
     others = [
         p for p in field.get("profiles", []) if p.get("fingerprint") != incumbent_fp
     ]
@@ -1613,6 +1660,29 @@ def build_queue(
     The ordering is ``_queue_for_mode``'s; this wrapper drops the entries a night spent on
     would teach nothing, for every mode at once rather than in each one separately.
     """
+    return queue_with_reasons(
+        field, heirs, incumbent_fp,
+        contenders=contenders, top_n=top_n, baseline=baseline, ratings=ratings,
+    )[0]
+
+
+def queue_with_reasons(
+    field: dict,
+    heirs: dict,
+    incumbent_fp: str,
+    *,
+    contenders: str = "ring",
+    top_n: int = 8,
+    baseline: list[dict] | None = None,
+    ratings: dict[str, dict] | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    """``(queue, dropped)`` — the queue, and why each entry was refused.
+
+    ``build_queue`` discarded the refusals after logging them, which left the caller that
+    most needs them — the one explaining an *empty* queue — unable to say the ladder had
+    dropped anything at all. It reported the rematch cooldown instead, an explanation that
+    is wrong in exactly the case the filter created.
+    """
     order = _queue_for_mode(
         field, heirs, incumbent_fp,
         contenders=contenders, top_n=top_n, baseline=baseline, ratings=ratings,
@@ -1624,7 +1694,7 @@ def build_queue(
             len(blocked),
             "; ".join(f"{fp[:8]}: {why}" for fp, why in list(blocked.items())[:3]),
         )
-    return [fp for fp in order if fp not in blocked]
+    return [fp for fp in order if fp not in blocked], blocked
 
 
 def _queue_for_mode(
@@ -1831,10 +1901,23 @@ def _challenger_order(
     onto the same shape so the engine has one loop rather than one per mode.
     """
     if mode == "ring":
-        return contender_order(
+        ranked = contender_order(
             field, ratings, defender_fp, baseline=baseline, heirs=heirs,
             ring_leader_fp=ring_leader_fp,
         )
+        # The decidability filter has to run HERE too, and did not. It was wired into
+        # `build_queue` on the claim that this covered "every mode at once" — but the
+        # default mode never reaches `build_queue`: it returns `contender_order` directly,
+        # so the one mode the ladder actually runs was the one mode left unfiltered. A
+        # guard that skips the default path is not a guard.
+        blocked = undecidable_bouts(field, defender_fp, [c["fingerprint"] for c in ranked])
+        if blocked:
+            log.info(
+                "duel: %d ring candidate(s) dropped as undecidable — %s",
+                len(blocked),
+                "; ".join(f"{fp[:8]}: {why}" for fp, why in list(blocked.items())[:3]),
+            )
+        return [c for c in ranked if c["fingerprint"] not in blocked]
     fps = build_queue(
         field, heirs, defender_fp, contenders=mode, top_n=top_n, baseline=baseline, ratings=ratings
     )
@@ -2405,6 +2488,39 @@ def leg_overrides(leg_iterations: int, only_browser: bool) -> dict:
     return overrides
 
 
+def _decided_reason(paired: PairedEvidence, verdict: str, basis: str) -> str:
+    """Why this match ended, in the terms of the rule that actually ended it.
+
+    Both rules end matches and they are not equally strong evidence, so the tape has to
+    say which one spoke. A streak verdict also states where the signed-rank test stands —
+    silent (too few rounds) or simply not cleared — because "three in a row" and "the
+    margins are significant" invite different amounts of trust, and the reader is entitled
+    to know which one they are being handed.
+    """
+    direction = 1 if verdict == "challenger" else -1
+    median = _median(paired.deltas)
+    if basis == "streak":
+        streak, _ = paired.current_streak
+        if paired.pairs < WILCOXON_MIN_PAIRS:
+            stat = (
+                f"the signed-rank test needs {WILCOXON_MIN_PAIRS} rounds to say anything, "
+                f"so it has no opinion yet"
+            )
+        else:
+            stat = (
+                f"the signed-rank test has not cleared its threshold "
+                f"(p={paired.p_value(direction):.4f} vs {paired.nominal_alpha:.4f})"
+            )
+        return (
+            f"{streak} rounds in a row (median Δ {median:+.2f}) — {stat}"
+        )
+    return (
+        f"margins consistently one-sided "
+        f"(p={paired.p_value(direction):.4f} ≤ {paired.nominal_alpha:.4f}, "
+        f"median Δ {median:+.2f})"
+    )
+
+
 def _adjudicate(seat: _Seat, *, method: str, min_pairs: int, max_pairs: int,
                 min_margin: float) -> tuple[str | None, str]:
     """The stopping rule over one seat's margins so far — the same rule as before, on
@@ -2424,13 +2540,9 @@ def _adjudicate(seat: _Seat, *, method: str, min_pairs: int, max_pairs: int,
                 else f"no decision in {max_pairs} rounds"
             )
         return None, ""
-    verdict = paired.decision()
+    verdict, basis = paired.decide()
     if verdict is not None:
-        return verdict, (
-            f"margins consistently one-sided "
-            f"(p={paired.p_value(1 if verdict == 'challenger' else -1):.4f} "
-            f"≤ {paired.nominal_alpha:.4f}, median Δ {_median(deltas):+.2f})"
-        )
+        return verdict, _decided_reason(paired, verdict, basis)
     # No winner yet. Three ways a match still ends — and the cap is checked HERE rather
     # than inherited from the sign test, which can sit on a "winner" the margin floor
     # keeps rejecting and so never terminates.
@@ -3101,7 +3213,15 @@ def _run_ring(
         _persist_open()
         if not seated:
             if not matchups:
-                raise RuntimeError(_no_contenders_reason(field, heirs, incumbent_fp, baseline))
+                # Only on the way out, so the hot loop pays nothing: ask the filter what it
+                # refused, so the failure names the real cause instead of the cooldown.
+                refused = undecidable_bouts(
+                    field, incumbent_fp,
+                    [p["fingerprint"] for p in field.get("profiles", [])],
+                )
+                raise RuntimeError(
+                    _no_contenders_reason(field, heirs, incumbent_fp, baseline, refused)
+                )
             break
 
         # The stored belt names the TITLE HOLDER (the replay above), written every cycle
@@ -3559,7 +3679,13 @@ def decidability_report(session, *, card: bool = False, limit: int = 40) -> dict
     incumbent_fp, incumbent_why = select_incumbent(session, field, live, cfg)
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
     if incumbent_fp is None or incumbent_fp not in profiles:
-        out["card"] = {"incumbent": None, "verdict": _no_contenders_reason(field, live)}
+        # `heirs`/`baseline`, not `(field, live)` — this call was two positional args
+        # against a four-argument signature, so the one endpoint whose job is to explain a
+        # ladder with nothing to fight raised TypeError on exactly that case.
+        out["card"] = {
+            "incumbent": None,
+            "verdict": _no_contenders_reason(field, heirs, incumbent_fp, live),
+        }
         return out
 
     order = _queue_for_mode(
@@ -3656,7 +3782,7 @@ def fight_card(session, limit: int = 12, contenders: str | None = None,
         h["fingerprint"]: h.get("reason") for h in (heirs.get("items") or []) if h.get("fingerprint")
     }
     mode = str(cfg.get("contenders", "ring") or "ring")
-    order = build_queue(
+    order, dropped = queue_with_reasons(
         field,
         heirs,
         incumbent_fp,
@@ -3677,7 +3803,7 @@ def fight_card(session, limit: int = 12, contenders: str | None = None,
             "queue": [],
             "contenders": str(cfg.get("contenders", "ring") or "ring"),
             "top_n": int(cfg.get("contender_top_n", 8) or 8),
-            "reason": _no_contenders_reason(field, heirs, incumbent_fp, live),
+            "reason": _no_contenders_reason(field, heirs, incumbent_fp, live, dropped),
         }
     cooldown_hours = rematch_hours(cfg)
 

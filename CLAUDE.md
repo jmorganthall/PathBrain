@@ -2176,14 +2176,43 @@ LLM-based. See `README.md` for the product overview.
     **It never withholds a crown.** A profile better by 0.000001 is better, full stop — the
     pooled crown is an argmax with no floor (`_select_crown`) and nothing here changes that.
     Ranking is free; *demonstrating* an ordering is what costs a night, and only the second
-    is rationed. Wired at `duel.build_queue` (which now wraps `_queue_for_mode` and drops
-    undecidable bouts for every mode at once, `undecidable_bouts` naming a reason for each)
-    and at `explore.rank_bets`, where `ring_resolution` closes the propose→adjudicate loop:
+    is rationed. Wired at **both** places the engine picks a challenger, which it was not at
+    first: `duel.build_queue` (wrapping `_queue_for_mode`, `undecidable_bouts` naming a
+    reason for each drop) **and `_challenger_order`'s `"ring"` branch**. The first was
+    shipped on the claim that it covered "every mode at once" — and the default mode is
+    exactly the one it missed, because `"ring"` returns `contender_order` directly and never
+    reaches `build_queue`. So the only mode a nightly session actually runs was the only one
+    left unfiltered: a guard that skips the default path is not a guard. `queue_with_reasons`
+    returns `(queue, dropped)` so the caller explaining an **empty** queue can name the
+    filter instead of blaming the rematch cooldown — every other sentence in
+    `_no_contenders_reason` is true of the field and none of them is why nothing could be
+    raced, and a correct sentence about the wrong cause sends the reader to re-measure or
+    wait out something that was never the problem. Also wired at `explore.rank_bets`, where
+    `ring_resolution` closes the propose→adjudicate loop:
     a bet predicting a gain the ring cannot see will be raced, drawn and recorded as no
     result, so each carries `ring_can_confirm` / `rounds_to_confirm` / `predicted_gain` —
     a **label beside `clears_bar`, never a filter and never a re-ordering**. Read-only
     throughout: the duel ledger, the pooled field and the shaper registry in, numbers and
     sentences out. `test_decidability`.
+  - **A verdict names the RULE that ended it, and never claims evidence it does not have**
+    (`PairedEvidence.decide` → `(verdict, basis)`, `duel._decided_reason`,
+    `WILCOXON_MIN_PAIRS`). Two independent rules end a match — the streak
+    (`streak_wins`, which fires first and on its own terms) and the signed-rank test — and
+    they are not equally strong evidence. `decision()` returned a bare verdict, so
+    `_adjudicate` wrote the **signed-rank sentence over both**, and a streak verdict at
+    three rounds was recorded as *"margins consistently one-sided (p=1.0000 ≤ 0.0214)"*:
+    an inequality that is arithmetically false, crediting a test that never ran. That
+    particular `1.0000` is the worst possible value to print, because it is
+    `wilcoxon_p`'s **"fewer than four rounds, I have no opinion"** sentinel — the reader is
+    handed the strongest available claim by a test making the weakest one. Reported off a
+    real tape (Duel #89, both decided matches). `decide()` now returns the basis,
+    `_decided_reason` writes the sentence for the rule that fired, and a streak verdict
+    also states where the statistical test stands — *silent* (under `WILCOXON_MIN_PAIRS`)
+    or *not cleared* (with the p it did not reach). Nothing about adjudication changes;
+    only what the ledger claims. The guarantee is pinned over the sentence itself
+    (`test_the_tape_never_asserts_an_inequality_that_is_false` parses every `p ≤ α` the
+    reason can print and checks the arithmetic), because the bug was not in a number but in
+    a template applied to two different things. `test_duel_verdict_reasons`.
   - **A draw is not a title defence** (`duel.lineal_belt`). `defences` counted three
     different events as one — the holder won, the bout was a draw, and the holder *lost* but
     kept the belt on the shared-record gate — which on a ladder where most matches cannot
@@ -3071,7 +3100,11 @@ LLM-based. See `README.md` for the product overview.
   **head-to-head grid** over the top of the table, the **bout tape** of every matchup with its
   pair scoreline / margin / what ended it, and **rules of the ring** — the nightly window plus
   the sequential stopping rule (min/max pairs, practical margin, rematch cooldown) editable
-  from the page. Settings Impact keeps only a one-line **Duel ladder** pointer strip so the two
+  from the page, with the ring's **measured resolving power stated beside the streak
+  setting** (`decide.power.min_margin`, already fetched for the decidability card): a streak
+  can end a match at any margin, including one this ring cannot resolve, which is a real
+  trade rather than a defect and was invisible only because the setting and the number lived
+  on different parts of the page. Settings Impact keeps only a one-line **Duel ladder** pointer strip so the two
   rankings don't duplicate controls; `Duels.tsx`, `/api/duel/*`), **Baseline (SQM off)** (the "Test baseline behavior" tab: arm the
   nightly schedule — time/iterations/settle all configurable — or run one on demand, with a live
   stage readout; `Baseline.tsx`, `/api/baseline/*`), **Away test** (the phone-first portable test +
