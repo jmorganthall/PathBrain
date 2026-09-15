@@ -2404,6 +2404,29 @@ export default function Duels() {
             Shorter streaks decide sooner but get it wrong more often.
             <HelpTip title="A match ends when one side wins enough rounds back to back, or wins most of them convincingly. A wrong call costs little on a ladder that runs every night: the next match corrects it, and the standings are what you read." />
           </Typography>
+          {/* The measured floor, stated where the rule that ignores it is set. A streak can
+              call a match at any margin — including one this ring cannot resolve — and that
+              is a real trade, not a defect. It was only ever invisible because the setting
+              and the number lived on different parts of the page. */}
+          {decide?.power?.min_margin != null && (
+            <Alert
+              severity="info"
+              variant="outlined"
+              icon={<StraightenIcon fontSize="small" />}
+              sx={{ mb: 1.5, py: 0.25 }}
+            >
+              <Typography variant="caption">
+                This ring resolves <b>{decide.power.min_margin.toFixed(2)} Overall pts</b>
+                {decide.power.noise
+                  ? ` (±${decide.power.noise.sigma.toFixed(2)} per round, measured over ${decide.power.noise.rounds} rounds)`
+                  : ""}
+                . A streak can end a match at any margin, so a win smaller than that is a
+                real verdict the ring cannot independently demonstrate — raise{" "}
+                <i>Ignore wins smaller than</i> below if you would rather record those as
+                draws.
+              </Typography>
+            </Alert>
+          )}
           <Box sx={PRESET_GRID}>
             {(cfg?.presets ?? []).map((preset) => {
               const selected = cfg?.preset === preset.key;
