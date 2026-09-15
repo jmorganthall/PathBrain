@@ -237,7 +237,18 @@ LLM-based. See `README.md` for the product overview.
     persisted Overall, the live fallback, and the challenger race never drift.
   - `config_store.py` — DB-backed runtime config + defaults (targets, weights,
     thresholds, `iterations`, `monitoring`, `correlation`, `trends`, `experiment`,
-    `rubric_version`).
+    `rubric_version`). **A measured default change is carried onto stored config once**
+    (`upgrade_config`, `CONFIG_UPGRADES`, run from `main.lifespan` right after `init_db`): a
+    default is only a default until a value is stored, and the Duels page stores the whole
+    statistical block the moment a preset is chosen, so a better default that lands in a
+    release never reaches an install that has ever touched the page. Each upgrade is named,
+    recorded on its own `AppConfig` row (`config_upgrades`, never in the effective config) so
+    it runs exactly once and a value set by hand afterwards is never revisited, and moves a
+    value only *from the old default it replaces* — an install on the quick preset, on four
+    iterations a round or on the floor rule chose that and keeps it. The three shipped:
+    `iterations_per_round` 3 → 5, the snap preset → balanced, `crown_rule` lineal → rating
+    (all three measured under `duel.py`). `test_duel_winner_rule` pins once-only, old-default-
+    only and fresh-install-untouched.
   - `runner.py` — orchestrates a run across plugins (derives metrics from raw via
     `interpret`, median-aggregated over iterations, per-run SOPS confidence band),
     stores `BenchmarkResult.raw` as the source of truth, captures the firewall
@@ -1733,8 +1744,18 @@ LLM-based. See `README.md` for the product overview.
     `test_duel_methodology.py` pins all three: the prior crown defends against the prior
     runner-up after a publish, a mid-session publish re-seeds instead of stranding, and a
     carried snapshot from another version is closed, not resumed.
-    **A round medians `duel.iterations_per_round` iterations a side (default 3) — the
-    ring's resolving power.** A round compares two measurements, so its margin carries the
+    **A round medians `duel.iterations_per_round` iterations a side (default 5, was 3) — the
+    ring's resolving power — and five wins on EQUAL wall clock, not just per round.** Measured
+    on the same simulated field (rating #1 on the true best, balanced rule, one nightly
+    window): three iterations at six bouts a night 35/52/62/82/86 % at nights 1/5/10/20/30;
+    five at four bouts 42/66/78/88/94 %; five at only *three* bouts (17% less wall clock)
+    38/68/78/84/92 %. Fewer, cleaner rounds beat more, noisier ones at every horizon.
+    The stopping-rule presets measured the same way at five iterations (rating #1 on the true
+    best at nights 10/30): snap 77/90, quick 80/96, balanced 91/96, strict 92/99 — snap also
+    moved the belt 0.15 times a night against balanced's 0.01, which is why the shipped
+    default is balanced and `config_store.upgrade_config` moves an install still on snap onto
+    it. Strict is the better dial once the field is settled; it spends a whole night on one
+    match (1.1 bouts a night), which starves exploration on a wide field. A round compares two measurements, so its margin carries the
     noise of both: measured on a real link, ~2.3 Overall points per run becomes ~3.3 per
     round, against observed long-run edges between top profiles of **0.17–0.30 points**. At
     one iteration a leg that is a 3.3-point ruler measuring 0.3-point differences, and no
@@ -1911,7 +1932,32 @@ LLM-based. See `README.md` for the product overview.
     has nothing to say (empty ledger, or no rated profile the live environment can be set
     to), and says which in `incumbent.why`; `fight_card` calls the same helper, so the
     preview can't name a different defender than the one who walks out.
-    **The title is LINEAL** (`lineal_belt` / `belt_holder`, `duel.crown_rule`, the default):
+    **The ring names its WINNER off the fitted rating; the belt still decides who DEFENDS**
+    (`RATING_RULE`, `duel.crown_rule = "rating"`, the default; `belt_holder` names the champion,
+    `defender_reference` names who walks into the ring; `test_duel_winner_rule`). Two questions
+    that shared one answer. A title has to be fought for to be winnable, so the lineal
+    belt-holder defends every bout — but the belt is the wrong statistic for "who is best":
+    it is a chain of custody, blind to every bout its holder did not fight, so one lucky snap
+    moves it and nothing a third profile does can. The Bradley–Terry rating reads the whole
+    ledger. **Measured** with the real `PairedEvidence`/`lineal_belt`/`fit_bradley_terry` code
+    on a six-profile field 0.1 points apart at the top, round noise σ 1.47 as the live ring
+    measures it, 200–400 worlds, 30 nights, the belt defending — how often each statistic
+    named the true best: snap preset, belt 52/48/57/65/77 % at nights 1/5/10/20/30 vs rating
+    #1 44/55/66/76/84 %; balanced, belt 46/58/62/71/78 vs rating 41/61/72/82/89. Past night 3
+    the rating is 7–11 points better at every horizon, on the same rounds. Who *defends* makes
+    no measurable difference (belt 82/92/94 vs rating-#1 82/92/96 at nights 10/20/30), so the
+    belt keeps that job and the rematch logic, and the sim's caveat is stated: it seats the
+    pooled crown as the true best, so absolute levels are optimistic and the *ordering* across
+    rules is the finding. Under the rating rule the champion is row 1 **by construction** —
+    `ledger_leader(sigma=rank_sigma)` and the table sort share `_rank_key` — and `standings()`
+    reports the lineal holder beside it as `belt` (with `holds_belt` on the champion), so the
+    claims strip, the champion card and the two-crowns tile say when the winner and the title
+    are different profiles instead of leaving it to be spotted. `latest_champion` (what the
+    `duel` crowning policy applies), `standings()["champion"]` and the stored
+    `Duel.champion_fingerprint` run the one `belt_holder`; the ring-#1 promotion in
+    `next_challenger` reads the same order, so the profile promoted to challenge the belt is
+    exactly the winner the ring names. `"lineal"` and `"rating_floor"` stay selectable.
+    **The title is LINEAL** (`lineal_belt`, `duel.crown_rule = "lineal"`, selectable):
     you take the belt by beating the profile that holds it, provided your whole shared record
     with it then favours you on **both** counts — more matches won *and* more rounds won.
     The champion defends every bout, which is what makes the title winnable at all.
@@ -2041,13 +2087,15 @@ LLM-based. See `README.md` for the product overview.
     significance gate: two well-measured profiles a hair apart both have narrow bars, so the
     better one still ranks first ("best by a statistically insignificant fraction is still
     best"); the floor only overturns an order that rests on a bar wider than the gap.
-    **The champion is NOT row 1, and is not meant to be.** The badge and the ranking answer
-    different questions (results vs. demonstrated evidence — see the lineal-title note
-    above), so they are computed separately and shown side by side; the champion carries its
-    own `rank` so the page states the disagreement instead of leaving the reader to spot it.
-    What they must never do is come from *different logic*: `standings()["champion"]`,
-    `latest_champion`, the stored `Duel.champion_fingerprint` and the choice of defender all
-    run the one `belt_holder` replay, so those four can't name different profiles.
+    **Under the lineal rule the champion is NOT row 1, and is not meant to be** (under the
+    default rating rule it is row 1, and the *belt* is what can sit lower). The badge and the
+    ranking answer different questions (results vs. demonstrated evidence — see the
+    lineal-title note above), so they are computed separately and shown side by side; the
+    champion carries its own `rank` so the page states the disagreement instead of leaving
+    the reader to spot it. What they must never do is come from *different logic*:
+    `standings()["champion"]`, `latest_champion` and the stored `Duel.champion_fingerprint`
+    run the one `belt_holder` replay, so those three can't name different profiles; the
+    defender runs `defender_reference`, which is the belt under every rule with a title.
     (The badge previously read a stored `champion_fingerprint` written at session end — the
     profile that *survived that session* — which a running ladder left hours stale.)
     `latest_champion` — which the crowning policy acts on — keeps its guards, translated onto

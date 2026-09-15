@@ -1619,13 +1619,14 @@ function RingBoard({ live }: { live: DuelLive }) {
 // ── The claims to "best", side by side ──────────────────────────────────────────────
 //
 // Three verdicts can name three different profiles at once: the lineal BELT (who beat
-// whom — a chain of custody), the standings' RING #1 (what a record has demonstrated,
-// the conservative rating floor), and the POOLED CROWN (highest all-time Overall — the
-// observational verdict). The ladder already resolves their disagreements pairwise, in
-// priority order — the ring #1 challenges the belt, the pooled crown gets the ring when
-// it disagrees — but the card never said you were watching one edge of a triangle, which
-// read as "we're only racing two profiles". This states all the claims, whether they
-// agree, and which edge the live match is testing.
+// whom — a chain of custody; it defends), the standings' RING #1 (the fitted head-to-head
+// rating over the whole ledger — the ring's named winner under the default rule), and the
+// POOLED CROWN (highest all-time Overall — the observational verdict). The ladder already
+// resolves their disagreements pairwise, in priority order — the ring #1 challenges the
+// belt, the pooled crown gets the ring when it disagrees — but the card never said you
+// were watching one edge of a triangle, which read as "we're only racing two profiles".
+// This states all the claims, whether they agree, which one the ring names as its answer,
+// and which edge the live match is testing.
 function ThreeClaims({
   table,
   crowns,
@@ -1637,18 +1638,23 @@ function ThreeClaims({
 }) {
   const nameOf = (x: { name?: string | null; label?: string | null; fingerprint?: string | null } | null) =>
     x ? x.name || x.label || (x.fingerprint ? x.fingerprint.slice(0, 8) : null) : null;
+  const belt = table?.belt ?? (table?.champion?.holds_belt ? table.champion : null);
+  const named = table?.champion?.fingerprint ?? null;
   const claims = [
     {
       key: "belt",
       title: "Belt",
-      tip: "The lineal title: it beat the profile that held it. A record of results — blind to third parties.",
-      fp: table?.champion?.fingerprint ?? null,
-      who: nameOf(table?.champion ?? null),
+      tip: "The lineal title: it beat the profile that held it. A record of results — blind to third parties. The belt-holder defends.",
+      fp: belt?.fingerprint ?? null,
+      who: nameOf(belt ?? null),
     },
     {
       key: "ring",
       title: "Ring #1",
-      tip: "Top of the standings on the proven (floor) rating — what a head-to-head record has demonstrated across the whole network of opponents.",
+      tip:
+        table?.ranked_by === "rating_floor"
+          ? "Top of the standings on the proven (floor) rating — what a head-to-head record has demonstrated across the whole network of opponents."
+          : "Top of the standings on the fitted head-to-head rating — the whole ledger, opponents the belt-holder never met included.",
       fp: table?.standings?.[0]?.fingerprint ?? null,
       who: nameOf(table?.standings?.[0] ?? null),
     },
@@ -1684,6 +1690,11 @@ function ThreeClaims({
             <Tooltip title={c.tip}>
               <span>
                 {c.title}: <b>{c.who}</b>
+                {named && c.fp === named && (c.key === "ring" || c.key === "belt") && (
+                  <Typography component="span" variant="caption" color="text.secondary">
+                    {" "}(the ring's answer)
+                  </Typography>
+                )}
               </span>
             </Tooltip>
           </Typography>
@@ -2183,13 +2194,20 @@ export default function Duels() {
               {cfg.iterations_per_round ?? 3} iteration(s) a leg. A match ends after{" "}
               {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of margins, then
               the next challenger steps up.
-              {cfg.crown_rule !== "rating_floor" && (
+              {cfg.crown_rule === "lineal" ? (
                 <>
                   {" "}
                   <b>The title is lineal</b>: beat the holder, and lead your shared record with
                   it on both matches and rounds, to take the belt.
                 </>
-              )}
+              ) : cfg.crown_rule === "rating" ? (
+                <>
+                  {" "}
+                  <b>The belt-holder defends; the winner is read off the fitted rating</b> —
+                  the standings' #1 over the whole ledger, which names the true best more often
+                  than the belt.
+                </>
+              ) : null}
             </>
           }
         >
@@ -2500,18 +2518,21 @@ export default function Duels() {
               <TextField
                 select
                 size="small"
-                label="How the champion is decided"
-                value={cfg?.crown_rule ?? "lineal"}
+                label="How the winner is named"
+                value={cfg?.crown_rule ?? "rating"}
                 disabled={!cfg || busy}
                 onChange={(e) => void patch({ crown_rule: e.target.value as DuelConfig["crown_rule"] })}
                 helperText={
-                  (cfg?.crown_rule ?? "lineal") === "rating_floor"
-                    ? "Top of the standings by proven rating. Rarely changes hands."
-                    : "Beat the holder, and lead your shared record with it, to take the belt."
+                  (cfg?.crown_rule ?? "rating") === "rating"
+                    ? "The standings' #1 by fitted head-to-head rating — measured to name the true best 7–11 points more often than the belt over a month. The belt-holder still defends."
+                    : (cfg?.crown_rule ?? "rating") === "rating_floor"
+                      ? "Top of the standings by the conservative floor. Rarely changes hands."
+                      : "Beat the holder, and lead your shared record with it, to take the belt — the belt is the winner."
                 }
               >
+                <MenuItem value="rating">Ring's #1 (fitted rating) — recommended</MenuItem>
                 <MenuItem value="lineal">Lineal title (beat the holder)</MenuItem>
-                <MenuItem value="rating_floor">Ring's #1 (proven rating)</MenuItem>
+                <MenuItem value="rating_floor">Ring's #1 (proven floor)</MenuItem>
               </TextField>
               <TextField
                 select
@@ -2767,7 +2788,11 @@ export default function Duels() {
                           defended eleven times and one that took the title in its first
                           match are both "champion", and that difference is the whole
                           story. */}
-                      {champion.rule === "rating_floor"
+                      {champion.rule === "rating"
+                        ? champion.holds_belt
+                          ? "#1 by fitted head-to-head rating — and holds the belt"
+                          : "#1 by fitted head-to-head rating"
+                        : champion.rule === "rating_floor"
                         ? "Top of the ladder"
                         : (champion.defences ?? 0) > 0
                           ? `Held the title through ${champion.defences} defence${
@@ -2800,11 +2825,22 @@ export default function Duels() {
                         ranking says what a record has demonstrated. They are allowed to
                         disagree, and when they do that IS the finding — so the card states
                         the disagreement rather than leaving the reader to spot it. */}
-                    {champion.rule !== "rating_floor" && champion.rank != null && (
+                    {champion.rule === "lineal" && champion.rank != null && (
                       <Typography variant="caption" color="text.secondary" display="block">
                         {champion.rank === 1
                           ? "Also #1 in the standings."
                           : `#${champion.rank} in the standings: it beat the holder, but others have proved more.`}
+                      </Typography>
+                    )}
+                    {/* Under the rating rule the winner and the title can part: the belt
+                        records who beat whom and its holder defends, the rating reads the
+                        whole ledger. State the split rather than leave it to be spotted. */}
+                    {champion.rule === "rating" && !champion.holds_belt && table?.belt && (
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        The belt is with{" "}
+                        <b>{table.belt.name || table.belt.label || table.belt.fingerprint.slice(0, 8)}</b>
+                        {table.belt.rank != null ? ` (#${table.belt.rank} in the standings)` : ""}, who
+                        defends; the whole ledger rates this profile higher.
                       </Typography>
                     )}
                   </>
@@ -2897,12 +2933,12 @@ export default function Duels() {
                 )}
                 {" "}· settings restored when the window closes
               </Typography>
-              {/* The belt changes hands mid-session — it is the ring's #1, re-read from the
-                  ledger between matches — so show who holds it right now rather than waiting
-                  for the session to end. */}
+              {/* The ring's named winner changes mid-session — re-read from the ledger
+                  between matches — so show who it is right now rather than waiting for the
+                  session to end. */}
               {status?.champion_label && (
                 <Typography variant="body2" sx={{ mt: 0.5 }}>
-                  In the ring with the belt: <b>{status.champion_label}</b>
+                  The ring's answer so far: <b>{status.champion_label}</b>
                   <Typography component="span" variant="caption" color="text.secondary">
                     {" "}
                     (provisional until the session ends)

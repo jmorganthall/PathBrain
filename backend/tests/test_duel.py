@@ -2574,16 +2574,27 @@ def test_the_belt_and_the_ranking_are_allowed_to_disagree():
             champion="newcomer",
             when=now,
         )
-    table = duel_mod.standings()
-    with session_scope() as s:
-        s.query(Duel).delete()
-
-    assert table["champion"]["fingerprint"] == "newcomer", "it beat the belt-holder"
-    assert table["ranked_by"] == "rating"
-    # …while the profile the ring rates highest is the one that swept the strongest
-    # opponents. Champion and row 1 are different profiles, and both statements are true.
-    assert table["standings"][0]["fingerprint"] != "newcomer"
-    assert table["champion"]["rank"] > 1
+    try:
+        # Under the default rule the ring NAMES the sweeper (row 1) and reports the belt —
+        # the newcomer, who defends — beside it; the disagreement is on screen, not hidden.
+        table = duel_mod.standings()
+        assert table["crown_rule"] == "rating" and table["ranked_by"] == "rating"
+        assert table["champion"]["fingerprint"] == "sweeper" == table["standings"][0]["fingerprint"]
+        assert table["champion"]["holds_belt"] is False and table["champion"]["rank"] == 1
+        assert table["belt"]["fingerprint"] == "newcomer", "it beat the belt-holder"
+        assert table["belt"]["rank"] > 1 and table["belt"]["is_champion"] is False
+        # Under the lineal rule the belt IS the champion, and sits below row 1.
+        with session_scope() as s:
+            save_config(s, {"duel": {"crown_rule": "lineal"}})
+        table = duel_mod.standings()
+        assert table["champion"]["fingerprint"] == "newcomer" == table["belt"]["fingerprint"]
+        assert table["champion"]["holds_belt"] is True
+        assert table["standings"][0]["fingerprint"] != "newcomer"
+        assert table["champion"]["rank"] > 1
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+            save_config(s, {"duel": {"crown_rule": "rating"}})
 
 
 def test_the_ring_card_says_who_it_beat_and_what_overall_thinks_of_them():
@@ -2917,9 +2928,9 @@ def test_a_round_medians_several_iterations_and_lifts_the_browser_cap(monkeypatc
 
 def test_iterations_per_round_is_bounded_and_survives_a_bad_value():
     """A stored nonsense value must never stop the ladder measuring."""
-    assert duel_mod.iterations_per_round({}) == 3
-    assert duel_mod.iterations_per_round({"iterations_per_round": 0}) == 3
-    assert duel_mod.iterations_per_round({"iterations_per_round": "seven"}) == 3
+    assert duel_mod.iterations_per_round({}) == 5, "five a leg: measured better on equal wall clock"
+    assert duel_mod.iterations_per_round({"iterations_per_round": 0}) == 5
+    assert duel_mod.iterations_per_round({"iterations_per_round": "seven"}) == 5
     assert duel_mod.iterations_per_round({"iterations_per_round": 9}) == 9
     assert duel_mod.iterations_per_round({"iterations_per_round": 999}) == 25
 

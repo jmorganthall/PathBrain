@@ -9,11 +9,16 @@ first use.
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
+from typing import Callable
 
 from sqlalchemy.orm import Session
 
 from .metrics import COMPLETION, SOPS, default_thresholds, default_weights
+from .logging_config import get_logger
 from .models import AppConfig
+
+log = get_logger("config_store")
 
 CONFIG_KEY = "benchmark"
 
@@ -432,27 +437,30 @@ DEFAULT_CONFIG: dict = {
         # rates 1696 vs 1581; 8 → 1621 vs 1583; 16 → 1569 vs 1584 (the snap finally ranks
         # below). Raise it if single-match records keep topping the table.
         "rating_prior_pairs": 4.0,
-        # Which rule names the champion.
+        # Which rule names the champion — the WINNER the ring reports, what the crowning
+        # policy applies. Who DEFENDS is the lineal belt-holder under every rule with a
+        # title (`duel.defender_reference`); the two are separate questions.
         #
-        # "lineal" (default) — a LINEAL TITLE: you take the belt by beating the profile
-        #   that holds it, provided your whole shared record with it then favours you on
-        #   BOTH counts (more matches won and more rounds won). The champion defends every
-        #   bout, so the title can actually change hands. Note the aggregate gate is
-        #   vacuous on a first meeting — there is no history to appeal to — so what decides
-        #   whether the belt churns is `min_margin`: at 0 a win by 0.01 Overall points is a
-        #   win, and on a field separated by less than the run-to-run noise that is a coin
-        #   flip wearing a belt. Raise it if the title changes hands on nothing.
+        # "rating" (default) — the ring's #1 on the standings' own order: the fitted
+        #   Bradley-Terry rating with `rank_sigma` standard errors subtracted (0 below).
+        #   Measured over 30 simulated nights on the live ring's noise, the rating names the
+        #   true best profile 7-11 points more often than the belt at every horizon past
+        #   night 3 (see the note above `duel.RATING_RULE`): the belt is a chain of
+        #   custody, blind to every bout its holder didn't fight, while the rating reads
+        #   the whole ledger.
         #
-        # "rating_floor" — the previous behaviour: the champion is the ring's #1 by the
-        #   conservative fitted rating (`rating - RANK_SIGMA*se`), the same number the
-        #   standings rank on. Honest about evidence, but it made the title unwinnable in
-        #   practice: the holder defends every bout, so no challenger ever accumulates the
-        #   second opponent its error bar needs to shrink enough to overtake.
+        # "lineal" — the title itself: you take the belt by beating the profile that holds
+        #   it, provided your whole shared record with it then favours you on BOTH counts
+        #   (more matches won and more rounds won). The aggregate gate is vacuous on a
+        #   first meeting, so what decides whether the belt churns is `min_margin`: at 0 a
+        #   win by 0.01 Overall points is a win. Still what governs who defends, and still
+        #   shown beside the champion.
         #
-        # Either way the STANDINGS still rank on `rating_floor` — "who has demonstrated
-        # the most strength" and "who holds the title" are different questions and are
-        # shown as two answers rather than forced into one.
-        "crown_rule": "lineal",
+        # "rating_floor" — the oldest rule: the #1 by the conservative floor
+        #   (`rating - RANK_SIGMA*se`). It made the title unwinnable in practice — the
+        #   holder defends every bout, so no challenger ever accumulates the second
+        #   opponent its error bar needs to shrink enough to overtake.
+        "crown_rule": "rating",
         # Seconds to wait after writing a profile to the firewall before measuring it.
         # Each run is preceded by a setPipe + reconfigure, which rebuilds the queues; the
         # baseline test has always waited for the link to settle before believing a
@@ -473,10 +481,13 @@ DEFAULT_CONFIG: dict = {
         #
         # Taking the median of k iterations divides that noise by sqrt(k), and rounds needed
         # for a confident call fall in proportion: at a 0.3-point edge, 468 rounds at 1
-        # iteration, 156 at 3, 94 at 5. A round costs k times as long, so this is roughly
-        # break-even on wall clock and a large win on *verdicts reached* — a match that
-        # never resolves is time spent for nothing.
-        "iterations_per_round": 3,
+        # iteration, 156 at 3, 94 at 5. It is a win on EQUAL wall clock, not just per
+        # round — measured on a simulated field at the live ring's noise (rating #1 on the
+        # true best, balanced rule, the same window): 3 iterations at 6 bouts a night
+        # reached 62% by night 10 and 86% by night 30; 5 iterations at 4 bouts 78% and 94%;
+        # 5 at only 3 bouts (17% LESS wall clock) 78% and 92%. Fewer, cleaner rounds beat
+        # more, noisier ones, so the default is 5 (`duel.DEFAULT_ITERATIONS_PER_ROUND`).
+        "iterations_per_round": 5,
         # The ring's shape (see `duel._run_ring`). `belt_every`: the belt's reference leg
         # recurs every N legs — 2 is strict alternation (B C B D…, every challenger leg has a
         # belt leg on both sides, the strongest shared-weather guarantee); 3 is B C D B C D,
@@ -583,6 +594,99 @@ def save_config(session: Session, new_config: dict) -> dict:
         row.value = merged_stored
     session.commit()
     return _deep_merge(DEFAULT_CONFIG, merged_stored)
+
+
+# ── One-time config upgrades ──────────────────────────────────────────────────────────
+#
+# A default is only a default until a value is stored, and the Duels page stores the whole
+# statistical block the moment a preset is chosen — so a better default that lands in a
+# release never reaches an install that has ever touched the page. When a measurement
+# changes what the right value IS (not a taste, a number), the change has to be carried
+# onto stored config, once, and it has to leave a deliberate custom value alone. Each
+# upgrade is named, applied exactly once (the names are recorded on their own row, never
+# in the effective config), and moves a value only from the OLD default it replaces: an
+# install on 4 iterations a round, or on the "quick" preset, or on the floor rule, chose
+# that and keeps it.
+
+UPGRADES_KEY = "config_upgrades"
+
+
+def _upgrade_rounds_of_five(stored: dict) -> dict | None:
+    from .duel import DEFAULT_ITERATIONS_PER_ROUND, PRIOR_ITERATIONS_PER_ROUND
+
+    d = stored.get("duel") or {}
+    if d.get("iterations_per_round") == PRIOR_ITERATIONS_PER_ROUND:
+        return {"duel": {"iterations_per_round": DEFAULT_ITERATIONS_PER_ROUND}}
+    return None
+
+
+def _upgrade_balanced_stopping_rule(stored: dict) -> dict | None:
+    """The snap preset (3 in a row ends it) measured worst of the four on a month of
+    nights: at five iterations a round, rating #1 on the true best by night 10 / 30 was
+    snap 77 / 90 %, quick 80 / 96, balanced 91 / 96, strict 92 / 99 — and snap moved the
+    belt 0.15 times a night against balanced's 0.01. Balanced is the shipped default; an
+    install that chose snap is moved onto it, and any other choice is kept."""
+    from .duel import preset_config, preset_for
+
+    d = stored.get("duel") or {}
+    if any(k in d for k in ("alpha", "min_pairs", "max_pairs", "streak_wins")):
+        effective = _deep_merge(DEFAULT_CONFIG["duel"], d)
+        if preset_for(effective) == "snap":
+            return {"duel": preset_config("balanced")}
+    return None
+
+
+def _upgrade_winner_by_rating(stored: dict) -> dict | None:
+    d = stored.get("duel") or {}
+    if d.get("crown_rule") == "lineal":
+        return {"duel": {"crown_rule": "rating"}}
+    return None
+
+
+CONFIG_UPGRADES: list[tuple[str, Callable[[dict], dict | None]]] = [
+    ("duel-rounds-of-five", _upgrade_rounds_of_five),
+    ("duel-balanced-stopping-rule", _upgrade_balanced_stopping_rule),
+    ("duel-winner-by-rating", _upgrade_winner_by_rating),
+]
+
+
+def applied_upgrades(session: Session) -> dict[str, str]:
+    row = session.get(AppConfig, UPGRADES_KEY)
+    return dict((row.value or {}).get("applied") or {}) if row is not None else {}
+
+
+def upgrade_config(session: Session) -> list[str]:
+    """Apply every config upgrade not yet recorded; returns the names applied this call.
+
+    An upgrade whose condition doesn't hold is still recorded as applied — it was
+    considered and had nothing to move — so a value the person later sets by hand is never
+    revisited on the next restart.
+    """
+    done = applied_upgrades(session)
+    applied: list[str] = []
+    stamp = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    for name, step in CONFIG_UPGRADES:
+        if name in done:
+            continue
+        row = session.get(AppConfig, CONFIG_KEY)
+        stored = copy.deepcopy(row.value or {}) if row is not None else {}
+        update = step(stored)
+        if update:
+            merged = _deep_merge(stored, update)
+            if row is None:
+                session.add(AppConfig(key=CONFIG_KEY, value=merged))
+            else:
+                row.value = merged
+            log.info("Config upgrade %s applied: %s", name, update)
+            applied.append(name)
+        done[name] = stamp
+    urow = session.get(AppConfig, UPGRADES_KEY)
+    if urow is None:
+        session.add(AppConfig(key=UPGRADES_KEY, value={"applied": done}))
+    else:
+        urow.value = {"applied": done}
+    session.commit()
+    return applied
 
 
 def reset_config(session: Session) -> dict:

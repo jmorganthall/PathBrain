@@ -36,6 +36,15 @@ async def lifespan(app: FastAPI):
     log.info("PathBrain %s starting up", __version__)
     init_db()
     log.info("Database initialized (%s)", settings.database_url)
+    # Carry measured default changes onto stored config, once, before any engine reads it
+    # (`config_store.upgrade_config`; a deliberate custom value is never touched).
+    from .config_store import upgrade_config
+    from .database import session_scope
+
+    with session_scope() as session:
+        applied = upgrade_config(session)
+    if applied:
+        log.info("Config upgrades applied on startup: %s", ", ".join(applied))
     from .job_queue import register_engines
     from .runner import reconcile_interrupted_runs
 
