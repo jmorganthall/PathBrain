@@ -218,7 +218,11 @@ export default function TwoCrowns() {
             <CrownTile
               icon={<MilitaryTechIcon sx={{ color: "info.main", fontSize: 34 }} />}
               kind="Duel champion"
-              what="Winner of the head-to-head ladder: interleaved A/B/A/B bouts where both sides met the same weather, decided by a sequential test. Narrower than the overall crown, but free of the timing confound."
+              what={
+                duel.rule === "rating"
+                  ? "The ring's #1 by fitted head-to-head rating over the whole ladder: interleaved bouts where both sides met the same weather. Narrower than the overall crown, but free of the timing confound. (The lineal belt — who defends — is on the Duels page.)"
+                  : "Winner of the head-to-head ladder: interleaved A/B/A/B bouts where both sides met the same weather, decided by a sequential test. Narrower than the overall crown, but free of the timing confound."
+              }
               title={duel.name || duel.label || duel.fingerprint}
               subtitle={`${
                 duel.overall_now != null ? `Overall ${fmtNum(duel.overall_now, 1)} · ` : ""

@@ -1857,6 +1857,10 @@ export interface DuelCrown {
   draws: number;
   matchups: number;
   beaten: string[];
+  // Which rule named it ("rating" = the standings' #1 by fitted rating, the default;
+  // "lineal" = the belt) and whether it also holds the lineal title.
+  rule?: string | null;
+  holds_belt?: boolean;
   // The champion's LIVE pooled Overall (same scale and vintage as the pooled side's
   // overall_now) — the number that lets the two crowns be compared at all.
   overall_now?: number | null;
@@ -2048,11 +2052,13 @@ export interface DuelConfig {
   // Who the champion fights: the profiles nearest the crown, or the exploring heirs order.
   contenders: "ring" | "leaders" | "heirs" | "levers";
   contender_top_n: number;
-  // Which rule names the champion. "lineal" — you take the belt by beating its holder,
-  // provided your whole shared record then favours you on BOTH matches and rounds.
-  // "rating_floor" — the ring's #1 by proven rating. The standings rank on the floor
-  // either way; this only decides who wears the belt.
-  crown_rule: "lineal" | "rating_floor";
+  // Which rule names the champion — the WINNER the ring reports, what the crowning policy
+  // applies. "rating" (default) — the standings' #1 by fitted head-to-head rating,
+  // measured to name the true best 7–11 points more often than the belt over a month of
+  // nights. "lineal" — the title: you take the belt by beating its holder, provided your
+  // whole shared record then favours you on BOTH matches and rounds. "rating_floor" —
+  // the #1 by the conservative floor. Who DEFENDS is the belt-holder under every rule.
+  crown_rule: "rating" | "lineal" | "rating_floor";
   crown_rules: string[];
   /** Benchmark iterations per leg of a round — divides the round's noise by sqrt(k). */
   iterations_per_round?: number;
@@ -2253,11 +2259,26 @@ export interface DuelHeadToHeadCell {
   median_margin: number | null;
 }
 
-// The champion is NOT row 1, and under the lineal rule it is not meant to be. The table
-// ranks on `rating_floor` — what a record has demonstrated across the whole network —
-// while the belt records who beat whom. A champion sitting at row 4 is the two verdicts
-// disagreeing, which is the reason for running both. Derived by replaying the ledger, not
-// read from a stored per-session value.
+// The champion is the winner the ring NAMES. Under the default "rating" rule that is row
+// 1 of the table (the fitted head-to-head rating), and the lineal belt — who DEFENDS — is
+// reported beside it as `DuelStandings.belt`; the two may be different profiles, and the
+// page says so. Under the lineal rule the champion IS the belt and can sit below row 1.
+// Derived by replaying the ledger, not read from a stored per-session value.
+export interface DuelBelt {
+  fingerprint: string;
+  name?: string | null;
+  label?: string | null;
+  rank?: number | null;
+  is_champion?: boolean;
+  defences?: number | null;
+  drawn_defences?: number | null;
+  survived_losses?: number | null;
+  undecided_defences?: number | null;
+  title_changes?: number | null;
+  title_bouts?: number | null;
+  took_it_from?: string | null;
+}
+
 export interface DuelChampionStanding {
   fingerprint: string;
   label: string | null;
@@ -2274,8 +2295,13 @@ export interface DuelChampionStanding {
   provisional?: boolean;
   // Where it sits on the OTHER verdict — the standings' proven-rating order.
   rank?: number | null;
-  // Which rule named it: "lineal" (beat the holder) or "rating_floor" (the ring's #1).
+  // Which rule named it: "rating" (the standings' #1), "lineal" (beat the holder) or
+  // "rating_floor" (the #1 by conservative floor).
   rule?: string | null;
+  // The rule's sentence for why this profile is champion.
+  why?: string | null;
+  // Whether the champion also holds the lineal title (always true under "lineal").
+  holds_belt?: boolean;
   // Title bouts since it took the belt, counted by what actually happened. They were one
   // number, and on a ladder where most matches cannot reach a verdict that number said
   // something false: "57 defences" of which ~51 were draws is not a champion fighting off
@@ -2332,6 +2358,10 @@ export interface DecidabilityReport {
 
 export interface DuelStandings {
   champion: DuelChampionStanding | null;
+  // The lineal title-holder — who DEFENDS — reported beside the champion whatever the
+  // rule, so the claims strip can say whether the two agree.
+  belt?: DuelBelt | null;
+  crown_rule?: string;
   standings: DuelStanding[];
   // head_to_head[a][b] = a's record against b.
   head_to_head: Record<string, Record<string, DuelHeadToHeadCell>>;

@@ -51,7 +51,10 @@ def _mock_ring(monkeypatch, scores: dict[str, float], chunk):
 
     with session_scope() as s:
         s.query(Duel).delete()
-        save_config(s, {"duel": {"settle_seconds": 0, "seats": 1, "belt_every": 2}})
+        # Three iterations a leg, pinned: the assertions below count them, and the
+        # shipped default is five.
+        save_config(s, {"duel": {"settle_seconds": 0, "seats": 1, "belt_every": 2,
+                                 "iterations_per_round": 3}})
     field = _field(*sorted(scores.items(), key=lambda kv: -kv[1]))
     monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: field)
     monkeypatch.setattr(rs, "_compute_heirs", lambda result, session, live=None: {

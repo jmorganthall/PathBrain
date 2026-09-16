@@ -1013,10 +1013,48 @@ def _recently_decided(session, a_fp: str, b_fp: str, cooldown_hours: float) -> b
 # replaying it is deterministic and re-derives from the record exactly like every other
 # verdict in PathBrain. Nothing here reads or writes mutable champion state.
 
+# ── The ring names its WINNER off the fitted rating; the belt decides who DEFENDS ──────
+#
+# Two questions that used to share one answer. "Who walks into the ring?" needs a title
+# that can be lost, so the lineal belt-holder defends every bout — that is what makes the
+# title winnable at all, and it is the design the measurements below were taken on. "Who
+# does the ring say is best?" — what the crowning policy applies and what the card names —
+# is a different question, and the belt is the wrong statistic for it: it is a chain of
+# custody, blind to every bout its holder did not fight, so one lucky snap moves it and
+# nothing a third profile does can. The Bradley-Terry rating (`rating.py`) reads the WHOLE
+# ledger — beating a strong profile counts more, losing to the best costs little, and two
+# profiles that never met compare through shared opponents.
+#
+# Measured, with the real `PairedEvidence`/`lineal_belt`/`fit_bradley_terry` code on a
+# six-profile field (true Overalls 61.4 / 61.3 / 61.2 / 61.1 / 60.9 / 59.4, round noise
+# sigma 1.47 as the live ring measures it, 200-400 worlds, 30 nights, the belt defending):
+# how often each statistic named the TRUE best profile —
+#
+#     night:                 1    5   10   20   30
+#     belt on best          52   48   57   65   77   %   (snap preset, the live settings)
+#     rating #1 on best     44   55   66   76   84   %
+#     belt on best          46   58   62   71   78   %   (balanced)
+#     rating #1 on best     41   61   72   82   89   %
+#
+# Past night 3 the rating is 7-11 points better at every horizon, on the same nights and
+# the same rounds. Chance is 17%. So the default rule reads the winner off the standings'
+# own order (the fitted rating, `duel.rank_sigma` standard errors subtracted — 0 by
+# default) while the belt keeps its one real job, deciding who defends. The lineal rule
+# stays selectable, and it still governs the rematch logic and the "in the ring with the
+# belt" readout under every rule, because those are questions about the title.
+
+RATING_RULE = "rating"
 LINEAL_RULE = "lineal"
 FLOOR_RULE = "rating_floor"
-CROWN_RULES = (LINEAL_RULE, FLOOR_RULE)
-DEFAULT_CROWN_RULE = LINEAL_RULE
+CROWN_RULES = (RATING_RULE, LINEAL_RULE, FLOOR_RULE)
+DEFAULT_CROWN_RULE = RATING_RULE
+
+
+#: Iterations medianed per leg. Was 3; 5 measured better on equal or less wall clock
+#: (see `iterations_per_round`). The old value is what `config_store.upgrade_config`
+#: moves an untouched install off.
+DEFAULT_ITERATIONS_PER_ROUND = 5
+PRIOR_ITERATIONS_PER_ROUND = 3
 
 
 def iterations_per_round(cfg: dict | None) -> int:
@@ -1030,12 +1068,19 @@ def iterations_per_round(cfg: dict | None) -> int:
     cannot separate real wins from lucky ones and why raising it only deletes matches.
 
     Taking the median of k iterations divides the noise by sqrt(k). It is the only lever
-    here that changes what the ring is *able* to see.
+    here that changes what the ring is *able* to see — and it wins on EQUAL wall clock, not
+    just per round. Measured on the six-profile field above (rating #1 on the true best,
+    balanced stopping rule, the same nightly window): three iterations at six bouts a
+    night 35 / 52 / 62 / 82 / 86 % at nights 1 / 5 / 10 / 20 / 30; five iterations at
+    four bouts a night 42 / 66 / 78 / 88 / 94 %; five at only THREE bouts (17% less wall
+    clock) 38 / 68 / 78 / 84 / 92 %. Fewer, cleaner rounds beat more, noisier ones at every
+    horizon, so the default is 5.
     """
     try:
-        value = int((cfg or {}).get("iterations_per_round", 3) or 3)
+        value = int((cfg or {}).get("iterations_per_round", DEFAULT_ITERATIONS_PER_ROUND)
+                    or DEFAULT_ITERATIONS_PER_ROUND)
     except (TypeError, ValueError):
-        return 3
+        return DEFAULT_ITERATIONS_PER_ROUND
     return max(1, min(value, 25))
 
 
@@ -1355,17 +1400,30 @@ def lineal_belt(sessions_data: list[dict]) -> dict | None:
 
 
 def belt_holder(
-    sessions_data: list[dict], ratings: dict[str, dict], rule: str = DEFAULT_CROWN_RULE
+    sessions_data: list[dict],
+    ratings: dict[str, dict],
+    rule: str = DEFAULT_CROWN_RULE,
+    sigma: float = 0.0,
 ) -> tuple[str | None, dict | None, str]:
     """``(fingerprint, lineal detail or None, why)`` — the one answer to "who is champion?".
 
-    Under ``"lineal"`` the belt is the replayed title, falling back to the rating floor
-    only when no bout has ever been decided (there is no title yet to hold). Under
-    ``"rating_floor"`` it is the ring's #1, the previous behaviour, kept so the two rules
-    can be compared on the same ledger.
+    The champion is the profile the ring NAMES AS ITS WINNER: what the crowning policy
+    applies, what the standings badge and the stored row carry. Under ``"rating"`` (the
+    default) that is the ring's #1 on the standings' own order — the fitted head-to-head
+    rating with ``sigma`` standard errors subtracted (`duel.rank_sigma`, 0 by default) —
+    measured to name the true best profile 7-11 points more often than the belt over a
+    month of nights (see the note above ``RATING_RULE``). Under ``"lineal"`` it is the
+    replayed title, falling back to the ring's #1 only when no bout has ever been decided.
+    Under ``"rating_floor"`` it is the #1 by the conservative floor, the oldest rule, kept
+    so the three can be compared on one ledger.
+
+    The lineal detail comes back only when the champion actually holds the belt, so a
+    card never prints another profile's defences under the champion's name. Who DEFENDS
+    is a separate question — `defender_reference` — and under the rating rule it is still
+    the belt-holder, because a title has to be fought for to be winnable.
     """
+    belt = lineal_belt(sessions_data)
     if rule == LINEAL_RULE:
-        belt = lineal_belt(sessions_data)
         if belt is not None:
             return belt["fingerprint"], belt, (
                 f"holds the lineal title ({belt['defences']} defence"
@@ -1374,22 +1432,78 @@ def belt_holder(
         return ledger_leader(ratings), None, (
             "no match has been decided yet — the ring's #1 holds the belt by default"
         )
-    fp = ledger_leader(ratings)
-    return fp, None, "the ring's #1 by proven rating"
+    if rule == FLOOR_RULE:
+        fp = ledger_leader(ratings)
+        return fp, (belt if belt and belt["fingerprint"] == fp else None), (
+            "the ring's #1 by proven rating"
+        )
+    fp = ledger_leader(ratings, sigma=sigma)
+    if fp is None:
+        return None, None, ""
+    holds = belt is not None and belt["fingerprint"] == fp
+    return fp, (belt if holds else None), (
+        "the ring's #1 by fitted head-to-head rating"
+        + (" — and holds the belt" if holds else (
+            f" (the belt is with another profile — {belt['fingerprint'][:8]})" if belt else ""
+        ))
+    )
+
+
+def defender_reference(
+    sessions_data: list[dict],
+    ratings: dict[str, dict],
+    rule: str = DEFAULT_CROWN_RULE,
+    sigma: float = 0.0,
+) -> str | None:
+    """Who walks into the ring to be challenged — **the title-holder**, under every rule
+    that has a title.
+
+    Under ``"rating"`` and ``"lineal"`` this is the lineal belt-holder (a title only changes
+    hands if its holder is there to lose it), falling back to the ring's #1 when nothing has
+    been decided yet. Under ``"rating_floor"`` it is the floor leader, as that rule always
+    had it. Kept apart from `belt_holder` on purpose: the winner the ring names and the
+    profile it puts in the ring are two questions, and the measurement that picked the
+    rating rule was taken with the belt defending.
+    """
+    if rule == FLOOR_RULE:
+        return ledger_leader(ratings)
+    belt = lineal_belt(sessions_data)
+    if belt is not None:
+        return belt["fingerprint"]
+    # No title yet: the standings' #1 under the rating rule, the floor under lineal (as
+    # that rule always had it).
+    return ledger_leader(ratings, sigma=sigma) if rule == RATING_RULE else ledger_leader(ratings)
+
+
+def _rank_key(r: dict, sigma: float | None) -> tuple[float, int] | None:
+    """The standings' own ordering key for one fitted record: the rating with ``sigma``
+    standard errors subtracted (``None`` = the stored conservative floor), ties toward the
+    deeper record. ONE key, shared by the table sort and `ledger_leader`, so the champion
+    the rating rule names is row 1 by construction rather than by two implementations
+    agreeing."""
+    if sigma is None:
+        floor = r.get("rating_floor")
+        if floor is None:
+            return None
+        return (float(floor), int(r.get("pairs") or 0))
+    rating = r.get("rating")
+    if rating is None:
+        return None
+    return (float(rating) - float(sigma) * float(r.get("rating_se") or 0.0), int(r.get("pairs") or 0))
 
 
 def ledger_leader(
-    ratings: dict[str, dict], eligible: set[str] | None = None
+    ratings: dict[str, dict],
+    eligible: set[str] | None = None,
+    sigma: float | None = None,
 ) -> str | None:
-    """The highest ``rating_floor`` on a fitted ledger — the ring's #1, full stop.
+    """The top of a fitted ledger — the ring's #1.
 
-    The ONE place that answers "who is the champion?", so the belt on the page, the
-    defender in the ring, and the profile the crowning policy would apply are the same
-    profile by construction. They used to be three different answers: the badge read a
-    stored ``Duel.champion_fingerprint`` written at session end, while the standings were
-    fitted live over the whole ledger — so any bout in a running session moved the table
-    without moving the badge, and every row written before the belt became the ring's #1
-    recorded whoever happened to survive that session instead.
+    ``sigma`` is how many standard errors to subtract before ordering: ``None`` reads the
+    stored conservative ``rating_floor`` (`rating.RANK_SIGMA`, the rule the floor crown and
+    the reachability fallback always used), a number is the standings' own order
+    (`duel.rank_sigma`, 0 by default — whoever wins the duel wins the duel). Both go
+    through `_rank_key`, so the table and this function cannot disagree about who leads.
 
     ``eligible`` narrows the pool (the *defender* must be reachable from the live
     environment; the *champion* is a statement about the ledger and is never filtered).
@@ -1399,10 +1513,9 @@ def ledger_leader(
     for fp, r in ratings.items():
         if eligible is not None and fp not in eligible:
             continue
-        if r.get("rating_floor") is None:
+        key = _rank_key(r, sigma)
+        if key is None:
             continue
-        # Ties break toward the deeper record, exactly as the standings do.
-        key = (float(r["rating_floor"]), int(r.get("pairs") or 0))
         if best is None or key > best:
             best_fp, best = fp, key
     return best_fp
@@ -1413,6 +1526,7 @@ def ring_leader(
     ratings: dict[str, dict],
     baseline: list[dict] | None = None,
     belt_fp: str | None = None,
+    sigma: float | None = None,
 ) -> tuple[str | None, str]:
     """Who stands in the ring — **the champion defends**.
 
@@ -1434,7 +1548,7 @@ def ring_leader(
         floor = r.get("rating_floor")
         proven = f", proven {floor:.0f}" if isinstance(floor, (int, float)) else ""
         return belt_fp, f"the champion defends its title{proven}"
-    best_fp = ledger_leader(ratings, eligible)
+    best_fp = ledger_leader(ratings, eligible, sigma)
     if best_fp is None:
         return None, ""
     r = ratings[best_fp]
@@ -1529,10 +1643,14 @@ def select_incumbent(
     pooled_fp = field.get("best_fingerprint")
     if ratings is None:
         ratings = ledger_ratings(session)
-    belt_fp, _detail, _why = belt_holder(
-        _ledger_sessions(session), ratings, crown_rule(cfg)
-    )
-    fp, why = ring_leader(field, ratings, baseline, belt_fp)
+    rule = crown_rule(cfg)
+    sigma = rank_sigma(cfg) if rule == RATING_RULE else None
+    # The TITLE-HOLDER defends under every rule that has a title — including the rating
+    # rule, where the champion the ring names may be a different profile. That split is
+    # the measured design: the belt keeps the bouts about a title that can be lost, the
+    # rating reads the whole ledger to say who is best.
+    belt_fp = defender_reference(_ledger_sessions(session), ratings, rule, sigma or 0.0)
+    fp, why = ring_leader(field, ratings, baseline, belt_fp, sigma)
     if fp is not None:
         return fp, why
     return pooled_fp, "no profile has a ring record yet — the pooled crown defends"
@@ -1944,6 +2062,7 @@ def next_challenger(
     mode: str = "ring",
     top_n: int = 8,
     fought: set[frozenset[str]] | None = None,
+    rank_sigma: float | None = None,
 ) -> tuple[str | None, str]:
     """The single best next opponent for whoever currently holds the belt.
 
@@ -1971,7 +2090,10 @@ def next_challenger(
     # ungated promotion would open every session with the same match, which is the ladder
     # spending the night on two profiles — the failure the tiering exists to prevent. One
     # extra indexed query, and only for the leader, since nothing else can be promoted.
-    ring_leader_fp = ledger_leader(ratings)
+    # ``rank_sigma`` None reads the conservative floor (the floor rule's #1); a number is
+    # the standings' own order — under the default rating rule the profile promoted here
+    # is exactly the champion the ring names, challenging the belt it doesn't hold.
+    ring_leader_fp = ledger_leader(ratings, sigma=rank_sigma)
     if ring_leader_fp is not None and (
         ring_leader_fp == defender_fp
         or frozenset((defender_fp, ring_leader_fp)) in fought
@@ -3091,10 +3213,18 @@ def _run_ring(
                     incumbent_fp = defender_fp
                     inc = settings_by_fp[incumbent_fp]
                     lead = None  # a new reference opens with a fresh belt leg
-            # The title holder over the ledger this session is extending — one replay per
-            # cycle, reused below for the stored belt (the badge changes hands mid-session,
-            # so it is written every cycle rather than at session end).
-            belt_now, _, _ = belt_holder(_ledger_sessions(session), ratings, crown_rule(cfg))
+            # Two replays per cycle over the ledger this session is extending. The BELT
+            # (title-holder) drives the rematch logic below and the "in the ring with the
+            # belt" readout; the CHAMPION — the winner the ring names under `crown_rule`,
+            # the fitted rating by default — is what the stored row carries, written every
+            # cycle because it changes mid-session and a badge that waits for session end
+            # reads stale. Under the lineal rule the two are the same profile.
+            belt_now = defender_reference(
+                _ledger_sessions(session), ratings, crown_rule(cfg), rank_sigma(cfg)
+            )
+            champion_now, _, _ = belt_holder(
+                _ledger_sessions(session), ratings, crown_rule(cfg), rank_sigma(cfg)
+            )
             # Unfinished business gets its rematch — once. A challenger that WON its match
             # without taking the belt (their shared record doesn't favour it yet) has
             # raised the most informative question on the ledger, so the pair re-opens.
@@ -3182,6 +3312,7 @@ def _run_ring(
                     challenger_fp, why_challenger = next_challenger(
                         session, field, ratings, incumbent_fp, heirs=heirs, baseline=baseline,
                         cooldown_hours=cooldown_hours, mode=mode, top_n=top_n, fought=fought,
+                        rank_sigma=(rank_sigma(cfg) if crown_rule(cfg) == RATING_RULE else None),
                     )
                 if challenger_fp is None or challenger_fp not in settings_by_fp:
                     break
@@ -3224,15 +3355,15 @@ def _run_ring(
                 )
             break
 
-        # The stored belt names the TITLE HOLDER (the replay above), written every cycle
-        # because the title changes hands mid-session and a badge that waits for session
+        # The stored champion is the winner the ring NAMES (the replay above), written
+        # every cycle because it changes mid-session and a badge that waits for session
         # end reads stale.
         with session_scope() as session:
-            belt_fp = belt_now or incumbent_fp
-            holder = settings_by_fp.get(belt_fp) or {}
+            champion_fp = champion_now or belt_now or incumbent_fp
+            holder = settings_by_fp.get(champion_fp) or {}
             d = session.get(Duel, duel_id)
             if d is not None:
-                d.champion_fingerprint = belt_fp
+                d.champion_fingerprint = champion_fp
                 d.champion_label = holder.get("name") or holder.get("label")
 
         # 2. One cycle: belt (if the previous one's closing leg can't serve), then the
@@ -3554,7 +3685,8 @@ def _drive(duel_id: int) -> None:
                 # be set to simply never defends, and the crown follower already refuses to
                 # apply an unreachable profile.
                 final_fp, _, _ = belt_holder(
-                    _ledger_sessions(session), ledger_ratings(session), crown_rule(cfg)
+                    _ledger_sessions(session), ledger_ratings(session), crown_rule(cfg),
+                    rank_sigma(cfg),
                 )
                 final_fp = final_fp or incumbent_fp
                 champion = settings_by_fp.get(final_fp) or {}
@@ -3898,18 +4030,19 @@ def fight_card(session, limit: int = 12, contenders: str | None = None,
 
 
 def latest_champion(session, max_age_days: int) -> dict | None:
-    """The ring's #1 over the whole ledger — the reigning duel champion — if fresh enough.
+    """The winner the ring names over the whole ledger — the reigning duel champion — if
+    fresh enough.
 
     Derived, never read from a stored row. It used to read the newest completed session's
     ``champion_fingerprint`` — the profile that *survived that session*, which a running
     ladder leaves hours stale. It is now the same `belt_holder` replay that the standings
-    badge, the stored row and the choice of defender all run, so those four can never name
-    different profiles.
+    badge and the stored row run, so those three can never name different profiles.
 
-    Note it is NOT the top of the standings table, and under the lineal rule it is not
-    meant to be: the table ranks on demonstrated strength (`rating_floor`) while the belt
-    records who beat whom. A champion sitting below row 1 is the two questions disagreeing,
-    which is information rather than a bug.
+    Under the default ``"rating"`` rule it IS the top of the standings table (same
+    `_rank_key`); the profile that *defends* is the lineal belt-holder, which may differ —
+    the winner and the title are two questions (see ``RATING_RULE``). Under the lineal
+    rule it is the belt, which can sit below row 1: the table ranks on fitted strength
+    while the belt records who beat whom.
 
     Deliberately NOT reachability-filtered — the champion is a claim about the ledger, like
     the standings. The choice of who *defends* is filtered (``ring_leader``), and the crown
@@ -3927,8 +4060,9 @@ def latest_champion(session, max_age_days: int) -> dict | None:
     ratings = fit_bradley_terry(_pair_record(sessions_data))
     from .config_store import get_config
 
-    rule = crown_rule((get_config(session).get("duel", {}) or {}))
-    fp, belt, _why = belt_holder(sessions_data, ratings, rule)
+    duel_cfg = get_config(session).get("duel", {}) or {}
+    rule = crown_rule(duel_cfg)
+    fp, belt, _why = belt_holder(sessions_data, ratings, rule, rank_sigma(duel_cfg))
     if fp is None:
         return None
 
@@ -4309,9 +4443,11 @@ def standings(limit_sessions: int = 50) -> dict:
     for row in table:
         row["rank_score"] = round(_rank_score(row), 1) if row.get("rating") is not None else None
     table.sort(
+        # `_rank_key` — the same key `ledger_leader` reads, so the champion the rating
+        # rule names is row 1 by construction; points only split an exact tie on both.
         key=lambda r: (
-            _rank_score(r),
-            r["rating_pairs"] or 0,  # more evidence first among equal scores
+            _rank_key({"rating": r.get("rating"), "rating_se": r.get("rating_se"),
+                       "pairs": r["rating_pairs"] or 0}, sigma) or (-1e9, 0),
             r["points"],
         ),
         reverse=True,
@@ -4361,10 +4497,31 @@ def standings(limit_sessions: int = 50) -> dict:
     # the badge honest and the title unwinnable: the holder defends every bout, so no
     # challenger accumulates the second opponent its floor would need to overtake one.)
     rule = crown_rule(cfg)
-    belt = lineal_belt(sessions_data) if rule == LINEAL_RULE else None
-    champion_fp = (belt or {}).get("fingerprint") or ledger_leader(ratings)
+    champion_fp, belt, champion_why = belt_holder(sessions_data, ratings, rule, sigma)
+    # The lineal belt is reported BESIDE the champion whatever the rule: under the default
+    # rating rule the champion is row 1 and the belt is whoever defends, and the claims
+    # strip needs both names to say whether they agree.
+    lineal = lineal_belt(sessions_data)
     champion = None
     by_fp = {r["fingerprint"]: r for r in table}
+    belt_out = None
+    if lineal is not None and by_fp.get(lineal["fingerprint"]) is not None:
+        brow = by_fp[lineal["fingerprint"]]
+        belt_out = {
+            "fingerprint": brow["fingerprint"],
+            "name": brow.get("name"),
+            "label": brow.get("label"),
+            "rank": brow.get("rank"),
+            "is_champion": lineal["fingerprint"] == champion_fp,
+            "defences": lineal.get("defences"),
+            "drawn_defences": lineal.get("drawn_defences"),
+            "survived_losses": lineal.get("survived_losses"),
+            "undecided_defences": lineal.get("undecided_defences"),
+            "title_changes": lineal.get("changes"),
+            "title_bouts": lineal.get("title_bouts"),
+            "took_it_from": lineal.get("took_it_from"),
+        }
+        brow["holds_belt"] = True
     row = by_fp.get(champion_fp)
     if row is not None:
         reign = 0
@@ -4388,6 +4545,9 @@ def standings(limit_sessions: int = 50) -> dict:
             # point of keeping the two apart, so the page should not have to join them.
             "rank": row.get("rank"),
             "rule": rule,
+            "why": champion_why,
+            # Whether the champion also holds the lineal title (always, under "lineal").
+            "holds_belt": bool(belt),
             "defences": (belt or {}).get("defences"),
             # Beside the wins: the title bouts that retained the belt without the holder
             # winning one. On a ladder where most matches cannot reach a verdict this is
@@ -4422,6 +4582,9 @@ def standings(limit_sessions: int = 50) -> dict:
     timings["ring_ms"] = max(0, timings["total_ms"] - timings.get("pooled_ms", 0))
     return {
         "champion": champion,
+        # The title-holder — who defends — reported beside the winner the ring names.
+        "belt": belt_out,
+        "crown_rule": rule,
         "standings": table,
         "head_to_head": matrix,
         "timings_ms": timings,
@@ -4950,6 +5113,12 @@ def reconcile_interrupted_duels(*, now: datetime | None = None) -> int:
 
 __all__ = [
     "PRESETS",
+    "RATING_RULE",
+    "LINEAL_RULE",
+    "FLOOR_RULE",
+    "DEFAULT_ITERATIONS_PER_ROUND",
+    "PRIOR_ITERATIONS_PER_ROUND",
+    "defender_reference",
     "PairedEvidence",
     "build_queue",
     "next_challenger",
