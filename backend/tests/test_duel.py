@@ -308,6 +308,8 @@ def test_crowning_policy_resolves_duel_champion_with_pooled_fallback(client):
     with session_scope() as s:
         out = crowning.resolve(s, pooled_best_fp="pooledbest0")
         assert out["source"] == "pooled" and out["fingerprint"] == "pooledbest0"
+    with session_scope() as s:
+        save_config(s, {"crown_follow": {"policy": crowning.DEFAULT_POLICY}})
         assert out["duel_champion"] is not None
 
     # A stale champion (older than rematch_days) falls back to pooled even under "duel".
@@ -321,7 +323,7 @@ def test_crowning_policy_resolves_duel_champion_with_pooled_fallback(client):
         assert out["source"] == "pooled" and out["fingerprint"] == "pooledbest0"
     # Cleanup: back to the default policy.
     with session_scope() as s:
-        save_config(s, {"crown_follow": {"policy": "pooled"}})
+        save_config(s, {"crown_follow": {"policy": crowning.DEFAULT_POLICY}})
         s.query(Duel).delete()
 
 
@@ -350,13 +352,13 @@ def test_duel_endpoints(client):
     assert "duels" in client.get("/api/duel/history").json()
     # Crown-follow surface carries the policy + choices.
     cf = client.get("/api/settings/crown-follow").json()
-    assert cf["config"]["policy"] in ("pooled", "duel")
-    assert set(cf["policies"]) == {"pooled", "duel"}
+    assert cf["config"]["policy"] in ("fused", "pooled", "duel")
+    assert set(cf["policies"]) == {"fused", "pooled", "duel"}
     assert "duel_champion" in cf
     out = client.post("/api/settings/crown-follow", json={"policy": "duel"}).json()
     assert out["config"]["policy"] == "duel"
     assert client.post("/api/settings/crown-follow", json={"policy": "nope"}).status_code == 400
-    client.post("/api/settings/crown-follow", json={"policy": "pooled"})
+    client.post("/api/settings/crown-follow", json={"policy": "fused"})
 
 
 # ── The head-to-head league table (the dueling-champions view) ───────────────────────
@@ -678,13 +680,15 @@ def test_crowns_endpoint_shows_both_verdicts(client):
     assert out["duel"]["fresh"] is True
     assert out["agree"] is False  # the two verdicts disagree — that's the point of showing both
 
-    # Under the default policy the pooled crown governs; switching makes the duel govern.
-    assert out["policy"] == "pooled" and out["governing"]["source"] == "pooled"
+    # Under the default (fused) policy the fit governs — or, with no rollup to fit on, the
+    # pooled crown stands in and says so; switching makes the duel govern.
+    assert out["policy"] == "fused" and out["governing"]["source"] in ("fused", "pooled")
+    assert "fused" in out  # the third verdict rides along whatever the policy
     client.post("/api/settings/crown-follow", json={"policy": "duel"})
     out = client.get("/api/settings/crowns").json()
     assert out["governing"]["source"] == "duel"
     assert out["governing"]["fingerprint"] == "duelwinner"
-    client.post("/api/settings/crown-follow", json={"policy": "pooled"})
+    client.post("/api/settings/crown-follow", json={"policy": "fused"})
 
     with session_scope() as s:
         s.query(Duel).delete()

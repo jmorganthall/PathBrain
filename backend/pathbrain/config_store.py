@@ -314,13 +314,17 @@ DEFAULT_CONFIG: dict = {
         "interval_minutes": 360,
         # The CROWNING POLICY — the first-class choice of which verdict governs what the
         # follower applies (and what the UI calls "the crown to follow"):
+        #   "fused"  — ONE ranking fitted over both records: the pooled medians as anchors
+        #              (each trusted to its own SE plus a measured slack) and every ring
+        #              round as a paired, weather-free difference (`overall_ranking`, the
+        #              Overall page). The default: the two below are its corners.
         #   "pooled" — the all-time pooled Overall argmax (compute_profiles best_fingerprint).
         #   "duel"   — the head-to-head duel ladder's latest champion (falls back to pooled
         #              when no decisive duel verdict is fresh within duel.rematch_days).
         # The pooled crown STATISTIC is always computed and displayed either way; the policy
         # only selects which verdict automation acts on. One policy, one follower, one write
         # path — engines (race/duel) only measure and adjudicate.
-        "policy": "pooled",
+        "policy": "fused",
         # Which verdict ORDERS the field: "ring" (default) or "pooled" (the old behaviour).
         #
         # A duel round is a paired, interleaved comparison under shared weather — a
@@ -334,6 +338,16 @@ DEFAULT_CONFIG: dict = {
         # matchmaking (that would make the ladder circular) or Explore (whose model is
         # fitted in pooled-Overall space) — see `crowning.rank_field`.
         "ranking": "ring",
+    },
+    # The fused ranking (the Overall page). `slack` is τ, the pooled slack in Overall
+    # points: how far a pooled median may sit from the truth for reasons more iterations
+    # never fix (weather, time of day, instrument drift). None = MEASURED from the ledger
+    # (how much pooled differences disagree with the ring's beyond both error bars); a
+    # number pins it, for comparison. 0 makes the ring unable to move a well-measured
+    # pooled median (the old pooled crown); a large value hands the top of the table to
+    # the ring alone (the old duel champion).
+    "overall_ranking": {
+        "slack": None,
     },
     # Interleaved head-to-head duel ladder (the adjudication engine): strict A/B/A/B
     # alternation, paired verdicts via a sequential test that stops the moment a matchup is
@@ -643,10 +657,22 @@ def _upgrade_winner_by_rating(stored: dict) -> dict | None:
     return None
 
 
+def _upgrade_fused_crowning_policy(stored: dict) -> dict | None:
+    """The crowning policy used to be a switch between the pooled crown and the duel
+    champion; the fused ranking is fitted over both and is the shipped default. An install
+    still on the old default ("pooled", which the Follow-best popover stores the moment a
+    chip is pressed) is moved onto it; one that chose "duel" chose that and keeps it."""
+    c = stored.get("crown_follow") or {}
+    if c.get("policy") == "pooled":
+        return {"crown_follow": {"policy": "fused"}}
+    return None
+
+
 CONFIG_UPGRADES: list[tuple[str, Callable[[dict], dict | None]]] = [
     ("duel-rounds-of-five", _upgrade_rounds_of_five),
     ("duel-balanced-stopping-rule", _upgrade_balanced_stopping_rule),
     ("duel-winner-by-rating", _upgrade_winner_by_rating),
+    ("crown-policy-fused", _upgrade_fused_crowning_policy),
 ]
 
 

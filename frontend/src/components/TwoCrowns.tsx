@@ -13,7 +13,7 @@
 // prompt to look — not an error. Only the one marked "following" is what automation
 // acts on, which is the crowning policy's job (top-bar Follow best).
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link as RouterLink, useNavigate } from "react-router-dom";
 import Box from "@mui/material/Box";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
@@ -168,7 +168,10 @@ export default function TwoCrowns() {
             <Typography variant="h6">The two crowns</Typography>
             <Typography variant="caption" color="text.secondary">
               Two ways of naming the best profile — the all-history standings and the
-              head-to-head ring. Only the "following" one is applied.
+              head-to-head ring.{" "}
+              {governing.source === "fused"
+                ? "Automation follows neither alone: it acts on the fused ranking that fits both together."
+                : 'Only the "following" one is applied.'}
             </Typography>
           </Box>
           {agree && (
@@ -255,6 +258,27 @@ export default function TwoCrowns() {
             />
           )}
         </Stack>
+
+        {governing.source === "fused" && (
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
+            <Chip size="small" color="primary" label="following · Overall ranking" sx={{ height: 20 }} />
+            <Typography variant="caption" color="text.secondary">
+              {data.fused ? (
+                <>
+                  The fit names <b>{data.fused.name || data.fused.label || data.fused.fingerprint.slice(0, 8)}</b>
+                  {" "}(Overall {fmtNum(data.fused.fused, 1)} ± {fmtNum(data.fused.fused_se, 2)}
+                  {data.fused.tied_count ? `, ${data.fused.tied_count} tied` : ""}).{" "}
+                </>
+              ) : (
+                <>The fit names nobody yet, so the pooled crown stands in. </>
+              )}
+              <Link component={RouterLink} to="/overall" underline="hover">
+                See how on the Overall page
+              </Link>
+              .
+            </Typography>
+          </Stack>
+        )}
 
         {!agree && pooled && duel && (
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>

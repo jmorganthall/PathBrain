@@ -15,6 +15,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import Loading from "./components/Loading";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Overall = lazy(() => import("./pages/Overall"));
 const History = lazy(() => import("./pages/History"));
 const Trends = lazy(() => import("./pages/Trends"));
 const ShotgunSweep = lazy(() => import("./pages/ShotgunSweep"));
@@ -45,6 +46,7 @@ export default function App() {
         <Suspense fallback={<Loading />}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/overall" element={<Overall />} />
             <Route path="/history" element={<History />} />
             <Route path="/trends" element={<Trends />} />
             <Route path="/runs/:id" element={<RunDetail />} />
