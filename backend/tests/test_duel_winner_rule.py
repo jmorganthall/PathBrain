@@ -207,20 +207,26 @@ def test_the_upgrade_moves_only_the_old_defaults_and_runs_once():
             # exactly the values the measurements replaced.
             save_config(s, {"duel": {"alpha": 0.10, "min_pairs": 3, "max_pairs": 12,
                                      "streak_wins": 3, "iterations_per_round": 3,
-                                     "crown_rule": "lineal", "min_margin": 0.0, "hour": 4}})
+                                     "crown_rule": "lineal", "min_margin": 0.0, "hour": 4},
+                            # …and on the pooled crowning policy, the old default the
+                            # popover stored the moment a chip was pressed.
+                            "crown_follow": {"policy": "pooled"}})
             applied = upgrade_config(s)
             assert applied == ["duel-rounds-of-five", "duel-balanced-stopping-rule",
-                               "duel-winner-by-rating"]
+                               "duel-winner-by-rating", "crown-policy-fused"]
             d = get_config(s)["duel"]
             assert d["iterations_per_round"] == 5 and d["crown_rule"] == "rating"
             assert preset_for(d) == "balanced"
             assert d["hour"] == 4 and d["min_margin"] == 0.0, "untouched fields stay"
+            assert get_config(s)["crown_follow"]["policy"] == "fused"
             # Recorded, so the next start does nothing — even after a hand edit back.
             assert set(applied_upgrades(s)) == set(applied)
-            save_config(s, {"duel": {"iterations_per_round": 3, "crown_rule": "lineal"}})
+            save_config(s, {"duel": {"iterations_per_round": 3, "crown_rule": "lineal"},
+                            "crown_follow": {"policy": "pooled"}})
             assert upgrade_config(s) == []
             d = get_config(s)["duel"]
             assert d["iterations_per_round"] == 3 and d["crown_rule"] == "lineal"
+            assert get_config(s)["crown_follow"]["policy"] == "pooled"
     finally:
         _reset_upgrades()
 
@@ -231,13 +237,15 @@ def test_the_upgrade_leaves_a_deliberate_choice_alone():
         with session_scope() as s:
             save_config(s, {"duel": {"alpha": 0.10, "min_pairs": 5, "max_pairs": 20,
                                      "streak_wins": 0,  # the quick preset
-                                     "iterations_per_round": 4, "crown_rule": "rating_floor"}})
+                                     "iterations_per_round": 4, "crown_rule": "rating_floor"},
+                            "crown_follow": {"policy": "duel"}})
             assert upgrade_config(s) == []
             d = get_config(s)["duel"]
             assert preset_for(d) == "quick"
             assert d["iterations_per_round"] == 4 and d["crown_rule"] == "rating_floor"
+            assert get_config(s)["crown_follow"]["policy"] == "duel"
             # Every upgrade is still recorded as considered.
-            assert len(applied_upgrades(s)) == 3
+            assert len(applied_upgrades(s)) == 4
     finally:
         _reset_upgrades()
 
@@ -248,7 +256,7 @@ def test_the_upgrade_leaves_a_fresh_install_alone():
         with session_scope() as s:
             assert upgrade_config(s) == []
             assert s.get(AppConfig, CONFIG_KEY) is None, "nothing was written to config"
-            assert len(applied_upgrades(s)) == 3
+            assert len(applied_upgrades(s)) == 4
             d = get_config(s)["duel"]
             assert d["iterations_per_round"] == DEFAULT_ITERATIONS_PER_ROUND
             assert d["crown_rule"] == RATING_RULE and preset_for(d) == "balanced"

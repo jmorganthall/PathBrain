@@ -22,13 +22,17 @@ from .logging_config import get_logger
 
 log = get_logger("crowning")
 
-POLICIES = ("pooled", "duel")
+#: ``"fused"`` (the default) is the one ranking fitted over BOTH records — the pooled medians
+#: as anchors, every ring round as a paired difference (`overall_ranking`). ``"pooled"`` and
+#: ``"duel"`` are its two corners, kept selectable so the three can be compared on one field.
+POLICIES = ("fused", "pooled", "duel")
+DEFAULT_POLICY = "fused"
 
 
 def active_policy(session) -> str:
     cfg = get_config(session).get("crown_follow", {}) or {}
-    policy = str(cfg.get("policy", "pooled") or "pooled").lower()
-    return policy if policy in POLICIES else "pooled"
+    policy = str(cfg.get("policy", DEFAULT_POLICY) or DEFAULT_POLICY).lower()
+    return policy if policy in POLICIES else DEFAULT_POLICY
 
 
 def resolve(session, pooled_best_fp: str | None) -> dict:
@@ -51,6 +55,37 @@ def resolve(session, pooled_best_fp: str | None) -> dict:
     # because the ladder paused for an afternoon.
     freshness = duel_mod.champion_freshness_days(get_config(session).get("duel", {}) or {})
     champion = duel_mod.latest_champion(session, max_age_days=freshness)
+
+    if policy == "fused":
+        from . import overall_ranking
+
+        fused = None
+        try:
+            fused = overall_ranking.crown(session)
+        except Exception:  # noqa: BLE001 — a failed fit falls back, it never stops the follower
+            log.warning("Crowning: the fused ranking could not be computed", exc_info=True)
+        if fused and fused.get("fingerprint"):
+            return {
+                "policy": policy,
+                "fingerprint": fused["fingerprint"],
+                "source": "fused",
+                "detail": (
+                    f"fused ranking — Overall {fused['fused']:.1f} ± {fused['fused_se']:.2f}"
+                    + (f", leads by {fused['lead']:.2f}" if fused.get("lead") is not None else "")
+                    + (" (clear)" if fused.get("clear") else
+                       f" ({fused.get('tied_count') or 0} tied)" if fused.get("lead") is not None else "")
+                ),
+                "duel_champion": champion,
+                "fused": fused,
+            }
+        return {
+            "policy": policy,
+            "fingerprint": pooled_best_fp,
+            "source": "pooled",
+            "detail": "the fused ranking names nobody yet — falling back to the pooled crown",
+            "duel_champion": champion,
+            "fused": None,
+        }
 
     if policy == "duel":
         if champion and champion.get("decisive"):
@@ -85,6 +120,7 @@ def resolve(session, pooled_best_fp: str | None) -> dict:
 
 __all__ = [
     "POLICIES",
+    "DEFAULT_POLICY",
     "RANKINGS",
     "RING_SOURCE",
     "POOLED_SOURCE",

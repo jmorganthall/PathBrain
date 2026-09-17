@@ -3855,11 +3855,26 @@ def crowns(session: Session = Depends(get_session)) -> dict:
     if duel_out:
         duel_out["name"] = call_signs.get(duel_out["fingerprint"])
 
+    # The fused verdict (the Overall page's crown) — present whatever the policy, so the
+    # card can show all three names and say which one automation follows.
+    fused_out = None
+    fused = resolution.get("fused")
+    if fused is None and resolution["policy"] != "fused":
+        try:
+            from .. import overall_ranking
+
+            fused = overall_ranking.crown(session)
+        except Exception:  # noqa: BLE001 — a reading, never a reason the card fails
+            log.debug("Two-crowns: the fused crown could not be read", exc_info=True)
+    if fused:
+        fused_out = {**fused, "name": fused.get("name") or call_signs.get(fused["fingerprint"])}
+
     last = crown_follower.status().get("last_result") or {}
     return {
         "policy": resolution["policy"],
         "pooled": pooled,
         "duel": duel_out,
+        "fused": fused_out,
         # Which verdict automation currently follows, and whether it fell back.
         "governing": {
             "source": resolution["source"],
@@ -3988,8 +4003,6 @@ def crown_follow_update(
             )
         updates["interval_minutes"] = interval
     if "policy" in (body or {}):
-        from .. import crowning
-
         policy = str(body["policy"] or "").lower()
         if policy not in crowning.POLICIES:
             raise HTTPException(
@@ -4007,7 +4020,7 @@ def crown_follow_update(
         "config": {
             "enabled": bool(cfg.get("enabled", False)),
             "interval_minutes": float(cfg.get("interval_minutes", 360) or 360),
-            "policy": str(cfg.get("policy", "pooled") or "pooled"),
+            "policy": crowning.active_policy(session),
         }
     }
 

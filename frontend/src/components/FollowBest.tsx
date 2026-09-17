@@ -22,7 +22,7 @@ import Typography from "@mui/material/Typography";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 
 import { api } from "../api/client";
-import type { CrownFollowStatus } from "../api/types";
+import type { CrownFollowStatus, CrowningPolicy } from "../api/types";
 import { fmtTimeShort } from "../utils/format";
 
 const POLL_MS = 60_000;
@@ -56,9 +56,9 @@ export default function FollowBest() {
   }, [load]);
 
   const enabled = info?.config.enabled ?? false;
-  const policy = info?.config.policy ?? "pooled";
+  const policy = info?.config.policy ?? "fused";
 
-  const setPolicy = (next: "pooled" | "duel") => {
+  const setPolicy = (next: CrowningPolicy) => {
     if (next === policy) return;
     setBusy(true);
     setInfo((v) => (v ? { ...v, config: { ...v.config, policy: next } } : v));
@@ -69,7 +69,9 @@ export default function FollowBest() {
           msg:
             next === "duel"
               ? "Crowning policy: duel champion — the follower acts on head-to-head verdicts (pooled fallback)."
-              : "Crowning policy: pooled Overall — the follower acts on the all-time crown.",
+              : next === "fused"
+                ? "Crowning policy: fused ranking — the follower acts on the pooled record and the ring fitted together (the Overall page)."
+                : "Crowning policy: pooled Overall — the follower acts on the all-time crown.",
           sev: "info",
         });
         load();
@@ -134,7 +136,7 @@ export default function FollowBest() {
   const followedName =
     last?.governing_name || last?.governing_label || last?.crown_name || followedFp;
   const followedLabel = last?.governing_label ?? last?.crown_label ?? null;
-  const followedSource = last?.governing_source ?? "pooled";
+  const followedSource = last?.governing_source ?? "fused";
   const pooledDiffers = !!(
     last?.crown_fingerprint &&
     followedFp &&
@@ -229,7 +231,17 @@ export default function FollowBest() {
             <Typography variant="caption" color="text.secondary">
               Crowning policy
             </Typography>
-            <Stack direction="row" spacing={0.75} sx={{ mt: 0.5 }}>
+            <Stack direction="row" spacing={0.75} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
+              <Tooltip title="Act on the one ranking fitted over BOTH records — each profile's pooled median, corrected by every head-to-head round it fought. The default; the other two are its corners. See the Overall page.">
+                <Chip
+                  size="small"
+                  label="Fused (both)"
+                  color={policy === "fused" ? "warning" : "default"}
+                  variant={policy === "fused" ? "filled" : "outlined"}
+                  onClick={() => setPolicy("fused")}
+                  disabled={busy}
+                />
+              </Tooltip>
               <Tooltip title="Act on the all-time pooled Overall argmax — the stable, weather-averaged map of the whole field.">
                 <Chip
                   size="small"
@@ -282,11 +294,15 @@ export default function FollowBest() {
               shown, demoted, because it is the tracked statistic the churn stats count. */}
           <Box>
             <Typography variant="caption" color="text.secondary">
-              {followedSource === "duel"
-                ? "Following · duel champion"
-                : policy === "duel"
-                  ? "Following · pooled crown (no fresh duel verdict)"
-                  : "Following · pooled crown"}
+              {followedSource === "fused"
+                ? "Following · fused ranking"
+                : followedSource === "duel"
+                  ? "Following · duel champion"
+                  : policy === "duel"
+                    ? "Following · pooled crown (no fresh duel verdict)"
+                    : policy === "fused"
+                      ? "Following · pooled crown (the fused ranking names nobody yet)"
+                      : "Following · pooled crown"}
             </Typography>
             {followedFp ? (
               <>

@@ -1726,13 +1726,16 @@ export type AiStreamEvent =
 
 // ── Crown follower ("Follow best") ─────────────────────────────────────────────────
 
+export type CrowningPolicy = "fused" | "pooled" | "duel";
+
 export interface CrownFollowConfig {
   enabled: boolean;
   interval_minutes: number;
   // The first-class CROWNING POLICY: which verdict the follower acts on.
+  // "fused" = the one ranking fitted over both records (the Overall page, the default);
   // "pooled" = the all-time Overall argmax; "duel" = the duel ladder's fresh champion
   // (pooled fallback when no decisive fresh verdict exists).
-  policy: "pooled" | "duel";
+  policy: CrowningPolicy;
 }
 
 // The duel ladder's latest fresh champion (crowning candidate under policy "duel").
@@ -1766,7 +1769,7 @@ export interface CrownCheckResult {
   governing_fingerprint?: string | null;
   governing_label?: string | null;
   governing_name?: string | null;
-  governing_source?: "pooled" | "duel";
+  governing_source?: "fused" | "pooled" | "duel";
   governing_detail?: string;
   duel_champion?: DuelChampion | null;
   live_fingerprint: string | null;
@@ -1868,13 +1871,15 @@ export interface DuelCrown {
 }
 
 export interface CrownsOut {
-  policy: "pooled" | "duel";
+  policy: CrowningPolicy;
   pooled: PooledCrown | null;
   duel: DuelCrown | null;
+  // The fused verdict (the Overall page's crown), whatever the policy.
+  fused: FusedCrown | null;
   // Champion's live pooled Overall minus the crown's — how far apart the two verdicts
   // sit on the one scale they share. Null until both have a live Overall.
   overall_delta?: number | null;
-  governing: { source: "pooled" | "duel"; fingerprint: string | null; detail: string };
+  governing: { source: "fused" | "pooled" | "duel"; fingerprint: string | null; detail: string };
   agree: boolean;
   follow_enabled: boolean;
   on_crown: boolean | null;
@@ -4256,4 +4261,136 @@ export interface ProfileSettingsView {
   dropped: ReachabilityDiff[];
   can_exist: boolean;
   verdict: string;
+}
+
+
+// ── The Overall page: one ranking from both kinds of evidence ───────────────────────
+// `GET /overall`. Every profile's Overall fitted from its pooled median AND every
+// head-to-head round it fought, with an error bar from both. The crown it names is what
+// the "fused" crowning policy acts on.
+
+export interface FusedCrown {
+  fingerprint: string;
+  name: string | null;
+  label: string | null;
+  fused: number;
+  fused_se: number;
+  lead: number | null;
+  clear: boolean | null;
+  tied_count: number | null;
+  computed_at?: string | null;
+}
+
+export interface OverallProfile {
+  fingerprint: string;
+  name: string | null;
+  label: string | null;
+  // The fused Overall and its standard error (both records, covariance included).
+  fused: number;
+  fused_se: number;
+  // The pooled median and its SE (IQR/√n); null for a profile the field never scored.
+  pooled: number | null;
+  pooled_se: number | null;
+  iterations: number;
+  // Ring evidence: rounds fought and distinct opponents.
+  rounds: number;
+  opponents: number;
+  // fused − pooled: how far the ring moved this profile. Null without a pooled median.
+  ring_pull: number | null;
+  // What the ring alone would say (τ → ∞); null for a profile the ring never fought.
+  ring_only: number | null;
+  confident: boolean;
+  is_sqm_off: boolean;
+  eligible: boolean;
+  pooled_rank: number | null;
+  fused_rank: number | null;
+  // pooled_rank − fused_rank: positive = climbed once the ring was heard.
+  moved: number | null;
+  tied_with_leader?: boolean;
+  gap_to_leader?: number;
+  gap_se?: number;
+  rounds_to_separate?: number | null;
+}
+
+export interface OverallCorner {
+  fingerprint: string;
+  name: string | null;
+  label: string | null;
+  kind: "pooled" | "ring" | "fused";
+  fused: number;
+  pooled: number | null;
+  iterations: number;
+  rounds: number;
+  rating?: number | null;
+  rating_se?: number | null;
+}
+
+export interface OverallSlack {
+  tau: number;
+  pairs: number;
+  basis: "measured" | "default" | "config" | "what_if";
+  excess_var: number | null;
+  expected_var: number | null;
+  needed_pairs: number;
+  measured_tau?: number | null;
+}
+
+export interface OverallInputs {
+  pooled_profiles: number;
+  pooled_iterations: number;
+  ring_rounds: number;
+  ring_matches: number;
+  ring_sessions: number;
+  ring_profiles: number;
+  excluded_other_methodology: number;
+  unstamped_matches: number;
+  weather_shifted_rounds: number;
+  sigma_round: number;
+  sigma_basis: "measured" | "fallback";
+  noise: { sigma: number; matchups: number; rounds: number; method?: string } | null;
+  slack: OverallSlack;
+}
+
+export interface OverallBacktest {
+  sessions: number;
+  matches: number;
+  rounds: number;
+  mae: { pooled: number; ring: number; fused: number };
+  best: "pooled" | "ring" | "fused";
+  // best = the fit predicts at least as well as either parent; close = within the check's
+  // own noise of the better parent; worse = a clear loss, said so on the page.
+  standing: "best" | "close" | "worse";
+  sentence: string;
+}
+
+export interface OverallOut {
+  methodology: string;
+  overall_method: string;
+  min_iterations: number;
+  tie_sigma: number;
+  best: OverallProfile | null;
+  runner_up: OverallProfile | null;
+  lead: number | null;
+  noise_bar: number | null;
+  clear: boolean | null;
+  tied: OverallProfile[];
+  tied_count: number;
+  rounds_to_settle: number | null;
+  vs_sqm_off: number | null;
+  sqm_off_overall: number | null;
+  live: OverallProfile | null;
+  on_firewall: boolean | null;
+  confident_profiles: number;
+  verdict: string;
+  profiles: OverallProfile[];
+  inputs: OverallInputs | Record<string, never>;
+  corners: {
+    pooled: OverallCorner | null;
+    ring: OverallCorner | null;
+    fused: OverallCorner | null;
+    agree: boolean;
+  } | Record<string, never>;
+  movers: OverallProfile[];
+  backtest: OverallBacktest | null;
+  computed_at: string;
 }

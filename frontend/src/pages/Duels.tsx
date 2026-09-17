@@ -76,6 +76,7 @@ import type {
   Job,
   PortableStandings,
   DecidabilityReport,
+  CrowningPolicy,
 } from "../api/types";
 import { Countdown, JobProgressBar, useSmoothProgress } from "../components/JobStatus";
 import { fmtDateTime, fmtNum } from "../utils/format";
@@ -1723,7 +1724,7 @@ export default function Duels() {
   const [table, setTable] = useState<DuelStandings | null>(null);
   const [crowns, setCrowns] = useState<CrownsOut | null>(null);
   const [ledger, setLedger] = useState<DuelSession[]>([]);
-  const [policy, setPolicy] = useState<"pooled" | "duel" | null>(null);
+  const [policy, setPolicy] = useState<CrowningPolicy | null>(null);
   // On-demand runs are also set by end time ("duel until 06:00"); the minutes the API
   // wants are derived from the clock at the moment you press the button.
   const [untilClock, setUntilClock] = useState<string | null>(null);

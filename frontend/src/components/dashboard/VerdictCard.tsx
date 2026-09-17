@@ -21,6 +21,10 @@
 //     important question when it is the small one.
 //   • **It never offers a firewall change.** It says what to run and whether you are
 //     running it; applying is the crowning policy's decision and lives behind the profile.
+//
+// The answer is the FUSED ranking (`GET /overall`, the Overall page): the pooled record
+// and the ring fitted together, so the card and the page can never name different
+// profiles. The pooled-only reading survives as one corner on that page.
 import { useCallback, useEffect, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import Box from "@mui/material/Box";
@@ -34,16 +38,16 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 
 import { api } from "../../api/client";
-import type { VerdictOut, VerdictProfile } from "../../api/types";
+import type { OverallOut, OverallProfile } from "../../api/types";
 import { fmtNum } from "../../utils/format";
 import { sopsColor } from "../../theme";
 
-const nameOf = (p: VerdictProfile) => p.name || p.label || p.fingerprint.slice(0, 8);
+const nameOf = (p: OverallProfile) => p.name || p.label || p.fingerprint.slice(0, 8);
 
 /** One "tied with the leader" pill, linking to the profile it names. */
-function TiedChip({ p }: { p: VerdictProfile }) {
+function TiedChip({ p }: { p: OverallProfile }) {
   return (
-    <Tooltip title={`Overall ${fmtNum(p.overall, 1)} over ${p.iterations} iterations`}>
+    <Tooltip title={`Overall ${fmtNum(p.fused, 1)} ± ${fmtNum(p.fused_se, 2)} · ${p.iterations} iterations, ${p.rounds} rounds in the ring`}>
       <Chip
         size="small"
         variant="outlined"
@@ -57,11 +61,11 @@ function TiedChip({ p }: { p: VerdictProfile }) {
 }
 
 export default function VerdictCard() {
-  const [data, setData] = useState<VerdictOut | null>(null);
+  const [data, setData] = useState<OverallOut | null>(null);
 
   const load = useCallback(async () => {
     try {
-      setData(await api.verdict());
+      setData(await api.overall({ backtest: false }));
     } catch {
       /* transient — the card stays hidden rather than showing a broken answer */
     }
@@ -121,8 +125,9 @@ export default function VerdictCard() {
                 </Box>
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                Best of {data.confident_profiles} profile{data.confident_profiles === 1 ? "" : "s"} measured
-                to {data.min_iterations}+ iterations · {best.iterations} iterations here
+                Best of {data.confident_profiles} profile{data.confident_profiles === 1 ? "" : "s"} with enough
+                evidence · {best.iterations} iterations
+                {best.rounds ? ` + ${best.rounds} ring round${best.rounds === 1 ? "" : "s"}` : ", never fought in the ring"}
               </Typography>
             </Box>
           </Stack>
@@ -131,11 +136,11 @@ export default function VerdictCard() {
               "what should I run" is much less useful without "and are you running it". */}
           <Stack direction="row" spacing={2} alignItems="center" sx={{ flexShrink: 0 }}>
             <Box sx={{ textAlign: "center" }}>
-              <Typography variant="h4" sx={{ fontWeight: 700, color: sopsColor(best.overall), lineHeight: 1 }}>
-                {fmtNum(best.overall, 1)}
+              <Typography variant="h4" sx={{ fontWeight: 700, color: sopsColor(best.fused), lineHeight: 1 }}>
+                {fmtNum(best.fused, 1)}
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                Overall
+                ± {fmtNum(best.fused_se, 2)} Overall
               </Typography>
             </Box>
             {data.on_firewall != null && (
@@ -169,8 +174,8 @@ export default function VerdictCard() {
             <Tooltip
               title={
                 clear
-                  ? "The lead is larger than the run-to-run noise in both medians — a real ordering."
-                  : "The lead is inside the run-to-run noise in the two medians, so the ordering is not demonstrated. The higher median still wins; it just hasn't been shown to."
+                  ? "The lead is larger than the combined noise of the pooled record and the ring — a real ordering."
+                  : "The lead is inside the combined noise, so the ordering is not demonstrated. The higher fused Overall still wins; it just hasn't been shown to."
               }
             >
               <Chip
@@ -191,18 +196,29 @@ export default function VerdictCard() {
               />
             </Tooltip>
           )}
-          {data.resolves != null && (
-            <Tooltip title="The smallest Overall gap the duel ladder can settle at its current round noise and pair cap. A real difference below this cannot reach a verdict there, however long it runs.">
+          {data.rounds_to_settle != null && data.rounds_to_settle > 0 && (
+            <Tooltip title="Head-to-head rounds between the top two that would settle the order, if the gap holds — what a duel night buys.">
               <Chip
                 size="small"
                 variant="outlined"
                 component={RouterLink}
                 to="/duels"
                 clickable
-                label={`ring resolves ${fmtNum(data.resolves, 2)}`}
+                label={`~${data.rounds_to_settle} round${data.rounds_to_settle === 1 ? "" : "s"} would settle it`}
               />
             </Tooltip>
           )}
+          <Tooltip title="How this was decided: the pooled record and the head-to-head ring fitted together, with what each said alone.">
+            <Chip
+              size="small"
+              variant="outlined"
+              color="primary"
+              component={RouterLink}
+              to="/overall"
+              clickable
+              label="how this was decided"
+            />
+          </Tooltip>
         </Stack>
 
         {tiedCount > 0 && (
@@ -220,7 +236,7 @@ export default function VerdictCard() {
                   size="small"
                   variant="outlined"
                   component={RouterLink}
-                  to="/settings"
+                  to="/overall"
                   clickable
                   label={`+${tiedCount - tied.length} more`}
                 />

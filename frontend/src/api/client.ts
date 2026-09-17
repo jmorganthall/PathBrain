@@ -106,6 +106,8 @@ import type {
   LeverCampaign,
   LeverCampaignStatus,
   DecidabilityReport,
+  OverallOut,
+  CrowningPolicy,
 } from "./types";
 
 // Minutes to add to UTC to reach the viewer's local time. getTimezoneOffset()
@@ -503,6 +505,23 @@ export const api = {
   // anything. Deliberately cheap — it reads the per-profile rollup, never a field pass.
   verdict: () => request<VerdictOut>("/settings/verdict"),
 
+  // The Overall page: one ranking fitted over the pooled record and the ring together.
+  // `slack` is a what-if re-fit (changes nothing stored); `backtest` off skips the
+  // held-out predictive check for a quicker read (the Dashboard card).
+  overall: (opts?: { slack?: number | null; backtest?: boolean }) => {
+    const q = new URLSearchParams();
+    if (opts?.slack != null) q.set("slack", String(opts.slack));
+    if (opts?.backtest === false) q.set("backtest", "false");
+    const qs = q.toString();
+    return request<OverallOut>(`/overall${qs ? `?${qs}` : ""}`);
+  },
+  overallConfig: () => request<{ slack: number | null; default_slack: number }>("/overall/config"),
+  overallConfigUpdate: (slack: number | null) =>
+    request<{ slack: number | null; default_slack: number }>("/overall/config", {
+      method: "PUT",
+      body: JSON.stringify({ slack }),
+    }),
+
   // Crown follower ("Follow best"): status + churn stats, config toggle, and a manual sync.
   crowns: () => request<CrownsOut>("/settings/crowns"),
   profileRename: (fingerprint: string, name: string) =>
@@ -511,7 +530,7 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ name }) }
     ),
   crownFollow: () => request<CrownFollowStatus>("/settings/crown-follow"),
-  crownFollowUpdate: (body: { enabled?: boolean; interval_minutes?: number; policy?: "pooled" | "duel" }) =>
+  crownFollowUpdate: (body: { enabled?: boolean; interval_minutes?: number; policy?: CrowningPolicy }) =>
     request<{ config: CrownFollowConfig }>("/settings/crown-follow", {
       method: "POST",
       body: JSON.stringify(body),

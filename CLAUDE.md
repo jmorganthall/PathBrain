@@ -2705,6 +2705,72 @@ LLM-based. See `README.md` for the product overview.
     transition, Explore prices that move from the ring's paired margin before any pooled
     evidence — `explore.ring_transitions`, under `explore.py`.) `ranking = "pooled"` restores
     the former behaviour for comparison.
+  - `overall_ranking.py` — **one ranking from both kinds of evidence** (`GET /api/overall`,
+    the **Overall** page, `Overall.tsx` / `/overall`; the Dashboard's verdict card reads the
+    same endpoint, so the card and the page can never name different profiles). Asked, after
+    the crowning card kept reading *"either the duel champion or the pooled Overall"*:
+    *"how do we take both sets of data — the random pooled data and the head to head — to
+    generate a new ranking?"* The two verdicts are two measurements of one quantity. The
+    **pooled** Overall measures each profile's *level* over thousands of iterations — a tiny
+    error bar, and a weather bias nobody could read off it, because the firewall sits on one
+    profile for hours and each profile samples its own slice of conditions. The **ring**
+    measures the *difference* between two profiles back to back under shared weather —
+    unbiased, and a handful of rounds wide. So they are fitted **together**, as one weighted
+    least-squares problem: `Σ (θ_i − μ_i)²/(SE_i² + τ²)` over the pooled anchors (each
+    profile's rollup median and IQR/√n, the same `_grade_medians` arithmetic as the verdict
+    card) plus `Σ (θ_b − θ_a − d)²/σ²` over every ring round (`d` = the match record's stored
+    `deltas`, challenger minus reference, already in Overall points; `σ` = the ring's own
+    `decidability.round_noise`). Solved only over the profiles the ring has fought (a few
+    dozen — pure-Python Cholesky, the inverse gives every profile a standard error and every
+    pair a covariance), everyone else drops straight out as pooled-plus-slack, so the
+    endpoint costs ~20 ms and the card renders on the Dashboard. Three properties, each
+    pinned in `test_overall_ranking`: **no rounds → the pooled ranking exactly** (the ring
+    only ever moves a pooled median, it never invents one); **τ is the whole argument, as a
+    number** — at τ = 0 a 3000-iteration median is immovable and the ring changes nothing
+    (the old pooled crown), at τ → ∞ only the ring speaks (the old duel champion), so the
+    two verdicts the user had been choosing between are the corners of one fit; and **τ is
+    measured, not chosen** (`pooled_slack`): where the ring has fought a pair, the pooled
+    difference and the ring's difference are two readings of one gap and the ring's is
+    unbiased, so `Var(pooled Δ − ring Δ) = SE_a² + SE_b² + σ²/n + 2τ²` solved for τ over
+    every fought pair (a median of squares, so one failed leg's margin cannot set it; under
+    `MIN_SLACK_PAIRS` it falls back to `DEFAULT_SLACK` = 0.5 and the page says *default*;
+    `config.overall_ranking.slack` pins it for comparison, and the page's slider is the
+    what-if — `?slack=` re-fits without storing). The crown is the argmax of the fused
+    Overall among profiles with enough evidence on **either** record (`min_iterations`
+    pooled, or `MIN_RING_ROUNDS_FOR_CROWN` = 8 rounds), SQM off excluded; "tied" is the
+    same `crown_tie_sigma` test on the SE of the fused *difference* (covariance included —
+    two profiles the ring fought share evidence, so their gap is known better than their
+    bars suggest), and `rounds_to_separate` says what a duel night would buy. The page
+    leads with the sentence, then the **three corners** (pooled alone / ring alone /
+    together, with a line saying which corrected which), **what went in** (profiles,
+    rounds, round noise, slack — each with its basis), a dot-and-whisker of the top of the
+    table with the pooled position drawn hollow beside each fused dot, **what the ring
+    changed** (the biggest rank moves, on how many rounds), every profile, and the
+    **predictive check** (`predictive_check`: leave-one-session-out — refit without each
+    recent session and predict its margins three ways; the fit is reported *best*, *close*
+    (within `BACKTEST_CLOSE_ABS`/`_REL` of the better parent — the check's own noise) or
+    *worse*, in words). **Measured before shipping** (`scripts/sim_overall_ranking.py`: a
+    tight simulated field, a pooled record with a hidden per-profile bias, a ladder seating
+    the pooled crown against its nearest rivals, 150 worlds × 30 nights, τ measured from the
+    data): with no pooled bias the pooled crown is right 100% and fused converges to 98% by
+    night 30 (ring alone 84%); at 0.6 points of bias pooled is right 35% flat while ring and
+    fused reach 85/83%; at 1.5 points, 21% vs 75/76%. Neither parent is the better one across
+    conditions and the fit tracks whichever is, within the simulation's ±4% — which is the
+    reason to fuse rather than switch. **The crowning policy acts on it**: `crown_follow.policy
+    = "fused"` is the default (`crowning.DEFAULT_POLICY`; `upgrade_config` moves an install
+    stored on the old default "pooled" onto it, a deliberate "duel" is kept), `crowning.resolve`
+    reads `overall_ranking.crown` with the pooled crown as the fallback when the fit names
+    nobody, the crowns card says *following · fused ranking* with the pooled crown and the
+    duel champion demoted to *for reference*, and the Follow-best popover carries the third
+    chip. Two deliberate exclusions, unchanged from `rank_field`'s: the **duel's matchmaking
+    keeps reading the pooled crown** (the ladder stays the independent check — this fit
+    choosing who the ring fights would make the ring's evidence about the ring's own
+    choices) and **Explore keeps branching from the pooled best** (its model is fitted in
+    pooled-Overall space). Stated limits: consecutive rounds share a belt leg (correlation
+    ≈1/6, so the ring's bars run slightly tight), τ is global rather than per profile (the
+    per-profile `weather_severity` could set it individually — a v2), and rounds fought under
+    another methodology are excluded (their margins are on another scale) while pre-stamp
+    matches are kept and counted as *unstamped*. Read-only; nothing here changes a score.
   - `verdict.py` — **which profile should I run?** (`GET /api/settings/verdict`, the card at
     the top of the Dashboard). PathBrain measured a great deal and said so in pieces: the
     two crowns side by side with *following* / *for reference* chips, the ring's #1 as a

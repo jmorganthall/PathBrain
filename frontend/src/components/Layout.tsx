@@ -24,6 +24,7 @@ import { useTheme } from "@mui/material/styles";
 import MenuIcon from "@mui/icons-material/Menu";
 import HubIcon from "@mui/icons-material/Hub";
 import DashboardIcon from "@mui/icons-material/SpaceDashboard";
+import OverallIcon from "@mui/icons-material/EmojiEvents";
 import HistoryIcon from "@mui/icons-material/Timeline";
 import TrendsIcon from "@mui/icons-material/CalendarMonth";
 import CompareIcon from "@mui/icons-material/CompareArrows";
@@ -328,6 +329,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { label: "Dashboard", to: "/", icon: <DashboardIcon /> },
+  { label: "Overall", to: "/overall", icon: <OverallIcon /> },
   { label: "History", to: "/history", icon: <HistoryIcon /> },
   { label: "Trends", to: "/trends", icon: <TrendsIcon /> },
   { label: "Weather", to: "/weather", icon: <WeatherIcon /> },
