@@ -2667,15 +2667,19 @@ LLM-based. See `README.md` for the product overview.
     of the identity: two attempts that landed on **different** profiles measured different things
     and stay separate — a disagreement worth seeing.
   - `crowning.py` — **the first-class CROWNING POLICY**: the single resolver for "which
-    verdict governs what automation applies". `crown_follow.policy` = **"pooled"** (the
-    all-time Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
-    `duel.latest_champion`, with pooled fallback). One policy, one write path: engines
-    (race/duel) only measure and adjudicate; `crowning.resolve` selects; the **crown
+    verdict governs what automation applies". `crown_follow.policy` = **"fused"** (the
+    default: the one ranking fitted over both records, `overall_ranking.crown`, with the
+    pooled crown as the fallback when the fit names nobody), **"pooled"** (the all-time
+    Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
+    `duel.latest_champion`, with pooled fallback) — the last two are the fused fit's corners,
+    kept selectable so the three can be compared on one field. One policy, one write path:
+    engines (race/duel) only measure and adjudicate; `crowning.resolve` selects; the **crown
     follower** is the only component that writes the firewall. The pooled crown *statistic*
     is always computed, tracked (churn ledger) and displayed regardless of policy. The GUI
-    control is the top-bar **Follow best popover** ("Crowning policy" chips + both verdicts
+    control is the top-bar **Follow best popover** ("Crowning policy" chips + the verdicts
     side by side); the API surface rides `GET/POST /settings/crown-follow` (`policy`,
-    `policies`, `duel_champion`).
+    `policies`, `duel_champion`) and `GET /settings/crowns` carries `fused` beside `pooled`
+    and `duel`.
   - **The field's primary ordering: the ring first, pooled as the seed**
     (`crowning.rank_field`, `crown_follow.ranking`, default `"ring"`). A duel round is a
     **paired, interleaved, counterbalanced comparison under shared weather** — a controlled

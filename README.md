@@ -157,10 +157,20 @@ floor* (rating − 1 SE), because a claim to be best has to be earned. The **bel
 separate and lineal: you take it by beating whoever holds it.
 
 Duel *runs* flow into the pooled record like any others; duel *verdicts* live beside it
-and never enter the pooled score. Which verdict actually governs what gets written to
-the firewall is a single first-class setting — the **crowning policy** — and the two
-naming different profiles is not a bug to reconcile but the most informative thing on
-screen.
+and never enter the pooled score. The two naming different profiles is not a bug to
+reconcile but the most informative thing on screen — and it is no longer a choice to
+make by hand. The **Overall** page fits both records **together** as measurements of one
+quantity: each profile's pooled median is an anchor trusted to its own error bar plus a
+*measured* slack (how far pooled medians sit from the truth beyond their bars, read off
+the pairs where the ring and the pooled record measured the same gap), and every ring
+round is a paired, weather-free difference trusted to the ring's own measured noise. The
+result is one ranking with an honest error bar for every profile: a profile the ring
+never fought sits exactly where its pooled record puts it, and one the ring has fought is
+pulled toward what it did head to head in proportion to the rounds. At zero slack it is
+the old pooled crown; at infinite slack it is the old duel champion; the measured value
+sits wherever the evidence puts it. Which verdict governs what gets written to the
+firewall is a single first-class setting — the **crowning policy** — and the fused
+ranking is its default, with the two corners kept selectable for comparison.
 
 ---
 
@@ -294,8 +304,8 @@ screen.
   than confounded curves? — which then feeds back: the band a bet is ranked on is the *wider*
   of the model's stated band and that class's actual miss.
 - 👑 **Follow best** — a single **crowning policy** decides which verdict governs what gets
-  written to the firewall (the pooled crown, or the duel's champion), and one component does
-  the writing. Crown *tracking* is always on regardless, so the **churn ledger** — how often
+  written to the firewall (the fused Overall ranking by default; the pooled crown or the
+  duel's champion alone, for comparison), and one component does the writing. Crown *tracking* is always on regardless, so the **churn ledger** — how often
   the best profile changes, median reign, changes/day — accrues before you ever arm following.
   That's the number that says whether auto-following would thrash. It refuses to auto-apply
   "SQM off" and any profile the live firewall can't actually be driven to.
