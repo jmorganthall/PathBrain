@@ -70,7 +70,7 @@ export default function FollowBest() {
             next === "duel"
               ? "Crowning policy: duel champion — the follower acts on head-to-head verdicts (pooled fallback)."
               : next === "fused"
-                ? "Crowning policy: fused ranking — the follower acts on the pooled record and the ring fitted together (the Overall page)."
+                ? "Crowning policy: Overall ranking — the follower acts on the pooled record and the ring fitted together (the Overall page)."
                 : "Crowning policy: pooled Overall — the follower acts on the all-time crown.",
           sev: "info",
         });
@@ -235,7 +235,7 @@ export default function FollowBest() {
               <Tooltip title="Act on the one ranking fitted over BOTH records — each profile's pooled median, corrected by every head-to-head round it fought. The default; the other two are its corners. See the Overall page.">
                 <Chip
                   size="small"
-                  label="Fused (both)"
+                  label="Overall (both records)"
                   color={policy === "fused" ? "warning" : "default"}
                   variant={policy === "fused" ? "filled" : "outlined"}
                   onClick={() => setPolicy("fused")}
@@ -295,13 +295,13 @@ export default function FollowBest() {
           <Box>
             <Typography variant="caption" color="text.secondary">
               {followedSource === "fused"
-                ? "Following · fused ranking"
+                ? "Following · Overall ranking"
                 : followedSource === "duel"
                   ? "Following · duel champion"
                   : policy === "duel"
                     ? "Following · pooled crown (no fresh duel verdict)"
                     : policy === "fused"
-                      ? "Following · pooled crown (the fused ranking names nobody yet)"
+                      ? "Following · pooled crown (the Overall ranking names nobody yet)"
                       : "Following · pooled crown"}
             </Typography>
             {followedFp ? (

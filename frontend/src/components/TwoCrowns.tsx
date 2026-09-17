@@ -261,7 +261,7 @@ export default function TwoCrowns() {
 
         {governing.source === "fused" && (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
-            <Chip size="small" color="primary" label="following · fused ranking" sx={{ height: 20 }} />
+            <Chip size="small" color="primary" label="following · Overall ranking" sx={{ height: 20 }} />
             <Typography variant="caption" color="text.secondary">
               {data.fused ? (
                 <>
