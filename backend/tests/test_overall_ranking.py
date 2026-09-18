@@ -214,10 +214,20 @@ def test_the_endpoint_ranks_off_the_rollup_and_the_ledger(client):
         assert rows[_fp("lo")]["moved"] == 1 and rows[_fp("hi")]["moved"] == -1
         assert body["verdict"].startswith("Run ")
         assert "The ring changed who is on top." in body["verdict"]
-        # The what-if: at zero slack the pooled record holds the crown.
-        pinned = client.get("/api/overall", params={"slack": 0.0, "backtest": False}).json()
-        assert pinned["best"]["fingerprint"] == _fp("hi")
-        assert pinned["inputs"]["slack"]["basis"] == "what_if"
+        # There is no what-if and no knob: a `slack` query is ignored, the basis is only
+        # ever measured or default, and the old config endpoint is gone.
+        same = client.get("/api/overall", params={"slack": 0.0, "backtest": False}).json()
+        assert same["best"]["fingerprint"] == _fp("lo")
+        assert same["inputs"]["slack"]["basis"] in ("measured", "default")
+        # (Unknown /api paths fall through to the SPA shell, so "gone" is "not JSON".)
+        gone = client.get("/api/overall/config")
+        assert "application/json" not in (gone.headers.get("content-type") or "")
+        assert client.put("/api/overall/config", json={"slack": 1.0}).status_code in (404, 405)
+        # The ring target: the fused #1 and the profiles the fit can't separate from it.
+        t = client.get("/api/overall/ring-target").json()["target"]
+        assert t["best"] == _fp("lo")
+        assert [r["fingerprint"] for r in t["rivals"]][0] == _fp("hi")
+        assert all(r["fingerprint"] != _fp("lo") for r in t["rivals"])
     finally:
         _clear_ledger()
 
@@ -245,16 +255,62 @@ def test_the_fused_policy_is_the_shipped_default():
     assert crowning.POLICIES[0] == "fused"
 
 
-def test_the_slack_config_round_trips_and_pins_the_fit(client):
-    _add("p", 70.0, runs=6, spread=1.0)
+def test_the_slack_is_never_a_human_setting():
+    """The pooled slack is measured from the ledger, never chosen: no config block, no
+    override argument, no endpoint. A weight a person can set on the evidence is exactly
+    what the fused fit replaces, so the absence is pinned rather than left to drift back."""
+    import inspect
+
+    from pathbrain.config_store import DEFAULT_CONFIG
+
+    assert "overall_ranking" not in DEFAULT_CONFIG
+    assert "slack_override" not in inspect.signature(o.ranking).parameters
+    assert "slack" not in inspect.signature(o.ranking).parameters
+
+
+def test_the_ring_target_is_the_fused_best_and_its_tied_rivals(client):
+    """Under the fused policy the ladder fights the Overall ranking's open question: the
+    fused #1 defends and the profiles the fit cannot yet separate from it are seated
+    first, most ambiguous first. Under the pooled policy nothing changes."""
+    from pathbrain import duel as duel_mod
+
+    _add("top", 70.30, runs=8, spread=2.0)
+    _add("near", 70.25, runs=8, spread=2.0)   # tied with the top on the pooled bar alone
+    _add("mid", 69.0, runs=8, spread=2.0)
+    _add("far", 60.0, runs=8, spread=2.0)
     try:
-        r = client.put("/api/overall/config", json={"slack": 1.25})
-        assert r.status_code == 200 and r.json()["slack"] == 1.25
-        body = client.get("/api/overall", params={"backtest": False}).json()
-        assert body["inputs"]["slack"]["basis"] == "config" and body["inputs"]["slack"]["tau"] == 1.25
-        assert client.put("/api/overall/config", json={"slack": -1}).status_code == 400
-        r = client.put("/api/overall/config", json={"slack": None})
-        assert r.status_code == 200 and r.json()["slack"] is None
+        with session_scope() as s:
+            save_config(s, {"crown_follow": {"policy": "fused"}})
+            t = o.ring_target(s)
+            assert t["best"] == _fp("top")
+            rivals = [r["fingerprint"] for r in t["rivals"]]
+            assert rivals[0] == _fp("near") and _fp("far") not in rivals
+            field = {
+                "best_fingerprint": _fp("far"),   # a pooled crown that disagrees on purpose
+                "profiles": [
+                    {"fingerprint": _fp(n), "label": n, "overall": v, "confident": True,
+                     "settings": [], "optimistic": v}
+                    for n, v in (("top", 70.3), ("near", 70.25), ("mid", 69.0), ("far", 60.0))
+                ],
+            }
+            fp, why = duel_mod.select_incumbent(s, field, None, {}, ratings={})
+            assert fp == _fp("top") and "Overall ranking's #1 defends" in why
+            order = duel_mod.contender_order(field, {}, fp, fused=t)
+            assert order[0]["fingerprint"] == _fp("near")
+            assert order[0]["tier"] == duel_mod.FUSED_RIVAL_TIER
+            assert "can't separate it from the #1" in order[0]["why"]
+            # Every fused rival precedes the pooled crown and the rest of the field.
+            tiers = {c["fingerprint"]: c["tier"] for c in order}
+            assert tiers[_fp("far")] == duel_mod.CROWN_TIER
+            assert min(c["tier"] for c in order) == duel_mod.FUSED_RIVAL_TIER
+            # The pooled policy leaves the old matchmaking alone: the target is not read.
+            save_config(s, {"crown_follow": {"policy": "pooled"}})
+            assert duel_mod._fused_target(s, {}) is None
+            fp2, why2 = duel_mod.select_incumbent(s, field, None, {}, ratings={})
+            assert fp2 == _fp("far") and "pooled crown defends" in why2
+            # Lever sessions never take the target: the campaign's base defends.
+            save_config(s, {"crown_follow": {"policy": "fused"}})
+            assert duel_mod._fused_target(s, {"contenders": "levers"}) is None
     finally:
         with session_scope() as s:
-            save_config(s, {"overall_ranking": {"slack": None}})
+            save_config(s, {"crown_follow": {"policy": "fused"}})

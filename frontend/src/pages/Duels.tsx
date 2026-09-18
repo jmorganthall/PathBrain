@@ -430,6 +430,7 @@ function StandingHeader({
 
 // Why a profile is in the queue, in words.
 const CARD_REASON: Record<string, string> = {
+  "overall-rival": "the Overall ranking can't separate it from the #1 yet — this round settles it",
   "pooled-crown": "the all-history crown, coming to take the belt",
   contender: "near the crown — the matchup that can change the answer",
   "limited-data": "could beat the crown at its best, not measured enough yet",

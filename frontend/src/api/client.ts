@@ -506,21 +506,10 @@ export const api = {
   verdict: () => request<VerdictOut>("/settings/verdict"),
 
   // The Overall page: one ranking fitted over the pooled record and the ring together.
-  // `slack` is a what-if re-fit (changes nothing stored); `backtest` off skips the
-  // held-out predictive check for a quicker read (the Dashboard card).
-  overall: (opts?: { slack?: number | null; backtest?: boolean }) => {
-    const q = new URLSearchParams();
-    if (opts?.slack != null) q.set("slack", String(opts.slack));
-    if (opts?.backtest === false) q.set("backtest", "false");
-    const qs = q.toString();
-    return request<OverallOut>(`/overall${qs ? `?${qs}` : ""}`);
-  },
-  overallConfig: () => request<{ slack: number | null; default_slack: number }>("/overall/config"),
-  overallConfigUpdate: (slack: number | null) =>
-    request<{ slack: number | null; default_slack: number }>("/overall/config", {
-      method: "PUT",
-      body: JSON.stringify({ slack }),
-    }),
+  // Nothing to set — the pooled slack is measured from the ledger, never chosen.
+  // `backtest` off skips the held-out predictive check for a quicker read (the Dashboard card).
+  overall: (opts?: { backtest?: boolean }) =>
+    request<OverallOut>(`/overall${opts?.backtest === false ? "?backtest=false" : ""}`),
 
   // Crown follower ("Follow best"): status + churn stats, config toggle, and a manual sync.
   crowns: () => request<CrownsOut>("/settings/crowns"),

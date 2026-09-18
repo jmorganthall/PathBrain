@@ -2698,11 +2698,13 @@ LLM-based. See `README.md` for the product overview.
     compared against each other — a partition, not a blend. Applied at the single
     `/settings/profiles` seam every reader shares, because five surfaces blending two
     scales privately is precisely how the verdicts drift apart. **Two deliberate
-    exclusions**, both load-bearing: the **duel's own matchmaking keeps reading the pooled
-    crown** (`best_fingerprint` is never re-pointed) — the ladder exists to be the
-    independent check on the pooled verdict, so letting this ordering choose who gets
+    exclusions**, both load-bearing: **this ordering never chooses who the duel fights**
+    (`best_fingerprint` is never re-pointed) — the ladder exists to be the independent
+    check on the pooled verdict, so letting a pooled-seeded ordering choose who gets
     checked would make it circular, the exact failure `contender_order` was written to
-    escape; and **Explore keeps branching from the pooled best**, because its response
+    escape (what the ring *does* take direction from is the fused fit's own unresolved
+    tie, under `overall_ranking.ring_target` — the ring's unfinished business, not the
+    pooled verdict); and **Explore keeps branching from the pooled best**, because its response
     curves, predictions and uncertainties are all fitted in pooled-Overall space and
     picking a parent by ring rating would price it against a scale it was never calibrated
     to. (The *move* is a different matter: where the ring has fought an exact single-lever
@@ -2738,8 +2740,9 @@ LLM-based. See `README.md` for the product overview.
     unbiased, so `Var(pooled Δ − ring Δ) = SE_a² + SE_b² + σ²/n + 2τ²` solved for τ over
     every fought pair (a median of squares, so one failed leg's margin cannot set it; under
     `MIN_SLACK_PAIRS` it falls back to `DEFAULT_SLACK` = 0.5 and the page says *default*;
-    `config.overall_ranking.slack` pins it for comparison, and the page's slider is the
-    what-if — `?slack=` re-fits without storing). The crown is the argmax of the fused
+    **there is no setting for it and no slider** — a weight a person chooses on the evidence
+    is exactly what the fit replaces; the page states whether τ was measured or defaulted, and
+    nothing lets anyone choose it). The crown is the argmax of the fused
     Overall among profiles with enough evidence on **either** record (`min_iterations`
     pooled, or `MIN_RING_ROUNDS_FOR_CROWN` = 8 rounds), SQM off excluded; "tied" is the
     same `crown_tie_sigma` test on the SE of the fused *difference* (covariance included —
@@ -2766,11 +2769,24 @@ LLM-based. See `README.md` for the product overview.
     reads `overall_ranking.crown` with the pooled crown as the fallback when the fit names
     nobody, the crowns card says *following · fused ranking* with the pooled crown and the
     duel champion demoted to *for reference*, and the Follow-best popover carries the third
-    chip. Two deliberate exclusions, unchanged from `rank_field`'s: the **duel's matchmaking
-    keeps reading the pooled crown** (the ladder stays the independent check — this fit
-    choosing who the ring fights would make the ring's evidence about the ring's own
-    choices) and **Explore keeps branching from the pooled best** (its model is fitted in
-    pooled-Overall space). Stated limits: consecutive rounds share a belt leg (correlation
+    chip. **The ring is pointed at this ranking's open question** (`ring_target`,
+    `GET /api/overall/ring-target`; `duel._fused_target` → `select_incumbent` /
+    `contender_order`'s `FUSED_RIVAL_TIER`, above the pooled crown's tier): under the fused
+    policy the fused #1 defends and the profiles the fit cannot yet separate from it — its
+    `tied` set, most ambiguous first (z = gap / SE of the gap), then the runner-up so the
+    crown's margin keeps being re-checked — are seated before every other reason to fight.
+    A round between the #1 and a tied rival is the one measurement that moves this ranking
+    where it is undecided, so that is where the ladder spends its nights; once the tie
+    clears the ordinary tiers resume. That is "the duel arbitrates the Overall" made
+    operational: pooled seeds the question, the ring answers it, the fit reads the answer
+    back. The circularity that kept the *pooled* ordering out of matchmaking does not apply
+    here, because the ring's own rounds are the unbiased part of the fit — seating the
+    fit's tie is seating the ring's own unfinished business. Read once per ring cycle and
+    once per fight card, best-effort (a failed fit falls back to the belt), never in lever
+    mode, only for an **anchored** best (a profile placed by ring rounds alone has no number
+    on the pooled scale), and only under the fused policy: `pooled` and `duel` keep the
+    belt-defends matchmaking unchanged. **Explore keeps branching from the pooled best**
+    (its model is fitted in pooled-Overall space). Stated limits: consecutive rounds share a belt leg (correlation
     ≈1/6, so the ring's bars run slightly tight), τ is global rather than per profile (the
     per-profile `weather_severity` could set it individually — a v2), and rounds fought under
     another methodology are excluded (their margins are on another scale) while pre-stamp

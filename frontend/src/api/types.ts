@@ -1969,6 +1969,9 @@ export interface DuelCard {
     // crown standing in because there's no fresh decisive champion.
     why?: string;
     is_duel_champion?: boolean;
+    // Under the fused crowning policy the Overall ranking's #1 defends, and the queue leads
+    // with the profiles the fit over both records cannot yet separate from it.
+    is_overall_best?: boolean;
   } | null;
   queue: DuelCardEntry[];
   total?: number;
@@ -4328,11 +4331,11 @@ export interface OverallCorner {
 export interface OverallSlack {
   tau: number;
   pairs: number;
-  basis: "measured" | "default" | "config" | "what_if";
+  // Measured from the ledger, or the stated default under the pair minimum. Never set by hand.
+  basis: "measured" | "default";
   excess_var: number | null;
   expected_var: number | null;
   needed_pairs: number;
-  measured_tau?: number | null;
 }
 
 export interface OverallInputs {
