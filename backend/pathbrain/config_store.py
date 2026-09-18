@@ -339,16 +339,9 @@ DEFAULT_CONFIG: dict = {
         # fitted in pooled-Overall space) — see `crowning.rank_field`.
         "ranking": "ring",
     },
-    # The fused ranking (the Overall page). `slack` is τ, the pooled slack in Overall
-    # points: how far a pooled median may sit from the truth for reasons more iterations
-    # never fix (weather, time of day, instrument drift). None = MEASURED from the ledger
-    # (how much pooled differences disagree with the ring's beyond both error bars); a
-    # number pins it, for comparison. 0 makes the ring unable to move a well-measured
-    # pooled median (the old pooled crown); a large value hands the top of the table to
-    # the ring alone (the old duel champion).
-    "overall_ranking": {
-        "slack": None,
-    },
+    # The fused ranking (the Overall page) has NO config block on purpose: its one
+    # parameter, the pooled slack τ, is measured from the ledger (`overall_ranking`), and a
+    # setting for it would be a human weight on the evidence — the thing the fit replaces.
     # Interleaved head-to-head duel ladder (the adjudication engine): strict A/B/A/B
     # alternation, paired verdicts via a sequential test that stops the moment a matchup is
     # decided — then the winner stays on and the next challenger steps up.

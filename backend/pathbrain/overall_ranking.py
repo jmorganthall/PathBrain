@@ -40,8 +40,9 @@ Three properties fall out of that one line, and the tests pin each:
   How much they disagree *beyond what both error bars explain* is exactly the bias in the
   pooled medians — `Var(pooled Δ − ring Δ) = SE_a² + SE_b² + σ²/n + 2τ²`, solved for τ
   robustly over every fought pair (`pooled_slack`). It needs no weather covariate and no
-  opinion: it is the ledger grading the pooled record. A config override exists for
-  comparison, and the page says which was used.
+  opinion: it is the ledger grading the pooled record. **There is no setting for it**:
+  a human weight on the evidence is exactly what this fit replaces, so the page says
+  whether τ was measured or defaulted, and nothing lets anyone choose it.
 
 The fit is solved only over the profiles the ring has actually fought (a few dozen);
 everyone else is diagonal and drops straight out as pooled-plus-slack, so the linear
@@ -52,6 +53,15 @@ Overall a standard error and every pair a covariance, which is what makes "tied"
 Read-only: the rollup and the duel ledger in, one ranking out. Nothing here changes a
 score. What automation does with the answer is `crowning.resolve`'s decision, and under
 the `"fused"` policy that is this module's crown.
+
+**The ring is pointed at this ranking's open question** (`ring_target`, read by
+`duel.select_incumbent` / `duel.contender_order` under the fused policy): the fused #1
+defends, and the profiles the fit cannot yet separate from it — its `tied` set, most
+ambiguous first — are seated before anything else. A round between the #1 and a tied
+rival is the one measurement that moves this ranking where it is undecided, so the
+ladder spends its nights exactly there; once the tie clears, the ordinary tiers resume.
+That is what "the duel arbitrates the Overall" means operationally: pooled seeds the
+question, the ring answers it, and the fit reads the answer back.
 """
 from __future__ import annotations
 
@@ -455,14 +465,13 @@ def _sentence(best: dict, runner: dict | None, lead: float | None, bar: float | 
     return out
 
 
-def ranking(session, *, slack_override: float | None = None, backtest: bool = True,
-            live: bool = True) -> dict:
+def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     """The fused ranking, the crown it names, and everything a reader needs to see why.
 
-    ``slack_override`` re-fits at a given τ (the page's what-if); the config's
-    ``overall_ranking.slack`` does the same persistently. ``backtest=False`` skips the
-    held-out predictive check and ``live=False`` the firewall read (the crown follower
-    needs neither — it reads the firewall itself).
+    τ is always the measured slack (or the stated default under `MIN_SLACK_PAIRS`); there
+    is deliberately no override. ``backtest=False`` skips the held-out predictive check
+    and ``live=False`` the firewall read (the crown follower needs neither — it reads the
+    firewall itself).
     """
     cfg = get_config(session)
     corr = cfg.get("correlation") or {}
@@ -470,7 +479,6 @@ def ranking(session, *, slack_override: float | None = None, backtest: bool = Tr
     tie_sigma = float(corr.get("crown_tie_sigma") or 2.0)
     min_margin = float(corr.get("crown_tie_min_margin") or 0.0)
     duel_cfg = cfg.get("duel") or {}
-    own_cfg = cfg.get("overall_ranking") or {}
 
     methodology = ensure_current_methodology(session, cfg)
     version = methodology.version
@@ -522,16 +530,6 @@ def ranking(session, *, slack_override: float | None = None, backtest: bool = Tr
     sigma_round = float(noise["sigma"]) if noise and noise.get("sigma") else FALLBACK_ROUND_SIGMA
     pairs = pair_summaries(rounds)
     slack = pooled_slack(pooled, pairs, sigma_round)
-    configured = own_cfg.get("slack")
-    if slack_override is not None:
-        slack = {**slack, "tau": float(slack_override), "basis": "what_if",
-                 "measured_tau": slack.get("tau") if slack.get("basis") == "measured" else None}
-    elif configured is not None:
-        try:
-            slack = {**slack, "tau": float(configured), "basis": "config",
-                     "measured_tau": slack.get("tau") if slack.get("basis") == "measured" else None}
-        except (TypeError, ValueError):
-            pass
     tau = float(slack["tau"])
 
     # ── The fit ───────────────────────────────────────────────────────────────────
@@ -726,6 +724,63 @@ def crown(session) -> dict | None:
     }
 
 
+def ring_target(session) -> dict | None:
+    """What the ring should fight next, read off this ranking: the fused #1 and every
+    profile the fit cannot yet separate from it, most ambiguous first.
+
+    Returns ``{best, best_fused, best_se, lead, noise_bar, clear, rivals: [{fingerprint,
+    name, gap, gap_se, z, rounds_to_separate}], tied_count}`` or None when the ranking
+    names nobody. ``rivals`` is the ``tied`` set ordered by ``z`` = gap / SE of the gap
+    ascending — the profile the fit is *least* able to tell from the #1 first, since one
+    round between those two is the measurement that moves this ranking where it is
+    undecided. The runner-up is included even when the lead is clear, so the ring keeps
+    re-checking the crown's margin rather than going quiet the moment a tie resolves.
+    No backtest and no firewall read: this is read before every cycle of a session.
+
+    Only an **anchored** best is a target: a profile the fit places from ring rounds
+    alone, with no pooled median at all, has a fused Overall that is relative to its
+    opponents and not on the pooled scale, and seating it would hand the ring to a number
+    the pooled record has never confirmed. In production every duel leg is also a pooled
+    run, so this only bites on a quarantined or foreign ledger — and there it returns
+    None, so the ladder falls back to the belt exactly as before.
+    """
+    r = ranking(session, backtest=False, live=False)
+    best = r.get("best")
+    if not best or best.get("pooled") is None:
+        return None
+    eligible = [p for p in r.get("profiles") or [] if p.get("eligible") and p["fingerprint"] != best["fingerprint"]]
+    rivals: list[dict] = []
+    for p in eligible:
+        se = float(p.get("gap_se") or 0.0)
+        gap = float(p.get("gap_to_leader") or 0.0)
+        tied = bool(p.get("tied_with_leader"))
+        if not tied and (r.get("runner_up") or {}).get("fingerprint") != p["fingerprint"]:
+            continue
+        rivals.append({
+            "fingerprint": p["fingerprint"],
+            "name": p.get("name"),
+            "gap": round(gap, 2),
+            "gap_se": round(se, 3),
+            "z": (gap / se) if se > 0 else float("inf"),
+            "rounds_to_separate": p.get("rounds_to_separate"),
+            "tied": tied,
+        })
+    rivals.sort(key=lambda x: (not x["tied"], x["z"], -(x["rounds_to_separate"] or 0)))
+    for x in rivals:
+        x["z"] = None if x["z"] == float("inf") else round(x["z"], 2)
+    return {
+        "best": best["fingerprint"],
+        "best_name": best.get("name"),
+        "best_fused": best["fused"],
+        "best_se": best["fused_se"],
+        "lead": r.get("lead"),
+        "noise_bar": r.get("noise_bar"),
+        "clear": r.get("clear"),
+        "tied_count": r.get("tied_count"),
+        "rivals": rivals,
+    }
+
+
 # ── The predictive check ───────────────────────────────────────────────────────────────
 
 
@@ -818,5 +873,5 @@ def predictive_check(pooled: dict[str, dict], rounds: list[dict], sigma_round: f
 __all__ = [
     "DEFAULT_SLACK", "MIN_SLACK_PAIRS", "MIN_RING_ROUNDS_FOR_CROWN",
     "ring_rounds", "pair_summaries", "pooled_slack", "fuse", "diff_se",
-    "rounds_to_separate", "ranking", "crown", "predictive_check",
+    "rounds_to_separate", "ranking", "crown", "ring_target", "predictive_check",
 ]

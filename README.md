@@ -168,7 +168,10 @@ result is one ranking with an honest error bar for every profile: a profile the 
 never fought sits exactly where its pooled record puts it, and one the ring has fought is
 pulled toward what it did head to head in proportion to the rounds. At zero slack it is
 the old pooled crown; at infinite slack it is the old duel champion; the measured value
-sits wherever the evidence puts it. Which verdict governs what gets written to the
+sits wherever the evidence puts it, and nothing lets anyone set it by hand. The ring is
+then pointed at what that ranking cannot yet decide: the fused #1 defends, and the
+profiles the fit cannot separate from it are seated first, so every night's rounds land
+exactly where the Overall is undecided. Which verdict governs what gets written to the
 firewall is a single first-class setting — the **crowning policy** — and the fused
 ranking is its default, with the two corners kept selectable for comparison.
 

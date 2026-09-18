@@ -18,14 +18,11 @@ import { Link as RouterLink } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import ButtonGroup from "@mui/material/ButtonGroup";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
-import Divider from "@mui/material/Divider";
 import Link from "@mui/material/Link";
-import Slider from "@mui/material/Slider";
 import Stack from "@mui/material/Stack";
 import Table from "@mui/material/Table";
 import TableBody from "@mui/material/TableBody";
@@ -36,12 +33,10 @@ import TableRow from "@mui/material/TableRow";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { useTheme } from "@mui/material/styles";
-import useMediaQuery from "@mui/material/useMediaQuery";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 import HandshakeIcon from "@mui/icons-material/Handshake";
 import MilitaryTechIcon from "@mui/icons-material/MilitaryTech";
-import PushPinIcon from "@mui/icons-material/PushPin";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import StackedLineChartIcon from "@mui/icons-material/StackedLineChart";
 
@@ -271,27 +266,16 @@ function DotWhisker({ rows, tieSigma }: { rows: OverallProfile[]; tieSigma: numb
 // ── The page ──────────────────────────────────────────────────────────────────────────
 
 export default function Overall() {
-  const theme = useTheme();
-  const phone = useMediaQuery(theme.breakpoints.down("sm"));
   const [data, setData] = useState<OverallOut | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // What-if slack: null = whatever the server uses (measured or pinned).
-  const [whatIf, setWhatIf] = useState<number | null>(null);
-  const [pinned, setPinned] = useState<number | null | undefined>(undefined);
   const [showAll, setShowAll] = useState(false);
-  const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async (slack: number | null) => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [out, cfg] = await Promise.all([
-        api.overall({ slack, backtest: true }),
-        api.overallConfig().catch(() => null),
-      ]);
-      setData(out);
-      if (cfg) setPinned(cfg.slack);
+      setData(await api.overall({ backtest: true }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load the Overall ranking.");
     } finally {
@@ -300,21 +284,8 @@ export default function Overall() {
   }, []);
 
   useEffect(() => {
-    void load(whatIf);
-  }, [load, whatIf]);
-
-  const pin = async (value: number | null) => {
-    setSaving(true);
-    try {
-      const r = await api.overallConfigUpdate(value);
-      setPinned(r.slack);
-      setWhatIf(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save the slack.");
-    } finally {
-      setSaving(false);
-    }
-  };
+    void load();
+  }, [load]);
 
   const inputs = data && "slack" in data.inputs ? data.inputs : null;
   const corners = data && "fused" in data.corners ? data.corners : null;
@@ -326,7 +297,6 @@ export default function Overall() {
   const chartRows = rows.filter((r) => r.eligible).slice(0, CHART_ROWS);
   const tableRows = showAll ? rows : rows.slice(0, TABLE_ROWS);
   const slackTau = inputs?.slack.tau ?? null;
-  const slackMax = Math.max(3, Math.ceil((slackTau ?? 1) * 3));
 
   return (
     <Box>
@@ -346,7 +316,7 @@ export default function Overall() {
             <HelpTip title="The pooled record says where each profile sits on its own, over thousands of iterations taken under whatever the weather was. The ring says how far apart two profiles are when measured back to back under the same conditions. This page fits the two together, weighting each by how much it can be trusted, and crowns off the result." />
           </Typography>
         </Box>
-        <Button size="small" startIcon={<RefreshIcon />} onClick={() => void load(whatIf)} disabled={loading}>
+        <Button size="small" startIcon={<RefreshIcon />} onClick={() => void load()} disabled={loading}>
           Refresh
         </Button>
       </Stack>
@@ -589,70 +559,13 @@ export default function Overall() {
                     caption={
                       inputs.slack.basis === "measured"
                         ? `measured from ${inputs.slack.pairs} fought pairs`
-                        : inputs.slack.basis === "what_if"
-                          ? `what-if — measured: ${inputs.slack.measured_tau != null ? `±${fmtNum(inputs.slack.measured_tau, 2)}` : "not yet"}`
-                          : inputs.slack.basis === "config"
-                            ? `pinned in config — measured: ${inputs.slack.measured_tau != null ? `±${fmtNum(inputs.slack.measured_tau, 2)}` : "not yet"}`
-                            : `default — needs ${inputs.slack.needed_pairs} fought pairs to measure (${inputs.slack.pairs} so far)`
+                        : `default — needs ${inputs.slack.needed_pairs} fought pairs to measure (${inputs.slack.pairs} so far)`
                     }
-                    tone={inputs.slack.basis === "measured" ? "good" : inputs.slack.basis === "default" ? "warn" : "info"}
-                    help="How far a pooled median can sit from the truth for reasons more iterations never fix: weather, time of day, the instrument drifting. Measured from the pairs the ring has fought — the pooled difference and the ring's difference are two readings of one gap, and how much they disagree beyond both error bars is exactly this. At 0 the pooled record can never be moved; large, and only the ring speaks."
+                    tone={inputs.slack.basis === "measured" ? "good" : "warn"}
+                    help="How far a pooled median can sit from the truth for reasons more iterations never fix: weather, time of day, the instrument drifting. Measured from the pairs the ring has fought — the pooled difference and the ring's difference are two readings of one gap, and how much they disagree beyond both error bars is exactly this. It is never set by hand: a weight a person chooses on the evidence is what this ranking replaces."
                   />
                 </Stack>
 
-                {/* The what-if: the two old verdicts are the ends of this slider. */}
-                <Divider sx={{ mb: 1.5 }} />
-                <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }}>
-                  <Box sx={{ minWidth: 0, flex: 1 }}>
-                    <Typography variant="body2">
-                      How much to trust the pooled record
-                      <HelpTip title="Drag to see what the ranking would be at a different slack. 0 is the old pooled crown (the ring can't move anything); far right hands the top of the table to the ring. The measured value is where the evidence itself puts it. Nothing changes until you pin it." />
-                    </Typography>
-                    <Slider
-                      size="small"
-                      min={0}
-                      max={slackMax}
-                      step={0.05}
-                      value={whatIf ?? slackTau ?? 0}
-                      onChangeCommitted={(_e, v) => setWhatIf(Array.isArray(v) ? v[0] : v)}
-                      valueLabelDisplay="auto"
-                      valueLabelFormat={(v) => `±${fmtNum(v, 2)}`}
-                      marks={[
-                        { value: 0, label: "pooled only" },
-                        ...(inputs.slack.measured_tau != null || inputs.slack.basis === "measured"
-                          ? [{ value: inputs.slack.measured_tau ?? inputs.slack.tau, label: phone ? "" : "measured" }]
-                          : []),
-                        { value: slackMax, label: "ring decides" },
-                      ]}
-                      sx={{
-                        mt: 0.5, mx: 5, width: "calc(100% - 80px)",
-                        "& .MuiSlider-markLabel": { fontSize: 11 },
-                      }}
-                    />
-                  </Box>
-                  <ButtonGroup size="small" variant="outlined" sx={{ flexShrink: 0 }}>
-                    <Button onClick={() => setWhatIf(null)} disabled={whatIf == null}>
-                      Back to {pinned != null ? "pinned" : "measured"}
-                    </Button>
-                    <Tooltip title="Save this slack to config so the crown follower and the Dashboard use it. Pin only if you have a reason to distrust the measured value.">
-                      <span>
-                        <Button startIcon={<PushPinIcon />} onClick={() => void pin(whatIf ?? slackTau ?? 0)} disabled={saving || whatIf == null}>
-                          Pin ±{fmtNum(whatIf ?? slackTau, 2)}
-                        </Button>
-                      </span>
-                    </Tooltip>
-                    {pinned != null && (
-                      <Button onClick={() => void pin(null)} disabled={saving}>
-                        Unpin (use measured)
-                      </Button>
-                    )}
-                  </ButtonGroup>
-                </Stack>
-                {inputs.slack.basis === "what_if" && (
-                  <Alert severity="info" sx={{ mt: 1.5 }}>
-                    Showing a what-if at ±{fmtNum(inputs.slack.tau, 2)}. The crown follower and the Dashboard still use the {pinned != null ? "pinned" : "measured"} value.
-                  </Alert>
-                )}
               </CardContent>
             </Card>
           )}
