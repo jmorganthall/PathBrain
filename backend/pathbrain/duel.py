@@ -3029,6 +3029,17 @@ def _run_ring(
             }
     else:
         carried = _carried_open_matches(duel_id)
+    # The exploration share: a slice of this window spent measuring Explore's best bet, so
+    # the field the ring fights over keeps growing with the smartest untried profiles. Never
+    # in a lever session — that measures one base's settings, not the best profile.
+    explorer = None
+    if campaign is None and mode != "levers":
+        from .explore_share import ExploreShare
+
+        explorer = ExploreShare(duel_id, cfg, max(0.0, deadline - time.monotonic()))
+        if not explorer.enabled:
+            explorer = None
+    explore_board: dict | None = None
 
     def _stopped() -> bool:
         return time.monotonic() >= deadline or bool(_state.get("cancel"))
@@ -3072,6 +3083,8 @@ def _run_ring(
             min_pairs=min_pairs, max_pairs=max_pairs, min_margin=min_margin,
             streak_needed=streak_needed, stage=stage, leg=leg,
         ))
+        if explore_board is not None:
+            last_live["explore"] = explore_board
         _set_live(duel_id, dict(last_live))
 
     def _leg_run_created(run_id: int) -> None:
@@ -3258,6 +3271,33 @@ def _run_ring(
         incumbent_fp, inc, draining, lead = None, {}, False, None
         counters["reseeds"] += 1
         _persist_open()
+
+    def _publish_explore() -> None:
+        # The session's exploration books, on the row and on the board.
+        nonlocal explore_board
+        if explorer is None:
+            return
+        explore_board = explorer.summary()
+        with session_scope() as session:
+            d = session.get(Duel, duel_id)
+            if d is not None:
+                d.explore = dict(explore_board)
+        if last_live:
+            last_live["explore"] = explore_board
+            _set_live(duel_id, dict(last_live))
+
+    def _refresh_field(session) -> None:
+        # A bet landed: re-read the field so the profile it measured can be seated against
+        # the belt tonight. Additive — seated matches keep the profiles they started with.
+        nonlocal field, heirs
+        from .api.routes_settings import _compute_heirs, compute_profiles
+
+        field = _seeded_field(session, compute_profiles(session, include_weather=False))
+        heirs = _engine_heirs(_compute_heirs(field, session, baseline))
+        settings_by_fp.update({p["fingerprint"]: p for p in field.get("profiles", [])})
+
+    if explorer is not None:
+        _publish_explore()
 
     while not _stopped():
         # 0. Is the ring still adjudicating on the current methodology? A publish (a new
@@ -3537,6 +3577,18 @@ def _run_ring(
         #    breaks adjacency, so the next cycle opens with a fresh belt leg.
         lease.check()
         lease.beat()
+        if explorer is not None:
+            # The exploration share: when a bet is owed, queue Explore's best one. It waits
+            # on the coordinator like any queued test, so the yield just below lets it
+            # through — the ring's own seam, nothing in flight, the window's clock running.
+            bet = explorer.at_seam(max(0.0, deadline - time.monotonic()))
+            lease.beat()  # choosing the bet costs a landscape pass
+            if bet is not None:
+                _publish_explore()
+                _live(None, (
+                    f"Exploring — Explore's top bet ({bet['label']}, {bet['iterations']} "
+                    f"iterations) runs next; the ring resumes after it"
+                ), leg=None)
         if coordinator.waiting():
             # Nothing of the ring's is on the firewall while another session runs, so no
             # profile's bar may claim otherwise: clear the leg before stepping aside.
@@ -3545,12 +3597,21 @@ def _run_ring(
         if yielded:
             log.info("Duel %s: stepped aside for %.0fs of queued work", duel_id, yielded)
             lead = None
+        if explorer is not None and explorer.newly_landed():
+            with session_scope() as session:
+                _refresh_field(session)
+            lease.beat()
+            _publish_explore()
+            log.info("Duel %s: an Explore bet landed — field re-read (%d profiles)",
+                     duel_id, len(field.get("profiles", [])))
 
     # Whatever is still seated when the window closes is CARRIED, not closed: its snapshot
     # is on the row (rewritten after every round), so the next session resumes it with
     # every margin intact instead of recording "window closed (undecided)" and restarting
     # the pair from round zero — which on a nightly ladder was the top pairs, every night.
     _persist_open()
+    if explorer is not None:
+        _publish_explore()
     if seated or carried:
         log.info("Duel %s: %d open match(es) carried to the next session",
                  duel_id, len(seated) + len(carried))
@@ -5105,6 +5166,8 @@ def _serialize(d: Duel, session=None, matchup_limit: int | None = None) -> dict:
         "duration_s": d.duration_s,
         "matchups": matchups,
         "live": d.live,
+        # The session's exploration share: Explore's bets it queued and what they cost.
+        "explore": d.explore,
         "iterations_run": d.iterations_run,
         "run_ids": d.run_ids or [],
         # Matches still open on this row: carried to the next session with their rounds.

@@ -2666,6 +2666,34 @@ LLM-based. See `README.md` for the product overview.
     returns `attempts_recorded`, so nothing is hidden). The resolved profile is deliberately part
     of the identity: two attempts that landed on **different** profiles measured different things
     and stay separate — a disagreement worth seeing.
+  - `explore_share.py` — **the duel's exploration share: a slice of every window spent on
+    Explore's best bet** (`duel.explore_share`, default 0.05; `duel.explore_iterations`,
+    default 5; 0 = off; the *Exploration share* field in the Duels page's advanced rules,
+    and the *exploring N% · spent/budget min* line under the live board). The ladder only
+    adjudicates profiles that already exist, and Explore's proposals reached the ring only
+    when a person pressed "Test now" — so the field grew by hand. Now `_run_ring` asks
+    `ExploreShare.at_seam` at every cycle seam whether a bet is owed and, if so, queues
+    Explore's top **bet** (`landscape["bets"]`, the pessimistic `rank_bets` order — the
+    candidate we would back, not merely look at) through the one `routes_explore.
+    _start_candidate` path (claim recorded in the ledger first, materialized on its parent,
+    apply → benchmark → restore as an ordinary profile test). The test waits on the
+    coordinator and the ring's own zipper yield lets it through at that seam; when it lands
+    (`newly_landed`) the ring re-reads the field (`_refresh_field`: the same seeded
+    `compute_profiles` pass `_reseed` runs, additive to `settings_by_fp`), so the new profile
+    — thin, and exactly what `contender_order`'s untested tier is for — can be seated against
+    the belt **the same session**. **Scales by construction**: the budget is `share × window`,
+    so ~1–2 bets in two hours and 5–6 in an eight-hour night, and a continuous ladder spends
+    the share of every session. **Paced, not front-loaded** (`due`, pure): a bet is owed only
+    while time spent ≤ `share × elapsed` and < `share × window`, one bet at a time, and never
+    when the window has less left than the costliest bet so far (`DEFAULT_BET_S` before any)
+    — a queued test outlives the ladder that asked for it. The first seam always owes one, so
+    a short session still contributes; the overshoot is bounded by that one bet. Spent time is
+    read off the bets' own `ProfileTest` start/finish, not estimated. Nothing to propose (or a
+    landscape failure) retries after `RETRY_AFTER_S` (30 min) rather than every cycle, since
+    the landscape costs a field pass. Never in a lever session. Recorded per session on
+    `Duel.explore` (budget, spent, the bets with their test ids and status).
+    `test_explore_share` (pacing, scaling, and end to end: bet queued → lands → field
+    re-read → the explored profile is raced).
   - `crowning.py` — **the first-class CROWNING POLICY**: the single resolver for "which
     verdict governs what automation applies". `crown_follow.policy` = **"fused"** (the
     default: the one ranking fitted over both records, `overall_ranking.crown`, with the

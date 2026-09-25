@@ -66,6 +66,7 @@ import type {
   DuelHealth,
   DuelLeg,
   DuelLegInFlight,
+  DuelExplore,
   DuelLive,
   DuelMatchup,
   DuelSession,
@@ -1532,6 +1533,41 @@ function RingStanding({
   );
 }
 
+// The session's exploration share: how much of the window went to Explore's bets, and which.
+function ExploreShareLine({ explore }: { explore: DuelExplore }) {
+  const min = (s: number) => Math.round(s / 60);
+  const bets = explore.bets ?? [];
+  return (
+    <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.75 }}>
+      <Chip
+        size="small"
+        variant="outlined"
+        sx={{ height: 20 }}
+        label={`exploring ${Math.round(explore.share * 1000) / 10}% · ${min(explore.spent_s)}/${min(explore.budget_s)} min`}
+      />
+      {bets.map((b) => (
+        <Tooltip
+          key={b.test_id ?? b.label}
+          title={`${b.summary || b.label}${b.predicted != null ? ` · predicted ${b.predicted.toFixed(1)}` : ""} · ${b.iterations} iterations`}
+        >
+          <Chip
+            size="small"
+            sx={{ height: 20, maxWidth: 260 }}
+            color={b.status === "complete" ? "success" : b.status === "failed" ? "error" : "default"}
+            label={`${b.label} · ${b.status ?? "queued"}`}
+          />
+        </Tooltip>
+      ))}
+      {bets.length === 0 && explore.note && (
+        <Typography variant="caption" color="text.secondary">
+          {explore.note}
+        </Typography>
+      )}
+      <HelpTip title="A share of every session's window goes to Explore's top bet — the untried profile it would back, not merely look at. Each bet is paced across the window, runs as an ordinary Explore test (its claim is graded on the Explore page), and once it lands the ring re-reads the field so the new profile can be duelled the same session." />
+    </Stack>
+  );
+}
+
 function RingBoard({ live }: { live: DuelLive }) {
   const seats = live.seats ?? [];
   const incName =
@@ -2571,6 +2607,21 @@ export default function Duels() {
                 helper="Minutes to leave the pipeline free between continuous sessions, for monitoring and manual runs."
               />
               <NumField
+                label="Exploration share (%)"
+                value={Math.round((cfg?.explore_share ?? 0.05) * 1000) / 10}
+                disabled={!cfg || busy}
+                onCommit={(v) => void patch({ explore_share: Math.max(0, Math.min(50, v)) / 100 })}
+                helper="Share of every session's window spent measuring Explore's top bet, so the ring keeps getting the smartest untried profiles to duel. Scales with the window: about two bets in two hours, five or six in a night. 0 turns it off."
+              />
+              <NumField
+                label="Iterations per Explore bet"
+                value={cfg?.explore_iterations ?? 5}
+                disabled={!cfg || busy}
+                min={1}
+                onCommit={(v) => void patch({ explore_iterations: Math.round(v) })}
+                helper="Enough to place a new profile in the field (Explore's own “Test now” length). The ring matures it from there."
+              />
+              <NumField
                 label="Wins in a row that end it"
                 value={cfg?.streak_wins ?? 0}
                 disabled={!cfg || busy}
@@ -2922,6 +2973,7 @@ export default function Duels() {
                   {status?.stage || "starting…"}
                 </Typography>
               )}
+              {status?.explore && <ExploreShareLine explore={status.explore} />}
               <Typography variant="caption" color="text.secondary">
                 {status?.iterations_run ?? 0} iteration(s) ·{" "}
                 {status?.matchups?.length ?? 0} match{status?.matchups?.length === 1 ? "" : "es"}{" "}

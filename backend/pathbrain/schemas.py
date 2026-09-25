@@ -125,6 +125,10 @@ class DuelScheduleUpdate(BaseModel):
     # Run the ladder perpetually rather than once a night, and the gap between sessions.
     continuous: bool | None = None
     continuous_gap_minutes: float | None = None
+    # The exploration share: fraction of each window (0–0.5) spent measuring Explore's top
+    # bet, and iterations per bet.
+    explore_share: float | None = None
+    explore_iterations: int | None = None
     # Who the champion fights: "leaders" (closest to the crown) or "heirs" (explore).
     contenders: str | None = None
     contender_top_n: int | None = None
