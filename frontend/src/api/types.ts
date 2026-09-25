@@ -2057,6 +2057,11 @@ export interface DuelConfig {
   // Run the ladder perpetually rather than once a night, and the pause between sessions.
   continuous: boolean;
   continuous_gap_minutes: number;
+  // The exploration share: this fraction of every session's window (0–0.5) is spent
+  // measuring Explore's top bet, `explore_iterations` each, so the ring keeps getting new
+  // profiles to duel. 0 = off.
+  explore_share?: number;
+  explore_iterations?: number;
   // Who the champion fights: the profiles nearest the crown, or the exploring heirs order.
   contenders: "ring" | "leaders" | "heirs" | "levers";
   contender_top_n: number;
@@ -2577,11 +2582,35 @@ export interface DuelOpenMatch {
   sessions: number[];
 }
 
+/** One Explore bet a duel session queued under its exploration share. */
+export interface DuelExploreBet {
+  test_id: number | null;
+  fingerprint: string | null;
+  label: string;
+  summary?: string | null;
+  predicted?: number | null;
+  confidence_score?: number | null;
+  clears_bar?: boolean | null;
+  iterations: number;
+  status?: string | null;
+}
+
+/** A session's exploration share: its budget, what the bets actually cost, and the bets. */
+export interface DuelExplore {
+  share: number;
+  iterations: number;
+  budget_s: number;
+  spent_s: number;
+  bets: DuelExploreBet[];
+  note?: string | null;
+}
+
 export interface DuelSession extends QueuePlacement {
   id: number;
   status: "pending" | "running" | "complete" | "failed" | "cancelled" | null;
   stage: string | null;
   live?: DuelLive | null;
+  explore?: DuelExplore | null;
   trigger: string;
   // The session's kind, fixed at start: "levers" for a lever session (the champion against
   // single-setting variants of itself), null/absent for the ladder's configured matchmaking.

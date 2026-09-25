@@ -805,6 +805,9 @@ class Duel(Base):
     # thing anyone watching a duel wants to know. Rewritten after every pair, cleared when
     # the session ends.
     live: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The session's exploration share (``explore_share``): the Explore bets it queued, their
+    # profile-test ids and status, and the time they cost against the share's budget.
+    explore: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # The ladder's final incumbent (the duel champion) when the session completed.
     champion_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     champion_label: Mapped[str | None] = mapped_column(String(255), nullable=True)

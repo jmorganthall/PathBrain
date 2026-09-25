@@ -189,6 +189,35 @@ def test_candidate(payload: ExploreTest, session: Session = Depends(get_session)
     return _start_candidate(session, payload)
 
 
+def candidate_label(candidate: dict) -> str:
+    """The moves a candidate makes, as one line (``Download Quantum 3000, …``)."""
+    return ", ".join(
+        f"{ch['pipe']} {ch['field_label']} {ch['to']}" for ch in candidate.get("changes") or []
+    )
+
+
+def candidate_test(candidate: dict, iterations: int | None, best_overall: float | None) -> tuple[str, ExploreTest]:
+    """A landscape candidate as the ``ExploreTest`` that measures it — the one mapping the
+    batch and the duel's exploration share both use, so neither can record a claim the
+    other would have recorded differently."""
+    label = candidate_label(candidate)
+    return label, ExploreTest(
+        settings=candidate.get("settings"),
+        label=f"Explore: {label}",
+        iterations=iterations,
+        parent_fingerprint=(candidate.get("parent") or {}).get("fingerprint"),
+        parent_overall=(candidate.get("parent") or {}).get("overall"),
+        changes=candidate.get("changes"),
+        evidence=candidate.get("evidence"),
+        multi_lever=bool(candidate.get("multi_lever")),
+        predicted=candidate.get("predicted"),
+        uncertainty=candidate.get("uncertainty"),
+        upside=candidate.get("upside"),
+        best_overall=best_overall,
+        summary=candidate.get("summary"),
+    )
+
+
 @router.post("/explore/test-batch")
 def test_batch(payload: ExploreBatchTest, session: Session = Depends(get_session)) -> dict:
     """Queue the top **N** recommendations at **M** iterations each — "run the smartest bets".
@@ -243,24 +272,7 @@ def test_batch(payload: ExploreBatchTest, session: Session = Depends(get_session
     queued: list[dict] = []
     skipped: list[dict] = []
     for candidate in pool[: payload.count]:
-        label = ", ".join(
-            f"{ch['pipe']} {ch['field_label']} {ch['to']}" for ch in candidate.get("changes") or []
-        )
-        one = ExploreTest(
-            settings=candidate.get("settings"),
-            label=f"Explore: {label}",
-            iterations=payload.iterations,
-            parent_fingerprint=(candidate.get("parent") or {}).get("fingerprint"),
-            parent_overall=(candidate.get("parent") or {}).get("overall"),
-            changes=candidate.get("changes"),
-            evidence=candidate.get("evidence"),
-            multi_lever=bool(candidate.get("multi_lever")),
-            predicted=candidate.get("predicted"),
-            uncertainty=candidate.get("uncertainty"),
-            upside=candidate.get("upside"),
-            best_overall=best_overall,
-            summary=candidate.get("summary"),
-        )
+        label, one = candidate_test(candidate, payload.iterations, best_overall)
         try:
             started = _start_candidate(session, one)
         except HTTPException as exc:

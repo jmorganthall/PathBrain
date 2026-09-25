@@ -389,6 +389,14 @@ DEFAULT_CONFIG: dict = {
         # leaves the pipeline free for monitoring and manual runs in between.
         "continuous": False,
         "continuous_gap_minutes": 5,
+        # The exploration share: this fraction of every session's window is spent measuring
+        # Explore's top bet (the candidate we would back, ranked on the pessimistic end of
+        # its measured band), `explore_iterations` each, so the field the ring fights over
+        # keeps growing with the smartest untried profiles — which the ring then duels.
+        # A share of the window, so it scales with it: ~1-2 bets in two hours, ~6 a night.
+        # 0 turns it off. See `explore_share`.
+        "explore_share": 0.05,
+        "explore_iterations": 5,
         "contenders": "ring",
         "contender_top_n": 8,
         "p1": 0.70,

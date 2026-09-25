@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .. import duel
+from .. import explore_share
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
 from .. import job_queue
@@ -89,6 +90,9 @@ def _schedule_payload(cfg: dict) -> dict:
         "streak_wins": int(d.get("streak_wins", 0) or 0),
         "continuous": bool(d.get("continuous", False)),
         "continuous_gap_minutes": float(d.get("continuous_gap_minutes", 5) or 0),
+        # The exploration share: fraction of each window spent measuring Explore's top bet.
+        "explore_share": explore_share.share(d),
+        "explore_iterations": explore_share.iterations(d),
         # Which rule names the champion. The STANDINGS always rank on the proven rating
         # floor; this only decides who wears the belt.
         "crown_rule": duel.crown_rule(d),
@@ -242,6 +246,17 @@ def update_duel_config(payload: DuelScheduleUpdate) -> dict:
         updates["streak_wins"] = int(payload.streak_wins)
     if payload.continuous is not None:
         updates["continuous"] = bool(payload.continuous)
+    if payload.explore_share is not None:
+        if not 0 <= float(payload.explore_share) <= explore_share.MAX_SHARE:
+            raise HTTPException(
+                status_code=422,
+                detail=f"explore_share must be between 0 and {explore_share.MAX_SHARE}",
+            )
+        updates["explore_share"] = float(payload.explore_share)
+    if payload.explore_iterations is not None:
+        if not 1 <= int(payload.explore_iterations) <= 50:
+            raise HTTPException(status_code=422, detail="explore_iterations must be between 1 and 50")
+        updates["explore_iterations"] = int(payload.explore_iterations)
     if payload.continuous_gap_minutes is not None:
         if float(payload.continuous_gap_minutes) < 0:
             raise HTTPException(status_code=422, detail="the gap cannot be negative")
