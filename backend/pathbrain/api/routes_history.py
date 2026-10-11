@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config_store import get_config
-from ..database import get_session
+from .. import jobs, research_export
+from ..database import get_session, session_scope
 from ..methodology import ensure_current_methodology
 from ..models import Run, Score
 from ..schemas import RunSummary
@@ -217,3 +219,66 @@ def history_series(
             }
         )
     return {"points": points}
+
+
+# --- Research export (docs/plan-learning-engine.md, phase 1) -------------------------------
+
+
+def _parse_day(value: str | None, field: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{field} must be an ISO date or datetime") from exc
+    # Stored timestamps are naive UTC; compare like with like.
+    return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
+
+
+@router.get("/export/research/estimate")
+def research_export_estimate(
+    since: str | None = Query(None, description="ISO date/datetime (UTC), inclusive."),
+    until: str | None = Query(None, description="ISO date/datetime (UTC), exclusive."),
+    session: Session = Depends(get_session),
+) -> dict:
+    """What an export would contain, and what the optional per-site pass would cost
+    (measured on a few real raws, not guessed)."""
+    return research_export.estimate(
+        session, since=_parse_day(since, "since"), until=_parse_day(until, "until")
+    )
+
+
+@router.post("/export/research", status_code=202)
+def research_export_start(
+    since: str | None = Query(None),
+    until: str | None = Query(None),
+    per_site: bool = Query(False, description="Also re-derive per-site metrics from raw (slow)."),
+) -> dict:
+    """Write a research export in the background; progress shows in the jobs feed. A
+    second request while one is running returns the running job's id."""
+    since_dt, until_dt = _parse_day(since, "since"), _parse_day(until, "until")
+
+    def task(job: jobs.Job) -> str:
+        with session_scope() as session:
+            path = research_export.build(
+                session, since=since_dt, until=until_dt, per_site=per_site,
+                progress=job.set_progress,
+            )
+        return f"wrote {path.name}"
+
+    job_id = jobs.start("research_export", "Research export", task, href="/data-dump")
+    return {"job_id": job_id}
+
+
+@router.get("/export/research")
+def research_export_list() -> dict:
+    """Exports on disk, newest first (the last few are kept)."""
+    return {"exports": research_export.list_exports(), "keep": research_export.KEEP}
+
+
+@router.get("/export/research/{name}")
+def research_export_download(name: str):
+    path = research_export.export_path(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="No such export")
+    return FileResponse(path, media_type="application/zip", filename=name)

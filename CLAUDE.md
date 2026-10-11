@@ -1081,6 +1081,23 @@ LLM-based. See `README.md` for the product overview.
     decided and iterations measured (`_duel_message`), both already recorded after every
     round: the stage names the bout in the ring, which is right and says nothing about how
     far through the night the ladder is.
+  - `research_export.py` — **the research export: the whole measured record in one file, for
+    analysis off the box** (phase 1 of `docs/plan-learning-engine.md`; `POST /api/export/research`,
+    `GET /api/export/research[/estimate|/{name}]`, the **Research export** card on the Data Dump
+    page). Every later phase — the noise audits, the simulator, the surrogate — must be fitted to
+    this link's data, and neither existing export can carry it (`/history/dump` builds one JSON in
+    memory and caps at 500 runs; the optimizer export has no per-iteration readings, round margins
+    or weather). So a `jobs` background job **streams** a `.zip` of JSON-lines files, one batch of
+    rows at a time (never `raw`): runs with each iteration's registry metrics (from the cached
+    `details['iteration_metrics']`), machine health, site/client stamps and scores (full detail
+    under the current methodology only); profiles; duels and lever campaigns with per-round
+    `deltas`; the Explore ledger; crown events; methodologies; the config; and a manifest whose
+    counts are the lines written. The optional `site_metrics.jsonl` re-derives the registry's
+    browser metrics per run × iteration × site through the one `interpret.derive`, one raw per
+    statement, and is priced first (`estimate` times real raws). **Never exported**: secret-looking
+    config keys, the AI row, Away-test runs (egress IPs/ISP), and any bare IPv4 in a string value
+    (`scrub`). Files land in `data/exports`, the newest `KEEP` (3) are kept, and a download is only
+    ever a listed export name, never a composed path. Read-only. `test_research_export`.
   - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
     iterations still needed to reach `correlation.min_iterations`, then **restore the
     baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
