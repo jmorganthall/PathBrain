@@ -117,8 +117,12 @@ overnight test time as efficiently as possible:
 | 6 | Value-of-information scheduler + value-based duel stopping | Beats fixed share + pair cap in the simulator; all firewall-write rules unchanged (existing guard tests green). |
 | 7 | "Is it learning?" card | Renders from existing endpoints; no field pass on page load. |
 
-## Open item
+## Bandwidth held (resolved)
 
-- **Existing profiles that differ in bandwidth.** Decision 11 stops *new* bandwidth values.
-  Whether the duel may still race *already-stored* profiles whose bandwidth differs from the
-  live value (which writes that bandwidth during the leg) is not yet decided.
+- The duel, the challenger race, crown-follow and every other automatic switch **skip any
+  stored profile whose download bandwidth differs from the live value**; the reachability
+  card lists them as "bandwidth held". Enforced in the new scheduler's candidate filter (and
+  the existing engines' reachability checks), **not** by making the field non-writable in the
+  registry, so a person can still set it by hand.
+
+No open questions remain.
