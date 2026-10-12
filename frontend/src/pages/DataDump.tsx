@@ -16,6 +16,7 @@ import DataObjectIcon from "@mui/icons-material/DataObject";
 import { api } from "../api/client";
 import type { DataDump as DataDumpPayload, OptimizerExport } from "../api/types";
 import { HelpTip } from "../components/Explain";
+import ResearchExportCard from "../components/ResearchExportCard";
 
 // Save any object as a downloaded .json file.
 function saveJson(obj: unknown, filename: string) {
@@ -118,6 +119,8 @@ export default function DataDump() {
       <Typography variant="h4" sx={{ mb: 1 }}>
         Data Dump
       </Typography>
+
+      <ResearchExportCard />
 
       {/* AI optimizer export — the headline export for feeding a model. */}
       <Typography variant="h6" sx={{ mb: 0.5 }}>

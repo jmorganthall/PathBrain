@@ -195,6 +195,29 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
+export interface ResearchExportEstimate {
+  runs: number;
+  browser_results: number;
+  duels: number;
+  per_site_seconds: number | null;
+  per_site_basis: string;
+}
+
+export interface ResearchExportFile {
+  name: string;
+  bytes: number;
+  created_at: string;
+}
+
+function researchQuery(since?: string, until?: string, perSite?: boolean): string {
+  const q = new URLSearchParams();
+  if (since) q.set("since", since);
+  if (until) q.set("until", until);
+  if (perSite) q.set("per_site", "true");
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
 export const api = {
   health: () => request<Health>("/health"),
 
@@ -669,6 +692,19 @@ export const api = {
       undefined,
       { timeoutMs: 120_000 },
     ),
+
+  // Research export (docs/plan-learning-engine.md, phase 1): a streamed .zip built by a job.
+  researchExportEstimate: (since?: string, until?: string) =>
+    request<ResearchExportEstimate>(`/export/research/estimate${researchQuery(since, until)}`, undefined, {
+      timeoutMs: 120_000,
+    }),
+  researchExportStart: (since?: string, until?: string, perSite = false) =>
+    request<{ job_id: string }>(
+      `/export/research${researchQuery(since, until, perSite)}`,
+      { method: "POST" },
+    ),
+  researchExports: () => request<{ exports: ResearchExportFile[]; keep: number }>("/export/research"),
+  researchExportUrl: (name: string) => `${BASE}/export/research/${encodeURIComponent(name)}`,
 
   // AI (OpenRouter)
   aiConfig: () => request<AiConfig>("/ai/config"),
