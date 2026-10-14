@@ -483,6 +483,13 @@ DEFAULT_CONFIG: dict = {
         # biased a verdict — it just put reconfiguration noise into every pair, and noise
         # costs pairs. 0 restores the old measure-immediately behaviour.
         "settle_seconds": 3,
+        # Adjust each round's margin for the measuring machine's own speed (``host_adjust``):
+        # the change in the host's context-setup / close / timing-read / render readings
+        # between a challenger leg and its belt legs, priced by a regression fitted on the
+        # ledger's same-profile leg pairs. Measured on the live ledger it removes ~36% of
+        # held-out leg noise, so a match needs roughly a third fewer rounds. It switches
+        # itself off (and says so on the record) when the fit doesn't earn its place.
+        "host_adjust": True,
         # Benchmark iterations per LEG of a round — one profile's side of one head-to-head
         # comparison. This is the lever that decides whether the ring can resolve your
         # field at all, and it is not a preference: it is set by the measurement noise.
