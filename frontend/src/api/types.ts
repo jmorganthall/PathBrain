@@ -4355,6 +4355,10 @@ export interface OverallCorner {
   rounds: number;
   rating?: number | null;
   rating_se?: number | null;
+  // Ring corner only: rounds behind the rating across every methodology (``rounds`` counts
+  // this methodology's alone), and whether the firewall can be set to it (null = unknown).
+  ledger_rounds?: number;
+  raceable?: boolean | null;
 }
 
 export interface OverallSlack {

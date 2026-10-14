@@ -407,14 +407,43 @@ def _pooled_field(session, version: str) -> list[dict]:
     return _graded_field(session, version)
 
 
-def _live_fingerprint() -> str | None:
+def _live_settings() -> list[dict] | None:
     try:
         from .providers import get_provider
-        from .settings_profile import fingerprint, normalize
+        from .settings_profile import normalize
 
-        return fingerprint(normalize(get_provider().discover()))
+        return normalize(get_provider().discover())
     except Exception:  # noqa: BLE001 — a firewall that will not answer is not this page's failure
         log.debug("Overall ranking: could not read the live profile", exc_info=True)
+        return None
+
+
+def _live_fingerprint(settings: list[dict] | None = None) -> str | None:
+    try:
+        from .settings_profile import fingerprint
+
+        settings = settings if settings is not None else _live_settings()
+        return None if settings is None else fingerprint(settings)
+    except Exception:  # noqa: BLE001
+        log.debug("Overall ranking: could not fingerprint the live profile", exc_info=True)
+        return None
+
+
+def _raceable(session, fp: str, live_settings: list[dict] | None) -> bool | None:
+    """Can the firewall be set to this profile? None when the live firewall did not answer
+    or the profile has no stored settings — unknown is never reported as a yes or a no."""
+    if live_settings is None:
+        return None
+    try:
+        from .duel import _reachable
+        from .refresh import list_profiles
+
+        settings = next((p["settings"] for p in list_profiles(session) if p["fingerprint"] == fp), None)
+        if not settings:
+            return None
+        return bool(_reachable(settings, live_settings))
+    except Exception:  # noqa: BLE001
+        log.debug("Overall ranking: could not test reachability", exc_info=True)
         return None
 
 
@@ -624,12 +653,19 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     ring_best_fp = ledger_leader(ratings, sigma=rank_sigma(duel_cfg))
     ring_best = next((r for r in rows if r["fingerprint"] == ring_best_fp), None)
     best = eligible[0] if eligible else None
+    live_settings = _live_settings() if live else None
+    ring_rating = ratings.get(ring_best_fp) or {}
     out["corners"] = {
         "pooled": None if pooled_best is None else _corner(pooled_best, "pooled"),
         "ring": None if ring_best is None else {
             **_corner(ring_best, "ring"),
-            "rating": (ratings.get(ring_best_fp) or {}).get("rating"),
-            "rating_se": (ratings.get(ring_best_fp) or {}).get("rating_se"),
+            "rating": ring_rating.get("rating"),
+            "rating_se": ring_rating.get("rating_se"),
+            # The rating is fitted over the whole ledger, every methodology; ``rounds`` is
+            # what the fit above can use (this methodology only). When they differ the
+            # card has to say so — "0 rounds · rating 1635" reads as a contradiction.
+            "ledger_rounds": int(ring_rating.get("pairs") or 0),
+            "raceable": _raceable(session, ring_best_fp, live_settings),
         },
         "fused": None if best is None else _corner(best, "fused"),
         "agree": bool(
@@ -667,7 +703,7 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     best["tied_with_leader"] = False
     best["gap_to_leader"] = 0.0
 
-    live_fp = _live_fingerprint() if live else None
+    live_fp = _live_fingerprint(live_settings) if live_settings is not None else None
     by_fp = {r["fingerprint"]: r for r in rows}
     sqm_off = out["sqm_off_overall"]
     moved_top = bool(pooled_best is not None and pooled_best["fingerprint"] != best["fingerprint"])

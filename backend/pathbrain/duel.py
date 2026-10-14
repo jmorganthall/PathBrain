@@ -1602,9 +1602,45 @@ def _seeded_field(session, field: dict) -> dict:
     # in — otherwise the ladder had nobody to challenge with as soon as the firewall's own
     # profile reached confidence after a publish (see ``seed_field_from_prior``).
     try:
-        return seed_field_from_prior(session, field, field.get("min_iterations"))
+        field = seed_field_from_prior(session, field, field.get("min_iterations"))
     except Exception:  # noqa: BLE001 — seeding orders the queue; it must never stop the ladder
         log.warning("Duel: could not seed the field from the prior methodology", exc_info=True)
+    return _with_ring_rated(session, field)
+
+
+def _with_ring_rated(session, field: dict) -> dict:
+    """The field with every profile the RING has rated folded in, whatever the pooled
+    record says about it.
+
+    The field is built from pooled data — current runs, plus the prior version's standings.
+    A profile whose rating comes from matches fought two publishes ago has neither, so it
+    was absent from the field, and matchmaking only seats what is in the field: the ring's
+    own #1 could sit at the top of the standings and never be raced, because the promotion
+    meant to resolve exactly that read a profile the queue had never heard of and dropped
+    it without a word. The ring's record is reason enough to stay in play; the stored
+    settings are what make it applicable. Best-effort: a failure here leaves the field as
+    it was."""
+    try:
+        from .refresh import list_profiles
+
+        rated = set(ledger_ratings(session))
+        known = {p["fingerprint"] for p in field.get("profiles", [])}
+        missing = rated - known
+        if not missing:
+            return field
+        out = {**field, "profiles": list(field.get("profiles", []))}
+        for p in list_profiles(session):
+            if p["fingerprint"] not in missing:
+                continue
+            out["profiles"].append({
+                "fingerprint": p["fingerprint"], "settings": p["settings"], "label": p["label"],
+                "name": p.get("name"), "confident": False, "overall": None, "optimistic": None,
+                "crown_spreads": {}, "last_seen": None, "no_data": True, "iterations": 0,
+                "prior_overall": None, "ring_rated_only": True,
+            })
+        return out
+    except Exception:  # noqa: BLE001 — matchmaking must never be why a session fails
+        log.warning("Duel: could not fold ring-rated profiles into the field", exc_info=True)
         return field
 
 
@@ -2149,7 +2185,25 @@ def next_challenger(
     # ``rank_sigma`` None reads the conservative floor (the floor rule's #1); a number is
     # the standings' own order — under the default rating rule the profile promoted here
     # is exactly the champion the ring names, challenging the belt it doesn't hold.
-    ring_leader_fp = ledger_leader(ratings, sigma=rank_sigma)
+    # Only a profile the firewall can actually be set to is promoted: the ring's #1 by
+    # rating may have been measured on settings PathBrain no longer writes, and seating it
+    # would fail every leg. The best *raceable* rated profile takes the promotion instead,
+    # and the unraceable one is named in the log rather than skipped in silence.
+    raceable = {
+        p["fingerprint"] for p in field.get("profiles", [])
+        if _reachable(p.get("settings"), baseline)
+    }
+    top_fp = ledger_leader(ratings, sigma=rank_sigma)
+    ring_leader_fp = ledger_leader(ratings, raceable, sigma=rank_sigma)
+    if top_fp is not None and top_fp != ring_leader_fp:
+        log.info(
+            "Duel: the ring's #1 (%s) %s — promoting the best raceable rated profile (%s)",
+            top_fp,
+            "cannot be applied to the live firewall" if any(
+                p["fingerprint"] == top_fp for p in field.get("profiles", [])
+            ) else "has no stored settings to apply",
+            ring_leader_fp,
+        )
     if ring_leader_fp is not None and (
         ring_leader_fp == defender_fp
         or frozenset((defender_fp, ring_leader_fp)) in fought
@@ -2357,7 +2411,7 @@ def contender_order(
                 "why": why,
             })
             continue
-        if fp == ring_leader_fp:
+        if fp == ring_leader_fp and (fp in heir_set or _reachable(p.get("settings"), baseline)):
             # The ring rates this profile above the one wearing the belt. Resolve it.
             out.append({
                 "fingerprint": fp,
