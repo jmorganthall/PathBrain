@@ -43,6 +43,7 @@ from . import alerts
 from . import coordinator
 from . import profile_names
 from . import decidability
+from . import host_adjust
 from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
@@ -2490,11 +2491,11 @@ def contender_order(
 
 #: The reference leg opening/closing a cycle, or a challenger's leg within it.
 class _Leg:
-    __slots__ = ("fp", "role", "run_id", "value", "severity", "why_missing", "index", "position", "crown")
+    __slots__ = ("fp", "role", "run_id", "value", "severity", "why_missing", "index", "position", "crown", "host")
 
     def __init__(self, fp: str, role: str, run_id: int | None, value: float | None,
                  severity: float | None, why_missing: str | None, index: int, position: int,
-                 crown: dict[str, float] | None = None):
+                 crown: dict[str, float] | None = None, host: list[float] | None = None):
         self.fp = fp
         self.role = role            # "belt" | "challenger"
         self.run_id = run_id
@@ -2504,6 +2505,7 @@ class _Leg:
         self.index = index          # leg number within the session (1-based)
         self.position = position    # slot within its cycle (belt = 0)
         self.crown = crown          # {crown metric: subscore} for this leg, or None
+        self.host = host            # log host readings (``host_adjust``), or None
 
 
 class _Seat:
@@ -2519,6 +2521,10 @@ class _Seat:
         self.sprt = SprtState(p1, alpha)
         self.paired = PairedEvidence(alpha, min_margin, min_pairs, max_pairs, streak_wins=streak_wins)
         self.deltas: list[float] = []
+        # The margins before the host adjustment (``host_adjust``), aligned with ``deltas``.
+        # ``deltas`` is what every rule and fit reads; this proves what the adjustment did.
+        self.raw_deltas: list[float] = []
+        self.host_adjusted = 0
         # Per crown metric, the same margins split by leg: ``{metric: [Δ per round]}``,
         # aligned index-for-index with ``deltas`` (None where a leg lacked the metric) —
         # so a match says WHERE its margin lived, not only how big it was.
@@ -2593,6 +2599,8 @@ def _seat_snapshot(seat: _Seat, duel_id: int, methodology: str | None = None) ->
         "challenger_name": seat.profile.get("name"),
         "why": seat.why,
         "deltas": [round(float(d), 4) for d in seat.deltas],
+        "raw_deltas": [round(float(d), 4) for d in seat.raw_deltas],
+        "host_adjusted": int(seat.host_adjusted),
         "crown_deltas": {m: list(v) for m, v in seat.crown_deltas.items()},
         "lever": dict(seat.lever) if seat.lever else None,
         "weather_shifts": list(seat.weather_shifts),
@@ -2623,6 +2631,10 @@ def _seat_from_snapshot(snap: dict, profile: dict, *, p1: float, alpha: float,
         seat.deltas.append(delta)
         seat.sprt.add_pair(delta > 0)
         seat.paired.add(delta)
+    # Snapshots written before the host adjustment existed carry no raw series: their
+    # margins were raw, so the raw series is the margins themselves.
+    seat.raw_deltas = [float(d) for d in (snap.get("raw_deltas") or snap.get("deltas") or [])]
+    seat.host_adjusted = int(snap.get("host_adjusted") or 0)
     seat.crown_deltas = {
         str(m): [None if d is None else float(d) for d in (series or [])]
         for m, series in (snap.get("crown_deltas") or {}).items()
@@ -2779,7 +2791,8 @@ def _adjudicate(seat: _Seat, *, method: str, min_pairs: int, max_pairs: int,
 
 
 def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: str,
-                  cadence: int, only_browser: bool, methodology: str | None = None) -> dict:
+                  cadence: int, only_browser: bool, methodology: str | None = None,
+                  host_model: dict | None = None) -> dict:
     """One decided (or closed) match as the ledger stores it. Same shape the pair engine
     wrote, plus the ring's design fields."""
     sprt, paired, deltas = seat.sprt, seat.paired, seat.deltas
@@ -2810,6 +2823,12 @@ def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: 
         # the lever ledger pooling rounds across matches — can run a paired test over the
         # actual evidence rather than reconstruct it from a median and a count.
         "deltas": [round(float(d), 3) for d in deltas],
+        # The same rounds before the host adjustment (``host_adjust``) — ``deltas`` is what
+        # the verdict was decided on; this is the audit of what the adjustment changed — and
+        # how many rounds it actually adjusted (a round missing a host reading stays raw).
+        "raw_deltas": [round(float(d), 3) for d in seat.raw_deltas] or None,
+        "host_adjusted_rounds": int(seat.host_adjusted),
+        "host_adjust": host_model,
         # Where the margin lived: the same rounds split by crown leg, and each leg's median.
         "crown_deltas": {m: list(v) for m, v in seat.crown_deltas.items()} or None,
         "median_crown_delta": {
@@ -2984,6 +3003,13 @@ def _run_ring(
     cooldown_hours = rematch_hours(cfg)
     leg_iterations = iterations_per_round(cfg)
     settle_s = max(0, int(cfg.get("settle_seconds", 3) or 0))
+    # The host adjustment (``host_adjust``): fitted once per session on the ledger's own
+    # same-profile leg pairs, and used only when it earns its place out of sample.
+    host_model = None
+    if cfg.get("host_adjust", True):
+        with session_scope() as session:
+            host_model = host_adjust.model_for(session, meth_version)
+    host_desc = host_model.describe() if host_model is not None else {"active": False, "why": "switched off"}
     cadence = belt_every(cfg)
     n_seats = seats(cfg)
     only_browser = browser_only(cfg)
@@ -3168,7 +3194,8 @@ def _run_ring(
             if d is not None:
                 d.run_ids = list(run_ids)
                 d.iterations_run = counters["iterations"]
-        leg = _Leg(fp, role, run_id, value, severity, why_missing, counters["legs"], position, crown)
+            host = host_adjust.leg_vector(session, run_id) if host_model is not None and host_model.active else None
+        leg = _Leg(fp, role, run_id, value, severity, why_missing, counters["legs"], position, crown, host)
         legs_tape.append({
             "index": leg.index,
             "fingerprint": fp,
@@ -3203,7 +3230,12 @@ def _run_ring(
             return
         seat.bad_streak = 0
         reference = sum(f.value for f in usable) / len(usable)
-        delta = leg.value - reference
+        raw = leg.value - reference
+        adjusted = host_model.adjust(raw, leg.host, [f.host for f in usable]) if host_model is not None else None
+        delta = raw if adjusted is None else adjusted
+        if adjusted is not None:
+            seat.host_adjusted += 1
+        seat.raw_deltas.append(raw)
         seat.deltas.append(delta)
         seat.leg_distances.append(max(abs(leg.index - f.index) for f in usable))
         shifts = [
@@ -3223,6 +3255,7 @@ def _run_ring(
         record = _match_record(
             seat, ref or inc, method=method, verdict=verdict, reason=reason,
             cadence=cadence, only_browser=only_browser, methodology=meth_version,
+            host_model=host_desc,
         )
         matchups.append(record)
         _persist_matchups()

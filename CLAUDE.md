@@ -2259,6 +2259,24 @@ LLM-based. See `README.md` for the product overview.
     a **label beside `clears_bar`, never a filter and never a re-ordering**. Read-only
     throughout: the duel ledger, the pooled field and the shaper registry in, numbers and
     sentences out. `test_decidability`.
+  - `host_adjust.py` — **a round's margin is adjusted for the measuring machine's own speed**
+    (`duel.host_adjust`, default on; `raw_deltas` / `host_adjusted_rounds` / `host_adjust` on
+    every match record). The research export showed the ring's leg noise is largely the HOST:
+    every night from 07:00 UTC the box runs ~30% slower for five hours (context setup +35%,
+    close +40%, render +10%) and every profile loses 3–4 points, with adjacent legs sharing
+    most but not all of it. So each round is CUPED-adjusted: `raw − β·(x_challenger − mean(x_belt))`,
+    `x` = the leg's log host readings (`instrument_health.HOST_QUANTITIES` — context setup,
+    close, timing reads, render, none of which the shaper can move, so the adjustment cannot
+    remove a real edge). β is fitted per session on the ledger's **pure-noise pairs** —
+    same-profile legs ≤ `MAX_LEG_GAP` apart in one session, whose true difference is zero —
+    by ridge least squares through the origin, with log-ratios clipped to ±`CLIP` so one
+    wedged phase can't steer it, and **kept only if it removes ≥ `MIN_GAIN` of held-out
+    variance** on ≥ `MIN_PAIRS` pairs (interleaved two-fold); otherwise margins stay raw and
+    the record says why. Measured on the live ledger: 36% of held-out leg noise removed
+    (1126 pairs) — roughly a third fewer rounds per verdict. A round missing a reading stays
+    raw (never a guessed covariate). `deltas` (what the rules, the ratings fit, the fused
+    ranking and decidability read) is the adjusted series; `raw_deltas` proves what changed.
+    `test_host_adjust`.
   - **A verdict names the RULE that ended it, and never claims evidence it does not have**
     (`PairedEvidence.decide` → `(verdict, basis)`, `duel._decided_reason`,
     `WILCOXON_MIN_PAIRS`). Two independent rules end a match — the streak
