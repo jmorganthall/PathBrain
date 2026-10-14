@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from .. import instrument_health
+from .. import host_pressure, instrument_health
 from ..config_store import get_config
 from ..database import get_session
 
@@ -97,6 +97,8 @@ def _serialize_run(run: Run, overall: float | None = None) -> RunDetail:
         pause_diagnostics=_pause_diagnostics(run),
         instrument_health=run.instrument_health,
         instrument_health_why=instrument_health.explain(run.instrument_health),
+        host_pressure=run.host_pressure,
+        host_pressure_why=host_pressure.explain(run.host_pressure),
     )
 
 

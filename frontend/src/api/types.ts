@@ -899,6 +899,9 @@ export interface RunDetail extends RunSummary, QueuePlacement {
   // which never quarantines.
   instrument_health?: InstrumentHealth | null;
   instrument_health_why?: string | null;
+  // How loaded the NAS was over the run's window, and by whom (backend `host_pressure`).
+  host_pressure?: HostPressure | null;
+  host_pressure_why?: string | null;
 }
 
 export interface InstrumentHealth {
@@ -4429,4 +4432,23 @@ export interface OverallOut {
   movers: OverallProfile[];
   backtest: OverallBacktest | null;
   computed_at: string;
+}
+
+// The kernel's account of one run's window: pressure-stall shares (percent of wall time)
+// for the host and the container, the host's CPU busy share, the CPU this container used,
+// and who the busy CPU belonged to. Recorded only — nothing grades on it.
+export interface HostPressure {
+  wall_s: number;
+  cpus: number;
+  host_psi_pct?: Record<string, number> | null;
+  container_psi_pct?: Record<string, number> | null;
+  host_cpu_pct?: number | null;
+  container_cpu_cores?: number | null;
+  container_share_of_busy?: number | null;
+  load1?: number | null;
+  load5?: number | null;
+  mem_available_mb?: number | null;
+  swap_used_mb?: number | null;
+  swap_growth_mb?: number | null;
+  attribution?: "host" | "pathbrain" | "quiet" | null;
 }

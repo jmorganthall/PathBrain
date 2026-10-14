@@ -87,6 +87,11 @@ class Run(Base):
     # otherwise sit in a profile's pooled median forever. NULL until assessed; the first
     # grading of a run stamps it, so a re-grade heals history without re-measuring.
     instrument_health: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # How loaded the HOST was over this run's window (`host_pressure`): pressure-stall
+    # shares for CPU/IO/memory, the host's CPU busy share against the CPU this container
+    # used, load and memory — so a slow stretch can be attributed to the NAS or to
+    # PathBrain. Recorded only; nothing grades or gates on it. NULL on runs from before it.
+    host_pressure: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
     # Firewall/SQM settings in effect during this run, for settings-vs-score

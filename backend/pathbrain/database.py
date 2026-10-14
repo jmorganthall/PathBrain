@@ -151,6 +151,7 @@ def _migrate() -> None:
             "job_group": "VARCHAR(64)",
             "job_group_total": "INTEGER",
             "instrument_health": "JSON",
+            "host_pressure": "JSON",
         },
 
         "benchmark_results": {

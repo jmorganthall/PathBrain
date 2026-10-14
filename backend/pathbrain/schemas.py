@@ -357,6 +357,10 @@ class RunDetail(BaseModel):
     # is off) — no opinion, which never quarantines.
     instrument_health: dict[str, Any] | None = None
     instrument_health_why: str | None = None
+    # How loaded the NAS was over the run's window, and by whom (`host_pressure`). Recorded
+    # only — no grade reads it. None on runs from before it was recorded.
+    host_pressure: dict[str, Any] | None = None
+    host_pressure_why: str | None = None
 
 
 class RunBaselineOut(BaseModel):

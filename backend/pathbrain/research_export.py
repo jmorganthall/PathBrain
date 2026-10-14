@@ -276,7 +276,7 @@ def _runs(session, run_ids: list[int], current: str, by_plugin, progress: Callab
                 Run.id, Run.created_at, Run.started_at, Run.finished_at, Run.status, Run.label,
                 Run.error, Run.iterations, Run.iterations_completed, Run.per_iteration_ms,
                 Run.job_group, Run.settings_fingerprint, Run.methodology_version,
-                Run.instrument_health, Run.config_used,
+                Run.instrument_health, Run.host_pressure, Run.config_used,
             ).where(Run.id.in_(batch)).order_by(Run.id)
         ).all()
         results: dict[int, list] = {}
@@ -349,6 +349,7 @@ def _runs(session, run_ids: list[int], current: str, by_plugin, progress: Callab
                 "fingerprint": r.settings_fingerprint,
                 "methodology_version": r.methodology_version,
                 "instrument_health": r.instrument_health,
+                "host_pressure": r.host_pressure,
                 "site_set": site_set_from_config(r.config_used),
                 "client_set": client_set_from_config(r.config_used),
                 "plugins": plugins,
