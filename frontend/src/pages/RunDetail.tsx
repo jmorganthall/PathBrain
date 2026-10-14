@@ -417,6 +417,18 @@ export default function RunDetail() {
         );
       })()}
 
+      {/* How loaded the NAS was while this ran, and by whom — the kernel's own account,
+          recorded on every run so a slow stretch can be attributed rather than guessed. */}
+      {run.host_pressure_why && (
+        <Alert
+          severity={run.host_pressure?.attribution === "quiet" || !run.host_pressure?.attribution ? "info" : "warning"}
+          variant="outlined"
+          sx={{ mb: 2 }}
+        >
+          {run.host_pressure_why}
+        </Alert>
+      )}
+
       {/* Was the machine healthy? Shown only when there is something to say — a healthy
           run needs no card, and a quarantined one must say why in the same place the
           reader is asking "why doesn't this run count?". */}

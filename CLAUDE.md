@@ -2286,6 +2286,20 @@ LLM-based. See `README.md` for the product overview.
     raw (never a guessed covariate). `deltas` (what the rules, the ratings fit, the fused
     ranking and decidability read) is the adjusted series; `raw_deltas` proves what changed.
     `test_host_adjust`.
+  - `host_pressure.py` — **how loaded the NAS was while a run measured, and by whom**
+    (`Run.host_pressure`, the outlined sentence on Run Detail, `runs.jsonl` in the research
+    export). Instrument health infers a slow host from the browser's own readings and cannot
+    say *why*; the nightly ~5-hour slowdown from 07:00 UTC had nothing in PathBrain scheduled,
+    and "the NAS's own job" and "PathBrain's leaked Chromium" call for opposite fixes. So the
+    runner reads the kernel's counters when a run starts and when its iterations finish and
+    keeps only the **differences**: host pressure-stall shares for CPU/IO/memory
+    (`/proc/pressure`), the container's own where the cgroup exposes them, the host's CPU
+    busy share (`/proc/stat`) against the CPU this container used (cgroup v2 `cpu.stat`,
+    v1 `cpuacct.usage`), and load/memory/swap at the end. `attribution` reads them as
+    `host` (busy or stalled, PathBrain a small share of the busy CPU), `pathbrain`, `quiet`,
+    or None when the readings can't say. **Recorded only** — nothing grades or gates on it;
+    the machine-health gate is unchanged by decision. Every source degrades to None and a
+    failed reading never fails a run. `test_host_pressure`.
   - **A verdict names the RULE that ended it, and never claims evidence it does not have**
     (`PairedEvidence.decide` → `(verdict, basis)`, `duel._decided_reason`,
     `WILCOXON_MIN_PAIRS`). Two independent rules end a match — the streak

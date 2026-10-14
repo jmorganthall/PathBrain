@@ -1069,6 +1069,12 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                 log.warning("Run %s: could not capture firewall settings", run_id, exc_info=True)
             session.commit()
 
+            # How loaded the NAS is, read now and again when the iterations finish, so the
+            # run carries the kernel's account of its own window (`host_pressure`).
+            from . import host_pressure as _host_pressure
+
+            pressure_start = _host_pressure.snapshot()
+
             plugins = iter_plugins()
             per_plugin: dict[str, list[PluginResult]] = {p.name: [] for p in plugins}
             # Per-plugin iteration count: a plugin's config section may cap how many of the
@@ -1268,6 +1274,11 @@ def execute_run(run_id: int, *, teardown: bool = True) -> None:
                     completion_metric_values=c_breakdown.metric_values if has_completion else None,
             )
             session.add(score_result)
+
+            try:
+                run.host_pressure = _host_pressure.summarize(pressure_start, _host_pressure.snapshot())
+            except Exception:  # noqa: BLE001 — a host reading must never fail a run
+                log.debug("Run %s: host pressure unavailable", run_id, exc_info=True)
 
             # Record the at-measure score in the (run × methodology) table under the
             # current methodology, scored across all its axes (Speed/Smoothness/…),
