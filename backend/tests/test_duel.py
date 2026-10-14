@@ -10,7 +10,7 @@ from pathbrain import duel as duel_mod
 from pathbrain.config_store import get_config, save_config
 from pathbrain.database import session_scope
 from pathbrain.duel import SprtState
-from pathbrain.models import Duel, DuelStatus
+from pathbrain.models import Duel, DuelStatus, Run, RunStatus
 from pathbrain.rating import RANK_SIGMA
 
 
@@ -3877,3 +3877,81 @@ def test_round_health_says_why_matches_produced_no_result():
     assert by_reason["rounds unusable — no Overall to compare"] == 1
     assert by_reason["carried over but could not resume"] == 1
     assert health["abort_reasons"][0]["matches"] == 2  # biggest cause first
+
+
+def test_the_rings_number_one_is_raced_even_when_the_pooled_field_has_never_heard_of_it():
+    """The reported bug: the ring's #1 was rated on matches fought two publishes ago, so it
+    had no current runs and the prior version had not ranked it either — it was not in the
+    field, and the promotion meant to seat it against the belt dropped it without a word.
+    The ring's own record keeps it in play; its stored settings make it applicable."""
+    from pathbrain.refresh import invalidate_seed_cache
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    settings = [{"label": "wan", "quantum": 1234}]
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s, matchups=_two_verdict_ledger("champ", "ringtop", now),
+            champion="champ", when=now - timedelta(days=30),
+        )
+        run = Run(status=RunStatus.COMPLETE, settings_fingerprint="ringtop", settings=settings)
+        s.add(run)
+        s.flush()
+        run_id = run.id
+    invalidate_seed_cache()
+    field = _field(("champ", 80.0), ("midfield", 60.0), ("backmarker", 50.0), best="midfield")
+    assert "ringtop" not in {p["fingerprint"] for p in field["profiles"]}, "fixture: not in the pooled field"
+    try:
+        with session_scope() as s:
+            seeded = duel_mod._with_ring_rated(s, field)
+            ratings = duel_mod.ledger_ratings(s)
+            fp, why = duel_mod.next_challenger(
+                s, seeded, ratings, "champ", heirs={"items": []}, cooldown_hours=6
+            )
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+            s.query(Run).filter(Run.id == run_id).delete(synchronize_session=False)
+        invalidate_seed_cache()
+    added = next(p for p in seeded["profiles"] if p["fingerprint"] == "ringtop")
+    assert added["settings"] == settings and added["no_data"]
+    assert fp == "ringtop"
+    assert "the ring's #1 isn't the champion" in why
+
+
+def test_an_unraceable_ring_leader_hands_the_promotion_to_the_best_raceable_one():
+    """The ring's #1 measured on settings the firewall can no longer be put on would fail
+    every leg it was seated for — so it is never promoted, and the next-best rated profile
+    the firewall CAN be set to takes the promotion instead."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    live = [{"label": "wan", "scheduler": "fq_codel", "queues": 2}]
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s,
+            matchups=[
+                _mu("ringtop", "midfield", "incumbent", wins_inc=18, wins_cha=1, delta=-4.0),
+                _mu("ringtop", "backmarker", "incumbent", wins_inc=17, wins_cha=1, delta=-4.0),
+                _mu("second", "backmarker", "incumbent", wins_inc=16, wins_cha=2, delta=-3.0),
+                _mu("champ", "midfield", "incumbent", wins_inc=9, wins_cha=2, delta=-2.0),
+            ],
+            champion="champ", when=now - timedelta(days=30),
+        )
+    field = {
+        "best_fingerprint": "midfield",
+        "profiles": [
+            {"fingerprint": fp, "label": fp, "overall": ov, "settings": [{**live[0], "quantum": q}]}
+            for fp, ov, q in (("champ", 80.0, 300), ("second", 75.0, 600), ("midfield", 60.0, 900),
+                              ("backmarker", 50.0, 1200))
+        ] + [{"fingerprint": "ringtop", "label": "ringtop", "overall": 70.0,
+              "settings": [{"label": "wan", "scheduler": "fq_codel", "queues": 8}]}],
+    }
+    with session_scope() as s:
+        ratings = duel_mod.ledger_ratings(s)
+        assert duel_mod.ledger_leader(ratings) == "ringtop", "fixture: ringtop rates highest"
+        fp, why = duel_mod.next_challenger(
+            s, field, ratings, "champ", heirs={"items": []}, baseline=live, cooldown_hours=6
+        )
+        s.query(Duel).delete()
+    assert fp == "second"
+    assert "the ring's #1 isn't the champion" in why

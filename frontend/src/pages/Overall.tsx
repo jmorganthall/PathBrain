@@ -66,6 +66,22 @@ function profileHref(fp: string) {
 
 // ── The three corners ─────────────────────────────────────────────────────────────────
 
+// The ring's rating is fitted over every methodology's rounds; the fit on this page uses only
+// the current methodology's. Say both, so "0 rounds · rating 1635" never reads as a contradiction.
+function ringCaption(corner: OverallCorner): string {
+  const plural = (n: number) => `${n} round${n === 1 ? "" : "s"}`;
+  const ledger = corner.ledger_rounds ?? corner.rounds;
+  const rating = corner.rating != null ? `rating ${Math.round(corner.rating)}` : null;
+  const basis =
+    ledger > corner.rounds
+      ? corner.rounds === 0
+        ? `${plural(ledger)}, all under an earlier methodology`
+        : `${plural(ledger)}, ${corner.rounds} under this methodology`
+      : `${plural(corner.rounds)} in the ring`;
+  const reach = corner.raceable === false ? " · can't be applied to the firewall now" : "";
+  return [rating, basis].filter(Boolean).join(" · ") + reach;
+}
+
 function CornerTile({
   corner,
   kind,
@@ -109,9 +125,7 @@ function CornerTile({
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
                   {kind === "pooled" &&
                     `pooled ${fmtNum(corner.pooled, 1)} · ${corner.iterations} iterations`}
-                  {kind === "ring" &&
-                    `${corner.rounds} round${corner.rounds === 1 ? "" : "s"} in the ring` +
-                      (corner.rating != null ? ` · rating ${Math.round(corner.rating)}` : "")}
+                  {kind === "ring" && ringCaption(corner)}
                   {kind === "fused" &&
                     `fused ${fmtNum(corner.fused, 1)} · ${corner.iterations} iterations + ${corner.rounds} round${corner.rounds === 1 ? "" : "s"}`}
                 </Typography>
@@ -506,7 +520,19 @@ export default function Overall() {
                 )}
                 {!corners.agree && corners.ring && corners.fused && corners.ring.fingerprint !== corners.fused.fingerprint && corners.pooled?.fingerprint === corners.fused.fingerprint && (
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
-                    The ring alone puts <b>{nameOf(corners.ring)}</b> on top, but on {corners.ring.rounds} round{corners.ring.rounds === 1 ? "" : "s"} its claim is too thin to outweigh <b>{nameOf(corners.fused)}</b>'s pooled record. More rounds between them is what would change that.
+                    {corners.ring.raceable === false ? (
+                      <>
+                        The ring alone puts <b>{nameOf(corners.ring)}</b> on top, but its settings differ from the firewall in a field PathBrain never writes, so it can't be raced against <b>{nameOf(corners.fused)}</b> — its rating is history, not a live claim. The ladder races the best rated profile it can apply instead.
+                      </>
+                    ) : corners.ring.rounds === 0 ? (
+                      <>
+                        The ring alone puts <b>{nameOf(corners.ring)}</b> on top, but every round behind that rating was fought under an earlier methodology, so this fit can't use them. The ladder seats the ring's #1 against <b>{nameOf(corners.fused)}</b>; rounds under the current methodology are what settle it.
+                      </>
+                    ) : (
+                      <>
+                        The ring alone puts <b>{nameOf(corners.ring)}</b> on top, but on {corners.ring.rounds} round{corners.ring.rounds === 1 ? "" : "s"} its claim is too thin to outweigh <b>{nameOf(corners.fused)}</b>'s pooled record. More rounds between them is what would change that.
+                      </>
+                    )}
                   </Typography>
                 )}
               </CardContent>

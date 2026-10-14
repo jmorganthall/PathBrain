@@ -1883,6 +1883,15 @@ LLM-based. See `README.md` for the product overview.
     prevent. `fought` (a hard skip within a session) outranks it too. Note this is the one
     place the cooldown is allowed to *withhold* rather than merely order, precisely because
     a single-occupant tier has no lower-priority sibling to fall through to.
+    **The ring's #1 is always in the field, and only a raceable one is promoted**
+    (`_with_ring_rated`, `next_challenger`). The field is built from pooled data, so a profile
+    rated on matches two publishes old — no current runs, unranked by the prior version — was
+    simply absent, and the promotion dropped it in silence: the Overall page named it "ring
+    alone" while the ladder never seated it. Every ring-rated profile is now folded into the
+    field from its stored settings, and the promotion goes to the best rated profile the live
+    firewall can be set to (an unraceable #1 is named in the log). The Overall page's ring
+    corner carries `ledger_rounds` (rounds behind the rating, every methodology) and
+    `raceable`, so "0 rounds · rating 1635" reads as what it is.
     **The rematch cooldown ORDERS, it never excludes** (`contender_tiers` / `next_matchup`).
     Queued profiles carry a priority **tier** — `CROWN_TIER` (the pooled crown) <
     `CONTENDER_TIER` (confident, scored) < `FILLER_TIER` (thin/untested) — and the ring is
