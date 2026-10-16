@@ -2155,8 +2155,12 @@ def next_challenger(
     fought: set[frozenset[str]] | None = None,
     rank_sigma: float | None = None,
     fused: dict | None = None,
+    only_tiers: set[int] | None = None,
 ) -> tuple[str | None, str]:
     """The single best next opponent for whoever currently holds the belt.
+
+    ``only_tiers`` restricts the choice to those priority tiers (the prospect seat asks for
+    `LIVE_THREAT_TIER` alone) and returns ``(None, "")`` when nobody in them is waiting.
 
     Called **before every bout**, against ratings refit over the ledger including the bouts
     already fought in this session — so the ladder is always running the matchup most
@@ -2195,7 +2199,7 @@ def next_challenger(
     }
     top_fp = ledger_leader(ratings, sigma=rank_sigma)
     ring_leader_fp = ledger_leader(ratings, raceable, sigma=rank_sigma)
-    if top_fp is not None and top_fp != ring_leader_fp:
+    if top_fp is not None and top_fp != defender_fp and top_fp != ring_leader_fp:
         log.info(
             "Duel: the ring's #1 (%s) %s — promoting the best raceable rated profile (%s)",
             top_fp,
@@ -2218,6 +2222,7 @@ def next_challenger(
         )
         if c["fingerprint"] != defender_fp
         and frozenset((defender_fp, c["fingerprint"])) not in fought
+        and (only_tiers is None or c["tier"] in only_tiers)
     ]
     if not order:
         return None, ""
@@ -2598,6 +2603,9 @@ class _Seat:
         # Every session this match has been seated in. More than one means it was carried
         # across a window close (or a restart) and resumed with its margins intact.
         self.sessions: list[int] = []
+        # Seated in the prospect seat (a thin profile whose pooled ceiling reaches the
+        # crown), under the shorter `prospect_max_pairs` cap.
+        self.prospect = False
 
 
 def _append_crown(seat: _Seat, leg: _Leg, usable: list[_Leg]) -> None:
@@ -3089,6 +3097,8 @@ def _run_ring(
     apply_streak = FailureStreak(MAX_CONSECUTIVE_LEG_FAILURES)
     seat_kw = dict(p1=p1, alpha=alpha, min_margin=min_margin, min_pairs=min_pairs,
                    max_pairs=max_pairs, streak_wins=streak_wins)
+    prospect_on = bool(cfg.get("prospect_seat", True)) and mode != "levers" and n_seats >= 2
+    prospect_cap = max(min_pairs, min(max_pairs, int(cfg.get("prospect_max_pairs", 12) or 12)))
     # Open matches the previous session (or a crashed one) left behind, moved onto this
     # row. Each is seated the moment its reference is the profile defending, or closed
     # with a reason when it can't be — never silently dropped. A campaign carries its own.
@@ -3541,12 +3551,33 @@ def _run_ring(
                         # the session's map so the leg can be applied, named and recorded.
                         settings_by_fp.setdefault(challenger_fp, variant["profile"])
                 else:
-                    challenger_fp, why_challenger = next_challenger(
-                        session, field, ratings, incumbent_fp, heirs=heirs, baseline=baseline,
-                        cooldown_hours=cooldown_hours, mode=mode, top_n=top_n, fought=fought,
+                    pick_kw = dict(
+                        heirs=heirs, baseline=baseline, cooldown_hours=cooldown_hours,
+                        mode=mode, top_n=top_n, fought=fought,
                         rank_sigma=(rank_sigma(cfg) if crown_rule(cfg) == RATING_RULE else None),
                         fused=fused_target,
                     )
+                    prospect = False
+                    challenger_fp, why_challenger = None, ""
+                    if prospect_on and not any(s.prospect for s in seated):
+                        # One seat is kept for an unexamined claim on the crown: a thin
+                        # profile whose pooled ceiling reaches it. Without this the tied
+                        # rivals of the Overall's #1 fill every seat every night and a
+                        # promising five-iteration profile never gets asked.
+                        challenger_fp, why_challenger = next_challenger(
+                            session, field, ratings, incumbent_fp,
+                            only_tiers={LIVE_THREAT_TIER}, **pick_kw,
+                        )
+                        prospect = challenger_fp is not None and challenger_fp in settings_by_fp
+                        if prospect:
+                            why_challenger = (
+                                f"prospect seat — {why_challenger}; up to {prospect_cap} rounds "
+                                "to show it can deliver or that it won't"
+                            )
+                    if not prospect:
+                        challenger_fp, why_challenger = next_challenger(
+                            session, field, ratings, incumbent_fp, **pick_kw,
+                        )
                 if challenger_fp is None or challenger_fp not in settings_by_fp:
                     break
                 if rematch_now == frozenset((incumbent_fp, challenger_fp)):
@@ -3554,10 +3585,12 @@ def _run_ring(
                         f"{why_challenger} — rematch: it won the last match without taking the belt"
                     )
                 fought.add(frozenset((incumbent_fp, challenger_fp)))
+                is_prospect = mode != "levers" and prospect
                 fresh = _Seat(
                     challenger_fp, settings_by_fp[challenger_fp], why_challenger, incumbent_fp,
-                    **seat_kw,
+                    **({**seat_kw, "max_pairs": prospect_cap} if is_prospect else seat_kw),
                 )
+                fresh.prospect = is_prospect
                 fresh.lever = dict(variant["lever"]) if variant else None
                 fresh.sessions.append(duel_id)
                 seated.append(fresh)
@@ -3648,9 +3681,15 @@ def _run_ring(
         for seat in list(seated):
             if seat.verdict is None:
                 seat.verdict, seat.reason = _adjudicate(
-                    seat, method=method, min_pairs=min_pairs, max_pairs=max_pairs,
+                    seat, method=method, min_pairs=min_pairs,
+                    max_pairs=prospect_cap if seat.prospect else max_pairs,
                     min_margin=min_margin,
                 )
+                if seat.verdict == "draw" and seat.prospect:
+                    seat.reason = (
+                        f"{seat.reason} — prospect match: measured enough to be rated, "
+                        "the ordinary tiers decide whether it is raced again"
+                    )
             if seat.verdict is not None:
                 _close(seat, seat.verdict, seat.reason)
                 seated.remove(seat)

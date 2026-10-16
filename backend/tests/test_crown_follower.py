@@ -721,3 +721,24 @@ def test_crown_grades_are_identical_whether_the_json_is_read_in_sql_or_in_python
                 row = s.get(Run, rid)
                 if row is not None:
                     s.delete(row)
+
+
+def test_a_firewall_on_a_different_governing_crown_is_not_cached_as_on_the_pooled_crown():
+    """Under the fused policy the follower can hold the firewall on a profile that is not
+    the pooled crown. Caching that profile's fingerprint as "the crown, live" made every
+    monitoring run on it look like a run on the crown and escalate to a full field pass
+    after every run. Only a firewall on the pooled crown itself is cached as on it."""
+    from pathbrain import crown_follower as cf
+
+    field = {"min_iterations": 15, "profiles": [
+        {"fingerprint": "pooled", "overall": 62.0, "confident": True},
+        {"fingerprint": "fused", "overall": 61.5, "confident": True},
+    ]}
+    best = field["profiles"][0]
+    cf._cache_standings(field, "v", best, {"on_crown": True, "live_fingerprint": "fused-echo",
+                                           "governing_fingerprint": "fused"})
+    assert cf._state["cache"]["crown_live_fp"] is None
+    cf._cache_standings(field, "v", best, {"on_crown": True, "live_fingerprint": "pooled-echo",
+                                           "governing_fingerprint": "pooled"})
+    assert cf._state["cache"]["crown_live_fp"] == "pooled-echo"
+    cf._state.pop("cache", None)
