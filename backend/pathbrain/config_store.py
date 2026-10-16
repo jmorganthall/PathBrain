@@ -397,6 +397,14 @@ DEFAULT_CONFIG: dict = {
         # 0 turns it off. See `explore_share`.
         "explore_share": 0.05,
         "explore_iterations": 5,
+        # The prospect seat: with two or more seats, one is kept for a thin profile whose
+        # pooled ceiling still reaches the crown (`LIVE_THREAT_TIER`), so promising
+        # under-sampled profiles are raced every night instead of waiting behind the Overall's
+        # tied rivals. A prospect match is capped at `prospect_max_pairs` rounds — enough to
+        # mature it past the confidence bar and earn a ring rating, or to say it won't
+        # deliver — and the ordinary tiers take it from there.
+        "prospect_seat": True,
+        "prospect_max_pairs": 12,
         "contenders": "ring",
         "contender_top_n": 8,
         "p1": 0.70,

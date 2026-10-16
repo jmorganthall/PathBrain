@@ -1554,6 +1554,13 @@ LLM-based. See `README.md` for the product overview.
     `environment_signature` guard the race uses). Deliberately a **mirror with no hysteresis**
     (the crown itself has none); the churn ledger + `co_leaders`/`crown_confidence` are what
     tell the user whether the verdict is stable enough to hand over the keys.
+    **The quick filter's "on the crown" means the POOLED crown** (`_cache_standings`,
+    `crown_live_fp`). `on_crown` is judged against the governing target, which under the
+    fused or duel policy can be another profile; caching its fingerprint as the crown's live
+    echo made every monitoring run on it compare its pooled Overall against the pooled
+    runner-up and escalate to a full `compute_profiles` pass after every run (logged as
+    *"crown fell to the runner-up"* every five minutes, and the NAS's CPU with it). Only a
+    firewall on the pooled crown itself is cached as on it.
     `/api/settings/crown-follow` (GET status+stats+ledger, POST config, POST `/sync` = check
     now); driven by the top-bar **"Follow best" switch** (`FollowBest.tsx`) with a status/churn
     popover.
@@ -1892,6 +1899,18 @@ LLM-based. See `README.md` for the product overview.
     firewall can be set to (an unraceable #1 is named in the log). The Overall page's ring
     corner carries `ledger_rounds` (rounds behind the rating, every methodology) and
     `raceable`, so "0 rounds · rating 1635" reads as what it is.
+    **One seat is kept for a promising thin profile** (`duel.prospect_seat`, default on;
+    `prospect_max_pairs` 12; `_Seat.prospect`; `next_challenger(only_tiers=)`). Under the
+    fused policy the Overall's tied rivals sit at `FUSED_RIVAL_TIER`, above everything else,
+    and on a tight field the tied set is large — so both seats went to it every night and a
+    two-to-five-iteration profile whose pooled ceiling reached the crown (`LIVE_THREAT_TIER`)
+    never got asked. With two or more seats, a seat is now filled first from that tier
+    alone; the match is capped at `prospect_max_pairs` rounds (each round adds
+    `iterations_per_round` iterations a side, so twelve rounds carries it far past the
+    confidence bar and earns it a ring rating) and a capped draw says so. From then on the
+    ordinary tiers decide: a rated profile whose ceiling clears the belt keeps being raced,
+    one the ring says can't reach it drops to `OUTCLASSED_TIER`. Never in a lever session.
+    A carried prospect match resumes as an ordinary seat.
     **The rematch cooldown ORDERS, it never excludes** (`contender_tiers` / `next_matchup`).
     Queued profiles carry a priority **tier** — `CROWN_TIER` (the pooled crown) <
     `CONTENDER_TIER` (confident, scored) < `FILLER_TIER` (thin/untested) — and the ring is

@@ -3955,3 +3955,84 @@ def test_an_unraceable_ring_leader_hands_the_promotion_to_the_best_raceable_one(
         s.query(Duel).delete()
     assert fp == "second"
     assert "the ring's #1 isn't the champion" in why
+
+
+def test_the_prospect_pick_takes_only_a_thin_profile_whose_ceiling_reaches_the_crown():
+    """The prospect seat asks for LIVE_THREAT_TIER alone: a thin profile whose pooled
+    ceiling reaches the crown is picked even though rated contenders would outrank it, and
+    with no such profile waiting the seat falls back to ordinary matchmaking (None)."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        _finished_duel(
+            s, matchups=_two_verdict_ledger("champ", "ringtop", now),
+            champion="champ", when=now - timedelta(days=30),
+        )
+    field = _field(("champ", 80.0), ("ringtop", 70.0), ("midfield", 60.0),
+                   ("backmarker", 50.0), best="champ")
+    for p in field["profiles"]:
+        p["confident"] = True
+    field["profiles"].append({"fingerprint": "thinstar", "label": "thinstar", "overall": 78.0,
+                              "optimistic": 82.0, "confident": False, "settings": []})
+    with session_scope() as s:
+        ratings = duel_mod.ledger_ratings(s)
+        fp, why = duel_mod.next_challenger(
+            s, field, ratings, "champ", heirs={"items": []}, cooldown_hours=6,
+            only_tiers={duel_mod.LIVE_THREAT_TIER},
+        )
+        field["profiles"][-1]["optimistic"] = 60.0  # its ceiling no longer reaches the crown
+        none_fp, _ = duel_mod.next_challenger(
+            s, field, ratings, "champ", heirs={"items": []}, cooldown_hours=6,
+            only_tiers={duel_mod.LIVE_THREAT_TIER},
+        )
+        s.query(Duel).delete()
+    assert fp == "thinstar" and "thin but live" in why
+    assert none_fp is None
+
+
+def test_a_session_seats_a_thin_promising_profile_in_the_prospect_seat(monkeypatch):
+    """End to end: with two seats, one goes to the rated contender and the other to the
+    thin profile whose ceiling reaches the crown — capped at prospect_max_pairs rounds."""
+    import pathbrain.api.routes_settings as rs
+    from pathbrain import challenger as challenger_mod
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+    fake_field = {
+        "best_fingerprint": "inc0000000x",
+        "profiles": [
+            {"fingerprint": "inc0000000x", "label": "incumbent", "overall": 80.0, "confident": True,
+             "settings": [{"label": "wan", "quantum": 1514}]},
+            {"fingerprint": "con0000000x", "label": "contender", "overall": 79.0, "confident": True,
+             "optimistic": 79.5, "settings": [{"label": "wan", "quantum": 900}]},
+            {"fingerprint": "thn0000000x", "label": "thin", "overall": 79.5, "confident": False,
+             "optimistic": 84.0, "settings": [{"label": "wan", "quantum": 300}]},
+        ],
+    }
+    applied: list[str] = []
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
+    monkeypatch.setattr(rs, "_compute_heirs", lambda result, session, live=None: {
+        "items": [{"fingerprint": "con0000000x"}, {"fingerprint": "thn0000000x"}]})
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    _no_settle()
+    by_run: dict[int, str] = {}
+    seq = {"n": 0}
+
+    def fake_chunk(label, notes, iterations, teardown=True, job_group=None, job_group_total=None, **_):
+        seq["n"] += 1
+        by_run[88000 + seq["n"]] = applied[-1]
+        return (88000 + seq["n"], True, iterations)
+
+    monkeypatch.setattr(duel_mod, "run_chunk", fake_chunk)
+    monkeypatch.setattr(duel_mod, "_run_overall", lambda rid, ver: 60.0 + (rid % 3) * 0.01)
+    real_cfg = duel_mod._duel_config
+    monkeypatch.setattr(duel_mod, "_duel_config", lambda session: {
+        **real_cfg(session), "seats": 2, "prospect_seat": True, "prospect_max_pairs": 9})
+
+    d = _wait_finish(duel_mod.start(duration_minutes=10))
+    assert d.status == DuelStatus.COMPLETE, d.error
+    seated = {m["challenger"]: m for m in d.matchups}
+    assert "thn0000000x" in seated, [m["challenger"] for m in d.matchups]
+    thin = seated["thn0000000x"]
+    assert "prospect seat" in (thin.get("challenger_why") or thin.get("why") or "")
+    assert thin["pairs"] <= 9

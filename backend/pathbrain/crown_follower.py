@@ -620,7 +620,18 @@ def _cache_standings(field: dict, meth_version: str, best: dict | None, result: 
         # Where the firewall's echo actually hashes when it sits on the crown — a run
         # completed on this fingerprint is an on-crown run even if the hash differs from
         # the stored profile's (format-sensitive echoes).
-        "crown_live_fp": (result or {}).get("live_fingerprint") if (result or {}).get("on_crown") else None,
+        # Only when the firewall is on the POOLED crown: ``on_crown`` is judged against the
+        # governing target, and under the fused or duel policy that can be a different
+        # profile. Caching its fingerprint here made every monitoring run on it read as "a
+        # run on the crown", compared its pooled Overall against the pooled runner-up, and
+        # escalated to a full field pass after every run — a CPU-bound pass, every five
+        # minutes, for a crown that had not moved.
+        "crown_live_fp": (
+            (result or {}).get("live_fingerprint")
+            if (result or {}).get("on_crown")
+            and (result or {}).get("governing_fingerprint", best_fp) == best_fp
+            else None
+        ),
     }
 
 
