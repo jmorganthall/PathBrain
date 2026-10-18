@@ -42,7 +42,8 @@ import type {
   PortableReference,
   PortableRun,
 } from "../api/types";
-import { Blurb, HelpTip } from "../components/Explain";
+import { HelpTip } from "../components/Explain";
+import PageHeader from "../components/PageHeader";
 import LocationQuadrant from "../components/LocationQuadrant";
 import { fmtDateTime } from "../utils/format";
 import { clientInfo, deviceId, egressIp, runPortableTest } from "../utils/portableTest";
@@ -602,13 +603,10 @@ export default function Away() {
 
   return (
     <Box>
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-        <FlightTakeoffIcon color="primary" />
-        <Typography variant="h5" sx={{ fontWeight: 700 }}>
-          Away test
-        </Typography>
-      </Stack>
-      <Blurb
+      <PageHeader
+        title="Away test"
+        icon={<FlightTakeoffIcon />}
+        lead="Measure the network you are on from this device, and compare it with this device's runs at home."
         more={
           <>
             A browser tab can't load the real sites the home test measures and read their timing, so this
@@ -624,10 +622,8 @@ export default function Away() {
             runs at home, which remove the device difference once a few exist.
           </>
         }
-      >
-        "This isn't home, but here is how it stood up." Measure this network from this device and compare it
-        with the same device's runs at home.
-      </Blurb>
+        compact
+      />
 
       <Card sx={{ mb: 2 }}>
         <CardContent>
@@ -706,7 +702,7 @@ export default function Away() {
                           ? egress?.v4 || egress?.v6
                             ? `Couldn't compare: ${homeInfo?.reason ?? "no address family is known on both sides"}. Choose Home or Away.`
                             : "Couldn't read this device's public address (the lookup may be blocked here) — choose Home or Away."
-                          : `Home address unknown${Object.values(homeInfo?.errors ?? {})[0] ? ` (${Object.values(homeInfo!.errors)[0]})` : ""} — set portable.home_ip in Config or choose Home or Away.`}
+                          : `Home address unknown${Object.values(homeInfo?.errors ?? {})[0] ? ` (${Object.values(homeInfo!.errors)[0]})` : ""} — choose Home or Away.`}
                   {mode !== "auto" && " Overriding detection."}
                 </Typography>
               </Box>
@@ -835,51 +831,7 @@ export default function Away() {
       )}
 
       <Card sx={{ mb: 2 }}>
-        <CardContent>
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-              Every place vs home
-            </Typography>
-            <HelpTip title="The Settings-Impact quadrant, asked of places instead of profiles. Each dot is one network — every Away run taken there, on any device, pooled to a median — on any two portable metrics, beside home on the profile the firewall is on now. Home is the phones' and laptops' own runs; PathBrain's wired Chromium is kept as its own dot because a wired headless browser and a phone on Wi-Fi measure the same recipe differently. Only runs on the current test version are drawn." />
-          </Stack>
-          {locations ? (
-            <>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                Home reference:{" "}
-                {locations.home_profile.fingerprint ? (
-                  <>
-                    <b>{locations.home_profile.name || locations.home_profile.summary || locations.home_profile.fingerprint.slice(0, 8)}</b>
-                    {locations.home_profile.source === "live"
-                      ? " — the profile on the firewall now"
-                      : locations.home_profile.source === "crown"
-                        ? " — the pooled crown (the firewall could not be read)"
-                        : ""}
-                    {locations.home_profile.name && locations.home_profile.summary ? (
-                      <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
-                        {locations.home_profile.summary}
-                      </Typography>
-                    ) : null}
-                  </>
-                ) : (
-                  <>every home run, on any profile (no profile could be read)</>
-                )}
-                {locations.excluded.home_other_profiles > 0 ? (
-                  <> · {locations.excluded.home_other_profiles} home run{locations.excluded.home_other_profiles === 1 ? "" : "s"} on other profiles left out</>
-                ) : null}
-                {locations.excluded.older_version > 0 ? (
-                  <> · {locations.excluded.older_version} run{locations.excluded.older_version === 1 ? "" : "s"} on an older test version left out</>
-                ) : null}
-              </Typography>
-              <LocationQuadrant map={locations} />
-            </>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              Loading the location map…
-            </Typography>
-          )}
-        </CardContent>
-      </Card>
-
+  
       <Card>
         <CardContent>
           <Typography variant="subtitle1" sx={{ fontWeight: 600 }} gutterBottom>
@@ -930,6 +882,51 @@ export default function Away() {
                 </ListItemButton>
               ))}
             </List>
+          )}
+        </CardContent>
+      </Card>
+
+      <CardContent>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+              Every place vs home
+            </Typography>
+            <HelpTip title="The Profile standings scatter, asked of places instead of profiles. Each dot is one network — every Away run taken there, on any device, pooled to a median — on any two portable metrics, beside home on the profile the firewall is on now. Home is the phones' and laptops' own runs; PathBrain's wired Chromium is kept as its own dot because a wired headless browser and a phone on Wi-Fi measure the same recipe differently. Only runs on the current test version are drawn." />
+          </Stack>
+          {locations ? (
+            <>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                Home reference:{" "}
+                {locations.home_profile.fingerprint ? (
+                  <>
+                    <b>{locations.home_profile.name || locations.home_profile.summary || locations.home_profile.fingerprint.slice(0, 8)}</b>
+                    {locations.home_profile.source === "live"
+                      ? " — the profile on the firewall now"
+                      : locations.home_profile.source === "crown"
+                        ? " — the pooled crown (the firewall could not be read)"
+                        : ""}
+                    {locations.home_profile.name && locations.home_profile.summary ? (
+                      <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+                        {locations.home_profile.summary}
+                      </Typography>
+                    ) : null}
+                  </>
+                ) : (
+                  <>every home run, on any profile (no profile could be read)</>
+                )}
+                {locations.excluded.home_other_profiles > 0 ? (
+                  <> · {locations.excluded.home_other_profiles} home run{locations.excluded.home_other_profiles === 1 ? "" : "s"} on other profiles left out</>
+                ) : null}
+                {locations.excluded.older_version > 0 ? (
+                  <> · {locations.excluded.older_version} run{locations.excluded.older_version === 1 ? "" : "s"} on an older test version left out</>
+                ) : null}
+              </Typography>
+              <LocationQuadrant map={locations} />
+            </>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              Loading the location map…
+            </Typography>
           )}
         </CardContent>
       </Card>

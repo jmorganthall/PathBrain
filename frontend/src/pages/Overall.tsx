@@ -43,6 +43,7 @@ import StackedLineChartIcon from "@mui/icons-material/StackedLineChart";
 import { api } from "../api/client";
 import type { OverallCorner, OverallOut, OverallProfile } from "../api/types";
 import { FoldCard, HelpTip } from "../components/Explain";
+import PageHeader from "../components/PageHeader";
 import StatTile from "../components/dashboard/StatTile";
 import { fmtNum } from "../utils/format";
 import { sopsColor } from "../theme";
@@ -314,26 +315,17 @@ export default function Overall() {
 
   return (
     <Box>
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        justifyContent="space-between"
-        alignItems={{ xs: "flex-start", sm: "center" }}
-        spacing={1}
-        sx={{ mb: 2 }}
-      >
-        <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
-            Overall
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            One ranking from both kinds of evidence: what every profile measured over time, corrected by what it did head to head.
-            <HelpTip title="The pooled record says where each profile sits on its own, over thousands of iterations taken under whatever the weather was. The ring says how far apart two profiles are when measured back to back under the same conditions. This page fits the two together, weighting each by how much it can be trusted, and crowns off the result." />
-          </Typography>
-        </Box>
-        <Button size="small" startIcon={<RefreshIcon />} onClick={() => void load()} disabled={loading}>
-          Refresh
-        </Button>
-      </Stack>
+      <PageHeader
+        title="Best profile"
+        lead="One ranking from both kinds of evidence: what every profile measured over time, corrected by how it did head to head."
+        more="The pooled record says where each profile sits on its own, over thousands of iterations taken under whatever the network conditions were. Head-to-head duels say how far apart two profiles are when measured back to back under the same conditions. This page fits the two together, weighting each by how much it can be trusted, and names the best off the result."
+        compact
+        actions={
+          <Button size="small" startIcon={<RefreshIcon />} onClick={() => void load()} disabled={loading}>
+            Refresh
+          </Button>
+        }
+      />
 
       {loading && !data && (
         <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
@@ -394,7 +386,7 @@ export default function Overall() {
                       title={
                         data.on_firewall
                           ? "The firewall is on this profile now."
-                          : "The firewall is on a different profile. Arm Follow best (crowning policy: fused) to keep it on this one, or apply it from the profile page."
+                          : "The firewall is on a different profile. Turn on Auto-apply (top bar) to keep it on this one, or apply it from the profile page."
                       }
                     >
                       <Chip
@@ -415,6 +407,9 @@ export default function Overall() {
               </Typography>
 
               <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap alignItems="center">
+                <Button size="small" variant="outlined" component={RouterLink} to={profileHref(best.fingerprint)}>
+                  Open profile
+                </Button>
                 {data.lead != null && data.noise_bar != null && (
                   <Tooltip
                     title={
@@ -427,13 +422,13 @@ export default function Overall() {
                       size="small"
                       color={data.clear ? "success" : "default"}
                       variant={data.clear ? "filled" : "outlined"}
-                      label={`${signed(data.lead)} over ${data.runner_up ? nameOf(data.runner_up) : "next"} · noise ±${fmtNum(data.noise_bar, 2)}`}
+                      label={`leads ${data.runner_up ? nameOf(data.runner_up) : "the next"} by ${signed(data.lead)} (noise ±${fmtNum(data.noise_bar, 2)})`}
                     />
                   </Tooltip>
                 )}
                 {data.rounds_to_settle != null && data.rounds_to_settle > 0 && (
                   <Tooltip title="Head-to-head rounds between the top two that would take the gap's error bar under the tie threshold, if the gap holds. This is what a duel night buys.">
-                    <Chip size="small" variant="outlined" component={RouterLink} to="/duels" clickable label={`~${data.rounds_to_settle} round${data.rounds_to_settle === 1 ? "" : "s"} would settle it`} />
+                    <Chip size="small" variant="outlined" component={RouterLink} to="/duels" clickable label={`~${data.rounds_to_settle} more head-to-head round${data.rounds_to_settle === 1 ? "" : "s"} to confirm`} />
                   </Tooltip>
                 )}
                 {data.vs_sqm_off != null && (
@@ -472,166 +467,17 @@ export default function Overall() {
             </CardContent>
           </Card>
 
-          {/* ── The three corners ─────────────────────────────────────────────── */}
-          {corners && (
-            <Card sx={{ mb: 2 }}>
-              <CardContent>
-                <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-                  <Box>
-                    <Typography variant="h6">Three ways to read the same field</Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      What each record says on its own, and what they say together. The fit is what automation follows.
-                    </Typography>
-                  </Box>
-                  {corners.agree ? (
-                    <Chip size="small" color="success" icon={<HandshakeIcon />} label="all three agree" sx={{ flexShrink: 0 }} />
-                  ) : (
-                    <Chip size="small" variant="outlined" label="they disagree" sx={{ flexShrink: 0 }} />
-                  )}
-                </Stack>
-                <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
-                  <CornerTile
-                    corner={corners.pooled}
-                    kind="pooled"
-                    title="Pooled record alone"
-                    what="The highest median Overall over every run a profile ever produced. Precise (thousands of iterations) but each profile's runs sampled its own weather, so a lead here can be conditions rather than settings."
-                    icon={<EmojiEventsIcon sx={{ color: "warning.main", fontSize: 30 }} />}
-                  />
-                  <CornerTile
-                    corner={corners.ring}
-                    kind="ring"
-                    title="Ring alone"
-                    what="The ring's #1 by fitted head-to-head rating: who beat whom, back to back, under shared weather. Free of the weather confound, but a night is a handful of rounds, each ±1.5 points, so it is wide."
-                    icon={<MilitaryTechIcon sx={{ color: "info.main", fontSize: 30 }} />}
-                  />
-                  <CornerTile
-                    corner={corners.fused}
-                    kind="fused"
-                    title="Together"
-                    what="Both records fitted as measurements of one quantity: each pooled median trusted to its own error bar plus the measured slack, each ring round trusted to the ring's measured noise. The answer above."
-                    icon={<StackedLineChartIcon sx={{ color: "primary.main", fontSize: 30 }} />}
-                    strong
-                  />
-                </Stack>
-                {!corners.agree && corners.pooled && corners.fused && corners.pooled.fingerprint !== corners.fused.fingerprint && (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
-                    The pooled record had <b>{nameOf(corners.pooled)}</b> on top; once the ring's rounds are heard, <b>{nameOf(corners.fused)}</b> is. That is the ring correcting a pooled lead that was worth less than it looked.
-                  </Typography>
-                )}
-                {!corners.agree && corners.ring && corners.fused && corners.ring.fingerprint !== corners.fused.fingerprint && corners.pooled?.fingerprint === corners.fused.fingerprint && (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
-                    {corners.ring.raceable === false ? (
-                      <>
-                        The ring alone puts <b>{nameOf(corners.ring)}</b> on top, but its settings differ from the firewall in a field PathBrain never writes, so it can't be raced against <b>{nameOf(corners.fused)}</b> — its rating is history, not a live claim. The ladder races the best rated profile it can apply instead.
-                      </>
-                    ) : corners.ring.rounds === 0 ? (
-                      <>
-                        The ring alone puts <b>{nameOf(corners.ring)}</b> on top, but every round behind that rating was fought under an earlier methodology, so this fit can't use them. The ladder seats the ring's #1 against <b>{nameOf(corners.fused)}</b>; rounds under the current methodology are what settle it.
-                      </>
-                    ) : (
-                      <>
-                        The ring alone puts <b>{nameOf(corners.ring)}</b> on top, but on {corners.ring.rounds} round{corners.ring.rounds === 1 ? "" : "s"} its claim is too thin to outweigh <b>{nameOf(corners.fused)}</b>'s pooled record. More rounds between them is what would change that.
-                      </>
-                    )}
-                  </Typography>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* ── What went in ──────────────────────────────────────────────────── */}
-          {inputs && (
-            <Card sx={{ mb: 2 }}>
-              <CardContent>
-                <Typography variant="h6" sx={{ mb: 0.5 }}>
-                  What went in
-                </Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-                  Every number here is read from data already on disk. Nothing is re-measured to build this page.
-                </Typography>
-                <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ mb: 2 }}>
-                  <StatTile
-                    label="Pooled record"
-                    value={inputs.pooled_profiles}
-                    unit="profiles"
-                    caption={`${inputs.pooled_iterations.toLocaleString()} iterations, medianed per profile`}
-                    help="Each profile's median Overall over every comparable run, with a standard error from its own spread (IQR/√n). The anchors of the fit."
-                  />
-                  <StatTile
-                    label="Ring"
-                    value={inputs.ring_rounds}
-                    unit="rounds"
-                    caption={`${inputs.ring_matches} matches · ${inputs.ring_sessions} sessions · ${inputs.ring_profiles} profiles fought`}
-                    help={
-                      `Every usable round on the duel ledger under this methodology, as a paired difference. ` +
-                      (inputs.excluded_other_methodology ? `${inputs.excluded_other_methodology} match(es) fought under another methodology were left out (their margins are on another scale). ` : "") +
-                      (inputs.weather_shifted_rounds ? `${inputs.weather_shifted_rounds} round(s) saw a weather shift between legs and still count.` : "")
-                    }
-                  />
-                  <StatTile
-                    label="Round noise"
-                    value={`±${fmtNum(inputs.sigma_round, 2)}`}
-                    unit="pts"
-                    caption={inputs.sigma_basis === "measured"
-                      ? `measured over ${inputs.noise?.rounds ?? "?"} rounds in ${inputs.noise?.matchups ?? "?"} matches`
-                      : "fallback — too few rounds to measure the ring's own noise yet"}
-                    tone={inputs.sigma_basis === "measured" ? "good" : "warn"}
-                    help="What one ring round is worth: the spread of successive margins within a match, which cancels the match's true edge and leaves pure measurement noise. Each round counts 1/σ² in the fit."
-                  />
-                  <StatTile
-                    label="Pooled slack"
-                    value={`±${fmtNum(slackTau, 2)}`}
-                    unit="pts"
-                    caption={
-                      inputs.slack.basis === "measured"
-                        ? `measured from ${inputs.slack.pairs} fought pairs`
-                        : `default — needs ${inputs.slack.needed_pairs} fought pairs to measure (${inputs.slack.pairs} so far)`
-                    }
-                    tone={inputs.slack.basis === "measured" ? "good" : "warn"}
-                    help="How far a pooled median can sit from the truth for reasons more iterations never fix: weather, time of day, the instrument drifting. Measured from the pairs the ring has fought — the pooled difference and the ring's difference are two readings of one gap, and how much they disagree beyond both error bars is exactly this. It is never set by hand: a weight a person chooses on the evidence is what this ranking replaces."
-                  />
-                </Stack>
-
-              </CardContent>
-            </Card>
-          )}
-
           {/* ── The chart ─────────────────────────────────────────────────────── */}
           {chartRows.length > 1 && (
             <Card sx={{ mb: 2 }}>
               <CardContent>
                 <Typography variant="h6" sx={{ mb: 0.5 }}>
-                  The top of the table
+                  Top profiles at a glance
                 </Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-                  Where each profile lands once both records are heard, and where the pooled record alone had it. Profiles whose bar reaches the leader's line are tied with it.
+                  Each profile's combined Overall (filled dot) beside its pooled-only position (hollow). A bar that reaches the leader's line is a tie.
                 </Typography>
                 <DotWhisker rows={chartRows} tieSigma={data.tie_sigma} />
-              </CardContent>
-            </Card>
-          )}
-
-          {/* ── What the ring changed ─────────────────────────────────────────── */}
-          {data.movers.length > 0 && (
-            <Card sx={{ mb: 2 }}>
-              <CardContent>
-                <Typography variant="h6" sx={{ mb: 0.5 }}>
-                  What the ring changed
-                </Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-                  The profiles whose place moved most once their head-to-head rounds were counted. A big move on few rounds is a claim; on many rounds it is a finding.
-                </Typography>
-                <Stack spacing={0.5}>
-                  {data.movers.map((m) => (
-                    <Typography key={m.fingerprint} variant="body2">
-                      <Link component={RouterLink} to={profileHref(m.fingerprint)} underline="hover" color="inherit">
-                        <b>{nameOf(m)}</b>
-                      </Link>{" "}
-                      {m.moved! > 0 ? "climbed" : "dropped"} from #{m.pooled_rank} to #{m.fused_rank} after {m.rounds} round{m.rounds === 1 ? "" : "s"} against {m.opponents} opponent{m.opponents === 1 ? "" : "s"}
-                      {m.ring_pull != null ? ` (${signed(m.ring_pull)} points)` : ""}.
-                    </Typography>
-                  ))}
-                </Stack>
               </CardContent>
             </Card>
           )}
@@ -671,8 +517,8 @@ export default function Overall() {
                         <HelpTip title="Rounds fought · distinct opponents. Zero means the ring has never tested this profile." inline />
                       </TableCell>
                       <TableCell align="right">
-                        Pull
-                        <HelpTip title="fused − pooled: how far the ring moved this profile from its pooled median. Positive = it did better head to head than its record suggested." inline />
+                        Shift
+                        <HelpTip title="Combined minus pooled: how far the head-to-head rounds moved this profile from its pooled median. Positive = it did better head to head than its record suggested." inline />
                       </TableCell>
                       <TableCell align="right">
                         Moved
@@ -762,22 +608,148 @@ export default function Overall() {
             </CardContent>
           </Card>
 
+          {/* ── The three corners ─────────────────────────────────────────────── */}
+          {corners && (
+            <Card sx={{ mb: 2 }}>
+              <CardContent>
+                <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                  <Box>
+                    <Typography variant="h6">Do the two records agree?</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      What each record says on its own, and what they say together. The combined answer is the one Auto-apply follows.
+                    </Typography>
+                  </Box>
+                  {corners.agree ? (
+                    <Chip size="small" color="success" icon={<HandshakeIcon />} label="all agree" sx={{ flexShrink: 0 }} />
+                  ) : (
+                    <Chip size="small" variant="outlined" label="they disagree" sx={{ flexShrink: 0 }} />
+                  )}
+                </Stack>
+                <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+                  <CornerTile
+                    corner={corners.pooled}
+                    kind="pooled"
+                    title="Long-run average"
+                    what="The highest median Overall over every run a profile ever produced. Precise (thousands of iterations) but each profile's runs sampled its own weather, so a lead here can be conditions rather than settings."
+                    icon={<EmojiEventsIcon sx={{ color: "warning.main", fontSize: 30 }} />}
+                  />
+                  <CornerTile
+                    corner={corners.ring}
+                    kind="ring"
+                    title="Head to head"
+                    what="The ring's #1 by fitted head-to-head rating: who beat whom, back to back, under shared weather. Free of the weather confound, but a night is a handful of rounds, each ±1.5 points, so it is wide."
+                    icon={<MilitaryTechIcon sx={{ color: "info.main", fontSize: 30 }} />}
+                  />
+                  <CornerTile
+                    corner={corners.fused}
+                    kind="fused"
+                    title="Combined (used)"
+                    what="Both records fitted as measurements of one quantity: each pooled median trusted to its own error bar plus the measured slack, each ring round trusted to the ring's measured noise. The answer above."
+                    icon={<StackedLineChartIcon sx={{ color: "primary.main", fontSize: 30 }} />}
+                    strong
+                  />
+                </Stack>
+                {!corners.agree && corners.pooled && corners.fused && corners.pooled.fingerprint !== corners.fused.fingerprint && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                    The pooled record had <b>{nameOf(corners.pooled)}</b> on top; once the ring's rounds are heard, <b>{nameOf(corners.fused)}</b> is. That is the ring correcting a pooled lead that was worth less than it looked.
+                  </Typography>
+                )}
+                {!corners.agree && corners.ring && corners.fused && corners.ring.fingerprint !== corners.fused.fingerprint && corners.pooled?.fingerprint === corners.fused.fingerprint && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                    {corners.ring.raceable === false ? (
+                      <>
+                        The ring alone puts <b>{nameOf(corners.ring)}</b> on top, but its settings differ from the firewall in a field PathBrain never writes, so it can't be raced against <b>{nameOf(corners.fused)}</b> — its rating is history, not a live claim. The ladder races the best rated profile it can apply instead.
+                      </>
+                    ) : corners.ring.rounds === 0 ? (
+                      <>
+                        The ring alone puts <b>{nameOf(corners.ring)}</b> on top, but every round behind that rating was fought under an earlier methodology, so this fit can't use them. The ladder seats the ring's #1 against <b>{nameOf(corners.fused)}</b>; rounds under the current methodology are what settle it.
+                      </>
+                    ) : (
+                      <>
+                        The ring alone puts <b>{nameOf(corners.ring)}</b> on top, but on {corners.ring.rounds} round{corners.ring.rounds === 1 ? "" : "s"} its claim is too thin to outweigh <b>{nameOf(corners.fused)}</b>'s pooled record. More rounds between them is what would change that.
+                      </>
+                    )}
+                  </Typography>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* ── What the ring changed ─────────────────────────────────────────── */}
+          {data.movers.length > 0 && (
+            <FoldCard title="What the duels changed" summary="The profiles whose place moved most once their head-to-head rounds were counted.">
+                <Stack spacing={0.5}>
+                  {data.movers.map((m) => (
+                    <Typography key={m.fingerprint} variant="body2">
+                      <Link component={RouterLink} to={profileHref(m.fingerprint)} underline="hover" color="inherit">
+                        <b>{nameOf(m)}</b>
+                      </Link>{" "}
+                      {m.moved! > 0 ? "climbed" : "dropped"} from #{m.pooled_rank} to #{m.fused_rank} after {m.rounds} round{m.rounds === 1 ? "" : "s"} against {m.opponents} opponent{m.opponents === 1 ? "" : "s"}
+                      {m.ring_pull != null ? ` (${signed(m.ring_pull)} points)` : ""}.
+                    </Typography>
+                  ))}
+                </Stack>
+              </FoldCard>
+          )}
+
+          {/* ── What went in ──────────────────────────────────────────────────── */}
+          {inputs && (
+            <FoldCard title="What went in" summary="The evidence this ranking is built from, all read from data already on disk.">
+                <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ mb: 2 }}>
+                  <StatTile
+                    label="Pooled record"
+                    value={inputs.pooled_profiles}
+                    unit="profiles"
+                    caption={`${inputs.pooled_iterations.toLocaleString()} iterations, medianed per profile`}
+                    help="Each profile's median Overall over every comparable run, with a standard error from its own spread (IQR/√n). The anchors of the fit."
+                  />
+                  <StatTile
+                    label="Ring"
+                    value={inputs.ring_rounds}
+                    unit="rounds"
+                    caption={`${inputs.ring_matches} matches · ${inputs.ring_sessions} sessions · ${inputs.ring_profiles} profiles fought`}
+                    help={
+                      `Every usable round on the duel ledger under this methodology, as a paired difference. ` +
+                      (inputs.excluded_other_methodology ? `${inputs.excluded_other_methodology} match(es) fought under another methodology were left out (their margins are on another scale). ` : "") +
+                      (inputs.weather_shifted_rounds ? `${inputs.weather_shifted_rounds} round(s) saw a weather shift between legs and still count.` : "")
+                    }
+                  />
+                  <StatTile
+                    label="Round noise"
+                    value={`±${fmtNum(inputs.sigma_round, 2)}`}
+                    unit="pts"
+                    caption={inputs.sigma_basis === "measured"
+                      ? `measured over ${inputs.noise?.rounds ?? "?"} rounds in ${inputs.noise?.matchups ?? "?"} matches`
+                      : "fallback — too few rounds to measure the ring's own noise yet"}
+                    tone={inputs.sigma_basis === "measured" ? "good" : "warn"}
+                    help="What one ring round is worth: the spread of successive margins within a match, which cancels the match's true edge and leaves pure measurement noise. Each round counts 1/σ² in the fit."
+                  />
+                  <StatTile
+                    label="Pooled slack"
+                    value={`±${fmtNum(slackTau, 2)}`}
+                    unit="pts"
+                    caption={
+                      inputs.slack.basis === "measured"
+                        ? `measured from ${inputs.slack.pairs} fought pairs`
+                        : `default — needs ${inputs.slack.needed_pairs} fought pairs to measure (${inputs.slack.pairs} so far)`
+                    }
+                    tone={inputs.slack.basis === "measured" ? "good" : "warn"}
+                    help="How far a pooled median can sit from the truth for reasons more iterations never fix: weather, time of day, the instrument drifting. Measured from the pairs the ring has fought — the pooled difference and the ring's difference are two readings of one gap, and how much they disagree beyond both error bars is exactly this. It is never set by hand: a weight a person chooses on the evidence is what this ranking replaces."
+                  />
+                </Stack>
+
+              </FoldCard>
+          )}
+
           {/* ── Does it predict better than its parents? ──────────────────────── */}
-          <Card sx={{ mb: 2 }}>
-            <CardContent>
-              <Typography variant="h6" sx={{ mb: 0.5 }}>
-                Which verdict predicts the next night?
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-                For each recent duel session, the ranking is rebuilt without it and asked to predict that night's margins. Lower is better. This is the check that says whether fusing the records is worth anything, measured on your own ledger.
-              </Typography>
+          <FoldCard title="Which method predicted recent nights best?" summary="Each recent duel session, predicted by a ranking rebuilt without it. Lower is better.">
               {data.backtest ? (
                 <>
                   <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 1.5 }}>
                     {(["pooled", "ring", "fused"] as const).map((k) => (
                       <StatTile
                         key={k}
-                        label={k === "pooled" ? "Pooled alone" : k === "ring" ? "Ring alone" : "Together"}
+                        label={k === "pooled" ? "Long-run average" : k === "ring" ? "Head to head" : "Combined"}
                         value={fmtNum(data.backtest!.mae[k], 2)}
                         unit="pts off"
                         tone={data.backtest!.best === k ? "good" : k === "fused" && data.backtest!.standing === "close" ? "info" : "idle"}
@@ -795,8 +767,7 @@ export default function Overall() {
                   Needs at least two duel sessions with rounds under this methodology.
                 </Typography>
               )}
-            </CardContent>
-          </Card>
+            </FoldCard>
 
           {/* ── How it works ──────────────────────────────────────────────────── */}
           <FoldCard title="How this ranking is built" summary="Plain words, no formulas hidden.">

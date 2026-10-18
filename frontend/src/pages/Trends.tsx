@@ -14,7 +14,6 @@ import Box from "@mui/material/Box";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import MenuItem from "@mui/material/MenuItem";
-import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { useTheme } from "@mui/material/styles";
@@ -24,6 +23,7 @@ import type { TrendHeatmapResponse, TrendRelativeResponse } from "../api/types";
 import TrendHeatmap from "../components/TrendHeatmap";
 import RelativeDelta, { fmtBucket } from "../components/RelativeDelta";
 import Loading from "../components/Loading";
+import PageHeader from "../components/PageHeader";
 import { useMetricMeta } from "../utils/metrics";
 
 // The headline Overall always leads; the crown measurements (what we rank on today) are
@@ -97,32 +97,27 @@ export default function Trends() {
 
   return (
     <Box>
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        justifyContent="space-between"
-        alignItems={{ xs: "flex-start", sm: "center" }}
-        spacing={2}
-        sx={{ mb: 1 }}
-      >
-        <Typography variant="h4">Historical Trends</Typography>
-        <TextField
-          select
-          size="small"
-          label="Metric"
-          value={metric}
-          onChange={(e) => setMetric(e.target.value)}
-          sx={{ minWidth: 200 }}
-        >
-          {metricOptions.map((o) => (
-            <MenuItem key={o.key} value={o.key}>
-              {o.label}
-            </MenuItem>
-          ))}
-        </TextField>
-      </Stack>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3, maxWidth: 720 }}>
-        What&apos;s normal for each metric by day of week and hour of day.
-      </Typography>
+      <PageHeader
+        title="Trends"
+        lead="What is normal for each metric by day of week and hour of day, and how right now compares."
+        compact
+        actions={
+          <TextField
+            select
+            size="small"
+            label="Metric"
+            value={metric}
+            onChange={(e) => setMetric(e.target.value)}
+            sx={{ minWidth: 200 }}
+          >
+            {metricOptions.map((o) => (
+              <MenuItem key={o.key} value={o.key}>
+                {o.label}
+              </MenuItem>
+            ))}
+          </TextField>
+        }
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>

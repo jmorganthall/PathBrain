@@ -20,6 +20,8 @@ import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
 import { api } from "../api/client";
+import PageHeader from "../components/PageHeader";
+import { HelpTip } from "../components/Explain";
 import LinkWatchCard, { fmtGap } from "../components/LinkWatchCard";
 import WriteAndPing from "../components/WriteAndPing";
 import type { FirewallGuardStatus, FirewallWriteRow, FqCodelPipe } from "../api/types";
@@ -104,13 +106,12 @@ export default function FirewallPage() {
 
   return (
     <Box>
-      <Typography variant="h5" gutterBottom>
-        Firewall
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Writing to the firewall is the one thing PathBrain does that your household feels.
-        Every write is on the ledger below, and the probe measures what one costs.
-      </Typography>
+      <PageHeader
+        title="Firewall"
+        lead="Every write PathBrain made to the firewall, and what each one cost the network."
+        more="Writing to the firewall is the one thing PathBrain does that your household feels: a shaper reload rebuilds the queues and drops what is in flight. The ledger records every write; the link watch and the write-and-ping probe measure what one costs, on demand."
+        compact
+      />
 
       {error && (
         <Alert severity="warning" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -118,11 +119,7 @@ export default function FirewallPage() {
         </Alert>
       )}
 
-      <LinkWatchCard />
-
-      <WriteAndPing pipes={pipes} onLoadPipes={loadPipes} loadingPipes={loadingPipes} />
-
-      <Card>
+      <Card sx={{ mb: 2 }}>
         <CardContent>
           <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
             <Typography variant="h6">Every write, and what it cost</Typography>
@@ -134,12 +131,10 @@ export default function FirewallPage() {
             )}
           </Stack>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            "What did PathBrain do in the five minutes before the drop?" — one query, and
-            the one that found the real cause: every write carrying the flow table cost
-            30-35 seconds, every write without it was sub-second.
-            <b> Took</b> is how long the firewall held the call. <b>Cost</b> is the worst
-            ping gap around the write, from the link watch above: "—" means nothing was
-            watching, which is not the same as clean.
+            <b>Took</b> is how long the firewall held the call. <b>Cost</b> is the worst ping
+            gap around the write, from the link watch below; "—" means nothing was watching,
+            which is not the same as clean.
+            <HelpTip title='This ledger answers "what did PathBrain do in the five minutes before the drop?" in one query — and it is the query that found the real cause of the reload storm: every write carrying the flow table cost 30–35 seconds, every write without it was sub-second. That field is no longer writable.' />
           </Typography>
           {writes.length === 0 ? (
             <Typography variant="body2" color="text.secondary">
@@ -209,6 +204,11 @@ export default function FirewallPage() {
           )}
         </CardContent>
       </Card>
+
+      <LinkWatchCard />
+
+      <WriteAndPing pipes={pipes} onLoadPipes={loadPipes} loadingPipes={loadingPipes} />
+
     </Box>
   );
 }

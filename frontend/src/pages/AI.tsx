@@ -48,7 +48,8 @@ import type {
   TopProfileSignature,
 } from "../api/types";
 import ApplyConfirmDialog, { type ApplyConfirm } from "../components/ApplyConfirmDialog";
-import { Blurb, HelpTip } from "../components/Explain";
+import { HelpTip } from "../components/Explain";
+import PageHeader from "../components/PageHeader";
 
 // The settings→outcome relationship map. Two views: the deterministic per-field/metric Spearman
 // correlations we computed and sent to the model (trustworthy, AI-independent), and the model's
@@ -595,24 +596,19 @@ export default function AI() {
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 1 }}>
-        AI
-      </Typography>
-      <Blurb
-        variant="body2"
-        sx={{ mb: 2, maxWidth: 860 }}
+      <PageHeader
+        title="AI suggestions"
+        lead="Ask a language model to propose untested shaper profiles from the measured data, ranked by how likely each is to beat your best."
         more={
           <>
             Configure an OpenRouter key and model, tweak the prompt if you like, then ask for
-            suggestions. Each suggestion has a <b>Test to minimum</b> button (apply, benchmark,
-            restore) and an <b>Apply</b> button that writes it to the firewall permanently after a
+            suggestions. Each suggestion has a <b>Trial</b> button (apply, benchmark, restore your
+            settings) and an <b>Apply</b> button that writes it to the firewall permanently after a
             confirm-diff. Nothing is applied without your click.
           </>
         }
-      >
-        Ask an LLM to propose untested shaper profiles, ranked by how likely each is to beat your
-        crown.
-      </Blurb>
+        compact
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -851,7 +847,7 @@ export default function AI() {
                 {activeTest.run_id != null && (
                   <>
                     {" "}
-                    <Link component={RouterLink} to={`/results/${activeTest.run_id}`}>
+                    <Link component={RouterLink} to={`/runs/${activeTest.run_id}`}>
                       View the run
                     </Link>
                     .
@@ -864,24 +860,13 @@ export default function AI() {
               {activeTest.iterations} iteration(s), then restores your baseline. Also shown in the
               jobs menu (top-right) and on{" "}
               <Link component={RouterLink} to="/settings">
-                Settings Impact
+                Profile standings
               </Link>
               .
             </Typography>
           </CardContent>
         </Card>
       )}
-
-      {result && <CoverageGapsCard gaps={result.coverage_gaps} />}
-
-      {result && (
-        <RelationshipsCard
-          sensitivity={result.field_sensitivity}
-          relationships={result.relationships}
-        />
-      )}
-
-      {result && <TopProfilesCard signature={result.top_profile_signature} />}
 
       {result && (
         <Card>
@@ -946,7 +931,7 @@ export default function AI() {
                         disabled={testingIdx != null || !s.settings}
                         onClick={() => testSuggestion(s, i)}
                       >
-                        Test to minimum
+                        Trial (restores after)
                       </Button>
                       <Button
                         size="small"
@@ -1024,6 +1009,18 @@ export default function AI() {
           </CardContent>
         </Card>
       )}
+
+      {result && <CoverageGapsCard gaps={result.coverage_gaps} />}
+
+      {result && (
+        <RelationshipsCard
+          sensitivity={result.field_sensitivity}
+          relationships={result.relationships}
+        />
+      )}
+
+      {result && <TopProfilesCard signature={result.top_profile_signature} />}
+
 
       <ApplyConfirmDialog
         confirm={applyConfirm}

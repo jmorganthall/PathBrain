@@ -16,6 +16,7 @@ import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
+import ListSubheader from "@mui/material/ListSubheader";
 import Toolbar from "@mui/material/Toolbar";
 import Typography from "@mui/material/Typography";
 import useMediaQuery from "@mui/material/useMediaQuery";
@@ -49,6 +50,7 @@ import type { ReactNode } from "react";
 
 import ErrorBoundary from "./ErrorBoundary";
 import FollowBest from "./FollowBest";
+import GlossaryButton from "./Glossary";
 import JobStatus from "./JobStatus";
 import { api, ApiError } from "../api/client";
 import type { VersionInfo } from "../api/types";
@@ -325,29 +327,66 @@ interface NavItem {
   label: string;
   to: string;
   icon: ReactNode;
+  /** One line a first-time visitor can read before clicking. Shown as the hover title. */
+  what: string;
 }
 
-const NAV: NavItem[] = [
-  { label: "Dashboard", to: "/", icon: <DashboardIcon /> },
-  { label: "Overall", to: "/overall", icon: <OverallIcon /> },
-  { label: "History", to: "/history", icon: <HistoryIcon /> },
-  { label: "Trends", to: "/trends", icon: <TrendsIcon /> },
-  { label: "Weather", to: "/weather", icon: <WeatherIcon /> },
-  { label: "Compare", to: "/compare", icon: <CompareIcon /> },
-  { label: "Settings Impact", to: "/settings", icon: <InsightsIcon /> },
-  { label: "Experiments", to: "/experiments", icon: <ScienceIcon /> },
-  { label: "Shotgun Sweep", to: "/sweep", icon: <ScatterPlotIcon /> },
-  { label: "Dueling Champions", to: "/duels", icon: <SportsMmaIcon /> },
-  { label: "Lever duels", to: "/levers", icon: <EqualizerIcon /> },
-  { label: "Explore", to: "/explore", icon: <ExploreIcon /> },
-  { label: "Baseline (SQM off)", to: "/baseline", icon: <PowerOffIcon /> },
-  { label: "Away test", to: "/away", icon: <FlightTakeoffIcon /> },
-  { label: "Firewall", to: "/firewall", icon: <SecurityIcon /> },
-  { label: "Config", to: "/config", icon: <SettingsIcon /> },
-  { label: "Methodology", to: "/methodology", icon: <RuleIcon /> },
-  { label: "Plugins", to: "/plugins", icon: <ExtensionIcon /> },
-  { label: "Data Dump", to: "/data-dump", icon: <DataObjectIcon /> },
-  { label: "AI", to: "/ai", icon: <AutoAwesomeIcon /> },
+interface NavGroup {
+  /** Section heading in the drawer; empty for the ungrouped top entry. */
+  title: string;
+  items: NavItem[];
+}
+
+// Twenty pages used to sit in one flat list, in roughly the order they were written. The
+// groups answer the question a newcomer actually has — "where do I look for X?" — and the
+// labels say what a page shows rather than what the engine behind it is called. Routes are
+// unchanged; only the words are.
+const NAV_GROUPS: NavGroup[] = [
+  {
+    title: "",
+    items: [
+      { label: "Dashboard", to: "/", icon: <DashboardIcon />, what: "Which profile to run, what the firewall is on, and what is measuring now." },
+    ],
+  },
+  {
+    title: "Results",
+    items: [
+      { label: "Best profile", to: "/overall", icon: <OverallIcon />, what: "The one ranking that combines every measurement with the head-to-head duels, and how sure it is." },
+      { label: "Profile standings", to: "/settings", icon: <InsightsIcon />, what: "Every firewall settings profile ranked by its measured score, with a scatter to compare them on any metric." },
+      { label: "Run history", to: "/history", icon: <HistoryIcon />, what: "Every benchmark run, newest first, with its score and the profile it measured." },
+      { label: "Trends", to: "/trends", icon: <TrendsIcon />, what: "What is normal for each metric by day of week and hour of day." },
+      { label: "Compare runs", to: "/compare", icon: <CompareIcon />, what: "Two or more runs side by side, metric by metric." },
+      { label: "Weather", to: "/weather", icon: <WeatherIcon />, what: "How much network conditions outside the shaper's control move the scores." },
+    ],
+  },
+  {
+    title: "Find a better profile",
+    items: [
+      { label: "Duels", to: "/duels", icon: <SportsMmaIcon />, what: "Profiles measured head to head under the same conditions; the champion, the standings, and tonight's matches." },
+      { label: "Lever duels", to: "/levers", icon: <EqualizerIcon />, what: "What moving one setting at a time does, measured in paired rounds." },
+      { label: "Explore", to: "/explore", icon: <ExploreIcon />, what: "Untested settings worth measuring next, and whether past suggestions were right." },
+      { label: "Shotgun sweep", to: "/sweep", icon: <ScatterPlotIcon />, what: "Try a grid of values for a setting in one go, then restore your settings." },
+      { label: "Experiments", to: "/experiments", icon: <ScienceIcon />, what: "The scheduled single-setting sweep that runs in a nightly window." },
+      { label: "AI suggestions", to: "/ai", icon: <AutoAwesomeIcon />, what: "Ask a language model to propose profiles from the measured data." },
+    ],
+  },
+  {
+    title: "Other tests",
+    items: [
+      { label: "No-shaper baseline", to: "/baseline", icon: <PowerOffIcon />, what: "Measure the link with SQM turned off, to see what the shaper is buying." },
+      { label: "Away test", to: "/away", icon: <FlightTakeoffIcon />, what: "Run a test from any phone or laptop and compare it with home." },
+    ],
+  },
+  {
+    title: "System",
+    items: [
+      { label: "Firewall", to: "/firewall", icon: <SecurityIcon />, what: "Every write PathBrain made to the firewall and what each one cost the network." },
+      { label: "Configuration", to: "/config", icon: <SettingsIcon />, what: "Targets, schedules, weights and thresholds." },
+      { label: "Methodology", to: "/methodology", icon: <RuleIcon />, what: "How raw measurements become a score, versioned, and the audits that check the instrument." },
+      { label: "Plugins", to: "/plugins", icon: <ExtensionIcon />, what: "The measurement plugins and the self-update integration." },
+      { label: "Data export", to: "/data-dump", icon: <DataObjectIcon />, what: "Download the measured record for analysis elsewhere." },
+    ],
+  },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -368,19 +407,34 @@ export default function Layout({ children }: { children: ReactNode }) {
         </Typography>
       </Toolbar>
       <Divider />
-      <List sx={{ px: 1 }}>
-        {NAV.map((item) => (
-          <ListItemButton
-            key={item.to}
-            component={RouterLink}
-            to={item.to}
-            selected={isActive(item.to)}
-            onClick={() => setMobileOpen(false)}
-            sx={{ borderRadius: 2, mb: 0.5 }}
-          >
-            <ListItemIcon sx={{ minWidth: 40 }}>{item.icon}</ListItemIcon>
-            <ListItemText primary={item.label} />
-          </ListItemButton>
+      <List dense sx={{ px: 1, pb: 2 }}>
+        {NAV_GROUPS.map((group) => (
+          <Box key={group.title || "top"} component="li" sx={{ listStyle: "none" }}>
+            {group.title && (
+              <ListSubheader
+                disableSticky
+                sx={{ bgcolor: "transparent", lineHeight: 2.2, mt: 1, px: 1.5, fontSize: 11, letterSpacing: 1, textTransform: "uppercase" }}
+              >
+                {group.title}
+              </ListSubheader>
+            )}
+            <List disablePadding>
+              {group.items.map((item) => (
+                <Tooltip key={item.to} title={item.what} placement="right" enterDelay={600} arrow>
+                  <ListItemButton
+                    component={RouterLink}
+                    to={item.to}
+                    selected={isActive(item.to)}
+                    onClick={() => setMobileOpen(false)}
+                    sx={{ borderRadius: 2, mb: 0.25, py: 0.6 }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>
+                    <ListItemText primary={item.label} primaryTypographyProps={{ fontSize: 14 }} />
+                  </ListItemButton>
+                </Tooltip>
+              ))}
+            </List>
+          </Box>
         ))}
       </List>
     </Box>
@@ -422,7 +476,8 @@ export default function Layout({ children }: { children: ReactNode }) {
               (The firewall-guard chip stood first in this row, carrying Arm and Hands off.
               It is gone with the state it controlled; the write rate and the ledger live on
               the Firewall page, which is where you go to read them.) */}
-          <ErrorBoundary label="Follow best" variant="widget"><FollowBest /></ErrorBoundary>
+          <ErrorBoundary label="Glossary" variant="widget"><GlossaryButton /></ErrorBoundary>
+          <ErrorBoundary label="Auto-apply" variant="widget"><FollowBest /></ErrorBoundary>
           <ErrorBoundary label="Update" variant="widget"><UpdateChip /></ErrorBoundary>
           <ErrorBoundary label="Jobs" variant="widget"><JobStatus /></ErrorBoundary>
         </Toolbar>

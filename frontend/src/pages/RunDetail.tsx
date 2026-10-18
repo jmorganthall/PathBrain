@@ -207,7 +207,7 @@ export default function RunDetail() {
   return (
     <Box>
       <Button component={RouterLink} to="/history" startIcon={<ArrowBackIcon />} sx={{ mb: 2 }}>
-        Back to History
+        All runs
       </Button>
 
       <Stack
@@ -645,7 +645,7 @@ export default function RunDetail() {
             ) : baseline.is_best_profile ? (
               <>
                 This run is on your <strong>best-scoring profile</strong>
-                {baseline.profile_median_sops != null && ` (SOPS ${Math.round(baseline.profile_median_sops)})`}
+                {baseline.profile_median_sops != null && ` (Overall ${Math.round(baseline.profile_median_sops)})`}
                 ; arrows compare it to that profile's own average over {baseline.run_count} run
                 {baseline.run_count === 1 ? "" : "s"}
               </>
@@ -654,7 +654,7 @@ export default function RunDetail() {
                 Arrows compare this run to your <strong>best-scoring profile</strong>
                 {baseline.profile_label ? ` (${baseline.profile_label}` : ""}
                 {baseline.profile_label && baseline.profile_median_sops != null
-                  ? `, SOPS ${Math.round(baseline.profile_median_sops)})`
+                  ? `, Overall ${Math.round(baseline.profile_median_sops)})`
                   : baseline.profile_label
                   ? ")"
                   : ""}{" "}
@@ -731,6 +731,8 @@ export default function RunDetail() {
                                       <strong>{meta.label}</strong>
                                       <br />
                                       {meta.description}
+                                      <br />
+                                      <code>{k}</code>
                                     </>
                                   }
                                 >
@@ -743,7 +745,7 @@ export default function RunDetail() {
                                       cursor: "help",
                                     }}
                                   >
-                                    {k}
+                                    {meta.label || k}
                                     <InfoOutlinedIcon sx={{ fontSize: "0.9rem", opacity: 0.5 }} />
                                   </Box>
                                 </Tooltip>

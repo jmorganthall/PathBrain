@@ -381,7 +381,7 @@ export default function ProfileDetail() {
   return (
     <Box>
       <Button startIcon={<ArrowBackIcon />} onClick={() => navigate("/settings")} sx={{ mb: 2 }}>
-        Back to Settings Impact
+        All profiles
       </Button>
 
       {error && (
@@ -443,13 +443,10 @@ export default function ProfileDetail() {
             )}
           </Stack>
           {profile?.name && (
-            <Typography variant="body2" color="text.secondary" sx={{ wordBreak: "break-word" }}>
+            <Typography variant="body2" color="text.secondary" sx={{ wordBreak: "break-word" }} title={fingerprint}>
               {profile.label}
             </Typography>
           )}
-          <Typography variant="caption" color="text.secondary">
-            {fingerprint}
-          </Typography>
         </Box>
         {/* Two actions, in order of how often you want them: measuring this profile is the
             everyday, self-reversing one (it restores your settings afterwards), while
@@ -464,7 +461,7 @@ export default function ProfileDetail() {
                   startIcon={testRunning ? <CircularProgress size={16} /> : <BoltIcon />}
                   onClick={() => void startTest(QUICK_ITERATIONS)}
                 >
-                  {testRunning ? "Testing…" : `Test this profile (${QUICK_ITERATIONS})`}
+                  {testRunning ? "Testing…" : `Quick test (${QUICK_ITERATIONS})`}
                 </Button>
                 <Button
                   size="small"
@@ -488,7 +485,7 @@ export default function ProfileDetail() {
                 nothing to run, and the server refuses it rather than pretending. */}
             <MenuItem onClick={() => void startTest()} disabled={topUpNeeded <= 0}>
               {topUpNeeded > 0
-                ? `Test to minimum · ${topUpNeeded} more to reach ${minIterations}`
+                ? `Test until confident · ${topUpNeeded} more to reach ${minIterations}`
                 : `Already at the ${minIterations ?? ""}-iteration minimum`}
             </MenuItem>
           </Menu>
@@ -499,7 +496,7 @@ export default function ProfileDetail() {
                 onClick={previewApply}
                 disabled={applying || isActive}
               >
-                {isActive ? "Active" : "Apply this profile"}
+                {isActive ? "On the firewall" : "Apply to firewall"}
               </Button>
             </span>
           </Tooltip>
@@ -578,12 +575,12 @@ export default function ProfileDetail() {
                 <Typography variant="caption">
                   {crownConf.clear_lead ? (
                     <>
-                      <b>Crown lead is real:</b> +{crownConf.gap_to_runner_up.toFixed(2)} over the
+                      <b>The best profile&apos;s lead is real:</b> +{crownConf.gap_to_runner_up.toFixed(2)} over the
                       runner-up, past the {crownConf.noise_threshold.toFixed(2)} noise bar.
                     </>
                   ) : (
                     <>
-                      <b>Crown is a statistical tie:</b> +{crownConf.gap_to_runner_up.toFixed(2)} over
+                      <b>The top is a statistical tie:</b> +{crownConf.gap_to_runner_up.toFixed(2)} over
                       the runner-up is within noise (needs &gt; {crownConf.noise_threshold.toFixed(2)}),{" "}
                       {crownConf.co_leader_count} co-leader{crownConf.co_leader_count === 1 ? "" : "s"}.
                       More runs could break it.
@@ -648,18 +645,38 @@ export default function ProfileDetail() {
           questions, and their disagreement is the whole reason the ladder exists, so both
           belong on the page that is about this one profile. Everything here is signed from
           this profile's own side. */}
-      {ring && (
-        <Card sx={{ mb: 2 }}>
+      <Card sx={{ mb: 2 }}>
           <CardContent>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-              <Typography variant="h6" sx={{ flexGrow: 1 }}>
-                In the ring
+            <Typography variant="h6" gutterBottom>
+              Scores over time
+            </Typography>
+            {series && series.points.length > 0 && headlineLines.length > 0 ? (
+              <SeriesChart data={series.points} yDomain={[0, 100]} lines={headlineLines} />
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                No comparable scored runs for this profile yet.
               </Typography>
-              {ring.is_champion && <Chip color="warning" size="small" label="reigning champion" />}
-              <Button size="small" onClick={() => navigate("/duels")}>
-                Dueling Champions
-              </Button>
-            </Stack>
+            )}
+          </CardContent>
+        </Card>
+
+      {ring && (
+        <FoldCard
+          title="Head-to-head record"
+          summary={
+            !ring.in_ring
+              ? "Has not fought a duel yet."
+              : `${ring.is_champion ? "Current duel champion · " : ""}${
+                  ring.record ? `duel rank #${ring.record.rank ?? "—"} · ${ring.record.wins}–${ring.record.losses}–${ring.record.draws}` : ""
+                } over ${ring.matchups_analyzed} match${ring.matchups_analyzed === 1 ? "" : "es"}`
+          }
+          openWhen={!!ring.is_champion}
+          actions={
+            <Button size="small" onClick={() => navigate("/duels")}>
+              Open duels
+            </Button>
+          }
+        >
 
             {!ring.in_ring ? (
               <Typography variant="body2" color="text.secondary">
@@ -1066,9 +1083,171 @@ export default function ProfileDetail() {
                 )}
               </>
             )}
+        </FoldCard>
+      )}
+
+      <Box sx={{ display: "grid", gap: 2 }}>
+        {profile?.metrics && profile.metrics["nav_response"] != null && (
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Load waterfall (median)
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+                Judge this profile on the amber <b>Delivery</b> phase: the one your shaper moves.
+                <HelpTip title="Setup up to first byte (DNS/TCP/TLS/TTFB) is weather, not shaping. Delivery (first byte → response done) is body delivery through the queue. Client render is CPU and should match across profiles." />
+              </Typography>
+              <Waterfall metrics={profile.metrics} />
+            </CardContent>
+          </Card>
+        )}
+
+        {pauses && pauses.urls.length > 0 && (
+          <FoldCard
+            sx={{ mb: 0 }}
+            title="Where's the pause?"
+            summary={
+              <>
+                The longest void per page load, median across {pauses.runs} run
+                {pauses.runs === 1 ? "" : "s"}.
+                <HelpTip title="Where nothing finished loading: how long, where in the load it falls, and whether it's network (the part your shaper moves) or render (main thread, shaping-immune). The crown's network-stall leg is built on this." />
+              </>
+            }
+          >
+              <Stack spacing={1}>
+                {pauses.urls.map((d) => {
+                  const phaseLabel: Record<string, string> = {
+                    pre_fcp: "before first paint",
+                    fcp_lcp: "first paint → main content",
+                    lcp_load: "post-LCP settle",
+                    post_load: "after load",
+                  };
+                  const netPct = d.network_fraction != null ? Math.round(d.network_fraction * 100) : null;
+                  const attrColor =
+                    d.attribution === "render" ? "warning" : d.attribution === "network" ? "info" : "default";
+                  return (
+                    <Box
+                      key={d.url}
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        gap: 1,
+                        p: 1,
+                        borderRadius: 1,
+                        border: 1,
+                        borderColor: "divider",
+                      }}
+                    >
+                      <Typography variant="body2" sx={{ minWidth: 0, flex: 1 }} noWrap title={d.url}>
+                        {d.url}
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        {Math.round(d.median_void_ms)}ms void
+                      </Typography>
+                      <Chip size="small" variant="outlined" label={phaseLabel[d.phase] ?? d.phase} />
+                      <Chip
+                        size="small"
+                        color={attrColor as "warning" | "info" | "default"}
+                        variant={d.attribution === "render" || d.attribution === "network" ? "filled" : "outlined"}
+                        label={
+                          netPct != null && d.attribution
+                            ? `${d.attribution} · ${netPct}% network`
+                            : d.attribution ?? "unknown"
+                        }
+                      />
+                      <Typography variant="caption" color="text.secondary">
+                        {d.runs} run{d.runs === 1 ? "" : "s"}
+                      </Typography>
+                    </Box>
+                  );
+                })}
+              </Stack>
+          </FoldCard>
+        )}
+
+        {/* ── Where a win lives: what this profile's gap to a reference is made of ─────── */}
+        {profile && (
+          <WhyCard fingerprint={fingerprint} profiles={allProfiles} bestFp={bestFp} />
+        )}
+
+        <Card>
+          <CardContent>
+            <Typography variant="h6" sx={{ mb: 1 }}>
+              Run history ({total})
+            </Typography>
+            {total === 0 ? (
+              <EmptyState
+                title="No runs for this profile"
+                description="Runs captured while this firewall profile was live will appear here."
+              />
+            ) : (
+              <>
+                <TableContainer>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>ID</TableCell>
+                        <TableCell>Time</TableCell>
+                        <TableCell>Label</TableCell>
+                        <TableCell>Status</TableCell>
+                        <TableCell align="right">Overall</TableCell>
+                        <TableCell align="right">Respons.</TableCell>
+                        <TableCell align="right">Smoothness</TableCell>
+                        <TableCell align="right">Speed</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {runs.map((r) => (
+                        <TableRow
+                          key={r.id}
+                          hover
+                          sx={{ cursor: "pointer", opacity: r.legacy ? 0.6 : 1 }}
+                          onClick={() => navigate(`/runs/${r.id}`)}
+                        >
+                          <TableCell>#{r.id}</TableCell>
+                          <TableCell>{fmtDateTime(r.created_at)}</TableCell>
+                          <TableCell>{r.label ?? "—"}</TableCell>
+                          <TableCell>
+                            <StatusChip status={r.status} />
+                          </TableCell>
+                          {r.legacy ? (
+                            <TableCell align="right" colSpan={4}>
+                              <Tooltip title="Not comparable under the current methodology.">
+                                <Chip size="small" variant="outlined" label="legacy" />
+                              </Tooltip>
+                            </TableCell>
+                          ) : (
+                            <>
+                              <TableCell align="right">
+                                <Typography component="span" sx={{ fontWeight: 700, color: sopsColor(r.overall) }}>
+                                  {fmtScore(r.overall)}
+                                </Typography>
+                              </TableCell>
+                              <TableCell align="right">{fmtScore(r.responsiveness)}</TableCell>
+                              <TableCell align="right">{fmtScore(r.smoothness)}</TableCell>
+                              <TableCell align="right">{fmtScore(r.speed)}</TableCell>
+                            </>
+                          )}
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+                <TablePagination
+                  component="div"
+                  count={total}
+                  page={page}
+                  onPageChange={handlePage}
+                  rowsPerPage={rowsPerPage}
+                  onRowsPerPageChange={handleRowsPerPage}
+                  rowsPerPageOptions={[10, 25, 50, 100]}
+                />
+              </>
+            )}
           </CardContent>
         </Card>
-      )}
+      </Box>
 
       {/* Data-integrity audit: prove old and new runs are like-for-like by re-deriving each from
           its immutable raw and diffing against the stored value. */}
@@ -1164,187 +1343,9 @@ export default function ProfileDetail() {
           )}
       </FoldCard>
 
-      <Box sx={{ display: "grid", gap: 2 }}>
-        {profile?.metrics && profile.metrics["nav_response"] != null && (
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Load waterfall (median)
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-                Judge this profile on the amber <b>Delivery</b> phase: the one your shaper moves.
-                <HelpTip title="Setup up to first byte (DNS/TCP/TLS/TTFB) is weather, not shaping. Delivery (first byte → response done) is body delivery through the queue. Client render is CPU and should match across profiles." />
-              </Typography>
-              <Waterfall metrics={profile.metrics} />
-            </CardContent>
-          </Card>
-        )}
-
-        {pauses && pauses.urls.length > 0 && (
-          <FoldCard
-            sx={{ mb: 0 }}
-            title="Where's the pause?"
-            summary={
-              <>
-                The longest void per page load, median across {pauses.runs} run
-                {pauses.runs === 1 ? "" : "s"}.
-                <HelpTip title="Where nothing finished loading: how long, where in the load it falls, and whether it's network (the part your shaper moves) or render (main thread, shaping-immune). The crown's network-stall leg is built on this." />
-              </>
-            }
-          >
-              <Stack spacing={1}>
-                {pauses.urls.map((d) => {
-                  const phaseLabel: Record<string, string> = {
-                    pre_fcp: "before first paint",
-                    fcp_lcp: "first paint → main content",
-                    lcp_load: "post-LCP settle",
-                    post_load: "after load",
-                  };
-                  const netPct = d.network_fraction != null ? Math.round(d.network_fraction * 100) : null;
-                  const attrColor =
-                    d.attribution === "render" ? "warning" : d.attribution === "network" ? "info" : "default";
-                  return (
-                    <Box
-                      key={d.url}
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        flexWrap: "wrap",
-                        gap: 1,
-                        p: 1,
-                        borderRadius: 1,
-                        border: 1,
-                        borderColor: "divider",
-                      }}
-                    >
-                      <Typography variant="body2" sx={{ minWidth: 0, flex: 1 }} noWrap title={d.url}>
-                        {d.url}
-                      </Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                        {Math.round(d.median_void_ms)}ms void
-                      </Typography>
-                      <Chip size="small" variant="outlined" label={phaseLabel[d.phase] ?? d.phase} />
-                      <Chip
-                        size="small"
-                        color={attrColor as "warning" | "info" | "default"}
-                        variant={d.attribution === "render" || d.attribution === "network" ? "filled" : "outlined"}
-                        label={
-                          netPct != null && d.attribution
-                            ? `${d.attribution} · ${netPct}% network`
-                            : d.attribution ?? "unknown"
-                        }
-                      />
-                      <Typography variant="caption" color="text.secondary">
-                        {d.runs} run{d.runs === 1 ? "" : "s"}
-                      </Typography>
-                    </Box>
-                  );
-                })}
-              </Stack>
-          </FoldCard>
-        )}
-
-        {/* ── Where a win lives: what this profile's gap to a reference is made of ─────── */}
-        {profile && (
-          <WhyCard fingerprint={fingerprint} profiles={allProfiles} bestFp={bestFp} />
-        )}
-
-        <Card>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              Scores over time (this profile)
-            </Typography>
-            {series && series.points.length > 0 && headlineLines.length > 0 ? (
-              <SeriesChart data={series.points} yDomain={[0, 100]} lines={headlineLines} />
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                No comparable scored runs for this profile yet.
-              </Typography>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent>
-            <Typography variant="h6" sx={{ mb: 1 }}>
-              Run history ({total})
-            </Typography>
-            {total === 0 ? (
-              <EmptyState
-                title="No runs for this profile"
-                description="Runs captured while this firewall profile was live will appear here."
-              />
-            ) : (
-              <>
-                <TableContainer>
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>ID</TableCell>
-                        <TableCell>Time</TableCell>
-                        <TableCell>Label</TableCell>
-                        <TableCell>Status</TableCell>
-                        <TableCell align="right">Overall</TableCell>
-                        <TableCell align="right">Respons.</TableCell>
-                        <TableCell align="right">Smoothness</TableCell>
-                        <TableCell align="right">Speed</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {runs.map((r) => (
-                        <TableRow
-                          key={r.id}
-                          hover
-                          sx={{ cursor: "pointer", opacity: r.legacy ? 0.6 : 1 }}
-                          onClick={() => navigate(`/runs/${r.id}`)}
-                        >
-                          <TableCell>#{r.id}</TableCell>
-                          <TableCell>{fmtDateTime(r.created_at)}</TableCell>
-                          <TableCell>{r.label ?? "—"}</TableCell>
-                          <TableCell>
-                            <StatusChip status={r.status} />
-                          </TableCell>
-                          {r.legacy ? (
-                            <TableCell align="right" colSpan={4}>
-                              <Tooltip title="Not comparable under the current methodology.">
-                                <Chip size="small" variant="outlined" label="legacy" />
-                              </Tooltip>
-                            </TableCell>
-                          ) : (
-                            <>
-                              <TableCell align="right">
-                                <Typography component="span" sx={{ fontWeight: 700, color: sopsColor(r.overall) }}>
-                                  {fmtScore(r.overall)}
-                                </Typography>
-                              </TableCell>
-                              <TableCell align="right">{fmtScore(r.responsiveness)}</TableCell>
-                              <TableCell align="right">{fmtScore(r.smoothness)}</TableCell>
-                              <TableCell align="right">{fmtScore(r.speed)}</TableCell>
-                            </>
-                          )}
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-                <TablePagination
-                  component="div"
-                  count={total}
-                  page={page}
-                  onPageChange={handlePage}
-                  rowsPerPage={rowsPerPage}
-                  onRowsPerPageChange={handleRowsPerPage}
-                  rowsPerPageOptions={[10, 25, 50, 100]}
-                />
-              </>
-            )}
-          </CardContent>
-        </Card>
-      </Box>
-
       {/* Apply confirmation dialog (preview of exact field writes). */}
       <Dialog open={applyPreview != null} onClose={() => setApplyPreview(null)} maxWidth="sm" fullWidth>
-        <DialogTitle>Apply “{profile?.label ?? fingerprint}”?</DialogTitle>
+        <DialogTitle>Apply “{profile?.name || profile?.label || fingerprint}”?</DialogTitle>
         <DialogContent dividers>
           {applyPreview?.already_applied ? (
             <Typography variant="body2">This profile is already live on the firewall.</Typography>

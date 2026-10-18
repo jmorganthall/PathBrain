@@ -39,6 +39,7 @@ import type {
   TestApplyResult,
 } from "../api/types";
 import Loading from "../components/Loading";
+import PageHeader from "../components/PageHeader";
 import JsonViewer from "../components/JsonViewer";
 import StringListEditor from "../components/config/StringListEditor";
 import HostPortListEditor from "../components/config/HostPortListEditor";
@@ -86,8 +87,9 @@ function NumberField(props: {
   error?: string | null;
   /** Persistent hint shown under the field (format / meaning). Hidden by an error. */
   helperText?: string;
+  disabled?: boolean;
 }) {
-  const { label, value, onChange, width = 150, fullWidth, step = 1, min, max, error, helperText } = props;
+  const { label, value, onChange, width = 150, fullWidth, step = 1, min, max, error, helperText, disabled } = props;
   return (
     <TextField
       size="small"
@@ -100,6 +102,7 @@ function NumberField(props: {
       helperText={error ?? helperText ?? undefined}
       sx={fullWidth ? undefined : { width }}
       inputProps={{ step, min, max }}
+      disabled={disabled}
     />
   );
 }
@@ -324,31 +327,35 @@ export default function Config() {
 
   return (
     <Box>
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        justifyContent="space-between"
-        alignItems={{ xs: "flex-start", sm: "center" }}
-        spacing={2}
-        sx={{ mb: 3 }}
-      >
-        <Typography variant="h4">Configuration</Typography>
-        <Stack direction="row" spacing={1} alignItems="center">
-          {errorCount > 0 && (
-            <Chip size="small" color="error" label={`${errorCount} field(s) to fix`} />
-          )}
-          <Button color="warning" startIcon={<RestartAltIcon />} onClick={handleReset} disabled={saving}>
-            Reset
-          </Button>
-          <Button
-            variant="contained"
-            startIcon={<SaveIcon />}
-            onClick={handleSave}
-            disabled={saving || errorCount > 0}
-          >
-            Save
-          </Button>
-        </Stack>
-      </Stack>
+      {/* Sticky, because the page is thirteen cards of form and Save used to be reachable
+          only by scrolling back to the top. */}
+      <Box sx={{ position: "sticky", top: { xs: 56, sm: 64 }, zIndex: 2, bgcolor: "background.default", mx: { xs: -2, md: -3 }, px: { xs: 2, md: 3 }, pt: 1 }}>
+        <PageHeader
+          title="Configuration"
+          lead="Targets, schedules, weights and thresholds. Changes take effect when you press Save."
+          compact
+          actions={
+            <>
+              {errorCount > 0 && (
+                <Chip size="small" color="error" label={`${errorCount} field(s) to fix`} />
+              )}
+              <Tooltip title="Discard unsaved changes and reload the stored configuration.">
+                <Button color="warning" startIcon={<RestartAltIcon />} onClick={handleReset} disabled={saving}>
+                  Reset
+                </Button>
+              </Tooltip>
+              <Button
+                variant="contained"
+                startIcon={<SaveIcon />}
+                onClick={handleSave}
+                disabled={saving || errorCount > 0}
+              >
+                Save
+              </Button>
+            </>
+          }
+        />
+      </Box>
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -575,7 +582,7 @@ export default function Config() {
               min={0}
               step={0.5}
               width={190}
-              helperText="A candidate must beat baseline SOPS by at least this % to be promoted."
+              helperText="A candidate must beat the baseline Overall by at least this % to be promoted."
               onChange={(v) =>
                 setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, improve_pct: v } } : p))
               }
@@ -920,6 +927,7 @@ export default function Config() {
               label="Viewport width"
               value={d.browser.viewport?.width ?? 0}
               min={0}
+              disabled={Boolean(siteOwner)}
               onChange={(v) =>
                 setDraft((p) =>
                   p ? { ...p, browser: { ...p.browser, viewport: { width: v || 0, height: p.browser.viewport?.height ?? 0 } } } : p,
@@ -930,6 +938,7 @@ export default function Config() {
               label="Viewport height"
               value={d.browser.viewport?.height ?? 0}
               min={0}
+              disabled={Boolean(siteOwner)}
               onChange={(v) =>
                 setDraft((p) =>
                   p ? { ...p, browser: { ...p.browser, viewport: { width: p.browser.viewport?.width ?? 0, height: v || 0 } } } : p,
