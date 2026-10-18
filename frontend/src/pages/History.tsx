@@ -21,6 +21,7 @@ import type { RunEstimate, RunSummary, SeriesPoint } from "../api/types";
 import StatusChip from "../components/StatusChip";
 import SeriesChart from "../components/SeriesChart";
 import Loading from "../components/Loading";
+import PageHeader from "../components/PageHeader";
 import EmptyState from "../components/EmptyState";
 import { fmtDateTime, fmtScore, runRemainingMs } from "../utils/format";
 import { useNow } from "../utils/useNow";
@@ -102,9 +103,11 @@ export default function History() {
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 3 }}>
-        History
-      </Typography>
+      <PageHeader
+        title="Run history"
+        lead="Every benchmark run, newest first, with its scores and the profile it measured. Click a run for its full detail."
+        compact
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
@@ -198,13 +201,13 @@ export default function History() {
                   variant={hideLegacy ? "outlined" : "filled"}
                   color={hideLegacy ? "default" : "primary"}
                   onClick={toggleLegacy}
-                  label={hideLegacy ? "Show legacy (archive)" : "Hide legacy"}
+                  label={hideLegacy ? "Show legacy runs" : "Hide legacy runs"}
                 />
               </Stack>
               {hideLegacy && hiddenCount > 0 && (
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
                   {hiddenCount} legacy run{hiddenCount === 1 ? "" : "s"} on this page hidden — scored
-                  before the current rubric, not comparable.
+                  before the current methodology, so not comparable. The page count still includes them.
                 </Typography>
               )}
               <TableContainer>

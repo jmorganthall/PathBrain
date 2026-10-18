@@ -20,6 +20,7 @@ import StopCircleIcon from "@mui/icons-material/StopCircle";
 import { api } from "../api/client";
 import type { ExperimentDetail, ExperimentsResponse } from "../api/types";
 import Loading from "../components/Loading";
+import PageHeader from "../components/PageHeader";
 import EmptyState from "../components/EmptyState";
 import { fmtDateTime } from "../utils/format";
 
@@ -70,13 +71,17 @@ export default function Experiments() {
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 1 }}>
-        Experiments
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Scheduled sweeps of one shaper parameter. Configure under{" "}
-        <RouterLink to="/config">Config → Experiment Engine</RouterLink>.
-      </Typography>
+      <PageHeader
+        title="Experiments"
+        lead={
+          <>
+            The scheduled sweep of one shaper setting that runs inside a nightly window. Configure it under{" "}
+            <RouterLink to="/config" style={{ color: "inherit" }}>Configuration → Experiment engine</RouterLink>; for a
+            grid you run right now, use Shotgun sweep.
+          </>
+        }
+        compact
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -122,7 +127,7 @@ export default function Experiments() {
               )}
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-              Sweeping <b>{status.param}</b> over{" "}
+              {status.enabled ? "Sweeping" : "Configured to sweep"} <b>{status.param}</b> over{" "}
               <b>{status.candidates.length ? status.candidates.join(", ") : "— (no candidates set)"}</b>
               {" · "}
               {windowLabel(status.window)}
@@ -210,7 +215,7 @@ export default function Experiments() {
                       <TableRow>
                         <TableCell>When</TableCell>
                         <TableCell>Value</TableCell>
-                        <TableCell align="right">SOPS</TableCell>
+                        <TableCell align="right">Overall</TableCell>
                         <TableCell>Applied</TableCell>
                         <TableCell>Run</TableCell>
                       </TableRow>

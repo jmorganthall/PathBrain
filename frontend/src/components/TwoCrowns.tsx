@@ -86,11 +86,11 @@ function CrownTile({
               {kind}
             </Typography>
             {governing ? (
-              <Tooltip title="Automation acts on this verdict — the crowning policy in the top-bar Follow best popover decides which.">
+              <Tooltip title="Auto-apply acts on this verdict. Which ranking it follows is chosen in the top-bar Auto-apply popover.">
                 <Chip size="small" color="primary" label="following" sx={{ height: 18 }} />
               </Tooltip>
             ) : (
-              <Tooltip title="Recorded and displayed, but automation isn't acting on it. Switch the crowning policy in the top-bar Follow best popover to change that.">
+              <Tooltip title="Recorded and displayed, but Auto-apply isn't acting on it. Change which ranking it follows in the top-bar Auto-apply popover.">
                 <Chip size="small" variant="outlined" label="for reference" sx={{ height: 18 }} />
               </Tooltip>
             )}
@@ -165,13 +165,12 @@ export default function TwoCrowns() {
           sx={{ mb: 1 }}
         >
           <Box>
-            <Typography variant="h6">The two crowns</Typography>
+            <Typography variant="h6">Two ways of naming a winner</Typography>
             <Typography variant="caption" color="text.secondary">
-              Two ways of naming the best profile — the all-history standings and the
-              head-to-head ring.{" "}
+              The all-history average and the head-to-head duels can disagree.{" "}
               {governing.source === "fused"
-                ? "Automation follows neither alone: it acts on the fused ranking that fits both together."
-                : 'Only the "following" one is applied.'}
+                ? "Auto-apply follows neither alone: it acts on the combined ranking that fits both together."
+                : 'Only the one marked "following" is applied.'}
             </Typography>
           </Box>
           {agree && (
@@ -261,7 +260,7 @@ export default function TwoCrowns() {
 
         {governing.source === "fused" && (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
-            <Chip size="small" color="primary" label="following · Overall ranking" sx={{ height: 20 }} />
+            <Chip size="small" color="primary" label="following · combined ranking" sx={{ height: 20 }} />
             <Typography variant="caption" color="text.secondary">
               {data.fused ? (
                 <>
@@ -273,7 +272,7 @@ export default function TwoCrowns() {
                 <>The fit names nobody yet, so the pooled crown stands in. </>
               )}
               <Link component={RouterLink} to="/overall" underline="hover">
-                See how on the Overall page
+                See how on the Best profile page
               </Link>
               .
             </Typography>

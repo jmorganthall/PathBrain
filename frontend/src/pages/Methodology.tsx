@@ -36,6 +36,7 @@ import type {
 } from "../api/types";
 import Loading from "../components/Loading";
 import { Blurb, FoldCard, HelpTip } from "../components/Explain";
+import PageHeader from "../components/PageHeader";
 import ReachabilityCard from "../components/ReachabilityCard";
 import StringListEditor from "../components/config/StringListEditor";
 import { fmtDateTime } from "../utils/format";
@@ -440,61 +441,48 @@ export default function Methodology() {
 
   return (
     <Box>
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        justifyContent="space-between"
-        alignItems={{ xs: "flex-start", sm: "center" }}
-        spacing={1}
-        sx={{ mb: 1 }}
-      >
-        <Typography variant="h4">Methodology</Typography>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-          <Tooltip
-            arrow
-            title="Recompute every run's metrics from its stored raw. Use after a formula changes or a metric is added. Doesn't change the rubric."
-          >
-            <span>
-              <Button
-                variant="outlined"
-                startIcon={rederiving ? <CircularProgress size={16} /> : <RestartAltIcon />}
-                onClick={handleRederive}
-                disabled={rederiving}
-              >
-                {rederiving ? "Re-deriving…" : "Re-derive history from raw"}
-              </Button>
-            </span>
-          </Tooltip>
-          <Tooltip
-            arrow
-            title="Re-score every run under the current methodology. Use after publishing new weights, thresholds, or a new crown. Re-derive first if the rubric needs a new measurement."
-          >
-            <span>
-              <Button
-                variant="outlined"
-                startIcon={regrading ? <CircularProgress size={16} /> : <RestartAltIcon />}
-                onClick={handleRegrade}
-                disabled={regrading}
-              >
-                {regrading ? "Re-grading…" : "Re-grade history under current"}
-              </Button>
-            </span>
-          </Tooltip>
-        </Stack>
-      </Stack>
-      <Blurb
-        variant="body2"
-        sx={{ mb: 2 }}
-        more={
+      <PageHeader
+        title="Methodology"
+        lead="How raw measurements become a score, versioned — plus the audits that check the measuring instrument itself."
+        more="Raw data is the instrumented truth; the methodology is the interpretation applied to it. Changing a weight, threshold, metric, site list or browser client publishes a new version. Old scores keep the version they were measured under, and any run can be re-scored from its raw under the current one."
+        compact
+        actions={
           <>
-            Raw data is the instrumented truth; the methodology is the interpretation applied to it.
-            Changing a weight, threshold, or metric publishes a new version. Old scores keep the
-            version they were measured under, and any run can be re-scored from its raw under the
-            current one.
+            <Tooltip
+              arrow
+              title="Recompute every run's metrics from its stored raw. Use after a formula changes or a metric is added. Doesn't change the rubric."
+            >
+              <span>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={rederiving ? <CircularProgress size={16} /> : <RestartAltIcon />}
+                  onClick={handleRederive}
+                  disabled={rederiving}
+                >
+                  {rederiving ? "Re-deriving…" : "Re-derive from raw"}
+                </Button>
+              </span>
+            </Tooltip>
+            <Tooltip
+              arrow
+              title="Re-score every run under the current methodology. Use after publishing new weights, thresholds, or a new crown. Re-derive first if the rubric needs a new measurement."
+            >
+              <span>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={regrading ? <CircularProgress size={16} /> : <RestartAltIcon />}
+                  onClick={handleRegrade}
+                  disabled={regrading}
+                >
+                  {regrading ? "Re-grading…" : "Re-grade history"}
+                </Button>
+              </span>
+            </Tooltip>
           </>
         }
-      >
-        How raw observations become a score, versioned.
-      </Blurb>
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>

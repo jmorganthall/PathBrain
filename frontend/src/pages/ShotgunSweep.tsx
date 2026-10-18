@@ -24,6 +24,7 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
 
 import { api } from "../api/client";
+import PageHeader from "../components/PageHeader";
 import { useQueuedAction } from "../hooks/useQueuedAction";
 import type {
   Sweep,
@@ -252,7 +253,7 @@ export default function ShotgunSweep() {
     if (!sweep) return;
     try {
       const r = await api.applySweepBest(sweep.id);
-      setToast(`Applied winner: ${JSON.stringify(r.applied)} (SOPS ${r.sops ?? "—"})`);
+      setToast(`Applied winner: ${JSON.stringify(r.applied)} (Overall ${r.sops ?? "—"})`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to apply winner");
     }
@@ -264,16 +265,12 @@ export default function ShotgunSweep() {
 
   return (
     <Box>
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        justifyContent="space-between"
-        alignItems={{ xs: "flex-start", sm: "center" }}
-        spacing={2}
-        sx={{ mb: 1 }}
-      >
-        <Typography variant="h4">Shotgun Sweep</Typography>
-        <Stack direction="row" spacing={1} alignItems="center">
-          {running ? (
+      <PageHeader
+        title="Shotgun sweep"
+        lead="Benchmark a grid of shaper values in one go. Each variant is applied for real, measured, and your settings are restored when it ends."
+        compact
+        actions={
+          running ? (
             <Button color="warning" variant="outlined" startIcon={<StopIcon />} onClick={handleCancel}>
               Cancel
             </Button>
@@ -286,12 +283,9 @@ export default function ShotgunSweep() {
             >
               {busy ? "Starting…" : "Start sweep"}
             </Button>
-          )}
-        </Stack>
-      </Stack>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 760 }}>
-        Benchmark a grid of shaper values in one go. Your settings are restored when it ends.
-      </Typography>
+          )
+        }
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -471,7 +465,7 @@ export default function ShotgunSweep() {
                       {fields.map((f) => (
                         <TableCell key={f.key} align="right">{f.label}</TableCell>
                       ))}
-                      <TableCell align="right">SOPS</TableCell>
+                      <TableCell align="right">Overall</TableCell>
                       <TableCell align="right">vs typical</TableCell>
                       <TableCell>Run</TableCell>
                     </TableRow>

@@ -3223,7 +3223,19 @@ LLM-based. See `README.md` for the product overview.
   parsed every other page plus recharts — over a second of blank screen on a phone before a
   single request was sent. Now the shell paints immediately, each page is its own small chunk
   (Duels ~40 kB), and the 384 kB chart bundle loads only for the three views that draw charts.
-  Keep new pages lazy. Pages: **Dashboard** (`Dashboard.tsx` — the NOC wall, led by the
+  Keep new pages lazy. **The shell is written for a first-time reader** (`docs/gui-ux-audit.md`
+  is the audit this came from): the drawer is grouped (Dashboard · Results · Find a better
+  profile · Other tests · System) with a one-line hover per page, and the nav labels say what
+  a page *shows* rather than what its engine is called — the routes and component files keep
+  their old names, so `/settings` + `Settings.tsx` is labelled **Profile standings**, `/overall`
+  **Best profile**, `/duels` **Duels**, `/data-dump` **Data export**, `/baseline` **No-shaper
+  baseline**, `/ai` **AI suggestions**. Every page opens with the one `PageHeader`
+  (`components/PageHeader.tsx`: title · one plain lead sentence · the rationale folded behind
+  "More" · the page's actions), long pages use its `SectionLabel`, and the vocabulary
+  (profile, crown, duel, belt, weather, pipeline, lever, pooled, fused…) is defined once in
+  `utils/glossary.ts`, served by the top-bar **?** (`components/Glossary.tsx`, with `<Term>` for
+  inline use). The top-bar switch is labelled **Auto-apply best** (it is still `FollowBest.tsx`
+  and the crown follower underneath). Pages: **Dashboard** (`Dashboard.tsx` — the NOC wall, led by the
   **verdict card** (`components/dashboard/VerdictCard`, `verdict.py`): which profile to run,
   how sure, what shaping is worth and whether the firewall is on it — the decision every
   reading below it is for, which is why it sits above them rather than beside the other

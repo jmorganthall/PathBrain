@@ -23,6 +23,7 @@ import type {
   UpdateLog,
 } from "../api/types";
 import Loading from "../components/Loading";
+import PageHeader from "../components/PageHeader";
 import { fmtDateTime } from "../utils/format";
 
 // How each attempt's *verdict* reads. The verdict is deliberately separate from the call's
@@ -274,9 +275,11 @@ export default function Plugins() {
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 3 }}>
-        Plugins
-      </Typography>
+      <PageHeader
+        title="Plugins"
+        lead="The measurement modules every benchmark run collects (read-only), and the self-update integration."
+        compact
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
@@ -298,7 +301,7 @@ export default function Plugins() {
               <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
                 <ExtensionIcon color="primary" fontSize="small" />
                 <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                  {p.name}
+                  {p.name.charAt(0).toUpperCase() + p.name.slice(1)}
                 </Typography>
               </Stack>
               <Typography variant="body2" color="text.secondary">

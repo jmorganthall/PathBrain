@@ -68,10 +68,10 @@ export default function FollowBest() {
         setSnack({
           msg:
             next === "duel"
-              ? "Crowning policy: duel champion — the follower acts on head-to-head verdicts (pooled fallback)."
+              ? "Auto-apply now follows the duel champion (falls back to the pooled best when no fresh verdict exists)."
               : next === "fused"
-                ? "Crowning policy: Overall ranking — the follower acts on the pooled record and the ring fitted together (the Overall page)."
-                : "Crowning policy: pooled Overall — the follower acts on the all-time crown.",
+                ? "Auto-apply now follows the Overall ranking — the pooled record and the duels fitted together (the Best profile page)."
+                : "Auto-apply now follows the pooled Overall — the all-time best by average.",
           sev: "info",
         });
         load();
@@ -92,10 +92,10 @@ export default function FollowBest() {
         setSnack(
           next
             ? {
-                msg: "Follow best is on — the firewall will track the crowned profile.",
+                msg: "Auto-apply is on — the firewall will be kept on the best profile.",
                 sev: "success",
               }
-            : { msg: "Follow best is off — crown changes are still recorded.", sev: "info" },
+            : { msg: "Auto-apply is off — changes of the best profile are still recorded.", sev: "info" },
         );
         load();
       })
@@ -150,8 +150,8 @@ export default function FollowBest() {
         <Tooltip
           title={
             enabled
-              ? "Follow best is ON — the firewall tracks the crowned profile. Click for status."
-              : "Follow best is OFF — click for crown-change history and stats."
+              ? "Auto-apply is ON — the firewall is kept on the best profile. Click for status."
+              : "Auto-apply is OFF — the best profile is tracked but never applied for you. Click for history."
           }
         >
           <IconButton size="small" onClick={(e) => setAnchor(e.currentTarget)}>
@@ -169,9 +169,9 @@ export default function FollowBest() {
           }}
           onClick={(e) => setAnchor(e.currentTarget as HTMLElement)}
         >
-          Follow best
+          Auto-apply best
         </Typography>
-        <Tooltip title="Keep the firewall's SQM settings on the best confident profile as the crown changes">
+        <Tooltip title="Keep the firewall on the best profile automatically, switching when the ranking changes">
           <span>
             {/* On phones the toolbar is tight (menu, title, update button, jobs) — collapse
                 to the trophy icon alone and let the popover carry the switch, so the
@@ -181,7 +181,7 @@ export default function FollowBest() {
               checked={enabled}
               disabled={busy || info === null}
               onChange={(e) => toggle(e.target.checked)}
-              inputProps={{ "aria-label": "Follow best" }}
+              inputProps={{ "aria-label": "Auto-apply best" }}
               sx={{ display: { xs: "none", sm: "inline-flex" } }}
             />
           </span>
@@ -200,11 +200,11 @@ export default function FollowBest() {
           <Stack direction="row" alignItems="center" spacing={1}>
             <EmojiEventsIcon fontSize="small" color={enabled ? "warning" : "disabled"} />
             <Typography variant="subtitle2" sx={{ flexGrow: 1 }}>
-              Follow best
+              Auto-apply best
             </Typography>
             <Chip
               size="small"
-              label={enabled ? "following" : "tracking only"}
+              label={enabled ? "applying" : "tracking only"}
               color={enabled ? "warning" : "default"}
               variant="outlined"
             />
@@ -215,12 +215,12 @@ export default function FollowBest() {
               checked={enabled}
               disabled={busy || info === null}
               onChange={(e) => toggle(e.target.checked)}
-              inputProps={{ "aria-label": "Follow best" }}
+              inputProps={{ "aria-label": "Auto-apply best" }}
             />
           </Stack>
           <Typography variant="caption" color="text.secondary">
-            When on, the firewall follows whichever confident profile holds the crown. Re-checked
-            after every run, with a full audit every{" "}
+            When on, the firewall is switched to whichever profile the chosen ranking names best.
+            Re-checked after every run, with a full check every{" "}
             {Math.round(((info?.config.interval_minutes ?? 360) / 60) * 10) / 10} h.
           </Typography>
 
@@ -229,7 +229,7 @@ export default function FollowBest() {
               applies. One policy, one follower, one write path. */}
           <Box>
             <Typography variant="caption" color="text.secondary">
-              Crowning policy
+              Which ranking to follow
             </Typography>
             <Stack direction="row" spacing={0.75} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
               <Tooltip title="Act on the one ranking fitted over BOTH records — each profile's pooled median, corrected by every head-to-head round it fought. The default; the other two are its corners. See the Overall page.">

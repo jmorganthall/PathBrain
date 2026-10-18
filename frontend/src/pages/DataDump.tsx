@@ -16,6 +16,7 @@ import DataObjectIcon from "@mui/icons-material/DataObject";
 import { api } from "../api/client";
 import type { DataDump as DataDumpPayload, OptimizerExport } from "../api/types";
 import { HelpTip } from "../components/Explain";
+import PageHeader from "../components/PageHeader";
 import ResearchExportCard from "../components/ResearchExportCard";
 
 // Save any object as a downloaded .json file.
@@ -116,9 +117,17 @@ export default function DataDump() {
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 1 }}>
-        Data Dump
-      </Typography>
+      <PageHeader
+        title="Data export"
+        lead="Download the measured record for analysis elsewhere: the full research export, a profile-centric JSON for feeding a model, or the raw run dump."
+        compact
+      />
+
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
 
       <ResearchExportCard />
 
@@ -127,7 +136,7 @@ export default function DataDump() {
         AI optimizer export
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 820 }}>
-        A profile-centric JSON built to feed an AI.
+        A profile-centric JSON built to feed an AI — the AI suggestions page sends this for you.
         <HelpTip title="Every profile's shaper settings, its runs with the raw scoring metrics, the objective (crown metrics, direction, best values so far), and the shaper field model (writable params and ranges). Hand it to a model and ask for untested profiles likely to beat anything measured." />
       </Typography>
 
@@ -160,7 +169,7 @@ export default function DataDump() {
               disabled={optLoading}
               startIcon={optLoading ? <CircularProgress size={16} color="inherit" /> : <DataObjectIcon />}
             >
-              {optLoading ? "Generating…" : "Generate"}
+              {optLoading ? "Generating…" : "Generate optimizer JSON"}
             </Button>
             {optExport && (
               <>
@@ -237,7 +246,7 @@ export default function DataDump() {
               disabled={loading}
               startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <DataObjectIcon />}
             >
-              {loading ? "Generating…" : "Generate"}
+              {loading ? "Generating…" : "Generate run dump"}
             </Button>
             {dump && (
               <>
@@ -255,12 +264,6 @@ export default function DataDump() {
           </Stack>
         </CardContent>
       </Card>
-
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      )}
 
       {dump && (
         <Card>

@@ -68,6 +68,7 @@ import { useTheme } from "@mui/material/styles";
 
 import { api } from "../api/client";
 import { FoldCard, HelpTip } from "../components/Explain";
+import PageHeader from "../components/PageHeader";
 import BestBetsDialog from "../components/BestBetsDialog";
 import { useQueuedAction } from "../hooks/useQueuedAction";
 import type {
@@ -342,22 +343,22 @@ function TestButtons({
             disabled={testing}
             onClick={() => onTest(candidate, quickIterations, keyId)}
           >
-            Test now ({quickIterations})
+            Quick test ({quickIterations})
           </Button>
         </span>
       </Tooltip>
       <Tooltip
-        title={`Run the full ${minIterations ?? "confidence"} iterations, so it can be ranked against the field rather than read as an early signal.`}
+        title={`Run the full ${minIterations ?? "confidence"} iterations that make a profile confident, so it can be ranked against the field rather than read as an early signal.`}
       >
         <span>
           <Button
             size="small"
-            variant="outlined"
+            variant="text"
             startIcon={<ScienceIcon />}
             disabled={testing}
             onClick={() => onTest(candidate, undefined, keyId)}
           >
-            Test to minimum
+            Full test
           </Button>
         </span>
       </Tooltip>
@@ -574,9 +575,14 @@ function CrownLegsCard({
   const refName = legs.reference.name || legs.reference.label;
   const weak = legs.legs.find((l) => l.key === legs.weakest);
   return (
-    <Card sx={{ mb: 2 }}>
-      <CardContent>
-        <Typography variant="h6">Leaders per crown leg</Typography>
+    <FoldCard
+      title="Where the best profile is weakest"
+      summary={
+        weak && !weak.reference.leads
+          ? `${refName} loses the most ground on ${weak.label}${weak.reference.rank != null ? ` (#${weak.reference.rank} of ${weak.reference.of})` : ""} — what the leaders on that measurement do differently.`
+          : `${refName} leads on every measurement the Overall is built from.`
+      }
+    >
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
           The Overall is built from {legs.legs.map((l) => l.label).join(" · ")}. For each leg: who
           leads it, where <b>{refName}</b> (the best profile, Overall {fmtNum(legs.reference.overall, 1)})
@@ -613,8 +619,7 @@ function CrownLegsCard({
             />
           ))}
         </Box>
-      </CardContent>
-    </Card>
+    </FoldCard>
   );
 }
 
@@ -674,7 +679,7 @@ function CandidateCard({
                 disabled={testing}
                 onClick={() => onTest(candidate, quickIterations)}
               >
-                Test now ({quickIterations})
+                Quick test ({quickIterations})
               </Button>
             </span>
           </Tooltip>
@@ -684,12 +689,12 @@ function CandidateCard({
             <span>
               <Button
                 size="small"
-                variant="outlined"
+                variant="text"
                 startIcon={<ScienceIcon />}
                 disabled={testing}
                 onClick={() => onTest(candidate)}
               >
-                Test to minimum
+                Full test
               </Button>
             </span>
           </Tooltip>
@@ -1015,11 +1020,11 @@ function MatchedPairsCard({ rows, ring }: { rows: ExploreMatchedPairs[]; ring?: 
           </Alert>
         ) : (
           <>
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
-              {all.length} measured move{all.length === 1 ? "" : "s"}
-              {fought > 0 ? ` · ${fought} fought in the ring` : ""}
-              {solid > 0 ? ` · ${solid} confirmed by more than one agreeing pair` : ""}
-            </Typography>
+            {solid > 0 && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+                {solid} move{solid === 1 ? "" : "s"} confirmed by more than one agreeing pair.
+              </Typography>
+            )}
             <TableContainer>
               <Table size="small">
                 <TableHead>
@@ -1141,7 +1146,7 @@ function MatchedPairsCard({ rows, ring }: { rows: ExploreMatchedPairs[]; ring?: 
 // version — every row is paired, interleaved, same-weather duel evidence — read beside
 // what fq_codel theory predicts on an unsaturated link. A prediction that fails is the
 // interesting row.
-function BasinsCard({ basins, maxOther }: { basins: ExploreBasin[]; maxOther?: number }) {
+function BasinsCard({ basins }: { basins: ExploreBasin[] }) {
   const navigate = useNavigate();
   // A profile with one measured sibling is barely a peak — it beat the only thing it was
   // ever compared to. Counting those in the coupling alarm turns it into "39 of 40", which
@@ -1169,7 +1174,7 @@ function BasinsCard({ basins, maxOther }: { basins: ExploreBasin[]; maxOther?: n
   return (
     <FoldCard
       icon={<TerrainIcon color="primary" />}
-      title="Local optima"
+      title="Dead ends — profiles no single change improves"
       summary={
         <>
           {basins.length} profile{basins.length === 1 ? "" : "s"} that no measured one-lever
@@ -1277,12 +1282,6 @@ function BasinsCard({ basins, maxOther }: { basins: ExploreBasin[]; maxOther?: n
               </Table>
             </TableContainer>
             <Pager count={basins.length} page={page} onPage={setPage} />
-            {!!maxOther && (
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-                The dashed curves above are conditioned the same way — profiles differing from
-                the reference in the plotted lever plus at most {maxOther} other.
-              </Typography>
-            )}
           </>
         )}
     </FoldCard>
@@ -1476,14 +1475,13 @@ function RecommendationLedger({ ledger }: { ledger: ExploreLedger }) {
   const rows = ledger.recommendations;
   const paged = rows.slice(page * ROWS_PER_PAGE, page * ROWS_PER_PAGE + ROWS_PER_PAGE);
   return (
-    <Card sx={{ mb: 2 }}>
-      <CardContent>
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-          <FactCheckIcon color="primary" fontSize="small" />
-          <Typography variant="h6">Was the data right?</Typography>
-        </Stack>
+    <FoldCard
+      icon={<FactCheckIcon color="primary" fontSize="small" />}
+      title="How past suggestions turned out"
+      summary={`${s.graded} graded against measurements · ${s.pending} waiting on data`}
+    >
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
-          Every recommendation you&apos;ve tested: what it predicted vs what the link did.
+          Every suggestion you&apos;ve tested: what it predicted against what the link then did.
           <HelpTip title="The claim is recorded before it's measured. Verdicts are recomputed on every read, so a re-grade or fresh runs move them. A claim made under an older methodology is reported as incomparable rather than graded on a different yardstick. Most rows note that they were filed under a different fingerprint than the one predicted at start: that is expected, not a fault — the firewall echoes a CoDel duration back as a string, so the same setting hashes differently. The apply is verified field by field before any benchmark runs, and each claim is graded against the runs it actually produced." />
         </Typography>
 
@@ -1614,8 +1612,7 @@ function RecommendationLedger({ ledger }: { ledger: ExploreLedger }) {
           ))}
         </Stack>
         <Pager count={rows.length} page={page} onPage={setPage} />
-      </CardContent>
-    </Card>
+    </FoldCard>
   );
 }
 
@@ -1785,29 +1782,25 @@ export default function Explore() {
 
   return (
     <Box>
-      <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mb: 1 }}>
-        <ExploreIcon color="primary" sx={{ fontSize: 32 }} />
-        <Box sx={{ flexGrow: 1 }}>
-          <Typography variant="h4">Explore</Typography>
-          <Typography variant="caption" color="text.secondary">
-            What the shaper's parameter space looks like, where the holes are, and which
-            untested profiles are most likely to beat everything you've measured.
-          </Typography>
-        </Box>
-        {!!data?.bets?.length && (
-          <Button
-            variant="contained"
-            color="secondary"
-            startIcon={<CasinoIcon />}
-            onClick={() => setBetsOpen(true)}
-          >
-            Run the best bets
-          </Button>
-        )}
-        <Button variant="outlined" onClick={() => void load()} disabled={loading}>
-          {loading ? "Mapping…" : data ? "Refresh" : "Map the space"}
-        </Button>
-      </Stack>
+      <PageHeader
+        title="Explore"
+        icon={<ExploreIcon />}
+        lead="Which untested settings are most likely to beat everything measured so far, and how past suggestions turned out."
+        more="The map reads every scored profile: a response curve per setting, the holes between tested values, controlled one-setting comparisons, and the places where settings have to be chosen together. Candidates are ranked by upside — where you might beat the best — not by where you would score respectably."
+        compact
+        actions={
+          <>
+            {!!data?.bets?.length && (
+              <Button variant="contained" color="secondary" startIcon={<CasinoIcon />} onClick={() => setBetsOpen(true)}>
+                Run the best bets
+              </Button>
+            )}
+            <Button variant={data ? "outlined" : "contained"} onClick={() => void load()} disabled={loading}>
+              {loading ? "Mapping…" : data ? "Refresh the map" : "Map the space"}
+            </Button>
+          </>
+        }
+      />
 
       {loading && !data && (
         <Box sx={{ mb: 2 }}>
@@ -1824,8 +1817,7 @@ export default function Explore() {
       )}
       {!data && !loading && !error && (
         <Alert severity="info">
-          This reads every scored profile to map the parameter space, so it runs on demand
-          rather than on page load. Press <b>Map the space</b>.
+          Press <b>Map the space</b> to analyse your measured profiles (a few seconds of server work).
         </Alert>
       )}
 
@@ -1851,7 +1843,7 @@ export default function Explore() {
           {/* ── What to run next ───────────────────────────────────────────────── */}
           <Card sx={{ mb: 2 }}>
             <CardContent>
-              <Typography variant="h6">Next profiles to test</Typography>
+              <Typography variant="h6">What to test next</Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
                 Existing profiles with one lever moved to an untried value, ranked by{" "}
                 <b>upside</b>.
@@ -1860,8 +1852,8 @@ export default function Explore() {
               {data.candidates.length > 0 && data.candidates_clear_noise === false && (
                 <Alert severity="warning" sx={{ mb: 1.5 }}>
                   <b>No candidate clears the noise floor</b> of{" "}
-                  <b>{fmtNum(data.noise_floor ?? null, 1)}</b> Overall points. Look at the{" "}
-                  <b>coverage gaps</b> below instead, where something genuinely untested could
+                  <b>{fmtNum(data.noise_floor ?? null, 1)}</b> Overall points. Look at{" "}
+                  <b>Holes in coverage</b> below instead, where something genuinely untested could
                   still exist.
                 </Alert>
               )}
@@ -1898,9 +1890,6 @@ export default function Explore() {
               minIterations={minIterations}
             />
           )}
-
-          {/* ── Was the data right? ────────────────────────────────────────────── */}
-          {ledger && ledger.recommendations.length > 0 && <RecommendationLedger ledger={ledger} />}
 
           {/* ── What each lever does ───────────────────────────────────────────── */}
           <FoldCard
@@ -1939,7 +1928,7 @@ export default function Explore() {
 
           {/* ── De-confounded evidence ─────────────────────────────────────────── */}
           <MatchedPairsCard rows={data.matched_pairs} ring={data.ring_transitions} />
-          <BasinsCard basins={data.basins} maxOther={data.condition_max_other_changes} />
+          <BasinsCard basins={data.basins} />
 
           {/* ── Holes in coverage ──────────────────────────────────────────────── */}
           <FoldCard
@@ -2058,6 +2047,9 @@ export default function Explore() {
                 </Stack>
             </FoldCard>
           )}
+
+          {/* ── How past suggestions turned out — the ledger closes the page ──── */}
+          {ledger && ledger.recommendations.length > 0 && <RecommendationLedger ledger={ledger} />}
         </>
       )}
 

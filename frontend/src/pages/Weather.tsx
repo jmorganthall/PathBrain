@@ -21,6 +21,8 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import { api } from "../api/client";
 import type { WeatherSensitivity } from "../api/types";
 import { FoldCard, HelpTip } from "../components/Explain";
+import PageHeader from "../components/PageHeader";
+import { Link as RouterLink } from "react-router-dom";
 
 // The Weather tab — the measured-conditions view, spun off the Settings-Impact card once
 // it grew past a card's altitude. Everything here is strictly informational (no scores
@@ -58,36 +60,34 @@ export default function Weather() {
   const verdict = !data
     ? null
     : cleanSensitive.length > 0
-      ? `Weather moves the crown: ${cleanSensitive.length} clean covariate↔metric pair(s) over ` +
-        `|ρ| ${data.trend_rho} — strongest: ${strongest.covariate_label} → ${strongest.metric_label} ` +
-        `(within-profile ρ ${strongest.within_profile_spearman ?? strongest.pooled_spearman}). ` +
-        "A vs-weather reading would carry real signal."
-      : `Crown looks weather-robust: no clean covariate reaches |ρ| ${data.trend_rho} within-profile ` +
-        `across ${data.runs_analyzed} runs / ${data.profiles_analyzed} profiles. ` +
-        "A weather adjustment would do little here.";
+      ? `Network conditions noticeably move the scores: ${cleanSensitive.length} condition→score link${cleanSensitive.length === 1 ? "" : "s"} ` +
+        `above the ${data.trend_rho} bar. Strongest: ${strongest.covariate_label} → ${strongest.metric_label} ` +
+        `(within-profile correlation ${strongest.within_profile_spearman ?? strongest.pooled_spearman}). ` +
+        "The “vs weather” reading on the standings carries real signal."
+      : `The scores look robust to network conditions: no condition reaches the ${data.trend_rho} correlation bar ` +
+        `within a profile, over ${data.runs_analyzed} runs and ${data.profiles_analyzed} profiles. ` +
+        "A weather adjustment would change little here.";
 
   return (
     <Box>
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        justifyContent="space-between"
-        alignItems={{ xs: "flex-start", sm: "center" }}
-        spacing={1}
-        sx={{ mb: 2 }}
-      >
-        <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
-            Weather
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            What ambient network conditions do to the numbers we crown on.
-            <HelpTip title="Conditions are measured on every run, never inferred from the clock. Per-profile readings (vs weather, severity, weather-beater flags) stay on Settings Impact next to the standings they qualify." />
-          </Typography>
-        </Box>
-        <Button size="small" startIcon={<RefreshIcon />} onClick={() => void load()} disabled={loading}>
-          Refresh
-        </Button>
-      </Stack>
+      <PageHeader
+        title="Weather"
+        lead="How network conditions outside the shaper's control — DNS, connection and handshake times — affect the scores."
+        more={
+          <>
+            Conditions are measured on every run, never inferred from the clock. The per-profile
+            readings (vs weather, severity, weather-beater) stay on the{" "}
+            <RouterLink to="/settings" style={{ color: "inherit" }}>Profile standings</RouterLink> page next to the
+            standings they qualify; this page is the analysis behind them.
+          </>
+        }
+        compact
+        actions={
+          <Button size="small" startIcon={<RefreshIcon />} onClick={() => void load()} disabled={loading}>
+            Refresh
+          </Button>
+        }
+      />
 
       {loading && (
         <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
@@ -117,9 +117,9 @@ export default function Weather() {
           {data.variance && (
             <Card sx={{ mb: 2 }}>
               <CardContent>
-                <Typography variant="h6">How much of the noise is measurable weather?</Typography>
+                <Typography variant="h6">How much score noise comes from network conditions</Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-                  The most a weather adjustment could ever remove. A ceiling, not a promise.
+                  The most a weather adjustment could ever remove — a ceiling, not a promise.
                   <HelpTip title="Adjusted within-profile R² of the clean covariates against each crown metric and the Overall. The profile is held fixed, so its identity can't masquerade as weather. Linear and in-sample." />
                 </Typography>
                 <Alert severity="info" icon={false} sx={{ mb: 1.5, py: 0.5 }}>
@@ -134,10 +134,10 @@ export default function Weather() {
                         </Typography>
                         {o.explained_share != null ? (
                           <Typography variant="caption" color="text.secondary">
-                            <b>{Math.round(o.explained_share * 100)}%</b> explainable
+                            <b>{Math.round(o.explained_share * 100)}%</b> of the run-to-run noise
                             {o.within_sd != null && o.residual_sd != null && (
                               <>
-                                {" "}· ±{o.within_sd} → ±{o.residual_sd} {o.unit}
+                                {" "}· noise ±{o.within_sd} → ±{o.residual_sd} {o.unit} if adjusted
                               </>
                             )}
                             {" "}· {o.runs.toLocaleString()} runs over {o.profiles} profiles
@@ -172,11 +172,11 @@ export default function Weather() {
           )}
 
           <FoldCard
-            title="Weather sensitivity"
+            title="Which conditions affect which scores"
             summary={
               <>
-                Which covariate moves which crown metric, {data.rows.length} pairs.
-                <HelpTip title="Within-profile ρ is the causal signal. Pooled ρ mixes in between-profile differences and is context only." />
+                {data.rows.length} condition→score pairs, strongest first.
+                <HelpTip title="The same-profile correlation is the causal signal: the profile is held fixed, so only conditions vary. The all-runs correlation mixes in differences between profiles and is context only." />
               </>
             }
           >
@@ -184,16 +184,16 @@ export default function Weather() {
                 <Table size="small" stickyHeader>
                   <TableHead>
                     <TableRow>
-                      <TableCell>Weather covariate</TableCell>
-                      <TableCell>Crown metric</TableCell>
+                      <TableCell>Condition</TableCell>
+                      <TableCell>Score it moves</TableCell>
                       <TableCell align="right">
                         <Tooltip title="Spearman ρ computed within each profile (profile held fixed), median across profiles — the causal 'does weather move this metric' signal.">
-                          <span>Within-profile ρ</span>
+                          <span>Effect (same profile)</span>
                         </Tooltip>
                       </TableCell>
                       <TableCell align="right">
                         <Tooltip title="Spearman ρ over all runs pooled — mixes the weather effect with between-profile differences; context only.">
-                          <span>Pooled ρ</span>
+                          <span>Effect (all runs)</span>
                         </Tooltip>
                       </TableCell>
                     </TableRow>
@@ -243,9 +243,8 @@ export default function Weather() {
                 </Table>
               </TableContainer>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-                {data.runs_analyzed} runs across {data.profiles_analyzed} profiles · pairs ranked by
-                |within-profile ρ| · |ρ| ≥ {data.trend_rho} counts as weather-sensitive · a profile
-                needs ≥ {data.within_profile_min_points} runs to contribute a within-profile ρ.
+                {data.runs_analyzed} runs across {data.profiles_analyzed} profiles. A correlation of{" "}
+                {data.trend_rho} or more counts as weather-sensitive; a profile needs {data.within_profile_min_points}+ runs to contribute.
               </Typography>
           </FoldCard>
         </>

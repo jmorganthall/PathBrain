@@ -24,7 +24,7 @@ import PowerOffIcon from "@mui/icons-material/PowerSettingsNew";
 import { api } from "../api/client";
 import { useQueuedAction } from "../hooks/useQueuedAction";
 import type { BaselineConfig, BaselineTest } from "../api/types";
-import { Blurb } from "../components/Explain";
+import PageHeader from "../components/PageHeader";
 import { fmtDateTime } from "../utils/format";
 
 const isActive = (t: BaselineTest | null) =>
@@ -204,25 +204,24 @@ export default function Baseline() {
 
   return (
     <Box>
-      <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mb: 1 }}>
-        <PowerOffIcon color="primary" />
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>
-          Test baseline behavior
-        </Typography>
-      </Stack>
-      <Blurb
-        variant="body2"
-        sx={{ mb: 3, maxWidth: 760 }}
+      <PageHeader
+        title="No-shaper baseline"
+        icon={<PowerOffIcon />}
+        lead={
+          <>
+            Measure the link with <strong>SQM turned off</strong>: what your shaper is actually buying.
+          </>
+        }
         more={
           <>
             A baseline test disables FQ-CoDel on every pipe, waits for the link to settle,
             benchmarks the unshaped path, then restores each pipe. Its runs group into their own
-            “SQM off” profile, so they never pollute a shaped profile&apos;s scores.
+            “No Shaper” profile, so they never pollute a shaped profile&apos;s scores. While it runs,
+            the household&apos;s link is unshaped.
           </>
         }
-      >
-        Measure the link with <strong>SQM turned off</strong>: what your shaper is actually buying.
-      </Blurb>
+        compact
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -231,7 +230,13 @@ export default function Baseline() {
       )}
 
       <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ mb: 2 }} alignItems="stretch">
-        {/* Nightly schedule */}
+        {/* Run now */}
+        <Card sx={{ flex: 1 }}>
+          <CardContent>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+              <PlayArrowIcon fontSize="small" color="action" />
+              <Typography variant="h6">Run now</Typography>
+              {/* Nightly schedule */}
         <Card sx={{ flex: 1 }}>
           <CardContent>
             <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
@@ -302,16 +307,10 @@ export default function Baseline() {
           </CardContent>
         </Card>
 
-        {/* Run now */}
-        <Card sx={{ flex: 1 }}>
-          <CardContent>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
-              <PlayArrowIcon fontSize="small" color="action" />
-              <Typography variant="h6">Run now</Typography>
-            </Stack>
+      </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Kick a baseline test on demand — disables SQM, settles, benchmarks the chosen
-              iterations, then restores. Runs in chunks so partial data is kept if interrupted.
+              Run one now: disables SQM, settles, benchmarks the chosen iterations, then restores.
+              Data is saved in chunks, so an interrupted test keeps what it measured.
             </Typography>
             <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
               <NumField
@@ -434,9 +433,9 @@ export default function Baseline() {
                   <Typography variant="body2" sx={{ mt: 1.5 }}>
                     Compare against your shaped profiles on the{" "}
                     <Link component={RouterLink} to="/settings" underline="hover">
-                      Settings Impact
+                      Profile standings
                     </Link>{" "}
-                    page — the SQM-off runs form their own profile.
+                    page — the SQM-off runs form their own “No Shaper” profile.
                   </Typography>
                 </>
               )}

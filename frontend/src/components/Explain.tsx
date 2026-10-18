@@ -166,6 +166,7 @@ export function FoldCard({
           px: 2,
           py: 1.5,
           display: "flex",
+          flexWrap: "wrap",
           alignItems: "center",
           gap: 1,
           cursor: "pointer",
@@ -176,7 +177,7 @@ export function FoldCard({
         }}
       >
         {icon}
-        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+        <Box sx={{ flex: "1 1 220px", minWidth: 0 }}>
           <Typography variant="h6" sx={{ lineHeight: 1.3 }}>
             {title}
           </Typography>
@@ -192,6 +193,7 @@ export function FoldCard({
             spacing={1}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
+            sx={{ ml: "auto", flexShrink: 0 }}
           >
             {actions}
           </Stack>

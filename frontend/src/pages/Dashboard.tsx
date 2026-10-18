@@ -54,6 +54,7 @@ import StatusChip from "../components/StatusChip";
 import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
 import { HelpTip } from "../components/Explain";
+import PageHeader, { SectionLabel } from "../components/PageHeader";
 import StatTile, { type Tone } from "../components/dashboard/StatTile";
 import Sparkline from "../components/dashboard/Sparkline";
 import Leaderboard from "../components/dashboard/Leaderboard";
@@ -413,14 +414,14 @@ export default function Dashboard() {
         }${pipelineStalled ? ` · quiet ${fmtDuration((pipeline.stalled_for_s ?? 0) * 1000)}` : ""}`
       : runningJobs > 0
         ? `${runningJobs} job${runningJobs === 1 ? "" : "s"} running`
-        : "nothing holds the benchmark lock";
+        : "free — nothing is measuring";
 
   const nextRunMs = monitoring?.next_run_at ? parseApiDate(monitoring.next_run_at).getTime() - Date.now() : null;
   const monitoringTone: Tone = !monitoring ? "idle" : monitoring.enabled ? (monitoring.active ? "info" : "good") : "warn";
   const monitoringCaption = !monitoring
     ? "status unavailable"
     : !monitoring.enabled
-      ? "off — enable in Config"
+      ? "off — enable in Configuration"
       : monitoring.active
         ? "a monitoring run is in progress"
         : nextRunMs != null
@@ -451,7 +452,7 @@ export default function Dashboard() {
       ? nextJob.label
       : cadence
         ? cadence.label
-        : "Nothing armed";
+        : "None";
   const scheduleCaption = !schedule
     ? "status unavailable"
     : nextJob && nextJobMs != null
@@ -490,14 +491,14 @@ export default function Dashboard() {
   const heirsTotal = field?.heirs?.total ?? 0;
   const profilesCaption = field
     ? `${confidentCount} confident · ${totalIterations.toLocaleString()} iterations${
-        heirsTotal > 0 ? ` · ${heirsTotal} could beat the crown` : ""
+        heirsTotal > 0 ? ` · ${heirsTotal} under-measured could still win` : ""
       }`
     : "loading the field";
 
   const followOn = follow?.config?.enabled ?? false;
   const followTone: Tone = !follow ? "idle" : followOn ? "good" : "idle";
   const followCaption = follow
-    ? `${followOn ? `policy ${follow.config.policy}` : "manual"} · crown changed ${follow.stats.changes_7d}× in 7d · reign ${fmtReign(
+    ? `${followOn ? "applies the best profile for you" : "off — apply by hand"} · best changed ${follow.stats.changes_7d}× in 7d · current for ${fmtReign(
         follow.stats.current_reign_hours
       )}`
     : "status unavailable";
@@ -528,63 +529,56 @@ export default function Dashboard() {
   return (
     <Box>
       {/* ── Header + run controls ─────────────────────────────────────────────── */}
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        justifyContent="space-between"
-        alignItems={{ xs: "flex-start", sm: "center" }}
-        spacing={2}
-        sx={{ mb: 2 }}
-      >
-        <Box>
-          <Typography variant="h4">Dashboard</Typography>
-          <Typography variant="caption" color="text.secondary">
-            Live stance of the tuner — what is running, who is winning, what a run costs.
-          </Typography>
-        </Box>
-        <Stack spacing={0.5} alignItems={{ xs: "flex-start", sm: "flex-end" }} sx={{ maxWidth: "100%" }}>
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-            <Tooltip
-              title={`How many times to run the full suite and average the results (1–${maxIterations}). More iterations = steadier score, longer run.`}
-            >
-              <TextField
-                label="Iterations"
-                type="text"
-                size="small"
-                value={iterationsText}
-                onChange={(e) => {
-                  const raw = e.target.value.replace(/[^0-9]/g, "");
-                  setIterationsText(raw);
-                  const n = parseInt(raw, 10);
-                  if (!Number.isNaN(n)) setIterations(Math.max(1, Math.min(n, maxIterations)));
-                }}
-                onBlur={() => {
-                  const n = parseInt(iterationsText, 10);
-                  const clamped = Number.isNaN(n) ? iterations : Math.max(1, Math.min(n, maxIterations));
-                  setIterations(clamped);
-                  setIterationsText(String(clamped));
-                }}
-                inputProps={{ inputMode: "numeric", pattern: "[0-9]*", min: 1, max: maxIterations }}
+      <PageHeader
+        title="Dashboard"
+        lead="Which profile to run, what the firewall is on, and what is measuring right now."
+        compact
+        actions={
+          <Stack spacing={0.5} alignItems={{ xs: "flex-start", sm: "flex-end" }} sx={{ maxWidth: "100%" }}>
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Tooltip
+                title={`How many times to repeat the measurement suite and take the median (1–${maxIterations}). More iterations: steadier score, longer run.`}
+              >
+                <TextField
+                  label="Iterations"
+                  type="text"
+                  size="small"
+                  value={iterationsText}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(/[^0-9]/g, "");
+                    setIterationsText(raw);
+                    const n = parseInt(raw, 10);
+                    if (!Number.isNaN(n)) setIterations(Math.max(1, Math.min(n, maxIterations)));
+                  }}
+                  onBlur={() => {
+                    const n = parseInt(iterationsText, 10);
+                    const clamped = Number.isNaN(n) ? iterations : Math.max(1, Math.min(n, maxIterations));
+                    setIterations(clamped);
+                    setIterationsText(String(clamped));
+                  }}
+                  inputProps={{ inputMode: "numeric", pattern: "[0-9]*", min: 1, max: maxIterations }}
+                  disabled={activeRun || testActive}
+                  sx={{ width: 110 }}
+                />
+              </Tooltip>
+              <Button startIcon={<RefreshIcon />} onClick={loadAll} disabled={loading}>
+                Refresh
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<PlayArrowIcon />}
+                onClick={handleRun}
                 disabled={activeRun || testActive}
-                sx={{ width: 110 }}
-              />
-            </Tooltip>
-            <Button startIcon={<RefreshIcon />} onClick={loadAll} disabled={loading}>
-              Refresh
-            </Button>
-            <Button
-              variant="contained"
-              startIcon={<PlayArrowIcon />}
-              onClick={handleRun}
-              disabled={activeRun || testActive}
-            >
-              {activeRun ? "Running…" : "Run Benchmark"}
-            </Button>
+              >
+                {activeRun ? "Running…" : "Run benchmark"}
+              </Button>
+            </Stack>
+            <Typography variant="caption" color="text.secondary">
+              {etaLabel}
+            </Typography>
           </Stack>
-          <Typography variant="caption" color="text.secondary">
-            {etaLabel}
-          </Typography>
-        </Stack>
-      </Stack>
+        }
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -600,12 +594,13 @@ export default function Dashboard() {
       <VerdictCard />
 
       {/* ── Status strip ──────────────────────────────────────────────────────── */}
+      <SectionLabel>Status</SectionLabel>
       <Box
         sx={{
           display: "grid",
           gap: 1.5,
           mb: 2,
-          gridTemplateColumns: { xs: "repeat(2, 1fr)", sm: "repeat(3, 1fr)", lg: "repeat(6, 1fr)" },
+          gridTemplateColumns: { xs: "repeat(2, 1fr)", sm: "repeat(3, 1fr)", md: "repeat(4, 1fr)", xl: "repeat(7, 1fr)" },
         }}
       >
         <StatTile
@@ -614,7 +609,7 @@ export default function Dashboard() {
           caption={pipelineCaption}
           tone={pipelineTone}
           live={!!pipeline?.busy && !pipelineStalled}
-          help="The benchmark lock every measurement session takes. Busy is normal for hours during a duel; stalled means the holder has stopped reporting progress and will be evicted."
+          help="PathBrain measures one thing at a time; this is that slot. Busy is normal for hours during a duel. Stalled means the current job has stopped reporting progress and will be stood down."
         />
         <StatTile
           label="Monitoring"
@@ -623,7 +618,7 @@ export default function Dashboard() {
           tone={monitoringTone}
           live={!!monitoring?.active}
           to="/config"
-          help="Scheduled background runs on whatever profile the firewall is on."
+          help="Scheduled background benchmark runs on whatever profile the firewall is on. Set the interval in Configuration."
         />
         <StatTile
           label="Next scheduled"
@@ -656,14 +651,14 @@ export default function Dashboard() {
           caption={profilesCaption}
           tone={heirsTotal > 0 ? "warn" : undefined}
           to="/settings"
-          help={`Distinct firewall settings profiles with scored runs. A profile is confident at ${minIterations} iterations; heirs are under-sampled profiles whose optimistic ceiling could still beat the crown.`}
+          help={`Distinct firewall settings profiles with scored runs. A profile is confident at ${minIterations} iterations; the under-measured ones are profiles whose best case could still beat the current best.`}
         />
         <StatTile
-          label="Follow best"
+          label="Auto-apply"
           value={follow ? (followOn ? "On" : "Off") : "—"}
           caption={followCaption}
           tone={followTone}
-          help="Whether the firewall is kept on the crowned profile automatically, and how often the crown has been changing hands — the number that says whether following would thrash."
+          help="Whether the firewall is kept on the best profile automatically (the top-bar switch), and how often the best profile has changed hands — if it changes often, auto-apply would keep rewriting the firewall."
         />
       </Box>
 
@@ -687,6 +682,7 @@ export default function Dashboard() {
       ) : (
         <>
           {/* ── Stance row: hero gauges · live profile · now running ───────────── */}
+          <SectionLabel>Scores · the firewall now</SectionLabel>
           <Box
             sx={{
               display: "grid",
@@ -698,8 +694,8 @@ export default function Dashboard() {
             <Card sx={{ gridColumn: { md: "1 / -1", lg: "auto" } }}>
               <CardContent>
                 <CardTitle
-                  title={`Overall · last ${rolling?.window_hours ?? 24}h`}
-                  help="Median of every scored run in the window, under the current methodology. The smaller gauges are the metrics the Overall is actually computed from — read from the methodology itself, so they follow a rubric change. The axis breakdown below is a separate decomposition, not the Overall's inputs."
+                  title={`Overall score · last ${rolling?.window_hours ?? 24}h`}
+                  help="Median of every scored run in the window. The smaller gauges are the measurements the Overall is actually built from, read from the current methodology. The axis breakdown is a separate way of splitting the same runs, not the Overall's inputs."
                   right={
                     profiles.length > 1 ? (
                       <Select
@@ -777,7 +773,7 @@ export default function Dashboard() {
                     </Stack>
                     <Stack spacing={0.75} sx={{ minWidth: 130 }}>
                       <Typography variant="caption" color="text.disabled">
-                        Axis breakdown
+                        Other axes
                       </Typography>
                       {allAxes.map((a) => {
                         const stat = rolling.axis_scores[a.key];
@@ -812,8 +808,8 @@ export default function Dashboard() {
             <Card>
               <CardContent>
                 <CardTitle
-                  title="On the firewall"
-                  help="The profile the firewall is currently set to (live discovery), with its standing in the pooled field and its median crown metrics."
+                  title="On the firewall now"
+                  help="The profile the firewall is currently set to (read live), with its standing in the pooled field and its median readings on the metrics the Overall is built from."
                   right={
                     liveIsCrown ? (
                       <Chip size="small" color="warning" icon={<EmojiEventsIcon />} label="the crown" />
@@ -964,8 +960,8 @@ export default function Dashboard() {
             <Card>
               <CardContent>
                 <CardTitle
-                  title="Now running"
-                  help="Top-level background jobs from the jobs feed — the same list as the top-right dropdown, without the per-chunk detail."
+                  title="Measuring now"
+                  help="Background jobs in progress — the same list as the top-right jobs dropdown, without the per-chunk detail."
                   right={
                     runningJobs > 0 ? (
                       <Chip size="small" color="info" label={`${runningJobs} active`} />
@@ -977,7 +973,7 @@ export default function Dashboard() {
                   <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: "divider" }}>
                     <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                       <Typography variant="caption" color="text.secondary">
-                        Latest run
+                        Last run
                       </Typography>
                       <StatusChip status={latest.status} etaMs={latestEtaMs} />
                       <Chip
@@ -1034,6 +1030,7 @@ export default function Dashboard() {
           </Box>
 
           {/* ── Verdict row: the two crowns · pooled leaderboard · the ring ──────── */}
+          <SectionLabel>Where the answer comes from</SectionLabel>
           <Box
             sx={{
               display: "grid",
@@ -1045,14 +1042,16 @@ export default function Dashboard() {
               "& > .two-crowns > .MuiCard-root": { mb: 0, height: "100%" },
             }}
           >
-            <Box className="two-crowns" sx={{ gridColumn: { md: "1 / -1", lg: "auto" } }}>
+            {/* `display: contents` so the Card is the grid item: TwoCrowns renders nothing
+                until something is crowned, and a wrapper cell would then sit empty. */}
+            <Box className="two-crowns" sx={{ display: "contents" }}>
               <TwoCrowns />
             </Box>
             <Card>
               <CardContent>
                 <CardTitle
-                  title="Top profiles by Overall"
-                  help="Confident profiles ranked by pooled Overall — the crown is #1 by definition. The live profile is kept in view even when it sits below the cut."
+                  title="Standings · all measurements pooled"
+                  help="Confident profiles ranked by their Overall across every run they ever had — the pooled record. #1 here is the pooled best by definition. The live profile is kept in view even when it sits below the cut."
                   right={
                     <Button size="small" component={RouterLink} to="/settings" sx={{ flexShrink: 0 }}>
                       Standings
@@ -1075,8 +1074,8 @@ export default function Dashboard() {
             <Card>
               <CardContent>
                 <CardTitle
-                  title="In the ring"
-                  help="The duel ladder's own verdict: the belt holder and the standings on fitted head-to-head strength. A controlled comparison under shared weather, so it can disagree with the pooled record — that is the point of running both."
+                  title="Standings · head-to-head duels"
+                  help="The duel ladder's own verdict: the champion and the standings on fitted head-to-head strength. Profiles are measured back to back under the same conditions, so this can disagree with the pooled record — that is the point of running both."
                   right={
                     <Button size="small" component={RouterLink} to="/duels">
                       Duels
@@ -1089,6 +1088,7 @@ export default function Dashboard() {
           </Box>
 
           {/* ── Trend + breakdown + waterfall ─────────────────────────────────────── */}
+          <SectionLabel>Recent measurements</SectionLabel>
           <Box
             sx={{
               display: "grid",
@@ -1101,12 +1101,8 @@ export default function Dashboard() {
                 <CardTitle
                   title="Scores over time"
                   help={
-                    "The Overall and the metrics it is actually computed from — the crown legs — " +
-                    "for the most recent 100 scored runs under the current methodology. Not the " +
-                    "Responsiveness/Smoothness/Speed axes: those are a different decomposition " +
-                    "and stopped being the Overall's inputs at v5, so trending them under the " +
-                    "Overall invited reading the top line as a roll-up of the ones below it. " +
-                    "Every series is a 0-100 perception-calibrated subscore, so they share the axis."
+                    "The Overall and the measurements it is built from, for the most recent 100 " +
+                    "scored runs. Every line is a 0–100 subscore, so they share one axis."
                   }
                 />
                 {axisSeries && axisSeries.points.length > 0 ? (
@@ -1155,7 +1151,7 @@ export default function Dashboard() {
                   <CardContent>
                     <CardTitle
                       title={`Load waterfall · run #${latest?.id}`}
-                      help="Cool bars up to first byte are network setup (DNS/TCP/TLS/TTFB), dominated by weather. Delivery (first byte → response done) is body delivery through your queue — the one phase your shaper moves. Purple bars after are client render, which shaping can't touch."
+                      help="Cool bars up to first byte are network setup (DNS, TCP, TLS, first byte), set by conditions outside the shaper. Delivery (first byte to response done) is the one phase your shaper moves. Purple bars after it are the browser rendering, which shaping cannot touch."
                     />
                     <Waterfall metrics={bm} />
                   </CardContent>

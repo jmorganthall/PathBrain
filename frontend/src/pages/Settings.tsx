@@ -43,8 +43,6 @@ import { describePlacement, useQueuedAction } from "../hooks/useQueuedAction";
 import type {
   ChallengerRace,
   CrownHeirs,
-  DuelSession,
-  DuelStandings,
   MetricSaturation,
   OutlierSummary,
   ProfileOutlier,
@@ -64,7 +62,8 @@ import Loading from "../components/Loading";
 import EmptyState from "../components/EmptyState";
 import ProfileQuadrant from "../components/ProfileQuadrant";
 import ApplyConfirmDialog, { type ApplyConfirm } from "../components/ApplyConfirmDialog";
-import { Blurb, HelpTip } from "../components/Explain";
+import { Blurb, FoldCard, HelpTip } from "../components/Explain";
+import PageHeader from "../components/PageHeader";
 import InsightsIcon from "@mui/icons-material/Insights";
 import PublishIcon from "@mui/icons-material/Publish";
 import RestorePageIcon from "@mui/icons-material/Restore";
@@ -539,17 +538,17 @@ function HeirsCard({
           sx={{ mb: 1 }}
         >
           <Box>
-            <Typography variant="h6">Heirs to the crown</Typography>
+            <Typography variant="h6">Could still beat the best</Typography>
             <Typography variant="caption" color="text.secondary">
-              {heirs.total} profile{heirs.total === 1 ? "" : "s"} could still beat the crown
-              {heirs.crown_overall != null ? ` (Overall ${heirs.crown_overall.toFixed(1)})` : ""}.
-              <HelpTip title="Under-sampled or stale profiles whose best-case ceiling clears the crown's Overall, biggest threat first. Racing them settles it." />
+              {heirs.total} under-measured profile{heirs.total === 1 ? "" : "s"} whose best case clears the best Overall
+              {heirs.crown_overall != null ? ` (${heirs.crown_overall.toFixed(1)})` : ""}.
+              <HelpTip title="Profiles with too little data, or none recently, whose optimistic ceiling clears the best profile's Overall — biggest threat first. Racing them settles it." />
             </Typography>
           </Box>
           <Tooltip title="Adaptively measure these limited-data / stale profiles against the crown, one iteration at a time.">
             <span>
               <Button size="small" variant="contained" color="secondary" onClick={onRace} disabled={raceDisabled}>
-                Race these
+                Race them
               </Button>
             </span>
           </Tooltip>
@@ -589,7 +588,7 @@ function HeirsCard({
                   {h.optimistic != null ? `ceiling ${h.optimistic.toFixed(1)}` : "ceiling —"}
                 </Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                  {h.margin != null ? `+${h.margin.toFixed(1)} over crown` : "upside unknown"}
+                  {h.margin != null ? `+${h.margin.toFixed(1)} over the best` : "upside unknown"}
                   {h.overall != null ? ` · now ${h.overall.toFixed(1)}` : ""}
                   {h.overall == null && h.prior_overall != null
                     ? ` · ${h.prior_overall.toFixed(1)} under the previous methodology`
@@ -604,113 +603,6 @@ function HeirsCard({
             +{heirs.total - items.length} more contender{heirs.total - items.length === 1 ? "" : "s"} not shown.
           </Typography>
         )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// Weather — a pointer, not a second copy of the analysis. The full measured-conditions
-// view (the "how much of the noise is measurable weather?" variance decomposition and the
-// covariate × crown-metric sensitivity table) lives on the Weather tab; this strip only
-// says what the per-profile columns beside it ("vs weather", severity, weather-beater)
-// are qualified by, and where the field-level answer lives. Deliberately fetch-free: the
-// analysis scans every comparable run, and a pointer must never be why this page is slow.
-function WeatherCard() {
-  const navigate = useNavigate();
-  return (
-    <Card sx={{ mb: 2 }}>
-      <CardContent>
-        <Stack
-          direction={{ xs: "column", sm: "row" }}
-          justifyContent="space-between"
-          alignItems={{ xs: "flex-start", sm: "center" }}
-          spacing={1}
-        >
-          <Box>
-            <Typography variant="h6">Weather</Typography>
-            <Typography variant="caption" color="text.secondary">
-              How much ambient network conditions move the scores.
-              <HelpTip title="Every run measures its own DNS/TCP/TLS/latency. The Weather page shows whether those move the crown metrics and how much run-to-run noise they explain. It's the analysis behind the “vs weather” column here." />
-            </Typography>
-          </Box>
-          <Button size="small" variant="outlined" onClick={() => navigate("/weather")}>
-            Weather
-          </Button>
-        </Stack>
-      </CardContent>
-    </Card>
-  );
-}
-
-// Duel ladder — a pointer, not a second control panel. The full head-to-head view (the
-// ladder standings, the head-to-head grid, the bout tape, and the ring rules) lives on the
-// Dueling Champions tab; this strip only says whether a champion has been crowned and
-// whether a duel is running right now, next to the pooled standings it complements.
-function DuelCard() {
-  const navigate = useNavigate();
-  const [table, setTable] = useState<DuelStandings | null>(null);
-  const [status, setStatus] = useState<DuelSession | null>(null);
-
-  const activeDuel = status?.status === "running" || status?.status === "pending";
-
-  const load = useCallback(async () => {
-    try {
-      const [st, s] = await Promise.all([api.duelStandings(), api.duelStatus()]);
-      setTable(st);
-      setStatus(s.status ? s : null);
-    } catch {
-      /* transient */
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  useEffect(() => {
-    if (!activeDuel) return;
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [activeDuel, load]);
-
-  const champion = table?.champion ?? null;
-
-  return (
-    <Card sx={{ mb: 2 }}>
-      <CardContent>
-        <Stack
-          direction={{ xs: "column", sm: "row" }}
-          justifyContent="space-between"
-          alignItems={{ xs: "flex-start", sm: "center" }}
-          spacing={1}
-        >
-          <Box>
-            <Typography variant="h6">Duel ladder</Typography>
-            <Typography variant="caption" color="text.secondary">
-              Head-to-head results, measured back to back under the same conditions.
-              <HelpTip title="The controlled-trial complement to these pooled standings: two profiles trade interleaved runs so both meet the same weather, and a verdict lands in tens of rounds." />
-            </Typography>
-            <Typography variant="body2" sx={{ mt: 0.75 }}>
-              {champion ? (
-                <>
-                  Champion: <b>{champion.name || champion.label || champion.fingerprint}</b> ·{" "}
-                  {table?.decisive_matchups ?? 0} decisive bout
-                  {(table?.decisive_matchups ?? 0) === 1 ? "" : "s"} on the ledger
-                </>
-              ) : (
-                "No duel champion crowned yet."
-              )}
-            </Typography>
-            {activeDuel && (
-              <Typography variant="caption" color="info.main">
-                Duel running — {status?.stage || "starting…"}
-              </Typography>
-            )}
-          </Box>
-          <Button size="small" variant="outlined" onClick={() => navigate("/duels")}>
-            Dueling Champions
-          </Button>
-        </Stack>
       </CardContent>
     </Card>
   );
@@ -926,7 +818,7 @@ export default function Settings() {
         setOrder((o) => (o === "asc" ? "desc" : "asc"));
         return prev;
       }
-      setOrder("desc");
+      setOrder(key === "primary" || key === "label" ? "asc" : "desc");
       return key;
     });
   }, []);
@@ -1023,8 +915,8 @@ export default function Settings() {
       setWeatherLens(on);
       localStorage.setItem("settingsWeatherLens", on ? "1" : "0");
       axesTouched.current = false; // let the axes effect re-point for the new lens
-      setOrderBy(on ? "weather_relative" : "overall");
-      setOrder("desc");
+      setOrderBy(on ? "weather_relative" : "primary");
+      setOrder(on ? "desc" : "asc");
       if (on) {
         setXKey("overall");
         setYKey("weather_relative");
@@ -1370,71 +1262,40 @@ export default function Settings() {
 
   return (
     <Box>
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        justifyContent="space-between"
-        alignItems={{ xs: "flex-start", sm: "center" }}
-        spacing={1}
-        sx={{ mb: 1 }}
-      >
-        <Typography variant="h4">Settings Impact</Typography>
-        {/* Wrap rather than squeeze: two long-labelled buttons side by side on a phone become
-            two narrow columns of wrapped words, which reads worse than one per line. */}
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Tooltip title="Stamp the current firewall settings onto past runs that captured none (e.g. before discovery worked). Only do this if the firewall is unchanged since those runs.">
-            <span>
-              <Button
-                startIcon={<RestorePageIcon />}
-                onClick={handleBackfill}
-                disabled={busy}
-                size="small"
-              >
-                Attribute unstamped runs
-              </Button>
-            </span>
-          </Tooltip>
-          <Tooltip title="Merge every “SQM off” run into one profile. Nothing is deleted; only the grouping changes, and shaped profiles are untouched.">
-            <span>
-              <Button
-                startIcon={<MergeIcon />}
-                onClick={handleRefingerprint}
-                disabled={busy}
-                size="small"
-              >
-                Merge SQM-off profiles
-              </Button>
-            </span>
-          </Tooltip>
-        </Stack>
-      </Stack>
-      <Blurb
-        variant="body2"
-        sx={{ mb: 1 }}
+      <PageHeader
+        title="Profile standings"
+        icon={<InsightsIcon />}
+        lead="Which firewall settings score best. Every distinct set of settings is a profile, ranked here by its measured Overall."
         more={
           <>
             Each run is stamped with the firewall settings live when it ran, and runs with the
             same settings group into a profile. A profile is <b>confident</b> once it has{" "}
-            {minIterations} total iterations. Iterations, not run count, are the bar: one
-            15-iteration run carries far more signal than fifteen single-iteration runs.
+            {minIterations} total iterations; below that it is shown but never crowned.
+            Iterations, not run count, are the bar: one 15-iteration run carries far more signal
+            than fifteen single-iteration runs. Profiles the duel ladder has measured head to head
+            are placed by those results first; the rest are ordered by their pooled Overall.
           </>
         }
-      >
-        Which firewall settings score best. Every distinct configuration is a profile.
-      </Blurb>
-      <FormControlLabel
-        sx={{ mb: 2 }}
-        control={
-          <Checkbox
-            size="small"
-            checked={completeOnly}
-            onChange={(e) => setCompleteOnly(e.target.checked)}
-          />
-        }
-        label={
-          <Typography variant="body2" color="text.secondary">
-            Only runs comparable under the current methodology
-            {diag ? ` (${diag.with_latest_metrics} of ${diag.total_completed})` : ""}
-          </Typography>
+        actions={
+          <Tooltip title="Measure the under-tested profiles that could still beat the best one, a little at a time, and drop any that fall behind. Your settings are restored afterwards.">
+            <span>
+              <Badge
+                color="warning"
+                badgeContent={heirs?.total ?? 0}
+                invisible={!heirs || heirs.total === 0 || raceRunning}
+              >
+                <Button
+                  size="small"
+                  variant="contained"
+                  startIcon={<ScienceIcon />}
+                  onClick={() => setRaceOpen(true)}
+                  disabled={raceRunning || testRunning || refreshRunning || applying}
+                >
+                  Race challengers
+                </Button>
+              </Badge>
+            </span>
+          </Tooltip>
         }
       />
 
@@ -1549,8 +1410,8 @@ export default function Settings() {
           The table below is user-sortable, so this describes the data, not the current sort. */}
       {ranking === "ring" && (ringRated > 0 || seeded > 0) && (
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-          <b>Ordered by the ring first:</b> {ringRated} profile{ringRated === 1 ? "" : "s"} placed
-          by duel results, {seeded} by pooled Overall.
+          <b>Order:</b> {ringRated} profile{ringRated === 1 ? "" : "s"} placed by head-to-head duel
+          results, then {seeded} by pooled Overall.
           <HelpTip title="Profiles measured head to head under shared weather are placed by the duel ladder. The rest have no rounds on record and are seeded by their pooled Overall, which also decides who gets raced next. A paired comparison beats an average over conditions that were never held equal." />
         </Typography>
       )}
@@ -1597,12 +1458,11 @@ export default function Settings() {
           }
         >
           <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
-            The crown&apos;s bar may be a ghost
+            The best profile&apos;s recent runs are worse than its record
           </Typography>
-          <b>{crownFading.label}</b> no longer delivers its record: last {crownFading.recent_n} runs
-          median <b>{crownFading.recent}</b> vs <b>{crownFading.prior}</b> before ({crownFading.delta},
-          beyond the ±{crownFading.threshold} noise). Re-measure it: race challengers, or re-run the
-          top profiles.
+          <b>{crownFading.label}</b>: its last {crownFading.recent_n} runs median <b>{crownFading.recent}</b>{" "}
+          against <b>{crownFading.prior}</b> before ({crownFading.delta}, beyond the ±{crownFading.threshold} noise).
+          Re-measure it before trusting its rank.
         </Alert>
       )}
 
@@ -1622,221 +1482,12 @@ export default function Settings() {
           }
         >
           <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
-            The crown may be weather-confounded
+            The best profile may owe its rank to good network conditions
           </Typography>
-          <b>{weatherSuspect.label}</b> tops the “vs weather” ranking (+{weatherSuspect.delta_median}{" "}
-          vs same-conditions cohort, {Math.round(weatherSuspect.coverage * 100)}% coverage) but not
-          the raw one. Race them head to head so they face the same conditions.
+          <b>{weatherSuspect.label}</b> beats the field under like conditions (+{weatherSuspect.delta_median}{" "}
+          vs others in the same weather, {Math.round(weatherSuspect.coverage * 100)}% coverage) but not on
+          the raw ranking. A head-to-head race settles it.
         </Alert>
-      )}
-
-      {bestDiff && <ProfileDiffCard diff={bestDiff} showCompletion={showCompletion} />}
-
-      {heirs && heirs.items.length > 0 && (
-        <HeirsCard
-          heirs={heirs}
-          onRace={() => setRaceOpen(true)}
-          raceDisabled={raceRunning || testRunning || refreshRunning || applying}
-        />
-      )}
-
-      <WeatherCard />
-
-      <DuelCard />
-
-      {profiles && profiles.length >= 2 && allFields.length > 0 && (
-        <Card sx={{ mb: 2 }}>
-          <CardContent>
-            <Stack
-              direction={{ xs: "column", sm: "row" }}
-              justifyContent="space-between"
-              alignItems={{ xs: "flex-start", sm: "center" }}
-              spacing={1}
-              sx={{ mb: 1 }}
-            >
-              <Typography variant="h6">Profile scatter</Typography>
-              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                <Tooltip title="Adaptively test promising limited-data profiles one iteration at a time, eliminating any that can't overtake the best.">
-                  <span>
-                    <Badge
-                      color="warning"
-                      badgeContent={heirs?.total ?? 0}
-                      invisible={!heirs || heirs.total === 0 || raceRunning}
-                    >
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        onClick={() => setRaceOpen(true)}
-                        disabled={raceRunning || testRunning || refreshRunning || applying}
-                      >
-                        Race challengers
-                      </Button>
-                    </Badge>
-                  </span>
-                </Tooltip>
-                <Tooltip title="Hide profiles with fewer than this many total iterations from the scatter (the table below is unaffected). 0 shows all.">
-                  <TextField
-                    label="Min iterations"
-                    type="number"
-                    size="small"
-                    value={minIterPlot}
-                    onChange={(e) =>
-                      setMinIterPlot(Math.max(0, Math.floor(Number(e.target.value) || 0)))
-                    }
-                    inputProps={{ min: 0, step: 1, "aria-label": "Minimum iterations to plot" }}
-                    sx={{ width: 130 }}
-                  />
-                </Tooltip>
-                <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={pickX} />
-                <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={pickY} />
-                <AxisSelect label="Shade" value={sizeKey} fields={allFields} onChange={pickShade} />
-              </Stack>
-            </Stack>
-            {minIterPlot > 0 && (
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-                Showing {plotProfiles.length} of {profiles.length} profiles with ≥ {minIterPlot}{" "}
-                iteration{minIterPlot === 1 ? "" : "s"}.
-              </Typography>
-            )}
-            <ProfileQuadrant
-              profiles={plotProfiles}
-              xField={fieldByKey(xKey) ?? allFields[0]}
-              yField={fieldByKey(yKey) ?? allFields[0]}
-              shadeField={fieldByKey(sizeKey) ?? null}
-              bestFingerprint={bestFingerprint}
-              currentFingerprint={currentFingerprint}
-              coLeaders={[...coLeaders]}
-              thresholds={metricThresholds}
-              onSelect={setScatterFp}
-            />
-            {scatterFp &&
-              (() => {
-                const sp = (profiles ?? []).find((p) => p.fingerprint === scatterFp);
-                if (!sp) return null;
-                return (
-                  <Box
-                    sx={{
-                      mt: 1.5,
-                      p: 1.5,
-                      borderRadius: 1,
-                      border: 1,
-                      borderColor: "divider",
-                      bgcolor: "action.hover",
-                      display: "flex",
-                      // Column on a phone: as a row, the buttons take their width first and
-                      // the text half collapses, so the call sign renders as "N…" and each
-                      // metric chip as "F.." — the panel truncates away everything it exists
-                      // to say while three buttons sit at full size.
-                      flexDirection: { xs: "column", sm: "row" },
-                      alignItems: { xs: "stretch", sm: "center" },
-                      flexWrap: "wrap",
-                      gap: 1,
-                    }}
-                  >
-                    <Box sx={{ minWidth: 0, flex: { xs: "none", sm: 1 } }}>
-                      <Typography
-                        variant="subtitle2"
-                        title={sp.label}
-                        // Wrap rather than ellipsize on a narrow screen: a truncated call
-                        // sign identifies nothing, and there is a whole line free here.
-                        sx={{ overflowWrap: "anywhere" }}
-                      >
-                        {sp.name || sp.label}
-                        {sp.fingerprint === bestFingerprint ? " · best" : ""}
-                        {sp.fingerprint !== bestFingerprint && coLeaders.has(sp.fingerprint)
-                          ? " · tied"
-                          : ""}
-                        {sp.fingerprint === currentFingerprint ? " · active" : ""}
-                        {sp.outlier ? " · outlier" : ""}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        Overall {sp.overall ?? "—"} · {sp.iterations} iteration
-                        {sp.iterations === 1 ? "" : "s"}
-                        {sp.confident ? "" : " · limited data"}
-                      </Typography>
-                      {sp.outlier && (
-                        <Typography variant="caption" color="warning.main" component="div">
-                          Outlier: {outlierWhy(sp.outlier)}
-                          {sp.outlier.thin
-                            ? " — thin data; test it to see whether the reading holds."
-                            : " — confident, so likely a real result."}
-                        </Typography>
-                      )}
-                      {/* The crown metrics that compute this profile's Overall — driven entirely by
-                          the methodology's `overall_metrics`, so this breakdown tracks the crown with
-                          no hardcoding. Each chip is the metric's standing (1 = best) + raw median. */}
-                      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 0.75 }}>
-                        {rankedMetrics
-                          .filter((m) => m.metricKey)
-                          .map((m) => {
-                            const rk = rankings[m.key];
-                            const rank = rk?.rankByFp[sp.fingerprint];
-                            const rawMetric = sp.metrics?.[m.metricKey as string] ?? null;
-                            const unit = metricMeta(m.metricKey as string).unit ?? "";
-                            return (
-                              <Tooltip key={m.key} title={m.tip}>
-                                <Chip
-                                  size="small"
-                                  variant="outlined"
-                                  sx={{ cursor: "help", borderColor: rankColor(rank, rk?.total ?? 0) }}
-                                  label={
-                                    <>
-                                      <b>{metricMeta(m.metricKey as string).label}</b>{" "}
-                                      #{rank ?? "—"}
-                                      {rawMetric != null ? ` · ${fmtNumField(rawMetric, unit)}` : ""}
-                                    </>
-                                  }
-                                />
-                              </Tooltip>
-                            );
-                          })}
-                      </Box>
-                    </Box>
-                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        onClick={() => navigate(`/profiles/${encodeURIComponent(sp.fingerprint)}`)}
-                      >
-                        View history
-                      </Button>
-                      <Tooltip title="Temporarily apply this profile, benchmark it for a number of iterations you choose, then restore your current settings. You'll pick the count and see the exact changes first.">
-                        <span>
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            color="secondary"
-                            startIcon={
-                              testPreviewFp === sp.fingerprint ? <CircularProgress size={14} /> : <ScienceIcon />
-                            }
-                            onClick={() => handleTestClick(sp)}
-                            disabled={testPreviewFp != null || testRunning || applying}
-                          >
-                            Test this profile
-                          </Button>
-                        </span>
-                      </Tooltip>
-                      <Tooltip title="Write this profile's shaper settings to the firewall now. You'll preview the exact changes and confirm first.">
-                        <span>
-                          <Button
-                            size="small"
-                            variant="contained"
-                            onClick={() => handleApplyClick(sp)}
-                            disabled={applying || sp.fingerprint === currentFingerprint}
-                          >
-                            Apply this profile
-                          </Button>
-                        </span>
-                      </Tooltip>
-                      <Button size="small" color="inherit" onClick={() => setScatterFp(null)}>
-                        Dismiss
-                      </Button>
-                    </Stack>
-                  </Box>
-                );
-              })()}
-          </CardContent>
-        </Card>
       )}
 
       {!profiles || profiles.length === 0 ? (
@@ -1846,13 +1497,13 @@ export default function Settings() {
               <EmptyState
                 icon={<InsightsIcon fontSize="inherit" />}
                 title="No profiles with the latest metrics yet"
-                description={`Your ${diag.legacy_metrics} run(s) predate paint capture, so they're filtered out as not comparable. Run a few benchmarks on the new build, or uncheck "Only runs with the latest metrics" above to include legacy data.`}
+                description={`Your ${diag.legacy_metrics} run(s) predate paint capture, so they're filtered out as not comparable. Run a few benchmarks on the new build, or untick "Only comparable runs" in the table to include legacy data.`}
               />
             ) : (
               <EmptyState
                 icon={<InsightsIcon fontSize="inherit" />}
                 title="No settings profiles yet"
-                description="Each distinct firewall configuration appears here once runs capture it. Older runs from before capture can be stamped with 'Attribute unstamped runs'."
+                description="Each distinct firewall configuration appears here once runs capture it. Older runs from before capture can be stamped under Data health, below."
               />
             )}
             {/* Even with no *comparable* profile, "Re-run profiles" is the way out: it re-runs the
@@ -1970,11 +1621,28 @@ export default function Settings() {
                 </>
               }
             >
-              Standing per column (1 = best), green → red. Hover a header for its meaning; use{" "}
-              <b>Columns</b> to add any metric.
+              Each score column is a standing (1 = best), green → red. Hover a header for what it
+              means; <b>Columns</b> adds any metric.
             </Blurb>
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+            <Tooltip title="Runs scored under an older methodology, or missing a measurement the current one needs, are left out. Untick to count every completed run.">
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={completeOnly}
+                    onChange={(e) => setCompleteOnly(e.target.checked)}
+                  />
+                }
+                label={
+                  <Typography variant="body2" color="text.secondary">
+                    Only comparable runs
+                    {diag ? ` (${diag.with_latest_metrics} of ${diag.total_completed})` : ""}
+                  </Typography>
+                }
+              />
+            </Tooltip>
             <FormControlLabel
-              sx={{ mt: 0.5 }}
               control={
                 <Checkbox
                   size="small"
@@ -1996,7 +1664,6 @@ export default function Settings() {
             />
             {/* Outliers: hide (a view choice) and re-run (an evidence choice), side by side, so
                 the reader picks the one their question needs instead of the page picking. */}
-            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
               <Tooltip
                 title={
                   outliers
@@ -2052,12 +1719,11 @@ export default function Settings() {
                   </span>
                 </Tooltip>
               )}
-            </Stack>
             <Tooltip title="Sort and chart by 'vs weather' instead of raw Overall. Display only; the crown is unchanged.">
               {/* `display: flex`, not `block`: a block FormControlLabel stacks the checkbox
                   above its own label, which read as an unlabelled box over a stray sentence. */}
               <FormControlLabel
-                sx={{ mt: 0.5, display: "flex", width: "fit-content" }}
+                sx={{ display: "flex", width: "fit-content" }}
                 control={
                   <Checkbox
                     size="small"
@@ -2072,6 +1738,7 @@ export default function Settings() {
                 }
               />
             </Tooltip>
+            </Stack>
             <TableContainer sx={{ mt: 1 }}>
               <Table size="small">
                 <TableHead>
@@ -2229,9 +1896,7 @@ export default function Settings() {
                       <TableRow>
                         <TableCell colSpan={99} sx={{ py: 0.5, borderBottom: 0 }}>
                           <Typography variant="caption" color="text.secondary">
-                            — below here the ring has no rounds on record, so these are
-                            ordered by pooled Overall: the seeding order for what to race
-                            next, not a head-to-head result —
+                            — not yet duelled: ordered by pooled Overall —
                           </Typography>
                         </TableCell>
                       </TableRow>
@@ -2292,7 +1957,7 @@ export default function Settings() {
                                 means — both stay visible so the table is scannable
                                 without becoming opaque. */}
                             {p.name && (
-                              <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-word" }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-word" }} title={p.fingerprint}>
                                 {p.label}
                               </Typography>
                             )}
@@ -2366,9 +2031,6 @@ export default function Settings() {
                             </Tooltip>
                           )}
                         </Box>
-                        <Typography variant="caption" color="text.secondary">
-                          {p.fingerprint}
-                        </Typography>
                       </TableCell>
                       <TableCell align="right">{p.count}</TableCell>
                       <TableCell align="right">{p.iterations}</TableCell>
@@ -2514,7 +2176,7 @@ export default function Settings() {
                                   onClick={() => handleTestClick(p)}
                                   disabled={testPreviewFp != null || testRunning || applying}
                                 >
-                                  Test profile
+                                  Test
                                 </Button>
                               </span>
                             </Tooltip>
@@ -2565,12 +2227,223 @@ export default function Settings() {
         </Card>
       )}
 
-      {diag && (
+      {profiles && profiles.length >= 2 && allFields.length > 0 && (
         <Card sx={{ mb: 2 }}>
           <CardContent>
-            <Typography variant="subtitle1" gutterBottom>
-              Capture diagnostics
-            </Typography>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              justifyContent="space-between"
+              alignItems={{ xs: "flex-start", sm: "center" }}
+              spacing={1}
+              sx={{ mb: 1 }}
+            >
+              <Typography variant="h6">Profile scatter</Typography>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Tooltip title="Hide profiles with fewer than this many total iterations from the scatter (the table below is unaffected). 0 shows all.">
+                  <TextField
+                    label="Min iterations"
+                    type="number"
+                    size="small"
+                    value={minIterPlot}
+                    onChange={(e) =>
+                      setMinIterPlot(Math.max(0, Math.floor(Number(e.target.value) || 0)))
+                    }
+                    inputProps={{ min: 0, step: 1, "aria-label": "Minimum iterations to plot" }}
+                    sx={{ width: 130 }}
+                  />
+                </Tooltip>
+                <AxisSelect label="X axis" value={xKey} fields={allFields} onChange={pickX} />
+                <AxisSelect label="Y axis" value={yKey} fields={allFields} onChange={pickY} />
+                <AxisSelect label="Shade" value={sizeKey} fields={allFields} onChange={pickShade} />
+              </Stack>
+            </Stack>
+            {minIterPlot > 0 && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                Showing {plotProfiles.length} of {profiles.length} profiles with ≥ {minIterPlot}{" "}
+                iteration{minIterPlot === 1 ? "" : "s"}.
+              </Typography>
+            )}
+            <ProfileQuadrant
+              profiles={plotProfiles}
+              xField={fieldByKey(xKey) ?? allFields[0]}
+              yField={fieldByKey(yKey) ?? allFields[0]}
+              shadeField={fieldByKey(sizeKey) ?? null}
+              bestFingerprint={bestFingerprint}
+              currentFingerprint={currentFingerprint}
+              coLeaders={[...coLeaders]}
+              thresholds={metricThresholds}
+              onSelect={setScatterFp}
+            />
+            {scatterFp &&
+              (() => {
+                const sp = (profiles ?? []).find((p) => p.fingerprint === scatterFp);
+                if (!sp) return null;
+                return (
+                  <Box
+                    sx={{
+                      mt: 1.5,
+                      p: 1.5,
+                      borderRadius: 1,
+                      border: 1,
+                      borderColor: "divider",
+                      bgcolor: "action.hover",
+                      display: "flex",
+                      // Column on a phone: as a row, the buttons take their width first and
+                      // the text half collapses, so the call sign renders as "N…" and each
+                      // metric chip as "F.." — the panel truncates away everything it exists
+                      // to say while three buttons sit at full size.
+                      flexDirection: { xs: "column", sm: "row" },
+                      alignItems: { xs: "stretch", sm: "center" },
+                      flexWrap: "wrap",
+                      gap: 1,
+                    }}
+                  >
+                    <Box sx={{ minWidth: 0, flex: { xs: "none", sm: 1 } }}>
+                      <Typography
+                        variant="subtitle2"
+                        title={sp.label}
+                        // Wrap rather than ellipsize on a narrow screen: a truncated call
+                        // sign identifies nothing, and there is a whole line free here.
+                        sx={{ overflowWrap: "anywhere" }}
+                      >
+                        {sp.name || sp.label}
+                        {sp.fingerprint === bestFingerprint ? " · best" : ""}
+                        {sp.fingerprint !== bestFingerprint && coLeaders.has(sp.fingerprint)
+                          ? " · tied"
+                          : ""}
+                        {sp.fingerprint === currentFingerprint ? " · active" : ""}
+                        {sp.outlier ? " · outlier" : ""}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Overall {sp.overall ?? "—"} · {sp.iterations} iteration
+                        {sp.iterations === 1 ? "" : "s"}
+                        {sp.confident ? "" : " · limited data"}
+                      </Typography>
+                      {sp.outlier && (
+                        <Typography variant="caption" color="warning.main" component="div">
+                          Outlier: {outlierWhy(sp.outlier)}
+                          {sp.outlier.thin
+                            ? " — thin data; test it to see whether the reading holds."
+                            : " — confident, so likely a real result."}
+                        </Typography>
+                      )}
+                      {/* The crown metrics that compute this profile's Overall — driven entirely by
+                          the methodology's `overall_metrics`, so this breakdown tracks the crown with
+                          no hardcoding. Each chip is the metric's standing (1 = best) + raw median. */}
+                      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 0.75 }}>
+                        {rankedMetrics
+                          .filter((m) => m.metricKey)
+                          .map((m) => {
+                            const rk = rankings[m.key];
+                            const rank = rk?.rankByFp[sp.fingerprint];
+                            const rawMetric = sp.metrics?.[m.metricKey as string] ?? null;
+                            const unit = metricMeta(m.metricKey as string).unit ?? "";
+                            return (
+                              <Tooltip key={m.key} title={m.tip}>
+                                <Chip
+                                  size="small"
+                                  variant="outlined"
+                                  sx={{ cursor: "help", borderColor: rankColor(rank, rk?.total ?? 0) }}
+                                  label={
+                                    <>
+                                      <b>{metricMeta(m.metricKey as string).label}</b>{" "}
+                                      #{rank ?? "—"}
+                                      {rawMetric != null ? ` · ${fmtNumField(rawMetric, unit)}` : ""}
+                                    </>
+                                  }
+                                />
+                              </Tooltip>
+                            );
+                          })}
+                      </Box>
+                    </Box>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => navigate(`/profiles/${encodeURIComponent(sp.fingerprint)}`)}
+                      >
+                        Open profile
+                      </Button>
+                      <Tooltip title="Temporarily apply this profile, benchmark it for a number of iterations you choose, then restore your current settings. You'll pick the count and see the exact changes first.">
+                        <span>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="secondary"
+                            startIcon={
+                              testPreviewFp === sp.fingerprint ? <CircularProgress size={14} /> : <ScienceIcon />
+                            }
+                            onClick={() => handleTestClick(sp)}
+                            disabled={testPreviewFp != null || testRunning || applying}
+                          >
+                            Test
+                          </Button>
+                        </span>
+                      </Tooltip>
+                      <Tooltip title="Write this profile's shaper settings to the firewall now. You'll preview the exact changes and confirm first.">
+                        <span>
+                          <Button
+                            size="small"
+                            variant="contained"
+                            onClick={() => handleApplyClick(sp)}
+                            disabled={applying || sp.fingerprint === currentFingerprint}
+                          >
+                            Apply
+                          </Button>
+                        </span>
+                      </Tooltip>
+                      <Button size="small" color="inherit" onClick={() => setScatterFp(null)}>
+                        Dismiss
+                      </Button>
+                    </Stack>
+                  </Box>
+                );
+              })()}
+          </CardContent>
+        </Card>
+      )}
+
+      {heirs && heirs.items.length > 0 && (
+        <HeirsCard
+          heirs={heirs}
+          onRace={() => setRaceOpen(true)}
+          raceDisabled={raceRunning || testRunning || refreshRunning || applying}
+        />
+      )}
+
+      {bestDiff && <ProfileDiffCard diff={bestDiff} showCompletion={showCompletion} />}
+
+      {/* Pointers, not copies: the pages that qualify these standings. */}
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+        Related: <Button size="small" sx={{ p: 0, minWidth: 0, textTransform: "none" }} onClick={() => navigate("/overall")}>Best profile</Button>
+        {" · "}
+        <Button size="small" sx={{ p: 0, minWidth: 0, textTransform: "none" }} onClick={() => navigate("/duels")}>Duels (head to head)</Button>
+        {" · "}
+        <Button size="small" sx={{ p: 0, minWidth: 0, textTransform: "none" }} onClick={() => navigate("/weather")}>Weather (what conditions do to these scores)</Button>
+      </Typography>
+
+      {diag && (
+        <FoldCard
+          title="Data health"
+          summary={`${diag.total_completed} completed runs · ${diag.unstamped} without captured settings · ${diag.distinct_profiles} distinct profiles`}
+        >
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
+              <Tooltip title="Stamp the current firewall settings onto past runs that captured none (e.g. before discovery worked). Only do this if the firewall is unchanged since those runs.">
+                <span>
+                  <Button startIcon={<RestorePageIcon />} onClick={handleBackfill} disabled={busy} size="small" variant="outlined">
+                    Attribute unstamped runs
+                  </Button>
+                </span>
+              </Tooltip>
+              <Tooltip title="Merge every “SQM off” run into one profile. Nothing is deleted; only the grouping changes, and shaped profiles are untouched.">
+                <span>
+                  <Button startIcon={<MergeIcon />} onClick={handleRefingerprint} disabled={busy} size="small" variant="outlined">
+                    Merge SQM-off profiles
+                  </Button>
+                </span>
+              </Tooltip>
+            </Stack>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
               <Chip size="small" label={`completed: ${diag.total_completed}`} />
               <Chip
@@ -2628,8 +2501,7 @@ export default function Settings() {
                 </TableBody>
               </Table>
             </TableContainer>
-          </CardContent>
-        </Card>
+        </FoldCard>
       )}
 
       <ApplyConfirmDialog

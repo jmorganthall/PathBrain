@@ -59,6 +59,7 @@ import { Link as RouterLink } from "react-router-dom";
 import { api } from "../api/client";
 import { useQueuedAction } from "../hooks/useQueuedAction";
 import { Blurb, FoldCard, HelpTip } from "../components/Explain";
+import PageHeader from "../components/PageHeader";
 import type { Theme } from "@mui/material/styles";
 import type {
   DuelCard,
@@ -113,18 +114,6 @@ const fmtWindow = (minutes: number) => {
   return h ? `${h}h${m ? ` ${m}m` : ""}` : `${m}m`;
 };
 
-// Minutes from now until the next occurrence of a wall-clock time (tomorrow if it has
-// already passed today), which is what an on-demand "duel until 06:00" means.
-const minutesUntil = (clock: string): number => {
-  const [h, m] = clock.split(":").map((x) => parseInt(x, 10));
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
-  const now = new Date();
-  const end = new Date(now);
-  end.setHours(h, m, 0, 0);
-  if (end <= now) end.setDate(end.getDate() + 1);
-  return Math.max(1, Math.round((end.getTime() - now.getTime()) / 60000));
-};
-
 // The clock time `minutes` from now — seeds the "duel until" picker from the configured
 // window so the default on-demand run matches the nightly one.
 // "20:34" is what the <input type=time> holds; people read "8:34 PM".
@@ -139,24 +128,6 @@ const formatClock = (clock: string): string => {
 const clockIn = (minutes: number): string => {
   const t = new Date(Date.now() + minutes * 60000);
   return hhmm(t.getHours(), t.getMinutes());
-};
-
-// "6h from now" alone is ambiguous at 7am — 1:08 PM today and 5:00 AM tomorrow are both
-// "from now". Naming the day is what makes the number checkable at a glance.
-const describeUntil = (clock: string): string => {
-  const [h, m] = clock.split(":").map((x) => parseInt(x, 10));
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return "";
-  // Derive the end instant from the CHOSEN clock, then format that — deriving it from
-  // now+minutes instead re-rounds the seconds away and prints a time one minute off the
-  // field you just set, which reads like the arithmetic is broken.
-  const now = new Date();
-  const end = new Date(now);
-  end.setHours(h, m, 0, 0);
-  if (end <= now) end.setDate(end.getDate() + 1);
-  const minutes = Math.max(1, Math.round((end.getTime() - now.getTime()) / 60000));
-  const day = end.getDate() === now.getDate() ? "today" : "tomorrow";
-  const at = end.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  return `Runs about ${fmtWindow(minutes)} — until ${at} ${day}.`;
 };
 
 // Does the nightly window run past midnight into the next morning?
@@ -580,7 +551,7 @@ function VerdictChip({ m }: { m: DuelMatchup }) {
   return (
     <Chip
       size="small"
-      color={m.verdict === "challenger" ? "warning" : "success"}
+      color={m.verdict === "challenger" ? "success" : "primary"}
       label={`${winner} wins`}
       icon={<SportsMmaIcon />}
     />
@@ -693,7 +664,7 @@ function BoutRow({ m }: { m: DuelMatchup }) {
           <Typography variant="body2" sx={{ fontWeight: 500 }}>
             {m.incumbent_name || m.incumbent_label}{" "}
             <Typography component="span" variant="caption" color="text.secondary">
-              (holder)
+              (defending)
             </Typography>{" "}
             vs {m.challenger_name || m.challenger_label}
           </Typography>
@@ -1762,9 +1733,6 @@ export default function Duels() {
   const [crowns, setCrowns] = useState<CrownsOut | null>(null);
   const [ledger, setLedger] = useState<DuelSession[]>([]);
   const [policy, setPolicy] = useState<CrowningPolicy | null>(null);
-  // On-demand runs are also set by end time ("duel until 06:00"); the minutes the API
-  // wants are derived from the clock at the moment you press the button.
-  const [untilClock, setUntilClock] = useState<string | null>(null);
   const [liveFp, setLiveFp] = useState<string | null>(null);
   const [health, setHealth] = useState<DuelHealth | null>(null);
   const [dismissing, setDismissing] = useState(false);
@@ -1882,7 +1850,6 @@ export default function Duels() {
       .duelConfig()
       .then((c) => {
         setCfg(c);
-        setUntilClock((u) => u ?? clockIn(c.duration_minutes));
       })
       .catch(report);
 
@@ -2074,37 +2041,32 @@ export default function Duels() {
 
   return (
     <Box>
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        justifyContent="space-between"
-        alignItems={{ xs: "flex-start", sm: "center" }}
-        spacing={1}
-        sx={{ mb: 2 }}
-      >
-        <Box>
-          <Typography variant="h5">Dueling Champions</Typography>
-          <Blurb
-            variant="body2"
-            sx={{ mb: 0 }}
-            more={
-              <>
-                The ring&apos;s #1 defends every match against whichever profile is most likely to
-                beat it, re-decided before each match. Win and you take the belt and defend next.
-                Both sides trade runs A/B/B/A so they meet the same weather, and each match ends
-                the moment it&apos;s decided.
-              </>
-            }
-          >
-            Profiles fight head to head. Ranked by what they <b>beat</b>, not what they averaged.
-          </Blurb>
-        </Box>
-        <Stack direction="row" spacing={1}>
-          {active ? (
+      <PageHeader
+        title="Duels"
+        icon={<SportsMmaIcon />}
+        lead={
+          <>
+            Profiles measured head to head, back to back, so both meet the same network conditions.
+            Ranked by what they <b>beat</b>, not what they averaged.
+          </>
+        }
+        more={
+          <>
+            The champion defends every match against whichever profile is most likely to beat
+            it, re-decided before each match. Win and you take the title and defend next. The two
+            sides trade runs A/B/B/A so neither gets the better conditions, and each match ends
+            the moment it is decided. A <b>session</b> is a night of matches; a <b>match</b> is
+            two profiles; a <b>round</b> is one paired pair of runs.
+          </>
+        }
+        compact
+        actions={
+          active ? (
             <Button color="warning" variant="outlined" startIcon={<StopIcon />} onClick={cancelNow}>
               Cancel duel
             </Button>
           ) : (
-            <Tooltip title="Choose how long this session should run.">
+            <Tooltip title="Start a session now. You choose how long it runs; your settings are restored when it ends.">
               <Button
                 variant="contained"
                 startIcon={<PlayArrowIcon />}
@@ -2123,9 +2085,9 @@ export default function Duels() {
                 Duel now
               </Button>
             </Tooltip>
-          )}
-        </Stack>
-      </Stack>
+          )
+        }
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -2227,8 +2189,8 @@ export default function Duels() {
           more={
             <>
               The champion defends against the top {cfg.contender_top_n}{" "}
-              {cfg.contenders === "leaders" ? "profiles nearest the crown" : "heirs"},{" "}
-              {cfg.seats ?? 2} at a time with a belt leg every {cfg.belt_every ?? 2} legs,{" "}
+              {cfg.contenders === "leaders" ? "profiles nearest the best" : "contenders"},{" "}
+              {cfg.seats ?? 2} at a time with a champion leg every {cfg.belt_every ?? 2} legs,{" "}
               {cfg.iterations_per_round ?? 3} iteration(s) a leg. A match ends after{" "}
               {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of margins, then
               the next challenger steps up.
@@ -2241,20 +2203,514 @@ export default function Duels() {
               ) : cfg.crown_rule === "rating" ? (
                 <>
                   {" "}
-                  <b>The belt-holder defends; the winner is read off the fitted rating</b> —
-                  the standings' #1 over the whole ledger, which names the true best more often
-                  than the belt.
+                  <b>The title holder defends; the winner is read off the fitted rating</b> —
+                  the standings' #1 over every match fought, which names the true best more often
+                  than the title alone.
                 </>
               ) : null}
             </>
           }
         >
-          <b>Duel now</b> runs until {formatClock(untilClock ?? clockIn(cfg.duration_minutes))}{" "}
-          (about {fmtWindow(minutesUntil(untilClock ?? clockIn(cfg.duration_minutes)))}), as many
-          matches as fit.
+          <b>Duel now</b> asks how long to run and starts a session; the nightly schedule is under{" "}
+          <b>Duel settings</b> below.
         </Blurb>
       )}
 
+      {/* ── The belt ─────────────────────────────────────────────────────────────── */}
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={2}
+            alignItems={{ xs: "flex-start", sm: "center" }}
+            justifyContent="space-between"
+          >
+            <Stack direction="row" spacing={1.5} alignItems="center">
+              <MilitaryTechIcon color={champion ? "warning" : "disabled"} sx={{ fontSize: 40 }} />
+              <Box>
+                <Typography variant="overline" color="text.secondary">
+                  Current duel champion
+                </Typography>
+                {champion ? (
+                  <>
+                    <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
+                      <Link
+                        component="button"
+                        underline="hover"
+                        onClick={() =>
+                          navigate(`/profiles/${encodeURIComponent(champion.fingerprint)}`)
+                        }
+                        sx={{ font: "inherit" }}
+                      >
+                        {champion.name || champion.label || champion.fingerprint}
+                      </Link>
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {/* Under the lineal rule the belt is a record of results, so say how
+                          it was won and how often it has been kept — a champion that has
+                          defended eleven times and one that took the title in its first
+                          match are both "champion", and that difference is the whole
+                          story. */}
+                      {champion.rule === "rating"
+                        ? champion.holds_belt
+                          ? "#1 by fitted head-to-head rating — and holds the belt"
+                          : "#1 by fitted head-to-head rating"
+                        : champion.rule === "rating_floor"
+                        ? "Top of the ladder"
+                        : (champion.defences ?? 0) > 0
+                          ? `Held the title through ${champion.defences} defence${
+                              champion.defences === 1 ? "" : "s"
+                            }`
+                          : (champion.undecided_defences ?? 0) > 0
+                            ? `Kept the title through ${champion.undecided_defences} undecided title bout${
+                                champion.undecided_defences === 1 ? "" : "s"
+                              } — none of them won`
+                            : "Took the title in its most recent match"}
+                      {/* The wins and the non-wins, apart. They used to be one number, and
+                          on a ladder where most matches cannot reach a verdict that number
+                          read as a dominance nobody demonstrated: "57 defences" of which
+                          ~51 were draws is a champion nobody could be shown to have beaten,
+                          which is a different fact and belongs on screen as one. */}
+                      {(champion.defences ?? 0) > 0 && (champion.undecided_defences ?? 0) > 0
+                        ? ` (and ${champion.undecided_defences} undecided)`
+                        : ""}
+                      {champion.consecutive_sessions > 0
+                        ? ` · ${champion.consecutive_sessions} consecutive session${
+                            champion.consecutive_sessions === 1 ? "" : "s"
+                          }`
+                        : ""}
+                      {champion.duel_id != null ? ` · duel #${champion.duel_id}` : ""}
+                      {champion.finished_at ? ` · ${fmtDateTime(champion.finished_at)}` : ""}
+                      {champion.decisive ? "" : " · draws only, nothing proven"}
+                      {champion.provisional ? " · provisional record" : ""}
+                    </Typography>
+                    {/* The two verdicts, one line apart. The belt says who beat whom; the
+                        ranking says what a record has demonstrated. They are allowed to
+                        disagree, and when they do that IS the finding — so the card states
+                        the disagreement rather than leaving the reader to spot it. */}
+                    {champion.rule === "lineal" && champion.rank != null && (
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        {champion.rank === 1
+                          ? "Also #1 in the standings."
+                          : `#${champion.rank} in the standings: it beat the holder, but others have proved more.`}
+                      </Typography>
+                    )}
+                    {/* Under the rating rule the winner and the title can part: the belt
+                        records who beat whom and its holder defends, the rating reads the
+                        whole ledger. State the split rather than leave it to be spotted. */}
+                    {champion.rule === "rating" && !champion.holds_belt && table?.belt && (
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        The belt is with{" "}
+                        <b>{table.belt.name || table.belt.label || table.belt.fingerprint.slice(0, 8)}</b>
+                        {table.belt.rank != null ? ` (#${table.belt.rank} in the standings)` : ""}, who
+                        defends; the whole ledger rates this profile higher.
+                      </Typography>
+                    )}
+                  </>
+                ) : loadingStandings ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Loading the ladder…
+                  </Typography>
+                ) : standingsError ? (
+                  <Typography variant="body2" color="error.main">
+                    Couldn't load the ladder — see the standings below.
+                  </Typography>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    No duel has crowned one yet — press <b>Duel now</b> to start.
+                  </Typography>
+                )}
+              </Box>
+            </Stack>
+            <Stack spacing={0.5} alignItems={{ xs: "flex-start", sm: "flex-end" }}>
+              <Chip
+                size="small"
+                color={policy === "duel" ? "warning" : "default"}
+                variant={policy === "duel" ? "filled" : "outlined"}
+                label={
+                  policy === "duel"
+                    ? "Auto-apply follows the duel champion"
+                    : "Auto-apply follows the Overall ranking"
+                }
+              />
+              <Typography variant="caption" color="text.secondary">
+                {policy === "duel"
+                  ? "The firewall is kept on the champion when Auto-apply is on."
+                  : "Recorded only. Change which ranking Auto-apply follows from the top bar."}
+              </Typography>
+              {table && (
+                <Typography variant="caption" color="text.secondary">
+                  {table.matchups_analyzed} match{table.matchups_analyzed === 1 ? "" : "es"} (
+                  {table.decisive_matchups} decisive) across {table.sessions_analyzed} session
+                  {table.sessions_analyzed === 1 ? "" : "s"}
+                </Typography>
+              )}
+            </Stack>
+          </Stack>
+
+          <ThreeClaims table={table} crowns={crowns} live={status?.live} />
+
+          {active && (
+            <Box sx={{ mt: 2 }}>
+              {/* The window bar and countdown from the jobs feed: the share of the session's
+                  window already spent, ticking on the browser's clock between polls, and
+                  how long is left — instead of an indeterminate sweep that read the same
+                  at minute one and minute three hundred. */}
+              {status?.mode === "levers" && (
+                <Alert
+                  severity="info"
+                  variant="outlined"
+                  sx={{ mb: 1 }}
+                  action={
+                    <Button size="small" component={RouterLink} to="/levers">
+                      Open
+                    </Button>
+                  }
+                >
+                  A lever session is in the ring: the champion against single-setting variants of
+                  itself, measuring one setting at a time rather than hunting the best profile. The
+                  Lever duels page has its board and its book.
+                </Alert>
+              )}
+              <JobProgressBar job={duelJob} sx={{ mb: 1 }} />
+              {/* The scoreboard when a match is actually under way; the stage sentence is
+                  the fallback for the moments between matches (applying a profile, ranking
+                  the field, restoring settings) where there is no score to show. */}
+              {status?.live ? (
+                <RingBoard live={status.live} />
+              ) : (
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  {status?.stage || "starting…"}
+                </Typography>
+              )}
+              {status?.explore && <ExploreShareLine explore={status.explore} />}
+              <Typography variant="caption" color="text.secondary">
+                {status?.iterations_run ?? 0} iteration(s) ·{" "}
+                {status?.matchups?.length ?? 0} match{status?.matchups?.length === 1 ? "" : "es"}{" "}
+                decided
+                {(status?.open_matches?.length ?? 0) > 0 && (
+                  <>
+                    {" "}· {status!.open_matches!.length} open match
+                    {status!.open_matches!.length === 1 ? "" : "es"} carried to the next session
+                    <HelpTip title="A match still open when the window closes keeps every round it has fought. The next session seats it first, against the same defender, and it resumes where it stopped." />
+                  </>
+                )}
+                {" "}· settings restored when the window closes
+              </Typography>
+              {/* The ring's named winner changes mid-session — re-read from the ledger
+                  between matches — so show who it is right now rather than waiting for the
+                  session to end. */}
+              {status?.champion_label && (
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  The ring's answer so far: <b>{status.champion_label}</b>
+                  <Typography component="span" variant="caption" color="text.secondary">
+                    {" "}
+                    (provisional until the session ends)
+                  </Typography>
+                </Typography>
+              )}
+              {/* How the belt got where it is. The defender is whoever the ledger ranks #1
+                  at that moment, so by match six the name holding it can be neither the
+                  profile that walked in with it nor the pooled crown — which reads as
+                  "random profiles" unless you can see the chain that got them there. */}
+              {!!status?.matchups?.length && (
+                <Box sx={{ mt: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    This session so far:
+                  </Typography>
+                  {status.matchups.length > liveShown && (
+                    <Button
+                      size="small"
+                      sx={{ display: "block", mb: 0.5 }}
+                      onClick={() => setLiveShown((n) => n + 20)}
+                    >
+                      Show earlier matches ({status.matchups.length - liveShown} more)
+                    </Button>
+                  )}
+                  {status.matchups.slice(-liveShown).map((m, sliceIdx) => {
+                    // The list is windowed to the most recent matches, so the lookahead
+                    // below has to index the FULL array — reading `sliceIdx + 1` would look
+                    // up the wrong match (and read the belt off it) as soon as anything was
+                    // hidden.
+                    const i = status.matchups!.length - Math.min(liveShown, status.matchups!.length) + sliceIdx;
+                    // Winning a match is NOT the same as taking the belt: under the lineal
+                    // rule the belt moves only when the winner leads the holder on their
+                    // whole shared record, so beating the champion once when it has beaten
+                    // you once leaves the title where it is. Saying "takes the belt" on
+                    // every challenger win is how the tape ended up contradicting the
+                    // standings. Read the actual belt from who defends the NEXT match (or,
+                    // for the newest match, from the session's current holder).
+                    const next = status.matchups?.[i + 1];
+                    const beltAfter = next ? next.incumbent : status.champion_fingerprint;
+                    const beltAfterName = next
+                      ? next.incumbent_name || next.incumbent_label
+                      : status.champion_label;
+                    const winner =
+                      m.verdict === "challenger"
+                        ? m.challenger_name || m.challenger_label
+                        : m.verdict === "incumbent"
+                          ? m.incumbent_name || m.incumbent_label
+                          : null;
+                    // Three outcomes, not two. Asking only "did the old holder keep it?"
+                    // credits the belt to whoever won this match whenever the defender
+                    // changes — but the defender is re-read before every match, so it can
+                    // pass to a profile that wasn't in this match at all (an unreachable
+                    // champion, for one, is stood in for). That reads as random unless it
+                    // is said out loud.
+                    let beltNote = "";
+                    if (beltAfter && beltAfter === m.challenger) {
+                      beltNote = " · and takes the belt";
+                    } else if (beltAfter && beltAfter !== m.incumbent && beltAfterName) {
+                      beltNote = ` · ${beltAfterName} defends next`;
+                    } else if (beltAfter && m.verdict === "challenger") {
+                      beltNote =
+                        " · belt stays — it doesn't lead the champion on their whole record yet";
+                    }
+                    return (
+                      <Typography
+                        key={i}
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block", fontFamily: "monospace" }}
+                      >
+                        {i + 1}. {m.incumbent_name || m.incumbent_label} vs{" "}
+                        {m.challenger_name || m.challenger_label}
+                        {m.challenger_why ? ` (${m.challenger_why})` : ""} →{" "}
+                        {winner ? `${winner} wins the match` : "draw"}
+                        {beltNote}
+                      </Typography>
+                    );
+                  })}
+                </Box>
+              )}
+            </Box>
+          )}
+          {!active && status?.status === "failed" && status.error && (
+            <Alert severity="warning" sx={{ mt: 2 }}>
+              <b>Last session didn't finish.</b> {status.error}
+            </Alert>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── The ladder ───────────────────────────────────────────────────────────── */}
+      <Card sx={{ mb: 2 }}>
+        <CardContent>
+          <Typography variant="h6">Standings</Typography>
+          <Blurb
+            more={
+              <>
+                <b>Rating</b> is a strength fitted to every round fought. Who you beat is what
+                moves it: beating the top profile is worth far more than beating the bottom one.
+                1500 is the middle of the field, ± is the error bar, and an amber tag marks a thin
+                record.
+                <br />
+                <b>Proven</b> is the rating minus its error bar: what a record has demonstrated,
+                not just what it won.
+                <br />
+                <b>Overall</b> and <b>Overall rank</b> are the pooled all-history score, so the
+                two verdicts sit side by side. The ▲▼ next to a rank is how far they disagree.
+                <br />
+                <b>≈#1</b> marks a profile inside the ring&apos;s own noise of the leader. Expect
+                many: nine rounds carries about ±100 points. Hover it to see how many more rounds
+                would settle it.
+              </>
+            }
+          >
+            Ranked by <b>Rating</b>: a strength fitted from every round fought, where beating a
+            strong profile counts for more. Hover a column header for its meaning; click to sort.
+          </Blurb>
+          {loadingStandings && standings.length === 0 ? (
+            <Box sx={{ mt: 1.5 }}>
+              <LinearProgress />
+              <Typography variant="caption" color="text.secondary">
+                Reading the ledger…
+              </Typography>
+            </Box>
+          ) : standingsError ? (
+            // "Nothing here" and "we couldn't load it" are different facts, and this card
+            // used to print the first for both: `table` stays null when the request fails,
+            // so a failed load rendered as an empty ledger. That sends you looking for a
+            // missing duel when what you have is a broken request — which is exactly what
+            // happened, with a full match tape visible directly underneath.
+            <Alert
+              severity="error"
+              sx={{ mt: 1.5 }}
+              action={
+                <Button size="small" onClick={() => void loadAll()}>
+                  Retry
+                </Button>
+              }
+            >
+              Couldn&apos;t load the ladder standings. {standingsError}
+            </Alert>
+          ) : standings.length === 0 ? (
+            <Alert severity="info" sx={{ mt: 1.5 }}>
+              No matches on the ledger yet. A duel needs a confident pooled crown to defend and
+              at least one reachable heir to challenge it.
+            </Alert>
+          ) : (
+            <TableContainer sx={{ mt: 1.5 }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <StandingHeader id="rank" label="Duel rank" orderBy={orderBy} order={order} onSort={handleSort} tip="Standing in the ring, by fitted Rating. Nothing pooled goes into it." />
+                    <StandingHeader id="name" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} />
+                    <StandingHeader id="rating" label="Rating" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Strength fitted to every round fought (Elo scale: 1500 is mid-field, +400 wins 10 rounds per 1 lost against an average opponent). Beating a strong profile moves it a lot; beating a weak one barely at all. ± is the error bar." />
+                    <StandingHeader id="rating_floor" label="Proven" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Rating minus one error bar: what the record has demonstrated, not what it suggests. A thin record scores low here even after a win." />
+                    <StandingHeader id="wins" label="W–L–D" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match record across every duel session: wins–losses–draws. Sorts by wins." />
+                    <StandingHeader id="points" label="Pts" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match points: 3 for a win, 1 for a draw." />
+                    <StandingHeader id="win_rate" label="Win rate" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Share of DECIDED matchups won (draws excluded)." />
+                    <StandingHeader id="pair_win_rate" label="Rounds" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Individual interleaved A/B rounds won — the raw evidence under the verdicts. Sorts by round-win rate." />
+                    <StandingHeader id="median_margin" label="Margin" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Median Overall-point gap in this profile's own favour, across its matches." />
+                    <StandingHeader id="overall" label="Overall" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="The pooled all-history score across every run, not just its matches." />
+                    <StandingHeader id="pooled_rank" label="Overall rank" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Rank on the pooled score among the profiles that have duelled. A big gap from Duel rank means the two verdicts disagree." />
+                    <StandingHeader id="opponents" label="Opponents" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Distinct profiles faced." />
+                    <StandingHeader id="championships" label="Titles" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Sessions ended holding the belt." />
+                    <StandingHeader id="last_dueled_at" label="Last match" align="right" orderBy={orderBy} order={order} onSort={handleSort} />
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {pagedStandings.map((r: DuelStanding) => (
+                    <TableRow
+                      key={r.fingerprint}
+                      hover
+                      sx={{
+                        ...(r.is_champion ? { bgcolor: "action.selected" } : null),
+                        // A gentle marker for the profile the firewall is on — an accent
+                        // rule down the edge rather than a fill, so it reads at a glance
+                        // and still composes with the champion's row highlight.
+                        ...(r.fingerprint === liveFp
+                          ? {
+                              boxShadow: (t: Theme) => `inset 3px 0 0 ${t.palette.info.main}`,
+                            }
+                          : null),
+                      }}
+                    >
+                      <TableCell>
+                        <Stack direction="row" spacing={0.75} alignItems="baseline">
+                          <Typography variant="body2">{r.rank}</Typography>
+                          {r.tied_with_leader && <TieMark pairs={r.pairs_to_separate} />}
+                          <RankGap ringRank={r.rank} pooledRank={pooledRank.get(r.fingerprint)} />
+                        </Stack>
+                      </TableCell>
+                      <TableCell sx={{ minWidth: 210 }}>
+                        <Stack direction="row" spacing={0.5} alignItems="center">
+                          {r.is_champion && (
+                            <MilitaryTechIcon color="warning" sx={{ fontSize: 18 }} />
+                          )}
+                          <Link
+                            component="button"
+                            underline="hover"
+                            onClick={() =>
+                              navigate(`/profiles/${encodeURIComponent(r.fingerprint)}`)
+                            }
+                            sx={{ font: "inherit", textAlign: "left", whiteSpace: "nowrap" }}
+                            title={r.label}
+                          >
+                            {r.name || r.label}
+                          </Link>
+                          {r.fingerprint === liveFp && (
+                            <Chip
+                              size="small"
+                              label="live"
+                              color="info"
+                              variant="outlined"
+                              title="This profile is currently on the firewall."
+                              sx={{ height: 18, "& .MuiChip-label": { px: 0.75, fontSize: 11 } }}
+                            />
+                          )}
+                        </Stack>
+                        {r.name && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{ display: "block" }}
+                          >
+                            {r.label}
+                          </Typography>
+                        )}
+                        {(r.beaten.length > 0 || r.lost_to.length > 0) && (
+                          <Typography variant="caption" color="text.secondary">
+                            {r.beaten.length > 0 && `beat ${r.beaten.join(", ")}`}
+                            {r.beaten.length > 0 && r.lost_to.length > 0 && " · "}
+                            {r.lost_to.length > 0 && `lost to ${r.lost_to.join(", ")}`}
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        <RatingCell row={r} />
+                      </TableCell>
+                      {/* What the record has demonstrated — and what the rank is built on,
+                          so it is printed rather than left implied in a sort order. */}
+                      <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                        {r.rating_floor == null ? "—" : Math.round(r.rating_floor)}
+                      </TableCell>
+                      <TableCell align="right">
+                        {r.wins}–{r.losses}–{r.draws}
+                      </TableCell>
+                      <TableCell align="right">{r.points}</TableCell>
+                      <TableCell align="right">{pct(r.win_rate)}</TableCell>
+                      <TableCell align="right">
+                        <Tooltip title={`${r.pair_wins} won / ${r.pair_losses} lost`}>
+                          <span>
+                            {r.pair_wins}–{r.pair_losses}{" "}
+                            <Typography component="span" variant="caption" color="text.secondary">
+                              ({pct(r.pair_win_rate)})
+                            </Typography>
+                          </span>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell align="right" sx={{ color: marginColor(r.median_margin) }}>
+                        {fmtMargin(r.median_margin)}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Tooltip
+                          title={
+                            r.overall == null
+                              ? "No comparable runs under the current methodology."
+                              : `Pooled across ${r.pooled_iterations ?? 0} iteration(s) of all-history data.`
+                          }
+                        >
+                          <span>{fmtNum(r.overall, 1)}</span>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell align="right">
+                        <Typography variant="body2" color="text.secondary">
+                          {pooledRank.get(r.fingerprint) ?? "—"}
+                        </Typography>
+                      </TableCell>
+                      <TableCell align="right">{r.opponents}</TableCell>
+                      <TableCell align="right">{r.championships || "—"}</TableCell>
+                      <TableCell align="right">
+                        <Typography variant="caption" color="text.secondary">
+                          {fmtDateTime(r.last_dueled_at)}
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              {standings.length > rowsPerPage && (
+                <TablePagination
+                  component="div"
+                  count={standings.length}
+                  page={page}
+                  onPageChange={(_, p) => setPage(p)}
+                  rowsPerPage={rowsPerPage}
+                  onRowsPerPageChange={(e) => {
+                    setRowsPerPage(parseInt(e.target.value, 10));
+                    setPage(0);
+                  }}
+                  rowsPerPageOptions={[25, 50, 100]}
+                />
+              )}
+            </TableContainer>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── The mission's own check: what each device measured at home per profile ── */}
       {/* ── What can tonight actually settle? ────────────────────────────────────────
           The ring had machinery for ANSWERING a question and none for deciding whether one
           was answerable, so it spent its nights on pairs it had no power to separate and
@@ -2262,27 +2718,23 @@ export default function Duels() {
           margin it can call, measured from its own stored per-round margins, and on request
           prices every queued bout against it. */}
       {decide && (
-        <Card sx={{ mb: 2 }}>
-          <CardContent>
-            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-              <StraightenIcon fontSize="small" color="action" />
-              <Typography variant="subtitle2">What this ladder can settle</Typography>
-              <HelpTip title="Measured from the per-round margins already on the ledger, not configured: the spread of successive rounds within a match cancels that match's true edge and leaves the measurement error. A real difference smaller than this cannot reach a verdict however long the ladder runs." />
-              {decide.power.min_margin != null && (
-                <Chip
-                  size="small"
-                  color="primary"
-                  variant="outlined"
-                  label={`resolves ${decide.power.min_margin.toFixed(2)} pts`}
-                />
-              )}
-              <Box flexGrow={1} />
-              <Button size="small" onClick={priceCard} disabled={decideBusy}>
-                {decideBusy ? "Pricing…" : decide.card ? "Re-price tonight's card" : "Price tonight's card"}
-              </Button>
-            </Stack>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+        <FoldCard
+          icon={<StraightenIcon fontSize="small" color="action" />}
+          title="What a duel can settle"
+          summary={
+            decide.power.min_margin != null
+              ? `Smallest gap this ladder can resolve: ${decide.power.min_margin.toFixed(2)} Overall points`
+              : "How small a difference the ladder can tell apart"
+          }
+          actions={
+            <Button size="small" onClick={priceCard} disabled={decideBusy}>
+              {decideBusy ? "Checking…" : decide.card ? "Re-check matchups" : "Check matchups"}
+            </Button>
+          }
+        >
+            <Typography variant="body2" color="text.secondary">
               {decide.power.verdict}
+              <HelpTip title="Measured from the per-round margins already on record, not configured: the spread of successive rounds within a match cancels that match's true edge and leaves the measurement error. A real difference smaller than this cannot reach a verdict however long the ladder runs." />
             </Typography>
 
             {decide.card && (
@@ -2324,11 +2776,10 @@ export default function Duels() {
                 </Stack>
               </Box>
             )}
-          </CardContent>
-        </Card>
+        </FoldCard>
       )}
 
-      {/* ── Settings, right under the button that uses them ──────────────────────── */}
+      {/* ── Settings ──────────────────────── */}
       <Accordion
         expanded={showRules}
         onChange={(_, open) => setShowRules(open)}
@@ -2338,7 +2789,7 @@ export default function Duels() {
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <GavelIcon fontSize="small" color="action" />
-            <Typography variant="subtitle2">Rules of the ring</Typography>
+            <Typography variant="subtitle2">Duel settings</Typography>
             <HelpTip title="A session is a night of matches. A match is two profiles head to head, decided over rounds. A round is one pair of runs, one per profile, back to back so they share conditions." />
             {/* The summary states the settings themselves, so the common case — checking
                 what's set — needs no click at all. */}
@@ -2440,13 +2891,6 @@ export default function Duels() {
                 if (!cfg || !Number.isFinite(h) || !Number.isFinite(m)) return;
                 void patch({ hour: cfg.hour, minute: cfg.minute, end_hour: h, end_minute: m });
               }}
-            />
-            <TimeField
-              label="Duel now until"
-              value={untilClock ?? clockIn(cfg?.duration_minutes ?? 120)}
-              disabled={busy || active}
-              helper={describeUntil(untilClock ?? clockIn(cfg?.duration_minutes ?? 120))}
-              onChange={setUntilClock}
             />
           </Box>
 
@@ -2648,7 +3092,7 @@ export default function Duels() {
                 value={cfg?.champion_freshness_days ?? 7}
                 disabled={!cfg || busy}
                 onCommit={(v) => void patch({ champion_freshness_days: v })}
-                helper="How old the duel champion may get before Follow best stops acting on it and falls back to the pooled crown."
+                helper="How old the duel champion may get before Auto-apply stops acting on it and falls back to the pooled best."
               />
               <NumField
                 label="Iterations per leg of a round"
@@ -2806,501 +3250,6 @@ export default function Duels() {
         </AccordionDetails>
       </Accordion>
 
-      {/* ── The belt ─────────────────────────────────────────────────────────────── */}
-      <Card sx={{ mb: 2 }}>
-        <CardContent>
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={2}
-            alignItems={{ xs: "flex-start", sm: "center" }}
-            justifyContent="space-between"
-          >
-            <Stack direction="row" spacing={1.5} alignItems="center">
-              <MilitaryTechIcon color={champion ? "warning" : "disabled"} sx={{ fontSize: 40 }} />
-              <Box>
-                <Typography variant="overline" color="text.secondary">
-                  Reigning duel champion
-                </Typography>
-                {champion ? (
-                  <>
-                    <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
-                      <Link
-                        component="button"
-                        underline="hover"
-                        onClick={() =>
-                          navigate(`/profiles/${encodeURIComponent(champion.fingerprint)}`)
-                        }
-                        sx={{ font: "inherit" }}
-                      >
-                        {champion.name || champion.label || champion.fingerprint}
-                      </Link>
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {/* Under the lineal rule the belt is a record of results, so say how
-                          it was won and how often it has been kept — a champion that has
-                          defended eleven times and one that took the title in its first
-                          match are both "champion", and that difference is the whole
-                          story. */}
-                      {champion.rule === "rating"
-                        ? champion.holds_belt
-                          ? "#1 by fitted head-to-head rating — and holds the belt"
-                          : "#1 by fitted head-to-head rating"
-                        : champion.rule === "rating_floor"
-                        ? "Top of the ladder"
-                        : (champion.defences ?? 0) > 0
-                          ? `Held the title through ${champion.defences} defence${
-                              champion.defences === 1 ? "" : "s"
-                            }`
-                          : (champion.undecided_defences ?? 0) > 0
-                            ? `Kept the title through ${champion.undecided_defences} undecided title bout${
-                                champion.undecided_defences === 1 ? "" : "s"
-                              } — none of them won`
-                            : "Took the title in its most recent match"}
-                      {/* The wins and the non-wins, apart. They used to be one number, and
-                          on a ladder where most matches cannot reach a verdict that number
-                          read as a dominance nobody demonstrated: "57 defences" of which
-                          ~51 were draws is a champion nobody could be shown to have beaten,
-                          which is a different fact and belongs on screen as one. */}
-                      {(champion.defences ?? 0) > 0 && (champion.undecided_defences ?? 0) > 0
-                        ? ` (and ${champion.undecided_defences} undecided)`
-                        : ""}
-                      {champion.consecutive_sessions > 0
-                        ? ` · ${champion.consecutive_sessions} consecutive session${
-                            champion.consecutive_sessions === 1 ? "" : "s"
-                          }`
-                        : ""}
-                      {champion.duel_id != null ? ` · duel #${champion.duel_id}` : ""}
-                      {champion.finished_at ? ` · ${fmtDateTime(champion.finished_at)}` : ""}
-                      {champion.decisive ? "" : " · draws only, nothing proven"}
-                      {champion.provisional ? " · provisional record" : ""}
-                    </Typography>
-                    {/* The two verdicts, one line apart. The belt says who beat whom; the
-                        ranking says what a record has demonstrated. They are allowed to
-                        disagree, and when they do that IS the finding — so the card states
-                        the disagreement rather than leaving the reader to spot it. */}
-                    {champion.rule === "lineal" && champion.rank != null && (
-                      <Typography variant="caption" color="text.secondary" display="block">
-                        {champion.rank === 1
-                          ? "Also #1 in the standings."
-                          : `#${champion.rank} in the standings: it beat the holder, but others have proved more.`}
-                      </Typography>
-                    )}
-                    {/* Under the rating rule the winner and the title can part: the belt
-                        records who beat whom and its holder defends, the rating reads the
-                        whole ledger. State the split rather than leave it to be spotted. */}
-                    {champion.rule === "rating" && !champion.holds_belt && table?.belt && (
-                      <Typography variant="caption" color="text.secondary" display="block">
-                        The belt is with{" "}
-                        <b>{table.belt.name || table.belt.label || table.belt.fingerprint.slice(0, 8)}</b>
-                        {table.belt.rank != null ? ` (#${table.belt.rank} in the standings)` : ""}, who
-                        defends; the whole ledger rates this profile higher.
-                      </Typography>
-                    )}
-                  </>
-                ) : loadingStandings ? (
-                  <Typography variant="body2" color="text.secondary">
-                    Loading the ladder…
-                  </Typography>
-                ) : standingsError ? (
-                  <Typography variant="body2" color="error.main">
-                    Couldn't load the ladder — see the standings below.
-                  </Typography>
-                ) : (
-                  <Typography variant="body2" color="text.secondary">
-                    No duel has crowned one yet — run a duel to start the ladder.
-                  </Typography>
-                )}
-              </Box>
-            </Stack>
-            <Stack spacing={0.5} alignItems={{ xs: "flex-start", sm: "flex-end" }}>
-              <Chip
-                size="small"
-                color={policy === "duel" ? "warning" : "default"}
-                variant={policy === "duel" ? "filled" : "outlined"}
-                label={
-                  policy === "duel"
-                    ? "Crowning policy: duel champion"
-                    : "Crowning policy: pooled crown"
-                }
-              />
-              <Typography variant="caption" color="text.secondary">
-                {policy === "duel"
-                  ? "Follow best acts on these verdicts."
-                  : "Recorded only. Switch the policy under Follow best (top bar) to act on them."}
-              </Typography>
-              {table && (
-                <Typography variant="caption" color="text.secondary">
-                  {table.matchups_analyzed} match{table.matchups_analyzed === 1 ? "" : "es"} (
-                  {table.decisive_matchups} decisive) across {table.sessions_analyzed} session
-                  {table.sessions_analyzed === 1 ? "" : "s"}
-                </Typography>
-              )}
-            </Stack>
-          </Stack>
-
-          <ThreeClaims table={table} crowns={crowns} live={status?.live} />
-
-          {active && (
-            <Box sx={{ mt: 2 }}>
-              {/* The window bar and countdown from the jobs feed: the share of the session's
-                  window already spent, ticking on the browser's clock between polls, and
-                  how long is left — instead of an indeterminate sweep that read the same
-                  at minute one and minute three hundred. */}
-              {status?.mode === "levers" && (
-                <Alert
-                  severity="info"
-                  variant="outlined"
-                  sx={{ mb: 1 }}
-                  action={
-                    <Button size="small" component={RouterLink} to="/levers">
-                      Open
-                    </Button>
-                  }
-                >
-                  A lever session is in the ring: the champion against single-setting variants of
-                  itself, measuring one setting at a time rather than hunting the best profile. The
-                  Lever duels page has its board and its book.
-                </Alert>
-              )}
-              <JobProgressBar job={duelJob} sx={{ mb: 1 }} />
-              {/* The scoreboard when a match is actually under way; the stage sentence is
-                  the fallback for the moments between matches (applying a profile, ranking
-                  the field, restoring settings) where there is no score to show. */}
-              {status?.live ? (
-                <RingBoard live={status.live} />
-              ) : (
-                <Typography variant="body2" sx={{ mt: 0.5 }}>
-                  {status?.stage || "starting…"}
-                </Typography>
-              )}
-              {status?.explore && <ExploreShareLine explore={status.explore} />}
-              <Typography variant="caption" color="text.secondary">
-                {status?.iterations_run ?? 0} iteration(s) ·{" "}
-                {status?.matchups?.length ?? 0} match{status?.matchups?.length === 1 ? "" : "es"}{" "}
-                decided
-                {(status?.open_matches?.length ?? 0) > 0 && (
-                  <>
-                    {" "}· {status!.open_matches!.length} open match
-                    {status!.open_matches!.length === 1 ? "" : "es"} carried to the next session
-                    <HelpTip title="A match still open when the window closes keeps every round it has fought. The next session seats it first, against the same defender, and it resumes where it stopped." />
-                  </>
-                )}
-                {" "}· settings restored when the window closes
-              </Typography>
-              {/* The ring's named winner changes mid-session — re-read from the ledger
-                  between matches — so show who it is right now rather than waiting for the
-                  session to end. */}
-              {status?.champion_label && (
-                <Typography variant="body2" sx={{ mt: 0.5 }}>
-                  The ring's answer so far: <b>{status.champion_label}</b>
-                  <Typography component="span" variant="caption" color="text.secondary">
-                    {" "}
-                    (provisional until the session ends)
-                  </Typography>
-                </Typography>
-              )}
-              {/* How the belt got where it is. The defender is whoever the ledger ranks #1
-                  at that moment, so by match six the name holding it can be neither the
-                  profile that walked in with it nor the pooled crown — which reads as
-                  "random profiles" unless you can see the chain that got them there. */}
-              {!!status?.matchups?.length && (
-                <Box sx={{ mt: 1 }}>
-                  <Typography variant="caption" color="text.secondary">
-                    This session so far:
-                  </Typography>
-                  {status.matchups.length > liveShown && (
-                    <Button
-                      size="small"
-                      sx={{ display: "block", mb: 0.5 }}
-                      onClick={() => setLiveShown((n) => n + 20)}
-                    >
-                      Show earlier matches ({status.matchups.length - liveShown} more)
-                    </Button>
-                  )}
-                  {status.matchups.slice(-liveShown).map((m, sliceIdx) => {
-                    // The list is windowed to the most recent matches, so the lookahead
-                    // below has to index the FULL array — reading `sliceIdx + 1` would look
-                    // up the wrong match (and read the belt off it) as soon as anything was
-                    // hidden.
-                    const i = status.matchups!.length - Math.min(liveShown, status.matchups!.length) + sliceIdx;
-                    // Winning a match is NOT the same as taking the belt: under the lineal
-                    // rule the belt moves only when the winner leads the holder on their
-                    // whole shared record, so beating the champion once when it has beaten
-                    // you once leaves the title where it is. Saying "takes the belt" on
-                    // every challenger win is how the tape ended up contradicting the
-                    // standings. Read the actual belt from who defends the NEXT match (or,
-                    // for the newest match, from the session's current holder).
-                    const next = status.matchups?.[i + 1];
-                    const beltAfter = next ? next.incumbent : status.champion_fingerprint;
-                    const beltAfterName = next
-                      ? next.incumbent_name || next.incumbent_label
-                      : status.champion_label;
-                    const winner =
-                      m.verdict === "challenger"
-                        ? m.challenger_name || m.challenger_label
-                        : m.verdict === "incumbent"
-                          ? m.incumbent_name || m.incumbent_label
-                          : null;
-                    // Three outcomes, not two. Asking only "did the old holder keep it?"
-                    // credits the belt to whoever won this match whenever the defender
-                    // changes — but the defender is re-read before every match, so it can
-                    // pass to a profile that wasn't in this match at all (an unreachable
-                    // champion, for one, is stood in for). That reads as random unless it
-                    // is said out loud.
-                    let beltNote = "";
-                    if (beltAfter && beltAfter === m.challenger) {
-                      beltNote = " · and takes the belt";
-                    } else if (beltAfter && beltAfter !== m.incumbent && beltAfterName) {
-                      beltNote = ` · ${beltAfterName} defends next`;
-                    } else if (beltAfter && m.verdict === "challenger") {
-                      beltNote =
-                        " · belt stays — it doesn't lead the champion on their whole record yet";
-                    }
-                    return (
-                      <Typography
-                        key={i}
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{ display: "block", fontFamily: "monospace" }}
-                      >
-                        {i + 1}. {m.incumbent_name || m.incumbent_label} vs{" "}
-                        {m.challenger_name || m.challenger_label}
-                        {m.challenger_why ? ` (${m.challenger_why})` : ""} →{" "}
-                        {winner ? `${winner} wins the match` : "draw"}
-                        {beltNote}
-                      </Typography>
-                    );
-                  })}
-                </Box>
-              )}
-            </Box>
-          )}
-          {!active && status?.status === "failed" && status.error && (
-            <Alert severity="warning" sx={{ mt: 2 }}>
-              <b>Last session didn't finish.</b> {status.error}
-            </Alert>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* ── The ladder ───────────────────────────────────────────────────────────── */}
-      <Card sx={{ mb: 2 }}>
-        <CardContent>
-          <Typography variant="h6">Ladder standings</Typography>
-          <Blurb
-            more={
-              <>
-                <b>Rating</b> is a strength fitted to every round fought. Who you beat is what
-                moves it: beating the top profile is worth far more than beating the bottom one.
-                1500 is the middle of the field, ± is the error bar, and an amber tag marks a thin
-                record.
-                <br />
-                <b>Proven</b> is the rating minus its error bar: what a record has demonstrated,
-                not just what it won.
-                <br />
-                <b>Overall</b> and <b>Overall rank</b> are the pooled all-history score, so the
-                two verdicts sit side by side. The ▲▼ next to a rank is how far they disagree.
-                <br />
-                <b>≈#1</b> marks a profile inside the ring&apos;s own noise of the leader. Expect
-                many: nine rounds carries about ±100 points. Hover it to see how many more rounds
-                would settle it.
-              </>
-            }
-          >
-            Ranked by <b>Rating</b>, a strength fitted to every round fought. Hover a column
-            header for its meaning; click to sort.
-          </Blurb>
-          {loadingStandings && standings.length === 0 ? (
-            <Box sx={{ mt: 1.5 }}>
-              <LinearProgress />
-              <Typography variant="caption" color="text.secondary">
-                Reading the ledger…
-              </Typography>
-            </Box>
-          ) : standingsError ? (
-            // "Nothing here" and "we couldn't load it" are different facts, and this card
-            // used to print the first for both: `table` stays null when the request fails,
-            // so a failed load rendered as an empty ledger. That sends you looking for a
-            // missing duel when what you have is a broken request — which is exactly what
-            // happened, with a full match tape visible directly underneath.
-            <Alert
-              severity="error"
-              sx={{ mt: 1.5 }}
-              action={
-                <Button size="small" onClick={() => void loadAll()}>
-                  Retry
-                </Button>
-              }
-            >
-              Couldn&apos;t load the ladder standings. {standingsError}
-            </Alert>
-          ) : standings.length === 0 ? (
-            <Alert severity="info" sx={{ mt: 1.5 }}>
-              No matches on the ledger yet. A duel needs a confident pooled crown to defend and
-              at least one reachable heir to challenge it.
-            </Alert>
-          ) : (
-            <TableContainer sx={{ mt: 1.5 }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <StandingHeader id="rank" label="Duel rank" orderBy={orderBy} order={order} onSort={handleSort} tip="Standing in the ring, by fitted Rating. Nothing pooled goes into it." />
-                    <StandingHeader id="name" label="Profile" orderBy={orderBy} order={order} onSort={handleSort} />
-                    <StandingHeader id="rating" label="Rating" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Strength fitted to every round fought (Elo scale: 1500 is mid-field, +400 wins 10 rounds per 1 lost against an average opponent). Beating a strong profile moves it a lot; beating a weak one barely at all. ± is the error bar." />
-                    <StandingHeader id="rating_floor" label="Proven" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Rating minus one error bar: what the record has demonstrated, not what it suggests. A thin record scores low here even after a win." />
-                    <StandingHeader id="wins" label="W–L–D" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match record across every duel session: wins–losses–draws. Sorts by wins." />
-                    <StandingHeader id="points" label="Pts" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Match points: 3 for a win, 1 for a draw." />
-                    <StandingHeader id="win_rate" label="Win rate" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Share of DECIDED matchups won (draws excluded)." />
-                    <StandingHeader id="pair_win_rate" label="Rounds" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Individual interleaved A/B rounds won — the raw evidence under the verdicts. Sorts by round-win rate." />
-                    <StandingHeader id="median_margin" label="Margin" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Median Overall-point gap in this profile's own favour, across its matches." />
-                    <StandingHeader id="overall" label="Overall" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="The pooled all-history score across every run, not just its matches." />
-                    <StandingHeader id="pooled_rank" label="Overall rank" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Rank on the pooled score among the profiles that have duelled. A big gap from Duel rank means the two verdicts disagree." />
-                    <StandingHeader id="opponents" label="Opponents" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Distinct profiles faced." />
-                    <StandingHeader id="championships" label="Titles" align="right" orderBy={orderBy} order={order} onSort={handleSort} tip="Sessions ended holding the belt." />
-                    <StandingHeader id="last_dueled_at" label="Last match" align="right" orderBy={orderBy} order={order} onSort={handleSort} />
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {pagedStandings.map((r: DuelStanding) => (
-                    <TableRow
-                      key={r.fingerprint}
-                      hover
-                      sx={{
-                        ...(r.is_champion ? { bgcolor: "action.selected" } : null),
-                        // A gentle marker for the profile the firewall is on — an accent
-                        // rule down the edge rather than a fill, so it reads at a glance
-                        // and still composes with the champion's row highlight.
-                        ...(r.fingerprint === liveFp
-                          ? {
-                              boxShadow: (t: Theme) => `inset 3px 0 0 ${t.palette.info.main}`,
-                            }
-                          : null),
-                      }}
-                    >
-                      <TableCell>
-                        <Stack direction="row" spacing={0.75} alignItems="baseline">
-                          <Typography variant="body2">{r.rank}</Typography>
-                          {r.tied_with_leader && <TieMark pairs={r.pairs_to_separate} />}
-                          <RankGap ringRank={r.rank} pooledRank={pooledRank.get(r.fingerprint)} />
-                        </Stack>
-                      </TableCell>
-                      <TableCell sx={{ minWidth: 210 }}>
-                        <Stack direction="row" spacing={0.5} alignItems="center">
-                          {r.is_champion && (
-                            <MilitaryTechIcon color="warning" sx={{ fontSize: 18 }} />
-                          )}
-                          <Link
-                            component="button"
-                            underline="hover"
-                            onClick={() =>
-                              navigate(`/profiles/${encodeURIComponent(r.fingerprint)}`)
-                            }
-                            sx={{ font: "inherit", textAlign: "left", whiteSpace: "nowrap" }}
-                            title={r.label}
-                          >
-                            {r.name || r.label}
-                          </Link>
-                          {r.fingerprint === liveFp && (
-                            <Chip
-                              size="small"
-                              label="live"
-                              color="info"
-                              variant="outlined"
-                              title="This profile is currently on the firewall."
-                              sx={{ height: 18, "& .MuiChip-label": { px: 0.75, fontSize: 11 } }}
-                            />
-                          )}
-                        </Stack>
-                        {r.name && (
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{ display: "block" }}
-                          >
-                            {r.label}
-                          </Typography>
-                        )}
-                        {(r.beaten.length > 0 || r.lost_to.length > 0) && (
-                          <Typography variant="caption" color="text.secondary">
-                            {r.beaten.length > 0 && `beat ${r.beaten.join(", ")}`}
-                            {r.beaten.length > 0 && r.lost_to.length > 0 && " · "}
-                            {r.lost_to.length > 0 && `lost to ${r.lost_to.join(", ")}`}
-                          </Typography>
-                        )}
-                      </TableCell>
-                      <TableCell align="right">
-                        <RatingCell row={r} />
-                      </TableCell>
-                      {/* What the record has demonstrated — and what the rank is built on,
-                          so it is printed rather than left implied in a sort order. */}
-                      <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
-                        {r.rating_floor == null ? "—" : Math.round(r.rating_floor)}
-                      </TableCell>
-                      <TableCell align="right">
-                        {r.wins}–{r.losses}–{r.draws}
-                      </TableCell>
-                      <TableCell align="right">{r.points}</TableCell>
-                      <TableCell align="right">{pct(r.win_rate)}</TableCell>
-                      <TableCell align="right">
-                        <Tooltip title={`${r.pair_wins} won / ${r.pair_losses} lost`}>
-                          <span>
-                            {r.pair_wins}–{r.pair_losses}{" "}
-                            <Typography component="span" variant="caption" color="text.secondary">
-                              ({pct(r.pair_win_rate)})
-                            </Typography>
-                          </span>
-                        </Tooltip>
-                      </TableCell>
-                      <TableCell align="right" sx={{ color: marginColor(r.median_margin) }}>
-                        {fmtMargin(r.median_margin)}
-                      </TableCell>
-                      <TableCell align="right">
-                        <Tooltip
-                          title={
-                            r.overall == null
-                              ? "No comparable runs under the current methodology."
-                              : `Pooled across ${r.pooled_iterations ?? 0} iteration(s) of all-history data.`
-                          }
-                        >
-                          <span>{fmtNum(r.overall, 1)}</span>
-                        </Tooltip>
-                      </TableCell>
-                      <TableCell align="right">
-                        <Typography variant="body2" color="text.secondary">
-                          {pooledRank.get(r.fingerprint) ?? "—"}
-                        </Typography>
-                      </TableCell>
-                      <TableCell align="right">{r.opponents}</TableCell>
-                      <TableCell align="right">{r.championships || "—"}</TableCell>
-                      <TableCell align="right">
-                        <Typography variant="caption" color="text.secondary">
-                          {fmtDateTime(r.last_dueled_at)}
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              {standings.length > rowsPerPage && (
-                <TablePagination
-                  component="div"
-                  count={standings.length}
-                  page={page}
-                  onPageChange={(_, p) => setPage(p)}
-                  rowsPerPage={rowsPerPage}
-                  onRowsPerPageChange={(e) => {
-                    setRowsPerPage(parseInt(e.target.value, 10));
-                    setPage(0);
-                  }}
-                  rowsPerPageOptions={[25, 50, 100]}
-                />
-              )}
-            </TableContainer>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* ── The mission's own check: what each device measured at home per profile ── */}
       <PhoneStanding />
 
       {/* ── Head-to-head grid ────────────────────────────────────────────────────── */}
@@ -3374,25 +3323,16 @@ export default function Duels() {
       )}
 
       {/* ── The card: who fights whom, in order ──────────────────────────────────── */}
-      <Card sx={{ mb: 2 }}>
-        <CardContent>
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            justifyContent="space-between"
-            alignItems={{ xs: "flex-start", sm: "center" }}
-            spacing={1}
-          >
-            <Box>
-              <Typography variant="h6">Who&apos;s fighting</Typography>
-              <Typography variant="caption" color="text.secondary">
-                The line-up a duel started now would run, in order.
-                <HelpTip title="A projection, not a schedule: the defender and the next challenger are re-decided from the ledger before every match." />
-              </Typography>
-            </Box>
-            <Button size="small" variant="outlined" onClick={() => void loadCard()} disabled={cardBusy}>
-              {cardBusy ? "Working it out…" : card ? "Refresh" : "Show the line-up"}
-            </Button>
-          </Stack>
+      <FoldCard
+        title="Who would fight next"
+        summary="The line-up a duel started now would run, in order. A projection: the defender and the next challenger are re-decided before every match."
+        openWhen={card != null}
+        actions={
+          <Button size="small" variant="outlined" onClick={() => void loadCard()} disabled={cardBusy}>
+            {cardBusy ? "Working it out…" : card ? "Refresh" : "Show line-up"}
+          </Button>
+        }
+      >
 
           {card?.reason && (
             <Alert severity="info" sx={{ mt: 1.5 }}>
@@ -3476,23 +3416,17 @@ export default function Duels() {
               )}
             </Box>
           )}
-        </CardContent>
-      </Card>
+      </FoldCard>
 
       {/* ── The tape ─────────────────────────────────────────────────────────────── */}
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Typography variant="h6">Match tape</Typography>
+          <Typography variant="h6">Every match</Typography>
           <Typography variant="caption" color="text.secondary">
-            Every match, newest session first.{" "}
-            <Box component="span" sx={{ color: "success.main" }}>
-              Green
-            </Box>{" "}
-            = holder&apos;s round wins,{" "}
-            <Box component="span" sx={{ color: "warning.main" }}>
-              amber
-            </Box>{" "}
-            = challenger&apos;s.
+            Every match, newest session first. In each round bar,{" "}
+            <SideDot color={HOLDER_COLOR} />
+            the defending champion&apos;s round wins, <SideDot color={CHALLENGER_COLOR} />
+            the challenger&apos;s.
           </Typography>
           {loadingLedger && ledger.length === 0 ? (
             <Box sx={{ mt: 1.5 }}>

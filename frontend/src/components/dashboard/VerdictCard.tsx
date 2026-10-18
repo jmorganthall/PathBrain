@@ -148,7 +148,7 @@ export default function VerdictCard() {
                 title={
                   onIt
                     ? "The firewall is on this profile now."
-                    : "The firewall is on a different profile. Applying is the crowning policy's job — arm Follow best, or apply it from the profile page."
+                    : "The firewall is on a different profile. Turn on Auto-apply (top bar) to keep it on this one, or apply it from the profile page."
                 }
               >
                 <Chip

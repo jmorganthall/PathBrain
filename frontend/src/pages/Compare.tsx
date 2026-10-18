@@ -19,6 +19,7 @@ import Typography from "@mui/material/Typography";
 import { api } from "../api/client";
 import type { RunDetail, RunSummary } from "../api/types";
 import Loading from "../components/Loading";
+import PageHeader from "../components/PageHeader";
 import EmptyState from "../components/EmptyState";
 import { fmtDateTime, fmtNum } from "../utils/format";
 
@@ -135,9 +136,11 @@ export default function Compare() {
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 3 }}>
-        Compare Runs
-      </Typography>
+      <PageHeader
+        title="Compare runs"
+        lead="Two runs side by side, metric by metric. The last 50 runs are offered; to compare profiles rather than runs, use Profile standings."
+        compact
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -230,7 +233,6 @@ export default function Compare() {
                           <TableCell>
                             <Typography variant="caption" color="text.secondary">
                               {row.group}
-                              {row.group === "Metric" ? " (lower better)" : " (higher better)"}
                             </Typography>
                           </TableCell>
                           <TableCell align="right">{fmtNum(row.a)}</TableCell>

@@ -42,6 +42,7 @@ import type {
   LeverLedger,
 } from "../api/types";
 import { FoldCard, HelpTip } from "../components/Explain";
+import PageHeader from "../components/PageHeader";
 import LeverLedgerCard from "../components/LeverLedgerCard";
 import { useQueuedAction } from "../hooks/useQueuedAction";
 import { fmtDateTime, fmtNum } from "../utils/format";
@@ -207,8 +208,7 @@ function PreviewCard({ card, busy, onRefresh }: { card: DuelCard | null; busy: b
   const rows = card?.queue ?? [];
   return (
     <FoldCard
-      title="What a lever session would seat"
-      defaultOpen
+      title="Preview the next session's matchups"
       summary={
         card?.incumbent ? (
           <>
@@ -219,7 +219,7 @@ function PreviewCard({ card, busy, onRefresh }: { card: DuelCard | null; busy: b
         ) : busy ? (
           "Ranking the field…"
         ) : (
-          card?.reason ?? "Not previewed — press Preview to rank the field and list what a session would seat (a few seconds of server work)."
+          card?.reason ?? "Press Preview to list which single-setting variants the next session would measure (a few seconds of server work)."
         )
       }
       actions={
@@ -494,17 +494,23 @@ export default function Levers() {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-        <EqualizerIcon color="primary" />
-        <Typography variant="h5">Lever duels</Typography>
-      </Stack>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 900 }}>
-        A profile is a bundle of settings, and a bout between two profiles that differ in four of them is
-        four questions asked at once with one answer. A lever session seats the champion against
-        single-setting variants of <b>itself</b>, so every round is a paired, same-weather reading of one
-        setting — the strongest evidence this platform can produce about what a setting does. It runs for
-        one session and then the ladder goes back to its own matchmaking.
-      </Typography>
+      <PageHeader
+        title="Lever duels"
+        icon={<EqualizerIcon />}
+        lead="What moving one setting does: your best profile against copies of itself with a single setting changed, measured in paired rounds under the same conditions."
+        more={
+          <>
+            A profile is a bundle of settings, and a match between two profiles that differ in
+            four of them is four questions asked at once with one answer. A lever session seats
+            a base profile against single-setting variants of <b>itself</b>, so every round is a
+            paired, same-conditions reading of one setting — the strongest evidence this platform
+            can produce about what a setting does. It runs for one session and then the duel
+            ladder goes back to its own matchmaking. A <b>campaign</b> pins the base profile, so
+            evidence about its settings accrues across sessions.
+          </>
+        }
+        compact
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -515,17 +521,20 @@ export default function Levers() {
       {/* ── Start / live ─────────────────────────────────────────────────────── */}
       <Card sx={{ mb: 2 }}>
         <CardContent>
+          <Typography variant="h6" sx={{ mb: 1 }}>
+            {leverSession && running ? "Live session" : "Run a lever session"}
+          </Typography>
           {leverSession && running ? (
             <Stack spacing={1}>
               <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
-                <Chip size="small" color="primary" label="lever session in the ring" />
+                <Chip size="small" color="primary" label="lever session running" />
                 <Typography variant="body2">{status?.stage ?? "starting…"}</Typography>
                 <Box sx={{ flex: 1 }} />
                 <Button size="small" color="warning" variant="outlined" startIcon={<StopIcon />} onClick={cancel}>
                   Stop after this round
                 </Button>
                 <Button size="small" component={RouterLink} to="/duels">
-                  Full board
+                  Open duels
                 </Button>
               </Stack>
               {status?.live?.reference && (
@@ -549,9 +558,31 @@ export default function Levers() {
             </Stack>
           ) : (
             <Stack spacing={1.5}>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
+                <FormControl size="small" sx={{ minWidth: 280 }}>
+                  <InputLabel id="new-base" shrink>New campaign on…</InputLabel>
+                  <Select labelId="new-base" label="New campaign on…" value={newBase} onChange={(e) => setNewBase(String(e.target.value))}>
+                    {profiles
+                      .slice()
+                      .sort((a, b) => (b.overall ?? -1) - (a.overall ?? -1))
+                      .map((p) => (
+                        <MenuItem key={p.fingerprint} value={p.fingerprint}>
+                          {p.name ?? p.label}
+                          {p.overall != null ? ` · ${p.overall.toFixed(1)}` : ""}
+                        </MenuItem>
+                      ))}
+                  </Select>
+                </FormControl>
+                <Button size="small" variant="outlined" disabled={!newBase} onClick={openCampaign}>
+                  Open campaign
+                </Button>
+                <Typography variant="caption" color="text.secondary">
+                  Step 1 — pick the profile whose settings to test, usually the best one. A base with an open campaign is selected instead of duplicated.
+                </Typography>
+              </Stack>
               <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ md: "center" }}>
                 <FormControl size="small" sx={{ minWidth: 260 }}>
-                  <InputLabel id="campaign-pick">Campaign</InputLabel>
+                  <InputLabel id="campaign-pick" shrink>Campaign</InputLabel>
                   <Select
                     labelId="campaign-pick"
                     label="Campaign"
@@ -561,7 +592,7 @@ export default function Levers() {
                   >
                     {openCampaigns.length === 0 && (
                       <MenuItem value="" disabled>
-                        No open campaign — open one below
+                        No open campaign — open one above
                       </MenuItem>
                     )}
                     {openCampaigns.map((c) => (
@@ -602,10 +633,9 @@ export default function Levers() {
                 )}
               </Stack>
               <Typography variant="caption" color="text.secondary">
-                A campaign pins its base: every match is that profile with one setting moved, whatever the belt does,
-                and a session picks up where the last one stopped. Runs through the same queue as every other
-                benchmark and restores your settings when it ends.
-                {otherSession ? " Another session holds the ring right now; this one will queue behind it." : ""}
+                Step 2 — run a session on the campaign. It picks up where the last one stopped and restores your
+                settings when it ends.
+                {otherSession ? " Another session is measuring right now; this one will queue behind it." : ""}
               </Typography>
               {campStatus && selectedCampaign && (
                 <Box>
@@ -619,28 +649,6 @@ export default function Levers() {
                   <CampaignTable status={campStatus} />
                 </Box>
               )}
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
-                <FormControl size="small" sx={{ minWidth: 280 }}>
-                  <InputLabel id="new-base">New campaign on…</InputLabel>
-                  <Select labelId="new-base" label="New campaign on…" value={newBase} onChange={(e) => setNewBase(String(e.target.value))}>
-                    {profiles
-                      .slice()
-                      .sort((a, b) => (b.overall ?? -1) - (a.overall ?? -1))
-                      .map((p) => (
-                        <MenuItem key={p.fingerprint} value={p.fingerprint}>
-                          {p.name ?? p.label}
-                          {p.overall != null ? ` · ${p.overall.toFixed(1)}` : ""}
-                        </MenuItem>
-                      ))}
-                  </Select>
-                </FormControl>
-                <Button size="small" variant="outlined" disabled={!newBase} onClick={openCampaign}>
-                  Open campaign
-                </Button>
-                <Typography variant="caption" color="text.secondary">
-                  Usually the crown or the ring&apos;s #1. Opening a base that already has an open campaign selects it.
-                </Typography>
-              </Stack>
             </Stack>
           )}
         </CardContent>
