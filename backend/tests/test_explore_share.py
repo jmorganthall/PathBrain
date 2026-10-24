@@ -124,3 +124,140 @@ def test_a_lever_session_never_explores():
 
     src = inspect.getsource(duel_mod._run_ring)
     assert 'campaign is None and mode != "levers"' in src
+
+
+# ── the maturing turn ────────────────────────────────────────────────────────────────
+
+
+def test_the_shares_turns_alternate_a_bet_then_a_top_up():
+    assert explore_share.kind_for(0, True) == "bet", "the first turn still explores"
+    assert explore_share.kind_for(1, True) == "mature"
+    assert explore_share.kind_for(2, True) == "bet"
+    assert explore_share.kind_for(3, True) == "mature"
+    assert all(explore_share.kind_for(n, False) == "bet" for n in range(6))
+    assert explore_share.mature_enabled({}) is True
+    assert explore_share.mature_enabled({"explore_mature": False}) is False
+    assert explore_share.mature_enabled({"explore_mature": None}) is True
+
+
+def test_a_maturing_turn_tops_up_the_thinnest_live_threat_not_in_the_ring(monkeypatch):
+    """The heir with the highest ceiling that is not seated, under-sampled (never a stale
+    confident one), each at most once a session, through an ordinary profile test."""
+    from pathbrain import profile_test
+
+    started: list[tuple] = []
+
+    def fake_start(fp, settings, label, iterations):
+        started.append((fp, settings, label, iterations))
+        return 4242
+
+    monkeypatch.setattr(profile_test, "start", fake_start)
+    share = explore_share.ExploreShare(7, {"explore_share": 0.05, "explore_iterations": 5}, 3600.0)
+    heirs = [
+        {"fingerprint": "seated00000", "reason": "limited-data", "optimistic": 81.0, "iterations": 5,
+         "name": "In The Ring", "crown_overall": 78.0},
+        {"fingerprint": "stale000000", "reason": "stale", "optimistic": 80.5, "iterations": 60,
+         "name": "Old Timer", "crown_overall": 78.0},
+        {"fingerprint": "thin0000000", "reason": "limited-data", "optimistic": 80.0, "iterations": 5,
+         "name": "Thin Threat", "crown_overall": 78.0, "overall": 83.0},
+        {"fingerprint": "thin0000001", "reason": "limited-data", "optimistic": 79.0, "iterations": 10,
+         "name": "Second Thin", "crown_overall": 78.0},
+    ]
+    share.heirs_source = lambda: heirs
+    share.settings_source = lambda fp: [{"label": "Download", "quantum": 3000}] if fp.startswith("thin") else None
+    share.exclude_source = lambda: {"seated00000"}
+
+    bet = share._queue_top_heir()
+    assert bet is not None and bet["kind"] == "mature"
+    assert bet["fingerprint"] == "thin0000000" and bet["test_id"] == 4242
+    assert bet["iterations"] == 5 and bet["iterations_before"] == 5 and bet["ceiling"] == 80.0
+    assert "ceiling 80.0 against a crown of 78.0" in bet["summary"]
+    assert started == [("thin0000000", [{"label": "Download", "quantum": 3000}],
+                        "Mature (duel #7): Thin Threat", 5)]
+    # Once a session: the next maturing turn goes to the next heir, then to nobody.
+    assert share._queue_top_heir()["fingerprint"] == "thin0000001"
+    assert share._queue_top_heir() is None
+    assert "already in the ring or was matured" in (share.note or "")
+
+
+def test_a_turn_with_nobody_to_mature_falls_through_to_a_bet_and_vice_versa(monkeypatch):
+    monkeypatch.setattr(explore_share, "QUEUE_SETTLE_S", 0.0)
+    share = explore_share.ExploreShare(8, {"explore_share": 0.5}, 3600.0)
+    share.heirs_source = lambda: []
+    calls: list[str] = []
+
+    def fake_bet(self):
+        calls.append("bet")
+        return {"kind": "bet", "test_id": _completed_test(C, seconds=1.0), "fingerprint": C,
+                "label": "q3000", "iterations": 5}
+
+    monkeypatch.setattr(explore_share.ExploreShare, "_queue_top_bet", fake_bet)
+    monkeypatch.setattr(explore_share, "due", lambda **_: True)
+    assert share.at_seam(3600.0)["kind"] == "bet"           # turn 1: a bet
+    assert share.at_seam(3600.0)["kind"] == "bet"           # turn 2: maturing owed, nobody → a bet
+    assert calls == ["bet", "bet"]
+    # And the other way: Explore has nothing, but an heir is waiting.
+    share2 = explore_share.ExploreShare(9, {"explore_share": 0.5}, 3600.0)
+    monkeypatch.setattr(explore_share.ExploreShare, "_queue_top_bet", lambda self: None)
+    monkeypatch.setattr(explore_share.ExploreShare, "_queue_top_heir",
+                        lambda self: {"kind": "mature", "test_id": _completed_test(C, seconds=1.0),
+                                      "fingerprint": C, "label": "Thin", "iterations": 5})
+    assert share2.at_seam(3600.0)["kind"] == "mature"        # turn 1 wanted a bet; none → matured
+    assert share2.summary()["matured"] == 1 and share2.summary()["explored"] == 0
+    # Switched off, the share only ever bets.
+    share3 = explore_share.ExploreShare(10, {"explore_share": 0.5, "explore_mature": False}, 3600.0)
+    assert share3.at_seam(3600.0) is None and share3.summary()["mature"] is False
+
+
+def test_the_ring_hands_the_maturing_turn_its_own_heirs_and_settings(monkeypatch):
+    """End to end: the ring wires the share to its heirs list, its settings and its seats, so
+    a maturing turn tops up a thin live threat through a real profile test."""
+    import pathbrain.api.routes_settings as rs
+    from pathbrain import profile_test
+    from pathbrain.config_store import save_config
+
+    applied, _ = _mock_ring(monkeypatch, {A: 70.0, B: 62.0, C: 75.0}, lambda fp, n: None)
+    with session_scope() as s:
+        save_config(s, {"duel": {"explore_share": 0.05}})
+    base = rs.compute_profiles(None)
+    for i, p in enumerate(base["profiles"]):
+        # A maturing turn applies the profile's STORED settings; the mock field carries none.
+        # Distinct per profile, or decidability refuses every bout as "the same profile".
+        if not p.get("settings"):
+            p["settings"] = [{"label": "Download", "quantum": 1000 + 1000 * i, "scheduler": "fq_codel"}]
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: base)
+    # C wears the belt and the single seat takes one of A/B; the other is the thin live threat
+    # a maturing turn may top up — never the seated one. The engine reads `all_items`
+    # (`_engine_heirs`), so the fake fills both.
+    heirs = [
+        {"fingerprint": fp, "name": f"Thin {fp[0].upper()}", "reason": "limited-data",
+         "optimistic": 90.0, "iterations": 5, "crown_overall": 75.0, "overall": 62.0}
+        for fp in (A, B)
+    ]
+    monkeypatch.setattr(rs, "_compute_heirs", lambda field, session, live=None: {
+        "items": list(heirs), "all_items": list(heirs), "total": 2, "limit": 5, "crown_overall": 75.0,
+    })
+    monkeypatch.setattr(explore_share, "QUEUE_SETTLE_S", 0.0)
+    monkeypatch.setattr(explore_share, "due", lambda **_: True)
+    monkeypatch.setattr(explore_share.ExploreShare, "_queue_top_bet",
+                        lambda self: {"kind": "bet", "test_id": _completed_test(C), "fingerprint": C,
+                                      "label": "bet", "iterations": self.iterations})
+    matured: list[tuple] = []
+
+    def fake_start(fp, settings, label, iterations):
+        matured.append((fp, settings, label, iterations))
+        return _completed_test(fp)
+
+    monkeypatch.setattr(profile_test, "start", fake_start)
+    d = _wait(duel_mod.start(duration_minutes=60), timeout=30)
+    assert d.status.value == "complete", d.error
+    kinds = [b.get("kind") for b in d.explore["bets"]]
+    assert "bet" in kinds and "mature" in kinds, kinds
+    fp, settings, label, iterations = matured[0]
+    assert fp in (A, B) and settings and iterations == 5
+    assert label == "Mature (duel #%d): Thin %s" % (d.id, fp[0].upper())
+    first_seated = d.matchups[0]["challenger"]
+    assert fp != first_seated, "a profile in the ring is never matured from under its match"
+    # Each profile is matured at most once a session; the belt never is.
+    assert d.explore["matured"] <= 2 and all(m[0] != C for m in matured)
+    assert len({m[0] for m in matured}) == len(matured)

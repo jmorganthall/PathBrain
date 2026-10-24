@@ -407,6 +407,10 @@ DEFAULT_CONFIG: dict = {
         # 0 turns it off. See `explore_share`.
         "explore_share": 0.05,
         "explore_iterations": 5,
+        # The share's turns alternate: a new bet, then a top-up of the thinnest live threat
+        # (the under-sampled heir with the highest posterior ceiling) for `explore_iterations`
+        # more — so the thin profiles the bets mint get settled, not only added to.
+        "explore_mature": True,
         # The prospect seat: with two or more seats, one is kept for a thin profile whose
         # pooled ceiling still reaches the crown (`LIVE_THREAT_TIER`), so promising
         # under-sampled profiles are raced every night instead of waiting behind the Overall's
