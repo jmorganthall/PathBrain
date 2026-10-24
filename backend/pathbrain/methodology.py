@@ -76,7 +76,12 @@ def weighted_score(pairs: list[tuple[float, float]]) -> float | None:
     den = sum(w for _, w in present)
     if not present or den <= 0:
         return None
-    return round(sum(v * w for v, w in present) / den, 1)
+    # Full precision, deliberately: this is the number the crown is the argmax of, and the
+    # gaps between the top profiles on a fast link are 0.1–0.3 points. Rounded to one
+    # decimal here, two profiles 0.05 apart read as an exact tie and the crown went to
+    # whichever had more iterations — a verdict decided by rounding and by sample size
+    # rather than by the measurement. Rounding is for serialization, at the edge.
+    return sum(v * w for v, w in present) / den
 
 # Shared axis layout + per-metric rubric for the speed/smoothness family.
 _SS_AXES = [
