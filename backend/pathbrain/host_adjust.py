@@ -258,3 +258,44 @@ def model_for(session, methodology_version: str) -> HostModel:
         return HostModel(None, 0, None, "the fit failed; margins left raw")
     log.info("Host adjustment: %s", model.why)
     return model
+
+
+# ── The pooled record, read against the same β ───────────────────────────────────────
+#
+# The ring adjusts a ROUND: challenger minus the mean of its belt legs, both measured
+# minutes apart on the same machine, so the covariate is the difference between two legs.
+# The pooled record has no pair: a profile's runs were taken across every hour of every
+# night, and the host's nightly slow window lands on whichever profile the firewall sat on
+# at 07:00 UTC. So the reference is the FIELD — the mean log host reading over every
+# comparable run — and a run's adjustment is β · (x_run − x̄): what the machine's own speed
+# at that moment was worth in Overall points, by the same β the ring earned on its pure-noise
+# pairs. Read by `compute_profiles` into a per-profile `overall_host_adjusted` beside the raw
+# Overall (R9 in the architecture review). **A reading, not a re-rank**: the crown still
+# pools the raw Overall; this says how far the machine moved each profile and whether the
+# adjusted argmax names a different profile, which is the case for a race, not a re-crown.
+
+
+def pooled_reference(vectors: list[list[float]]) -> list[float] | None:
+    """The field's mean log host vector — "the typical machine this record was measured on".
+    None without any readings."""
+    vecs = [v for v in vectors if v is not None]
+    if not vecs:
+        return None
+    n = len(vecs)
+    return [sum(v[i] for v in vecs) / n for i in range(len(KEYS))]
+
+
+def pooled_adjustment(model: "HostModel | None", vec: list[float] | None, reference: list[float] | None) -> float | None:
+    """How many Overall points the host's speed on this run was worth, against the field's
+    reference machine: ``β · clip(x_run − x̄)``. None when there is no fitted β, no reading
+    or no reference — the caller then keeps the raw Overall, never a guessed covariate."""
+    if model is None or not model.active or vec is None or reference is None:
+        return None
+    return _predict(model.beta, _diff(vec, reference))
+
+
+def describe_reference(reference: list[float] | None) -> dict[str, float] | None:
+    """The reference machine in the readings' own units (ms), for the page."""
+    if reference is None:
+        return None
+    return {k: round(math.exp(v), 1) for k, v in zip(KEYS, reference)}

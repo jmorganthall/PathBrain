@@ -226,6 +226,14 @@ export interface SettingsProfile {
   // the duel's live-threat tier admit a thin profile on. `optimistic_p75` is the p75 it replaced.
   optimistic: number | null;
   optimistic_p75: number | null;
+  // The pooled host adjustment (host_adjust.py): this profile's Overall with the measuring
+  // machine's own speed priced out — each run's Overall less β · (its log host readings − the
+  // field's reference machine), medianed over the runs that carry readings — beside how many
+  // runs did and the shift it made (adjusted − raw). Display only; the crown is the raw argmax.
+  // Null when no β is fitted or none of its runs carry host readings.
+  overall_host_adjusted: number | null;
+  host_adjusted_runs: number;
+  host_adjustment: number | null;
   // Current form vs prior record: recent-window median Overall vs the rest of history,
   // significance-gated both directions. "fading" = pooled Overall propped by a past it no
   // longer delivers; "rising" = pooled Overall understates its present. Null when there
@@ -524,6 +532,37 @@ export interface SettingsProfilesResponse {
     label: string;
     delta_median: number;
     coverage: number;
+  } | null;
+  // The pooled host adjustment's readout: the ring's β (per host reading, Overall points per
+  // log unit), the field's reference machine in ms, how many runs carried readings, and the
+  // raw vs host-adjusted argmax. Null when `duel.host_adjust` is off.
+  host_adjust: {
+    active: boolean;
+    beta: Record<string, number> | null;
+    pairs: number;
+    heldout_gain: number | null;
+    why: string;
+    runs_with_readings: number;
+    reference: Record<string, number> | null;
+    crown_raw: string | null;
+    crown_adjusted: string | null;
+  } | null;
+  // The host-adjusted argmax when it differs from the raw crown: the crown may owe its rank to
+  // a faster machine during its runs — race these two. Null when they agree.
+  host_crown_suspect: {
+    fingerprint: string;
+    label: string;
+    name: string | null;
+    overall: number | null;
+    overall_host_adjusted: number;
+    host_adjustment: number | null;
+    crown_fingerprint: string;
+    crown_label: string;
+    crown_name: string | null;
+    crown_overall: number | null;
+    crown_overall_host_adjusted: number | null;
+    crown_host_adjustment: number | null;
+    why: string;
   } | null;
   // The ghost-crown signal: the crown's current form significantly trails its own prior
   // record, so the bar challengers must clear may be stale. Null when steady/rising.

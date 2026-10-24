@@ -358,6 +358,8 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.overall_recent ?? null;
     case "overall_shrunk":
       return p.overall_shrunk ?? null;
+    case "overall_host_adjusted":
+      return p.overall_host_adjusted ?? null;
     case "pct_vs_sqm_off":
       return p.pct_vs_sqm_off ?? null;
     case "p25":
@@ -437,6 +439,7 @@ const FIXED_COLUMN_KEYS = new Set([
   "count",
   "overall_recent",
   "overall_shrunk",
+  "overall_host_adjusted",
   "weather_relative",
   "pct_vs_sqm_off",
 ]);
@@ -455,6 +458,8 @@ const COLUMN_TIPS: Record<string, string> = {
     "The headline score, combining the crown metrics. Shown as a standing (1 = best); the highest Overall among confident profiles is crowned.",
   overall_shrunk:
     "The Overall shrunk toward the field's centre by exactly as much as this profile's own noise warrants. A well-measured profile does not move; a one-run profile reading far above the pack is mostly the lucky run, and this is what it probably is. Display only — the crown ranks on the raw Overall.",
+  overall_host_adjusted:
+    "The Overall with the measuring machine's own speed priced out: each run's Overall less what the host's context setup / close / timing reads / render cost on that run, by the β the duel ring fitted on same-profile legs, against the field's typical machine. A profile measured through the host's slow window reads higher here; one measured on a quick machine reads lower. Display only — the crown ranks on the raw Overall; a disagreement is a case for a race.",
   weather_relative:
     "This profile's Overall vs what other profiles deliver under the same measured conditions. Positive = beats the field in like weather. Informational only.",
   weather_severity:
@@ -693,6 +698,8 @@ export default function Settings() {
   const [crownWindow, setCrownWindow] = useState(100);
   // The field-as-prior behind the Shrunk column (null under a corner crown, or before load).
   const [shrinkage, setShrinkage] = useState<{ mean: number; basis: string } | null>(null);
+  const [hostAdjust, setHostAdjust] = useState<SettingsProfilesResponse["host_adjust"]>(null);
+  const [hostSuspect, setHostSuspect] = useState<SettingsProfilesResponse["host_crown_suspect"]>(null);
   // Dynamic quadrant axes — X/Y/Shade default to the current methodology's crown metric set
   // (the Overall scoring corner's inputs), pulled from the profiles response's `overall_metrics`
   // rather than hardcoded, so the default view always demonstrates how *this* methodology's Overall
@@ -877,6 +884,8 @@ export default function Settings() {
       setCrownFading(p.crown_fading ?? null);
       setCrownWindow(p.crown_window_iterations ?? 0);
       setShrinkage(p.shrinkage ?? null);
+      setHostAdjust(p.host_adjust ?? null);
+      setHostSuspect(p.host_crown_suspect ?? null);
       setRanking(p.ranking ?? "pooled");
       setScoreSources(p.score_sources ?? null);
       setRingRated(p.ring_rated_count ?? 0);
@@ -1508,6 +1517,33 @@ export default function Settings() {
         </Alert>
       )}
 
+      {hostSuspect && (
+        <Alert
+          severity="info"
+          sx={{ mb: 2 }}
+          action={
+            <Button
+              size="small"
+              color="inherit"
+              onClick={() => setRaceOpen(true)}
+              disabled={raceRunning || testRunning || refreshRunning || applying}
+            >
+              Race challengers
+            </Button>
+          }
+        >
+          <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.5 }}>
+            The best profile may owe its rank to a faster measuring machine
+          </Typography>
+          With the host's own speed priced out, <b>{hostSuspect.name ?? hostSuspect.label}</b> reads{" "}
+          {hostSuspect.overall_host_adjusted.toFixed(2)} (raw {hostSuspect.overall != null ? hostSuspect.overall.toFixed(2) : "—"}) against the
+          crown <b>{hostSuspect.crown_name ?? hostSuspect.crown_label}</b> at{" "}
+          {hostSuspect.crown_overall_host_adjusted != null ? hostSuspect.crown_overall_host_adjusted.toFixed(2) : "—"} (raw{" "}
+          {hostSuspect.crown_overall != null ? hostSuspect.crown_overall.toFixed(2) : "—"}). Nothing is re-ranked; a head-to-head
+          race on one machine settles it.
+        </Alert>
+      )}
+
       {!profiles || profiles.length === 0 ? (
         <Card sx={{ mb: 2 }}>
           <CardContent>
@@ -1836,6 +1872,17 @@ export default function Settings() {
                         tip={COLUMN_TIPS.overall_shrunk}
                       />
                     )}
+                    {hostAdjust?.active && (
+                      <SortHeader
+                        id="overall_host_adjusted"
+                        label="Host-adj"
+                        align="right"
+                        orderBy={orderBy}
+                        order={order}
+                        onSort={handleSort}
+                        tip={COLUMN_TIPS.overall_host_adjusted}
+                      />
+                    )}
                     <SortHeader
                       id="weather_relative"
                       label="vs weather"
@@ -2137,6 +2184,25 @@ export default function Settings() {
                                 sx={{ cursor: "help", color: p.confident ? "inherit" : "text.secondary" }}
                               >
                                 {p.overall_shrunk.toFixed(1)}
+                              </Typography>
+                            </Tooltip>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                      )}
+                      {hostAdjust?.active && (
+                        <TableCell align="right">
+                          {p.overall_host_adjusted != null ? (
+                            <Tooltip
+                              title={`With the measuring machine's speed priced out: ${p.overall_host_adjusted.toFixed(2)} from a raw ${p.overall != null ? p.overall.toFixed(2) : "—"} (${p.host_adjustment != null && p.host_adjustment >= 0 ? "+" : ""}${p.host_adjustment != null ? p.host_adjustment.toFixed(2) : "—"}), over the ${p.host_adjusted_runs} of ${p.count} run(s) that carry host readings. Display only; the crown ranks on the raw Overall.`}
+                            >
+                              <Typography
+                                component="span"
+                                variant="body2"
+                                sx={{ cursor: "help", color: p.confident ? "inherit" : "text.secondary" }}
+                              >
+                                {p.overall_host_adjusted.toFixed(1)}
                               </Typography>
                             </Tooltip>
                           ) : (

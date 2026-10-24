@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, defer, selectinload
 
 from .. import challenger as challenger_mod
 from .. import crowning
+from .. import host_adjust as host_adjust_mod
 from .. import profile_test as profile_test_mod
 from .. import refresh as refresh_mod
 from .. import why as why_mod
@@ -2306,6 +2307,17 @@ def _compute_profiles_uncached(
     _capture_keys = _crown_adj_keys | set(_clean_covs)
     # Per-run (fingerprint, overall, covariate readings) for the weather cohort pass.
     weather_runs: list[tuple[str, float, dict[str, float]]] = []
+    # The pooled host adjustment (host_adjust.py, R9): the ring's β — fitted on same-profile
+    # legs minutes apart, so it prices only the machine's own speed — read against the field's
+    # reference machine, so a profile measured through the host's nightly slow window is priced
+    # beside its raw Overall. A reading, never a crown input; a failed fit is no reading.
+    host_model = None
+    host_vectors: list[list[float]] = []
+    try:
+        if bool((get_config(session).get("duel") or {}).get("host_adjust", True)):
+            host_model = host_adjust_mod.model_for(session, methodology.version)
+    except Exception:  # noqa: BLE001 — a reading, never a failed field
+        host_model = None
     # ── Recent-evidence window (the "Overall (recent)" COLUMN, not the verdict) ──────
     # A per-profile window over its most recent ``crown_window_iterations`` iterations
     # (walking runs newest-first until the window fills). This briefly WAS the verdict
@@ -2396,6 +2408,8 @@ def _compute_profiles_uncached(
                 # …plus the per-run weather-adjusted crown raw (setup-stripped fcp/lcp, raw
                 # stall_energy) for the display-only `weather_adjusted_overall`.
                 "crown_adj_samples": {},
+                # …and (per-run Overall, log host vector) pairs for the pooled host adjustment.
+                "host_runs": [],
                 "first_seen": run.created_at,
                 "last_seen": run.created_at,
             },
@@ -2471,6 +2485,11 @@ def _compute_profiles_uncached(
         if run_overall is not None:
             covs = {k: run_vals[k] for k in _clean_covs if k in run_vals}
             weather_runs.append((run.settings_fingerprint, float(run_overall), covs))
+        if host_model is not None and host_model.active and run_overall is not None:
+            host_vec = host_adjust_mod._log_vector((run.instrument_health or {}).get("readings"))
+            if host_vec is not None:
+                host_vectors.append(host_vec)
+                g["host_runs"].append((float(run_overall), host_vec))
         g["settings"] = run.settings
         g["last_seen"] = run.created_at
 
@@ -2504,6 +2523,10 @@ def _compute_profiles_uncached(
     # Tie/significance parameters — shared by the crown-tie machinery below and the
     # per-profile current-form check inside the loop.
     tie_margin, tie_sigma = _crown_tie_params(session)
+
+    # The field's reference machine for the pooled host adjustment: the mean log host reading
+    # over every comparable run with readings (None without any).
+    host_reference = host_adjust_mod.pooled_reference(host_vectors) if host_vectors else None
 
     profiles = []
     for g in groups.values():
@@ -2553,6 +2576,23 @@ def _compute_profiles_uncached(
             baseline_points, g["points"], "overall", tz_offset, min_samples,
             resolver=overall_resolver,
         )
+        # Host-adjusted Overall: each run's Overall less what the machine's speed on that run
+        # was worth against the reference machine (β · Δlog host readings), medianed over the
+        # runs that carry readings. `host_adjustment` is the shift it made to this profile.
+        host_adj_overall = host_adjustment = None
+        host_adj_n = 0
+        if host_reference is not None and g["host_runs"]:
+            adjusted, raw_same = [], []
+            for run_ov, vec in g["host_runs"]:
+                adj = host_adjust_mod.pooled_adjustment(host_model, vec, host_reference)
+                if adj is None:
+                    continue
+                adjusted.append(run_ov - adj)
+                raw_same.append(run_ov)
+            if adjusted:
+                host_adj_n = len(adjusted)
+                host_adj_overall = round(median(adjusted), 2)
+                host_adjustment = round(median(adjusted) - median(raw_same), 2)
         profiles.append(
             {
                 "fingerprint": g["fingerprint"],
@@ -2562,6 +2602,12 @@ def _compute_profiles_uncached(
                 "label": summarize(g["settings"]),
                 "settings": g["settings"],
                 "count": count,
+                # The pooled host adjustment (display only): this profile's Overall with the
+                # measuring machine's own speed priced out, how many of its runs carried the
+                # readings, and the shift (adjusted − raw over those runs).
+                "overall_host_adjusted": host_adj_overall,
+                "host_adjusted_runs": host_adj_n,
+                "host_adjustment": host_adjustment,
                 "iterations": g["iterations"],
                 # Confidence is gated on total iterations (the unit of signal), not
                 # run count.
@@ -2806,6 +2852,50 @@ def _compute_profiles_uncached(
     # "this was close" flag, not a re-ranking. Empty when the crown stands clearly apart.
     crown_co_leaders = [fp for fp in co_leaders if fp != best_fingerprint]
 
+    # The pooled host adjustment's own readout, and the one question it exists to ask: does
+    # the host-adjusted argmax name a different profile than the raw crown? If it does the
+    # crown may owe its rank to a faster machine — the case for a RACE (back-to-back legs on
+    # the same machine), never a re-crown: `host_crown_suspect` is flag-and-steer exactly as
+    # `weather_crown_suspect` is.
+    host_adjust_info = None
+    host_crown_suspect = None
+    if host_model is not None:
+        host_adjust_info = {
+            **host_model.describe(),
+            "runs_with_readings": len(host_vectors),
+            "reference": host_adjust_mod.describe_reference(host_reference),
+            "crown_raw": best_fingerprint,
+            "crown_adjusted": None,
+        }
+        adjusted_field = [p for p in confident if p.get("overall_host_adjusted") is not None]
+        if host_reference is not None and adjusted_field and best_fingerprint:
+            top = max(adjusted_field, key=lambda p: (p["overall_host_adjusted"], p["iterations"]))
+            host_adjust_info["crown_adjusted"] = top["fingerprint"]
+            crown_p = next((p for p in confident if p["fingerprint"] == best_fingerprint), None)
+            if top["fingerprint"] != best_fingerprint and crown_p is not None:
+                crown_adj = crown_p.get("overall_host_adjusted")
+                host_crown_suspect = {
+                    "fingerprint": top["fingerprint"],
+                    "label": top["label"],
+                    "name": top.get("name"),
+                    "overall": top.get("overall"),
+                    "overall_host_adjusted": top["overall_host_adjusted"],
+                    "host_adjustment": top.get("host_adjustment"),
+                    "crown_fingerprint": best_fingerprint,
+                    "crown_label": crown_p["label"],
+                    "crown_name": crown_p.get("name"),
+                    "crown_overall": crown_p.get("overall"),
+                    "crown_overall_host_adjusted": crown_adj,
+                    "crown_host_adjustment": crown_p.get("host_adjustment"),
+                    "why": (
+                        f"With the measuring machine's own speed priced out, {top['label']} reads "
+                        f"{top['overall_host_adjusted']:.2f} against the crown's "
+                        f"{crown_adj if crown_adj is None else format(crown_adj, '.2f')} — the crown may "
+                        f"owe its rank to a faster machine during its runs. A head-to-head race on one "
+                        f"machine settles it; nothing is re-ranked."
+                    ),
+                }
+
     # Crown-lead-vs-noise readout: the actual numbers behind "is #1 a real lead?" — the crown's
     # Overall + its standard error, the gap to the runner-up, and the significance threshold
     # (max(floor, σ · pooled SE)). Lets the UI show measured signal-vs-noise instead of an adjective.
@@ -2945,6 +3035,13 @@ def _compute_profiles_uncached(
         # The residual ranking's top profile when it differs from the raw crown — the
         # "crown may be weather-confounded; race these" signal (None when they agree).
         "weather_crown_suspect": weather_crown_suspect,
+        # The pooled host adjustment (host_adjust.py): the ring's β, the field's reference
+        # machine, how many runs carried readings, and the raw vs host-adjusted argmax. Null
+        # when the adjustment is switched off (`duel.host_adjust`).
+        "host_adjust": host_adjust_info,
+        # The host-adjusted argmax when it differs from the raw crown — "the crown may owe its
+        # rank to a faster machine; race these" (None when they agree or nothing is adjusted).
+        "host_crown_suspect": host_crown_suspect,
         # The ghost-crown signal: the crown's current form significantly trails its own
         # prior record, so the bar challengers race against may be stale (None when steady).
         "crown_fading": crown_fading,
