@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import idle_audit, instrument_drift, instrument_health, jobs, reachability, warm_agreement
+from .. import publish_followthrough
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
 from ..logging_config import get_logger
@@ -27,10 +28,15 @@ from ..methodology import (
     summarize,
 )
 from ..models import Methodology
-from ..runner import score_history_under_current
 
 router = APIRouter()
 log = get_logger(__name__)
+
+# Every publish route kicks the same job: grade history under the now-current version, then
+# finish the publish — re-read the duel ledger under it and queue the prior version's winners
+# for their first chunk (``publish_followthrough``). One body, so a publish started from the
+# re-anchor, the site list or the version picker cannot leave a different half undone.
+_regrade_job = publish_followthrough.regrade_then_follow_through
 
 
 def _fmt_num(v: float) -> str:
@@ -304,12 +310,8 @@ def reanchor_threshold(
         return {"version": new_version, "job_id": None, "regrade_deferred": True}
 
     # Re-grade history under the new version (background job; surfaces in the jobs feed).
-    def task(job: jobs.Job) -> dict:
-        with session_scope() as s:
-            return score_history_under_current(s, progress=job.set_progress)
-
     job_id = jobs.start(
-        "regrade", f"Re-grade under {new_version}", task, href="/methodology"
+        "regrade", f"Re-grade under {new_version}", _regrade_job, href="/methodology"
     )
     return {"version": new_version, "job_id": job_id}
 
@@ -344,11 +346,7 @@ def publish_site_list(body: dict = Body(...), session: Session = Depends(get_ses
     if not regrade:
         return {**info, "job_id": None, "regrade_deferred": True}
 
-    def task(job: jobs.Job) -> dict:
-        with session_scope() as s:
-            return score_history_under_current(s, progress=job.set_progress)
-
-    job_id = jobs.start("regrade", f"Re-grade under {row.version}", task, href="/methodology")
+    job_id = jobs.start("regrade", f"Re-grade under {row.version}", _regrade_job, href="/methodology")
     return {**info, "job_id": job_id}
 
 
@@ -380,9 +378,29 @@ def set_current_methodology(
     session.commit()
     log.info("Set current methodology → %s (pin=%r)", row.version, version or None)
 
-    def task(job: jobs.Job) -> dict:
-        with session_scope() as s:
-            return score_history_under_current(s, progress=job.set_progress)
-
-    job_id = jobs.start("regrade", f"Re-grade under {row.version}", task, href="/methodology")
+    job_id = jobs.start("regrade", f"Re-grade under {row.version}", _regrade_job, href="/methodology")
     return {"version": row.version, "job_id": job_id}
+
+
+@router.post("/methodologies/reseed", status_code=202)
+def reseed_prior_winners(body: dict = Body(default=None), session: Session = Depends(get_session)) -> dict:
+    """Queue the prior methodology's winners for their first chunk under the current one —
+    the step the re-grade job runs by itself after a publish, here on demand
+    (``publish_followthrough.queue_prior_winners``). Body: ``{"top"?: N, "iterations"?: N,
+    "dry_run"?: bool}`` — defaults from ``config.publish``; ``dry_run`` returns the plan
+    (who would be queued and why each winner is or is not) without submitting anything."""
+    body = body or {}
+
+    def _opt_int(key: str) -> int | None:
+        raw = body.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{key} must be an integer") from None
+
+    return publish_followthrough.queue_prior_winners(
+        session, top=_opt_int("top"), iterations=_opt_int("iterations"),
+        dry_run=bool(body.get("dry_run", False)),
+    )

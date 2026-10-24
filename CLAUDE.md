@@ -3054,6 +3054,25 @@ LLM-based. See `README.md` for the product overview.
     no data on are still folded in as `no_data` entries; with no crown at all every stored
     profile is seeded, as before. `test_the_seed_still_applies_once_the_firewalls_own_profile_is_crowned`
     pins it: the current crown defends, the prior's best unmeasured profile challenges first.
+    **A publish finishes itself** (`publish_followthrough.py`: `regrade_then_follow_through`,
+    the one job body every re-grade route runs — the plain re-grade, the re-anchor, the site
+    list and the version picker; `queue_prior_winners` / `plan_prior_winners`; `config.publish`
+    `reseed_top` 10 / `reseed_iterations` 5, 0 = off; `POST /api/methodologies/reseed`, with
+    `dry_run` for the plan). A publish has two costs and only the re-grade was paid by itself:
+    a publish that changes the *instrument* (sites, client, a metric old raw cannot supply)
+    quarantines history, and the seed could order the empty field but the winner-first re-run
+    that fills it was a button nobody was reminded to press. Now the re-grade job grades
+    history, re-reads the duel ledger under the new version (`duel.regrade_ledger`), and
+    queues the prior version's top winners — **confident under it** (a thin lucky reading was
+    never a winner by the project's own rule) and short of one chunk of comparable iterations
+    under the current version — as an ordinary winner-first refresh of exactly those
+    fingerprints through `job_queue`, so it waits its turn, survives a restart and restores
+    the baseline. Idempotent: a winner with its chunk is skipped, a refresh already queued or
+    running is left alone, and a re-weighting publish (history re-grades whole) queues
+    nothing — which is right. The plan says why each winner is or is not queued. It never
+    picks winners by the current version (there is no current data; that is the situation),
+    never re-runs everything (the un-ranked refresh stays a button), and writes nothing to the
+    firewall itself. `test_publish_followthrough`.
     **The seed is cached, because it is now read on every page load** (`refresh._PROFILES_CACHE`
     / `_PRIOR_CACHE`, dropped by `invalidate_seed_cache` from the same hook as the field memo).
     Ungating the seed made `seed_field_from_prior` run on every Settings-Impact load and every
