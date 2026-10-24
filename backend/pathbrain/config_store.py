@@ -238,6 +238,16 @@ DEFAULT_CONFIG: dict = {
         # does this machine do lately?"), never by all of time.
         "baseline_runs": 400,
     },
+    # What a publish does by itself once history is re-graded (`publish_followthrough`): the
+    # prior methodology's top `reseed_top` winners (confident under it) that have fewer than
+    # `reseed_iterations` comparable iterations under the new version are queued for exactly
+    # that many, as a winner-first refresh. A re-weighting publish re-grades history whole and
+    # queues nothing; an instrument publish (sites, client, a new metric) quarantines the old
+    # runs and this is what gives the new field its first data without a button. 0 = off.
+    "publish": {
+        "reseed_top": 10,
+        "reseed_iterations": 5,
+    },
     "correlation": {
         "significant_change_pct": 5,
 

@@ -169,25 +169,14 @@ def regrade_history() -> dict:
     incomparable. Progress + the final comparability summary surface in the jobs feed.
     """
 
-    def task(job: jobs.Job) -> dict:
-        with session_scope() as session:
-            summary = score_history_under_current(session, progress=job.set_progress)
-        # The ledger re-grades with the record: every duel round is re-read from the runs
-        # that made it under the version the history was just graded on, so a publish never
-        # costs the fused ranking its ring evidence (``duel.regrade_ledger``). Best-effort —
-        # a failure here is reported in the summary, never a failed re-grade.
-        try:
-            from .. import duel
-
-            with session_scope() as session:
-                summary["ledger"] = duel.regrade_ledger(session)
-        except Exception as exc:  # noqa: BLE001 — the history re-grade already landed
-            log.warning("Re-grade: the duel ledger could not be re-graded", exc_info=True)
-            summary["ledger"] = {"error": str(exc)}
-        return summary
+    # One body for every re-grade job (``publish_followthrough.regrade_then_follow_through``):
+    # grade history, re-read the duel ledger under the new version, queue the prior winners'
+    # first chunk — so a publish finishes itself whichever route started it.
+    from ..publish_followthrough import regrade_then_follow_through
 
     job_id = jobs.start(
-        "regrade", "Re-grade history under current methodology", task, href="/methodology"
+        "regrade", "Re-grade history under current methodology", regrade_then_follow_through,
+        href="/methodology",
     )
     return {"job_id": job_id}
 
