@@ -103,6 +103,9 @@ UNANCHORED_VARIANCE = 400.0
 #: `median(z²)` for a centred normal is `0.4549 · Var(z)`; used to read a variance off a
 #: median so one enormous margin (a failed leg) cannot set the slack on its own.
 MEDIAN_SQ_TO_VAR = 1.0 / 0.4549
+#: The median of a χ²₁ variable — what ``z² / Var(z)`` should median to when the model
+#: holds. `pooled_slack` solves for the τ that makes it so.
+MEDIAN_CHI2_1 = 0.4549
 
 #: Past this many head-to-head rounds "rounds to separate" is reported as None — the
 #: answer is "they are the same profile for every practical purpose".
@@ -219,11 +222,21 @@ def pooled_slack(
     For every pair the ring has fought, the pooled difference ``μ_b − μ_a`` and the ring's
     mean margin are two readings of one gap, and the ring's is unbiased. Their
     disagreement ``z`` has variance ``SE_a² + SE_b² + σ²/n + 2τ²`` — everything but the
-    last term is known — so τ is the excess, read robustly (a median of ``z²``, since one
-    failed leg's margin would otherwise set it) and never negative.
+    last term is known — so τ is the excess, read robustly and never negative.
+
+    **Each pair is read against its own expected variance.** The pairs are not alike: one
+    rests on two 3000-iteration medians and twenty rounds, another on a five-run profile
+    and four rounds, so their ``z`` have different known variances and "median of z² minus
+    median of expected" compares the middle of one distribution with the middle of
+    another — a mismatch that reads τ wrong whenever the thin pairs and the wide-z pairs
+    are not the same pairs. Under the model every standardized ``z² / (expected + 2τ²)``
+    is an iid χ²₁, whose median is `MEDIAN_CHI2_1`, so τ² is the value that makes the
+    median of those ratios equal it (a monotone function of τ², solved by bisection; zero
+    when the pooled record already disagrees less than its own bars allow). Still a
+    median, so one failed leg's margin cannot set it.
 
     Returns ``{tau, pairs, basis, excess_var, expected_var}``; ``basis`` is ``measured``
-    or ``default``.
+    or ``default``. ``excess_var`` / ``expected_var`` are the plain medians, for the page.
     """
     z2: list[float] = []
     expected: list[float] = []
@@ -247,12 +260,38 @@ def pooled_slack(
         }
     total_var = float(_median(z2) or 0.0) * MEDIAN_SQ_TO_VAR
     exp_var = float(_median(expected) or 0.0)
-    excess = max(0.0, (total_var - exp_var) / 2.0)
+    tau2 = _solve_slack_variance(z2, expected)
     return {
-        "tau": round(math.sqrt(excess), 3), "pairs": len(z2), "basis": "measured",
+        "tau": round(math.sqrt(tau2), 3), "pairs": len(z2), "basis": "measured",
         "excess_var": round(total_var, 4), "expected_var": round(exp_var, 4),
         "needed_pairs": MIN_SLACK_PAIRS,
+        "method": "standardized: median of z²/(expected + 2τ²) = median χ²₁",
     }
+
+
+def _solve_slack_variance(z2: list[float], expected: list[float]) -> float:
+    """τ² such that ``median(z² / (expected + 2τ²)) == MEDIAN_CHI2_1``, or 0 when the
+    disagreement is already inside the known bars. The ratio's median falls monotonically
+    in τ², so bisection is exact to the tolerance."""
+    def ratio(t2: float) -> float:
+        return float(_median([z / (e + 2.0 * t2) for z, e in zip(z2, expected)]) or 0.0)
+
+    if ratio(0.0) <= MEDIAN_CHI2_1:
+        return 0.0
+    lo, hi = 0.0, max(max(z2), 1e-9)
+    # Widen until the median ratio has fallen under the χ²₁ median (it must — every
+    # ratio → 0 as τ² grows).
+    for _ in range(64):
+        if ratio(hi) <= MEDIAN_CHI2_1:
+            break
+        hi *= 2.0
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        if ratio(mid) > MEDIAN_CHI2_1:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
 
 
 # ── The fit ─────────────────────────────────────────────────────────────────────────────
@@ -585,6 +624,9 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
             "ring_only": None if fp not in ring_only or not f["rounds"] else round(float(ring_only[fp]["fused"]), 2),
             "confident": int(p.get("iterations") or 0) >= min_iterations,
             "is_sqm_off": fp == SQM_OFF_FINGERPRINT,
+            # Placed by a pooled median (True) or by ring rounds alone (False). Only an
+            # anchored profile has a fused Overall ON the pooled scale.
+            "anchored": bool(f.get("anchored")),
         })
     # Names for profiles the ring fought that the field has no row for.
     unnamed = [r["fingerprint"] for r in rows if not r["name"]]
@@ -599,10 +641,14 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
         except Exception:  # noqa: BLE001 — naming is never a reason the page fails
             log.debug("Overall ranking: could not resolve call signs", exc_info=True)
 
-    # Eligible for the crown: measured enough on either record. SQM off is excluded (the
-    # baseline test's supervised job) but supplies the "vs no shaper" reading.
+    # Eligible for the crown: measured enough on either record, AND anchored — a profile
+    # the fit places from ring rounds alone has a fused Overall relative to its opponents,
+    # not a number on the pooled scale, and `ring_target` already refuses to seat one;
+    # `crown()` naming it would hand the crowning policy a profile the pooled record has
+    # never confirmed (the review's S5). SQM off is excluded (the baseline test's
+    # supervised job) but supplies the "vs no shaper" reading.
     for r in rows:
-        r["eligible"] = (not r["is_sqm_off"]) and (
+        r["eligible"] = (not r["is_sqm_off"]) and r["anchored"] and (
             r["confident"] or r["rounds"] >= MIN_RING_ROUNDS_FOR_CROWN
         )
     rows.sort(key=lambda r: (r["fused"], r["iterations"], r["rounds"]), reverse=True)
@@ -730,7 +776,9 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     })
     if backtest:
         try:
-            out["backtest"] = predictive_check(pooled, rounds, sigma_round, tau)
+            out["backtest"] = predictive_check(
+                pooled, rounds, sigma_round, tau, sessions_data=sessions_data,
+            )
         except Exception:  # noqa: BLE001 — a check, never a reason the ranking fails
             log.warning("Overall ranking: the predictive check failed", exc_info=True)
     return out
@@ -821,7 +869,7 @@ def ring_target(session) -> dict | None:
 
 
 def predictive_check(pooled: dict[str, dict], rounds: list[dict], sigma_round: float,
-                     tau: float) -> dict | None:
+                     tau: float, *, sessions_data: list[dict] | None = None) -> dict | None:
     """Which verdict predicts the next night better? Leave-one-session-out.
 
     For each of the newest `BACKTEST_SESSIONS` sessions with rounds, refit on every other
@@ -830,6 +878,14 @@ def predictive_check(pooled: dict[str, dict], rounds: list[dict], sigma_round: f
     the round-weighted mean absolute error against what the night actually measured.
     Lower is better; a verdict that predicts the ring's own next reading worse than the
     pooled record does is not the one to crown by. Returns None below two sessions.
+
+    **The held-out night is held out of everything.** The fit has two inputs beside the
+    rounds — the slack τ and the round noise σ — and both are measured from the ledger,
+    so a fold that reused the all-sessions values had already seen the night it was
+    predicting (the review's S5). Each fold now re-reads τ from the training pairs and,
+    when ``sessions_data`` is given, σ from the training sessions; a training set too thin
+    to measure σ falls back to the caller's value and the result says so
+    (``sigma_refit_folds``). τ's default under `MIN_SLACK_PAIRS` applies per fold too.
     """
     by_session: dict = {}
     for r in rounds:
@@ -840,13 +896,23 @@ def predictive_check(pooled: dict[str, dict], rounds: list[dict], sigma_round: f
     err = {"pooled": 0.0, "ring": 0.0, "fused": 0.0}
     weight = 0
     scored = 0
+    sigma_refit = 0
     for sid in ids:
         held = by_session[sid]
         train = [r for r in rounds if r["session_id"] != sid]
         if not train:
             continue
-        fit = fuse(pooled, train, sigma_round, tau)
-        ring = fuse(pooled, train, sigma_round, tau, anchor_scale=0.0)
+        sigma_f = sigma_round
+        if sessions_data:
+            noise_f = decidability.round_noise(
+                [s for s in sessions_data if s.get("id") != sid]
+            )
+            if noise_f and noise_f.get("sigma"):
+                sigma_f = float(noise_f["sigma"])
+                sigma_refit += 1
+        tau_f = float(pooled_slack(pooled, pair_summaries(train), sigma_f)["tau"])
+        fit = fuse(pooled, train, sigma_f, tau_f)
+        ring = fuse(pooled, train, sigma_f, tau_f, anchor_scale=0.0)
         summaries = pair_summaries(held)
         for (a, b), s in summaries.items():
             pa, pb = pooled.get(a), pooled.get(b)
@@ -903,6 +969,10 @@ def predictive_check(pooled: dict[str, dict], rounds: list[dict], sigma_round: f
         "sessions": len(ids), "matches": scored, "rounds": weight,
         "mae": mae, "best": best, "standing": standing,
         "sentence": sentence,
+        # What each fold re-measured without the held-out night: τ always; σ on the folds
+        # whose training sessions were enough to measure it.
+        "tau_refit": True,
+        "sigma_refit_folds": sigma_refit,
     }
 
 
