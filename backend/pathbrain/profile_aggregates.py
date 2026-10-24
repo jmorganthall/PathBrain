@@ -85,6 +85,22 @@ def _comparable_runs(version: str):
     )
 
 
+def median_se(iqr: float | None, runs: int | None) -> float | None:
+    """Standard error of a profile's median Overall ≈ IQR/√runs — the ONE arithmetic.
+
+    The rollup's quartiles are over **per-run** values (one Score per run), so the sample
+    size is the run count, never the iteration total. The standings
+    (`routes_settings._overall_se`), the verdict card (`verdict._se`) and through it the
+    fused ranking's pooled anchors all read this; two of them used to divide the same IQR by
+    different counts, which understated a five-iteration-a-run profile's SE by √5 on the card
+    and over-trusted its anchor in the fit. ``None`` when the spread or the count is unknown
+    (callers choose their own sentinel for that).
+    """
+    if iqr is None or runs is None or int(runs) < 1:
+        return None
+    return max(0.0, float(iqr)) / (int(runs) ** 0.5)
+
+
 def stamps(session, version: str, fingerprints: list[str] | None = None) -> dict[str, Stamp]:
     """``{fingerprint: Stamp}`` — what each profile's rollup *should* be built from, now.
 

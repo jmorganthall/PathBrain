@@ -1525,6 +1525,19 @@ LLM-based. See `README.md` for the product overview.
     the same arithmetic rather than two implementations that agree until one is edited;
     `_grade_samples` delegates to it. `_collect` stays for the explore ledger, which filters
     each run by `created_at` before grading and so needs the rows themselves.
+    **One standard error, divided by the RUN count** (`profile_aggregates.median_se`). The
+    rollup's quartiles are over per-run values — one Score per run — so the SE of a profile's
+    median Overall is IQR/√runs, and the standings (`routes_settings._overall_se`), the verdict
+    card (`verdict._se`) and through it every pooled anchor in the fused ranking read that one
+    function. They used to disagree: the standings divided by the run count and the verdict
+    divided the same IQR by the **iteration total**, which understated a five-iteration-a-run
+    profile's SE by √5 (×2.2) on the card, over-trusted its anchor in the fit, mis-estimated
+    the slack τ against that understated variance, and let the standings chip and the Overall
+    page call different profiles "tied" on the same data. The anti-drift test that was meant
+    to catch it handed both paths the iteration count and so manufactured agreement; it now
+    hands the run count, and `test_the_se_divides_the_run_band_by_the_run_count_not_the_
+    iteration_total` pins that two profiles with the same runs and spread carry the same SE
+    whatever each run medianed. The verdict rows carry `runs` beside `iterations`.
   - `crown_follower.py` — **Follow best**: keep the firewall's SQM settings on the crowned
     best profile (`compute_profiles` → `best_fingerprint`) as the crown changes.
     **Event-driven, not polled**: the runner queues `notify_run_complete` as each run finishes

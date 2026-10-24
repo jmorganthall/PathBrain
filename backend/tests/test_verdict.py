@@ -168,12 +168,15 @@ def test_the_tie_set_is_the_standings_own_test_not_a_second_opinion():
 
     def _as_standings(p: dict) -> dict:
         se = p["se"]
-        # `_overall_se` reads IQR/√n off p25/p75 + count; hand it a band that reproduces the
-        # same SE so the two implementations are compared on identical inputs.
-        band = None if se is None else se * (p["iterations"] ** 0.5)
+        # `_overall_se` reads IQR/√runs off p25/p75 + count (the RUN count, as the standings
+        # fill it); hand it a band that reproduces the same SE so the two implementations are
+        # compared on identical inputs. The earlier version of this helper passed the
+        # iteration total as the count, which is exactly the mistake the verdict used to
+        # make — so it manufactured agreement instead of testing for it.
+        band = None if se is None else se * (p["runs"] ** 0.5)
         return {
             "overall": p["overall"],
-            "count": p["iterations"],
+            "count": p["runs"],
             "overall_p25": None if band is None else 0.0,
             "overall_p75": band,
         }
@@ -190,6 +193,27 @@ def test_the_tie_set_is_the_standings_own_test_not_a_second_opinion():
     # no spread to measure, so it must contribute nothing to the bar rather than excuse
     # itself from the comparison.
     assert field[_fp("mirror-thin")]["se"] == 0.0
+
+
+def test_the_se_divides_the_run_band_by_the_run_count_not_the_iteration_total():
+    """The band is over per-run Overalls — one Score per run — so its standard error is
+    IQR/√runs. Two profiles with the same six runs and the same spread must carry the same
+    SE however many iterations each run medianed; dividing by the iteration total (as the
+    card and the fused fit once did) read the 100-iteration profile as √5 more certain than
+    the 20-iteration one on identical per-run evidence, and over-trusted every pooled anchor
+    the fused ranking was handed."""
+    _add("se-twenty", 80.0, runs=6, iterations=20, spread=3.0)
+    _add("se-hundred", 80.0, runs=6, iterations=100, spread=3.0)
+
+    with session_scope() as s:
+        field = {p["fingerprint"]: p for p in verdict_mod._graded_field(s, VERSION)}
+    a, b = field[_fp("se-twenty")], field[_fp("se-hundred")]
+    assert a["runs"] == b["runs"] == 6 and a["iterations"] == 120 and b["iterations"] == 600
+    assert a["se"] == pytest.approx(b["se"]) and a["se"] > 0
+    # And it IS the run-count convention the standings use: IQR over the six per-run values.
+    assert a["se"] == pytest.approx(profile_aggregates.median_se(a["se"] * 6 ** 0.5, 6))
+    assert profile_aggregates.median_se(3.0, 9) == pytest.approx(1.0)
+    assert profile_aggregates.median_se(3.0, 0) is None and profile_aggregates.median_se(None, 9) is None
 
 
 def test_an_unknown_spread_contributes_zero_noise_rather_than_cannot_say():
