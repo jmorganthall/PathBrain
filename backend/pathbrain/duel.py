@@ -1875,6 +1875,7 @@ def queue_with_reasons(
     baseline: list[dict] | None = None,
     ratings: dict[str, dict] | None = None,
     fused: dict | None = None,
+    round_budget: int | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     """``(queue, dropped)`` — the queue, and why each entry was refused.
 
@@ -1886,6 +1887,7 @@ def queue_with_reasons(
     order = _queue_for_mode(
         field, heirs, incumbent_fp,
         contenders=contenders, top_n=top_n, baseline=baseline, ratings=ratings, fused=fused,
+        round_budget=round_budget,
     )
     blocked = undecidable_bouts(field, incumbent_fp, order)
     if blocked:
@@ -1907,6 +1909,7 @@ def _queue_for_mode(
     baseline: list[dict] | None = None,
     ratings: dict[str, dict] | None = None,
     fused: dict | None = None,
+    round_budget: int | None = None,
 ) -> list[str]:
     """Who the champion actually fights, in order.
 
@@ -1956,6 +1959,7 @@ def _queue_for_mode(
     if contenders == "ring":
         order = contender_order(
             field, ratings or {}, incumbent_fp, baseline=baseline, heirs=heirs, fused=fused,
+            round_budget=round_budget,
         )
         return [c["fingerprint"] for c in order]
     if contenders == "levers":
@@ -2041,12 +2045,58 @@ UNPROMISING_TIER = UNTESTED_TIER  # the same thing named for what it is
 FILLER_TIER = UNTESTED_TIER  # legacy alias for the pre-ring-ranking modes
 
 
+def leg_seconds(iteration_s: float | None, leg_iterations_: int, settle_s: float) -> float | None:
+    """What one leg costs the window: its iterations at the measured per-iteration price,
+    plus the settle after the apply. None when nothing has been timed yet."""
+    if iteration_s is None or iteration_s <= 0:
+        return None
+    return max(1, int(leg_iterations_)) * float(iteration_s) + max(0.0, float(settle_s))
+
+
+def rounds_affordable(window_s: float, leg_s: float | None, *, n_seats: int, cadence: int) -> int | None:
+    """How many rounds ONE seat can run in ``window_s`` under the ring's own cadence.
+
+    A cycle gives every seat one round and costs ``seats + ceil(seats / (belt_every − 1))``
+    legs — the challengers' legs plus the shared belt legs the cadence interleaves — so a
+    seat's rounds per window is the window over that cycle. ``None`` when the leg cost is
+    unknown (nothing timed yet): an unknown budget never refuses, the same discipline
+    `decidability` keeps for an unknown resolving power.
+    """
+    if leg_s is None or leg_s <= 0:
+        return None
+    if window_s <= 0:
+        return 0
+    seats_ = max(1, int(n_seats))
+    reference = max(1, int(cadence) - 1)
+    cycle_legs = seats_ + math.ceil(seats_ / reference)
+    return int(window_s // (cycle_legs * float(leg_s)))
+
+
+def _session_round_budget(session, cfg: dict, window_s: float) -> int | None:
+    """`rounds_affordable` for this ladder's configuration over ``window_s``, priced at the
+    measured per-iteration cost (`iteration_cost.estimate_ms`, recent-first)."""
+    try:
+        from .iteration_cost import estimate_ms
+
+        ms = estimate_ms(session)
+    except Exception:  # noqa: BLE001 — a budget is a reading, never a reason to fail
+        log.debug("Duel: could not price an iteration for the round budget", exc_info=True)
+        ms = None
+    leg = leg_seconds(
+        None if ms is None else float(ms) / 1000.0,
+        iterations_per_round(cfg),
+        max(0, int(cfg.get("settle_seconds", 3) or 0)),
+    )
+    return rounds_affordable(window_s, leg, n_seats=seats(cfg), cadence=belt_every(cfg))
+
+
 def contender_tiers(
     field: dict,
     queue: list[str],
     ratings: dict[str, dict] | None = None,
     incumbent_fp: str | None = None,
     fused: dict | None = None,
+    round_budget: int | None = None,
 ) -> dict[str, int]:
     """Each queued profile's priority tier, derived from the same field the queue was built
     from (so there is no second ranking to drift out of step with the first).
@@ -2055,7 +2105,9 @@ def contender_tiers(
     that decides them — so the loop can never disagree with the order it was handed.
     """
     if ratings is not None and incumbent_fp is not None:
-        by_fp = {c["fingerprint"]: c["tier"] for c in contender_order(field, ratings, incumbent_fp, fused=fused)}
+        by_fp = {c["fingerprint"]: c["tier"] for c in contender_order(
+            field, ratings, incumbent_fp, fused=fused, round_budget=round_budget,
+        )}
         return {fp: by_fp.get(fp, UNTESTED_TIER) for fp in queue}
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
     pooled_fp = field.get("best_fingerprint")
@@ -2101,6 +2153,7 @@ def _challenger_order(
     top_n: int,
     ring_leader_fp: str | None = None,
     fused: dict | None = None,
+    round_budget: int | None = None,
 ) -> list[dict]:
     """The candidates to face ``defender_fp``, best first, as ``[{fingerprint, tier, why}]``.
 
@@ -2112,7 +2165,7 @@ def _challenger_order(
     if mode == "ring":
         ranked = contender_order(
             field, ratings, defender_fp, baseline=baseline, heirs=heirs,
-            ring_leader_fp=ring_leader_fp, fused=fused,
+            ring_leader_fp=ring_leader_fp, fused=fused, round_budget=round_budget,
         )
         # The decidability filter has to run HERE too, and did not. It was wired into
         # `build_queue` on the claim that this covered "every mode at once" — but the
@@ -2155,6 +2208,7 @@ def next_challenger(
     fought: set[frozenset[str]] | None = None,
     rank_sigma: float | None = None,
     fused: dict | None = None,
+    round_budget: int | None = None,
     only_tiers: set[int] | None = None,
 ) -> tuple[str | None, str]:
     """The single best next opponent for whoever currently holds the belt.
@@ -2219,6 +2273,7 @@ def next_challenger(
         for c in _challenger_order(
             field, ratings, defender_fp, mode=mode, heirs=heirs, baseline=baseline,
             top_n=top_n, ring_leader_fp=ring_leader_fp, fused=fused,
+            round_budget=round_budget,
         )
         if c["fingerprint"] != defender_fp
         and frozenset((defender_fp, c["fingerprint"])) not in fought
@@ -2317,6 +2372,7 @@ def contender_order(
     heirs: dict | None = None,
     ring_leader_fp: str | None = None,
     fused: dict | None = None,
+    round_budget: int | None = None,
 ) -> list[dict]:
     """Who should challenge the belt-holder, best chance of unseating it first.
 
@@ -2381,13 +2437,37 @@ def contender_order(
         r["fingerprint"]: r for r in ((fused or {}).get("rivals") or []) if r.get("fingerprint")
     }
 
+    # A fused rival the WINDOW cannot settle is not seated first (`round_budget`, from
+    # `rounds_affordable`): the fit says how many head-to-head rounds would separate it from
+    # the #1 (`rounds_to_separate`), and a ladder that can run seven rounds a seat tonight
+    # spends nothing useful opening with a question that needs eight hundred. Such a rival
+    # keeps its ordinary tier — raced on its ring merits, never excluded — and says why. A
+    # gap the fit cannot price at all (zero, or no SE) is unknown, and unknown never refuses.
+    deferred: dict[str, str] = {}
+
+    def _settleable(fp: str, rv: dict) -> bool:
+        if fp == fused_best or round_budget is None:
+            return True
+        gap, gap_se = float(rv.get("gap") or 0.0), float(rv.get("gap_se") or 0.0)
+        if gap <= 0 or gap_se <= 0:
+            return True
+        need = rv.get("rounds_to_separate")
+        if need is not None and int(need) <= int(round_budget):
+            return True
+        deferred[fp] = (
+            "the Overall can't separate it from the #1 either, but settling that would take "
+            + (f"~{int(need)} rounds" if need is not None else "more rounds than the ring will run")
+            + f" and this window can run ~{int(round_budget)} a seat — left to its ordinary tier"
+        )
+        return False
+
     out: list[dict] = []
     for fp, p in profiles.items():
         if fp == incumbent_fp:
             continue
         if fused and (fp == fused_best or fp in fused_rivals) and (
             fp in heir_set or _reachable(p.get("settings"), baseline)
-        ):
+        ) and _settleable(fp, fused_rivals.get(fp) or {}):
             rv = fused_rivals.get(fp) or {}
             rating, ceiling = _ceiling(fp)
             if fp == fused_best:
@@ -2501,6 +2581,12 @@ def contender_order(
             "prior_overall": p.get("prior_overall"),
             "why": why,
         })
+
+    for c in out:
+        note = deferred.get(c["fingerprint"])
+        if note:
+            c["why"] = f"{c['why']} · {note}"
+            c["fused_deferred"] = True
 
     # Within a tier: by ceiling where we have one (best chance of dethroning first), by
     # pooled Overall where we don't (the only thing that distinguishes two unknowns), and
@@ -3697,6 +3783,12 @@ def _run_ring(
             # The Overall ranking's open question, re-read every cycle so a tie the last
             # round just settled stops being fought (None under any policy but fused).
             fused_target = None if campaign is not None else _fused_target(session, cfg)
+            # What a seat can still settle tonight: the fit's open question is seated
+            # first only when its rounds-to-separate fit the window that remains.
+            round_budget = (
+                _session_round_budget(session, cfg, max(0.0, deadline - time.monotonic()))
+                if fused_target else None
+            )
             if campaign is not None:
                 # The campaign's base defends, whatever the belt says: a variant that wins
                 # is a finding about the base, not the next base.
@@ -3833,7 +3925,7 @@ def _run_ring(
                         heirs=heirs, baseline=baseline, cooldown_hours=cooldown_hours,
                         mode=mode, top_n=top_n, fought=fought,
                         rank_sigma=(rank_sigma(cfg) if crown_rule(cfg) == RATING_RULE else None),
-                        fused=fused_target,
+                        fused=fused_target, round_budget=round_budget,
                     )
                     prospect = False
                     challenger_fp, why_challenger = None, ""
@@ -4461,6 +4553,10 @@ def fight_card(session, limit: int = 12, contenders: str | None = None,
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
     # The Overall ranking's open question — the same read the engine makes each cycle.
     fused_target = _fused_target(session, cfg)
+    round_budget = (
+        _session_round_budget(session, cfg, 60.0 * float(cfg.get("duration_minutes", 120) or 120))
+        if fused_target else None
+    )
     # Exactly the engine's choice of who defends, so the preview can't promise a different
     # champion than the one that actually walks out — or, for a campaign preview, its base.
     if contenders == "levers" and base_fingerprint:
@@ -4501,6 +4597,7 @@ def fight_card(session, limit: int = 12, contenders: str | None = None,
         baseline=live,
         ratings=ratings,
         fused=fused_target,
+        round_budget=round_budget,
     )
     # The ring's reason for each entry — so the preview explains the running order in the
     # ladder's own terms rather than restating the pooled standings.
@@ -4508,6 +4605,7 @@ def fight_card(session, limit: int = 12, contenders: str | None = None,
         c["fingerprint"]: c
         for c in contender_order(
             field, ratings, incumbent_fp, baseline=live, heirs=heirs, fused=fused_target,
+            round_budget=round_budget,
         )
     }
     fused_rival_fps = {
@@ -4525,6 +4623,7 @@ def fight_card(session, limit: int = 12, contenders: str | None = None,
 
     tiers = contender_tiers(
         field, order, ratings if mode == "ring" else None, incumbent_fp, fused=fused_target,
+        round_budget=round_budget,
     )
     # Lever mode: a generated step is not in the field, so the preview needs its label and
     # the lever it moves from the variant list itself (kept beside the field rather than
@@ -4605,6 +4704,9 @@ def fight_card(session, limit: int = 12, contenders: str | None = None,
             # the profiles the fit cannot yet separate from it.
             "is_overall_best": bool(fused_target and incumbent_fp == fused_target.get("best")),
             "overall_target": fused_target,
+            # Rounds one seat can run in the configured window at the measured iteration
+            # cost — the bar a fused rival's rounds-to-separate must fit to be seated first.
+            "round_budget": round_budget,
         },
         "queue": [_entry(fp, i + 1) for i, fp in enumerate(order[: max(int(limit), 1)])],
         "total": len(order),
