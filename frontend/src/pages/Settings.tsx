@@ -356,6 +356,8 @@ function sortValue(p: SettingsProfile, key: SortKey): number | string | null {
       return p.weather_relative?.delta_median ?? null;
     case "overall_recent":
       return p.overall_recent ?? null;
+    case "overall_shrunk":
+      return p.overall_shrunk ?? null;
     case "pct_vs_sqm_off":
       return p.pct_vs_sqm_off ?? null;
     case "p25":
@@ -434,6 +436,7 @@ const FIXED_COLUMN_KEYS = new Set([
   "iterations",
   "count",
   "overall_recent",
+  "overall_shrunk",
   "weather_relative",
   "pct_vs_sqm_off",
 ]);
@@ -450,6 +453,8 @@ const COLUMN_TIPS: Record<string, string> = {
     "Overall recomputed over only this profile's most recent iterations (default 100). A big gap from Overall means its present differs from its record. Informational only.",
   overall:
     "The headline score, combining the crown metrics. Shown as a standing (1 = best); the highest Overall among confident profiles is crowned.",
+  overall_shrunk:
+    "The Overall shrunk toward the field's centre by exactly as much as this profile's own noise warrants. A well-measured profile does not move; a one-run profile reading far above the pack is mostly the lucky run, and this is what it probably is. Display only — the crown ranks on the raw Overall.",
   weather_relative:
     "This profile's Overall vs what other profiles deliver under the same measured conditions. Positive = beats the field in like weather. Informational only.",
   weather_severity:
@@ -685,6 +690,8 @@ export default function Settings() {
   const [seedInfo, setSeedInfo] = useState<SeededField | null>(null);
   // The recent-evidence window sizing the "Overall (recent)" drift-lens column.
   const [crownWindow, setCrownWindow] = useState(100);
+  // The field-as-prior behind the Shrunk column (null under a corner crown, or before load).
+  const [shrinkage, setShrinkage] = useState<{ mean: number; basis: string } | null>(null);
   // Dynamic quadrant axes — X/Y/Shade default to the current methodology's crown metric set
   // (the Overall scoring corner's inputs), pulled from the profiles response's `overall_metrics`
   // rather than hardcoded, so the default view always demonstrates how *this* methodology's Overall
@@ -868,6 +875,7 @@ export default function Settings() {
       setWeatherSuspect(p.weather_crown_suspect ?? null);
       setCrownFading(p.crown_fading ?? null);
       setCrownWindow(p.crown_window_iterations ?? 0);
+      setShrinkage(p.shrinkage ?? null);
       setRanking(p.ranking ?? "pooled");
       setRingRated(p.ring_rated_count ?? 0);
       setSeeded(p.seeded_count ?? 0);
@@ -1807,6 +1815,17 @@ export default function Settings() {
                         tip={COLUMN_TIPS.overall_recent}
                       />
                     )}
+                    {shrinkage && (
+                      <SortHeader
+                        id="overall_shrunk"
+                        label="Shrunk"
+                        align="right"
+                        orderBy={orderBy}
+                        order={order}
+                        onSort={handleSort}
+                        tip={COLUMN_TIPS.overall_shrunk}
+                      />
+                    )}
                     <SortHeader
                       id="weather_relative"
                       label="vs weather"
@@ -2088,6 +2107,25 @@ export default function Settings() {
                             >
                               <Typography component="span" variant="body2" sx={{ cursor: "help" }}>
                                 {p.overall_recent.toFixed(1)}
+                              </Typography>
+                            </Tooltip>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                      )}
+                      {shrinkage && (
+                        <TableCell align="right">
+                          {p.overall_shrunk != null ? (
+                            <Tooltip
+                              title={`Shrunk toward the field's centre (${shrinkage.mean.toFixed(1)}) by its own noise: ${p.overall_shrunk.toFixed(2)} ± ${p.overall_shrunk_se != null ? p.overall_shrunk_se.toFixed(2) : "—"} from a raw ${p.overall != null ? p.overall.toFixed(2) : "—"} over ${p.count} run(s). Ceiling ${p.optimistic != null ? p.optimistic.toFixed(1) : "—"} — what admits it to the ring. Display only; the crown ranks on the raw Overall.`}
+                            >
+                              <Typography
+                                component="span"
+                                variant="body2"
+                                sx={{ cursor: "help", color: p.confident ? "inherit" : "text.secondary" }}
+                              >
+                                {p.overall_shrunk.toFixed(1)}
                               </Typography>
                             </Tooltip>
                           ) : (

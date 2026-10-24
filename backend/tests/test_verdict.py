@@ -153,7 +153,9 @@ def test_the_tie_set_is_the_standings_own_test_not_a_second_opinion():
     """The anti-drift pin. Two components deciding separately what "tied" means is how a
     card and a chip come to contradict each other on one screen, so the verdict's pooled-SE
     test is checked against `routes_settings._clearly_better` over the very same rows —
-    including the single-run case, whose spread is zero and must therefore *widen* nothing."""
+    including the single-run case, whose own spread is zero and whose SE is therefore the
+    FIELD's per-run noise (`shrinkage.profile_se`), never a zero that would let the card call
+    the crown clearly better than a profile measured once."""
     _add("mirror-a", 80.0, runs=6, spread=3.0)
     _add("mirror-b", 79.6, runs=6, spread=3.0)
     _add("mirror-c", 50.0, runs=6, spread=3.0)
@@ -190,9 +192,13 @@ def test_the_tie_set_is_the_standings_own_test_not_a_second_opinion():
         )
         assert (fp not in tied) == separated, fp
     # And the case that makes the convention matter was actually exercised: a lone run has
-    # no spread to measure, so it must contribute nothing to the bar rather than excuse
-    # itself from the comparison.
-    assert field[_fp("mirror-thin")]["se"] == 0.0
+    # no spread of its own, so its SE is the field's per-run noise over √1 — the same floor
+    # the standings read — rather than the zero its own IQR would say.
+    from pathbrain import shrinkage
+
+    noise, _used, basis = shrinkage.run_noise([(r["iqr"], r["runs"]) for r in field.values()])
+    assert basis == "fitted"
+    assert field[_fp("mirror-thin")]["se"] == pytest.approx(noise) and noise > 0
 
 
 def test_the_se_divides_the_run_band_by_the_run_count_not_the_iteration_total():

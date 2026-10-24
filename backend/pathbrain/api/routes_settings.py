@@ -359,6 +359,11 @@ def _overall_se(p: dict) -> float:
     the spread or sample size is unknown (contributes 0 to the pooled SE via ``_finite``)."""
     from ..profile_aggregates import median_se
 
+    # A profile graded by the shrinkage pass carries its SE already — the same IQR/√runs,
+    # floored for a thin profile at the field's per-run noise over √runs (`shrinkage.
+    # profile_se`), so one run's IQR of zero never reads as a noiseless median here either.
+    if p.get("overall_se") is not None:
+        return float(p["overall_se"])
     iqr = _overall_iqr(p)
     if iqr == float("inf"):
         return float("inf")
@@ -2728,6 +2733,36 @@ def _compute_profiles_uncached(
         else:
             p["pct_vs_sqm_off"] = None
 
+    # ── Shrinkage pass: the field as a prior ────────────────────────────────────────
+    # Under the weighted crown each profile's Overall is its own median, so the field can be
+    # read as a prior and every reading shrunk toward it by exactly as much as its own noise
+    # warrants (`shrinkage`). The crown below is still the argmax of the RAW median — that
+    # rule is untouched — but `optimistic`, the number that admits a thin profile to the
+    # ring, the race and the heirs card, becomes the posterior CEILING: a one-run profile's
+    # p75 was its own point estimate, so admission was a coin flip on the run that happened
+    # to land high. The unshaped baseline is left out of the prior (a different regime, and
+    # it would only widen τ); it is still graded against the prior like everyone else.
+    shrinkage_info: dict | None = None
+    if crown_method == "weighted":
+        from ..shrinkage import fit as _fit_prior, grade as _shrink_grade
+
+        prior = _fit_prior([
+            (p["overall"], _overall_iqr(p), p.get("count"))
+            for p in profiles if p.get("overall") is not None and not p["is_sqm_off"]
+        ])
+        for p in profiles:
+            iqr = _overall_iqr(p)
+            g = _shrink_grade(prior, p.get("overall"), None if iqr == float("inf") else iqr, p.get("count"))
+            # The p75 ceiling the gate used to read, kept beside the posterior one for the record.
+            p["optimistic_p75"] = p.get("optimistic")
+            if g is None:
+                p["overall_shrunk"] = p["overall_shrunk_se"] = p["overall_se"] = None
+                continue
+            p["overall_shrunk"], p["overall_shrunk_se"] = g["shrunk"], g["shrunk_se"]
+            p["overall_se"] = g["se"]
+            p["optimistic"] = g["ceiling"]
+        shrinkage_info = prior.as_dict()
+
     # Rank the table by the raw-normalized corner "overall"; profiles missing it (no crown
     # metrics captured yet) fall back to smoothness median, sort last.
     # Call signs, in one query for the whole field (see profile_names.names_for).
@@ -2860,6 +2895,10 @@ def _compute_profiles_uncached(
         "min_runs": min_runs,
         "min_iterations": min_iterations,
         "complete_only": complete_only,
+        # The field-as-prior behind `overall_shrunk` and the posterior `optimistic` ceiling:
+        # centre, between-profile τ, pooled per-run noise and the basis of each (`shrinkage.py`).
+        # None under a field-relative (corner) crown, where a profile has no reading of its own.
+        "shrinkage": shrinkage_info,
         # The "SQM off" baseline Overall the "% vs SQM off" column is measured against (best
         # Overall among measured SQM-off profiles), or null if no baseline test has run yet.
         "sqm_off_overall": baseline_overall,
