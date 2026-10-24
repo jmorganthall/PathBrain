@@ -478,11 +478,11 @@ def _gaps(points: list[dict], axes: dict[str, dict], curves: list[dict]) -> list
             })
         if curve and curve["best_at_edge"]:
             at_max = curve["best_value"] == axis["max"]
-            step = _step_for(axis)
-            # Stepping *below* the range is proportional, not a fixed step: a declared sweep
-            # step can exceed the minimum itself, and "try 0" is not a shaper setting.
-            beyond = axis["max"] + step if at_max else axis["min"] - min(step, axis["min"] * 0.25)
-            if beyond <= 0:
+            beyond, blocked = _beyond(axis, at_max)
+            if beyond is None:
+                # The finding stands — the best is at the edge — but no value past it can be
+                # offered, and the curve says why rather than the button simply missing.
+                curve["edge_blocked"] = blocked
                 continue
             out.append({
                 "key": key,
@@ -514,6 +514,76 @@ def _step_for(axis: dict) -> float:
     if isinstance(step, (int, float)) and step > 0:
         return float(step)
     return max((axis["max"] - axis["min"]) / 5.0, 1.0)
+
+
+def _select_kind(axis: dict) -> bool:
+    """Is this lever an option-keyed select on the firewall (CoDel target / interval)?
+    The registry marks those by a unit on a non-integer field: the value written is the
+    bare option key, and a key the select does not offer is silently not written."""
+    fld = shaper_field(axis["field"])
+    return bool(fld and fld.unit and fld.kind != "int")
+
+
+def _snap_unavailable(axis: dict) -> bool:
+    """A select-kind lever whose option list the provider could not supply: nothing can
+    check that an UNTESTED value exists, so none is proposed (a tested value is known to
+    exist — the firewall has held it)."""
+    return _select_kind(axis) and not axis.get("allowed")
+
+
+def _beyond(axis: dict, at_max: bool) -> tuple[float | None, str | None]:
+    """The one value to try past the tested edge, or ``(None, why)``.
+
+    The edge step used to be ``max + step`` with no ceiling and no check that the value
+    existed, so a quantum edge walked past the registry's own 10000 one sweep step at a
+    time, and a CoDel interval edge proposed ``100 + 20 = 120 ms`` on a select that offers
+    no such option — a write the firewall accepts and ignores, measured as a profile nobody
+    proposed (the review's E10). Three cases, in order of how much is known:
+
+    * the provider's **option list** is attached → the next option past the edge, or
+      nothing when the edge is already the last option;
+    * a select-kind lever **without** the list → nothing, with the reason: no value past the
+      edge can be checked to exist;
+    * a numeric lever → the field's sweep step (or a fifth of the tested range), **clamped
+      to the registry's declared sweep range** (`ShaperField.sweep_default` min/max) when it
+      declares one; an edge already at the clamp proposes nothing.
+    """
+    allowed = axis.get("allowed")
+    if allowed:
+        past = [a for a in allowed if (a > axis["max"] if at_max else a < axis["min"])]
+        if not past:
+            return None, (
+                f"{axis['field_label']} is already at the "
+                f"{'last' if at_max else 'first'} option the firewall offers"
+            )
+        return (min(past) if at_max else max(past)), None
+    if _select_kind(axis):
+        return None, (
+            f"the firewall's option list for {axis['field_label']} is unknown, so no value "
+            f"past the tested range can be checked to exist"
+        )
+    step = _step_for(axis)
+    fld = shaper_field(axis["field"])
+    default = (fld.sweep_default or {}) if fld else {}
+    if at_max:
+        beyond = axis["max"] + step
+        ceiling = default.get("max")
+        if isinstance(ceiling, (int, float)):
+            if axis["max"] >= float(ceiling):
+                return None, f"{axis['field_label']} is already at its declared maximum ({ceiling:g})"
+            beyond = min(beyond, float(ceiling))
+    else:
+        # Stepping *below* the range is proportional, not a fixed step: a declared sweep
+        # step can exceed the minimum itself, and "try 0" is not a shaper setting.
+        beyond = axis["min"] - min(step, axis["min"] * 0.25)
+        floor = default.get("min")
+        if isinstance(floor, (int, float)):
+            if axis["min"] <= float(floor):
+                return None, f"{axis['field_label']} is already at its declared minimum ({floor:g})"
+            beyond = max(beyond, float(floor))
+    if beyond <= 0:
+        return None, f"nothing below {axis['min']:g} is a shaper setting"
+    return beyond, None
 
 
 def _snap_allowed(axis: dict, value: float) -> float:
@@ -961,11 +1031,8 @@ def _candidate_values(axis: dict, curve: dict | None) -> list[tuple[float, str]]
     if curve:
         best = curve["best_value"]
         if curve["best_at_edge"]:
-            step = _step_for(axis)
-            # Proportional downward step — a declared sweep step can exceed the minimum, and
-            # halving a lever is an extrapolation rather than a neighbour.
-            beyond = best + step if best == axis["max"] else best - min(step, best * 0.25)
-            if beyond > 0:
+            beyond, _blocked = _beyond(axis, best == axis["max"])
+            if beyond is not None:
                 out.append((beyond, f"steps past {best:g}, the best value tested and the end of the range"))
         else:
             i = vals.index(best) if best in vals else -1
@@ -994,6 +1061,10 @@ def _candidate_values(axis: dict, curve: dict | None) -> list[tuple[float, str]]
         val = float(coerced) if isinstance(coerced, (int, float)) else float(v)
         val = _snap_allowed(axis, val)
         if val <= 0 or val in seen or (val in tested and val not in proven):
+            continue
+        # A select-kind lever with no option list: an untested value cannot be checked to
+        # exist, so only values the firewall has already held (transplants) are offered.
+        if val not in tested and _snap_unavailable(axis):
             continue
         # An immaterial sibling is not a proposal: a value closer to an already-measured one
         # than `MIN_STEP_FRACTION` of the measured range is the q5799-beside-q5800 artifact,
@@ -1588,6 +1659,17 @@ def attach_gap_candidates(
         if not isinstance(value, (int, float)):
             continue
         value = _snap_allowed(axis, float(value))
+        if float(value) not in axis["values"] and _snap_unavailable(axis):
+            # The hole is real and stays reported (with the value it would take, coerced to
+            # the field's form like every other suggestion); the value cannot be checked to
+            # exist on a select whose option list the provider did not supply, so there is
+            # no button — and the row says why.
+            gap["suggest"] = value if value != int(value) else int(value)
+            gap["blocked"] = (
+                f"the firewall's option list for {axis['field_label']} is unknown, so "
+                f"{value:g} cannot be checked to exist"
+            )
+            continue
         why = (
             f"steps past {gap['to']:g}, the end of the tested range"
             if gap["kind"] == "edge"

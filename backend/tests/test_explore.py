@@ -710,6 +710,8 @@ def test_a_gap_suggestion_is_the_value_the_firewall_can_actually_hold(monkeypatc
         _profile("c", quantum=1400, target=5, overall=64.0),
         _profile("d", quantum=1600, target=40, overall=66.0),
     ]
+    # Without the firewall's option list nothing can check that a value exists on the
+    # select, so the hole is reported with the reason and no candidate is attached (R23).
     out = _landscape(monkeypatch, profiles)
     gap = next(
         (g for g in out["gaps"] if g["field"] == "target" and g["kind"] == "gap"), None
@@ -717,6 +719,11 @@ def test_a_gap_suggestion_is_the_value_the_firewall_can_actually_hold(monkeypatc
     if gap is None:  # the target axis produced no wide hole in this field
         return
     assert float(gap["suggest"]) == int(gap["suggest"])
+    assert gap.get("blocked") and "candidate" not in gap
+    # With it, the suggestion is an option the firewall offers and the candidate posts it.
+    out = _landscape(monkeypatch, profiles, allowed_values={"target": [3, 4, 5, 10, 20, 40]})
+    gap = next(g for g in out["gaps"] if g["field"] == "target" and g["kind"] == "gap")
+    assert gap["suggest"] in (10, 20)
     assert gap["candidate"]["changes"][0]["to"] == float(gap["suggest"])
 
 

@@ -138,7 +138,9 @@ export default function ShotgunSweep() {
   // automatically gives it a control here — no hardcoded quantum/target.
   const [fields, setFields] = useState<SweepField[]>([]);
   const [ranges, setRanges] = useState<Record<string, SweepParamRange>>({});
-  const [iterations, setIterations] = useState(2);
+  // One chunk (runner.CHUNK_ITERATIONS, Explore's "Test now" length): two left every variant too
+  // thin for anything to rank or race.
+  const [iterations, setIterations] = useState(5);
   const [dwellMinutes, setDwellMinutes] = useState(0);
   const [dryRun, setDryRun] = useState(false);
 

@@ -130,12 +130,13 @@ def sweep_fields() -> dict:
 def sweep_preview(body: dict = Body(...), session: Session = Depends(get_session)) -> dict:
     """Variant count + ETA for a sweep spec, without starting it."""
     spec = body.get("spec") or {}
-    iterations = max(1, min(int(body.get("iterations") or 2), MAX_ITERATIONS))
+    iterations = max(1, min(int(body.get("iterations") or sweep_mod.DEFAULT_SWEEP_ITERATIONS), MAX_ITERATIONS))
     dwell_s = max(0.0, float(body.get("dwell_minutes") or 0) * 60.0)
     variants = sweep_mod.generate_variants(spec)
     per = _recent_per_iteration_ms(session)
     est = sweep_mod.estimate(variants, iterations, dwell_s, per)
     return {
+        "iterations": iterations,
         "variants": variants,
         "total_variants": est["total_variants"],
         "eta_ms": est["eta_ms"],
@@ -152,7 +153,7 @@ def start_sweep(
 ) -> dict:
     """Start an immediate foreground sweep. 409 if one is already running."""
     spec = body.get("spec") or {}
-    iterations = max(1, min(int(body.get("iterations") or 2), MAX_ITERATIONS))
+    iterations = max(1, min(int(body.get("iterations") or sweep_mod.DEFAULT_SWEEP_ITERATIONS), MAX_ITERATIONS))
     dwell_s = max(0.0, float(body.get("dwell_minutes") or 0) * 60.0)
     dry_run = bool(body.get("dry_run", False))
     pipe_uuid = body.get("pipe_uuid") or None

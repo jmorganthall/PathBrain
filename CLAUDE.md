@@ -2671,6 +2671,23 @@ LLM-based. See `README.md` for the product overview.
     link's model is what is wrong), the exploration bonus is cut to `INERT_LEVER_CREDIT`
     (25%); the prediction itself is untouched, so the curves still speak, and the candidate
     says why in its evidence. A two-lever move that touches a live lever is not discounted.
+    **(3) An edge step is a value the firewall can hold** (`_beyond`, `_select_kind`,
+    `_snap_unavailable`; `edge_blocked` on a curve, `blocked` on a gap). The step past the
+    tested edge was `max + step` with no ceiling and no check that the value existed, so a
+    quantum edge walked past the registry's own 10000 one sweep step at a time and a CoDel
+    interval edge proposed `100 + 20 = 120 ms` on a select that offers no such option — a
+    write the firewall accepts and ignores, measured as a profile nobody proposed (the
+    review's E10). Now, in order of what is known: with the provider's **option list**
+    attached the edge steps to the *next option* (nothing when the edge is the last one); a
+    select-kind lever **without** the list proposes no untested value at all — not past the
+    edge, not in a gap, not as a refine — because nothing can check that it exists, and only
+    values the firewall has already held are offered on it (transplants); a numeric lever's
+    step is clamped to the registry's declared sweep range (`ShaperField.sweep_default`), and
+    an edge already at the clamp proposes nothing. The finding is never dropped silently: the
+    curve carries `edge_blocked` and a gap `blocked`, each a sentence, and the page shows
+    them where the button would be. The Shotgun Sweep's default is **one chunk a variant**
+    (`sweep.DEFAULT_SWEEP_ITERATIONS` = `runner.CHUNK_ITERATIONS` = 5, was 2): a 13-variant
+    sweep at two iterations minted thirteen permanent field members too thin to rank or race.
     `test_explore_hygiene`.
     **Candidates are priced from the best evidence available**, in that same order:
     a matched pair for the exact move → the *parent's own* conditioned neighbourhood → the

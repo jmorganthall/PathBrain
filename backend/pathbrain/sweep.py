@@ -105,6 +105,13 @@ def generate_variants(spec: dict) -> list[dict]:
     ]
 
 
+#: Iterations a sweep variant runs by default — one `runner.CHUNK_ITERATIONS` block, the
+#: same length as Explore's "Test now". Two was the default for years, and a 13-variant
+#: sweep at two iterations minted thirteen permanent field members too thin for anything
+#: to rank or race (the review's E10).
+DEFAULT_SWEEP_ITERATIONS = 5
+
+
 def estimate(variants: list[dict], iterations: int, dwell_s: float, per_iteration_ms: float | None) -> dict:
     """Total variants + wall-clock ETA (None until we have a per-iteration timing)."""
     per_variant_ms = (dwell_s * 1000.0) + iterations * (per_iteration_ms or 0.0)
