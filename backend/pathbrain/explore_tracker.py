@@ -33,6 +33,8 @@ calibration summary rather than graded against a yardstick it never claimed.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import select
 
 from .config_store import get_config
@@ -199,16 +201,22 @@ def _verdict(
     iterations: int,
     min_iterations: int,
     current_version: str,
+    test_state: tuple[str | None, str | None] | None = None,
 ) -> dict:
     """Grade one claim against what the link actually did.
 
-    Five outcomes, and the two that aren't a grade matter as much as the three that are:
-    a claim with no data yet is **pending**, and one made under a different methodology is
-    **incomparable** — its number was never a claim about today's scale.
+    Six outcomes, and the three that aren't a grade matter as much as the three that are:
+    a claim with no data yet is **pending**, one whose profile test ended without a run is
+    **failed** (it was never measured — and it must not sit in the ledger as "pending" for
+    ever, which is how a value the firewall rejected once blocked its own coordinates for
+    good), and one made under a different methodology is **incomparable** — its number was
+    never a claim about today's scale. ``test_state`` is the claim's profile test
+    ``(status, error)`` when the caller has it.
     """
     band = max(float(rec.uncertainty or 0.0), MIN_BAND)
     stale = bool(rec.methodology_version and rec.methodology_version != current_version)
     error = None if (actual is None or rec.predicted is None) else round(actual - rec.predicted, 2)
+    test_status, test_error = (test_state or (None, None))
 
     if getattr(rec, "unreachable", False):
         # The firewall never held the full proposal — the benchmark measured the closest
@@ -216,6 +224,11 @@ def _verdict(
         # the model's evidence class, which is how the -5.9 "matched pair miss" that was
         # actually an unappliable CoDel interval poisoned the calibration table.
         verdict = "unreachable"
+    elif (actual is None or iterations <= 0) and test_status in FAILED_TEST_STATES:
+        # The test that was to measure this claim ended before any run landed — the firewall
+        # refused the value, the session was cancelled, the box went away. Nothing was
+        # measured, so there is nothing to grade and nothing to wait for.
+        verdict = "failed"
     elif actual is None or iterations <= 0:
         # ``iterations`` now counts only runs made at/after the claim, so "anything at
         # all" is the gate — the old ``baseline_iterations`` subtraction existed to skim
@@ -240,10 +253,12 @@ def _verdict(
         # Provisional while the profile is still short of the confidence bar: the number is
         # real, it just rests on too few iterations to argue with.
         "provisional": (
-            verdict not in ("pending", "incomparable", "unreachable")
+            verdict not in ("pending", "incomparable", "unreachable", "failed")
             and iterations < min_iterations
         ),
         "stale_methodology": stale,
+        "test_status": test_status,
+        "test_error": test_error if verdict == "failed" else None,
     }
 
 
@@ -267,6 +282,14 @@ def _why(rec: ExploreRecommendation, kind: str, graded: dict, actual: float | No
             "was measured is the closest reachable profile, not this claim. Kept out of the "
             "calibration summary: a plumbing failure says nothing about the evidence the "
             "prediction was priced from." + note
+        )
+    if verdict == "failed":
+        detail = f": {graded.get('test_error')}" if graded.get("test_error") else ""
+        return (
+            f"The profile test {graded.get('test_status') or 'ended'} before any run landed"
+            f"{detail}. Nothing was measured, so there is nothing to grade — and the proposal "
+            f"is offered again once it is {FAILED_CLAIM_COOLDOWN_DAYS} days old, in case the "
+            "failure was the firewall's night rather than the value." + note
         )
     if verdict == "pending":
         return (
@@ -431,6 +454,7 @@ def _summarize(rows: list[dict]) -> dict:
         "recorded": len(rows),
         "graded": len(graded),
         "pending": sum(1 for r in rows if r["verdict"] == "pending"),
+        "failed": sum(1 for r in rows if r["verdict"] == "failed"),
         "incomparable": sum(1 for r in rows if r["verdict"] == "incomparable"),
         "unreachable": sum(1 for r in rows if r["verdict"] == "unreachable"),
         "on_target": sum(1 for r in graded if r["verdict"] == "on_target"),
@@ -576,6 +600,28 @@ def _reconcile(rows: list[ExploreRecommendation], actual: dict[int, str]) -> Non
 # is not to re-propose something already paid for — but bounded, so the landscape's cost
 # doesn't grow without limit as the ledger fills.
 CLAIM_HISTORY = 500
+#: Profile-test states that mean the claim was never measured.
+FAILED_TEST_STATES = ("failed", "cancelled")
+#: How long a claim whose test failed keeps blocking its own coordinates. A failure is often
+#: the firewall's night rather than the value, so the proposal comes back — but not the next
+#: morning, or a value the firewall genuinely rejects would be re-proposed, re-queued by the
+#: exploration share and re-failed every session for ever.
+FAILED_CLAIM_COOLDOWN_DAYS = 7
+
+
+def _test_states(session, rows) -> dict[int, tuple[str | None, str | None]]:
+    """``{recommendation id: (profile test status, error)}`` for the rows that have a test."""
+    by_test = {r.profile_test_id: r.id for r in rows if getattr(r, "profile_test_id", None) is not None}
+    if not by_test:
+        return {}
+    out: dict[int, tuple[str | None, str | None]] = {}
+    for pt_id, status, error in session.execute(
+        select(ProfileTest.id, ProfileTest.status, ProfileTest.error)
+        .where(ProfileTest.id.in_(list(by_test)))
+    ).all():
+        value = status.value if hasattr(status, "value") else (str(status) if status is not None else None)
+        out[by_test[pt_id]] = (value, error)
+    return out
 
 
 def claimed_moves(session, limit: int = CLAIM_HISTORY) -> list[dict]:
@@ -591,16 +637,30 @@ def claimed_moves(session, limit: int = CLAIM_HISTORY) -> list[dict]:
     matters ("have we already spent a night on this?"). A claim stores its parent and the
     levers it moved, so the point it proposed reconstructs exactly: the parent's coordinates
     with those moves applied.
+
+    A claim whose profile test **failed** before any run landed was not paid for: it keeps
+    blocking its coordinates for `FAILED_CLAIM_COOLDOWN_DAYS` (so a value the firewall
+    rejects is not re-queued every session) and then drops out, so the proposal can be made
+    again. Without that a single failed test closed a coordinate for ever.
     """
     rows = session.scalars(
         select(ExploreRecommendation)
         .order_by(ExploreRecommendation.id.desc())
         .limit(max(1, limit))
     ).all()
+    states = _test_states(session, rows)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=FAILED_CLAIM_COOLDOWN_DAYS)
     out: list[dict] = []
     for rec in rows:
         if not rec.parent_fingerprint:
             continue
+        status = (states.get(rec.id) or (None, None))[0]
+        if status in FAILED_TEST_STATES:
+            made = rec.created_at
+            if made is not None and made.tzinfo is not None:
+                made = made.astimezone(timezone.utc).replace(tzinfo=None)
+            if made is None or made < cutoff:
+                continue  # never measured, and old enough to try again
         moves = {
             ch["key"]: ch["to"]
             for ch in (rec.changes or [])
@@ -680,12 +740,22 @@ def recommendations(session, limit: int = 50) -> dict:
         samples, iters = _collect(eligible, crown_metrics)
         return _grade_samples(samples, iters, crown_metrics, crown_required, weights)
     names = names_for(session, [fp for fp in fps if fp]) if fps else {}
+    # The profile test behind each claim, so a claim whose test ended without a run reads
+    # as failed rather than pending for ever.
+    try:
+        test_states = _test_states(session, rows)
+    except Exception:  # noqa: BLE001 — bookkeeping must never blank the ledger
+        log.debug("Recommendation ledger: could not read profile test states", exc_info=True)
+        test_states = {}
 
     out: list[dict] = []
     for rec in rows:
         actual, iterations = _measured_since_claim(rec)
         kind = evidence_kind(rec.evidence)
-        graded = _verdict(rec, actual, iterations, min_iterations, methodology.version)
+        graded = _verdict(
+            rec, actual, iterations, min_iterations, methodology.version,
+            test_state=test_states.get(rec.id),
+        )
         parent_actual, _ = measured.get(rec.parent_fingerprint or "", (None, 0))
         out.append({
             "id": rec.id,
