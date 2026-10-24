@@ -92,12 +92,18 @@ def _quartile_grade(metrics: dict, key: str, crown: list[str], required: list[st
     return _grade_medians(row, iters, crown, required, weights)[0]
 
 
-def _se(p25: float | None, p75: float | None, iterations: int) -> float | None:
-    """Standard error of the median Overall ≈ IQR/√n — the same convention as
-    ``routes_settings._overall_se``. ``None`` when the spread or the sample size is unknown."""
-    if p25 is None or p75 is None or iterations < 1:
+def _se(p25: float | None, p75: float | None, runs: int) -> float | None:
+    """Standard error of the median Overall — `profile_aggregates.median_se`, the one
+    arithmetic the standings (`routes_settings._overall_se`) and the fused fit read too.
+    ``runs`` is the RUN count: the quartiles are over per-run values, one Score per run, so
+    dividing by the iteration total (as this once did) understated the SE by √(iterations
+    per run) — ×2.2 at five iterations a run — and over-trusted every pooled anchor the
+    fused ranking was handed. ``None`` when the spread or the sample size is unknown."""
+    if p25 is None or p75 is None:
         return None
-    return max(0.0, float(p75) - float(p25)) / (iterations ** 0.5)
+    from .profile_aggregates import median_se
+
+    return median_se(max(0.0, float(p75) - float(p25)), runs)
 
 
 def _pooled(a: dict, b: dict) -> float:
@@ -131,6 +137,7 @@ def _graded_field(session, version: str) -> list[dict]:
         fp = p["fingerprint"]
         agg = rolled.get(fp) or {}
         metrics, iters = agg.get("metrics") or {}, int(agg.get("iterations") or 0)
+        runs = int(agg.get("run_count") or 0)
         overall = _quartile_grade(metrics, "median", crown, required, weights, iters)
         if overall is None:
             continue
@@ -142,7 +149,9 @@ def _graded_field(session, version: str) -> list[dict]:
             "label": p.get("label"),
             "overall": round(float(overall), 2),
             "iterations": iters,
-            "se": _se(p25, p75, iters),
+            "runs": runs,
+            # The band is over per-run values, so its SE divides by the RUN count.
+            "se": _se(p25, p75, runs),
             "is_sqm_off": fp == SQM_OFF_FINGERPRINT,
         })
     return out

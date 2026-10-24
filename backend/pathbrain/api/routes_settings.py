@@ -357,11 +357,16 @@ def _overall_se(p: dict) -> float:
     median, *not* how much individual runs bounce. Tightens as runs (``count``) accrue, so a
     heavily-sampled profile's median is treated as the confident estimate it is. ``inf`` when
     the spread or sample size is unknown (contributes 0 to the pooled SE via ``_finite``)."""
+    from ..profile_aggregates import median_se
+
     iqr = _overall_iqr(p)
-    n = int(p.get("count") or 0)
-    if iqr == float("inf") or n < 1:
+    if iqr == float("inf"):
         return float("inf")
-    return iqr / (n ** 0.5)
+    # ``count`` is the RUN count — the quartiles are over per-run Overalls — and the one
+    # arithmetic lives in ``profile_aggregates.median_se`` so the verdict card and the fused
+    # ranking read the same number for the same profile.
+    se = median_se(iqr, int(p.get("count") or 0))
+    return float("inf") if se is None else se
 
 
 def _clearly_better(a: dict, b: dict, min_margin: float, sigma: float) -> bool:
