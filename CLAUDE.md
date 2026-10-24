@@ -3012,7 +3012,24 @@ LLM-based. See `README.md` for the product overview.
     operational: pooled seeds the question, the ring answers it, the fit reads the answer
     back. The circularity that kept the *pooled* ordering out of matchmaking does not apply
     here, because the ring's own rounds are the unbiased part of the fit — seating the
-    fit's tie is seating the ring's own unfinished business. Read once per ring cycle and
+    fit's tie is seating the ring's own unfinished business. **And only the part of that
+    question the window can settle** (`duel.rounds_affordable` / `_session_round_budget`,
+    `contender_order(round_budget=)`, `fused_deferred`): the fit says how many head-to-head
+    rounds would separate each tied rival from the #1 (`rounds_to_separate`), and the ring
+    measures its own resolving power at ~0.85 points over 30 rounds against top-of-field gaps
+    of ~0.1 — ≈850 rounds a pair — so a ladder that can run seven rounds a seat tonight was
+    opening every night with a match it could not finish and the thin prospects waited
+    behind it (the review's D1). Before every cycle the ring prices the window that remains
+    at the measured per-iteration cost (`iteration_cost.estimate_ms`, the ring's own
+    `iterations_per_round`, settle, seats and `belt_every`: a cycle costs
+    `seats + ceil(seats/(belt_every−1))` legs and gives each seat one round) and a rival
+    whose rounds-to-separate exceed that budget is **left to its ordinary tier** — raced on
+    its ring merits, never excluded, its `why` saying what it would take and what the window
+    can run — so the seat goes to a rival the night can decide, a prospect or a bet. A gap
+    the fit cannot price (zero, or no SE) is unknown, and unknown never refuses; no measured
+    iteration cost yet means no budget and the old behaviour. The fight card carries
+    `round_budget` and prices the configured window the same way, so the preview and the
+    session agree. `test_a_fused_rival_the_window_cannot_settle_is_left_to_its_ordinary_tier`. Read once per ring cycle and
     once per fight card, best-effort (a failed fit falls back to the belt), never in lever
     mode, only for an **anchored** best (a profile placed by ring rounds alone has no number
     on the pooled scale), and only under the fused policy: `pooled` and `duel` keep the

@@ -4036,3 +4036,65 @@ def test_a_session_seats_a_thin_promising_profile_in_the_prospect_seat(monkeypat
     thin = seated["thn0000000x"]
     assert "prospect seat" in (thin.get("challenger_why") or thin.get("why") or "")
     assert thin["pairs"] <= 9
+
+
+# ── The ring is pointed at what it can settle ────────────────────────────────────────
+
+
+def test_rounds_affordable_prices_a_seats_rounds_from_the_window_and_the_cadence():
+    from pathbrain import duel as duel_mod
+
+    leg = duel_mod.leg_seconds(35.0, 5, 3)          # 5 iterations at 35 s + a 3 s settle
+    assert leg == 178.0
+    # Two seats under strict alternation: B C B D = 4 legs a cycle, one round a seat.
+    assert duel_mod.rounds_affordable(7200.0, leg, n_seats=2, cadence=2) == 10
+    # belt_every 3: B C D = 3 legs a cycle → a third more rounds on the same clock.
+    assert duel_mod.rounds_affordable(7200.0, leg, n_seats=2, cadence=3) == 13
+    assert duel_mod.rounds_affordable(0.0, leg, n_seats=2, cadence=2) == 0
+    # Nothing timed yet → no budget, and an unknown budget never refuses.
+    assert duel_mod.leg_seconds(None, 5, 3) is None
+    assert duel_mod.rounds_affordable(7200.0, None, n_seats=2, cadence=2) is None
+
+
+def test_a_fused_rival_the_window_cannot_settle_is_left_to_its_ordinary_tier():
+    """The fit's open question is seated first only when the rounds that would settle it
+    fit the window. A rival 850 rounds from separation keeps its ordinary tier — raced on
+    its ring merits, never excluded — and says why; one 6 rounds away, the runner-up, and a
+    gap the fit cannot price at all are seated first as before. No budget → old behaviour."""
+    from pathbrain import duel as duel_mod
+
+    names = ["top", "near", "close", "runner", "beyond", "zero", "other"]
+    field = {
+        "best_fingerprint": "other",
+        "profiles": [
+            {"fingerprint": n, "label": n, "overall": 70.0, "confident": True, "settings": [],
+             "optimistic": 70.0, "iterations": 40}
+            for n in names
+        ],
+    }
+    fused = {"best": "top", "rivals": [
+        {"fingerprint": "near", "gap": 0.05, "gap_se": 0.3, "z": 0.17, "rounds_to_separate": 850, "tied": True},
+        {"fingerprint": "close", "gap": 0.4, "gap_se": 0.3, "z": 1.3, "rounds_to_separate": 6, "tied": True},
+        {"fingerprint": "runner", "gap": 1.5, "gap_se": 0.3, "z": 5.0, "rounds_to_separate": 0, "tied": False},
+        {"fingerprint": "beyond", "gap": 0.02, "gap_se": 0.3, "z": 0.07, "rounds_to_separate": None, "tied": True},
+        {"fingerprint": "zero", "gap": 0.0, "gap_se": 0.3, "z": None, "rounds_to_separate": None, "tied": True},
+    ]}
+    order = duel_mod.contender_order(field, {}, "top", fused=fused, round_budget=7)
+    by = {c["fingerprint"]: c for c in order}
+    assert by["close"]["tier"] == duel_mod.FUSED_RIVAL_TIER
+    assert by["runner"]["tier"] == duel_mod.FUSED_RIVAL_TIER
+    assert by["zero"]["tier"] == duel_mod.FUSED_RIVAL_TIER, "an unpriceable gap is unknown, and unknown never refuses"
+    for fp in ("near", "beyond"):
+        assert by[fp]["tier"] != duel_mod.FUSED_RIVAL_TIER, fp
+        assert by[fp].get("fused_deferred") is True
+        assert "this window can run ~7 a seat" in by[fp]["why"] and "left to its ordinary tier" in by[fp]["why"]
+    assert "~850 rounds" in by["near"]["why"]
+    assert "more rounds than the ring will run" in by["beyond"]["why"]
+    # Deferred, not dropped: both are still in the running order.
+    assert {c["fingerprint"] for c in order} == set(names) - {"top"}
+    # Without a budget every rival is seated first, exactly as before.
+    before = {c["fingerprint"]: c["tier"] for c in duel_mod.contender_order(field, {}, "top", fused=fused)}
+    assert all(before[fp] == duel_mod.FUSED_RIVAL_TIER for fp in ("near", "close", "runner", "beyond", "zero"))
+    # And the tier map the loop reads agrees with the order it was handed.
+    tiers = duel_mod.contender_tiers(field, [c["fingerprint"] for c in order], {}, "top", fused=fused, round_budget=7)
+    assert tiers["near"] != duel_mod.FUSED_RIVAL_TIER and tiers["close"] == duel_mod.FUSED_RIVAL_TIER
