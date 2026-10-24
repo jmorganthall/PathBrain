@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from pathbrain.database import session_scope
@@ -1899,3 +1901,34 @@ def test_a_busy_pipeline_queues_the_test_and_says_what_is_in_the_way(client):
             break
         time.sleep(0.02)
     mock_mod._OVERRIDES.clear()
+
+
+def test_a_one_run_profiles_ceiling_is_the_posterior_not_its_own_point_estimate(client):
+    """R6: `optimistic` used to be the p75 of a profile's own runs, which for ONE run is the
+    reading itself — so admission to the ring, the race and the heirs card was a coin flip on
+    whichever run landed high. It is now the posterior ceiling under the field-as-prior
+    (`shrinkage.py`), and a shrunk reading sits beside the raw one."""
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    crown = _crown_metrics()
+    # A handful of well-measured profiles so the prior is fitted rather than flat.
+    for k in range(6):
+        for i in range(6):
+            _seed_run(f"shrfield{k:03d}", 70 + k, t0 - timedelta(minutes=300 - 10 * k - i),
+                      crown_subscores={m: 70 + k + (i - 2.5) * 0.8 for m in crown}, iterations=5)
+    # One lucky run: 88 on every crown leg.
+    _seed_run("shrthin0000", 88, t0 - timedelta(minutes=5),
+              crown_subscores={m: 88 for m in crown}, iterations=5)
+
+    body = client.get("/api/settings/profiles").json()
+    assert body["shrinkage"] is not None and body["shrinkage"]["basis"] == "fitted"
+    thin = next(p for p in body["profiles"] if p["fingerprint"] == "shrthin0000")
+    assert thin["count"] == 1
+    assert thin["optimistic_p75"] == thin["overall"], "the old gate: one run's p75 IS its reading"
+    assert thin["optimistic"] != thin["overall"], "the ceiling is a posterior quantile now"
+    assert thin["overall_se"] > 0, "a lone run's SE is the field's per-run noise, not zero"
+    centre = body["shrinkage"]["mean"]
+    assert centre < thin["overall_shrunk"] < thin["overall"], "pulled toward the field, not onto it"
+    assert thin["overall_shrunk"] + 2 * thin["overall_shrunk_se"] == pytest.approx(thin["optimistic"], abs=0.02)
+    # A well-measured profile is left where it reads.
+    solid = next(p for p in body["profiles"] if p["fingerprint"] == "shrfield005")
+    assert solid["count"] == 6 and abs(solid["overall_shrunk"] - solid["overall"]) < 0.5

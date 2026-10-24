@@ -212,6 +212,20 @@ export interface SettingsProfile {
   overall_recent: number | null;
   recent_iterations: number;
   recent_scores: Record<string, number>;
+  // The field-as-prior reading (shrinkage.py): this profile's Overall shrunk toward the field's
+  // centre by exactly as much as its own noise warrants, with the posterior SD. A 3000-iteration
+  // profile does not move; a one-run 88 reads as the ~73 it probably is. Display only — the
+  // crown is still the argmax of the raw `overall`. Null until the profile has an Overall, or
+  // under a field-relative (corner) crown.
+  overall_shrunk: number | null;
+  overall_shrunk_se: number | null;
+  // SE of the raw median Overall with the thin-profile floor (a one-run profile reads the
+  // field's per-run noise, never zero).
+  overall_se: number | null;
+  // The posterior CEILING (shrunk + 2 SD) — the number the heirs card, the challenger race and
+  // the duel's live-threat tier admit a thin profile on. `optimistic_p75` is the p75 it replaced.
+  optimistic: number | null;
+  optimistic_p75: number | null;
   // Current form vs prior record: recent-window median Overall vs the rest of history,
   // significance-gated both directions. "fading" = pooled Overall propped by a past it no
   // longer delivers; "rising" = pooled Overall understates its present. Null when there
@@ -455,6 +469,18 @@ export interface SettingsProfilesResponse {
   // The "SQM off" baseline Overall that "% vs SQM off" is measured against (best Overall
   // among measured SQM-off profiles). Null until a baseline test has run.
   sqm_off_overall: number | null;
+  // The prior behind `overall_shrunk` / `optimistic`: the field's centre, between-profile τ
+  // (null when flat), pooled per-run noise, and the basis of each. Null under a corner crown.
+  shrinkage: {
+    mean: number;
+    tau: number | null;
+    run_noise: number;
+    profiles: number;
+    noise_profiles: number;
+    basis: "fitted" | "flat";
+    noise_basis: "fitted" | "default";
+    ceiling_z: number;
+  } | null;
   // The POOLED crown: confident and highest all-time Overall. Kept as its own field and
   // deliberately NOT re-pointed at the ring — the duel's matchmaking reads it as the
   // independent opinion, and pointing it at the ring would make the ladder choose who gets

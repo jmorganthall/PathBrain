@@ -152,8 +152,20 @@ def _graded_field(session, version: str) -> list[dict]:
             "runs": runs,
             # The band is over per-run values, so its SE divides by the RUN count.
             "se": _se(p25, p75, runs),
+            "iqr": None if p25 is None or p75 is None else max(0.0, float(p75) - float(p25)),
             "is_sqm_off": fp == SQM_OFF_FINGERPRINT,
         })
+    # The thin-profile floor (`shrinkage.profile_se`): a one-run profile has an IQR of zero and
+    # so an SE of zero, which made it a *tied* co-leader the card could never separate and, as a
+    # pooled anchor in the fused ranking, a point held as firmly as the crown's 3000 iterations.
+    # Under `OWN_SE_MIN_RUNS` runs the SE is the field's own per-run noise over √runs; above it
+    # the profile's own, floored at half of that.
+    from .shrinkage import profile_se, run_noise
+
+    noise, _n, _basis = run_noise([(r["iqr"], r["runs"]) for r in out])
+    for r in out:
+        se = profile_se(r["iqr"], r["runs"], noise)
+        r["se"] = se if se is not None else r["se"]
     return out
 
 

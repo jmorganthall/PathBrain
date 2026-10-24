@@ -1538,6 +1538,42 @@ LLM-based. See `README.md` for the product overview.
     hands the run count, and `test_the_se_divides_the_run_band_by_the_run_count_not_the_
     iteration_total` pins that two profiles with the same runs and spread carry the same SE
     whatever each run medianed. The verdict rows carry `runs` beside `iterations`.
+  - `shrinkage.py` — **the field as a prior: a thin profile's Overall is shrunk toward it, and
+    its ceiling is a posterior quantile.** Reported as *"very high Overall on five iterations,
+    and dueling never picks them up"*, and both halves were one statistic. A profile measured
+    once reads its Overall off a single run, a run on this link wobbles by ~2 points, and among
+    a hundred such profiles the best-looking one overshoots its true value by ≈2.5–3 points
+    (the expected maximum of a hundred draws) against real gaps between the top profiles of
+    0.1–0.3 — so the high number was mostly selection, not signal. And the one number that
+    decided whether such a profile earned a night in the ring, `optimistic`, was the **p75 of
+    its own runs**: with one run that *is* the point estimate, with two `statistics.quantiles`
+    extrapolates past the larger, with three it equals the maximum — so admission (the heirs
+    card, the challenger race's eliminate-below-the-bar, the duel's `LIVE_THREAT_TIER`) was a
+    coin flip on whichever run happened to land high, and a profile whose one run landed low
+    was struck off while a sibling whose one run landed high was seated first. Now the field is
+    the prior: `fit` takes every profile's `(overall, iqr, runs)` (the unshaped baseline left
+    out — a different regime), centres on the median and fits τ, the spread of **true**
+    Overalls, by the method of moments as `pooled_slack` fits its slack (observed spread minus
+    what measurement error alone would produce, floored at `TAU_FLOOR`); `posterior` shrinks
+    each reading by `w = τ²/(τ²+se²)` and reports `ceiling = shrunk + CEILING_Z·sd` — the same
+    2σ bar as `crown_tie_sigma` and `duel.tie_sigma`, so "its ceiling reaches the crown" and
+    "the crown cannot call it clearly worse" are one statement. A 3000-iteration profile has
+    `se ≈ 0` and does not move; a one-run profile is pulled most of the way to the centre with a
+    band that says honestly what it could still be. **The per-run noise is pooled, never read
+    off the thin profile**: under `OWN_SE_MIN_RUNS` (5) runs a profile's SE is the field's
+    per-run SD (`run_noise`: median `IQR/1.349` over the well-measured profiles) over √runs,
+    and a well-measured profile's own IQR-based SE is floored at half that — a one-run profile
+    with an IQR of zero used to carry an SE of zero, which made it a co-leader the verdict
+    card could never separate and, as a pooled anchor in the fused ranking, a point held as
+    firmly as the crown (`verdict._graded_field` reads the same `profile_se`). Wired at the one
+    seam: `compute_profiles` (weighted crown only) sets `overall_shrunk` / `overall_shrunk_se` /
+    `overall_se` on every profile, keeps the old number as `optimistic_p75`, and makes
+    `optimistic` the posterior ceiling — so heirs, the race and the live-threat tier change
+    behaviour with no edit, exactly as they were written to; the response carries `shrinkage`
+    (centre, τ, noise, basis). **The crown is untouched**: still the argmax of the raw median
+    among confident profiles, no floor, no hysteresis. Fewer than `MIN_PRIOR_PROFILES` profiles
+    → a flat prior (nothing shrunk, the ceiling is the reading plus 2 SEs) and the response says
+    so. `test_shrinkage` + the API-level pin in `test_settings`.
   - `crown_follower.py` — **Follow best**: keep the firewall's SQM settings on the crowned
     best profile (`compute_profiles` → `best_fingerprint`) as the crown changes.
     **Event-driven, not polled**: the runner queues `notify_run_complete` as each run finishes
