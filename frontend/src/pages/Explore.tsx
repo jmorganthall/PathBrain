@@ -256,6 +256,7 @@ function CurveCard({
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
           Best at <b>{fmtValue(curve.best_value, curve.unit)}</b> ({fmtNum(curve.best_overall, 1)})
           {curve.best_at_edge ? " — the end of the tested range, so the optimum may lie beyond it" : ""}
+          {curve.best_settled === false ? " — nothing on this lever is settled yet, so this is the steadiest thin reading, not a measured best" : ""}
           {curve.spearman != null ? ` · ρ ${curve.spearman.toFixed(2)}` : ""}
         </Typography>
         {!!conditioned && (

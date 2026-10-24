@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 import pathbrain.api.routes_settings as rs
 from pathbrain import explore
 
@@ -1213,3 +1215,69 @@ def test_the_landscape_threads_the_ring_into_every_priced_proposal(monkeypatch):
     assert cand["ring"]["rounds"] == 10 and cand["ring"]["margin"] == 1.2
     assert [r["key"] for r in out["ring_transitions"]] == ["Download::quantum"]
     assert out["ring_transitions"][0]["transitions"][0]["rounds"] == 10
+
+
+# ── R12: the best value and the transplant source rest on settled evidence ────────────
+
+
+def test_a_thin_reading_is_never_the_best_value_nor_a_transplant_source(monkeypatch):
+    """E6: the lever's "best value" was a plain max over the per-value medians, and a value
+    tested by one five-iteration profile is a median of one lucky reading. Named best it
+    seeded refines on both sides and an edge step past it — every one a new thin profile.
+    Now a point needs one settled profile-equivalent of evidence behind it to be named best
+    or offered as a transplant; it still draws the curve and still informs the model."""
+    profiles = [
+        _profile("a", quantum=1000, target=5, overall=60.0),
+        _profile("b", quantum=2000, target=5, overall=62.0),
+        _profile("c", quantum=3000, target=5, overall=64.0),
+        _profile("d", quantum=4000, target=5, overall=66.0),
+        _profile("lucky", quantum=5000, target=5, overall=99.0, iterations=2, confident=False),
+    ]
+    out = _landscape(monkeypatch, profiles, suggestions=12)
+    curve = next(c for c in out["curves"] if c["key"] == "Download::quantum")
+    pts = {c["value"]: c for c in curve["curve"]}
+    assert pts[5000.0]["overall"] == 99.0 and pts[5000.0]["settled"] is False, "drawn, not trusted"
+    assert pts[4000.0]["settled"] is True
+    assert curve["best_value"] == 4000.0 and curve["best_settled"] is True
+    assert curve["best_at_edge"] is False, "the thin reading is the range's edge, not the best"
+    # No edge proposal steps past the lucky reading, and no transplant carries its value.
+    assert not [g for g in out["gaps"] if g["key"] == "Download::quantum" and g["kind"] == "edge"]
+    for c in out["candidates"]:
+        for ch in c["changes"]:
+            if ch["key"] == "Download::quantum" and "proven elsewhere" in ch["why"]:
+                assert ch["to"] != 5000.0, "a one-reading value is not proven"
+    # The thin reading widens the field's spread a little, not by its full distance: the
+    # uncertainty band is evidence-weighted.
+    weighted = explore._weighted_stdev([(p["overall"], p["weight"]) for p in out["points"]])
+    unweighted = explore._stdev([p["overall"] for p in out["points"]])
+    assert weighted < unweighted
+
+
+def test_with_nothing_settled_the_best_value_is_picked_on_the_pessimistic_end(monkeypatch):
+    """A field of nothing but quick tests has no settled point to prefer, so the pick falls
+    to each point's own pessimistic end (`trusted`, the p25): the steady 70 beats the
+    lucky 99 whose p25 says 55."""
+    def thin(fp, q, overall, p25):
+        p = _profile(fp, quantum=q, target=5, overall=overall, iterations=5, confident=False)
+        p["overall_p25"] = p25
+        p["overall_p75"] = overall + (overall - p25)
+        p["count"] = 1
+        return p
+    profiles = [
+        thin("a", 1000, 60.0, 58.0), thin("b", 2000, 63.0, 61.0),
+        thin("steady", 3000, 70.0, 68.0), thin("lucky", 4000, 99.0, 55.0),
+    ]
+    out = _landscape(monkeypatch, profiles)
+    curve = next(c for c in out["curves"] if c["key"] == "Download::quantum")
+    assert all(c["settled"] is False for c in curve["curve"])
+    assert curve["best_value"] == 3000.0 and curve["best_settled"] is False
+    assert next(c for c in curve["curve"] if c["value"] == 4000.0)["trusted"] == 55.0
+
+
+def test_the_weighted_spread_degenerates_to_the_plain_one_at_equal_weights():
+    vals = [60.0, 62.0, 64.0, 66.0, 99.0]
+    assert explore._weighted_stdev([(v, 1.0) for v in vals]) == pytest.approx(explore._stdev(vals))
+    assert explore._weighted_stdev([(v, 0.4) for v in vals]) == pytest.approx(explore._stdev(vals))
+    thin = explore._weighted_stdev([(v, 1.0) for v in vals[:-1]] + [(99.0, explore.THIN_WEIGHT_FLOOR)])
+    assert explore._stdev(vals[:-1]) < thin < explore._stdev(vals)
+    assert explore._weighted_stdev([(1.0, 1.0)]) == 0.0

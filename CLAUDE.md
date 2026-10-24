@@ -2727,7 +2727,20 @@ LLM-based. See `README.md` for the product overview.
     the right response to a promising thin profile is to mature it in the ring, not to extend it
     before anyone knows its number is real — with thin parents used only when fewer than
     `MIN_POINTS` settled profiles exist); and it cannot set the bar (`_best_established` keeps
-    "best measured" on the best *confident* profile, the same one the crown names). **The seam it leaves is the overnight module**: the
+    "best measured" on the best *confident* profile, the same one the crown names). **And it
+    cannot be a lever's best value or a transplant source** (`BEST_VALUE_MIN_EVIDENCE`,
+    `_best_curve_point` / `_settled_first`, `settled` + `trusted` on every curve point,
+    `best_settled` on every curve): a curve's `best_value` was a plain max over the per-value
+    medians, and a value tested by one five-iteration profile is a median of one lucky reading
+    (evidence 0.15) — named best, it seeded "refine" moves on both sides and an "edge" step
+    past it, each a 5-iteration test and a permanent field member (the review's E6). A point
+    now needs one settled profile-equivalent of evidence behind it to be named best or offered
+    as *proven elsewhere*; it still draws the curve and still informs the predictions. With no
+    settled point at all the pick falls to each point's pessimistic end (`trusted`, the
+    members' p25), so the lucky reading still cannot be it. The field spread behind every
+    uncertainty band is evidence-weighted the same way (`_weighted_stdev`, exactly `_stdev` at
+    equal weights). `test_a_thin_reading_is_never_the_best_value_nor_a_transplant_source`.
+    **The seam it leaves is the overnight module**: the
     engine is a pure function returning runnable per-pipe overrides, so a scheduler can alternate
     *explore* (measure these candidates) with *adjudicate* (duel the survivors) and the field
     grows toward the optimum instead of only being re-ranked.
