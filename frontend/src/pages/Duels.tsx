@@ -1525,7 +1525,7 @@ function ExploreShareLine({ explore }: { explore: DuelExplore }) {
             size="small"
             sx={{ height: 20, maxWidth: 260 }}
             color={b.status === "complete" ? "success" : b.status === "failed" ? "error" : "default"}
-            label={`${b.label} · ${b.status ?? "queued"}`}
+            label={`${b.kind === "mature" ? "mature · " : ""}${b.label} · ${b.status ?? "queued"}`}
           />
         </Tooltip>
       ))}
@@ -1534,7 +1534,7 @@ function ExploreShareLine({ explore }: { explore: DuelExplore }) {
           {explore.note}
         </Typography>
       )}
-      <HelpTip title="A share of every session's window goes to Explore's top bet — the untried profile it would back, not merely look at. Each bet is paced across the window, runs as an ordinary Explore test (its claim is graded on the Explore page), and once it lands the ring re-reads the field so the new profile can be duelled the same session." />
+      <HelpTip title="A share of every session's window goes to Explore. Its turns alternate: a bet — the untried profile Explore would back, not merely look at — then a top-up (marked 'mature') of the thinnest profile whose ceiling still reaches the crown, so the thin profiles the bets mint get settled rather than only added to. Each is paced across the window, runs as an ordinary profile test, and once it lands the ring re-reads the field so the profile can be duelled the same session." />
     </Stack>
   );
 }

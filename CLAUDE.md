@@ -2878,6 +2878,25 @@ LLM-based. See `README.md` for the product overview.
     `Duel.explore` (budget, spent, the bets with their test ids and status).
     `test_explore_share` (pacing, scaling, and end to end: bet queued → lands → field
     re-read → the explored profile is raced).
+    **The share has two verbs, and they alternate** (`explore_share.kind_for`,
+    `duel.explore_mature`, default on; `_queue_top_heir`). Exploring adds a profile nobody has
+    tried; **maturing** tops up one that exists and is too thin to be trusted. Reported as
+    *"very high Overall on five iterations that dueling never picks up"*, and the share was
+    half of why: every bet minted a five-iteration profile, the prospect seat matured one of
+    them a night, the heirs card listed the rest — and nothing scheduled ever measured them
+    again, so the backlog only grew. Now the turns alternate: a bet, then the heir with the
+    highest posterior ceiling (`optimistic` — see `shrinkage.py`) that is not in the ring,
+    under-sampled (never a stale confident one — that is the race's job), topped up for
+    `explore_iterations` more through an ordinary `profile_test.start`, each profile once a
+    session. The ring hands the share its own books at call time (`heirs_source` = the
+    engine's heirs list, `settings_source` = `settings_by_fp`, `exclude_source` = the seats and
+    the belt), so what gets matured is exactly what the heirs card says could still beat the
+    crown and never a profile mid-match. A turn with nobody to mature falls through to a bet
+    and vice versa, so the share is never left unspent for want of one kind; both are charged
+    to the same budget, land the same way (`newly_landed` → field re-read), and a matured
+    profile that crosses the confidence bar is a contender the same session. Each entry on
+    `Duel.explore.bets` carries `kind`; the board chip reads *mature ·*. The first turn still
+    explores, so a session that only ever gets one turn grows the field as before.
   - `crowning.py` — **the first-class CROWNING POLICY**: the single resolver for "which
     verdict governs what automation applies". `crown_follow.policy` = **"fused"** (the
     default: the one ranking fitted over both records, `overall_ranking.crown`, with the

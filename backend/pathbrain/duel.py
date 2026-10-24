@@ -3243,9 +3243,32 @@ def _ring_live(*, matchups_done: int, inc: dict, seats_list: list[_Seat], curren
         }
         board["lever"] = dict(seat.lever) if seat.lever else None
         boards.append(board)
-    # Callers only publish the ring while at least one seat is filled (`_run_ring` breaks
-    # before its first `_live` otherwise), so there is always a board to lead with.
-    head = boards[seats_list.index(current)] if current in seats_list else boards[0]
+    if boards:
+        head = boards[seats_list.index(current)] if current in seats_list else boards[0]
+    else:
+        # Between matches — every seat closed at this seam and the next not yet filled. The
+        # exploration share queues its tests at exactly this seam, and publishing "Exploring"
+        # or "Stepping aside" with no seat used to index an empty list and fail the whole
+        # session. The head keeps the one-match shape (a placeholder challenger, never
+        # None: the page dereferences it) so every reader built for it still works.
+        head = {
+            "bout": matchups_done + 1,
+            "pairs": 0,
+            "incumbent": {
+                "fingerprint": inc.get("fingerprint"), "name": inc.get("name"),
+                "label": inc.get("label"), "wins": 0,
+            },
+            "challenger": {"fingerprint": None, "name": None, "label": None, "wins": 0, "why": ""},
+            "leader": "level",
+            "median_margin": None, "last_margin": None, "margins": [],
+            "min_pairs": min_pairs, "max_pairs": max_pairs, "min_margin": min_margin,
+            "p_value": None, "alpha": None,
+            "streak": {"length": 0, "side": None, "needed": streak_needed},
+            "weather": {"shifted_rounds": 0, "last_shift": None, "max_shift": None,
+                        "threshold": ROUND_WEATHER_SHIFT},
+            "measuring": False,
+            "between_matches": True,
+        }
     return {
         **head,
         "seats": boards,
@@ -3373,6 +3396,14 @@ def _run_ring(
         explorer = ExploreShare(duel_id, cfg, max(0.0, deadline - time.monotonic()))
         if not explorer.enabled:
             explorer = None
+        else:
+            # The maturing turn reads the ring's own books, at call time: the heirs as the
+            # engine orders them, each profile's stored settings, and who is in the ring now.
+            explorer.heirs_source = lambda: list((heirs or {}).get("items") or [])
+            explorer.settings_source = lambda fp: (settings_by_fp.get(fp) or {}).get("settings")
+            explorer.exclude_source = lambda: (
+                {s.fp for s in seated} | ({incumbent_fp} if incumbent_fp else set())
+            )
     explore_board: dict | None = None
 
     def _stopped() -> bool:
@@ -3959,6 +3990,9 @@ def _run_ring(
             if bet is not None:
                 _publish_explore()
                 _live(None, (
+                    f"Maturing — {bet['label']} ({bet['iterations']} more iterations) runs "
+                    f"next so its ceiling can be read; the ring resumes after it"
+                    if bet.get("kind") == "mature" else
                     f"Exploring — Explore's top bet ({bet['label']}, {bet['iterations']} "
                     f"iterations) runs next; the ring resumes after it"
                 ), leg=None)

@@ -2613,6 +2613,11 @@ export interface DuelOpenMatch {
 
 /** One Explore bet a duel session queued under its exploration share. */
 export interface DuelExploreBet {
+  // "bet" = Explore's untried candidate; "mature" = a top-up of a thin existing profile whose
+  // posterior ceiling reaches the crown. The share alternates the two.
+  kind?: "bet" | "mature";
+  ceiling?: number | null;
+  iterations_before?: number | null;
   test_id: number | null;
   fingerprint: string | null;
   label: string;
@@ -2628,6 +2633,9 @@ export interface DuelExploreBet {
 export interface DuelExplore {
   share: number;
   iterations: number;
+  mature?: boolean;
+  explored?: number;
+  matured?: number;
   budget_s: number;
   spent_s: number;
   bets: DuelExploreBet[];

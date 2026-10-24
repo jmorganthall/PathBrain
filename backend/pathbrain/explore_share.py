@@ -29,10 +29,24 @@ cannot finish inside the window, since a queued test outlives the ladder that as
 The accounting is the bets' own clocks — each ``ProfileTest`` row's start and finish — so
 the share is what exploration actually cost, not the duel's guess at it. Nothing here writes
 the firewall or scores anything; it only decides when to press the button a person would.
+
+**The share has two verbs, and they alternate** (``kind_for``; ``duel.explore_mature``,
+default on). *Exploring* adds a profile nobody has tried. *Maturing* tops up one that exists
+and is too thin to be trusted: the heir with the highest posterior ceiling (``optimistic``,
+the number the heirs card, the race and the ring's live-threat tier all admit on — see
+`shrinkage.py`) that is not in the ring right now, measured for ``explore_iterations`` more
+through an ordinary profile test. Without it the backlog only ever grows: every bet mints a
+five-iteration profile, the prospect seat matures one of them a night, and a hundred
+high-reading thin profiles sat unexamined while the ladder re-raced the top three. A maturing
+turn with nobody to mature falls through to a bet, and vice versa, so the share is never left
+unspent for want of one kind. Both are charged to the same budget, land the same way, and
+re-read the field when they do — a matured profile that crosses the confidence bar becomes a
+contender the same session.
 """
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -56,6 +70,12 @@ RETRY_AFTER_S = 1800.0
 #: How long to wait for a just-queued bet to reach the coordinator's queue, so the ring's
 #: yield at the same seam sees it rather than holding the pipeline for one more cycle.
 QUEUE_SETTLE_S = 5.0
+#: Whether the share alternates exploring (a new bet) with maturing (a top-up of the thinnest
+#: live threat) when the config says nothing.
+MATURE_DEFAULT = True
+#: Which heirs a maturing turn may top up: the under-sampled ones. Stale-but-confident heirs
+#: are the race's job and already carry a trustworthy reading.
+MATURE_REASONS = ("limited-data",)
 
 _OPEN = (ProfileTestStatus.PENDING, ProfileTestStatus.RUNNING)
 
@@ -79,6 +99,25 @@ def iterations(cfg: dict | None) -> int:
     except (TypeError, ValueError):
         n = QUICK_ITERATIONS
     return max(1, min(50, n))
+
+
+def mature_enabled(cfg: dict | None) -> bool:
+    """Does the share alternate bets with top-ups of the thinnest live threat?"""
+    raw = (cfg or {}).get("explore_mature", MATURE_DEFAULT)
+    return MATURE_DEFAULT if raw is None else bool(raw)
+
+
+def kind_for(actions_so_far: int, mature_on: bool) -> str:
+    """Which verb the next turn of the share takes: ``"bet"`` or ``"mature"``.
+
+    Pure. The first turn always explores (the behaviour the share shipped with, so a
+    session that only ever gets one turn still grows the field); with maturing on, the
+    turns then alternate, so a night's share is split evenly between new ideas and
+    settling the thin ones already on the record.
+    """
+    if not mature_on:
+        return "bet"
+    return "mature" if actions_so_far % 2 == 1 else "bet"
 
 
 def due(*, share_: float, elapsed_s: float, window_s: float, spent_s: float,
@@ -111,11 +150,18 @@ class ExploreShare:
         self.duel_id = duel_id
         self.share = share(cfg)
         self.iterations = iterations(cfg)
+        self.mature = mature_enabled(cfg)
         self.window_s = float(window_s)
         self._clock = clock
         self._t0 = clock()
         self.bets: list[dict] = []
         self._tried: set[str] = set()
+        self._tried_mature: set[str] = set()
+        # The ring hands the maturing turn its own books: the heirs as the engine orders them
+        # (biggest ceiling first), each profile's stored settings, and who is in the ring now.
+        self.heirs_source: Callable[[], list[dict]] | None = None
+        self.settings_source: Callable[[str], list[dict] | None] | None = None
+        self.exclude_source: Callable[[], set[str]] | None = None
         self._folded: set[int] = set()
         self._retry_at = 0.0
         self.note: str | None = None
@@ -172,7 +218,13 @@ class ExploreShare:
                 bet_cost_s=self._bet_cost_s(rows),
             ):
                 return None
-            bet = self._queue_top_bet()
+            kind = kind_for(len(self.bets), self.mature)
+            bet = self._queue(kind)
+            if bet is None:
+                # The other verb, so the share is never left unspent for want of one kind.
+                other = "bet" if kind == "mature" else "mature"
+                if other == "bet" or self.mature:
+                    bet = self._queue(other)
         except Exception:  # noqa: BLE001
             log.exception("Duel %s: exploration share could not queue a bet", self.duel_id)
             self._retry_at = self._clock() + RETRY_AFTER_S
@@ -188,6 +240,67 @@ class ExploreShare:
         while coordinator.waiting() <= 0 and time.monotonic() < deadline:
             time.sleep(0.05)
         return bet
+
+    def _queue(self, kind: str) -> dict | None:
+        return self._queue_top_heir() if kind == "mature" else self._queue_top_bet()
+
+    def _queue_top_heir(self) -> dict | None:
+        """Top up the thinnest live threat: the under-sampled heir with the highest posterior
+        ceiling that is not in the ring right now, for `iterations` more iterations.
+
+        The heirs list is the engine's own (`duel._engine_heirs`, biggest ceiling first,
+        reachability-filtered), so what gets matured is exactly what the heirs card says
+        could still beat the crown. Each profile is matured at most once a session; the
+        re-read after it lands re-ranks the rest.
+        """
+        from . import profile_test
+
+        heirs = list(self.heirs_source()) if self.heirs_source is not None else []
+        if not heirs:
+            self.note = "No thin profile whose ceiling reaches the crown is waiting to be matured."
+            return None
+        exclude = set(self.exclude_source()) if self.exclude_source is not None else set()
+        for h in heirs:
+            fp = h.get("fingerprint")
+            if not fp or fp in exclude or fp in self._tried_mature:
+                continue
+            if h.get("reason") not in MATURE_REASONS:
+                continue
+            settings = self.settings_source(fp) if self.settings_source is not None else None
+            if not settings:
+                continue
+            self._tried_mature.add(fp)
+            name = h.get("name") or h.get("label") or fp[:8]
+            ceiling, crown = h.get("optimistic"), h.get("crown_overall")
+            try:
+                test_id = profile_test.start(
+                    fp, settings, f"Mature (duel #{self.duel_id}): {name}", self.iterations,
+                )
+            except Exception as exc:  # noqa: BLE001 — a bad heir is skipped, not fatal
+                log.info("Duel %s: could not mature %s — %s", self.duel_id, name, exc)
+                continue
+            self.note = None
+            bet = {
+                "kind": "mature",
+                "test_id": test_id,
+                "fingerprint": fp,
+                "label": name,
+                "summary": (
+                    f"{name}: {int(h.get('iterations') or 0)} iteration(s) so far, ceiling "
+                    f"{ceiling:.1f}" + (f" against a crown of {crown:.1f}" if crown is not None else "")
+                    if ceiling is not None else f"{name}: {int(h.get('iterations') or 0)} iteration(s) so far"
+                ),
+                "predicted": h.get("overall"),
+                "ceiling": ceiling,
+                "iterations": self.iterations,
+                "iterations_before": h.get("iterations"),
+                "queued_at": datetime.now(timezone.utc).isoformat(),
+            }
+            log.info("Duel %s: queued maturing test #%s for %s (%s iterations; ceiling %s)",
+                     self.duel_id, test_id, name, self.iterations, ceiling)
+            return bet
+        self.note = "Every thin live threat is already in the ring or was matured this session."
+        return None
 
     def _queue_top_bet(self) -> dict | None:
         """Walk Explore's bets, best first, and queue the first one that starts."""
@@ -228,6 +341,7 @@ class ExploreShare:
                     continue
                 self.note = None
                 bet = {
+                    "kind": "bet",
                     "test_id": started.get("id"),
                     "fingerprint": started.get("fingerprint"),
                     "label": label,
@@ -278,6 +392,9 @@ class ExploreShare:
         return {
             "share": self.share,
             "iterations": self.iterations,
+            "mature": self.mature,
+            "explored": sum(1 for b in bets if b.get("kind", "bet") == "bet"),
+            "matured": sum(1 for b in bets if b.get("kind") == "mature"),
             "budget_s": round(self.share * self.window_s),
             "spent_s": round(self.spent_s(rows)),
             "bets": bets,
