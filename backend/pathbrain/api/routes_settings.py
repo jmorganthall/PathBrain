@@ -410,8 +410,11 @@ def _select_crown(
     The crown is the **highest median Overall**, full stop — the profile that wins, wins,
     even by an infinitesimal margin. No stickiness/hysteresis and no steadiness override
     enter the *verdict*: a marginally-higher median is still a higher median, and the crown
-    follows it deterministically (ties on the exact median break toward the more-measured,
-    then most-recently-seen profile).
+    follows it deterministically. The Overall is carried at full precision, so an exact tie
+    is a genuine coincidence rather than two readings rounded onto one decimal; when it does
+    happen it breaks toward the higher **shrunk** reading (`overall_shrunk`, the posterior
+    under the field prior — the profile whose reading rests on more evidence), then the
+    more-measured, then the most-recently-seen profile.
 
     The ``co_leaders`` — every confident profile the crown can't ``_clearly_better`` (i.e.
     within run-to-run noise of it, including the crown itself) — are still returned, but
@@ -424,11 +427,18 @@ def _select_crown(
     if not scored:
         return None, []
     # The winner is simply the highest median Overall (deterministic tie-break on exact
-    # equality: more iterations, then most recent). A hair of a lead still wins.
-    best = max(
-        scored,
-        key=lambda p: (float(p["overall"]), int(p.get("iterations") or 0), p.get("last_seen") or ""),
-    )
+    # equality: the higher posterior, then more iterations, then most recent). A hair of a
+    # lead still wins.
+    def _key(p: dict) -> tuple:
+        shrunk = p.get("overall_shrunk")
+        return (
+            float(p["overall"]),
+            float(shrunk) if shrunk is not None else float("-inf"),
+            int(p.get("iterations") or 0),
+            p.get("last_seen") or "",
+        )
+
+    best = max(scored, key=_key)
     # Informational only: who is statistically indistinguishable from the crown.
     co_fps = [
         p["fingerprint"]

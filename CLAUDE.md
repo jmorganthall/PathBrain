@@ -3286,8 +3286,16 @@ LLM-based. See `README.md` for the product overview.
     The crowned **"best"** is the **confident** profile (total iterations ≥
     `correlation.min_iterations`) with the **highest Overall** (the field-normalized raw corner
     above) — full stop, the profile that wins wins, even by an infinitesimal margin (`_select_crown`).
-    The verdict is a deterministic argmax of that Overall (exact-tie break: more iterations,
-    then most-recently-seen); there is **no hysteresis/stickiness and no steadiness override**.
+    The verdict is a deterministic argmax of that Overall; there is **no hysteresis/stickiness
+    and no steadiness override**. **The grade is carried at full precision** (`weighted_score`
+    no longer rounds; `_select_crown`): it used to be rounded to one decimal, so on a field
+    whose top profiles sit 0.1–0.3 points apart two readings 0.05 apart read as an exact tie
+    and the crown went to whichever had more iterations — a verdict decided by rounding and by
+    sample size rather than by the measurement (the review's M4). Rounding is for
+    serialization, at the edge (the verdict card's 2 dp, the frontend's `toFixed`). A genuine
+    exact tie now breaks toward the higher **shrunk** reading (`overall_shrunk`, the posterior
+    under the field prior — the profile whose reading rests on more evidence), then more
+    iterations, then most-recently-seen. `test_the_crown_grade_is_carried_at_full_precision_…`.
     The Overall IQR
     (`overall_p25/p75`) does **not** decide the crown; it only *labels* a photo finish:
     `_clearly_better`/`co_leaders` flag every confident profile statistically
