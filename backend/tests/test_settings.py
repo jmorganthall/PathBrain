@@ -1932,3 +1932,30 @@ def test_a_one_run_profiles_ceiling_is_the_posterior_not_its_own_point_estimate(
     # A well-measured profile is left where it reads.
     solid = next(p for p in body["profiles"] if p["fingerprint"] == "shrfield005")
     assert solid["count"] == 6 and abs(solid["overall_shrunk"] - solid["overall"]) < 0.5
+
+
+def test_the_crown_grade_is_carried_at_full_precision_and_a_true_tie_breaks_toward_the_posterior():
+    """R10: `weighted_score` used to round to one decimal, so two profiles 0.05 apart read as
+    an exact tie and the crown went to whichever had more iterations — decided by rounding
+    and sample size rather than by the measurement."""
+    from pathbrain.methodology import weighted_score
+
+    a = weighted_score([(70.26, 1.0), (70.26, 1.0), (70.26, 0.5)])
+    b = weighted_score([(70.31, 1.0), (70.31, 1.0), (70.31, 0.5)])
+    assert a == pytest.approx(70.26) and b == pytest.approx(70.31) and b > a
+    assert weighted_score([(80.0, 1.0), (80.0, 1.0)]) == 80.0
+    assert weighted_score([(None, 1.0), (60.0, 0.0)]) is None
+    # A genuine exact tie: the higher shrunk reading wins before the iteration count does.
+    import pathbrain.api.routes_settings as rs
+
+    thin_lucky = {"fingerprint": "lucky", "overall": 72.0, "overall_shrunk": 70.4, "iterations": 300,
+                  "last_seen": "2026-10-24", "overall_p25": 71.0, "overall_p75": 73.0, "count": 60}
+    solid = {"fingerprint": "solid", "overall": 72.0, "overall_shrunk": 71.9, "iterations": 100,
+             "last_seen": "2026-10-01", "overall_p25": 71.5, "overall_p75": 72.5, "count": 20}
+    best, _co = rs._select_crown([thin_lucky, solid], 0.0, 2.0)
+    assert best["fingerprint"] == "solid"
+    # With no posterior on either, the old order stands: more iterations, then most recent.
+    best, _co = rs._select_crown(
+        [{**thin_lucky, "overall_shrunk": None}, {**solid, "overall_shrunk": None}], 0.0, 2.0,
+    )
+    assert best["fingerprint"] == "lucky"
