@@ -2388,6 +2388,25 @@ LLM-based. See `README.md` for the product overview.
     raw (never a guessed covariate). `deltas` (what the rules, the ratings fit, the fused
     ranking and decidability read) is the adjusted series; `raw_deltas` proves what changed.
     `test_host_adjust`.
+    **The POOLED record is priced with the same β** (`pooled_reference` / `pooled_adjustment` /
+    `describe_reference`; `overall_host_adjusted` / `host_adjusted_runs` / `host_adjustment` on
+    every profile in `GET /settings/profiles`, response `host_adjust` + `host_crown_suspect`,
+    the **Host-adj** column and the *"may owe its rank to a faster measuring machine"* alert on
+    Profile standings — R9 in the architecture review). The ring adjusted a round and the
+    pooled record did not, so a profile the firewall sat on through the host's nightly slow
+    window wore the machine's slowness in its pooled median for ever, and the crown pools all
+    history with no window to age it out. The pooled record has no pair to difference against,
+    so the reference is the **field** — the mean log host vector over every comparable run with
+    readings (`Run.instrument_health["readings"]`) — and a run's adjustment is `β · clip(x_run −
+    x̄)`: what the machine's own speed at that moment was worth, by the β the ring earned on its
+    pure-noise pairs (a β fitted on legs minutes apart on one machine cannot carry a profile
+    effect, which is what makes it safe to apply here). A run without readings enters no
+    adjusted median rather than a guessed one; no fitted β is no reading, and the response says
+    why. **Flag-and-steer, never a crown input**: the crown is still the raw argmax, and
+    `host_crown_suspect` names the adjusted argmax when it differs — the case for a *race*
+    (back-to-back legs on one machine), exactly as `weather_crown_suspect` is. Read inside
+    `compute_profiles` (one `model_for` per field pass, memoized with it); off with
+    `duel.host_adjust`. `test_host_adjust` + two API tests in `test_settings`.
   - `host_pressure.py` — **how loaded the NAS was while a run measured, and by whom**
     (`Run.host_pressure`, the outlined sentence on Run Detail, `runs.jsonl` in the research
     export). Instrument health infers a slow host from the browser's own readings and cannot

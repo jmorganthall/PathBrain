@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import random
 
+import pytest
+
 from pathbrain import challenger as challenger_mod
 from pathbrain import duel as duel_mod
 from pathbrain import host_adjust as H
@@ -152,3 +154,31 @@ def test_a_duel_decides_on_adjusted_margins_and_keeps_the_raw_ones(monkeypatch):
     assert m["host_adjusted_rounds"] == m["pairs"] > 0
     assert all(abs(r + 2.1) < 0.3 for r in m["raw_deltas"])
     assert all(abs(a) < 0.3 for a in m["deltas"])
+
+
+def test_the_pooled_adjustment_reads_a_run_against_the_fields_reference_machine():
+    """R9: the ring adjusts a round against its own belt legs; the pooled record has no pair,
+    so its reference is the field's mean log host vector, and a run's adjustment is β against
+    that — the same β, the same clip, and None rather than a guess whenever anything is
+    missing."""
+    fast = [math.log(v) for v in (300, 120, 2000, 280)]
+    slow = [fast[0] + 0.4] + fast[1:]
+    ref = H.pooled_reference([fast, slow, None])
+    assert ref is not None and abs(ref[0] - (fast[0] + 0.2)) < 1e-9 and ref[1:] == fast[1:]
+    m = H.HostModel([-7.0, 0.0, 0.0, 0.0], 400, 0.4, "test")
+    # The fast run gained 1.4 points from its machine, the slow one lost 1.4; the reference
+    # machine itself is worth nothing.
+    assert H.pooled_adjustment(m, fast, ref) == pytest.approx(+1.4)
+    assert H.pooled_adjustment(m, slow, ref) == pytest.approx(-1.4)
+    assert H.pooled_adjustment(m, ref, ref) == pytest.approx(0.0)
+    # Clipped like the ring: a run ten times slower is priced at ±CLIP, never at ln(10).
+    assert H.pooled_adjustment(m, [fast[0] + math.log(10)] + fast[1:], ref) == pytest.approx(-7.0 * H.CLIP)
+    # Nothing is ever guessed.
+    assert H.pooled_adjustment(None, fast, ref) is None
+    assert H.pooled_adjustment(H.HostModel(None, 0, None, "off"), fast, ref) is None
+    assert H.pooled_adjustment(m, None, ref) is None
+    assert H.pooled_adjustment(m, fast, None) is None
+    assert H.pooled_reference([]) is None and H.pooled_reference([None]) is None
+    # The reference reads back in the readings' own units for the page.
+    assert H.describe_reference(ref)["close_ms"] == 120.0
+    assert H.describe_reference(None) is None

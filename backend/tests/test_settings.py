@@ -143,6 +143,7 @@ def _seed_run(
     overall: float | None = None,
     settings: list[dict] | None = None,
     label: str | None = None,
+    instrument_health: dict | None = None,
 ) -> None:
     with session_scope() as session:
         run = Run(
@@ -152,6 +153,7 @@ def _seed_run(
             settings_fingerprint=fp,
             settings=settings if settings is not None else [{"label": "wan", "quantum": 1514}],
             iterations=iterations,
+            instrument_health=instrument_health,
         )
         session.add(run)
         session.flush()
@@ -1959,3 +1961,83 @@ def test_the_crown_grade_is_carried_at_full_precision_and_a_true_tie_breaks_towa
         [{**thin_lucky, "overall_shrunk": None}, {**solid, "overall_shrunk": None}], 0.0, 2.0,
     )
     assert best["fingerprint"] == "lucky"
+
+
+def test_the_pooled_record_is_priced_for_the_measuring_machines_speed_but_never_re_crowned(client, monkeypatch):
+    """R9: the ring adjusts a ROUND for the host's own speed (`host_adjust.py`), the pooled
+    record did not — so a profile the firewall sat on through the host's nightly slow window
+    wore the machine's slowness in its pooled median for ever. Every profile now carries an
+    `overall_host_adjusted` beside the raw Overall, read with the ring's own β against the
+    field's reference machine, and the response says whether the adjusted argmax names a
+    different profile. The crown itself is untouched: flag-and-steer, like weather."""
+    import math
+
+    from pathbrain import host_adjust as H
+    from pathbrain.api import routes_settings as rs
+
+    # β: a slower context setup costs Overall points (−7 per log unit), nothing else matters.
+    _wipe_runs()
+    monkeypatch.setattr(H, "model_for", lambda session, version: H.HostModel([-7.0, 0.0, 0.0, 0.0], 400, 0.4, "test"))
+    rs.invalidate_profiles_cache()
+
+    def health(ctx_ms: float) -> dict:
+        return {"readings": {"context_ms": ctx_ms, "close_ms": 120.0, "reads_ms": 2000.0, "nav_render_ms": 280.0}}
+
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    crown = _crown_metrics()
+    # "fast" was measured on a quick machine (context 300 ms) and reads 80; "slow" was measured
+    # through the slow window (context 300·e^0.3 ≈ 405 ms) and reads 79 — one point behind on
+    # the raw record, but β says the slow machine cost it 7·0.3 = 2.1 points.
+    for i in range(4):
+        _seed_run("hostfast000", 80.0, t0 - timedelta(minutes=60 - i), iterations=5,
+                  crown_subscores={m: 80.0 for m in crown}, instrument_health=health(300.0))
+        _seed_run("hostslow000", 79.0, t0 - timedelta(minutes=30 - i), iterations=5,
+                  crown_subscores={m: 79.0 for m in crown}, instrument_health=health(300.0 * math.exp(0.3)))
+    # A run with no readings is never guessed at: it simply does not enter the adjusted median.
+    _seed_run("hostslow000", 79.0, t0 - timedelta(minutes=1), iterations=5,
+              crown_subscores={m: 79.0 for m in crown})
+
+    body = client.get("/api/settings/profiles").json()
+    fast = next(p for p in body["profiles"] if p["fingerprint"] == "hostfast000")
+    slow = next(p for p in body["profiles"] if p["fingerprint"] == "hostslow000")
+    # The reference machine sits between the two (mean log), so each moves by half the gap.
+    assert fast["host_adjusted_runs"] == 4 and slow["host_adjusted_runs"] == 4
+    assert fast["host_adjustment"] == pytest.approx(-1.05, abs=0.02)
+    assert slow["host_adjustment"] == pytest.approx(+1.05, abs=0.02)
+    assert fast["overall_host_adjusted"] == pytest.approx(78.95, abs=0.02)
+    assert slow["overall_host_adjusted"] == pytest.approx(80.05, abs=0.02)
+    # The crown is still the raw argmax — nothing is re-ranked…
+    assert body["best_fingerprint"] == "hostfast000"
+    assert fast["overall"] == pytest.approx(80.0) and slow["overall"] == pytest.approx(79.0)
+    # …and the response says the adjusted argmax disagrees, with both numbers and a sentence.
+    info = body["host_adjust"]
+    assert info["active"] and info["runs_with_readings"] == 8
+    assert info["crown_raw"] == "hostfast000" and info["crown_adjusted"] == "hostslow000"
+    assert info["reference"]["close_ms"] == 120.0
+    suspect = body["host_crown_suspect"]
+    assert suspect["fingerprint"] == "hostslow000" and suspect["crown_fingerprint"] == "hostfast000"
+    assert suspect["overall_host_adjusted"] == slow["overall_host_adjusted"]
+    assert "race" in suspect["why"].lower() and "re-rank" in suspect["why"]
+
+
+def test_without_a_fitted_host_model_the_pooled_record_carries_no_adjustment(client, monkeypatch):
+    """No β (too few noise pairs, or the fit failed) → no adjusted reading anywhere, the
+    response says why, and no run's readings are even read."""
+    from pathbrain import host_adjust as H
+    from pathbrain.api import routes_settings as rs
+
+    _wipe_runs()
+    monkeypatch.setattr(H, "model_for", lambda session, version: H.HostModel(None, 12, None, "only 12 pairs (needs 60)"))
+    rs.invalidate_profiles_cache()
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    crown = _crown_metrics()
+    for i in range(4):
+        _seed_run("hostnone000", 80.0, t0 - timedelta(minutes=60 - i), iterations=5,
+                  crown_subscores={m: 80.0 for m in crown},
+                  instrument_health={"readings": {"context_ms": 300.0, "close_ms": 120.0, "reads_ms": 2000.0, "nav_render_ms": 280.0}})
+    body = client.get("/api/settings/profiles").json()
+    p = next(p for p in body["profiles"] if p["fingerprint"] == "hostnone000")
+    assert p["overall_host_adjusted"] is None and p["host_adjusted_runs"] == 0 and p["host_adjustment"] is None
+    assert body["host_adjust"]["active"] is False and "12 pairs" in body["host_adjust"]["why"]
+    assert body["host_adjust"]["runs_with_readings"] == 0 and body["host_adjust"]["reference"] is None
+    assert body["host_crown_suspect"] is None
