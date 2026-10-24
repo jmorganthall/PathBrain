@@ -561,6 +561,16 @@ def duel_health(sessions: int = 50) -> dict:
     return duel.round_health(limit_sessions=max(1, min(sessions, 200)))
 
 
+@router.post("/duel/ledger/regrade")
+def duel_ledger_regrade() -> dict:
+    """Re-read every round on the duel ledger from the runs that made it, under the current
+    methodology (``duel.regrade_ledger``). The re-grade job already does this after grading
+    history; this is the on-demand form. Bounded by the ledger; touches no run, no verdict and
+    no firewall. Its own writing session, since ``get_session`` closes without committing."""
+    with session_scope() as session:
+        return duel.regrade_ledger(session)
+
+
 @router.get("/duel/weather-distance")
 def duel_weather_distance(sessions: int = 10, legs: int = 400) -> dict:
     """How much the measured weather shifts between legs 1–4 apart, from recent duel
