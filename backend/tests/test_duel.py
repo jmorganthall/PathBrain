@@ -2750,9 +2750,15 @@ def test_the_standings_count_aborts_apart_from_draws():
 # ── The ring is the primary verdict; pooled seeds the unrated ────────────────────────
 
 
-def _ranked(field):
+def _ranked(field, ranking: str | None = None):
     with session_scope() as s:
-        return crowning.rank_field(s, field)
+        if ranking is not None:
+            save_config(s, {"crown_follow": {"ranking": ranking}})
+        try:
+            return crowning.rank_field(s, field)
+        finally:
+            if ranking is not None:
+                save_config(s, {"crown_follow": {"ranking": crowning.DEFAULT_RANKING}})
 
 
 def test_the_ring_orders_what_it_has_measured_and_pooled_seeds_the_rest():
@@ -2783,7 +2789,7 @@ def test_the_ring_orders_what_it_has_measured_and_pooled_seeds_the_rest():
         ],
         "best_fingerprint": "raced_lo",
     }
-    out = _ranked(field)
+    out = _ranked(field, ranking="ring")
     with session_scope() as s:
         s.query(Duel).delete()
 
@@ -2821,7 +2827,7 @@ def test_a_profile_whose_only_matches_aborted_is_not_ring_rated():
         ],
         "best_fingerprint": "ghost",
     }
-    out = _ranked(field)
+    out = _ranked(field, ranking="ring")
     with session_scope() as s:
         s.query(Duel).delete()
     assert out["by_fingerprint"]["ghost"]["source"] == crowning.POOLED_SOURCE
@@ -2876,7 +2882,7 @@ def test_pooled_ranking_mode_restores_the_old_order():
     finally:
         with session_scope() as s:
             s.query(Duel).delete()
-            save_config(s, {"crown_follow": {"ranking": "ring"}})
+            save_config(s, {"crown_follow": {"ranking": crowning.DEFAULT_RANKING}})
 
 
 def test_a_round_medians_several_iterations_and_lifts_the_browser_cap(monkeypatch):
@@ -4098,3 +4104,59 @@ def test_a_fused_rival_the_window_cannot_settle_is_left_to_its_ordinary_tier():
     # And the tier map the loop reads agrees with the order it was handed.
     tiers = duel_mod.contender_tiers(field, [c["fingerprint"] for c in order], {}, "top", fused=fused, round_budget=7)
     assert tiers["near"] != duel_mod.FUSED_RIVAL_TIER and tiers["close"] == duel_mod.FUSED_RIVAL_TIER
+
+
+# ── The fused order: one scale over both records ─────────────────────────────────────
+
+
+def test_the_fused_order_is_one_scale_and_a_lucky_thin_profile_no_longer_outranks_the_crown(monkeypatch):
+    """R11: the ring-first partition sorted the pooled group on the raw Overall with no
+    confidence gate, so a five-iteration 95 sat above the 3000-iteration crown, and ring
+    Elo and raw Overall — two scales never calibrated to each other — were stacked. The
+    default order is now one scale: the fused Overall where the ring has fought a profile,
+    its shrunk pooled Overall otherwise, the raw one when no posterior exists."""
+    from pathbrain import overall_ranking
+
+    monkeypatch.setattr(overall_ranking, "ranking", lambda session, **_: {"profiles": [
+        {"fingerprint": "fought", "fused": 92.0, "fused_se": 0.4, "rounds": 12},
+        {"fingerprint": "crown", "fused": 89.9, "fused_se": 0.2, "rounds": 0},  # anchored, never fought
+    ]})
+    field = {
+        "profiles": [
+            {"fingerprint": "lucky", "overall": 95.0, "overall_shrunk": 70.5, "iterations": 5, "confident": False},
+            {"fingerprint": "crown", "overall": 90.0, "overall_shrunk": 89.9, "iterations": 3000, "confident": True},
+            {"fingerprint": "fought", "overall": 85.0, "overall_shrunk": 84.8, "iterations": 100, "confident": True},
+            {"fingerprint": "raw", "overall": 80.0, "iterations": 60, "confident": True},  # no posterior on it
+            {"fingerprint": "nothing", "overall": None, "iterations": 0, "confident": False},
+        ],
+        "best_fingerprint": "crown",
+    }
+    out = _ranked(field, ranking="fused")
+    assert out["ranking"] == "fused"
+    assert out["order"] == ["fought", "crown", "raw", "lucky", "nothing"]
+    by = out["by_fingerprint"]
+    assert by["fought"]["score_source"] == "fused" and by["fought"]["score"] == 92.0
+    assert by["crown"]["score_source"] == "shrunk" and by["crown"]["score"] == 89.9, "anchored but never fought: its posterior, not the fit"
+    assert by["raw"]["score_source"] == "pooled" and by["lucky"]["score_source"] == "shrunk"
+    assert by["nothing"]["score"] is None and by["nothing"]["source"] == crowning.UNMEASURED_SOURCE
+    assert out["score_sources"] == {"fused": 1, "shrunk": 2, "pooled": 1}
+    # The circularity guard holds: the pooled crown is untouched.
+    assert field["best_fingerprint"] == "crown"
+    # An unreadable fit degrades to the shrunk order rather than failing the page.
+    def _boom(session, **_):
+        raise RuntimeError("no fit")
+    monkeypatch.setattr(overall_ranking, "ranking", _boom)
+    out = _ranked(field, ranking="fused")
+    assert out["order"][:2] == ["crown", "fought"] and out["by_fingerprint"]["fought"]["score_source"] == "shrunk"
+
+
+def test_the_fused_order_is_the_shipped_default_and_the_upgrade_moves_an_install_off_the_old_one():
+    from pathbrain import config_store
+
+    assert crowning.DEFAULT_RANKING == "fused"
+    assert config_store.DEFAULT_CONFIG["crown_follow"]["ranking"] == "fused"
+    up = config_store._upgrade_fused_field_order
+    assert up({"crown_follow": {"ranking": "ring"}}) == {"crown_follow": {"ranking": "fused"}}
+    assert up({"crown_follow": {"ranking": "pooled"}}) is None, "a deliberate choice is kept"
+    assert up({}) is None, "a fresh install already has the default"
+    assert any(name == "field-order-fused" for name, _ in config_store.CONFIG_UPGRADES)

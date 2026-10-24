@@ -821,6 +821,8 @@ def settings_profiles(
         profile["primary_rank"] = entry.get("position")
         profile["ring_rating"] = entry.get("ring_rating")
         profile["ring_rounds"] = entry.get("ring_rounds")
+        profile["primary_score"] = entry.get("score")
+        profile["primary_score_source"] = entry.get("score_source")
     order = {fp: i for i, fp in enumerate(ranked["order"])}
     result["profiles"].sort(key=lambda p: order.get(p["fingerprint"], len(order)))
     result["ranking"] = ranked["ranking"]
@@ -830,6 +832,7 @@ def settings_profiles(
     result["primary_best_source"] = ranked["best_source"]
     result["ring_rated_count"] = ranked["ring_rated"]
     result["seeded_count"] = ranked["seeded"]
+    result["score_sources"] = ranked.get("score_sources")
     return result
 
 

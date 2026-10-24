@@ -2911,8 +2911,24 @@ LLM-based. See `README.md` for the product overview.
     side by side); the API surface rides `GET/POST /settings/crown-follow` (`policy`,
     `policies`, `duel_champion`) and `GET /settings/crowns` carries `fused` beside `pooled`
     and `duel`.
-  - **The field's primary ordering: the ring first, pooled as the seed**
-    (`crowning.rank_field`, `crown_follow.ranking`, default `"ring"`). A duel round is a
+  - **The field's primary ordering is ONE scale: the fused Overall where the ring has
+    fought, the shrunk pooled Overall elsewhere** (`crowning.rank_field`,
+    `crown_follow.ranking`, default `"fused"`; `primary_score` / `primary_score_source` on
+    every profile, `score_sources` on the response; `config_store._upgrade_fused_field_order`
+    moves an install stored on the old default `"ring"`). The `"ring"` order below was a
+    partition — ring-rated profiles by Bradley–Terry Elo first, then everyone else by the
+    *raw* pooled Overall with no confidence gate — which stacked two scales never calibrated
+    to each other and put a five-iteration 95 above the 3000-iteration crown (the review's
+    S4). Now each profile is sorted on a posterior-mean estimate on the Overall scale: the
+    fused Overall (`overall_ranking`, the pooled anchor corrected by its rounds) where the
+    ring has fought it, its shrunk pooled Overall (`shrinkage.py`) otherwise, the raw one only
+    when no posterior exists; unmeasured last. An unreadable fit degrades to the shrunk
+    order, never a failed page. The Bradley–Terry rating keeps its jobs — the belt, the duel
+    standings and matchmaking — and `source` still says which evidence placed a row.
+    `"ring"` and `"pooled"` stay selectable for comparison.
+    `test_the_fused_order_is_one_scale_and_a_lucky_thin_profile_no_longer_outranks_the_crown`.
+  - **The `"ring"` ordering (selectable): the ring first, pooled as the seed**
+    (`crown_follow.ranking = "ring"`). A duel round is a
     **paired, interleaved, counterbalanced comparison under shared weather** — a controlled
     experiment. The pooled Overall averages runs taken at different times under conditions
     that were never held equal — an observational statistic. On the same question the
