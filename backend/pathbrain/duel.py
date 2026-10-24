@@ -2584,6 +2584,11 @@ class _Seat:
         # ``deltas`` is what every rule and fit reads; this proves what the adjustment did.
         self.raw_deltas: list[float] = []
         self.host_adjusted = 0
+        # WHICH runs made each round — ``{"challenger": run_id, "belt": [run_ids]}`` per usable
+        # round, aligned index-for-index with ``deltas``. A margin is a difference of two
+        # Overalls on one rubric's scale; the legs are the record a later rubric can re-read
+        # (``regrade_ledger``), so a publish never costs the ledger its rounds.
+        self.round_legs: list[dict] = []
         # Per crown metric, the same margins split by leg: ``{metric: [Δ per round]}``,
         # aligned index-for-index with ``deltas`` (None where a leg lacked the metric) —
         # so a match says WHERE its margin lived, not only how big it was.
@@ -2663,6 +2668,7 @@ def _seat_snapshot(seat: _Seat, duel_id: int, methodology: str | None = None) ->
         "deltas": [round(float(d), 4) for d in seat.deltas],
         "raw_deltas": [round(float(d), 4) for d in seat.raw_deltas],
         "host_adjusted": int(seat.host_adjusted),
+        "round_legs": [dict(x) for x in seat.round_legs],
         "crown_deltas": {m: list(v) for m, v in seat.crown_deltas.items()},
         "lever": dict(seat.lever) if seat.lever else None,
         "weather_shifts": list(seat.weather_shifts),
@@ -2697,6 +2703,9 @@ def _seat_from_snapshot(snap: dict, profile: dict, *, p1: float, alpha: float,
     # margins were raw, so the raw series is the margins themselves.
     seat.raw_deltas = [float(d) for d in (snap.get("raw_deltas") or snap.get("deltas") or [])]
     seat.host_adjusted = int(snap.get("host_adjusted") or 0)
+    # Snapshots written before the leg ids were recorded carry none: those rounds cannot be
+    # re-graded later, and the record says so by having no entry for them.
+    seat.round_legs = [dict(x) for x in (snap.get("round_legs") or []) if isinstance(x, dict)]
     seat.crown_deltas = {
         str(m): [None if d is None else float(d) for d in (series or [])]
         for m, series in (snap.get("crown_deltas") or {}).items()
@@ -2710,6 +2719,237 @@ def _seat_from_snapshot(snap: dict, profile: dict, *, p1: float, alpha: float,
     seat.bad_streak = int(snap.get("bad_streak") or 0)
     seat.sessions = [int(x) for x in (snap.get("sessions") or [])]
     return seat
+
+
+# ── The ledger re-grades with the record ──────────────────────────────────────────────
+#
+# A match stores its margins — Overall points on the rubric they were read under — so every
+# reader that pools rounds (the fused ranking, the lever ledger, decidability's round noise)
+# has to exclude a match fought under another methodology: its numbers are on another scale.
+# That made a publish silently cost the fused ranking every ring round it had, until new
+# ones accrued, while the pooled record re-graded from stored raw in one job. The legs are
+# runs, and runs re-grade; so each round now records WHICH runs made it (``round_legs``),
+# and this pass re-reads every margin from its legs under the current version — raw, then
+# the host adjustment refitted under that version, then the crown split — exactly as the
+# ring forms them live. The adjudication (verdict, reason, the SPRT and signed-rank
+# diagnostics) is a decision that was made at the time and is left as the record of it;
+# what re-grades is the EVIDENCE, which is what the fits consume.
+
+
+def _regrade_record(m: dict, *, version: str, overall: dict[int, float],
+                    crown: dict[int, dict[str, float]], host: dict[int, list[float]],
+                    model: "host_adjust.HostModel | None", now: str) -> dict | None:
+    """Rebuild one match record's (or open-match snapshot's) evidence from its legs.
+
+    Returns ``{"changed": bool, "rounds": kept, "dropped": n}`` or None when the record
+    carries no leg ids (written before they were recorded — nothing to re-read). Pure over
+    the lookups it is handed; mutates ``m`` in place and leaves the adjudication alone.
+    """
+    legs = [dict(x) for x in (m.get("round_legs") or []) if isinstance(x, dict)]
+    set_aside = [dict(x) for x in (m.get("round_legs_dropped") or []) if isinstance(x, dict)]
+    if not legs and not set_aside:
+        return None
+    old_version = m.get("methodology")
+    # Every round the record ever had, in round order. The legs on the record are aligned
+    # with the series they sit beside; a leg set aside by an earlier pass (unreadable under
+    # that version) carries its own weather shift and leg distance, so it can be spliced
+    # back the moment a version can read it — the record never forgets a round.
+    shifts_old = m.get("weather_shifts") or []
+    dist_old = m.get("leg_distances") or []
+    for pos, x in enumerate(legs):
+        x.setdefault("i", pos)
+        x.setdefault("weather_shift", shifts_old[pos] if pos < len(shifts_old) else None)
+        x.setdefault("leg_distance", dist_old[pos] if pos < len(dist_old) else None)
+    candidates = sorted(legs + set_aside, key=lambda x: (x.get("i") is None, x.get("i") or 0))
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    raw_s: list[float] = []
+    adj_s: list[float] = []
+    adjusted_n = 0
+    crown_s: dict[str, list[float | None]] = {}
+    for rl in candidates:
+        c = rl.get("challenger")
+        belt = [b for b in (rl.get("belt") or []) if b is not None]
+        oc = overall.get(c) if c is not None else None
+        ob = [overall.get(b) for b in belt]
+        if oc is None or not belt or any(v is None for v in ob):
+            dropped.append(rl)
+            continue
+        raw = float(oc) - sum(float(v) for v in ob) / len(ob)
+        adjusted = (
+            model.adjust(raw, host.get(c), [host.get(b) for b in belt])
+            if model is not None and model.active else None
+        )
+        if adjusted is not None:
+            adjusted_n += 1
+        kept.append(rl)
+        raw_s.append(raw)
+        adj_s.append(raw if adjusted is None else float(adjusted))
+        mine = crown.get(c) or {}
+        flank = [crown.get(b) or {} for b in belt]
+        for k in set(mine) | {x for f in flank for x in f}:
+            series = crown_s.setdefault(k, [])
+            while len(series) < len(kept) - 1:
+                series.append(None)
+            if mine.get(k) is None or any(f.get(k) is None for f in flank):
+                series.append(None)
+            else:
+                series.append(round(float(mine[k]) - sum(float(f[k]) for f in flank) / len(flank), 3))
+    for series in crown_s.values():
+        while len(series) < len(kept):
+            series.append(None)
+
+    new_deltas = [round(d, 3) for d in adj_s]
+    old_deltas = [round(float(d), 3) for d in (m.get("deltas") or []) if isinstance(d, (int, float))]
+    changed = (
+        old_version != version
+        or new_deltas != old_deltas
+        or sorted(x.get("i") for x in dropped) != sorted(x.get("i") for x in set_aside)
+    )
+    if not changed:
+        return {"changed": False, "rounds": len(kept), "dropped": len(dropped)}
+
+    m["deltas"] = new_deltas
+    m["raw_deltas"] = [round(d, 3) for d in raw_s] or None
+    m["round_legs"] = [{"i": x.get("i"), "challenger": x.get("challenger"), "belt": list(x.get("belt") or [])}
+                       for x in kept]
+    if dropped:
+        m["round_legs_dropped"] = dropped
+    else:
+        m.pop("round_legs_dropped", None)
+    m["weather_shifts"] = [x.get("weather_shift") for x in kept]
+    distances = [x.get("leg_distance") for x in kept if isinstance(x.get("leg_distance"), (int, float))]
+    m["leg_distances"] = distances
+    if "max_leg_distance" in m:
+        m["max_leg_distance"] = max(distances, default=None)
+    if "weather_shifted_rounds" in m:
+        threshold = m.get("weather_shift_threshold")
+        m["weather_shifted_rounds"] = sum(
+            1 for w in m["weather_shifts"]
+            if w is not None and threshold is not None and float(w) >= float(threshold)
+        )
+        m["weather_max_shift"] = max((w for w in m["weather_shifts"] if w is not None), default=None)
+    m["crown_deltas"] = crown_s or None
+    if "median_crown_delta" in m:
+        m["median_crown_delta"] = {
+            k: round(_median([d for d in v if d is not None]), 2)
+            for k, v in crown_s.items() if any(d is not None for d in v)
+        } or None
+    if "median_delta" in m:
+        m["median_delta"] = round(_median(adj_s), 2) if adj_s else None
+    if "pairs" in m:
+        m["pairs"] = len(kept)
+        wins_c = sum(1 for d in adj_s if d > 0)  # ``SprtState.add_pair(delta > 0)``: a zero is the belt's
+        m["wins_challenger"] = wins_c
+        m["wins_incumbent"] = len(kept) - wins_c
+    if "host_adjusted_rounds" in m:
+        m["host_adjusted_rounds"] = adjusted_n
+    if "host_adjusted" in m:
+        m["host_adjusted"] = adjusted_n
+    if "host_adjust" in m:
+        m["host_adjust"] = model.describe() if model is not None else {"active": False, "why": "switched off"}
+    if "verdict" in m:
+        # The verdict was decided under the rubric in force then; say which, once.
+        m.setdefault("verdict_methodology", old_version)
+    m["methodology"] = version
+    m["regraded"] = {
+        "from": old_version, "at": now,
+        "rounds": len(kept), "rounds_dropped": len(dropped),
+    }
+    return {"changed": True, "rounds": len(kept), "dropped": len(dropped)}
+
+
+def regrade_ledger(session, version: str | None = None, *, limit_sessions: int | None = None) -> dict:
+    """Re-read every round on the duel ledger under ``version`` (default: the current
+    methodology) from the runs that made it, so the ring's evidence survives a publish.
+
+    Run after a history re-grade (the re-grade job calls it) or on demand. Bounded by the
+    ledger, not by history: one Score read per session's legs. Records with no leg ids
+    (written before they were recorded) are counted and left as they are. Nothing here
+    touches the firewall, a run, or a verdict.
+    """
+    from .methodology import ensure_current_methodology
+
+    version = version or ensure_current_methodology(session, get_config(session)).version
+    model = host_adjust.model_for(session, version)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    crown_keys = _crown_keys(session, version)
+    q = select(Duel).order_by(Duel.id.desc())
+    if limit_sessions:
+        q = q.limit(int(limit_sessions))
+    rows = session.scalars(q).all()
+    summary = {
+        "version": version, "sessions": 0, "matches": 0, "matches_regraded": 0,
+        "matches_unchanged": 0, "matches_without_legs": 0, "open_matches_regraded": 0,
+        "rounds": 0, "rounds_dropped": 0, "host_adjust": model.describe(),
+    }
+    for d in rows:
+        matchups = [dict(x) for x in (d.matchups or []) if isinstance(x, dict)]
+        snaps = [dict(x) for x in (d.open_matches or []) if isinstance(x, dict)]
+        ids: set[int] = set()
+        for rec in matchups + snaps:
+            for rl in list(rec.get("round_legs") or []) + list(rec.get("round_legs_dropped") or []):
+                if isinstance(rl, dict):
+                    if isinstance(rl.get("challenger"), int):
+                        ids.add(rl["challenger"])
+                    ids.update(b for b in (rl.get("belt") or []) if isinstance(b, int))
+        if not ids:
+            n = sum(1 for m in matchups if m.get("incumbent") and m.get("challenger"))
+            summary["matches"] += n
+            summary["matches_without_legs"] += n
+            continue
+        summary["sessions"] += 1
+        overall: dict[int, float] = {}
+        crown: dict[int, dict[str, float]] = {}
+        id_list = sorted(ids)
+        for start in range(0, len(id_list), 500):
+            chunk = id_list[start:start + 500]
+            for rid, axes, sub in session.execute(
+                select(Score.run_id, Score.axis_scores, Score.subscores).where(
+                    Score.run_id.in_(chunk), Score.methodology_version == version,
+                    Score.comparability != "incomparable",
+                )
+            ).all():
+                val = (axes or {}).get("overall")
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    overall[rid] = float(val)
+                    crown[rid] = {
+                        k: float((sub or {})[k]) for k in crown_keys
+                        if isinstance((sub or {}).get(k), (int, float)) and not isinstance((sub or {}).get(k), bool)
+                    }
+        host = host_adjust.run_readings(session, id_list) if model.active else {}
+        touched = False
+        for m in matchups:
+            if not m.get("incumbent") or not m.get("challenger"):
+                continue
+            summary["matches"] += 1
+            res = _regrade_record(m, version=version, overall=overall, crown=crown, host=host, model=model, now=now)
+            if res is None:
+                summary["matches_without_legs"] += 1
+                continue
+            summary["rounds"] += res["rounds"]
+            summary["rounds_dropped"] += res["dropped"]
+            if res["changed"]:
+                summary["matches_regraded"] += 1
+                touched = True
+            else:
+                summary["matches_unchanged"] += 1
+        for snap in snaps:
+            res = _regrade_record(snap, version=version, overall=overall, crown=crown, host=host, model=model, now=now)
+            if res is not None and res["changed"]:
+                summary["open_matches_regraded"] += 1
+                touched = True
+        if touched:
+            # New list objects: a JSON column only sees a change when the attribute is reassigned.
+            d.matchups = matchups
+            d.open_matches = snaps or None
+    log.info(
+        "Duel ledger re-graded under %s: %d match(es) re-read over %d round(s) (%d unchanged, "
+        "%d without leg ids, %d round(s) dropped, %d open match(es))",
+        version, summary["matches_regraded"], summary["rounds"], summary["matches_unchanged"],
+        summary["matches_without_legs"], summary["rounds_dropped"], summary["open_matches_regraded"],
+    )
+    return summary
 
 
 def _current_methodology_version(session) -> str | None:
@@ -2891,6 +3131,10 @@ def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: 
         "raw_deltas": [round(float(d), 3) for d in seat.raw_deltas] or None,
         "host_adjusted_rounds": int(seat.host_adjusted),
         "host_adjust": host_model,
+        # The runs behind each round, aligned with ``deltas``: the challenger leg's run and
+        # the belt leg(s) it was compared against. This is what lets ``regrade_ledger``
+        # re-read every margin under a later methodology instead of discarding the match.
+        "round_legs": [dict(x) for x in seat.round_legs] or None,
         # Where the margin lived: the same rounds split by crown leg, and each leg's median.
         "crown_deltas": {m: list(v) for m, v in seat.crown_deltas.items()} or None,
         "median_crown_delta": {
@@ -3301,6 +3545,9 @@ def _run_ring(
             seat.host_adjusted += 1
         seat.raw_deltas.append(raw)
         seat.deltas.append(delta)
+        seat.round_legs.append({
+            "i": len(seat.round_legs), "challenger": leg.run_id, "belt": [f.run_id for f in usable],
+        })
         seat.leg_distances.append(max(abs(leg.index - f.index) for f in usable))
         shifts = [
             abs(leg.severity - f.severity)

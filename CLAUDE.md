@@ -1768,6 +1768,30 @@ LLM-based. See `README.md` for the product overview.
     `test_duel_methodology.py` pins all three: the prior crown defends against the prior
     runner-up after a publish, a mid-session publish re-seeds instead of stranding, and a
     carried snapshot from another version is closed, not resumed.
+    **The ledger re-grades with the record** (`round_legs` on every match record and open-match
+    snapshot; `duel.regrade_ledger`, run by the re-grade job after `score_history_under_current`
+    and on demand via `POST /api/duel/ledger/regrade`). A match stored only its margins —
+    Overall points on the rubric they were read under — so `overall_ranking.ring_rounds`, the
+    lever ledger and decidability's round noise had to exclude every match fought under another
+    version, and a publish silently cost the fused ranking every ring round it had while the
+    pooled record re-graded from stored raw in one job. The legs are runs and runs re-grade: each
+    usable round now records which runs made it (`{"challenger": run_id, "belt": [run_ids]}`,
+    aligned with `deltas`), and the pass re-reads every margin from those runs under the current
+    version exactly as the ring forms it live — raw (challenger minus the mean of its belt legs),
+    then the host adjustment refitted under that version (`host_adjust.model_for`) and re-applied
+    per round, then the crown split from the re-graded subscores — rebuilding `deltas`,
+    `raw_deltas`, `wins_*`, `pairs`, `median_delta`, `crown_deltas` and the aligned weather/leg
+    series. A round whose leg has no Overall under the version is **set aside, never forgotten**
+    (`round_legs_dropped`, carrying its own weather shift and leg distance, counted in
+    `regraded.rounds_dropped`) and is spliced back in round order the moment a version can read
+    it — the record of which runs made a match is the one thing a re-grade must not lose. **The
+    adjudication is never touched**: `verdict`, `reason`, the SPRT and signed-rank diagnostics
+    are the decision made at the time (the belt is a chain of custody of those decisions) and
+    stay as its record, with `verdict_methodology` saying which rubric decided it; what
+    re-grades is the *evidence*, which is what the fits consume. Records written before the leg
+    ids existed are counted and left alone. Open-match snapshots are re-stamped too, so a carried
+    match resumes across a publish instead of being closed. Bounded by the ledger (one Score
+    read per session's legs), idempotent, no firewall, no runs. `test_duel_ledger_regrade`.
     **A round medians `duel.iterations_per_round` iterations a side (default 5, was 3) — the
     ring's resolving power — and five wins on EQUAL wall clock, not just per round.** Measured
     on the same simulated field (rating #1 on the true best, balanced rule, one nightly
