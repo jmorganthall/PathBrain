@@ -2800,6 +2800,20 @@ LLM-based. See `README.md` for the product overview.
     returns `attempts_recorded`, so nothing is hidden). The resolved profile is deliberately part
     of the identity: two attempts that landed on **different** profiles measured different things
     and stay separate — a disagreement worth seeing.
+    **A claim whose test never ran is `failed`, not `pending` for ever** (`_test_states`,
+    `FAILED_TEST_STATES`, `FAILED_CLAIM_COOLDOWN_DAYS` = 7; `test_status`/`test_error` on the
+    graded row, `failed` in the summary). The verdict read only the runs made after the claim
+    and never the `ProfileTest` behind it, so a value the firewall rejected at verify ("did
+    not accept quantum …"), a cancelled test or a box that went away left the claim `pending`
+    with nothing ever coming — and `claimed_moves` dedups every recorded claim, so that
+    coordinate was closed to Explore for good on the strength of a test that measured
+    nothing. Now the ledger reads each claim's profile test status in one query: a claim with
+    no run whose test `failed` or was `cancelled` grades `failed` (never counted, its `why`
+    carries the test's own error), and `claimed_moves` drops such a claim once it is
+    `FAILED_CLAIM_COOLDOWN_DAYS` old — kept blocking until then, because a failure is often
+    the firewall's night rather than the value, and a value the firewall genuinely rejects
+    would otherwise be re-proposed, re-queued by the exploration share and re-failed every
+    session. `test_explore_tracker_failed`.
   - `explore_share.py` — **the duel's exploration share: a slice of every window spent on
     Explore's best bet** (`duel.explore_share`, default 0.05; `duel.explore_iterations`,
     default 5; 0 = off; the *Exploration share* field in the Duels page's advanced rules,
