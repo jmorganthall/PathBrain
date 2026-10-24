@@ -2587,6 +2587,26 @@ LLM-based. See `README.md` for the product overview.
     ring-priced move narrows what is known about the *move*, not the *point*; `rank_bets`
     widens or trusts the class by its measured miss once claims are graded), and the full
     ledger card, which stays on the Levers page with its mechanism predictions.
+    **Explore does not manufacture profiles the ring cannot use** (`MIN_STEP_FRACTION` /
+    `_immaterial`, `INERT_LEVER_CREDIT` / `_inert_levers`; `inert_levers` and
+    `exploration_credit` on every candidate). Two leaks fed the field with thin, noisy
+    fingerprints — the "high Overall on five iterations" backlog the review priced. **(1)** The
+    refine move bisected between the best value and its neighbour with no floor, so a field
+    holding `q5797` and `q5800` was offered `q5798`: a bout `decidability.cannot_differ`
+    refuses as an immaterial step and no instrument resolves, costing a 5-iteration test and
+    a permanent field member with a fresh ±1-point reading. A generated value closer than
+    `MIN_STEP_FRACTION` (5%) of the lever's measured range to an already-measured value is
+    dropped; a transplant (a measured value, which is the point of it) is exempt. **(2)** The
+    upper-confidence-bound search found open space on levers `levers.MECHANISM` predicts
+    inert on an unsaturated link (target, interval, limit, ecn — nothing stands in a queue
+    long enough for CoDel to act) *maximally* attractive precisely because nobody had been
+    there, so untested interval values and ECN flips led the list. When every moved lever is
+    predicted inert and the ring has not found it moving the Overall (no `significant`
+    transition on that axis — a `surprise` restores the credit in full, because then the
+    link's model is what is wrong), the exploration bonus is cut to `INERT_LEVER_CREDIT`
+    (25%); the prediction itself is untouched, so the curves still speak, and the candidate
+    says why in its evidence. A two-lever move that touches a live lever is not discounted.
+    `test_explore_hygiene`.
     **Candidates are priced from the best evidence available**, in that same order:
     a matched pair for the exact move → the *parent's own* conditioned neighbourhood → the
     marginal curve, **shrunk by `CONFOUNDED_SHRINK`** when that curve is flagged confounded

@@ -997,10 +997,15 @@ def test_a_batch_really_lines_up_queued_profile_tests(client, monkeypatch):
                  "scheduler": "fq_codel", "queues": 1},
             ],
         }
+        # The upload quantum is held constant so it is not an axis: the mock firewall's
+        # second pipe has no uuid and cannot be written, so a candidate moving it is reverted
+        # to a no-op and skipped — correct reachability, but this test is about the batch
+        # lining up more than one test, and once target moves lost their exploration credit
+        # (the mechanism prior) the upload moves were what filled the top of the pool.
         for fp, quantum, target, overall, up_quantum in [
-            ("ea", 1000, 3, 60.0, 500), ("eb", 2000, 5, 70.0, 1000),
-            ("ec", 3000, 8, 80.0, 1514), ("ed", 5000, 10, 65.0, 2000),
-            ("ee", 7000, 15, 55.0, 3000), ("ef", 9000, 20, 50.0, 4000),
+            ("ea", 1000, 3, 60.0, 1514), ("eb", 2000, 5, 70.0, 1514),
+            ("ec", 3000, 8, 80.0, 1514), ("ed", 5000, 10, 65.0, 1514),
+            ("ee", 7000, 15, 55.0, 1514), ("ef", 9000, 20, 50.0, 1514),
         ]
     ]
     monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: {"profiles": field})

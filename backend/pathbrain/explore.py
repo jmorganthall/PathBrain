@@ -42,6 +42,7 @@ from __future__ import annotations
 import math
 
 from .levers import ALPHA as RING_ALPHA, MIN_ROUNDS as RING_MIN_ROUNDS, NULL_MARGIN as RING_NULL_MARGIN, NULL_ROUNDS as RING_NULL_ROUNDS
+from .levers import MECHANISM as LEVER_MECHANISM
 from . import decidability
 from .logging_config import get_logger
 from .metrics import METRICS
@@ -101,6 +102,24 @@ CONFOUNDED_SHRINK = 0.5
 THIN_WEIGHT_FLOOR = 0.15
 # Parents to branch candidates from, and how many candidates to return by default.
 CANDIDATE_PARENTS = 5
+# The smallest move worth proposing, as a share of the range the lever has actually been
+# measured over on this link. "Refine between the best and its neighbour" bisects without a
+# floor, so a field that already holds q5797 and q5800 is offered q5798 — a profile the ring
+# refuses to race (`decidability.cannot_differ`: an immaterial step against the measured
+# span) and no instrument can resolve, and each such proposal costs a 5-iteration test and
+# becomes a permanent field member with a fresh ±1-point reading. A transplant is exempt: it
+# proposes a value already measured, which is the point of it.
+MIN_STEP_FRACTION = 0.05
+# How much exploration credit a move on a lever the mechanism model predicts INERT keeps.
+# On an unsaturated link `levers.MECHANISM` says target, interval, limit and ecn do nothing
+# (nothing stands in a queue long enough for CoDel to act), and an upper-confidence-bound
+# search is the wrong instinct for those: open space on an inert axis reads as maximally
+# attractive precisely because nobody has been there, so the page manufactured untested
+# interval values and ECN flips as its top proposals. The prediction is left alone — the
+# curves still speak — but the "go where we know least" bonus is cut to this share, unless
+# the ring has found the lever moving the Overall (a `surprise`), in which case the model of
+# the link is what is wrong and the credit is restored in full.
+INERT_LEVER_CREDIT = 0.25
 # The significance multiplier behind the landscape's NOISE FLOOR — deliberately the same
 # shape as ``correlation.crown_tie_sigma`` (2 x the pooled standard error of two medians):
 # the gap two settled profiles need before their Overalls are distinguishable at all. A
@@ -969,15 +988,49 @@ def _candidate_values(axis: dict, curve: dict | None) -> list[tuple[float, str]]
     fld = shaper_field(axis["field"])
     cleaned: list[tuple[float, str]] = []
     seen: set[float] = set()
+    tested = set(vals)
     for v, why in out:
         coerced = coerce_value(axis["field"], v)
         val = float(coerced) if isinstance(coerced, (int, float)) else float(v)
         val = _snap_allowed(axis, val)
-        if val <= 0 or val in seen or (val in set(vals) and val not in proven):
+        if val <= 0 or val in seen or (val in tested and val not in proven):
+            continue
+        # An immaterial sibling is not a proposal: a value closer to an already-measured one
+        # than `MIN_STEP_FRACTION` of the measured range is the q5799-beside-q5800 artifact,
+        # which the ring would refuse to race and no instrument could resolve.
+        if val not in tested and _immaterial(val, vals, span):
             continue
         seen.add(val)
         cleaned.append((val, why))
     return cleaned
+
+
+def _immaterial(value: float, tested: list[float], span: float) -> bool:
+    """Is ``value`` too close to a measured value, against the lever's measured range, to be
+    a different profile in any sense an instrument could show? Bools have no range and are
+    never immaterial; a lever with no span cannot be judged."""
+    if span <= 0 or not tested:
+        return False
+    return min(abs(value - t) for t in tested) < MIN_STEP_FRACTION * span
+
+
+def _inert_levers(moves: dict[str, float], axes: dict[str, dict], ring_by_key: dict[str, dict] | None) -> list[str]:
+    """The moved levers the mechanism model predicts inert on an unsaturated link and the
+    ring has not contradicted — the axis keys whose exploration credit is discounted.
+
+    A lever is contradicted ("surprise") when any transition the ring has fought on that
+    axis is `significant`: the ring found it moving the Overall, so the link's model, not
+    the lever, is what is wrong, and the search should look there after all."""
+    out: list[str] = []
+    for key in moves:
+        field = str((axes.get(key) or {}).get("field") or "")
+        if (LEVER_MECHANISM.get(field) or {}).get("prediction") != "null":
+            continue
+        transitions = ((ring_by_key or {}).get(key) or {}).get("transitions") or []
+        if any(t.get("significant") for t in transitions):
+            continue
+        out.append(key)
+    return out
 
 
 def _settings_for(parent: dict, changes: dict[str, float], axes: dict[str, dict]) -> list[dict]:
@@ -1111,8 +1164,19 @@ def _candidate_dict(
         uncertainty *= MULTI_LEVER_UNCERTAINTY
     predicted = min(OVERALL_MAX, max(OVERALL_MIN, predicted))
     # Opportunity is what we haven't measured; model risk is what we might be getting
-    # wrong. Only the first belongs on the upside.
-    upside = predicted + EXPLORATION_WEIGHT * base_uncertainty
+    # wrong. Only the first belongs on the upside — and only in full on a lever the link's
+    # model says can move anything. When EVERY moved lever is one the mechanism predicts
+    # inert (and the ring has not found otherwise), open space there is not opportunity, so
+    # the exploration credit is cut to `INERT_LEVER_CREDIT`; the prediction is untouched.
+    inert = _inert_levers(moves, axes, ring_by_key)
+    credit = INERT_LEVER_CREDIT if inert and len(inert) == len(moves) else 1.0
+    if credit < 1.0:
+        labels = ", ".join(axes[k]["field_label"] for k in inert)
+        evidence = list(evidence) + [
+            f"the mechanism predicts no effect from {labels} on an unsaturated link and the ring "
+            f"has not contradicted it — exploration credit kept at {credit:.0%}"
+        ]
+    upside = predicted + EXPLORATION_WEIGHT * base_uncertainty * credit
     if multi:
         upside -= (MULTI_LEVER_UNCERTAINTY - 1.0) * base_uncertainty
     upside = min(OVERALL_MAX, max(OVERALL_MIN, upside))
@@ -1151,6 +1215,11 @@ def _candidate_dict(
         # page can show "backed by the ring · 12 rounds" without parsing the notes.
         "ring": _ring_block(ring_by_key, parent, moves),
         "multi_lever": multi,
+        # The levers the mechanism model predicts inert (ring not disagreeing), and the share
+        # of exploration credit the upside kept because of them — so the page can say why a
+        # wide-open interval value is not at the top of the list.
+        "inert_levers": inert,
+        "exploration_credit": credit,
         "upside": round(upside, 2),
         "nearest_measured": round(nearest, 3),
         "settings": _settings_for(parent, moves, axes),
