@@ -164,15 +164,38 @@ __all__ = [
 RING_SOURCE = "ring"
 POOLED_SOURCE = "pooled"
 UNMEASURED_SOURCE = "unmeasured"
-RANKINGS = ("ring", "pooled")
+RANKINGS = ("fused", "ring", "pooled")
+DEFAULT_RANKING = "fused"
 
 
 def active_ranking(session) -> str:
-    """Which verdict orders the field: ``"ring"`` (default) or ``"pooled"`` (the old
-    behaviour, kept so the two can be compared on the same data)."""
+    """Which verdict orders the field: ``"fused"`` (default — one Overall scale over both
+    records), ``"ring"`` (the ring where it has fought, pooled as the seed — a partition of
+    two scales) or ``"pooled"`` (the oldest order), the last two kept so the three can be
+    compared on the same data."""
     cfg = get_config(session).get("crown_follow", {}) or {}
-    ranking = str(cfg.get("ranking", "ring") or "ring").lower()
-    return ranking if ranking in RANKINGS else "ring"
+    ranking = str(cfg.get("ranking", DEFAULT_RANKING) or DEFAULT_RANKING).lower()
+    return ranking if ranking in RANKINGS else DEFAULT_RANKING
+
+
+def _fused_scores(session) -> dict[str, dict]:
+    """``{fingerprint: {fused, fused_se, rounds}}`` off the Overall ranking — the one fit
+    over both records. Best-effort: an unreadable fit orders the field as if the ring had
+    fought nobody, never fails the page."""
+    try:
+        from . import overall_ranking
+
+        r = overall_ranking.ranking(session, backtest=False, live=False)
+        return {
+            row["fingerprint"]: {
+                "fused": row.get("fused"), "fused_se": row.get("fused_se"),
+                "rounds": int(row.get("rounds") or 0),
+            }
+            for row in (r.get("profiles") or []) if row.get("fingerprint")
+        }
+    except Exception:  # noqa: BLE001
+        log.warning("rank_field: could not read the fused ranking; ordering on the shrunk pooled Overall", exc_info=True)
+        return {}
 
 
 def rank_field(session, field: dict, ratings: dict | None = None) -> dict:
@@ -196,6 +219,7 @@ def rank_field(session, field: dict, ratings: dict | None = None) -> dict:
     if ratings is None:
         ratings = duel_mod.ledger_ratings(session)
     sigma = duel_mod.rank_sigma(get_config(session).get("duel", {}) or {})
+    fused_by_fp = _fused_scores(session) if ranking == "fused" else {}
 
     entries: list[dict] = []
     for p in profiles:
@@ -213,6 +237,22 @@ def rank_field(session, field: dict, ratings: dict | None = None) -> dict:
             source = POOLED_SOURCE
         else:
             source = UNMEASURED_SOURCE
+        # The one scale the fused order sorts on: the fused Overall where the ring has
+        # fought this profile (its pooled anchor corrected by its rounds), else its shrunk
+        # pooled Overall (the posterior under the field prior — a lucky thin reading is
+        # pulled toward the field exactly as its noise warrants), else the raw pooled one.
+        # All three are posterior-mean estimates on the Overall scale, which is what lets
+        # them be sorted together; an Elo rating and a raw Overall could not be.
+        fz = fused_by_fp.get(fp) or {}
+        score: float | None
+        if ranking == "fused" and fz.get("fused") is not None and fz.get("rounds", 0) > 0:
+            score, score_source = float(fz["fused"]), "fused"
+        elif p.get("overall_shrunk") is not None:
+            score, score_source = float(p["overall_shrunk"]), "shrunk"
+        elif pooled is not None:
+            score, score_source = float(pooled), "pooled"
+        else:
+            score, score_source = None, None
         entries.append(
             {
                 "fingerprint": fp,
@@ -222,17 +262,25 @@ def rank_field(session, field: dict, ratings: dict | None = None) -> dict:
                 "ring_rounds": pairs,
                 "ring_provisional": bool(r.get("provisional", True)) if rated else None,
                 "pooled_overall": pooled,
+                "fused_overall": fz.get("fused"),
+                "fused_se": fz.get("fused_se"),
+                "score": score,
+                "score_source": score_source,
                 "iterations": p.get("iterations"),
                 "confident": bool(p.get("confident")),
             }
         )
 
-    # Ring-rated first, then pooled-seeded, then unmeasured. Within each group the ordering
-    # is that group's own verdict — the two scales are never compared to each other, which
-    # is what makes this a partition rather than a blend.
+    # ``ring``/``pooled``: ring-rated first, then pooled-seeded, then unmeasured, each group
+    # ordered by its own verdict — a partition of two scales, never a blend. ``fused``: one
+    # scale (``score``), measured profiles first, unmeasured last.
     _GROUP = {RING_SOURCE: 0, POOLED_SOURCE: 1, UNMEASURED_SOURCE: 2}
 
     def _key(e: dict) -> tuple:
+        if ranking == "fused":
+            if e["score"] is None:
+                return (1, 0.0, 0.0, 0.0)
+            return (0, -float(e["score"]), -(e["iterations"] or 0), -(e["ring_rounds"] or 0))
         group = _GROUP[e["source"]]
         if e["source"] == RING_SOURCE:
             score = float(e["ring_rating"]) - sigma * float(e["ring_rating_se"] or 0.0)
@@ -257,4 +305,8 @@ def rank_field(session, field: dict, ratings: dict | None = None) -> dict:
         "seeded": counts[POOLED_SOURCE],
         "unmeasured": counts[UNMEASURED_SOURCE],
         "rank_sigma": sigma,
+        # Under the fused order: how many profiles each kind of score placed.
+        "score_sources": {
+            k: sum(1 for e in entries if e["score_source"] == k) for k in ("fused", "shrunk", "pooled")
+        },
     }

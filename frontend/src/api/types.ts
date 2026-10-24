@@ -244,6 +244,11 @@ export interface SettingsProfile {
   metrics: Record<string, number>;
   /** Which verdict placed this profile: the ring measured it, or pooled seeded it. */
   verdict_source?: "ring" | "pooled" | "unmeasured";
+  // Under the fused order: the one-scale number this row is sorted on and what it is — the
+  // fused Overall where the ring has fought the profile, its shrunk pooled Overall otherwise,
+  // the raw pooled one when no posterior exists.
+  primary_score?: number | null;
+  primary_score_source?: "fused" | "shrunk" | "pooled" | null;
   /** Position under the primary ordering (1 = best). */
   primary_rank?: number | null;
   /** The ring's fitted strength and how many rounds stand behind it (null if unraced). */
@@ -488,7 +493,9 @@ export interface SettingsProfilesResponse {
   best_fingerprint: string | null;
   // The field's primary ordering — the ring where it has real head-to-head evidence,
   // pooled where it doesn't. `profiles` arrives sorted by it.
-  ranking?: "ring" | "pooled";
+  ranking?: "fused" | "ring" | "pooled";
+  // Under the fused order: how many profiles each kind of score placed.
+  score_sources?: { fused: number; shrunk: number; pooled: number } | null;
   primary_best_fingerprint?: string | null;
   primary_best_source?: "ring" | "pooled" | "unmeasured";
   // How many profiles each verdict is placing.

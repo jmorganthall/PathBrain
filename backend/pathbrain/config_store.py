@@ -347,7 +347,7 @@ DEFAULT_CONFIG: dict = {
         # This is display + standings ordering. It deliberately does NOT feed the duel's own
         # matchmaking (that would make the ladder circular) or Explore (whose model is
         # fitted in pooled-Overall space) — see `crowning.rank_field`.
-        "ranking": "ring",
+        "ranking": "fused",
     },
     # The fused ranking (the Overall page) has NO config block on purpose: its one
     # parameter, the pooled slack τ, is measured from the ledger (`overall_ranking`), and a
@@ -698,11 +698,24 @@ def _upgrade_fused_crowning_policy(stored: dict) -> dict | None:
     return None
 
 
+def _upgrade_fused_field_order(stored: dict) -> dict | None:
+    """The field's primary order used to be a partition — ring-rated profiles by Elo first,
+    everyone else by raw pooled Overall — which put a five-iteration 95 above the
+    3000-iteration crown and compared two scales that were never calibrated to each other.
+    The shipped default is now the fused Overall on one scale. An install still on the old
+    default ("ring") is moved onto it; one that chose "pooled" chose that and keeps it."""
+    c = stored.get("crown_follow") or {}
+    if c.get("ranking") == "ring":
+        return {"crown_follow": {"ranking": "fused"}}
+    return None
+
+
 CONFIG_UPGRADES: list[tuple[str, Callable[[dict], dict | None]]] = [
     ("duel-rounds-of-five", _upgrade_rounds_of_five),
     ("duel-balanced-stopping-rule", _upgrade_balanced_stopping_rule),
     ("duel-winner-by-rating", _upgrade_winner_by_rating),
     ("crown-policy-fused", _upgrade_fused_crowning_policy),
+    ("field-order-fused", _upgrade_fused_field_order),
 ]
 
 

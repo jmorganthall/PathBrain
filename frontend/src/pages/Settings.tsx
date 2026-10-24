@@ -682,7 +682,8 @@ export default function Settings() {
   // "Ghost crown": the crown's current form significantly trails its own prior record, so
   // the bar challengers race against may be propped by history it no longer delivers.
   const [crownFading, setCrownFading] = useState<SettingsProfilesResponse["crown_fading"]>(null);
-  const [ranking, setRanking] = useState<"ring" | "pooled">("pooled");
+  const [ranking, setRanking] = useState<"fused" | "ring" | "pooled">("pooled");
+  const [scoreSources, setScoreSources] = useState<{ fused: number; shrunk: number; pooled: number } | null>(null);
   const [ringRated, setRingRated] = useState(0);
   const [seeded, setSeeded] = useState(0);
   // Nothing comparable under the current methodology yet: the field is ordered by the
@@ -877,6 +878,7 @@ export default function Settings() {
       setCrownWindow(p.crown_window_iterations ?? 0);
       setShrinkage(p.shrinkage ?? null);
       setRanking(p.ranking ?? "pooled");
+      setScoreSources(p.score_sources ?? null);
       setRingRated(p.ring_rated_count ?? 0);
       setSeeded(p.seeded_count ?? 0);
       setSeedInfo(p.seeded ?? null);
@@ -1416,6 +1418,14 @@ export default function Settings() {
           primary order — the ring where it has real head-to-head evidence, pooled where it
           hasn't — and saying so is the difference between a ranking and an unexplained list.
           The table below is user-sortable, so this describes the data, not the current sort. */}
+      {ranking === "fused" && scoreSources && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+          <b>Order:</b> one Overall scale — {scoreSources.fused} profile{scoreSources.fused === 1 ? "" : "s"} placed by
+          the fused Overall (pooled record and head-to-head rounds fitted together), {scoreSources.shrunk} by
+          the shrunk pooled Overall{scoreSources.pooled > 0 ? `, ${scoreSources.pooled} by the raw pooled Overall` : ""}.
+          <HelpTip title="Where the ring has fought a profile its pooled record and its rounds are fitted together into one Overall; everywhere else the profile's reading is shrunk toward the field by exactly as much as its own noise warrants, so a lucky five-iteration reading sits where it probably belongs rather than above the crown. All three are estimates on the same Overall scale, which is what lets them be sorted together." />
+        </Typography>
+      )}
       {ranking === "ring" && (ringRated > 0 || seeded > 0) && (
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
           <b>Order:</b> {ringRated} profile{ringRated === 1 ? "" : "s"} placed by head-to-head duel
@@ -1906,6 +1916,7 @@ export default function Settings() {
                     const prev = idx > 0 ? (pagedProfiles ?? [])[idx - 1] : undefined;
                     const crossesInto =
                       orderBy === "primary" &&
+                      ranking === "ring" &&
                       p.verdict_source &&
                       p.verdict_source !== "ring" &&
                       (idx === 0 ? page > 0 && ringRated > 0 : prev?.verdict_source === "ring");
