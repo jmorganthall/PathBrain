@@ -14,6 +14,7 @@ refused, because "nobody has looked" is a reason to race it.
 """
 from __future__ import annotations
 
+import math
 import random
 import statistics
 
@@ -122,6 +123,50 @@ def test_resolving_power_falls_as_the_round_cap_rises():
     # A margin small enough is not reachable by measuring, and says so rather than
     # printing a number nobody would run.
     assert dec.rounds_to_resolve(0.001, 1.0) is None
+
+
+def _ring_synthetic(leg_sigma: float, *, n_per=8, n_match=10, seed=0, stamp=True) -> list[dict]:
+    """Matches fought the way the ring fights them: legs B C B C B …, each margin the
+    challenger leg minus the MEAN of the two belt legs flanking it, so consecutive margins
+    share one belt leg. Leg noise is ``leg_sigma``; a margin therefore carries √1.5·σ."""
+    rng = random.Random(seed)
+    out: list[dict] = []
+    for _ in range(n_match):
+        edge = rng.uniform(-2, 2)
+        belts = [rng.gauss(0, leg_sigma) for _ in range(n_per + 1)]
+        deltas = [
+            edge + rng.gauss(0, leg_sigma) - (belts[i] + belts[i + 1]) / 2.0
+            for i in range(n_per)
+        ]
+        m = {"deltas": deltas}
+        if stamp:
+            m["design"] = "ring"
+        out.append(m)
+    return [{"matchups": out}]
+
+
+def test_the_noise_estimator_corrects_for_the_shared_belt_leg():
+    """R15 / S6: under the ring design consecutive margins share a belt leg, so their
+    difference carries 2.5 leg-variances against a margin's 1.5 — a ratio of 5/3, not the
+    2 the plain successive-difference estimator assumes. Uncorrected, the ring read its
+    own noise ≈9% low, in the one direction that makes the ladder think it can resolve
+    what it cannot. A record stamped ``design: "ring"`` is scaled by √(5/3); the ABBA pair
+    records that predate the stamp keep √2, and a mixed ledger pools like with like."""
+    truth = math.sqrt(1.5) * 1.0
+    corrected = statistics.median(
+        dec.round_noise(_ring_synthetic(1.0, seed=s))["sigma"] for s in range(40)
+    )
+    naive = statistics.median(
+        dec.round_noise(_ring_synthetic(1.0, seed=s, stamp=False))["sigma"] for s in range(40)
+    )
+    assert 0.9 * truth <= corrected <= 1.1 * truth, f"σ={truth:.3f} read back as {corrected:.3f}"
+    assert naive < corrected, "the uncorrected read is the low one"
+    assert 0.86 <= naive / truth <= 0.96, f"the naive read should sit ≈9% low, got {naive / truth:.3f}"
+    out = dec.round_noise(_ring_synthetic(1.0, seed=1))
+    assert out["shared_belt_matchups"] == 10 and "belt leg" in out["method"]
+    # Independent pairs are read exactly as before.
+    plain = dec.round_noise(_synthetic(1.0, seed=1))
+    assert plain["shared_belt_matchups"] == 0 and "belt leg" not in plain["method"]
 
 
 # ── Pairs that cannot differ at all ───────────────────────────────────────────────────

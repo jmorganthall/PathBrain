@@ -2318,7 +2318,17 @@ LLM-based. See `README.md` for the product overview.
     differences it cannot — and it books **drift** as noise, where a successive difference
     sees one round of it (measured at 0.5 pts/round: 5% inflation against the centred
     version's 41%). Less sensitive, not immune; the residue is conservative, which is the
-    right direction for a number that decides what to refuse. `min_margin` =
+    right direction for a number that decides what to refuse. **The ring's own design is
+    corrected for** (`SHARED_BELT_SUCCESSIVE_TO_SIGMA`, `_shares_belt_legs`): a ring margin
+    is the challenger leg minus the mean of the two belt legs flanking it, and the next
+    margin of the same match reuses one of them, so consecutive margins are not independent
+    — their difference carries `2.5` leg-variances against a margin's `1.5`, a ratio of 5/3
+    rather than the 2 the plain successive-difference estimator assumes, which read the
+    noise ≈9% *low* (the review's S6, the one direction that matters here). A record
+    stamped `design: "ring"` is scaled by √(5/3) before pooling, the ABBA pair records that
+    predate the stamp keep √2, and `shared_belt_matchups` says how many of each the
+    estimate rests on (`test_the_noise_estimator_corrects_for_the_shared_belt_leg`).
+    `min_margin` =
     `DETECT_SIGMA·σ/√max_pairs`, and `DETECT_SIGMA` is 2.0 — the same bar as `duel.tie_sigma`
     and `correlation.crown_tie_sigma`, so "the ring can resolve this" and "the crown calls
     this clearly better" mean the same thing.
@@ -2985,13 +2995,26 @@ LLM-based. See `README.md` for the product overview.
     measured, not chosen** (`pooled_slack`): where the ring has fought a pair, the pooled
     difference and the ring's difference are two readings of one gap and the ring's is
     unbiased, so `Var(pooled Δ − ring Δ) = SE_a² + SE_b² + σ²/n + 2τ²` solved for τ over
-    every fought pair (a median of squares, so one failed leg's margin cannot set it; under
+    every fought pair — **each pair standardized by its own expected variance**
+    (`_solve_slack_variance`, `MEDIAN_CHI2_1`): the pairs rest on very different evidence
+    (two 3000-iteration medians and twenty rounds beside a five-run profile and four), so
+    "median of z² minus median of expected" compared the middle of one distribution with the
+    middle of another and misread τ whenever the wide-z pairs and the wide-bar pairs were
+    not the same pairs (the review's S5); under the model every `z²/(expected + 2τ²)` is an
+    iid χ²₁, so τ² is the value that makes their median the χ²₁ median, solved by bisection,
+    zero when the record already disagrees less than its bars allow — still a median, so one
+    failed leg's margin cannot set it; under
     `MIN_SLACK_PAIRS` it falls back to `DEFAULT_SLACK` = 0.5 and the page says *default*;
     **there is no setting for it and no slider** — a weight a person chooses on the evidence
     is exactly what the fit replaces; the page states whether τ was measured or defaulted, and
     nothing lets anyone choose it). The crown is the argmax of the fused
     Overall among profiles with enough evidence on **either** record (`min_iterations`
-    pooled, or `MIN_RING_ROUNDS_FOR_CROWN` = 8 rounds), SQM off excluded; "tied" is the
+    pooled, or `MIN_RING_ROUNDS_FOR_CROWN` = 8 rounds) **that are anchored** — a profile
+    the fit places from ring rounds alone has a fused Overall relative to its opponents,
+    not a number on the pooled scale; `ring_target` always refused to seat one and
+    `crown()` could still name one, so `eligible` now requires `anchored` and the two
+    agree (`test_a_profile_placed_by_ring_rounds_alone_is_never_the_crown`); the ghost
+    keeps its row and its rounds. SQM off excluded; "tied" is the
     same `crown_tie_sigma` test on the SE of the fused *difference* (covariance included —
     two profiles the ring fought share evidence, so their gap is known better than their
     bars suggest), and `rounds_to_separate` says what a duel night would buy. The page
@@ -3001,7 +3024,12 @@ LLM-based. See `README.md` for the product overview.
     table with the pooled position drawn hollow beside each fused dot, **what the ring
     changed** (the biggest rank moves, on how many rounds), every profile, and the
     **predictive check** (`predictive_check`: leave-one-session-out — refit without each
-    recent session and predict its margins three ways; the fit is reported *best*, *close*
+    recent session and predict its margins three ways; **the held-out night is held out of
+    τ and σ too** — both are measured from the ledger, so a fold reusing the all-sessions
+    values had already seen the night it was predicting; each fold re-reads τ from its
+    training pairs and σ from its training sessions, falling back to the caller's σ when
+    the training set is too thin to measure it, and the result says how many folds refit
+    it (`tau_refit`, `sigma_refit_folds`); the fit is reported *best*, *close*
     (within `BACKTEST_CLOSE_ABS`/`_REL` of the better parent — the check's own noise) or
     *worse*, in words). **Measured before shipping** (`scripts/sim_overall_ranking.py`: a
     tight simulated field, a pooled record with a hidden per-profile bias, a ladder seating
@@ -3051,7 +3079,8 @@ LLM-based. See `README.md` for the product overview.
     on the pooled scale), and only under the fused policy: `pooled` and `duel` keep the
     belt-defends matchmaking unchanged. **Explore keeps branching from the pooled best**
     (its model is fitted in pooled-Overall space). Stated limits: consecutive rounds share a belt leg (correlation
-    ≈1/6, so the ring's bars run slightly tight), τ is global rather than per profile (the
+    ≈1/6, so the ring's bars run slightly tight — `round_noise` now corrects its own
+    estimate for the shared leg, the fit's per-round weights do not), τ is global rather than per profile (the
     per-profile `weather_severity` could set it individually — a v2), and rounds fought under
     another methodology are excluded (their margins are on another scale) while pre-stamp
     matches are kept and counted as *unstamped*. Read-only; nothing here changes a score.

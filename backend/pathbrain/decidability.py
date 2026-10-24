@@ -91,9 +91,21 @@ MIN_NOISE_MATCHUPS = 5
 #: enormous margin, and an SD would hand that one round the whole estimate.
 MAD_TO_SIGMA = 1.4826
 
-#: Consecutive margins differ by ``√2 · σ`` when each carries noise ``σ``, so the spread of
-#: successive differences is divided by this to recover one round's noise.
+#: Consecutive margins differ by ``√2 · σ`` when each carries noise ``σ`` and the two are
+#: independent (the ABBA pair design: every margin is its own challenger leg minus its own
+#: belt leg), so the spread of successive differences is divided by this to recover one
+#: round's noise.
 SUCCESSIVE_TO_SIGMA = math.sqrt(2.0)
+
+#: Under the ring design consecutive margins are NOT independent: a margin is the
+#: challenger leg minus the mean of the two belt legs flanking it, and the next margin of
+#: the same match shares one of those belt legs. With leg noise ``s``, a margin carries
+#: ``1.5 s²`` and the difference of two consecutive ones ``2 s² + s²/2 = 2.5 s²`` (the two
+#: challenger legs, plus half the difference of the two UNshared belt legs) — a ratio of
+#: 5/3 rather than 2. Dividing by √2 there reads the ring's noise ≈9% low, which is the
+#: one direction of error that matters here (`test_the_noise_estimator_corrects_for_the_
+#: shared_belt_leg`).
+SHARED_BELT_SUCCESSIVE_TO_SIGMA = math.sqrt(5.0 / 3.0)
 
 #: How many standard errors a margin must clear to be callable. 2.0 matches
 #: ``duel.tie_sigma`` and ``correlation.crown_tie_sigma``, so "the ring can resolve this"
@@ -153,6 +165,7 @@ def round_noise(sessions_data: list[dict]) -> dict | None:
     steps: list[float] = []
     matchups = 0
     rounds = 0
+    shared = 0
     for sess in sessions_data or []:
         for m in sess.get("matchups") or []:
             deltas = _deltas_of(m)
@@ -160,7 +173,15 @@ def round_noise(sessions_data: list[dict]) -> dict | None:
                 continue
             matchups += 1
             rounds += len(deltas)
-            steps.extend(abs(b - a) for a, b in zip(deltas, deltas[1:]))
+            # Each successive difference is scaled to ONE margin's noise before pooling,
+            # by the factor its own design implies — so a ledger mixing ABBA pairs and
+            # ring matches pools like with like.
+            if _shares_belt_legs(m):
+                shared += 1
+                factor = SHARED_BELT_SUCCESSIVE_TO_SIGMA
+            else:
+                factor = SUCCESSIVE_TO_SIGMA
+            steps.extend(abs(b - a) / factor for a, b in zip(deltas, deltas[1:]))
 
     if matchups < MIN_NOISE_MATCHUPS or not steps:
         return None
@@ -168,11 +189,23 @@ def round_noise(sessions_data: list[dict]) -> dict | None:
     if spread is None or spread <= 0:
         return None
     return {
-        "sigma": round(spread * MAD_TO_SIGMA / SUCCESSIVE_TO_SIGMA, 3),
+        "sigma": round(spread * MAD_TO_SIGMA, 3),
         "matchups": matchups,
         "rounds": rounds,
-        "method": "robust successive-difference within matchups",
+        "shared_belt_matchups": shared,
+        "method": (
+            "robust successive-difference within matchups"
+            + (", corrected for the belt leg consecutive ring margins share" if shared else "")
+        ),
     }
+
+
+def _shares_belt_legs(matchup: dict) -> bool:
+    """Does this record's design make consecutive margins share a belt leg? True for the
+    ring (`duel._run_ring` stamps ``design: "ring"``: each margin is read against the mean
+    of the flanking belt legs, and the next one of the same match reuses one of them);
+    False for the ABBA pair records that predate it, whose margins are independent."""
+    return (matchup or {}).get("design") == "ring"
 
 
 def rounds_to_resolve(margin: float, sigma: float) -> int | None:

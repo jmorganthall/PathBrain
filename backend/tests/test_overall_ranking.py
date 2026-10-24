@@ -314,3 +314,114 @@ def test_the_ring_target_is_the_fused_best_and_its_tied_rivals(client):
     finally:
         with session_scope() as s:
             save_config(s, {"crown_follow": {"policy": "fused"}})
+
+
+# ── R15: fused hygiene ─────────────────────────────────────────────────────────────────
+
+
+def test_the_slack_solve_reads_each_pair_against_its_own_bars():
+    """S5: "median of z² minus median of expected" compared the middles of two different
+    distributions. The solve standardizes each pair by its OWN expected variance, so a
+    ledger whose pairs rest on very different evidence reads the τ that is actually there.
+    Pinned two ways: with equal bars it is the old closed form exactly, and with unequal
+    bars a ledger built to carry exactly τ = 1 reads 1 where the old arithmetic does not."""
+    # Homogeneous: the solve equals the closed form.
+    z2 = [0.2, 0.9, 1.7, 2.6, 4.0, 0.5, 1.1]
+    expected = [0.3] * len(z2)
+    closed = max(0.0, (o._median(z2) * o.MEDIAN_SQ_TO_VAR - 0.3) / 2.0)
+    assert o._solve_slack_variance(z2, expected) == pytest.approx(closed, abs=1e-6)
+    # Heterogeneous: seven pairs on very different bars whose standardized ratios
+    # z²/(v + 2·1²) median to exactly the χ²₁ median at τ² = 1 — so the ledger carries
+    # τ = 1 by construction — with the wide-z pairs and the wide-bar pairs NOT the same
+    # pairs. The solve reads 1; the old arithmetic, comparing the median z² (one pair)
+    # against the median bar (another pair), reads τ² ≈ 3.1.
+    vs = [0.01, 9.0, 0.5, 4.0, 0.02, 2.0, 0.05]
+    ratios = [0.1, 0.3, o.MEDIAN_CHI2_1, 0.6, 2.0, 0.2, 1.5]
+    z2 = [r * (v + 2.0) for r, v in zip(ratios, vs)]
+    assert o._solve_slack_variance(z2, vs) == pytest.approx(1.0, abs=1e-6)
+    old = max(0.0, (o._median(z2) * o.MEDIAN_SQ_TO_VAR - o._median(vs)) / 2.0)
+    assert old > 2.5, f"the old arithmetic misreads this ledger (τ² {old:.2f} for a true 1.0)"
+    # Inside the bars → zero, never negative.
+    assert o._solve_slack_variance([0.01, 0.02, 0.03], [1.0, 1.0, 1.0]) == 0.0
+    # Through the public function, with the diagnostics still reported.
+    pooled = {f"p{i}": {"overall": 70.0, "se": 0.1} for i in range(6)}
+    rounds: list[dict] = []
+    for i in range(5):
+        rounds += _rounds(f"p{i}", f"p{i + 1}", 0.0, 6, seed=i)
+    s_ = o.pooled_slack(pooled, o.pair_summaries(rounds), SIGMA)
+    assert s_["basis"] == "measured" and s_["tau"] >= 0.0
+    assert s_["excess_var"] is not None and "standardized" in s_["method"]
+
+
+def test_the_predictive_check_holds_the_night_out_of_the_slack_and_the_noise_too(monkeypatch):
+    """S5: τ and σ are measured from the ledger, so a fold that reused the all-sessions
+    values had already seen the night it was predicting. Each fold now re-reads τ from the
+    training pairs and σ from the training sessions, and the held-out session appears in
+    neither."""
+    fps = [f"q{i}" for i in range(7)]
+    pooled = {fp: {"overall": 70.0 + i * 0.3, "se": 0.05} for i, fp in enumerate(fps)}
+    rounds: list[dict] = []
+    sessions_data: list[dict] = []
+    for sid in range(1, 7):
+        a, b = fps[sid - 1], fps[sid]
+        rs = _rounds(a, b, 0.3, 6, seed=sid, session_id=sid)
+        rounds += rs
+        sessions_data.append({"id": sid, "matchups": [
+            {"incumbent": a, "challenger": b, "verdict": "draw", "deltas": [r["margin"] for r in rs]}
+        ]})
+    slack_calls: list[set] = []
+    noise_calls: list[set] = []
+    real_slack, real_noise = o.pooled_slack, o.decidability.round_noise
+
+    def spy_slack(pooled_, pairs, sigma):
+        slack_calls.append(set(pairs))
+        return real_slack(pooled_, pairs, sigma)
+
+    def spy_noise(sessions):
+        noise_calls.append({s["id"] for s in sessions})
+        return real_noise(sessions)
+
+    monkeypatch.setattr(o, "pooled_slack", spy_slack)
+    monkeypatch.setattr(o.decidability, "round_noise", spy_noise)
+    out = o.predictive_check(pooled, rounds, SIGMA, 0.5, sessions_data=sessions_data)
+    assert out is not None and out["sessions"] == 6
+    all_pairs = set(o.pair_summaries(rounds))
+    assert len(slack_calls) == 6 and len(noise_calls) == 6
+    for seen in slack_calls:
+        assert len(all_pairs - seen) == 1, "each fold's slack is read without exactly one pair"
+    for ids in noise_calls:
+        assert len(ids) == 5 and len({1, 2, 3, 4, 5, 6} - ids) == 1
+    assert out["tau_refit"] is True and out["sigma_refit_folds"] == 6
+    # Without the sessions the σ fallback is the caller's and the result says so.
+    out2 = o.predictive_check(pooled, rounds, SIGMA, 0.5)
+    assert out2["sigma_refit_folds"] == 0 and out2["tau_refit"] is True
+
+
+def test_a_profile_placed_by_ring_rounds_alone_is_never_the_crown():
+    """S5: `ring_target` already refused to seat an unanchored best — a profile with no
+    pooled median has a fused Overall relative to its opponents, not a number on the pooled
+    scale — while `crown()` could still name one. Eligibility now requires `anchored`, so
+    the two agree; the ghost keeps its row and its rounds, it just cannot wear the crown."""
+    _add("top", 70.3, runs=8, spread=2.0)
+    _add("mid", 69.0, runs=8, spread=2.0)
+    ghost = "ghost-never-pooled-fp"
+    _ledger([{
+        "incumbent": _fp("top"), "challenger": ghost, "verdict": "challenger",
+        "methodology": VERSION, "pairs": 12, "wins_incumbent": 0, "wins_challenger": 12,
+        "deltas": [5.0 + 0.1 * (i % 3) for i in range(12)],
+    }])
+    try:
+        with session_scope() as s:
+            r = o.ranking(s, backtest=False, live=False)
+            rows = {p["fingerprint"]: p for p in r["profiles"]}
+            assert rows[ghost]["rounds"] == 12 and rows[ghost]["anchored"] is False
+            assert rows[ghost]["fused"] > rows[_fp("top")]["fused"], "the fit still places it"
+            assert rows[ghost]["eligible"] is False
+            assert rows[_fp("top")]["anchored"] is True and rows[_fp("top")]["eligible"] is True
+            assert r["best"]["fingerprint"] == _fp("top")
+            c = o.crown(s)
+            assert c["fingerprint"] == _fp("top")
+            t = o.ring_target(s)
+            assert t is not None and t["best"] == _fp("top")
+    finally:
+        _clear_ledger()
