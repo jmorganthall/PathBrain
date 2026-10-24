@@ -204,3 +204,17 @@ def test_sweep_preview_multiplies_by_pipes(client):
     )
     assert resp.status_code == 200
     assert resp.json()["total_variants"] == 6  # 3 quantum × 2 pipes
+
+
+def test_a_sweep_variant_runs_one_chunk_by_default(client):
+    """E10: two iterations a variant minted a field of thin, unrankable profiles; the default
+    is one chunk — the same length as Explore's "Test now"."""
+    from pathbrain import sweep as sweep_mod
+    from pathbrain.runner import CHUNK_ITERATIONS
+
+    assert sweep_mod.DEFAULT_SWEEP_ITERATIONS == CHUNK_ITERATIONS == 5
+    resp = client.post(
+        "/api/sweep/preview",
+        json={"spec": {"quantum": {"enabled": True, "min": 1500, "max": 3000, "step": 750}}},
+    )
+    assert resp.status_code == 200 and resp.json()["iterations"] == 5

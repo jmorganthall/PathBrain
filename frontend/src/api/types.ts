@@ -2768,6 +2768,10 @@ export interface ExploreCurve {
   // was picked on each point's pessimistic end rather than its median.
   best_settled?: boolean;
   shape: string;
+  // Set when the best value is at the tested edge but nothing past it can be proposed: the
+  // lever is at its declared maximum, at the last option the firewall offers, or is a select
+  // whose option list the provider could not supply.
+  edge_blocked?: string | null;
   // Curve points whose OTHER levers are systematically skewed — the point is measuring two
   // levers at once, which is how a marginal curve names a value best that isn't.
   imbalance?: {
@@ -2902,6 +2906,9 @@ export interface ExploreGap {
   // moved to `suggest`, priced exactly like a headline candidate so the row can post it.
   // Absent only when no measured profile carries this lever.
   candidate?: ExploreCandidate;
+  // Set when the hole is real but the value to fill it cannot be checked to exist (a select
+  // whose option list the provider did not supply) — reported, with no button.
+  blocked?: string;
 }
 
 export interface ExploreCandidate {

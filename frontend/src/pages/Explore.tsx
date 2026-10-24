@@ -258,6 +258,7 @@ function CurveCard({
           {curve.best_at_edge ? " — the end of the tested range, so the optimum may lie beyond it" : ""}
           {curve.best_settled === false ? " — nothing on this lever is settled yet, so this is the steadiest thin reading, not a measured best" : ""}
           {curve.spearman != null ? ` · ρ ${curve.spearman.toFixed(2)}` : ""}
+          {curve.edge_blocked ? ` — no step past it is offered: ${curve.edge_blocked}` : ""}
         </Typography>
         {!!conditioned && (
           <Typography variant="caption" sx={{ display: "block", mb: 0.5, color: "success.main" }}>
@@ -851,7 +852,7 @@ function GapRow({
           {gap.pipe} {gap.field_label}
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          try {fmtValue(gap.suggest, gap.unit)}
+          {gap.blocked ? `no value offered — ${gap.blocked}` : `try ${fmtValue(gap.suggest, gap.unit)}`}
         </Typography>
         <Box sx={{ flexGrow: 1 }} />
         {candidate && !closed && (

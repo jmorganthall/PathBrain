@@ -151,3 +151,74 @@ def test_inert_moves_rank_below_a_live_move_of_equal_promise():
     assert q["predicted"] == t["predicted"]  # no curves handed in: both sit on the anchor
     bonus_q, bonus_t = q["upside"] - q["predicted"], t["upside"] - t["predicted"]
     assert bonus_q > 0 and abs(bonus_t - bonus_q * explore.INERT_LEVER_CREDIT) < 0.02
+
+
+# ── R23: an edge step is a value the firewall can hold ─────────────────────────────────
+
+
+def test_an_edge_step_never_walks_past_the_levers_declared_maximum(monkeypatch):
+    """E10: the edge step was ``max + step`` with no ceiling, so a quantum edge walked past
+    the registry's own 10000 one sweep step at a time. The step is clamped to the declared
+    sweep range, and an edge already at the clamp proposes nothing — the finding stays on
+    the curve with the reason."""
+    from pathbrain.shaper_fields import field as shaper_field
+
+    top = shaper_field("quantum").sweep_default["max"]
+    profiles = [
+        _profile("a", quantum=1000, target=5, overall=60.0),
+        _profile("b", quantum=4000, target=5, overall=70.0),
+        _profile("c", quantum=7000, target=5, overall=80.0),
+        _profile("d", quantum=top, target=5, overall=90.0),
+    ]
+    out = _landscape(monkeypatch, profiles)
+    curve = next(c for c in out["curves"] if c["key"] == "Download::quantum")
+    assert curve["best_at_edge"] is True
+    assert "declared maximum" in (curve.get("edge_blocked") or "")
+    assert not [g for g in out["gaps"] if g["key"] == "Download::quantum" and g["kind"] == "edge"]
+    for c in out["candidates"]:
+        for ch in c["changes"]:
+            if ch["key"] == "Download::quantum":
+                assert ch["to"] <= top, ch
+    # A step short of the ceiling is clamped TO it rather than past it.
+    near = [
+        _profile("a", quantum=1000, target=5, overall=60.0),
+        _profile("b", quantum=4000, target=5, overall=70.0),
+        _profile("c", quantum=7000, target=5, overall=80.0),
+        _profile("d", quantum=top - 100, target=5, overall=90.0),
+    ]
+    out2 = _landscape(monkeypatch, near)
+    edge = next(g for g in out2["gaps"] if g["key"] == "Download::quantum" and g["kind"] == "edge")
+    assert edge["suggest"] == top
+
+
+def test_a_select_lever_without_its_option_list_offers_no_untested_value(monkeypatch):
+    """A CoDel target/interval is a select; a value off its option list is accepted and
+    ignored by the firewall, and the benchmark measures a profile nobody proposed. Without
+    the provider's list nothing can check that an untested value exists, so the hole is
+    reported with the reason and no button, no edge step is offered, and only values the
+    firewall has already held (transplants) are proposed on that lever."""
+    profiles = [
+        _profile("a", quantum=1000, target=3, overall=60.0),
+        _profile("b", quantum=1200, target=4, overall=62.0),
+        _profile("c", quantum=1400, target=5, overall=64.0),
+        _profile("d", quantum=1600, target=40, overall=66.0),
+    ]
+    out = _landscape(monkeypatch, profiles, suggestions=20)
+    curve = next(c for c in out["curves"] if c["key"] == "Download::target")
+    assert curve["best_at_edge"] is True and "option list" in (curve.get("edge_blocked") or "")
+    gaps = [g for g in out["gaps"] if g["key"] == "Download::target"]
+    assert gaps and all(g["kind"] == "gap" for g in gaps)
+    assert all(g.get("blocked") and "candidate" not in g for g in gaps)
+    assert all(float(g["suggest"]) == int(g["suggest"]) for g in gaps), "still the field's own form"
+    for c in out["candidates"]:
+        for ch in c["changes"]:
+            if ch["key"] == "Download::target":
+                assert ch["to"] in (3.0, 4.0, 5.0, 40.0), ch
+                assert "proven elsewhere" in ch["why"]
+    # With the option list attached the edge steps to the NEXT OPTION, never an invented value.
+    out2 = _landscape(monkeypatch, profiles, suggestions=20, allowed_values={"target": [3, 4, 5, 40, 60]})
+    edge = next(g for g in out2["gaps"] if g["key"] == "Download::target" and g["kind"] == "edge")
+    assert edge["suggest"] == 60 and edge.get("candidate") is not None
+    out3 = _landscape(monkeypatch, profiles, suggestions=20, allowed_values={"target": [3, 4, 5, 40]})
+    curve3 = next(c for c in out3["curves"] if c["key"] == "Download::target")
+    assert "last option" in (curve3.get("edge_blocked") or "")
