@@ -2742,6 +2742,13 @@ export interface ExploreCurvePoint {
   overall: number;
   best: number;
   profiles: number;
+  // Measurement behind the point in whole-profile units (two settled profiles read 2.0, four
+  // five-iteration ones ~0.6); `settled` = at least one settled profile-equivalent, which is
+  // what a point needs to be named the lever's best value or offered as a transplant.
+  // `trusted` is the members' pessimistic end (p25), the pick when nothing is settled.
+  evidence?: number;
+  trusted?: number;
+  settled?: boolean;
 }
 
 export interface ExploreCurve {
@@ -2757,6 +2764,9 @@ export interface ExploreCurve {
   best_overall: number;
   // The best value tested is the highest or lowest tried — the optimum isn't bracketed.
   best_at_edge: boolean;
+  // False when no point on the curve has a settled profile-equivalent behind it, so the best
+  // was picked on each point's pessimistic end rather than its median.
+  best_settled?: boolean;
   shape: string;
   // Set when the best value is at the tested edge but nothing past it can be proposed: the
   // lever is at its declared maximum, at the last option the firewall offers, or is a select

@@ -100,6 +100,16 @@ CONFOUNDED_SHRINK = 0.5
 # model for having few iterations — that would throw away the only reading anyone has of
 # that point — but nor can a five-run wobble carry a curve like a settled measurement.
 THIN_WEIGHT_FLOOR = 0.15
+# How much measurement a curve point needs behind it — in whole-profile units, the sum of
+# its members' evidence weights — before it may be named the lever's BEST value or offered
+# as a transplant source: one settled profile-equivalent. The best value was a plain max
+# over the per-value medians, and a value tested by a single five-iteration profile is a
+# per-value median of one lucky reading (evidence 0.15); named best, it seeded "refine"
+# moves on both sides and an "edge" proposal past it, each a 5-iteration test and a new
+# permanent field member (the review's E6). Points short of this still draw the curve and
+# still inform the predictions; they just cannot be where the search is pointed. When NO
+# point reaches it the best is picked on each point's pessimistic end (`trusted`) instead.
+BEST_VALUE_MIN_EVIDENCE = 1.0
 # Parents to branch candidates from, and how many candidates to return by default.
 CANDIDATE_PARENTS = 5
 # The smallest move worth proposing, as a share of the range the lever has actually been
@@ -282,6 +292,27 @@ def _stdev(vals: list[float]) -> float:
     return math.sqrt(sum((v - m) ** 2 for v in vals) / (n - 1))
 
 
+def _weighted_stdev(pairs: list[tuple[float, float]]) -> float:
+    """Evidence-weighted spread of ``(value, weight)`` pairs, with the reliability-weights
+    correction so equal weights reproduce `_stdev` exactly. A one-run 99 in a field of 60s
+    is a real reading and a thin one: unweighted it set the field's spread — and so every
+    candidate's uncertainty band — on its own; weighted at the thin floor it widens the
+    band a little, which is what one noisy reading is worth."""
+    pairs = [(v, w) for v, w in pairs if w > 0]
+    if len(pairs) < 2:
+        return 0.0
+    total = sum(w for _, w in pairs)
+    if total <= 0:
+        return 0.0
+    mean = sum(v * w for v, w in pairs) / total
+    var = sum(w * (v - mean) ** 2 for v, w in pairs) / total
+    sq = sum(w * w for _, w in pairs)
+    denom = total - sq / total
+    if denom <= 0:
+        return 0.0
+    return math.sqrt(var * total / denom)
+
+
 def _response_curves(points: list[dict], axes: dict[str, dict]) -> list[dict]:
     """Median Overall at each tested value of each axis, plus the rank correlation.
 
@@ -294,17 +325,22 @@ def _response_curves(points: list[dict], axes: dict[str, dict]) -> list[dict]:
         xs: list[float] = []
         ys: list[float] = []
         by_value: dict[float, list[float]] = {}
+        trusted_by_value: dict[float, list[tuple[float, float]]] = {}
         for pt in points:
             x = pt["coords"].get(key)
             if x is None:
                 continue
             xs.append(x)
             ys.append(pt["overall"])
-            by_value.setdefault(x, []).append((pt["overall"], pt.get("weight", 1.0)))
+            w = pt.get("weight", 1.0)
+            by_value.setdefault(x, []).append((pt["overall"], w))
+            trusted_by_value.setdefault(x, []).append((pt.get("trusted", pt["overall"]), w))
         if len(xs) < MIN_POINTS or len(set(xs)) < 2:
             continue
-        curve = [
-            {
+        curve = []
+        for v, vs in sorted(by_value.items()):
+            evidence = sum(w for _, w in vs)
+            curve.append({
                 "value": v,
                 "overall": round(_weighted_median(vs), 2),
                 "best": round(max(o for o, _ in vs), 2),
@@ -312,14 +348,21 @@ def _response_curves(points: list[dict], axes: dict[str, dict]) -> list[dict]:
                 # How much measurement stands behind this point, in whole-profile units: two
                 # profiles at the confidence bar read 2.0, four five-iteration ones read ~0.6.
                 # "Three profiles" and "three *settled* profiles" are different claims.
-                "evidence": round(sum(w for _, w in vs), 2),
-            }
-            for v, vs in sorted(by_value.items())
-        ]
+                "evidence": round(evidence, 2),
+                # The pessimistic end of its members' own spreads — what this point is worth
+                # when nothing on the curve is settled enough to be picked on its median.
+                "trusted": round(_weighted_median(trusted_by_value[v]), 2),
+                # Enough measurement to be named the lever's best value or offered as a
+                # transplant: at least one settled profile-equivalent behind it.
+                "settled": evidence >= BEST_VALUE_MIN_EVIDENCE,
+            })
         rho = spearman(xs, ys) if len(set(xs)) >= MIN_DISTINCT_VALUES else None
-        # The value with the best median outcome, and whether it sits at an edge of what
-        # has been tested — an edge-best is the field telling you to look further out.
-        best = max(curve, key=lambda c: c["overall"])
+        # The value with the best median outcome AMONG THE SETTLED POINTS, and whether it
+        # sits at an edge of what has been tested — an edge-best is the field telling you to
+        # look further out. A value one thin profile happened to score 99 on is drawn, but
+        # it is not the best measured; with nothing settled at all the pick falls to each
+        # point's pessimistic end, so the lucky reading still cannot be it.
+        best = _best_curve_point(curve)
         at_edge = best["value"] in (axis["min"], axis["max"])
         out.append({
             **{k: axis[k] for k in ("key", "pipe", "field", "field_label", "unit", "sweepable")},
@@ -328,10 +371,24 @@ def _response_curves(points: list[dict], axes: dict[str, dict]) -> list[dict]:
             "best_value": best["value"],
             "best_overall": best["overall"],
             "best_at_edge": at_edge,
+            "best_settled": bool(best["settled"]),
             "shape": _curve_shape(curve, rho),
         })
     out.sort(key=lambda r: -(abs(r["spearman"] or 0.0)))
     return out
+
+
+def _settled_first(curve: list[dict]) -> list[dict]:
+    """The curve's points in the order a search should trust them: settled points by their
+    median, best first; when none is settled, every point by its pessimistic end."""
+    settled = [c for c in curve if c.get("settled")]
+    if settled:
+        return sorted(settled, key=lambda c: -c["overall"])
+    return sorted(curve, key=lambda c: -c.get("trusted", c["overall"]))
+
+
+def _best_curve_point(curve: list[dict]) -> dict:
+    return _settled_first(curve)[0]
 
 
 def _curve_shape(curve: list[dict], rho: float | None) -> str:
@@ -612,7 +669,7 @@ def _uncertainty(coords: dict[str, float], points: list[dict], axes: dict[str, d
     profiles is pinned down; one in open space carries the full spread of the field, which
     is the honest statement that we have no idea — and the whole reason to go and look.
     """
-    spread = _stdev([p["overall"] for p in points]) or 1.0
+    spread = _weighted_stdev([(p["overall"], p.get("weight", 1.0)) for p in points]) or 1.0
     weight = 0.0
     nearest = float("inf")
     for p in points:
@@ -1012,10 +1069,11 @@ def _candidate_values(axis: dict, curve: dict | None) -> list[tuple[float, str]]
         return []
     out: list[tuple[float, str]] = []
 
-    # Transplants: the best-scoring values measured anywhere on this axis.
+    # Transplants: the best-scoring SETTLED values measured anywhere on this axis — a value
+    # one thin profile happened to score well on is not proven, it is one reading.
     proven: set[float] = set()
     if curve:
-        ranked = sorted(curve["curve"], key=lambda c: -c["overall"])[:TRANSPLANT_VALUES]
+        ranked = _settled_first(curve["curve"])[:TRANSPLANT_VALUES]
         for pt in ranked:
             proven.add(pt["value"])
             out.append((
