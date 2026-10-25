@@ -1057,6 +1057,15 @@ DEFAULT_CROWN_RULE = RATING_RULE
 DEFAULT_ITERATIONS_PER_ROUND = 5
 PRIOR_ITERATIONS_PER_ROUND = 3
 
+#: How often the belt's reference leg recurs. Was 2 (strict alternation, B C B D…); 3
+#: (B C D B C D…) is a third more challenger legs per hour at up to two legs' distance
+#: from the belt — the throughput the review priced against a default window that could
+#: not reach a verdict (seven rounds a seat against a ``min_pairs`` of eight). The trade
+#: is a measured one on this link's own history (`weather_by_distance`); the old value is
+#: what `config_store.upgrade_config` moves an untouched install off.
+DEFAULT_BELT_EVERY = 3
+PRIOR_BELT_EVERY = 2
+
 
 def iterations_per_round(cfg: dict | None) -> int:
     """Benchmark iterations per LEG of a round — the ring's resolving power.
@@ -2617,10 +2626,12 @@ def contender_order(
 #
 # * ``duel.belt_every`` — the belt (the *reference* leg) recurs every N legs. N=2 is strict
 #   alternation, ``B C B D B C B D…``: every challenger leg has a belt leg on both sides,
-#   which is the strongest shared-weather guarantee the ladder can offer and the default.
-#   N=3 is ``B C D B C D``: a third more challenger legs per hour, and a challenger leg can
-#   be two legs from its nearest belt leg. Raising it is a measured trade, which is what
-#   ``weather_by_distance`` exists to price.
+#   which is the strongest shared-weather guarantee the ladder can offer. N=3 is
+#   ``B C D B C D`` — a third more challenger legs per hour, and a challenger leg can be
+#   two legs from its nearest belt leg — and is the default (`DEFAULT_BELT_EVERY`): at 2 a
+#   default two-hour window bought each seat about seven rounds against a ``min_pairs`` of
+#   eight, so no match could reach a verdict in one night. The trade is a measured one,
+#   which is what ``weather_by_distance`` exists to price; 2 stays selectable.
 # * ``duel.seats`` — how many challengers are in the ring at once. Their matches run
 #   concurrently, sharing the same belt legs and the same weather window, and a seat refills
 #   the moment its match decides, so time flows to the undecided.
@@ -3070,12 +3081,13 @@ def _carried_open_matches(duel_id: int) -> list[dict]:
 
 
 def belt_every(cfg: dict | None) -> int:
-    """How often the belt's reference leg recurs (2 = strict alternation). Bounded so a
-    stored nonsense value can never stop the ladder measuring."""
+    """How often the belt's reference leg recurs (2 = strict alternation; the default is
+    `DEFAULT_BELT_EVERY`). Bounded so a stored nonsense value can never stop the ladder
+    measuring."""
     try:
-        value = int((cfg or {}).get("belt_every", 2) or 2)
+        value = int((cfg or {}).get("belt_every", DEFAULT_BELT_EVERY) or DEFAULT_BELT_EVERY)
     except (TypeError, ValueError):
-        return 2
+        return DEFAULT_BELT_EVERY
     return max(2, min(value, 6))
 
 
@@ -5812,6 +5824,8 @@ __all__ = [
     "LINEAL_RULE",
     "FLOOR_RULE",
     "DEFAULT_ITERATIONS_PER_ROUND",
+    "DEFAULT_BELT_EVERY",
+    "PRIOR_BELT_EVERY",
     "PRIOR_ITERATIONS_PER_ROUND",
     "defender_reference",
     "PairedEvidence",

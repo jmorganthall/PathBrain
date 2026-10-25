@@ -1702,10 +1702,18 @@ LLM-based. See `README.md` for the product overview.
     matches, each round a (belt, challenger) pair in ABBA order — which put the same profile
     back to back at every round boundary and spent half of every session re-measuring the
     belt. The ring generalises it with two settings and no new statistics. `belt_every`
-    (default 2) is how often the belt's *reference* leg recurs: 2 is strict alternation
-    (`B C B D B C B D…` — every challenger leg has a belt leg on both sides, the strongest
-    shared-weather guarantee); 3 is `B C D B C D` — a third more challenger legs per hour, with
-    a challenger leg up to two legs from its nearest belt leg. `seats` (default 2) is how many
+    (default **3**, `duel.DEFAULT_BELT_EVERY`) is how often the belt's *reference* leg recurs:
+    3 is `B C D B C D` — a third more challenger legs per hour, with a challenger leg up to
+    two legs from its nearest belt leg; 2 is strict alternation (`B C B D B C B D…` — every
+    challenger leg has a belt leg on both sides, the strongest shared-weather guarantee). It
+    shipped at 2, and the review's throughput arithmetic showed why that could not work on a
+    default window: a cycle under strict alternation is one belt leg plus one challenger leg,
+    so each of two seats got a round every other cycle — about seven rounds a seat in a
+    two-hour window against a `min_pairs` of eight, so no match reached a verdict inside one
+    night and carried matches were the norm. At 3 a cycle gives every seat a round
+    (`rounds_affordable`: 13 rounds a seat on the same window where 2 gave 10). A fourth
+    `config_store` upgrade (`duel-belt-every-three`) moves an install still on the old default;
+    any other stored cadence is a choice and keeps. `seats` (default 2) is how many
     challengers fight at once, drawn by the same `next_challenger` ordering: they share the
     belt legs and the weather window, and a seat refills the moment its match decides, so
     time flows to the undecided. Each challenger leg yields **one margin** = its Overall minus

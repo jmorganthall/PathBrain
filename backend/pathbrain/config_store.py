@@ -533,13 +533,17 @@ DEFAULT_CONFIG: dict = {
         # more, noisier ones, so the default is 5 (`duel.DEFAULT_ITERATIONS_PER_ROUND`).
         "iterations_per_round": 5,
         # The ring's shape (see `duel._run_ring`). `belt_every`: the belt's reference leg
-        # recurs every N legs — 2 is strict alternation (B C B D…, every challenger leg has a
-        # belt leg on both sides, the strongest shared-weather guarantee); 3 is B C D B C D,
-        # a third more challenger legs per hour at up to two legs' distance from the belt.
-        # `weather_by_distance` prices that trade from this link's own history. `seats`:
-        # challengers in the ring at once, sharing the same belt legs and weather window;
-        # a seat refills the moment its match decides.
-        "belt_every": 2,
+        # recurs every N legs — 3 (the default, `duel.DEFAULT_BELT_EVERY`) is B C D B C D,
+        # a third more challenger legs per hour at up to two legs' distance from the belt;
+        # 2 is strict alternation (B C B D…, every challenger leg has a belt leg on both
+        # sides, the strongest shared-weather guarantee). It was 2, and at 2 a default
+        # two-hour window gave each seat about seven rounds against a `min_pairs` of eight,
+        # so no match could reach a verdict inside one night and carried matches were the
+        # norm. `weather_by_distance` prices the trade from this link's own history; an
+        # install still on 2 is moved by `upgrade_config`, one that chose it keeps it.
+        # `seats`: challengers in the ring at once, sharing the same belt legs and weather
+        # window; a seat refills the moment its match decides.
+        "belt_every": 3,
         "seats": 2,
         # Run duel legs with the browser plugin alone. Every crown metric is browser-derived
         # and the weather stamp still has the browser's own nav_dns/nav_tcp/nav_tls/
@@ -710,12 +714,29 @@ def _upgrade_fused_field_order(stored: dict) -> dict | None:
     return None
 
 
+def _upgrade_belt_every_three(stored: dict) -> dict | None:
+    """The belt leg used to recur every second leg (strict alternation), which gave each
+    seat about seven rounds in a default two-hour window against a ``min_pairs`` of eight
+    — no verdict inside one night. The shipped default is now every third leg, a third
+    more challenger legs per hour. An install still on the old default is moved; one on
+    any other cadence chose it and keeps it. (An install that chose 2 while 2 was the
+    default is indistinguishable from an untouched one, the same accepted trade as every
+    upgrade here; the page's own field puts it back in one edit.)"""
+    from .duel import DEFAULT_BELT_EVERY, PRIOR_BELT_EVERY
+
+    d = stored.get("duel") or {}
+    if d.get("belt_every") == PRIOR_BELT_EVERY:
+        return {"duel": {"belt_every": DEFAULT_BELT_EVERY}}
+    return None
+
+
 CONFIG_UPGRADES: list[tuple[str, Callable[[dict], dict | None]]] = [
     ("duel-rounds-of-five", _upgrade_rounds_of_five),
     ("duel-balanced-stopping-rule", _upgrade_balanced_stopping_rule),
     ("duel-winner-by-rating", _upgrade_winner_by_rating),
     ("crown-policy-fused", _upgrade_fused_crowning_policy),
     ("field-order-fused", _upgrade_fused_field_order),
+    ("duel-belt-every-three", _upgrade_belt_every_three),
 ]
 
 
