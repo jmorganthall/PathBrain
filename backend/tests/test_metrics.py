@@ -99,6 +99,38 @@ def test_rank_eligibility_gate():
     assert metrics.rank_eligible("ttfb") is False          # probe instrument (weather)
     assert metrics.rank_eligible("fcp") is False           # opaque milestone
     assert metrics.rank_eligible("cls") is False           # client health-check
+    # The crown's hard rule is narrower than the automatic gate: only W and C are forbidden.
+    assert metrics.crown_ledger_violations(["fcp", "lcp", "network_stall_all"]) == {}
+    assert metrics.crown_ledger_violations(["ttfb", "cls", "nav_response"]) == {"ttfb": "W", "cls": "C"}
+    assert metrics.crown_ledger_violations(["not_a_metric"]) == {}
+    assert metrics.CROWN_FORBIDDEN_ROLES == {metrics.ROLE_WEATHER, metrics.ROLE_CLIENT}
+
+
+def test_the_ledger_lets_the_crown_name_an_opaque_milestone_explicitly():
+    """FCP and LCP are role O — never picked up by an *automatic* selection — and the crown
+    names them on purpose, because they are what a person feels. Both statements must hold
+    at once: the gate says no, the crown's own rule says yes."""
+    for k in ("fcp", "lcp"):
+        assert metrics.rank_eligible(k) is False
+        assert metrics.crown_ledger_violations([k]) == {}
+
+
+def test_crown_legs_are_never_weather_or_client():
+    """Walk every registered methodology: the only crown ever to name a W/C metric is v5
+    (`inp`, frozen history — a published version is never rewritten), and the current
+    version is clean. A new version whose crown graded the probe sockets' weather or the
+    measuring machine's CPU fails here AND at import (`methodology.KNOWN_CROWN_LEDGER_VIOLATIONS`)."""
+    from pathbrain import methodology
+
+    found = {}
+    for ver, spec in methodology.METHODOLOGY_REGISTRY.items():
+        bad = metrics.crown_ledger_violations((spec.get("overall") or {}).get("metrics") or [])
+        if bad:
+            found[ver] = bad
+    assert found == {"speed-smoothness-v5": {"inp": "C"}}
+    assert found == methodology.KNOWN_CROWN_LEDGER_VIOLATIONS
+    current = methodology.METHODOLOGY_REGISTRY[methodology.CURRENT_METHODOLOGY]
+    assert metrics.crown_ledger_violations(current["overall"]["metrics"]) == {}
 
 
 def test_completion_axis_is_exactly_the_weather_bucket():

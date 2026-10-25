@@ -748,6 +748,26 @@ for _ver, _spec in METHODOLOGY_REGISTRY.items():
         f"{sorted(_unscored)}"
     )
 
+# Invariant: the crown never names a weather instrument or a client health-check
+# (`metrics.CROWN_FORBIDDEN_ROLES`). The ledger said "O: never ranked" while every crown
+# since v10 named FCP and LCP, and nothing checked either claim; the enforceable half is
+# that a crown must never grade the probe sockets' weather or the measuring machine's CPU.
+# History is frozen: v5's crown named `inp` (a client-CPU metric) and that version stays
+# exactly as published, so it is listed here as the one known violation rather than
+# rewritten — and the CURRENT version must be clean. A fork (`+sites-…`, a re-anchor)
+# copies its base's `overall`, so asserting the registry covers them.
+KNOWN_CROWN_LEDGER_VIOLATIONS: dict[str, dict[str, str]] = {
+    "speed-smoothness-v5": {"inp": metrics_mod.ROLE_CLIENT},
+}
+for _ver, _spec in METHODOLOGY_REGISTRY.items():
+    _bad = metrics_mod.crown_ledger_violations((_spec.get("overall") or {}).get("metrics") or [])
+    assert _bad == KNOWN_CROWN_LEDGER_VIOLATIONS.get(_ver, {}), (
+        f"methodology {_ver}: the crown names a weather/client metric the ledger forbids: {_bad}"
+    )
+assert not metrics_mod.crown_ledger_violations(
+    (METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY].get("overall") or {}).get("metrics") or []
+), "the current methodology's crown must be ledger-clean"
+
 
 def build_definition_from_spec(spec: dict) -> dict:
     """Build a full frozen definition from a registry spec + the metric catalog."""

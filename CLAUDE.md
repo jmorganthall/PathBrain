@@ -132,8 +132,17 @@ LLM-based. See `README.md` for the product overview.
     opaque milestone sum (fcp/lcp/load_event — span multiple buckets). `RANKABLE_ROLES = {N, S}`
     is the coarse gate (`rank_eligible`/`ineligible_scored`) that keeps weather + opaque metrics
     out of *automatic* headline/axis ranking; the crown may still explicitly name an `O` metric
-    (v10 corners over FCP/LCP by design). Completeness is asserted at import — adding a metric
-    forces a role choice.
+    (v10 corners over FCP/LCP by design). **The crown's hard rule is executable**
+    (`CROWN_FORBIDDEN_ROLES = {W, C}`, `crown_ledger_violations`): a weather instrument or a
+    client health-check can never be a crown leg — a probe socket's TTFB measures the probe's
+    own connection and render/INP/CLS are the measuring machine's CPU, so a crown over either
+    grades the weather or the host, not the shaper. The ledger used to say "O: never ranked"
+    while every crown since v10 named FCP and LCP and nothing checked either claim (the
+    review's M8); the enforceable half is W/C never, O explicitly, N/S freely, and
+    `methodology.py` asserts it at import over every registered version
+    (`KNOWN_CROWN_LEDGER_VIOLATIONS` lists v5's `inp` as frozen history; the current version
+    must be clean — `test_crown_legs_are_never_weather_or_client`). Completeness is asserted at
+    import — adding a metric forces a role choice.
   - `scoring/engine.py` — the generic score **primitive**: `compute_score` takes a
     metric set + weights + thresholds and returns a 0–100 weighted average on a
     perception-calibrated log curve, redistributing missing-metric weight. Axis-
