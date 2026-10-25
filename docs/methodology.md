@@ -114,10 +114,11 @@ score or re-derive one, with no reference to current code:
 > (time-to-last + interactive) — plus secondary **Stability** (CLS) and **Completion**
 > (infra). Each metric maps to exactly one axis, so a new headline framing is just a
 > re-partition published as a new version. The published-now version is
-> **`speed-smoothness-v16`**, which keeps that partition minus the metrics a *probe*
-> plugin supplied (the HTTP-socket TTFB and the whole Completion axis) — because runs now
-> measure only what the methodology requires, and a rubric still scoring the probes would
-> grade every new run *partial* forever.
+> **`speed-smoothness-v17`**: v16's partition (which dropped the metrics a *probe* plugin
+> supplied — the HTTP-socket TTFB and the whole Completion axis — because runs now measure
+> only what the methodology requires), with a real **shape** leg in the crown — FCP 1 ·
+> LCP 1 · cadence_cov 1 — in place of the duration-shaped `network_stall_all`, which stays
+> scored in Smoothness re-anchored at 10 ms so it sits on the log curve.
 >
 > **The Overall outgrew this note.** It says the Overall is a derived presentation
 > roll-up, "deliberately not a methodology axis, never persisted". That stopped being true
@@ -133,7 +134,8 @@ score or re-derive one, with no reference to current code:
 > Its shape has moved twice since, both as ordinary published versions. Through **v14** it
 > was a **corner** — closeness to the perfect 100-corner, an *intersection* where one weak
 > metric can't be averaged away. **v15** made it a **weighted average** of the same
-> perception-calibrated subscores (FCP 1 · LCP 1 · network_stall_all 0.5), because on a fast
+> perception-calibrated subscores (FCP 1 · LCP 1 · network_stall_all 0.5; **v17** swaps the
+> stall leg for cadence_cov at weight 1), because on a fast
 > link the field-percentile corner carried a ±17-point standard error and the top ~66
 > profiles were a tie no amount of measuring could break — rank normalization was
 > *manufacturing* noise absent from the raw milliseconds. Both primitives live in

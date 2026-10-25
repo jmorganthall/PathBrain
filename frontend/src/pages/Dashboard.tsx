@@ -517,7 +517,7 @@ export default function Dashboard() {
 
   // What the Overall is ACTUALLY computed from, read off the methodology on every request.
   // The axes are a different decomposition and have not been the Overall's inputs since
-  // v5 — under v16 they are dominated by metrics (render, load_event, cadence, evenness,
+  // v5 — under v16/v17 they are dominated by metrics (render, load_event, evenness,
   // byte earliness, CLS) the Overall never reads, so a hero card built on them shows a
   // rubric that stopped being current many versions ago.
   const overallLegs = rolling?.overall_metrics ?? crownMetrics;

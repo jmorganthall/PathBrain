@@ -53,7 +53,7 @@ settings are actually best?* — into an empirical, measured answer.
 > **Philosophy:** Empirical. Never assume. Never rely on folklore. Every
 > optimization is tested, measured, scored, and historically tracked.
 
-### The score: three perceptual axes (methodology `speed-smoothness-v16`)
+### The score: three perceptual axes (methodology `speed-smoothness-v17`)
 
 PathBrain scores the **three temporal phases of a page load** as independent
 0–100 axes, rather than blending them into one number. (The original single
@@ -64,7 +64,7 @@ normalized to a 0–100 subscore against configurable *best/worst* thresholds
 | Axis | Answers | Metrics (weights) |
 | --- | --- | --- |
 | **Responsiveness** | How fast does the *first* content appear? | byte-earliness (30) · FCP (25, required) |
-| **Smoothness** | How steadily does it fill in (minimized wait)? | longest-stall (40, required) · network-stall-all (30, required) · cadence (15) · evenness (15) |
+| **Smoothness** | How steadily does it fill in (minimized wait)? | longest-stall (40, required) · network-stall-all (30, required) · cadence (15, required) · evenness (15) |
 | **Speed** | How soon is it *fully visible + interaction-ready*? | LCP (40, required) · INP (40) · render (20) · load-event (20) |
 
 Plus a **secondary** axis: **Stability** (layout shift / CLS) — diagnostic only,
@@ -82,15 +82,14 @@ covariates — from the browser's own `nav_dns`/`nav_tcp`/`nav_tls`/`nav_request
 **Overall** is a single higher-is-better roll-up — and since `speed-smoothness-v5`
 it's a **first-class, versioned, persisted** quantity, not just a presentation
 measure. Since **v15** it's a **weighted average** of the perception-calibrated
-subscores over a small, hand-picked **crown metric set**: **FCP (1) · LCP (1) ·
-network-stall-all (0.5)** — shows initial progress fastest × reaches "main content
-visible" fastest × spends least time stalled on the network. FCP and LCP are *native*
-browser paint timestamps; `network_stall_all` is the summed duration of every
-network-attributed inter-resource gap with **no minimum-gap floor**, so it counts the
-sub-perceptible RTT/handoff gaps a page load on fiber is actually made of (render-covered
-time excluded via LoAF overlap, so it isolates the shapeable share). It is deliberately
-below human perception: the objective is to *crown the best profile* by measured network
-dead-air, not to gate on human-noticeable hitches.
+subscores over a small, hand-picked **crown metric set**; since **v17** that set is **FCP (1)
+· LCP (1) · cadence (1)** — shows initial progress fastest × reaches "main content visible"
+fastest × fills in most *evenly*. FCP and LCP are *native* browser paint timestamps;
+`cadence_cov` is the coefficient of variation of the gaps between resource completions —
+floor-free and scale-free, so a steady fill and a stall-then-lurch over the same span read
+differently, which the previous leg (`network_stall_all`, the load's duration minus its
+render time) could not tell apart. The stall leg stays scored in Smoothness, re-anchored at
+10 ms so it sits on the log curve.
 
 Why weighted and not the corner it used to be: on a fast link ~149 profiles packed into
 a few milliseconds, and the field-percentile corner carried a **±17-point standard error**
@@ -126,8 +125,9 @@ Plugins are **pure sensors** that store raw observations; all interpretation
 the axis scores themselves) lives in a separate, **versioned methodology** layer —
 so a new metric, a re-weight, or an axis re-partition is published as a new
 methodology version and re-graded over history straight from raw, without
-re-collecting (`POST /api/score/regrade`). `speed-smoothness-v16` is the
-published-now version. The **sites and the browser client are part of the methodology
+re-collecting (`POST /api/score/regrade`). `speed-smoothness-v17` is the
+published-now version, and the Methodology page's **Crown agreement** card prices the
+field under any two versions to say what a publish changed in the ranking. The **sites and the browser client are part of the methodology
 too** — a site hands an automated 800×600 headless shell a different page than it hands
 a person, so changing either is a publish that forks a version and quarantines runs
 measured against the old collection. A too-lenient threshold can be **re-anchored from
@@ -191,8 +191,8 @@ ranking is its default, with the two corners kept selectable for comparison.
 - 🧮 **Three perceptual axes** — perception-calibrated **log curve** (Weber–Fechner):
   **Responsiveness** (time-to-first), **Smoothness** (the steady fill, led by byte-
   arrival metrics — longest-stall/network-stall/cadence/evenness), and **Speed** (time-to-
-  last + interactive), plus a first-class **Overall** (v16: a weighted average over
-  FCP · LCP · network-stall-all). Raw-only collection + a **versioned methodology**:
+  last + interactive), plus a first-class **Overall** (v17: a weighted average over
+  FCP · LCP · cadence). Raw-only collection + a **versioned methodology**:
   `POST /api/score/regrade` re-scores history from raw under any published methodology —
   without re-collecting. The **sites and the browser client** are part of that version too,
   so changing either is a publish that quarantines runs measured against the old collection
@@ -231,7 +231,7 @@ ranking is its default, with the two corners kept selectable for comparison.
   (A browser tab can't read google.com's paint timing, so this is a different instrument from
   the Chromium test — `/away`, `/api/portable/*`.)
 - ⏱️ **Measure only what the methodology requires** — the crown is FCP × LCP ×
-  network_stall_all, all browser-derived, so by default a run skips the five probe plugins
+  cadence, all browser-derived, so by default a run skips the five probe plugins
   (about half of its wall clock) and measures the crown on every iteration; `measurement.
   methodology_only: false` restores the full suite. Methodology v16 drops the probe metrics
   from the rubric so old and new runs grade on one definition. An **Idle-wait audit** on the

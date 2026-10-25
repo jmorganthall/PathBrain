@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import idle_audit, instrument_drift, instrument_health, jobs, reachability, warm_agreement
+from .. import crown_agreement, idle_audit, instrument_drift, instrument_health, jobs, reachability, warm_agreement
 from .. import publish_followthrough
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
@@ -161,6 +161,27 @@ def warm_crown_agreement(min_runs: int = warm_agreement.MIN_RUNS, session: Sessi
     correlation, the #1 on each, and the crown's rank on each. Read-only; the decision it
     informs (adopting warm legs in a version) is a publish, made elsewhere."""
     return warm_agreement.warm_agreement(session, get_config(session), min_runs=min_runs)
+
+
+@router.get("/methodologies/crown-agreement")
+def crown_version_agreement(
+    a: str | None = None,
+    b: str | None = None,
+    min_runs: int = crown_agreement.MIN_RUNS,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Do two methodology versions rank the profiles alike? Every profile with ``min_runs``+
+    runs carrying every leg of both crowns is priced under version ``a`` and version ``b``
+    (each with its own thresholds and weights) from the same cold medians, and the audit
+    reports the rank correlation, the #1 under each, the pooled crown's rank under each and
+    the biggest movers. ``b`` defaults to the current version and ``a`` to the registry
+    version before it — "what did the last publish change?"; either may name any registry
+    or stored version, so a version written but not yet current can be audited before the
+    flip. Read-only; the decision it informs is a publish or a pin, made elsewhere."""
+    try:
+        return crown_agreement.crown_agreement(session, get_config(session), a=a, b=b, min_runs=min_runs)
+    except crown_agreement.UnknownVersion as exc:
+        raise HTTPException(status_code=404, detail=f"No methodology '{exc.args[0]}'") from exc
 
 
 @router.get("/methodologies/idle-audit")

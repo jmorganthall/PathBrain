@@ -62,10 +62,10 @@ def _profile(cold, warm, n=5):
 def test_agreement_when_the_two_instruments_rank_the_field_alike():
     d = _definition()
     sources = warm_agreement.crown_sources(d)
-    assert set(sources) == {"fcp", "lcp", "network_stall_all"}
-    fast = {"fcp": 250.0, "lcp": 300.0, "network_stall_all": 40.0}
-    mid = {"fcp": 400.0, "lcp": 500.0, "network_stall_all": 80.0}
-    slow = {"fcp": 900.0, "lcp": 1200.0, "network_stall_all": 200.0}
+    assert set(sources) == {"fcp", "lcp", "cadence_cov"}
+    fast = {"fcp": 250.0, "lcp": 300.0, "cadence_cov": 0.3}
+    mid = {"fcp": 400.0, "lcp": 500.0, "cadence_cov": 0.6}
+    slow = {"fcp": 900.0, "lcp": 1200.0, "cadence_cov": 1.2}
     warm = lambda c: {k: v * 0.6 for k, v in c.items()}  # noqa: E731 — warm is faster everywhere, same order
     profiles = {"a": _profile(fast, warm(fast)), "b": _profile(mid, warm(mid)), "c": _profile(slow, warm(slow)), "thin": _profile(fast, warm(fast), n=2)}
     out = warm_agreement.assess(profiles, definition=d, sources=sources, min_runs=5, crown_fp="a", names={"a": "Alpha"})
@@ -79,9 +79,9 @@ def test_agreement_when_the_two_instruments_rank_the_field_alike():
 def test_disagreement_names_both_number_ones_and_the_crowns_two_ranks():
     d = _definition()
     sources = warm_agreement.crown_sources(d)
-    a_cold, a_warm = {"fcp": 250.0, "lcp": 300.0, "network_stall_all": 40.0}, {"fcp": 240.0, "lcp": 290.0, "network_stall_all": 120.0}
-    b_cold, b_warm = {"fcp": 400.0, "lcp": 500.0, "network_stall_all": 80.0}, {"fcp": 140.0, "lcp": 160.0, "network_stall_all": 20.0}
-    c_cold, c_warm = {"fcp": 900.0, "lcp": 1200.0, "network_stall_all": 200.0}, {"fcp": 600.0, "lcp": 800.0, "network_stall_all": 150.0}
+    a_cold, a_warm = {"fcp": 250.0, "lcp": 300.0, "cadence_cov": 0.3}, {"fcp": 240.0, "lcp": 290.0, "cadence_cov": 1.0}
+    b_cold, b_warm = {"fcp": 400.0, "lcp": 500.0, "cadence_cov": 0.6}, {"fcp": 140.0, "lcp": 160.0, "cadence_cov": 0.25}
+    c_cold, c_warm = {"fcp": 900.0, "lcp": 1200.0, "cadence_cov": 1.2}, {"fcp": 600.0, "lcp": 800.0, "cadence_cov": 0.9}
     profiles = {"a": _profile(a_cold, a_warm), "b": _profile(b_cold, b_warm), "c": _profile(c_cold, c_warm)}
     out = warm_agreement.assess(profiles, definition=d, sources=sources, min_runs=5, crown_fp="a", names={"a": "Alpha", "b": "Bravo"})
     assert out["verdict"] == "disagree" and out["top_cold"]["name"] == "Alpha" and out["top_warm"]["name"] == "Bravo"
@@ -103,6 +103,7 @@ def test_load_profiles_reads_paired_readings_through_json_paths_and_the_endpoint
                 s.add(run)
                 s.flush()
                 metrics = {"fcp_ms": cold[0] + i, "lcp_ms": cold[1] + i, "network_stall_all_ms": cold[2],
+                           "cadence_cov": 0.4, "warm_cadence_cov": 0.3,
                            "warm_fcp_ms": warm[0] + i, "warm_lcp_ms": warm[1] + i, "warm_network_stall_all_ms": warm[2]}
                 if i == 5:
                     metrics.pop("warm_lcp_ms")  # a run missing one warm leg is not a pair
@@ -111,7 +112,7 @@ def test_load_profiles_reads_paired_readings_through_json_paths_and_the_endpoint
         run = Run(status=RunStatus.COMPLETE, created_at=now.replace(tzinfo=None), settings_fingerprint="wa-fast", iterations=1, iterations_completed=1)
         s.add(run)
         s.flush()
-        s.add(BenchmarkResult(run_id=run.id, plugin="browser", success=True, metrics={"fcp_ms": 250.0, "lcp_ms": 300.0, "network_stall_all_ms": 40.0}, details={}, raw={}))
+        s.add(BenchmarkResult(run_id=run.id, plugin="browser", success=True, metrics={"fcp_ms": 250.0, "lcp_ms": 300.0, "network_stall_all_ms": 40.0, "cadence_cov": 0.4}, details={}, raw={}))
     with session_scope() as s:
         profiles = warm_agreement.load_profiles(s, sources)
         assert len(profiles["wa-fast"]) == 5 and len(profiles["wa-slow"]) == 5

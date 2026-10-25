@@ -116,7 +116,7 @@ def measurement_scope(config: dict, definition: dict, plugin_names: list[str]) -
 
     ``methodology_only`` (the default): a run measures **only the plugins whose metrics the
     methodology requires** (``methodology.required_plugins`` — the browser, under every
-    version since the crown became FCP × LCP × network_stall_all) plus the ``always`` list
+    version since the crown became browser-only — FCP × LCP × a byte-arrival shape leg) plus the ``always`` list
     (the ``portable`` plugin, the Away test's home reference, which is not a methodology
     metric but is wanted on every run). Everything else is skipped — the five probes, about
     half of every run's wall clock, none of it read by the crown. A required plugin's own

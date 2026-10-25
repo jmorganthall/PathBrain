@@ -48,7 +48,7 @@ SPEED, SMOOTHNESS, STABILITY = "speed", "smoothness", "stability"
 RESPONSIVENESS = "responsiveness"
 
 # The version new runs are scored under (the "published now" methodology).
-CURRENT_METHODOLOGY = "speed-smoothness-v16"
+CURRENT_METHODOLOGY = "speed-smoothness-v17"
 
 
 def corner_score(values: list[float]) -> float | None:
@@ -313,6 +313,27 @@ def _ss_v16_assignments() -> dict:
     a = _ss_v13_assignments()
     for key in ("ttfb", "dns", "tcp", "tls", "jitter", "packet_loss"):
         del a[key]
+    return a
+
+
+def _ss_v17_assignments() -> dict:
+    """v16's rubric with one threshold moved: ``network_stall_all`` gets a **positive
+    anchor** (``best`` 0 → 10 ms), and stays **required**.
+
+    `scoring.engine._normalize` puts a metric on the perception-calibrated log curve only
+    when ``best > 0``; at ``best = 0`` it silently falls back to a linear ramp, so the one
+    "smoothness" leg v13–v16 crowned on was the one leg not perception-calibrated at all
+    (the review's M3). 10 ms is the scale ``longest_stall`` anchors at (25 ms) and a round
+    trip on this link — below it a stall is not a stall. It keeps its Smoothness weight.
+
+    ``required`` is set explicitly because the crown no longer names it: a run with no LoAF
+    provenance cannot measure it (derive-v14 omits it rather than fabricating 0) and has
+    been quarantined as *incomparable* since; without the flag those runs would silently
+    become comparable under v17 and enter the crown ranking — a history change nobody
+    asked for. CLS keeps ``best = 0`` deliberately: a ratio with a true zero, not a time.
+    """
+    a = _ss_v16_assignments()
+    a["network_stall_all"] = {**a["network_stall_all"], "best": 10.0, "required": True}
     return a
 
 
@@ -732,6 +753,31 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "weights": {"fcp": 1.0, "lcp": 1.0, "network_stall_all": 0.5},
         },
     },
+    "speed-smoothness-v17": {
+        "derivation_version": DERIVATION_VERSION,  # derive-v15 — rubric change only, re-grade not re-derive
+        "notes": (
+            "A real SHAPE leg in the crown. v13-v16's smoothness leg network_stall_all is the load's "
+            "duration minus its render time: on synthetic series an even 100 ms cadence and an 850 ms "
+            "void-then-dump over the same span score identically, so the optimizer could not see "
+            "stall-then-lurch, and its best=0 threshold put it on a linear ramp rather than the "
+            "perceptual log curve. The crown is now FCP 1 · LCP 1 · cadence_cov 1 (weighted): the "
+            "coefficient of variation of the gaps between resource completions, floor-free and "
+            "scale-free, already derived for every run and already scored in Smoothness (0.2/2.5, "
+            "on the log curve). Same axes, metrics and thresholds as v16 otherwise, except "
+            "network_stall_all's best moves 0 → 10 ms (a positive log anchor; it stays scored in "
+            "Smoothness and stays required, so the pre-LoAF runs quarantined since derive-v14 stay "
+            "quarantined). No derive change: history re-grades from cached scalars. The crown-"
+            "agreement audit (Methodology page) reports what the publish changed in the ranking."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v17_assignments(),
+        "overall": {
+            "method": "weighted",
+            "metrics": ["fcp", "lcp", "cadence_cov"],
+            "required": ["fcp", "lcp", "cadence_cov"],
+            "weights": {"fcp": 1.0, "lcp": 1.0, "cadence_cov": 1.0},
+        },
+    },
 }
 
 
@@ -767,6 +813,30 @@ for _ver, _spec in METHODOLOGY_REGISTRY.items():
 assert not metrics_mod.crown_ledger_violations(
     (METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY].get("overall") or {}).get("metrics") or []
 ), "the current methodology's crown must be ledger-clean"
+
+
+def linear_ramp_legs(spec: dict) -> dict[str, float]:
+    """``{crown key: best}`` for every crown leg whose ``best`` threshold is not positive —
+    the legs `scoring.engine._normalize` scores on a LINEAR ramp instead of the perceptual
+    log curve (it takes the log branch only when ``best > 0``). Empty == every leg is
+    perception-calibrated. Asserted for the current version at import."""
+    assignments = spec.get("assignments") or {}
+    out: dict[str, float] = {}
+    for key in (spec.get("overall") or {}).get("metrics") or []:
+        best = (assignments.get(key) or {}).get("best")
+        if best is None or float(best) <= 0:
+            out[key] = float(best) if best is not None else 0.0
+    return out
+
+
+# Invariant: every crown leg of the CURRENT version sits on the perceptual log curve. A
+# ``best`` of 0 is a silent fall-back to a linear ramp (`_normalize`), which is how the
+# v13–v16 smoothness leg came to be the one crown leg not calibrated to perception at all
+# (the review's M3/R5). History keeps its ramps — a published version is never rewritten.
+assert not linear_ramp_legs(METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]), (
+    "the current methodology's crown has a leg on a linear ramp (best <= 0): "
+    f"{linear_ramp_legs(METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY])}"
+)
 
 
 def build_definition_from_spec(spec: dict) -> dict:

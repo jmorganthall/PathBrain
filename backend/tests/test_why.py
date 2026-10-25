@@ -27,6 +27,11 @@ A_FP, B_FP = "whyprofA001", "whyprofB001"
 SITE1, SITE2 = "https://one.example/", "https://two.example/"
 
 _RES = [{"responseEnd": t} for t in (180.0, 210.0, 300.0, 560.0)]
+# Two byte-arrival shapes over the same span, for the crown's cadence leg: an even fill and
+# a lurch (three resources land at once, then nothing until the last). Same first and last
+# completion, so only the SHAPE differs — what v17's leg exists to see.
+_RES_EVEN = [{"responseEnd": t} for t in (180.0, 300.0, 420.0, 540.0)]
+_RES_LURCH = [{"responseEnd": t} for t in (180.0, 185.0, 190.0, 540.0)]
 _LOAF = {"source": "longtask", "entries": [{"startTime": 300.0, "duration": 200.0}]}
 
 
@@ -57,7 +62,7 @@ def _thresholds(definition: dict) -> dict[str, tuple[float, float]]:
 
 def _seed(
     fp: str, n: int, *, request_ms: float, render_ms: float, lcp: dict[str, float], stall: float,
-    version: str, definition: dict, settings=None,
+    version: str, definition: dict, settings=None, cadence: float = 0.5, resources=None,
 ) -> list[int]:
     """`n` comparable runs for one profile. Page loads on SITE1/SITE2 with the given per-site
     LCP; a ±1 ms alternation per run gives every series a small, finite IQR so the noise bar
@@ -75,10 +80,11 @@ def _seed(
                 urls[url] = {
                     "nav": _nav(req, render_ms, fcp),
                     "paint": {"fcp": fcp, "lcp": lcp[url] + wobble},
-                    "resources": _RES, "loaf": _LOAF,
+                    "resources": resources if resources is not None else _RES, "loaf": _LOAF,
                 }
             raw = {"iterations": [{"urls": urls}, {"urls": urls}]}
-            raw_values = {"fcp": fcp, "lcp": median(lcp.values()) + wobble, "network_stall_all": stall + wobble}
+            raw_values = {"fcp": fcp, "lcp": median(lcp.values()) + wobble, "network_stall_all": stall + wobble,
+                          "cadence_cov": cadence + wobble * 0.001}
             subscores = {m: _normalize(raw_values[m], *thr[m]) for m in crown}
             run = Run(
                 status=RunStatus.COMPLETE,
@@ -95,6 +101,7 @@ def _seed(
                 run_id=run.id, plugin="browser", success=True, raw=raw,
                 metrics={
                     "fcp_ms": fcp, "lcp_ms": raw_values["lcp"], "network_stall_all_ms": raw_values["network_stall_all"],
+                    "cadence_cov": raw_values["cadence_cov"],
                     "nav_dns_ms": 3.0, "nav_tcp_ms": 12.0, "nav_tls_ms": 20.0,
                     "nav_request_ms": req, "nav_response_ms": 135.0, "nav_render_ms": render_ms,
                 },
@@ -116,12 +123,13 @@ def _clear(ids: list[int], fps: list[str], version: str) -> None:
 @pytest.fixture()
 def two_profiles():
     """A beats B: 50 ms less request wait (so FCP and LCP both ~50 ms sooner), 40 ms less
-    network stall, and on SITE1 a further 100 ms LCP edge; render identical."""
+    network stall, a steadier cadence (CoV 0.4 vs 0.6), and on SITE1 a further 100 ms LCP
+    edge; render identical."""
     version, definition = _definition()
     ids = _seed(A_FP, 6, request_ms=100.0, render_ms=40.0, lcp={SITE1: 400.0, SITE2: 500.0}, stall=60.0,
-                version=version, definition=definition)
+                version=version, definition=definition, cadence=0.4, resources=_RES_EVEN)
     ids += _seed(B_FP, 6, request_ms=150.0, render_ms=40.0, lcp={SITE1: 550.0, SITE2: 550.0}, stall=100.0,
-                 version=version, definition=definition)
+                 version=version, definition=definition, cadence=0.6, resources=_RES_LURCH)
     try:
         yield version, definition
     finally:
@@ -166,9 +174,9 @@ def test_deltas_are_signed_from_this_profiles_side_with_a_noise_bar(two_profiles
     assert phases["nav_request"]["se"] is not None and phases["nav_request"]["se"] < 5
     # Render is the machine, identical on both sides: no delta, not clear.
     assert phases["nav_render"]["delta"] == 0.0 and phases["nav_render"]["clear"] is False
-    # Raw crown values ride the legs too, in ms, signed the same way.
+    # Raw crown values ride the legs too, in their own units, signed the same way.
     legs = {l["metric"]: l for l in out["legs"]}
-    assert legs["network_stall_all"]["delta_raw"] == pytest.approx(-40.0, abs=0.01)
+    assert legs["cadence_cov"]["delta_raw"] == pytest.approx(-0.2, abs=0.01)
     assert legs["fcp"]["delta_raw"] == pytest.approx(-50.0, abs=0.01)
     # Read from B's side the same numbers flip sign.
     flipped = _explain(B_FP, A_FP)
@@ -195,15 +203,17 @@ def test_sites_are_rederived_from_raw_and_priced_on_the_methodology_thresholds(t
     total_w = sum(weights.get(m, 1.0) for m in crown)
     expected = weights["lcp"] * (_normalize(400.0, *thr["lcp"]) - _normalize(550.0, *thr["lcp"])) / total_w
     assert lcp1["points"] == pytest.approx(expected, abs=0.011)
-    # Every leg is priced from its own re-derived medians on that page, by the same rule.
-    stall1 = next(l for l in sites[SITE1]["legs"] if l["metric"] == "network_stall_all")
-    assert stall1["a"] is not None and stall1["b"] is not None
-    expected_stall = (
-        weights["network_stall_all"]
-        * (_normalize(stall1["a"], *thr["network_stall_all"]) - _normalize(stall1["b"], *thr["network_stall_all"]))
+    # Every leg is priced from its own re-derived medians on that page, by the same rule —
+    # the shape leg too, re-derived from the page's own resource series (A's even fill
+    # against B's lurch: a per-site number read off raw, never the pooled one).
+    cov1 = next(l for l in sites[SITE1]["legs"] if l["metric"] == "cadence_cov")
+    assert cov1["a"] is not None and cov1["b"] is not None and cov1["a"] < cov1["b"]
+    expected_cov = (
+        weights["cadence_cov"]
+        * (_normalize(cov1["a"], *thr["cadence_cov"]) - _normalize(cov1["b"], *thr["cadence_cov"]))
         / total_w
     )
-    assert stall1["points"] == pytest.approx(expected_stall, abs=0.011)
+    assert cov1["points"] == pytest.approx(expected_cov, abs=0.011)
     # And the page-level phases name where the edge sits: request wait, not render.
     assert sites[SITE1]["top_phase"]["metric"] == "nav_request"
     assert sites[SITE1]["host"] == "one.example"

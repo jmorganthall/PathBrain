@@ -89,6 +89,7 @@ import type {
   ProfileSettingsView,
   ReachabilityAudit,
   WarmAgreement,
+  CrownAgreement,
   PortableDevice,
   PortableStandings,
   PortableLocationMap,
@@ -396,6 +397,14 @@ export const api = {
   idleAudit: (limit = 200) => request<IdleAudit>(`/methodologies/idle-audit?limit=${limit}`),
   instrumentDrift: (days = 14) => request<InstrumentDrift>(`/methodologies/instrument-drift?days=${days}`),
   warmAgreement: (minRuns = 5) => request<WarmAgreement>(`/methodologies/warm-agreement?min_runs=${minRuns}`),
+  // Two methodology versions, one field: did the publish change who wins? `a` defaults to the
+  // registry version before `b`, `b` to the current one.
+  crownAgreement: (a?: string, b?: string, minRuns = 5) => {
+    const q = new URLSearchParams({ min_runs: String(minRuns) });
+    if (a) q.set("a", a);
+    if (b) q.set("b", b);
+    return request<CrownAgreement>(`/methodologies/crown-agreement?${q.toString()}`);
+  },
   reachabilityAudit: () => request<ReachabilityAudit>(`/methodologies/reachability`),
   profileSettingsView: (fp: string) =>
     request<ProfileSettingsView>(`/settings/profiles/${encodeURIComponent(fp)}/settings`),

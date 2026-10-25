@@ -3,7 +3,7 @@
 After every page load the browser plugin waits for the network to go idle, capped at
 ``browser.networkidle_timeout_s`` (5 s by default). The smoothness instrument is bounded to
 ``loadEventEnd`` on purpose (``interpret.smoothness.resources_within_load``), so nothing that
-arrives during that wait can move longest-stall or network_stall_all. The only crown metric
+arrives during that wait can move longest-stall, network_stall_all or cadence_cov. The only crown metric
 the wait can still move is **LCP**, and only when a page paints its largest element *after*
 the load event. So whether the cap can be shortened is an empirical question about the
 sites being measured — and every stored browser raw already holds the answer: per load,
