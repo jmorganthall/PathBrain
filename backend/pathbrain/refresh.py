@@ -272,7 +272,10 @@ def _prior_field_under(session, version: str, min_iterations: int | None) -> dic
     need = int(min_iterations or 0)
     confident = [fp for fp in overall if iterations.get(fp, 0) >= need] or list(overall)
     best = max(confident, key=lambda fp: overall[fp])
-    return {"version": version, "overall": overall, "best_fingerprint": best}
+    # ``iterations`` rides along so a reader can tell a confident prior standing from a thin
+    # one without re-reading the rows (the re-grade order grades the confident ones first).
+    return {"version": version, "overall": overall, "best_fingerprint": best,
+            "iterations": {fp: iterations.get(fp, 0) for fp in overall}}
 
 
 def seed_field_from_prior(session, field: dict, min_iterations: int | None = None) -> dict:

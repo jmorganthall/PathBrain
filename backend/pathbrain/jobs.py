@@ -80,6 +80,21 @@ def _running_of_kind(kind: str) -> Job | None:
     return next((j for j in _jobs.values() if j.kind == kind and j.status == "running"), None)
 
 
+#: The jobs that rewrite the scored field in place. While one runs, every reader of the
+#: field sees a PARTIAL field — some profiles re-graded under the current version, the rest
+#: not yet — so anything that would act on a crown (the crown follower) holds until it ends.
+REGRADE_KINDS = ("regrade", "rescore", "rederive")
+
+
+def regrading() -> Job | None:
+    """The running re-grade / re-score / re-derive job, if any (see ``REGRADE_KINDS``)."""
+    with _lock:
+        return next(
+            (j for j in _jobs.values() if j.kind in REGRADE_KINDS and j.status == "running"),
+            None,
+        )
+
+
 def start(kind: str, label: str, fn: Callable[[Job], object], *, href: str | None = None) -> str:
     """Register a job and run ``fn(job)`` on a daemon thread.
 
@@ -124,7 +139,8 @@ def start(kind: str, label: str, fn: Callable[[Job], object], *, href: str | Non
 
 def _summarize(result: dict) -> str:
     """Compact one-line summary of a worker's returned dict (best-effort)."""
-    keys = ("scored", "partial", "incomparable", "rescored", "rederived", "skipped", "errors")
+    keys = ("scored", "partial", "incomparable", "rescored", "rederived", "skipped", "unscorable",
+            "errors")
     parts = [f"{k} {result[k]}" for k in keys if isinstance(result.get(k), int)]
     return " · ".join(parts) if parts else "done"
 
