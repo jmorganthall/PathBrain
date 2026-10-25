@@ -2150,9 +2150,9 @@ export interface DuelConfig {
   crown_rules: string[];
   /** Benchmark iterations per leg of a round — divides the round's noise by sqrt(k). */
   iterations_per_round?: number;
-  // The ring's shape. `belt_every`: the belt's reference leg recurs every N legs (2 =
-  // strict alternation B C B D…, every challenger leg flanked by belt legs; 3 = B C D B C D,
-  // a third more challenger legs per hour at up to two legs from the belt). `seats`: how
+  // The ring's shape. `belt_every`: the belt's reference leg recurs every N legs (3, the
+  // default = B C D B C D, a third more challenger legs per hour at up to two legs from the
+  // belt; 2 = strict alternation B C B D…, every challenger leg flanked by belt legs). `seats`: how
   // many challengers fight at once, sharing the belt legs and the weather window.
   // `browser_only`: duel legs run the browser plugin alone (the crown is browser-derived).
   belt_every?: number;
