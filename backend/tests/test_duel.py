@@ -3488,9 +3488,14 @@ def test_weather_by_distance_splits_a_session_where_the_ladder_stepped_aside(mon
 
 
 def test_the_ring_shape_is_bounded_and_survives_bad_values():
-    assert duel_mod.belt_every({}) == 2
-    assert duel_mod.belt_every({"belt_every": 1}) == 2
-    assert duel_mod.belt_every({"belt_every": "many"}) == 2
+    from pathbrain import config_store
+
+    assert duel_mod.DEFAULT_BELT_EVERY == 3 and duel_mod.PRIOR_BELT_EVERY == 2
+    assert config_store.DEFAULT_CONFIG["duel"]["belt_every"] == duel_mod.DEFAULT_BELT_EVERY
+    assert duel_mod.belt_every({}) == 3
+    assert duel_mod.belt_every({"belt_every": 1}) == 2, "the floor is strict alternation, not the default"
+    assert duel_mod.belt_every({"belt_every": "many"}) == 3
+    assert duel_mod.belt_every({"belt_every": 2}) == 2
     assert duel_mod.belt_every({"belt_every": 3}) == 3
     assert duel_mod.belt_every({"belt_every": 99}) == 6
     assert duel_mod.seats({}) == 2
@@ -3708,7 +3713,7 @@ def test_ring_shape_round_trips_through_the_config_endpoint(client):
         assert client.put("/api/duel/config", json={"belt_every": 9}).status_code == 422
         assert client.put("/api/duel/config", json={"seats": 0}).status_code == 422
     finally:
-        client.put("/api/duel/config", json={"belt_every": 2, "seats": 2, "browser_only": False})
+        client.put("/api/duel/config", json={"belt_every": duel_mod.DEFAULT_BELT_EVERY, "seats": 2, "browser_only": False})
     dist = client.get("/api/duel/weather-distance?sessions=2&legs=20").json()
     assert "by_distance" in dist and "threshold" in dist
 
@@ -4054,6 +4059,8 @@ def test_rounds_affordable_prices_a_seats_rounds_from_the_window_and_the_cadence
     assert leg == 178.0
     # Two seats under strict alternation: B C B D = 4 legs a cycle, one round a seat.
     assert duel_mod.rounds_affordable(7200.0, leg, n_seats=2, cadence=2) == 10
+    # The shipped cadence (3): B C D = 3 legs a cycle, one round a seat — a third more.
+    assert duel_mod.rounds_affordable(7200.0, leg, n_seats=2, cadence=duel_mod.belt_every({})) == 13
     # belt_every 3: B C D = 3 legs a cycle → a third more rounds on the same clock.
     assert duel_mod.rounds_affordable(7200.0, leg, n_seats=2, cadence=3) == 13
     assert duel_mod.rounds_affordable(0.0, leg, n_seats=2, cadence=2) == 0
@@ -4160,3 +4167,13 @@ def test_the_fused_order_is_the_shipped_default_and_the_upgrade_moves_an_install
     assert up({"crown_follow": {"ranking": "pooled"}}) is None, "a deliberate choice is kept"
     assert up({}) is None, "a fresh install already has the default"
     assert any(name == "field-order-fused" for name, _ in config_store.CONFIG_UPGRADES)
+
+
+def test_belt_every_three_is_the_shipped_default_and_the_upgrade_moves_strict_alternation_off_it():
+    from pathbrain import config_store
+
+    up = config_store._upgrade_belt_every_three
+    assert up({"duel": {"belt_every": 2}}) == {"duel": {"belt_every": 3}}
+    assert up({"duel": {"belt_every": 4}}) is None, "a deliberate cadence is kept"
+    assert up({"duel": {}}) is None and up({}) is None, "a fresh install already has the default"
+    assert any(name == "duel-belt-every-three" for name, _ in config_store.CONFIG_UPGRADES)

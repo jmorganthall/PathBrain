@@ -208,7 +208,8 @@ def test_the_upgrade_moves_only_the_old_defaults_and_runs_once():
             # exactly the values the measurements replaced.
             save_config(s, {"duel": {"alpha": 0.10, "min_pairs": 3, "max_pairs": 12,
                                      "streak_wins": 3, "iterations_per_round": 3,
-                                     "crown_rule": "lineal", "min_margin": 0.0, "hour": 4},
+                                     "crown_rule": "lineal", "min_margin": 0.0, "hour": 4,
+                                     "belt_every": 2},
                             # …and on the pooled crowning policy and the ring-first field
                             # order, the old defaults the pages stored the moment a chip
                             # was pressed.
@@ -216,9 +217,10 @@ def test_the_upgrade_moves_only_the_old_defaults_and_runs_once():
             applied = upgrade_config(s)
             assert applied == ["duel-rounds-of-five", "duel-balanced-stopping-rule",
                                "duel-winner-by-rating", "crown-policy-fused",
-                               "field-order-fused"]
+                               "field-order-fused", "duel-belt-every-three"]
             d = get_config(s)["duel"]
             assert d["iterations_per_round"] == 5 and d["crown_rule"] == "rating"
+            assert d["belt_every"] == 3
             assert preset_for(d) == "balanced"
             assert d["hour"] == 4 and d["min_margin"] == 0.0, "untouched fields stay"
             assert get_config(s)["crown_follow"]["policy"] == "fused"

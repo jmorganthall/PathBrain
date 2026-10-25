@@ -2190,7 +2190,7 @@ export default function Duels() {
             <>
               The champion defends against the top {cfg.contender_top_n}{" "}
               {cfg.contenders === "leaders" ? "profiles nearest the best" : "contenders"},{" "}
-              {cfg.seats ?? 2} at a time with a champion leg every {cfg.belt_every ?? 2} legs,{" "}
+              {cfg.seats ?? 2} at a time with a champion leg every {cfg.belt_every ?? 3} legs,{" "}
               {cfg.iterations_per_round ?? 3} iteration(s) a leg. A match ends after{" "}
               {cfg.decision?.streak_pairs ?? "—"} straight wins or a clear run of margins, then
               the next challenger steps up.
@@ -3104,11 +3104,11 @@ export default function Duels() {
               />
               <NumField
                 label="Belt leg every N legs"
-                value={cfg?.belt_every ?? 2}
+                value={cfg?.belt_every ?? 3}
                 disabled={!cfg || busy}
                 min={2}
                 onCommit={(v) => void patch({ belt_every: Math.round(v) })}
-                helper="2 = a belt leg between every challenger leg (safest). 3 = two challenger legs per belt leg: a third more challenger measurements per hour, up to two legs from the belt. Measure the weather shift by distance below before raising it."
+                helper="3 (the default) = two challenger legs per belt leg: a third more challenger measurements per hour, up to two legs from the belt. 2 = a belt leg between every challenger leg, the strongest shared-weather guarantee at the cost of a third of the night. Measure the weather shift by distance below before choosing."
               />
               <NumField
                 label="Seats in the ring"
