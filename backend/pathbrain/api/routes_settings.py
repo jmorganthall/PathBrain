@@ -48,6 +48,7 @@ from ..settings_profile import (
     diff_profiles,
     environment_signature,
     fingerprint,
+    is_sqm_off_profile,
     normalize,
     plan_apply,
     summarize,
@@ -2781,7 +2782,7 @@ def _compute_profiles_uncached(
     # that % better than the unshaped link; negative = worse. None when there's no baseline yet
     # or the profile has no Overall.
     def _is_sqm_off(p: dict) -> bool:
-        return any((pipe or {}).get("enabled") is False for pipe in (p.get("settings") or []))
+        return is_sqm_off_profile(p.get("fingerprint"), p.get("settings"))
 
     sqm_off_overalls = [p["overall"] for p in profiles if _is_sqm_off(p) and p["overall"] is not None]
     baseline_overall = max(sqm_off_overalls) if sqm_off_overalls else None
@@ -3909,19 +3910,6 @@ def rename_profile(fingerprint: str, body: dict = Body(...)) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"fingerprint": fingerprint, "name": name}
-
-
-@router.get("/settings/verdict")
-def settings_verdict(session: Session = Depends(get_session)) -> dict:
-    """**Which profile should I run?** — the one answer, with how sure and whether it matters.
-
-    Deliberately cheap: the rollup, not a ``compute_profiles`` pass, because this renders on
-    the Dashboard and a cold field pass on page load is the documented way to take the
-    process down. See ``verdict.py`` for why one statement replaces three competing ones.
-    """
-    from ..verdict import verdict
-
-    return verdict(session)
 
 
 @router.get("/settings/crowns")

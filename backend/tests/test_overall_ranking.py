@@ -25,9 +25,9 @@ from pathbrain.config_store import get_config, save_config
 from pathbrain.database import session_scope
 from pathbrain.models import Duel, DuelStatus
 
-# Reuse the verdict suite's own-field fixture so the pooled side is real rollup rows
+# Reuse the pooled-field suite's own-field fixture so the pooled side is real rollup rows
 # under a version this module owns.
-from tests.test_verdict import VERSION, _add, _fp, _own_field  # noqa: F401
+from tests.test_pooled_field import VERSION, _add, _fp, _own_field  # noqa: F401
 
 SIGMA = 1.47
 

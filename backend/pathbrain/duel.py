@@ -4907,8 +4907,9 @@ def standings(limit_sessions: int = 50) -> dict:
     weather. A profile ranks by what it *beat*, not by what it averaged.
 
     Returns ``{champion, standings, head_to_head, sessions_analyzed, matchups_analyzed,
-    decisive_matchups, generated_from}``. Rows rank on ``rating_floor`` (the "Proven"
-    column) — what a record has *demonstrated*.
+    decisive_matchups, generated_from}``. Rows rank on the fitted ``rating`` with
+    ``duel.rank_sigma`` standard errors subtracted (0 by default — whoever wins the duel
+    wins the duel); ``rating_floor`` is the sortable "Proven" column beside it.
 
     The ``champion`` is computed separately and is deliberately allowed to differ from row
     1: under the lineal rule the belt goes to whoever beat the holder, which is a claim
@@ -5100,7 +5101,8 @@ def standings(limit_sessions: int = 50) -> dict:
         r = ratings.get(row["fingerprint"]) or {}
         row["rating"] = r.get("rating")
         row["rating_se"] = r.get("rating_se")
-        # The conservative floor is what the table ranks on — see rating.RANK_SIGMA.
+        # The conservative floor — the sortable "Proven" column (rating.RANK_SIGMA); the
+        # table's own order is the rating less `duel.rank_sigma` SEs, 0 by default.
         row["rating_floor"] = r.get("rating_floor")
         row["rating_pairs"] = r.get("pairs")
         row["rating_provisional"] = bool(r.get("provisional", True))
@@ -5181,8 +5183,8 @@ def standings(limit_sessions: int = 50) -> dict:
             co_leaders.append(row["fingerprint"])
 
     # The champion is NOT row 1, and under the lineal rule it is not supposed to be. The
-    # table ranks on `rating_floor` — what a record has *demonstrated* across the whole
-    # network — while the belt records who beat whom. Those answer different questions, so
+    # table ranks on the fitted rating (less `rank_sigma` SEs; the "Proven" floor is a
+    # column) — the whole network's evidence — while the belt records who beat whom. Those answer different questions, so
     # they are computed separately and shown separately; a champion sitting at row 4 is the
     # two verdicts disagreeing, which is the reason for running both.
     #

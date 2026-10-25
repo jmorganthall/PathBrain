@@ -44,7 +44,6 @@ import type {
   DuelWeatherDistance,
   DuelStandings,
   CrownsOut,
-  VerdictOut,
   AiConfig,
   AiModel,
   AiStreamEvent,
@@ -523,10 +522,6 @@ export const api = {
     ),
   raceCurrent: () => request<{ race: ChallengerRace | null }>("/settings/race"),
   cancelRace: () => request<{ cancelled: boolean }>("/settings/race/cancel", { method: "POST" }),
-
-  // The one answer: which profile to run, how sure, and whether the choice is worth
-  // anything. Deliberately cheap — it reads the per-profile rollup, never a field pass.
-  verdict: () => request<VerdictOut>("/settings/verdict"),
 
   // The Overall page: one ranking fitted over the pooled record and the ring together.
   // Nothing to set — the pooled slack is measured from the ledger, never chosen.
