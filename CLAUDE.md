@@ -3322,7 +3322,26 @@ LLM-based. See `README.md` for the product overview.
     fields none of them read (32s → 15s cold, measured; `test_skipping_the_weather_pass_…`
     pins that it changes nothing else).
   - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
-    settings-vs-responsiveness correlation (`/api/settings/*`). Profile confidence is
+    settings-vs-responsiveness correlation (`/api/settings/*`). **A fingerprint is
+    spelling-blind** (`shaper_fields.canonical_value`, applied inside `fingerprint`): every
+    identity field is hashed in the firewall's own echo form — the form OPNsense's
+    `discover()` returns: int kinds as `int`, the CoDel duration selects as the bare option
+    key as a **str** (`"5"`, never `"5ms"` and never `coerce_value`'s wire `int`), `ecn` as a
+    `bool`, bandwidth and scheduler strings untouched — so `target: "5ms"` (the mock, an AI),
+    `5` (the wire form) and `"5"` (the echo) are one profile. It used to hash the raw JSON
+    spelling, so a profile *proposed* in another notation got a fingerprint pointing at a
+    profile with no history, which three earlier fixes worked around downstream
+    (`_apply_writable_overrides` keeping live's representation, `unwritable_diffs`, the
+    ledger's `_reconcile`); those stay, as the backstops they are. The echo form is a fixed
+    point (`test_canonical_value_is_a_fixed_point_on_the_firewalls_echo`), so a run recorded
+    off a real firewall never re-keys and `POST /api/settings/refingerprint` on a live install
+    folds nothing but SQM-off history; on a mock-backed dev database it also folds the mock's
+    `"5ms"` spellings. Bandwidth restated in another unit (`"880Mbit"` vs `"0.88Gbit"`) is
+    deliberately *not* folded — out of scope, and `_to_number` already compares it numerically
+    for diffs. The duel's exploration bets report the **reached** fingerprint
+    (`ProfileTest.reached_fingerprint`) as `fingerprint` once a test has verified, with the
+    prediction beside it as `predicted_fingerprint` (`explore_share._file_under_reached`), so
+    the board names the profile that has the runs. Profile confidence is
     gated on **total iterations** (`correlation.min_iterations`, default 15).
     `/api/settings/profiles` ranks profiles by the **Overall**, which since methodology
     `speed-smoothness-v5` is a **first-class, versioned quantity** defined in the

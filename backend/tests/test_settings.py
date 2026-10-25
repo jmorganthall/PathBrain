@@ -72,6 +72,49 @@ def test_sqm_off_collapses_to_one_fingerprint_regardless_of_inert_fields():
     assert "SQM off" in summarize(off_b) and "q6000" not in summarize(off_b)
 
 
+def test_refingerprint_folds_spelling_variants_onto_one_profile(client):
+    """Two runs of one profile whose stored settings spell the CoDel target differently
+    (the firewall's ``"5"`` and a proposal's ``"5ms"``) and were stamped with different
+    fingerprints re-key onto the one canonical profile; the firewall-form run keeps its hash."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from pathbrain.database import session_scope
+    from pathbrain.models import Run, RunStatus
+
+    t0 = datetime.now(timezone.utc).replace(tzinfo=None)
+    echo = [{"label": "wan", "download_bandwidth": "900Mbit", "quantum": 3000, "limit": 10240,
+             "target": "5", "interval": "100", "ecn": True, "flows": 1024, "queues": 1,
+             "scheduler": "fq_codel", "enabled": True}]
+    spelled = [{**echo[0], "target": "5ms", "quantum": "3000"}]
+    canonical = fingerprint(echo)
+    with session_scope() as s:
+        before = {r.id: r.settings_fingerprint for r in s.scalars(select(Run)).all()}
+    ids: list[int] = []
+    try:
+        with session_scope() as s:
+            for fp, settings in [(canonical, echo), ("spelled_0001", spelled)]:
+                run = Run(status=RunStatus.COMPLETE, created_at=t0, iterations=1,
+                          settings_fingerprint=fp, settings=settings)
+                s.add(run)
+                s.flush()
+                ids.append(run.id)
+        body = client.post("/api/settings/refingerprint").json()
+        assert body["rekeyed"] >= 1
+        with session_scope() as s:
+            fps = {rid: s.get(Run, rid).settings_fingerprint for rid in ids}
+        assert fps[ids[0]] == canonical, "the firewall's own form is a fixed point"
+        assert fps[ids[1]] == canonical, "the spelling variant folds onto it"
+    finally:
+        with session_scope() as s:
+            for rid in ids:
+                row = s.get(Run, rid)
+                if row is not None:
+                    s.delete(row)
+            for r in s.scalars(select(Run)).all():
+                if r.id in before and r.settings_fingerprint != before[r.id]:
+                    r.settings_fingerprint = before[r.id]
+
+
 def test_refingerprint_rekeys_sqm_off_history_into_one_profile(client):
     from datetime import datetime, timezone
     from sqlalchemy import select

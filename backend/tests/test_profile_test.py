@@ -108,6 +108,9 @@ def test_profile_test_verifies_semantically_despite_format(monkeypatch):
 
     assert pt.status == ProfileTestStatus.COMPLETE, pt.error
     assert pt.run_id is not None
+    # Fingerprints are spelling-blind now: the int we asked for and the "7" the mock reports
+    # back are one profile, so the test reached exactly the fingerprint it was asked for.
+    assert pt.reached_fingerprint == target_fp
     assert pt.stage == "Done — baseline restored"
     # Baseline restored (mock default quantum + target).
     assert get_provider().discover()[0].quantum == 1514
