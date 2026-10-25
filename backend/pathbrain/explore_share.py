@@ -142,6 +142,18 @@ def _utc(dt: datetime | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _file_under_reached(bet: dict, pt) -> None:
+    """A bet is queued under the fingerprint Explore *predicted*; its runs are filed under the
+    one the firewall actually settled on (`ProfileTest.reached_fingerprint`, written after the
+    post-apply verify). The board and the stored row report the reached one as ``fingerprint``
+    once it is known, keeping the prediction beside it as ``predicted_fingerprint`` — so a
+    reader following a bet to its profile lands on the profile that has the runs."""
+    reached = getattr(pt, "reached_fingerprint", None)
+    bet.setdefault("predicted_fingerprint", bet.get("fingerprint"))
+    if reached:
+        bet["fingerprint"] = reached
+
+
 class ExploreShare:
     """One session's exploration allowance: when a bet is owed, queueing it, and the books."""
 
@@ -374,12 +386,14 @@ class ExploreShare:
                 continue
             self._folded.add(tid)
             bet["status"] = pt.status.value
+            _file_under_reached(bet, pt)
             if pt.status == ProfileTestStatus.COMPLETE:
                 landed.append(bet)
         return landed
 
     def summary(self) -> dict:
-        """The session's exploration, for the live board and the stored row."""
+        """The session's exploration, for the live board and the stored row. Each bet names
+        the profile its runs were actually filed under (see `_file_under_reached`)."""
         try:
             rows = self._rows()
         except Exception:  # noqa: BLE001
@@ -388,7 +402,10 @@ class ExploreShare:
         bets = []
         for b in self.bets:
             pt = by_id.get(b.get("test_id"))
-            bets.append({**b, "status": pt.status.value if pt is not None else b.get("status")})
+            entry = {**b, "status": pt.status.value if pt is not None else b.get("status")}
+            if pt is not None:
+                _file_under_reached(entry, pt)
+            bets.append(entry)
         return {
             "share": self.share,
             "iterations": self.iterations,

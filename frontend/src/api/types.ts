@@ -2619,7 +2619,10 @@ export interface DuelExploreBet {
   ceiling?: number | null;
   iterations_before?: number | null;
   test_id: number | null;
+  // The profile the bet's runs were filed under: the firewall's reached fingerprint once the
+  // test has verified, the predicted one until then (kept beside it as `predicted_fingerprint`).
   fingerprint: string | null;
+  predicted_fingerprint?: string | null;
   label: string;
   summary?: string | null;
   predicted?: number | null;

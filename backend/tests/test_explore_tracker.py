@@ -474,6 +474,9 @@ def test_restating_a_field_in_another_notation_does_not_invent_a_profile(client,
     for change in plan_apply(applied["target"], provider.discover())[0]:
         provider.apply(change)
     assert body["fingerprint"] == fingerprint(normalize(provider.discover()))
+    # And the belt-and-braces: the claim's fingerprint is the target's own, which — now that
+    # fingerprints are spelling-blind — is the firewall's whatever notation the parent used.
+    assert body["fingerprint"] == fingerprint(applied["target"])
     mock_mod._OVERRIDES.clear()
 
 

@@ -21,6 +21,7 @@ from .shaper_fields import (  # noqa: F401 — re-exported for back-compat
     FIELD_LABELS,
     NON_WRITABLE_FIELDS,
     WRITABLE_FIELDS,
+    canonical_value,
     field as _shaper_field,
 )
 
@@ -76,12 +77,20 @@ def fingerprint(normalized: list[dict]) -> str:
     baseline test's runs all aggregate into one "SQM off" profile instead of splintering into a
     new profile every time the underlying shaper values differ.
 
-    ``enabled`` is deliberately not a ``CANON_FIELDS`` identity value, and an ordinary all-enabled
-    profile still hashes byte-for-byte as it always has (no history re-key) — only SQM-off runs
-    change fingerprint. Re-key existing SQM-off history with ``POST /api/settings/refingerprint``."""
+    ``enabled`` is deliberately not a ``CANON_FIELDS`` identity value.
+
+    **Spelling-blind.** Every identity value is hashed in the firewall's own echo form
+    (`shaper_fields.canonical_value`: ``"5ms"`` / ``5`` / ``"5"`` → ``"5"`` for a duration
+    select, ``"3000"`` → ``3000`` for an int field, ``"true"`` → ``True``), so a profile
+    *proposed* in another notation — an AI suggestion, a hand-typed override, an Explore
+    candidate restating its parent — hashes to the profile the firewall will actually report.
+    It used to hash the raw JSON spelling, so ``target: 5`` and ``target: "5"`` were two
+    fingerprints, the predicted one pointing at a profile with no history. The echo form is a
+    fixed point, so a run recorded off a real firewall's ``discover()`` keeps its fingerprint;
+    only invented spellings fold. Re-key history with ``POST /api/settings/refingerprint``."""
     if is_sqm_off(normalized):
         return SQM_OFF_FINGERPRINT
-    core = [{k: p.get(k) for k in CANON_FIELDS} for p in normalized]
+    core = [{k: canonical_value(k, p.get(k)) for k in CANON_FIELDS} for p in normalized]
     core.sort(key=lambda x: json.dumps(x, sort_keys=True, default=str))
     blob = json.dumps(core, sort_keys=True, default=str)
     return hashlib.sha1(blob.encode()).hexdigest()[:12]

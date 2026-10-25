@@ -148,6 +148,27 @@ def coerce_value(field_key: str, value):
     return value
 
 
+def canonical_value(field_key: str, value):
+    """The value in the firewall's **own echo form**, so a profile's ``fingerprint`` is blind
+    to spelling: ``"5ms"``, ``5``, ``"5"`` and ``5.0`` for a CoDel target all hash as the one
+    profile the firewall would report back. The form is what OPNsense's ``discover()`` returns
+    — int kinds (quantum/limit/flows/queues) as ``int``, the duration selects (target/interval)
+    as the **bare option key as a str** (``"5"``, never ``"5ms"`` and never the int
+    `coerce_value` produces for the wire), ``ecn`` as ``bool``, bandwidth and scheduler
+    strings untouched — so ``normalize(discover())`` from a real firewall is a fixed point and
+    no run recorded off the firewall's echo ever re-keys. A value that cannot be parsed is
+    returned as given, like `coerce_value`."""
+    if value is None:
+        return None
+    f = _BY_KEY.get(field_key)
+    if f is None:
+        return value
+    c = coerce_value(field_key, value)
+    if f.unit and isinstance(c, int) and not isinstance(c, bool):
+        return str(c)
+    return c
+
+
 # Derived views — the names the rest of the codebase consumes. Keeping them as derived
 # constants (not re-typed literals) is the whole point: change a facet above and every
 # consumer updates with it.
