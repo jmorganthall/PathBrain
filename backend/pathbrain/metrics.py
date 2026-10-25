@@ -472,7 +472,9 @@ METRICS: list[MetricDef] = [
 #                           absolute-gap members (stall_time/longest_stall) still drift
 #                           with server pacing and need the weather lens even post-anchor.
 #   O  Opaque milestone     a sum that spans buckets (FCP/LCP/load/render/…). What a human
-#                           means by "fast", but unattributable — display only, never ranked.
+#                           means by "fast", but unattributable — never ranked AUTOMATICALLY;
+#                           a methodology may name one as a crown leg explicitly (the crown
+#                           has cornered over FCP/LCP since v10, by design).
 ROLE_WEATHER = "W"
 ROLE_NETWORK = "N"
 ROLE_CLIENT = "C"
@@ -480,11 +482,23 @@ ROLE_SHAPE = "S"
 ROLE_COMPOSITE = "O"
 VALID_ROLES = {ROLE_WEATHER, ROLE_NETWORK, ROLE_CLIENT, ROLE_SHAPE, ROLE_COMPOSITE}
 
-# Roles that may enter headline / crown ranking. W (instrument) and C (client health-
-# check) are excluded on principle; O (opaque sums) are unattributable so display-only.
-# Note this is the *coarse* gate that keeps the clearly-ineligible out — the finer
-# positive selection (delivery within N; ratio-vs-absolute within S) is the crown's job.
+# Roles that may enter headline / crown ranking AUTOMATICALLY. W (instrument) and C
+# (client health-check) are excluded on principle; O (opaque sums) are unattributable and
+# so never picked up by an automatic selection — but the crown is a positive, explicit
+# choice, and it may name an O metric (FCP/LCP are what a person feels). Note this is the
+# *coarse* gate that keeps the clearly-ineligible out — the finer positive selection
+# (delivery within N; ratio-vs-absolute within S) is the crown's job.
 RANKABLE_ROLES = {ROLE_NETWORK, ROLE_SHAPE}
+
+# The crown's HARD rule, enforced at import against every registered methodology
+# (`methodology.py`): a weather instrument or a client health-check can never be a crown
+# leg. A probe socket's TTFB measures the probe's own connection, not the page a person
+# loads; render/INP/CLS are the measuring machine's CPU, shaping-immune by construction —
+# a crown over either grades the weather or the host, not the shaper. This is the part of
+# the ledger that can honestly be *enforced* rather than stated: W/C never, O explicitly,
+# N/S freely. Before this the ledger said "O: never ranked" while the crown named FCP and
+# LCP, and nothing checked either claim (the review's M8).
+CROWN_FORBIDDEN_ROLES = {ROLE_WEATHER, ROLE_CLIENT}
 
 # The ledger. One entry per metric (completeness asserted below, shaper_fields-style:
 # adding a metric forces a bucket choice). The single readable view of the partition.
@@ -537,6 +551,15 @@ def ineligible_scored(keys) -> dict[str, str]:
     non-empty result names exactly what's leaking network weather (or client noise) into
     the ranking — e.g. scored ``ttfb`` (a probe) in the Responsiveness axis."""
     return {k: METRIC_ROLES[k] for k in keys if METRIC_ROLES.get(k) not in RANKABLE_ROLES and k in METRIC_ROLES}
+
+
+def crown_ledger_violations(keys) -> dict[str, str]:
+    """``{key: role}`` for crown legs the ledger forbids — a weather instrument (``W``) or a
+    client health-check (``C``). An opaque milestone (``O``) may be named explicitly and a
+    network phase / shape statistic (``N``/``S``) needs no permission, so neither is listed.
+    Empty == the crown is ledger-clean. `methodology.py` asserts this over every registered
+    version at import, so a crown that would grade the weather or the host fails to ship."""
+    return {k: METRIC_ROLES[k] for k in keys if METRIC_ROLES.get(k) in CROWN_FORBIDDEN_ROLES}
 
 
 # Executable invariants (shaper_fields-style: at import *and* in test_metrics).
