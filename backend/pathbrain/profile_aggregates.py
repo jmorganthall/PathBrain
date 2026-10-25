@@ -90,7 +90,7 @@ def median_se(iqr: float | None, runs: int | None) -> float | None:
 
     The rollup's quartiles are over **per-run** values (one Score per run), so the sample
     size is the run count, never the iteration total. The standings
-    (`routes_settings._overall_se`), the verdict card (`verdict._se`) and through it the
+    (`routes_settings._overall_se`), the pooled field (`pooled_field.se`) and through it the
     fused ranking's pooled anchors all read this; two of them used to divide the same IQR by
     different counts, which understated a five-iteration-a-run profile's SE by √5 on the card
     and over-trusted its anchor in the fit. ``None`` when the spread or the count is unknown

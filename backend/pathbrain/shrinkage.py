@@ -36,7 +36,7 @@ is itself a coin flip), so under `OWN_SE_MIN_RUNS` a profile's SE is the **field
 noise** over √runs — the median per-run SD over the profiles measured well enough to have one
 (`run_noise`) — and a well-measured profile's own IQR-based SE is floored at half of that, so a
 profile whose few runs happened to agree cannot present itself as noiseless. This is the same
-floor the fused ranking's pooled anchors read (`verdict._graded_field`), where a one-run
+floor the fused ranking's pooled anchors read (`pooled_field.graded_field`), where a one-run
 profile with SE 0 used to anchor the fit as firmly as the crown.
 
 **What it does NOT do.** The crown is still the argmax of the *raw* median among confident

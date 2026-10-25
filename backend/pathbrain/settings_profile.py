@@ -51,6 +51,21 @@ def normalize(configs: list[FqCodelConfig]) -> list[dict]:
 SQM_OFF_FINGERPRINT = hashlib.sha1(b"\x00sqm_off").hexdigest()[:12]
 
 
+def is_sqm_off(settings: list[dict] | None) -> bool:
+    """Whether a normalized profile has shaping switched off on any pipe — the one predicate
+    `fingerprint` collapses on, Settings Impact prices the `% vs SQM off` baseline with, and
+    the pooled field / fused ranking exclude from the crown with."""
+    return any((p or {}).get("enabled") is False for p in (settings or []))
+
+
+def is_sqm_off_profile(fp: str | None, settings: list[dict] | None = None) -> bool:
+    """SQM off by either record: the collapsed `SQM_OFF_FINGERPRINT`, or stored settings that
+    say a pipe is disabled. Keying on the fingerprint alone misses a baseline run recorded
+    before the collapse (its runs still carry their own hash until re-keyed), which made it a
+    baseline on Settings Impact and a contender on the Overall page at once."""
+    return fp == SQM_OFF_FINGERPRINT or is_sqm_off(settings)
+
+
 def fingerprint(normalized: list[dict]) -> str:
     """Stable short hash of the profile-defining fields (order-independent).
 
@@ -64,7 +79,7 @@ def fingerprint(normalized: list[dict]) -> str:
     ``enabled`` is deliberately not a ``CANON_FIELDS`` identity value, and an ordinary all-enabled
     profile still hashes byte-for-byte as it always has (no history re-key) — only SQM-off runs
     change fingerprint. Re-key existing SQM-off history with ``POST /api/settings/refingerprint``."""
-    if any(p.get("enabled") is False for p in normalized):
+    if is_sqm_off(normalized):
         return SQM_OFF_FINGERPRINT
     core = [{k: p.get(k) for k in CANON_FIELDS} for p in normalized]
     core.sort(key=lambda x: json.dumps(x, sort_keys=True, default=str))

@@ -152,8 +152,9 @@ decided by a one-sided Wilcoxon signed-rank test on the paired margins with a
 simulation-fitted peek penalty, plus "if it wins back to back at a length that isn't
 luck, it wins". The standings rank on a **Bradley–Terry** fit over the whole ledger, so
 beating a strong profile counts for more than beating an unmeasured one and profiles
-that never met are comparable through shared opponents — ordered by the *conservative
-floor* (rating − 1 SE), because a claim to be best has to be earned. The **belt** is
+that never met are comparable through shared opponents — ordered by the fitted rating
+(whoever wins the duel wins the duel), with the *conservative floor* (rating − 1 SE)
+beside it as the "Proven" column for anyone asking what a record has demonstrated. The **belt** is
 separate and lineal: you take it by beating whoever holds it.
 
 Duel *runs* flow into the pooled record like any others; duel *verdicts* live beside it
@@ -270,8 +271,8 @@ ranking is its default, with the two corners kept selectable for comparison.
   at once against the belt-holder, matchmaking is re-decided before every bout (always be
   running the bout most likely to unseat the best profile we have), bouts are adjudicated on
   the paired margins by a Wilcoxon signed-rank test with a simulation-fitted peek penalty, and
-  the standings rank on a **Bradley–Terry** fit — by its conservative floor, because a claim to
-  be best has to be earned. The **belt is lineal** and allowed to disagree with the standings
+  the standings rank on a **Bradley–Terry** fit — by the fitted rating, with the conservative
+  floor beside it as the "Proven" column. The **belt is lineal** and allowed to disagree with the standings
   and with the pooled crown; the page shows all three side by side and says which edge of the
   triangle the live match is testing. Open matches **survive the window** and resume next
   session with their evidence intact, and a mid-session methodology publish re-seeds the ring

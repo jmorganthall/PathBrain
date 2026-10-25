@@ -203,9 +203,9 @@ def candidates(fingerprint: str):
 
 
 def _is_sqm_off(fingerprint: str) -> bool:
-    from .settings_profile import SQM_OFF_FINGERPRINT
+    from .settings_profile import is_sqm_off_profile
 
-    return fingerprint == SQM_OFF_FINGERPRINT
+    return is_sqm_off_profile(fingerprint)
 
 
 def name_for(session, fingerprint: str) -> str:

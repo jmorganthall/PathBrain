@@ -441,9 +441,9 @@ def rounds_to_separate(gap: float, se: float, sigma_round: float, tie_sigma: flo
 
 
 def _pooled_field(session, version: str) -> list[dict]:
-    from .verdict import _graded_field
+    from .pooled_field import graded_field
 
-    return _graded_field(session, version)
+    return graded_field(session, version)
 
 
 def _live_settings() -> list[dict] | None:
@@ -623,7 +623,9 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
             "ring_pull": None if p.get("overall") is None else round(float(f["fused"]) - float(p["overall"]), 2),
             "ring_only": None if fp not in ring_only or not f["rounds"] else round(float(ring_only[fp]["fused"]), 2),
             "confident": int(p.get("iterations") or 0) >= min_iterations,
-            "is_sqm_off": fp == SQM_OFF_FINGERPRINT,
+            # The pooled row's own flag (`settings_profile.is_sqm_off_profile`: fingerprint OR
+            # stored settings); a ring-only row has no pooled row and only its fingerprint.
+            "is_sqm_off": bool(p.get("is_sqm_off")) or fp == SQM_OFF_FINGERPRINT,
             # Placed by a pooled median (True) or by ring rounds alone (False). Only an
             # anchored profile has a fused Overall ON the pooled scale.
             "anchored": bool(f.get("anchored")),

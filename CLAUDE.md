@@ -1527,11 +1527,11 @@ LLM-based. See `README.md` for the product overview.
     each run by `created_at` before grading and so needs the rows themselves.
     **One standard error, divided by the RUN count** (`profile_aggregates.median_se`). The
     rollup's quartiles are over per-run values — one Score per run — so the SE of a profile's
-    median Overall is IQR/√runs, and the standings (`routes_settings._overall_se`), the verdict
-    card (`verdict._se`) and through it every pooled anchor in the fused ranking read that one
-    function. They used to disagree: the standings divided by the run count and the verdict
-    divided the same IQR by the **iteration total**, which understated a five-iteration-a-run
-    profile's SE by √5 (×2.2) on the card, over-trusted its anchor in the fit, mis-estimated
+    median Overall is IQR/√runs, and the standings (`routes_settings._overall_se`), the pooled
+    field (`pooled_field.se`) and through it every pooled anchor in the fused ranking read that
+    one function. They used to disagree: the standings divided by the run count and the pooled
+    field divided the same IQR by the **iteration total**, which understated a five-iteration-a-run
+    profile's SE by √5 (×2.2) on the Overall page, over-trusted its anchor in the fit, mis-estimated
     the slack τ against that understated variance, and let the standings chip and the Overall
     page call different profiles "tied" on the same data. The anti-drift test that was meant
     to catch it handed both paths the iteration count and so manufactured agreement; it now
@@ -1563,9 +1563,9 @@ LLM-based. See `README.md` for the product overview.
     off the thin profile**: under `OWN_SE_MIN_RUNS` (5) runs a profile's SE is the field's
     per-run SD (`run_noise`: median `IQR/1.349` over the well-measured profiles) over √runs,
     and a well-measured profile's own IQR-based SE is floored at half that — a one-run profile
-    with an IQR of zero used to carry an SE of zero, which made it a co-leader the verdict
-    card could never separate and, as a pooled anchor in the fused ranking, a point held as
-    firmly as the crown (`verdict._graded_field` reads the same `profile_se`). Wired at the one
+    with an IQR of zero used to carry an SE of zero, which made it a co-leader the Overall
+    page could never separate and, as a pooled anchor in the fused ranking, a point held as
+    firmly as the crown (`pooled_field.graded_field` reads the same `profile_se`). Wired at the one
     seam: `compute_profiles` (weighted crown only) sets `overall_shrunk` / `overall_shrunk_se` /
     `overall_se` on every profile, keeps the old number as `optimistic_p75`, and makes
     `optimistic` the posterior ceiling — so heirs, the race and the live-threat tier change
@@ -2093,9 +2093,9 @@ LLM-based. See `README.md` for the product overview.
     opponent, so no challenger's error bar ever shrinks enough to overtake the incumbent's
     floor, so the belt never moved. Four profiles beating the crown 3-0 and all sitting below
     it on Proven was the ladder working exactly as specified and saying nothing.
-    Two questions, now answered separately and allowed to disagree: **the standings still
-    rank on `rating_floor`** ("what has this record demonstrated across the network?") while
-    **the belt records who beat whom** — a champion at row 4 is the two verdicts disagreeing,
+    Two questions, now answered separately and allowed to disagree: **the standings rank on
+    the fitted rating** ("what does the whole network's evidence say?") while **the belt
+    records who beat whom** — a champion at row 4 is the two verdicts disagreeing,
     which is the point of running both, so the champion card states its own `rank` outright.
     The aggregate gate is deliberately **vacuous on a first meeting** — there is no shared
     history to appeal to, so a clean win transfers the belt and the new holder defends
@@ -2198,21 +2198,26 @@ LLM-based. See `README.md` for the product overview.
     entire point. A rating is flagged **provisional** (still shown and ranked, marked `?`) until
     it rests on ≥`PROVISIONAL_PAIRS` pairs **and** ≥2 opponents — one opponent is a single edge
     restated, not a position in the network.
-    **The standings rank on the conservative FLOOR, not the fitted rating** (`RANK_SIGMA`,
-    `rating_floor` = `rating − 1·rating_se`). The reported symptom was *"why is the top profile
-    ranked #1 with only one opponent?"* — and it genuinely was: a 4–1 record against a single
-    opponent fitted 55 Elo points above a 29–15 record against seven, on error bars of ±123 and
-    ±53. The point estimate was higher; the gap was a third of the pooled bar, so the ordering
-    was noise printed as a leaderboard. Ranking on what a record has *demonstrated* rather than
-    what it *suggests* fixes it without discarding anything: the thin record keeps its high
-    rating (and its row), and the wide bar that comes with it is what costs it the top spot
-    until it has been measured. Note the **symmetry with matchmaking**, which ranks on the
-    optimistic **ceiling** (`CEILING_SIGMA`): optimism decides who to *race*, because a profile
-    that might be good is worth measuring; pessimism decides who is *best*, because a claim to
-    be best has to be earned — same machinery, opposite directions. It is deliberately **not** a
-    significance gate: two well-measured profiles a hair apart both have narrow bars, so the
-    better one still ranks first ("best by a statistically insignificant fraction is still
-    best"); the floor only overturns an order that rests on a bar wider than the gap.
+    **The standings rank on the fitted RATING; the conservative floor is a column, not the
+    order** (`duel.rank_sigma`, default **0**; `rating.RANK_SIGMA` = 1 defines the
+    `rating_floor` = `rating − 1·rating_se` printed as the sortable **"Proven"** column). The
+    table *used* to rank on the floor, for the reported *"why is the top profile ranked #1 with
+    only one opponent?"*: a 4–1 record against a single opponent fitted 55 Elo points above a
+    29–15 record against seven, on error bars of ±123 and ±53, an ordering that was noise
+    printed as a leaderboard. The floor fixed that and broke something it was not measured
+    against: on a real ledger it **overturned head-to-head results** — a challenger on 1687 ±146
+    (floor 1541) ranked below the leader on 1563 ±17 (floor 1546) it had just beaten, five
+    points of floor on a bar eight times wider than the gap, putting the profile that won the
+    match underneath the one that lost it (`config_store.py`, the `rank_sigma` comment).
+    Whoever wins the duel wins the duel, so the order is the rating itself and `ranked_by`
+    reads `"rating"`; `rank_sigma` stays a dial (0–3) for anyone asking the other question, and
+    the floor stays beside the rating as the "Proven" column. The trade is real and stated: at
+    0 a single lucky 3–0 outranks a deep winning record (measured: 1696 vs 1581), and the lever
+    for *that* is the rating prior (`rating_prior_pairs`, below), which shrinks a thin record
+    toward the field instead of letting an error bar overturn a result. Note the **symmetry
+    with matchmaking**, which ranks on the optimistic **ceiling** (`CEILING_SIGMA`): optimism
+    decides who to *race*, because a profile that might be good is worth measuring; the
+    rating decides who is *best*, because that is what the ring measured.
     **Under the lineal rule the champion is NOT row 1, and is not meant to be** (under the
     default rating rule it is row 1, and the *belt* is what can sit lower). The badge and the
     ranking answer different questions (results vs. demonstrated evidence — see the
@@ -2264,7 +2269,8 @@ LLM-based. See `README.md` for the product overview.
     side*, opponents beaten/lost to, title count — plus the reigning champion (with reign
     length) and the `head_to_head[a][b]` matrix. It is **pure ledger**: only decided matchups,
     nothing pooled, nothing averaged over history, so it never touches the crown. Rank order:
-    **`rating_floor`** → pairs behind it → points (`ranked_by: "rating_floor"` + `rank_sigma` in
+    **`rating` less `rank_sigma` SEs** (0 by default, so the rating itself) → pairs behind it →
+    points (`ranked_by: "rating"`, or `"rating_floor"` when `rank_sigma` > 0, + `rank_sigma` in
     the payload); the floor is printed as its own sortable **"Proven"** column beside the rating
     rather than left implied in a sort order, and the points / win-rate / pair-rate columns stay
     as the readable ledger and remain sortable. Each row also carries the
@@ -3141,52 +3147,32 @@ LLM-based. See `README.md` for the product overview.
     per-profile `weather_severity` could set it individually — a v2), and rounds fought under
     another methodology are excluded (their margins are on another scale) while pre-stamp
     matches are kept and counted as *unstamped*. Read-only; nothing here changes a score.
-  - `verdict.py` — **which profile should I run?** (`GET /api/settings/verdict`, the card at
-    the top of the Dashboard). PathBrain measured a great deal and said so in pieces: the
-    two crowns side by side with *following* / *for reference* chips, the ring's #1 as a
-    third claim on the Duels page, and a standings table of rating, proven floor, match
-    points, win rate, pair rate and median margin — while `crown_confidence`, the one
-    reading that says how *sure* any of it is, was fetched only on Profile Detail, a page
-    you can open only once you already know which profile you meant to ask about. So the
-    platform could tell you a dozen true things and not the one a person opens it for
-    (*"we've got ALL of these metrics and numbers and crowns and win rate and pts and
-    margin — where is the THIS IS THE BEST PROFILE rating?"*). Showing the verdicts apart
-    was right while they disagreed *meaningfully*; what changed is that the ladder can now
-    measure its own resolving power (`decidability.resolving_power`) and on this link that
-    is ~0.85 Overall points against gaps between the top profiles of ~0.1 — three names and
-    no resolution is not richer than one name with an honest error bar, it is the same
-    information arranged so nobody can act on it. **The answer is the argmax, full stop** —
-    the highest Overall among confident profiles, the same `_select_crown` rule, no floor
-    and no hysteresis, because a profile better by 0.000001 is better. What this module adds
-    is not a different verdict but the two facts that make it *usable*: **how sure** (the
-    lead over the runner-up against `crown_tie_sigma` × the pooled SE of the two medians,
-    and every profile that lead does not clear — "Palm Oyster, and fourteen profiles are
-    tied with it" is a complete answer, "Palm Oyster" alone is a precision the data does not
-    have, and three competing names is no answer at all), and **whether it matters** (the
-    crown's margin over the unshaped baseline, so a reader deciding where to spend a night
-    knows shaping is worth ~2 points and the pick between the tied leaders ~0.2). The tie
-    test is `_clearly_better`'s, including its convention that an **unknown** SE contributes
-    zero to the pooled bar rather than "cannot say" (`_pooled`, the counterpart of
-    `routes_settings._finite`) — two components deciding separately what "tied" means is how
-    a card and a chip come to contradict each other on one screen. SQM off is excluded from
-    the crown (disabling shaping is the baseline test's supervised job) but supplies the
-    `% vs SQM off` reading; a thin profile never holds the card, and with nothing confident
-    it says so rather than crowning a lucky five-iteration 99. **Deliberately cheap: no
-    `compute_profiles` pass** — this renders on the Dashboard, and a cold field pass on page
-    load is the documented way to take the process down (`_field_stamp`, the
-    unresponsiveness incident), so everything comes from `profile_aggregates`, one
-    stamp-verified row per profile, graded through the one `_grade_medians`. That
-    equivalence holds because a **weighted** crown grades each profile on its own; a
-    corner/percentile crown is **field-relative** — one run re-ranks everybody — so the same
-    medians would give a different ordering and the headline card would quietly disagree
-    with the standings on the one screen that exists to settle the question. A non-weighted
-    methodology is therefore **declined in words**, pointing at the standings that pay for
-    the field pass: the same line `crown_follower._needs_full_check` draws, for the same
-    reason, and under v16 it never fires. The live
-    profile and the ring's resolving power are both **best-effort**: a firewall that will
-    not answer costs a reading, never the answer. Read-only — rollup in, one sentence out;
-    what to *do* with it is the crowning policy's decision and the card offers no firewall
-    change. `test_verdict`.
+  - `pooled_field.py` — **the pooled field graded off the rollup**: every stored profile
+    with its Overall and the band around it, the pooled anchors `overall_ranking` fits to
+    (`graded_field`; `se` / `pooled_se` / `quartile_grade`). Deliberately never a
+    `compute_profiles` pass — it is read on every Dashboard load through `GET /api/overall`,
+    and a cold field pass on page load is the documented way to take the process down
+    (`_field_stamp`, the unresponsiveness incident) — so everything comes from
+    `profile_aggregates`, one stamp-verified row per profile, graded through the one
+    `_grade_medians`, and the SE is `profile_aggregates.median_se` floored by
+    `shrinkage.profile_se`, the standings' own arithmetic. `is_sqm_off` on every row is the
+    one predicate `settings_profile.is_sqm_off_profile` (the collapsed fingerprint *or* a
+    stored pipe with shaping off), which `compute_profiles`, `fingerprint` and the fused
+    ranking's rows read too — before that the Overall page keyed on the fingerprint alone,
+    so a baseline run recorded before the SQM-off collapse was the control group on Settings
+    Impact and a contender for the crown on the Overall page at once.
+    **This module was `verdict.py`, and `GET /api/settings/verdict` is RETIRED.** It carried a
+    second "which profile should I run?" answer — the pooled argmax among confident profiles,
+    a tie set against `crown_tie_sigma` × the pooled SE, the margin over SQM off and a
+    sentence — written for the Dashboard's verdict card. The card never read it: it reads
+    `GET /api/overall`, the fused ranking, which is the one verdict the crowning policy acts
+    on, and the fused page already carries the lead, the noise bar, the tied set, the
+    `vs_sqm_off` reading and the live profile. Two "the answer" endpoints with one of them
+    dead is exactly how a card and a standings chip come to disagree on one screen (the
+    review's S7), so the pooled sentence is gone — the pooled crown itself is still computed,
+    tracked and shown everywhere it was — and what survives here is the arithmetic both still
+    share. `test_pooled_field` (the SE convention, the tie test as the standings' own, cheap by
+    construction, SQM off keyed one way, the route stays retired).
   - `refresh.py` — **Re-run profiles**: the batch sibling of `profile_test`. For
     each stored profile it applies the settings, benchmarks a **caller-chosen** number of
     iterations, then moves on — **restoring the baseline at the end** (persisted to a
@@ -3508,7 +3494,8 @@ LLM-based. See `README.md` for the product overview.
   `utils/glossary.ts`, served by the top-bar **?** (`components/Glossary.tsx`, with `<Term>` for
   inline use). The top-bar switch is labelled **Auto-apply best** (it is still `FollowBest.tsx`
   and the crown follower underneath). Pages: **Dashboard** (`Dashboard.tsx` — the NOC wall, led by the
-  **verdict card** (`components/dashboard/VerdictCard`, `verdict.py`): which profile to run,
+  **verdict card** (`components/dashboard/VerdictCard`, reading `GET /api/overall` —
+  `overall_ranking.py`, the fused ranking the crowning policy acts on): which profile to run,
   how sure, what shaping is worth and whether the firewall is on it — the decision every
   reading below it is for, which is why it sits above them rather than beside the other
   verdicts. Then a status strip
