@@ -149,7 +149,39 @@ LLM-based. See `README.md` for the product overview.
     agnostic; *which* metrics form *which* axis lives in `methodology.py`.
   - `methodology.py` — **the published, versioned rubric** (derivation + axis
     weights/thresholds + the first-class Overall), append-only. `CURRENT_METHODOLOGY` =
-    `speed-smoothness-v16` — **v15's browser metrics, thresholds and weighted crown
+    `speed-smoothness-v17` — **a real SHAPE leg in the crown: FCP 1 · LCP 1 · cadence_cov 1
+    (weighted)**. v13–v16's smoothness leg `network_stall_all` is the load's duration minus its
+    render time, so on synthetic series an even 100 ms cadence and an 850 ms void-then-dump over
+    the same span scored identically and the optimizer could not see stall-then-lurch (the
+    review's M1); at weight 0.5 beside two time-to-milestone legs it was swamped anyway (FCP
+    0.44 pts per 10 ms against the stall leg's 0.10, M2); and its `best = 0` threshold put it on
+    a **linear ramp** — `scoring.engine._normalize` takes the perceptual log curve only when
+    `best > 0` — so the one "smoothness" leg was the one leg not perception-calibrated at all
+    (M3). `cadence_cov` (`interpret/smoothness.cadence_cov`, the coefficient of variation of
+    the gaps between resource completions, floor-free and scale-free) was already derived for
+    every run and already scored in Smoothness at 0.2/2.5 on the log curve, so **v17 is a
+    re-grade from cached scalars, no re-derive** (`DERIVATION_VERSION` unchanged). The three
+    legs are even, so the shape leg carries real weight. `network_stall_all` keeps its
+    Smoothness weight with `best` **0 → 10 ms** (R5: a positive log anchor, the scale
+    `longest_stall` anchors at) and keeps `required: True` explicitly — the crown no longer
+    names it, and without the flag the pre-LoAF runs derive-v14 quarantined (it omits the
+    metric rather than fabricating 0) would silently have become comparable and entered the
+    ranking. CLS keeps `best = 0` deliberately: a ratio with a true zero, not a time. Two
+    guards are executable at import: `linear_ramp_legs` (no current crown leg at `best ≤ 0`;
+    `test_no_current_crown_leg_anchors_best_at_zero`) beside the ledger guard above. **What the
+    publish changed in the ranking is measured, not remembered**: `crown_agreement.py`
+    (`GET /api/methodologies/crown-agreement?a=&b=&min_runs=`, the **Crown agreement between
+    versions** card on the Methodology page) prices every confident profile's cold medians
+    under two versions — each with its own thresholds and weights, through the one
+    `warm_agreement.overall_for` — ranks both ways and reports Spearman ρ, the #1 under each,
+    the pooled crown's rank under each and the biggest movers; `a` defaults to the registry
+    version before `b` and `b` to the current one, either may name any registry or stored
+    version (so a version written but not yet current can be audited before the flip), and
+    the verdicts are the warm audit's (`agree` / `same_top` / `disagree` / `insufficient`).
+    `instrument_drift.CROWN_KEYS` and `portable.CROWN_STAND_INS` follow the new leg
+    (`test_instrument_drift_crown_keys_cover_the_current_crown`; the cadence of the synthetic
+    waterfall's completions stands in for a real page's). `test_crown_agreement`,
+    `test_current_methodology_is_v17_rubric`. **v16** was **v15's browser metrics, thresholds and weighted crown
     byte-for-byte, minus every metric a probe plugin supplied** (the HTTP-socket `ttfb` and the
     Completion axis `dns`/`tcp`/`tls`/`jitter`/`packet_loss`), because runs now **measure only
     what the methodology requires** (`config.measurement.methodology_only`, default on:
@@ -3841,6 +3873,10 @@ docker compose up --build   # -> http://localhost:8000
 - **Publishing a new methodology — required follow-through.** Bumping
   `CURRENT_METHODOLOGY` is not done until both of these happen, or history shows stale
   scores and the default UI stops reflecting the rubric:
+  0. **Read what it changed.** The Methodology page's **Crown agreement between versions**
+     card (`GET /api/methodologies/crown-agreement`) prices the field under the prior and the
+     new version and reports how far the ranking moved — before the flip (name the new version
+     as `b` while it is still only in the registry) or after it (the defaults).
   1. **Re-grade history.** New/changed metrics derive from the **already-captured raw**
      (Resource Timing etc.), so a re-grade re-scores every run with the new
      metrics — **no re-collection / re-run needed**. Trigger it via the **Methodology

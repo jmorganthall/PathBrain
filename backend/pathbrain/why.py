@@ -392,9 +392,13 @@ def _site_rows(
             w = float(weights.get(m, 1.0))
             points = w * (_normalize(ma, best, worst) - _normalize(mb, best, worst)) / total_w
             se = _pooled(_se(va), _se(vb))
+            # One decimal is right for a millisecond reading and wrong for a unitless ratio:
+            # the crown's cadence leg lives between 0.2 and 2.5, where 0.45 vs 0.5 is the
+            # difference being priced. Round by the metric's unit, like `format_display`.
+            nd = 1 if (m in _META and _META[m].unit == "ms") else 3
             legs.append({
                 "metric": m, "label": _META[m].label if m in _META else m,
-                "a": _r(ma, 1), "b": _r(mb, 1), "delta": _r(ma - mb, 1), "se": _r(se, 1),
+                "a": _r(ma, nd), "b": _r(mb, nd), "delta": _r(ma - mb, nd), "se": _r(se, nd),
                 "clear": _clear(ma - mb, se, sigma), "points": _r(points),
             })
         phases: list[dict] = []

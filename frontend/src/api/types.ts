@@ -3821,6 +3821,44 @@ export interface WarmAgreement {
   runs_with_warm_reading: number;
 }
 
+// ── Crown agreement: two versions, one field (GET /methodologies/crown-agreement) ──
+export interface CrownAgreementRow {
+  fingerprint: string;
+  name: string | null;
+  runs: number;
+  is_crown: boolean;
+  medians: Record<string, number>;
+  a: { overall: number; subscores: Record<string, number> };
+  b: { overall: number; subscores: Record<string, number> };
+  // On different scales when the crowns differ: read the direction, not the size.
+  b_minus_a: number;
+  a_rank: number;
+  b_rank: number;
+}
+
+export interface CrownAgreement {
+  verdict: "insufficient" | "agree" | "same_top" | "disagree";
+  text: string;
+  rho: number | null;
+  profiles: number;
+  thin_profiles: number;
+  min_runs: number;
+  agree_top: boolean;
+  a: string;
+  b: string;
+  a_crown_metrics: string[];
+  b_crown_metrics: string[];
+  top_a: { fingerprint: string; name: string | null } | null;
+  top_b: { fingerprint: string; name: string | null } | null;
+  crown: { fingerprint: string | null; a_rank?: number; b_rank?: number } | null;
+  movers: { fingerprint: string; name: string | null; a_rank: number; b_rank: number }[];
+  rows: CrownAgreementRow[];
+  methodology: string;
+  runs_compared: number;
+  // Every code-shipped version, oldest first — what the pickers offer.
+  versions: string[];
+}
+
 // ── Where a win lives (GET /settings/profiles/{fp}/why) ────────────────────────
 export interface WhySide {
   fingerprint: string;

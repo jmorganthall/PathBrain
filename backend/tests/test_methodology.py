@@ -151,13 +151,13 @@ def test_unknown_methodology_404(client):
     assert client.get("/api/methodologies/no-such-version").status_code == 404
 
 
-def test_current_methodology_is_v16_rubric():
-    # The published-now methodology is speed-smoothness-v16: v15's browser metrics, thresholds
-    # and weighted crown (FCP 1 · LCP 1 · network_stall_all 0.5) byte-for-byte, minus every
-    # metric a PROBE plugin supplied — the HTTP-socket ttfb and the Completion axis. Runs now
-    # measure only what the methodology requires, and a rubric still scoring probe metrics
-    # would grade every new run "partial" and shift Responsiveness's composition mid-history.
-    assert CURRENT_METHODOLOGY == "speed-smoothness-v16"
+def test_current_methodology_is_v17_rubric():
+    # The published-now methodology is speed-smoothness-v17: v16's browser metrics, axes and
+    # thresholds, with a real SHAPE leg in the crown (FCP 1 · LCP 1 · cadence_cov 1) in place
+    # of the duration-shaped network_stall_all (which stays scored in Smoothness, re-anchored
+    # 0 → 10 ms so it sits on the log curve, and stays required so pre-LoAF runs stay
+    # quarantined). Probe metrics stay out, as v16 took them out.
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v17"
     spec = METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]
     d = build_definition_from_spec(spec)
     by_key = {m["key"]: m for m in d["metrics"]}
@@ -168,11 +168,16 @@ def test_current_methodology_is_v16_rubric():
     # ...and v15 still scores them, frozen, for the runs graded under it.
     v15 = {m["key"]: m for m in build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v15"])["metrics"]}
     assert v15["ttfb"]["axis"] == "responsiveness" and v15["dns"]["axis"] == "completion"
-    # Every browser metric v15 scored, v16 scores identically.
+    # Every browser metric v15 scored, v17 scores identically — except the one re-anchor.
     for k, m in v15.items():
-        if m.get("axis") and k not in ("dns", "tcp", "tls", "jitter", "packet_loss", "ttfb"):
+        if m.get("axis") and k not in ("dns", "tcp", "tls", "jitter", "packet_loss", "ttfb", "network_stall_all"):
             assert (by_key[k]["axis"], by_key[k]["weight"], by_key[k]["best"], by_key[k]["worst"]) == (
                 m["axis"], m["weight"], m["best"], m["worst"]), k
+    # v16 stays frozen exactly as it was published: the duration leg at best 0, in the crown.
+    v16 = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v16"])
+    v16_by = {m["key"]: m for m in v16["metrics"]}
+    assert v16_by["network_stall_all"]["best"] == 0.0
+    assert v16["overall"]["metrics"] == ["fcp", "lcp", "network_stall_all"]
 
     expected = {
         # responsiveness — time-to-first (v5 aspirational-floor anchors carried over)
@@ -185,10 +190,10 @@ def test_current_methodology_is_v16_rubric():
         "load_event": ("speed", 20, 556.2, 8000.0),
         # stability — CLS only
         "cls": ("stability", 50, 0.0, 0.25),
-        # smoothness — network_stall_all (floor-free network dead-air) takes the scored stall slot
-        # (worst_void_fraction → display-only)
+        # smoothness — network_stall_all (floor-free network dead-air) keeps the scored stall slot,
+        # now anchored at 10 ms so it sits on the log curve (worst_void_fraction → display-only)
         "longest_stall": ("smoothness", 40, 25.0, 2000.0),
-        "network_stall_all": ("smoothness", 30, 0.0, 2000.0),
+        "network_stall_all": ("smoothness", 30, 10.0, 2000.0),
         "cadence_cov": ("smoothness", 15, 0.2, 2.5),
         "delivery_gini": ("smoothness", 15, 0.1, 0.7),
     }
@@ -201,8 +206,9 @@ def test_current_methodology_is_v16_rubric():
         assert by_key[k]["axis"] is None, k
 
     # The universal `required` field is materialized onto every metric that defines the
-    # Overall/crown (v13: FCP × LCP × network_stall_all) plus the flagged longest_stall.
-    for key in ("fcp", "lcp", "network_stall_all", "longest_stall"):
+    # Overall/crown (v17: FCP · LCP · cadence_cov) plus the flagged longest_stall and the
+    # still-flagged network_stall_all (so pre-LoAF runs stay quarantined as they were).
+    for key in ("fcp", "lcp", "cadence_cov", "longest_stall", "network_stall_all"):
         assert by_key[key]["required"] is True, key
     # A scored-but-optional metric is NOT required (it redistributes when missing → partial).
     assert by_key["byte_earliness"]["required"] is False
@@ -218,14 +224,29 @@ def test_current_methodology_is_v16_rubric():
     for k in ("latency", "transfer", "speed_index", "network_stall", "worst_void_fraction"):
         assert by_key[k]["axis"] is None
 
-    # v16's crown (unchanged from v15): a weighted average of the calibrated FCP / LCP / network_stall_all subscores —
-    # FCP and LCP even (fastest-to-first + fastest-to-main-content), smoothness secondary at 0.5.
+    # v17's crown: a weighted average of the calibrated FCP / LCP / cadence_cov subscores — the
+    # three even, so the shape leg carries real weight instead of the 0.5 the review priced as
+    # "swamped" (FCP 4.4× more sensitive per ms than the stall leg it replaces).
     assert d["overall"] == {
         "method": "weighted",
-        "metrics": ["fcp", "lcp", "network_stall_all"],
-        "required": ["fcp", "lcp", "network_stall_all"],
-        "weights": {"fcp": 1.0, "lcp": 1.0, "network_stall_all": 0.5},
+        "metrics": ["fcp", "lcp", "cadence_cov"],
+        "required": ["fcp", "lcp", "cadence_cov"],
+        "weights": {"fcp": 1.0, "lcp": 1.0, "cadence_cov": 1.0},
     }
+
+
+def test_no_current_crown_leg_anchors_best_at_zero():
+    """`_normalize` takes the perceptual log curve only when ``best > 0``; at 0 it falls back
+    to a linear ramp silently. v13–v16's smoothness leg sat on that ramp — the one crown leg
+    not calibrated to perception (the review's M3). The current crown has no such leg, the
+    helper names the ones that did, and history keeps its ramps frozen."""
+    from pathbrain.methodology import linear_ramp_legs
+
+    assert linear_ramp_legs(METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY]) == {}
+    for ver in ("speed-smoothness-v13", "speed-smoothness-v14", "speed-smoothness-v15", "speed-smoothness-v16"):
+        assert linear_ramp_legs(METHODOLOGY_REGISTRY[ver]) == {"network_stall_all": 0.0}, ver
+    assert linear_ramp_legs({"overall": {"metrics": ["x", "y"]}, "assignments": {"x": {"best": 0.0}, "y": {"best": 5.0}}}) == {"x": 0.0}
+    assert linear_ramp_legs({"overall": {"metrics": ["z"]}, "assignments": {}}) == {"z": 0.0}
 
 
 def test_overall_from_definition_corners_the_crown_trinity():
@@ -327,11 +348,15 @@ def test_unmeasurable_crown_metric_is_quarantined():
         if plugin == "browser"
     }
     d = build_definition_from_spec(METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY])
-    crown, _ = overall_metrics(d)
+    from pathbrain.methodology import required_metric_keys
     assert metric_values.get("fcp") is not None and metric_values.get("lcp") is not None
+    # The run CAN measure the current crown's shape leg (cadence needs only completions) …
+    assert metric_values.get("cadence_cov") is not None
     tag, missing = comparability(d, metric_values)
     assert tag == "incomparable"
-    assert "network_stall_all" in missing and "network_stall_all" in crown
+    # … and is still quarantined, because network_stall_all stays REQUIRED under v17 even
+    # though the crown no longer names it: the quarantine derive-v14 introduced is kept.
+    assert "network_stall_all" in missing and "network_stall_all" in required_metric_keys(d)
 
 
 def test_required_metric_keys_is_the_single_required_set():

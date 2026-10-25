@@ -454,7 +454,7 @@ def test_reanchor_forks_a_new_version_and_makes_it_current(client, monkeypatch):
     metrics = {m["key"]: m for m in cur["definition"]["metrics"]}
     assert metrics["load_event"]["best"] == 500.0
     assert metrics["fcp"]["best"] == 150.0  # untouched
-    assert cur["definition"]["overall"]["metrics"] == ["fcp", "lcp", "network_stall_all"]
+    assert cur["definition"]["overall"]["metrics"] == ["fcp", "lcp", "cadence_cov"]
 
     # Guard: 'best' can't cross to the wrong side of 'worst' (would invert the curve).
     bad = client.post("/api/methodologies/reanchor", json={"metric_key": "load_event", "best": 99999})
@@ -1240,8 +1240,8 @@ def test_optimizer_export_has_settings_runs_and_raw_metrics(client):
     # Raw scoring metrics per run (most recent first), with the crown metrics present.
     assert len(prof["run_samples"]) == 3
     sample = prof["run_samples"][0]
-    # crown_raw is positional by crown order → fcp=210, lcp=250, network_stall_all=140.0.
-    assert sample["metrics"]["fcp"] == 210.0 and sample["metrics"]["network_stall_all"] == 140.0
+    # crown_raw is positional by crown order → fcp=210, lcp=250, cadence_cov=140.0.
+    assert sample["metrics"]["fcp"] == 210.0 and sample["metrics"]["cadence_cov"] == 140.0
     # Percentile-normalized crown + raw medians summarize the profile.
     assert set(prof["crown_percentiles"]) >= set(_crown_metrics())
     assert prof["metric_medians"]["lcp"] == 250.0
@@ -1481,14 +1481,14 @@ def test_weather_sensitivity_detects_within_profile_correlation(client):
 
 
 def test_weather_adjusted_overall_strips_setup_weather(client):
-    # Two profiles with identical raw FCP/LCP/network_stall_all, so their raw Overall ties. One ran
+    # Two profiles with identical raw crown values, so their raw Overall ties. One ran
     # under heavy connection-setup weather (nav dns+tcp+tls), the other under almost none.
     # Stripping the setup weather leaves the heavy-weather profile with a much faster
     # profile-attributable paint → a higher weather_adjusted_overall, even though raw Overall is
     # equal. (Display-only — the canonical Overall / crown is unaffected.)
     t0 = datetime.now(timezone.utc).replace(tzinfo=None)
-    crown = _crown_metrics()  # [fcp, lcp, network_stall_all]
-    raw = tuple({"fcp": 500.0, "lcp": 800.0, "network_stall_all": 300.0}[m] for m in crown)
+    crown = _crown_metrics()  # [fcp, lcp, cadence_cov] under v17
+    raw = tuple({"fcp": 500.0, "lcp": 800.0, "network_stall_all": 300.0, "cadence_cov": 0.6}[m] for m in crown)
     for i in range(6):
         when = t0 - timedelta(minutes=60 - i)
         _seed_run("wadjheavy001", 80.0, when, iterations=3, crown_raw=raw,

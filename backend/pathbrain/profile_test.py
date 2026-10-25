@@ -358,7 +358,7 @@ def _drive(pt_id: int) -> None:
                         job_group=f"profile_test-{pt_id}",  # group chunks under the parent job
                         job_group_total=iterations,
                         # Lift the browser's per-plugin cap for the test's chunks: the crown
-                        # metrics (fcp/lcp/network_stall_all) are ALL browser-derived, so under
+                        # metrics (fcp/lcp/cadence_cov) are ALL browser-derived, so under
                         # the default cap of 2 a 5-iteration quick test's verdict rests on two
                         # page loads — the dominant noise term the recommendation ledger
                         # measured. A profile test is an explicit "measure this profile"

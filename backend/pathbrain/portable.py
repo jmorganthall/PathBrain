@@ -1323,6 +1323,9 @@ CROWN_STAND_INS: dict[str, str] = {
     "worst_void_fraction": "longest_stall_ms",
     "byte_earliness": "byte_earliness_ms",
     "jank_fraction": "cadence_cov",
+    # v17's smoothness leg is the same statistic on both instruments: the cadence of the
+    # synthetic waterfall's completions stands in for the cadence of a real page's.
+    "cadence_cov": "cadence_cov",
 }
 
 

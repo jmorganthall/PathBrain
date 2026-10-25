@@ -85,9 +85,10 @@ def load_profiles(session, sources: dict[str, str], *, limit: int = LIMIT) -> di
     return dict(out)
 
 
-def _overall(definition: dict, sources: dict[str, str], values: dict[str, float]) -> tuple[float | None, dict]:
+def overall_for(definition: dict, sources: dict[str, str], values: dict[str, float]) -> tuple[float | None, dict]:
     """Score one set of crown-metric values on the methodology's own thresholds and fold them
-    into its Overall — the yardstick the crown is ranked on."""
+    into its Overall — the yardstick the crown is ranked on. Shared with `crown_agreement`,
+    which prices the same medians under two versions."""
     from .methodology import overall_from_definition
     from .scoring.engine import compute_score
 
@@ -102,6 +103,9 @@ def _overall(definition: dict, sources: dict[str, str], values: dict[str, float]
     )
     subs = dict(breakdown.subscores or {})
     return overall_from_definition(definition, subs), subs
+
+
+_overall = overall_for
 
 
 def assess(
@@ -176,7 +180,7 @@ def assess(
             f"They disagree: by first visit {_nm(top_cold)} ranks first, by repeat visit {_nm(top_warm)} does "
             f"(ρ = {rho:+.2f} over {len(rows)} profiles). On the repeat visit — most clicks — the cold crown is "
             "not the best-feeling profile. That is a methodology decision: a version can adopt the warm legs "
-            "(warm_fcp / warm_lcp / warm_network_stall_all) in its Overall, and this card is the measured "
+            f"({' / '.join(WARM_PREFIX + k for k in sources)}) in its Overall, and this card is the measured "
             "reason to make it."
         )
     if crown_row and crown_row["cold_rank"] != crown_row["warm_rank"]:

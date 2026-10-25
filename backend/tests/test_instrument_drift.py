@@ -64,6 +64,7 @@ def _samples(**series) -> list[RunSample]:
                 fcp_ms=f.get("fcp_ms", 300.0),
                 lcp_ms=f.get("lcp_ms", 350.0),
                 network_stall_all_ms=f.get("network_stall_all_ms", 40.0),
+                cadence_cov=f.get("cadence_cov", 0.4),
                 nav_render_ms=f.get("nav_render_ms", 120.0),
                 inp_ms=f.get("inp_ms", 30.0),
                 cls=f.get("cls", 0.01),
@@ -324,7 +325,7 @@ def _seed_db(n: int = 20) -> list[int]:
                     run_id=run.id, plugin="browser", success=True, duration_ms=18000.0 + 1000.0 * i,
                     metrics={
                         "total_render_ms": 3000.0, "load_event_ms": 1200.0, "fcp_ms": 300.0, "lcp_ms": 350.0,
-                        "network_stall_all_ms": 40.0, "nav_render_ms": 100.0 + 5.0 * i, "inp_ms": 30.0, "cls": 0.01,
+                        "network_stall_all_ms": 40.0, "cadence_cov": 0.4, "nav_render_ms": 100.0 + 5.0 * i, "inp_ms": 30.0, "cls": 0.01,
                         "nav_dns_ms": 2.0, "nav_tcp_ms": 10.0, "nav_tls_ms": 20.0, "nav_request_ms": 50.0, "nav_response_ms": 30.0,
                     },
                     details=details, raw={},
@@ -368,3 +369,17 @@ def test_load_samples_reads_scalars_through_json_paths_and_the_audit_runs_end_to
         "mix", "published", "browser_failed", "stable", "insufficient",
     }
     assert "cohorts" in body and "trends" in body and "steps" in body and body["derivation_version"] == DERIVATION_VERSION
+
+
+def test_instrument_drift_crown_keys_cover_the_current_crown():
+    """The audit trends the crown's own readings; `CROWN_KEYS` must name every leg of the
+    current methodology's crown by its browser source key, or a publish silently drops a leg
+    from the drift readout."""
+    from pathbrain import instrument_drift
+    from pathbrain.methodology import CURRENT_METHODOLOGY, METHODOLOGY_REGISTRY, build_definition_from_spec
+    from pathbrain.warm_agreement import crown_sources
+
+    d = build_definition_from_spec(METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY])
+    assert set(crown_sources(d).values()) <= set(instrument_drift.CROWN_KEYS)
+    for k in instrument_drift.CROWN_KEYS:
+        assert instrument_drift.QUANTITIES[k]["family"] == "crown", k

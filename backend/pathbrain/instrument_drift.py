@@ -112,12 +112,16 @@ QUANTITIES: dict[str, dict] = {
     "nav_network_ms": {"label": "Network phases", "unit": "ms", "floor": 20.0, "family": "network"},
     "fcp_ms": {"label": "FCP", "unit": "ms", "floor": 20.0, "family": "crown"},
     "lcp_ms": {"label": "LCP", "unit": "ms", "floor": 20.0, "family": "crown"},
-    "network_stall_all_ms": {"label": "Network stall (all)", "unit": "ms", "floor": 10.0, "family": "crown"},
+    "cadence_cov": {"label": "Delivery cadence (CoV)", "unit": "", "floor": 0.05, "family": "crown"},
+    # Scored in Smoothness, no longer a crown leg (v17); kept as a network reading.
+    "network_stall_all_ms": {"label": "Network stall (all)", "unit": "ms", "floor": 10.0, "family": "network"},
     "browser_share": {"label": "Browser iterations per suite iteration", "unit": "", "floor": 0.1, "family": "mix"},
     "pages": {"label": "Pages per browser iteration", "unit": "", "floor": 0.5, "family": "mix"},
 }
 CLIENT_KEYS = ("nav_render_ms", "inp_ms", "cls")
-CROWN_KEYS = ("fcp_ms", "lcp_ms", "network_stall_all_ms")
+# The current crown's readings, by browser source key (`test_instrument_drift` pins that
+# this covers `methodology.overall_metrics` for the current version).
+CROWN_KEYS = ("fcp_ms", "lcp_ms", "cadence_cov")
 # A step in any of these is a step in what the crown reads — the instrument, not the schedule.
 INSTRUMENT_KEYS = CLIENT_KEYS + CROWN_KEYS + ("page_clock_ms", "nav_network_ms")
 PHASE_KEYS = ("context_ms", "goto_ms", "idle_ms", "reads_ms", "warm_ms", "close_ms")
@@ -145,6 +149,7 @@ class RunSample:
     fcp_ms: float | None = None
     lcp_ms: float | None = None
     network_stall_all_ms: float | None = None
+    cadence_cov: float | None = None
     nav_render_ms: float | None = None
     inp_ms: float | None = None
     cls: float | None = None
@@ -841,6 +846,7 @@ def load_samples(session, *, days: int = DEFAULT_DAYS, limit: int = DEFAULT_LIMI
                 metrics["fcp_ms"].as_float(),
                 metrics["lcp_ms"].as_float(),
                 metrics["network_stall_all_ms"].as_float(),
+                metrics["cadence_cov"].as_float(),
                 metrics["nav_render_ms"].as_float(),
                 metrics["inp_ms"].as_float(),
                 metrics["cls"].as_float(),
@@ -852,7 +858,7 @@ def load_samples(session, *, days: int = DEFAULT_DAYS, limit: int = DEFAULT_LIMI
         for row in session.execute(q).all():
             (
                 rid, finished, created, label, group, done, planned, per_ms, mver, scoped, idle_cap, pages,
-                wall, samples, client_json, phases_json, page_wall, page_clock, fcp, lcp, nsa, render, inp, cls, *nav,
+                wall, samples, client_json, phases_json, page_wall, page_clock, fcp, lcp, nsa, cov, render, inp, cls, *nav,
             ) = row
             nav_vals = [_f(v) for v in nav]
             phases = _json(phases_json)
@@ -874,6 +880,7 @@ def load_samples(session, *, days: int = DEFAULT_DAYS, limit: int = DEFAULT_LIMI
                     fcp_ms=_f(fcp),
                     lcp_ms=_f(lcp),
                     network_stall_all_ms=_f(nsa),
+                    cadence_cov=_f(cov),
                     nav_render_ms=_f(render),
                     inp_ms=_f(inp),
                     cls=_f(cls),

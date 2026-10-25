@@ -10,12 +10,14 @@ from pathbrain.plugins import iter_plugins
 from pathbrain.runner import create_run, measurement_scope
 
 PLUGINS = [p.name for p in iter_plugins()]
+V17 = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v17"])
 V16 = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v16"])
 V15 = build_definition_from_spec(METHODOLOGY_REGISTRY["speed-smoothness-v15"])
 
 
 def test_required_plugins_is_the_browser_under_the_current_crown():
-    # The crown is FCP × LCP × network_stall_all (+ the flagged longest_stall): browser-only.
+    # The crown is FCP · LCP · cadence_cov (+ the flagged longest_stall / network_stall_all): browser-only.
+    assert required_plugins(V17) == {"browser"}
     assert required_plugins(V16) == {"browser"}
     assert required_plugins(V15) == {"browser"}
     # A pre-v5 style definition with no overall spec and no flags requires nothing.

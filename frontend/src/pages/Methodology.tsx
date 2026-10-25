@@ -28,6 +28,7 @@ import type {
   IdleAudit,
   InstrumentDrift,
   WarmAgreement,
+  CrownAgreement,
   BrowserClient,
   BrowserConfig,
   MethodologyDetail,
@@ -731,6 +732,8 @@ export default function Methodology() {
 
       <WarmCrownAudit autoRun={auditParam === "warm"} />
 
+      <CrownAgreementAudit autoRun={auditParam === "crown"} versions={versions.map((v) => v.version)} />
+
       {/* "Can this profile exist?" — the reachability audit. Sits with the other audits
           because it is the same kind of question: not "is this measurement sound?" but
           "is this profile still one we can put the firewall on?" */}
@@ -1212,6 +1215,141 @@ const WARM_SEVERITY: Record<WarmAgreement["verdict"], "success" | "info" | "warn
  * this ranks the profiles by a warm Overall on the methodology's own yardstick beside the cold
  * one. Agreement means the cold crown stands for the warm case; disagreement is the measured
  * reason to publish a version that adopts the warm legs. Read-only. */
+function CrownAgreementAudit({ autoRun, versions }: { autoRun: boolean; versions: string[] }) {
+  const [minRuns, setMinRuns] = useState(5);
+  const [a, setA] = useState<string>("");
+  const [b, setB] = useState<string>("");
+  const [audit, setAudit] = useState<CrownAgreement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const load = useCallback(async (n: number, va: string, vb: string) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const out = await api.crownAgreement(va || undefined, vb || undefined, n);
+      setAudit(out);
+      // The server filled the defaults in; show them so the pickers say what was compared.
+      setA(out.a);
+      setB(out.b);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+  useEffect(() => {
+    if (autoRun) void load(5, "", "");
+  }, [autoRun, load]);
+  // Every version the server knows: the code-shipped list plus whatever the page lists
+  // (forks published from here never reach the registry).
+  const options = Array.from(new Set([...(audit?.versions ?? []), ...versions]));
+  const short = (v: string) => v.replace(/^speed-smoothness-/, "");
+  return (
+    <FoldCard
+      title="Crown agreement between versions"
+      summary="Did the last publish change who wins? Two rubrics priced on the same profiles' medians, ranked both ways."
+      openWhen={autoRun}
+    >
+      <Stack spacing={1.5}>
+        <Typography variant="body2" color="text.secondary">
+          A publish that changes the crown — a new leg, a re-weight, a re-anchored threshold — is a decision about
+          what <b>best</b> means, and the one number that says what it did is how far the ranking moved. Every profile
+          with enough runs carrying every leg of both crowns is priced under version <b>A</b> and version <b>B</b>, each
+          with its own thresholds and weights, from the same cold medians; the readout is the rank correlation, the #1
+          under each, the pooled crown's rank under each and the biggest movers. Defaults: A = the version before the
+          current one, B = the current one. A version that is written but not yet current can be compared before the
+          flip.
+        </Typography>
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <TextField select size="small" label="Version A" value={a} onChange={(e) => setA(e.target.value)} sx={{ minWidth: 160 }}>
+            <MenuItem value="">(the one before B)</MenuItem>
+            {options.map((v) => (
+              <MenuItem key={v} value={v}>{short(v)}</MenuItem>
+            ))}
+          </TextField>
+          <TextField select size="small" label="Version B" value={b} onChange={(e) => setB(e.target.value)} sx={{ minWidth: 160 }}>
+            <MenuItem value="">(current)</MenuItem>
+            {options.map((v) => (
+              <MenuItem key={v} value={v}>{short(v)}</MenuItem>
+            ))}
+          </TextField>
+          <TextField
+            select
+            size="small"
+            label="Runs per profile"
+            value={minRuns}
+            onChange={(e) => setMinRuns(Number(e.target.value))}
+            sx={{ minWidth: 150 }}
+          >
+            {[3, 5, 10, 20].map((n) => (
+              <MenuItem key={n} value={n}>
+                at least {n}
+              </MenuItem>
+            ))}
+          </TextField>
+          <Button variant="outlined" size="small" onClick={() => load(minRuns, a, b)} disabled={busy}>
+            {busy ? "Comparing…" : audit ? "Re-run comparison" : "Run comparison"}
+          </Button>
+        </Stack>
+        {err && <Alert severity="error">{err}</Alert>}
+        {audit && (
+          <>
+            <Alert severity={WARM_SEVERITY[audit.verdict] ?? "info"}>
+              <b>{audit.text}</b>
+              <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.5 }}>
+                {audit.runs_compared} runs · {audit.profiles} profile(s) compared
+                {audit.thin_profiles ? ` · ${audit.thin_profiles} below ${audit.min_runs} runs` : ""} · A = {short(audit.a)} (
+                {audit.a_crown_metrics.join(", ")}) · B = {short(audit.b)} ({audit.b_crown_metrics.join(", ")})
+              </Typography>
+            </Alert>
+            {audit.rows.length > 0 && (
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Profile</TableCell>
+                      <TableCell align="right">Runs</TableCell>
+                      <TableCell align="right">A Overall</TableCell>
+                      <TableCell align="right">A #</TableCell>
+                      <TableCell align="right">B Overall</TableCell>
+                      <TableCell align="right">B #</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {audit.rows.map((r) => (
+                      <TableRow key={r.fingerprint} hover>
+                        <TableCell>
+                          {r.name ?? r.fingerprint.slice(0, 8)}
+                          {r.is_crown && <Chip size="small" label="crown" color="primary" variant="outlined" sx={{ ml: 0.5 }} />}
+                        </TableCell>
+                        <TableCell align="right">{r.runs}</TableCell>
+                        <TableCell align="right">{r.a.overall.toFixed(1)}</TableCell>
+                        <TableCell align="right">{r.a_rank}</TableCell>
+                        <TableCell align="right">{r.b.overall.toFixed(1)}</TableCell>
+                        <TableCell align="right">
+                          {r.b_rank}
+                          {r.b_rank !== r.a_rank && (
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              label={r.b_rank < r.a_rank ? `▲${r.a_rank - r.b_rank}` : `▼${r.b_rank - r.a_rank}`}
+                              sx={{ ml: 0.5 }}
+                            />
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+          </>
+        )}
+      </Stack>
+    </FoldCard>
+  );
+}
+
 function WarmCrownAudit({ autoRun }: { autoRun: boolean }) {
   const [minRuns, setMinRuns] = useState(5);
   const [audit, setAudit] = useState<WarmAgreement | null>(null);
