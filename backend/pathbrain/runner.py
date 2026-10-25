@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean, median, pstdev
 from time import perf_counter
 
-from sqlalchemy import select
+from sqlalchemy import exists, func, select
 
 from . import coordinator, probes
 from .config import get_settings
@@ -891,10 +891,71 @@ def score_run_under(session, run, methodology, artifact_base: str | None = None)
 _REGRADE_COMMIT_EVERY = 100
 
 
+def regrade_order(session, min_iterations: int | None = None) -> tuple[list[int], dict]:
+    """The runs a re-grade should visit, **best-first**, and the ones it need not visit.
+
+    A pass walked every completed run oldest first, which is close to the worst order for
+    the one thing a re-grade is for — a crown under the new rubric. The oldest runs are the
+    ones with no re-gradeable raw (the first minutes of a 40,000-run pass produced nothing
+    actionable: *"scored 108/40430 · 7%"*), and the profiles whose numbers decide the crown
+    are the ones the **prior** version ranked highest, since a publish keeps most of the
+    crown and the previous top is where the new crown almost certainly lives.
+
+    So: **(1)** the prior version's **confident** profiles, best first (`refresh.prior_field`,
+    the same standings the seed uses — a prior for *ordering*, never a score); **(2)** its
+    thin profiles, best first; **(3)** everything else — profiles the prior version never
+    ranked, and runs with no fingerprint — newest first. Within a profile, newest runs
+    first, so the recent comparable evidence lands before the stale tail. **(4)** A run
+    with no benchmark result rows at all is left out up front rather than visited: it has
+    no cached metrics and no raw, so `score_run_under` can only ever skip it, and counting
+    it in the total made the progress bar read 7% at 108 runs scored. Returns the ordered
+    run ids and ``{ordered_by, prior_profiles, unscorable}``. The ORDER is the whole of
+    this: every run that can score still scores, in one pass."""
+    has_result = exists().where(BenchmarkResult.run_id == Run.id)
+    rows = session.execute(
+        select(Run.id, Run.settings_fingerprint)
+        .where(Run.status == RunStatus.COMPLETE, has_result)
+    ).all()
+    unscorable = int(session.scalar(
+        select(func.count(Run.id)).where(Run.status == RunStatus.COMPLETE, ~has_result)
+    ) or 0)
+    prior = None
+    try:
+        from .refresh import prior_field
+
+        prior = prior_field(session, min_iterations)
+    except Exception:  # noqa: BLE001 — no prior standings is newest-first, never a failed pass
+        log.debug("Re-grade order: the prior field could not be read", exc_info=True)
+    overall = (prior or {}).get("overall") or {}
+    iters = (prior or {}).get("iterations") or {}
+    need = int(min_iterations or 0)
+
+    def _key(row) -> tuple:
+        rid, fp = row
+        if fp in overall:
+            return (0 if iters.get(fp, 0) >= need else 1, -float(overall[fp]), -int(rid))
+        return (2, 0.0, -int(rid))
+
+    ordered = [int(rid) for rid, _fp in sorted(rows, key=_key)]
+    return ordered, {
+        "ordered_by": (
+            f"the prior version's standings ({prior['version']}), confident profiles best "
+            "first, then the rest newest first"
+            if overall else "newest first (no prior version has standings)"
+        ),
+        "prior_profiles": len(overall),
+        "unscorable": unscorable,
+    }
+
+
 def score_history_under_current(session, progress=None) -> dict:
     """Score every completed run from raw under the current methodology (Phase 3
     re-grade). Writes new/refreshed Score rows; leaves other versions' at-measure
     rows untouched. Returns a comparability summary.
+
+    The runs are visited in `regrade_order`: the prior version's best profiles first, so
+    the numbers that decide the new crown land in the first minutes rather than the last,
+    and runs that cannot score are not visited at all.
 
     Each run is committed as it's scored (not one all-or-nothing commit at the end)
     and wrapped in its own try/except, so the pass is **resumable and robust**: a
@@ -909,12 +970,17 @@ def score_history_under_current(session, progress=None) -> dict:
     from .config_store import get_config
     from .methodology import ensure_current_methodology
 
-    methodology = ensure_current_methodology(session, get_config(session))
+    cfg = get_config(session)
+    methodology = ensure_current_methodology(session, cfg)
     session.commit()  # persist the methodology row before the (possibly long) loop
     artifact_base = os.path.abspath(get_settings().artifact_dir)
-    run_ids = list(session.scalars(select(Run.id).where(Run.status == RunStatus.COMPLETE)))
+    min_iterations = int((cfg.get("correlation") or {}).get("min_iterations") or 0)
+    run_ids, order = regrade_order(session, min_iterations)
     total = len(run_ids)
-    counts = {"exact": 0, "partial": 0, "incomparable": 0, "scored": 0, "skipped": 0, "errors": 0}
+    log.info("Re-grade under %s: %d run(s) to visit, %d unscorable left out; ordered by %s",
+             methodology.version, total, order["unscorable"], order["ordered_by"])
+    counts = {"exact": 0, "partial": 0, "incomparable": 0, "scored": 0, "skipped": 0, "errors": 0,
+              "unscorable": order["unscorable"], "ordered_by": order["ordered_by"]}
     # Commit in batches instead of once per run: a per-run commit fsyncs on every one of
     # (potentially thousands of) runs, which dominated the wall-clock. Each run is wrapped in
     # a SAVEPOINT so a single malformed run rolls back only itself, not the whole batch — so

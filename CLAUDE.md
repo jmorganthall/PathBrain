@@ -1651,6 +1651,18 @@ LLM-based. See `README.md` for the product overview.
     runner-up and escalate to a full `compute_profiles` pass after every run (logged as
     *"crown fell to the runner-up"* every five minutes, and the NAS's CPU with it). Only a
     firewall on the pooled crown itself is cached as on it.
+    **The follower HOLDS while a re-grade runs** (`_regrade_in_progress`, `jobs.regrading`
+    / `jobs.REGRADE_KINDS`, `check()["skipped"]`). A re-grade rewrites the field in place
+    and, since `regrade_order`, best-first — so for the hour it runs the field is partial: the
+    profiles it has reached are scored under the current version and the rest are not, and
+    a crown read then is the pass's progress, not the field's verdict. The follower used to
+    read that crown like any other: a tracked "change" on the churn ledger that never
+    happened, and under *Follow best* a firewall write to a profile crowned on half the
+    history. Now `step()` holds before it opens a session (`retry_at` = `RETRY_SECONDS`
+    away, never the multi-hour backstop) and `_do_check` returns `skipped` naming the job
+    before any session work; the re-grade's own `poke()` runs the full check the moment it
+    finishes. Best-effort: an unreadable job registry reads as nothing running.
+    `test_the_follower_holds_while_a_regrade_is_running`.
     `/api/settings/crown-follow` (GET status+stats+ledger, POST config, POST `/sync` = check
     now); driven by the top-bar **"Follow best" switch** (`FollowBest.tsx`) with a status/churn
     popover.
@@ -3903,6 +3915,17 @@ docker compose up --build   # -> http://localhost:8000
      Only pre-raw-collection legacy runs (no raw) can't be re-derived — they stay
      quarantined as legacy. There is deliberately no "physically re-run every profile"
      batch; re-grading from raw is the supported way to bring history onto a new rubric.
+     **The pass is best-first, and runs that cannot score are not visited**
+     (`runner.regrade_order`): a publish exists to produce a crown under the new rubric,
+     and oldest-first put the runs that decide one last — the first minutes of a
+     40,000-run pass were spent on runs with no re-gradeable raw (*"scored 108/40430 ·
+     7%"*). The order is the prior version's standings (`refresh.prior_field`, the same
+     seed the ladder uses — a prior for *ordering*, never a score): its **confident**
+     profiles best first, newest run first within a profile, then its thin profiles, then
+     everything the prior never ranked newest first. A COMPLETE run with no benchmark
+     result rows is left out up front and counted as `unscorable` in the summary rather
+     than visited and skipped. Every run that can score still scores, in the one pass.
+     The job summary carries `unscorable` and `ordered_by`.
   2. **Changing the sites is a publish too.** Do it from the Methodology page's "Sites
      measured" card (`POST /api/methodologies/sites`), never by editing config: the new
      version owns the list and quarantines runs measured against the old one, and the

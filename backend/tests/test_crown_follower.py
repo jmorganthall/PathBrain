@@ -742,3 +742,53 @@ def test_a_firewall_on_a_different_governing_crown_is_not_cached_as_on_the_poole
                                            "governing_fingerprint": "pooled"})
     assert cf._state["cache"]["crown_live_fp"] == "pooled-echo"
     cf._state.pop("cache", None)
+
+
+# ── a re-grade in flight: the field is partial, so the follower holds ───────────────
+
+
+def test_the_follower_holds_while_a_regrade_is_running(monkeypatch):
+    """Mid re-grade the field is half under the new version and half not, so a crown read
+    then is the pass's progress, not the field's verdict: the follower neither writes the
+    firewall nor records a crown change until the job ends, and `step()` retries soon
+    (the re-grade also pokes a full check when it finishes)."""
+    import time
+    from types import SimpleNamespace
+
+    from pathbrain import jobs
+
+    _enable()
+    target = _off_crown_target(quantum=2000)
+    monkeypatch.setattr(crown_follower, "_compute_field", lambda s: _field_for(_profile(target)))
+    fake = SimpleNamespace(id=7, label="Re-grade history under current methodology")
+    monkeypatch.setattr(jobs, "regrading", lambda: fake)
+
+    result = crown_follower.check()
+    assert result["skipped"] and "job #7" in result["skipped"]
+    assert result["applied"] is False
+    assert "quantum" not in _OVERRIDES, "nothing reached the firewall"
+    assert _events() == [], "no crown event is written off a partial field"
+    assert crown_follower._state["last_result"] is result
+
+    # The tick holds before it opens a session, and retries soon rather than at the
+    # multi-hour backstop.
+    crown_follower._state["backstop_s"] = 3600.0
+    crown_follower._state["last_full_check"] = 0.0
+
+    def _boom(*a, **k):
+        raise AssertionError("a held tick touched the DB")
+
+    monkeypatch.setattr(crown_follower, "session_scope", _boom)
+    assert crown_follower.step() is False
+    retry_at = crown_follower._state["retry_at"]
+    assert retry_at is not None and time.time() < retry_at <= time.time() + crown_follower.RETRY_SECONDS + 1
+    monkeypatch.undo()
+
+    # The job ends: the same check applies the crown exactly as before.
+    monkeypatch.setattr(crown_follower, "_compute_field", lambda s: _field_for(_profile(target)))
+    monkeypatch.setattr(jobs, "regrading", lambda: None)
+    _enable()
+    result = crown_follower.check()
+    assert result["skipped"] is None
+    assert result["applied"] is True and int(_OVERRIDES["quantum"]) == 2000
+    assert len(_events("change")) == 1

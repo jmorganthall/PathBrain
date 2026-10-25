@@ -317,6 +317,16 @@ def step() -> bool:
     if not pending and not due:
         return False
 
+    # A re-grade is rewriting the field in place: every profile it has reached is scored
+    # under the current version and every profile it has not is not, so any crown read now
+    # is a crown over a partial field — the one thing the follower must never write. Hold,
+    # and retry soon; the re-grade pokes a full check the moment it finishes.
+    regrade = _regrade_in_progress()
+    if regrade is not None:
+        log.info("Crown follower: holding — %s is running (the field is partial)", regrade)
+        _state["retry_at"] = now + RETRY_SECONDS
+        return False
+
     # We're doing work anyway — refresh the cached backstop interval from config.
     try:
         with session_scope() as session:
@@ -350,6 +360,9 @@ def step() -> bool:
     except Exception:  # noqa: BLE001 — never let a check kill the scheduler loop
         log.exception("Crown follower check failed")
         return False
+    if result.get("skipped"):
+        _state["retry_at"] = now + RETRY_SECONDS
+        return False
     # A deferred (pipeline busy) or failed apply retries soon, not hours away at the
     # next backstop.
     if (result.get("apply_skipped") or "").startswith("deferred") or (
@@ -373,6 +386,21 @@ def check() -> dict:
         return _do_check()
 
 
+def _regrade_in_progress() -> str | None:
+    """The running re-grade / re-score / re-derive job as a label, or None. A field being
+    rewritten in place is partial until the job ends: whatever it has reached is scored
+    under the current version and whatever it has not is not, so a crown read mid-pass can
+    name a profile crowned on half the history. Best-effort: an unreadable registry reads
+    as nothing running (the check then proceeds as it always did)."""
+    try:
+        from . import jobs
+
+        job = jobs.regrading()
+    except Exception:  # noqa: BLE001
+        return None
+    return None if job is None else f"job #{job.id} ({job.label})"
+
+
 def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladder
     now = datetime.now(timezone.utc)
     result: dict = {
@@ -385,8 +413,18 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
         "on_crown": None,
         "applied": False,
         "apply_skipped": None,
+        "skipped": None,
         "error": None,
     }
+
+    # Neither track nor follow on a partial field (see `_regrade_in_progress`): a crown
+    # "change" read halfway through a re-grade is the pass's progress, not the field's
+    # verdict, and would be written to the churn ledger as a change that never happened.
+    regrade = _regrade_in_progress()
+    if regrade is not None:
+        result["skipped"] = f"{regrade} is re-grading the field; checking again when it finishes"
+        _state["last_result"] = result
+        return result
 
     with session_scope() as session:
         result["enabled"] = _follow_config(session)["enabled"]
