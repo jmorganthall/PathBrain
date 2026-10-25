@@ -113,3 +113,63 @@ def test_no_plan_can_write_the_flow_table():
     changes, _ = plan_apply(target, live)
     assert changes, "the quantum difference should still be planned"
     assert "flows" not in {c["param"] for c in changes}
+
+
+# ── Fingerprints are spelling-blind ──────────────────────────────────────────
+
+
+def test_canonical_value_is_a_fixed_point_on_the_firewalls_echo():
+    """`normalize(discover())` from a real OPNsense pipe must hash exactly as it always has:
+    the canonical form IS the firewall's echo form, so no run recorded off the firewall
+    re-keys. Ints stay ints, the duration selects stay bare-number strings, ecn stays a bool,
+    bandwidth and scheduler strings pass through."""
+    from pathbrain.providers.opnsense import _pipe_to_config
+    from pathbrain.settings_profile import fingerprint, normalize
+    from tests.test_opnsense_parse import SAMPLE_PIPE
+
+    norm = normalize([_pipe_to_config("u", SAMPLE_PIPE)])
+    for p in norm:
+        for k in sf.CANON_FIELDS:
+            assert sf.canonical_value(k, p.get(k)) == p.get(k), k
+            assert type(sf.canonical_value(k, p.get(k))) is type(p.get(k)), k
+    assert norm[0]["target"] == "5" and sf.canonical_value("target", "5") == "5"
+    assert norm[0]["quantum"] == 3000 and sf.canonical_value("quantum", 3000) == 3000
+    assert sf.canonical_value("ecn", True) is True
+    assert sf.canonical_value("download_bandwidth", "900Mbit") == "900Mbit"
+    assert sf.canonical_value("scheduler", "fq_codel") == "fq_codel"
+    assert sf.canonical_value("target", None) is None
+    # And the hash of the echo is the hash of its own canonical form.
+    canon = [{**p, **{k: sf.canonical_value(k, p.get(k)) for k in sf.CANON_FIELDS}} for p in norm]
+    assert fingerprint(canon) == fingerprint(norm)
+
+
+def test_every_spelling_of_one_profile_shares_a_fingerprint():
+    """`"5ms"` (the mock, an AI), `5` (coerce_value's wire form), `"5"` (OPNsense's echo) and
+    `5.0` are one CoDel target; `"3000"` and `3000` one quantum; `"true"` and `True` one ECN.
+    They used to be as many fingerprints as spellings, the predicted one pointing at a profile
+    with no history."""
+    from pathbrain.settings_profile import fingerprint
+
+    def prof(target, quantum, ecn):
+        return [{"label": "wan", "download_bandwidth": "900Mbit", "quantum": quantum, "limit": 10240,
+                 "target": target, "interval": "100", "ecn": ecn, "flows": 1024, "queues": 1,
+                 "scheduler": "fq_codel", "enabled": True}]
+
+    echo = fingerprint(prof("5", 3000, True))
+    for target in ("5ms", 5, "5", 5.0, " 5 ms"):
+        for quantum in ("3000", 3000, 3000.0):
+            for ecn in ("true", True, "1", "on"):
+                assert fingerprint(prof(target, quantum, ecn)) == echo, (target, quantum, ecn)
+    # Different settings are still different profiles.
+    assert fingerprint(prof("6", 3000, True)) != echo
+    assert fingerprint(prof("5", 3001, True)) != echo
+    assert fingerprint(prof("5", 3000, False)) != echo
+    # The canonical form is the echo's, not the wire's: a str for the select, never an int.
+    assert sf.canonical_value("target", "5ms") == "5" and sf.coerce_value("target", "5ms") == 5
+
+
+def test_sqm_off_collapses_before_canonicalisation():
+    from pathbrain.settings_profile import SQM_OFF_FINGERPRINT, fingerprint
+
+    assert fingerprint([{"label": "wan", "quantum": "3000", "target": "5ms", "enabled": False}]) == SQM_OFF_FINGERPRINT
+    assert fingerprint([{"label": "wan", "quantum": 3000, "target": "5", "enabled": True}]) != SQM_OFF_FINGERPRINT

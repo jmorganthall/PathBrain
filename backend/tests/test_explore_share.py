@@ -64,12 +64,13 @@ def test_zero_share_is_off_and_the_share_is_clamped():
     assert explore_share.iterations({}) == 5
 
 
-def _completed_test(fp: str, seconds: float = 60.0) -> int:
+def _completed_test(fp: str, seconds: float = 60.0, *, reached: str | None = None) -> int:
     now = datetime.now(timezone.utc)
     with session_scope() as s:
         pt = ProfileTest(
             status=ProfileTestStatus.COMPLETE, fingerprint=fp, target_label="explore",
             iterations=5, started_at=now - timedelta(seconds=seconds), finished_at=now,
+            reached_fingerprint=reached,
         )
         s.add(pt)
         s.flush()
@@ -261,3 +262,26 @@ def test_the_ring_hands_the_maturing_turn_its_own_heirs_and_settings(monkeypatch
     # Each profile is matured at most once a session; the belt never is.
     assert d.explore["matured"] <= 2 and all(m[0] != C for m in matured)
     assert len({m[0] for m in matured}) == len(matured)
+
+
+def test_a_landed_bet_reports_the_fingerprint_its_runs_were_filed_under():
+    """A bet is queued under the fingerprint Explore predicted; the firewall settles on the
+    profile it actually reports and the runs are filed there (`ProfileTest.reached_fingerprint`).
+    The board used to keep showing the prediction, so a reader following the bet to its profile
+    found a profile with no runs. Once known, the reached fingerprint is the bet's and the
+    prediction sits beside it."""
+    share = explore_share.ExploreShare(1, {"explore_share": 0.05}, 3600.0)
+    reached_id = _completed_test("predicted000", reached="reached00000")
+    pending_id = _completed_test("predicted111")        # no reached stamp (older row)
+    share.bets = [
+        {"kind": "bet", "test_id": reached_id, "fingerprint": "predicted000", "label": "a", "iterations": 5},
+        {"kind": "bet", "test_id": pending_id, "fingerprint": "predicted111", "label": "b", "iterations": 5},
+    ]
+    landed = {b["label"]: b for b in share.newly_landed()}
+    assert landed["a"]["fingerprint"] == "reached00000"
+    assert landed["a"]["predicted_fingerprint"] == "predicted000"
+    assert landed["b"]["fingerprint"] == "predicted111", "no reached stamp → the prediction stands"
+    assert landed["b"]["predicted_fingerprint"] == "predicted111"
+    board = {b["label"]: b for b in share.summary()["bets"]}
+    assert board["a"]["fingerprint"] == "reached00000" and board["a"]["predicted_fingerprint"] == "predicted000"
+    assert board["b"]["fingerprint"] == "predicted111"

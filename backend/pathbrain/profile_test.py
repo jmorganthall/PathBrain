@@ -300,11 +300,13 @@ def _drive(pt_id: int) -> None:
                     )
                 reached_fp = fingerprint(after)
                 # The verify above raises unless every writable field matches, so reaching this
-                # line means the firewall IS on the requested profile. If the fingerprints still
-                # differ it is a spelling difference — we write ``55``, the firewall reports
-                # ``"55"`` — and the runs will be filed under the firewall's version. Log the
-                # actual field values behind it, because "settled on a different fingerprint" is
-                # alarming and unfalsifiable without them.
+                # line means the firewall IS on the requested profile. `fingerprint` hashes
+                # every identity field in the firewall's own echo form, so a spelling difference
+                # (we write ``55``, the firewall reports ``"55"``) no longer moves it; if the
+                # two still differ it is a form `canonical_value` does not fold (a bandwidth
+                # restated in another unit) and the runs are filed under the firewall's
+                # version. Log the actual field values behind it, because "settled on a
+                # different fingerprint" is alarming and unfalsifiable without them.
                 if reached_fp != target_fp:
                     spelled = "; ".join(
                         f"{t.get('label')}·{f}: asked {t.get(f)!r} ({type(t.get(f)).__name__}), "

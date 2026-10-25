@@ -706,11 +706,14 @@ def refingerprint_runs(
     """Recompute every run's ``settings_fingerprint`` from its *own* captured settings — a one-shot
     re-key of history under the current fingerprint scheme, preserving all the underlying data.
 
-    Its effect today is to **collapse all "SQM off" runs into the single canonical SQM-off
+    Two collapses, both idempotent. **"SQM off" runs fold into the single canonical SQM-off
     profile**: their fingerprints used to vary with the (inert) shaper field values the firewall
-    echoes back while disabled, splintering the baseline into many one-off profiles. Ordinary
-    shaped profiles hash identically under the new and old scheme, so they are left untouched — only
-    SQM-off (and any other newly-collapsing) runs change their grouping key."""
+    echoes back while disabled, splintering the baseline into many one-off profiles. And
+    **spelling variants fold onto the firewall's own form** (`shaper_fields.canonical_value`):
+    a run whose stored settings say ``target: "5ms"`` or ``5`` re-keys onto the profile the
+    firewall reports as ``"5"``. A run recorded off a real OPNsense ``discover()`` is already in
+    that form and is left untouched — on a live install this re-keys nothing but SQM-off
+    history; on a mock-backed dev database it also folds the mock's ``"5ms"`` spellings."""
     runs = session.scalars(
         select(Run).where(Run.status == RunStatus.COMPLETE, Run.settings.is_not(None))
     ).all()
