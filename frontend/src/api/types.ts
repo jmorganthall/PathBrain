@@ -2154,6 +2154,8 @@ export interface DuelWeatherDistance {
 export interface DuelMatchup {
   incumbent: string;
   challenger: string;
+  // True when the side ahead took an undecided match (not statistically clear, still a win).
+  narrow?: boolean;
   incumbent_label: string;
   challenger_label: string;
   // Call signs recorded at duel time (absent on bouts fought before naming existed).
@@ -2453,6 +2455,8 @@ export interface DuelProfileBout {
   opponent_name?: string | null;
   label: string;
   result: "win" | "loss" | "draw";
+  // The side ahead took an undecided match: a win (or loss) that was not statistically clear.
+  narrow?: boolean;
   pairs: number;
   pair_wins: number;
   pair_losses: number;

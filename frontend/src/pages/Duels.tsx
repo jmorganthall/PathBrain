@@ -548,13 +548,23 @@ function VerdictChip({ m }: { m: DuelMatchup }) {
     result === "challenger"
       ? m.challenger_name || m.challenger_label
       : m.incumbent_name || m.incumbent_label;
-  return (
+  const chip = (
     <Chip
       size="small"
       color={m.verdict === "challenger" ? "success" : "primary"}
-      label={`${winner} wins`}
+      label={m.narrow ? `${winner} wins (narrow)` : `${winner} wins`}
+      variant={m.narrow ? "outlined" : "filled"}
       icon={<SportsMmaIcon />}
     />
+  );
+  // A narrow win: the side ahead when the match ended without a statistically clear
+  // result. It counts as a win everywhere; the label says how much evidence is behind it.
+  return m.narrow ? (
+    <Tooltip title="Narrow win — this side was ahead when the match ended, but the margin was not statistically clear. A tiny win is still a win: it counts in the standings, the ratings and the combined ranking.">
+      {chip}
+    </Tooltip>
+  ) : (
+    chip
   );
 }
 

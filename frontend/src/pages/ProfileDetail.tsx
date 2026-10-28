@@ -968,7 +968,7 @@ export default function ProfileDetail() {
                             size="small"
                             color={BOUT_COLOR[b.result]}
                             variant={b.result === "draw" ? "outlined" : "filled"}
-                            label={b.result}
+                            label={b.narrow ? `${b.result} (narrow)` : b.result}
                           />
                         </Stack>
                         <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
@@ -1045,7 +1045,7 @@ export default function ProfileDetail() {
                               size="small"
                               color={BOUT_COLOR[b.result]}
                               variant={b.result === "draw" ? "outlined" : "filled"}
-                              label={b.result}
+                              label={b.narrow ? `${b.result} (narrow)` : b.result}
                             />
                           </TableCell>
                           <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>

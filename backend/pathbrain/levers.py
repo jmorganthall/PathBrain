@@ -596,7 +596,7 @@ def _agreement(prediction: str, direction: str) -> tuple[str, str]:
 def lever_ledger(session, *, limit_sessions: int = 50) -> dict:
     """Every single-lever match on the duel ledger, pooled per lever and per transition,
     read beside the mechanism prediction for that lever."""
-    from .duel import _ledger_sessions, outcome
+    from .duel import _ledger_sessions, counts_as_evidence, outcome
 
     sessions = _ledger_sessions(session, limit_sessions)
     fps: set[str] = set()
@@ -611,7 +611,9 @@ def lever_ledger(session, *, limit_sessions: int = 50) -> dict:
     used = skipped = aborted = 0
     for sess in sessions:
         for m in sess.get("matchups") or []:
-            if outcome(m) == "aborted":
+            if outcome(m) == "aborted" and not counts_as_evidence(m):
+                # Only an aborted match with no comparable rounds is set aside: one that
+                # fought rounds before it stopped still measured the lever.
                 aborted += 1
                 continue
             lever = m.get("lever") or single_lever_diff(
@@ -858,16 +860,17 @@ def _transition_state(rounds: int, wins_variant: int, wins_base: int, sign_p: fl
 
 
 def base_readings(sessions_data: list[dict], base_fp: str, settings_of) -> list[dict]:
-    """Every non-aborted single-lever match with ``base_fp`` on one side, read from the
-    base's side: ``margin`` is variant minus base. ``settings_of(fp)`` supplies settings for
-    matches recorded without an explicit ``lever``."""
-    from .duel import outcome
+    """Every single-lever match with ``base_fp`` on one side that fought comparable rounds
+    (an aborted one included — its rounds were still measured), read from the base's side:
+    ``margin`` is variant minus base. ``settings_of(fp)`` supplies settings for matches
+    recorded without an explicit ``lever``."""
+    from .duel import counts_as_evidence, outcome
 
     out: list[dict] = []
     for sess in sessions_data:
         for m in sess.get("matchups") or []:
             inc, cha = str(m.get("incumbent") or ""), str(m.get("challenger") or "")
-            if base_fp not in (inc, cha) or outcome(m) == "aborted":
+            if base_fp not in (inc, cha) or (outcome(m) == "aborted" and not counts_as_evidence(m)):
                 continue
             lever = m.get("lever") or single_lever_diff(settings_of(inc), settings_of(cha))
             if not lever:

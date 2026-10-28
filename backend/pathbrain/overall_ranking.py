@@ -150,9 +150,10 @@ def ring_rounds(sessions_data: list[dict], methodology: str | None) -> dict:
         for m in sess.get("matchups") or []:
             if not m or not m.get("incumbent") or not m.get("challenger"):
                 continue
-            from .duel import ABORTED, outcome
+            from .duel import counts_as_evidence
 
-            if outcome(m) == ABORTED:
+            # Every fought round counts — an aborted verdict does not un-measure them.
+            if not counts_as_evidence(m):
                 continue
             deltas = decidability._deltas_of(m)
             if not deltas:
