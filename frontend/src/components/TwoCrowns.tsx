@@ -25,6 +25,7 @@ import Typography from "@mui/material/Typography";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 import MilitaryTechIcon from "@mui/icons-material/MilitaryTech";
 import HandshakeIcon from "@mui/icons-material/Handshake";
+import SpeedIcon from "@mui/icons-material/Speed";
 
 import { api } from "../api/client";
 import type { CrownsOut } from "../api/types";
@@ -254,6 +255,26 @@ export default function TwoCrowns() {
               muted
               href="/duels"
               onOpen={() => navigate("/duels")}
+            />
+          )}
+
+          {data.math && (
+            <CrownTile
+              icon={<SpeedIcon sx={{ color: "success.main", fontSize: 34 }} />}
+              kind="Fastest on paper"
+              what="The mathematical crown: the confident profile with the lowest median FCP × median LCP in raw milliseconds. No perception curve and no weights, so it is not a judgement of how a load feels. Auto-apply never follows it."
+              title={data.math.name || data.math.label || data.math.fingerprint}
+              subtitle={`FCP ${fmtNum(data.math.fcp_ms, 0)} ms × LCP ${fmtNum(data.math.lcp_ms, 0)} ms`}
+              detail={
+                data.math.runner_up
+                  ? `next: ${data.math.runner_up.name || data.math.runner_up.label} · ${fmtNum(
+                      data.math.runner_up.fcp_ms,
+                      0
+                    )} × ${fmtNum(data.math.runner_up.lcp_ms, 0)} ms`
+                  : `${data.math.iterations} iterations`
+              }
+              governing={false}
+              href={`/profiles/${encodeURIComponent(data.math.fingerprint)}`}
             />
           )}
         </Stack>

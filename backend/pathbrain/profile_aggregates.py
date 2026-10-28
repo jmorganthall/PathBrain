@@ -151,6 +151,17 @@ def _quartiles(values: list[float]) -> tuple[float | None, float | None]:
     return q[0], q[2]
 
 
+#: Metrics whose RAW medians (milliseconds, off `Score.metric_values`) the rollup keeps
+#: beside the subscores. Read in SQL as two scalars per run, so they cost nothing like the
+#: subscore document decode.
+RAW_METRICS: tuple[str, ...] = ("fcp", "lcp")
+
+
+def _summary(values: list[float]) -> dict:
+    p25, p75 = _quartiles(values)
+    return {"n": len(values), "median": median(values), "p25": p25, "p75": p75}
+
+
 def _recompute(session, version: str, fingerprints: list[str]) -> dict[str, dict]:
     """Aggregate these profiles' runs from the Score rows — the one place that reads runs.
 
@@ -166,15 +177,21 @@ def _recompute(session, version: str, fingerprints: list[str]) -> dict[str, dict
         for chunk in _chunks(fingerprints)
         for row in session.execute(
             select(Run.settings_fingerprint, Run.iterations, Run.id,
-                   Score.computed_at, Score.subscores)
+                   Score.computed_at, Score.subscores,
+                   *[Score.metric_values[m].as_float() for m in RAW_METRICS])
             .join(Score, Score.run_id == Run.id)
             .where(*_comparable_runs(version), Run.settings_fingerprint.in_(chunk))
         )
     ]
 
     samples: dict[str, dict[str, list[float]]] = {}
+    raw_samples: dict[str, dict[str, list[float]]] = {}
     totals: dict[str, dict] = {}
-    for fp, iterations, run_id, scored_at, subscores in rows:
+    for fp, iterations, run_id, scored_at, subscores, *raw_values in rows:
+        by_raw = raw_samples.setdefault(fp, {})
+        for metric, value in zip(RAW_METRICS, raw_values):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                by_raw.setdefault(metric, []).append(float(value))
         agg = totals.setdefault(
             fp, {"iterations": 0, "runs": 0, "max_run_id": None, "scored_at": None}
         )
@@ -205,6 +222,7 @@ def _recompute(session, version: str, fingerprints: list[str]) -> dict[str, dict
             metrics[metric] = {"n": len(values), "median": median(values), "p25": p25, "p75": p75}
         out[fp] = {
             "metrics": metrics,
+            "raw": {m: _summary(v) for m, v in (raw_samples.get(fp) or {}).items() if v},
             "iterations": agg["iterations"],
             "run_count": agg["runs"],
             # The stamp this rollup describes, derived from the very rows it aggregated —
@@ -249,6 +267,7 @@ def _persist(version: str, computed: dict[str, dict]) -> None:
                     row = ProfileAggregate(settings_fingerprint=fp, methodology_version=version)
                     session.add(row)
                 row.metrics = agg["metrics"]
+                row.raw = agg.get("raw") or {}
                 row.iterations = iterations
                 row.run_count = agg["run_count"]
                 row.source_max_run_id = max_run_id
@@ -294,11 +313,14 @@ def aggregates(
             # No comparable runs at all. Answerable without touching the cache — and a
             # stored row here is a leftover (its runs were re-graded out of comparability),
             # so it must not be served.
-            out[fp] = {"metrics": {}, "iterations": 0, "run_count": 0}
+            out[fp] = {"metrics": {}, "raw": {}, "iterations": 0, "run_count": 0}
             continue
-        if row is not None and _stored_stamp(row) == want:
+        # A row written before the raw medians existed (`raw` None) is rebuilt once, for
+        # that profile alone — the same per-profile repair any stale stamp gets.
+        if row is not None and _stored_stamp(row) == want and row.raw is not None:
             out[fp] = {
                 "metrics": row.metrics or {},
+                "raw": row.raw or {},
                 "iterations": int(row.iterations or 0),
                 "run_count": int(row.run_count or 0),
             }
@@ -310,6 +332,7 @@ def aggregates(
         for fp, agg in computed.items():
             out[fp] = {
                 "metrics": agg["metrics"],
+                "raw": agg.get("raw") or {},
                 "iterations": agg["iterations"],
                 "run_count": agg["run_count"],
             }

@@ -3249,6 +3249,20 @@ LLM-based. See `README.md` for the product overview.
     ranking's rows read too — before that the Overall page keyed on the fingerprint alone,
     so a baseline run recorded before the SQM-off collapse was the control group on Settings
     Impact and a contender for the crown on the Overall page at once.
+    **The mathematical crown lives here too** (`math_crown`, `corners.math` on `GET
+    /api/overall`, `math` on `GET /settings/crowns`, the **"Fastest on paper"** tile on the
+    Best profile page and the Dashboard's crowns card). Asked for *"simply fastest LCP ×
+    fastest FCP — the mathematical crown, not necessarily user experience"*: the confident
+    profile (≥ `min_iterations`, SQM off excluded) with the lowest **median FCP × median LCP
+    in raw milliseconds** — no perception curve, no weights, no shrinkage, no ring; the
+    product makes it scale-free, so a 10% gain on either leg counts the same, and a profile
+    best on one leg loses to one close on both. A reference beside the verdicts: it is never
+    part of `corners.agree` and nothing follows it. The raw medians come from the rollup,
+    which now keeps `raw` (`profile_aggregates.RAW_METRICS` = fcp/lcp, read in SQL off
+    `Score.metric_values` as two scalars a run); a row written before the column existed
+    reads `raw` None and is rebuilt once for that profile, like any stale stamp.
+    `test_the_math_crown_is_the_lowest_fcp_times_lcp_among_confident_profiles`,
+    `test_the_rollup_keeps_raw_medians_and_rebuilds_a_row_written_before_them`.
     **This module was `verdict.py`, and `GET /api/settings/verdict` is RETIRED.** It carried a
     second "which profile should I run?" answer — the pooled argmax among confident profiles,
     a tie set against `crown_tie_sigma` × the pooled SE, the margin over SQM off and a

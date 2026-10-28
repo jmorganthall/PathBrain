@@ -717,6 +717,9 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
             "raceable": _raceable(session, ring_best_fp, live_settings),
         },
         "fused": None if best is None else _corner(best, "fused"),
+        # The mathematical crown: lowest median FCP × median LCP in raw ms. A reference
+        # beside the three records, never part of `agree` and never followed.
+        "math": _math_corner(session, version, min_iterations),
         "agree": bool(
             best is not None and pooled_best is not None and ring_best is not None
             and best["fingerprint"] == pooled_best["fingerprint"] == ring_best["fingerprint"]
@@ -785,6 +788,17 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
         except Exception:  # noqa: BLE001 — a check, never a reason the ranking fails
             log.warning("Overall ranking: the predictive check failed", exc_info=True)
     return out
+
+
+def _math_corner(session, version: str, min_iterations: int) -> dict | None:
+    """`pooled_field.math_crown`, best-effort: a reference tile must never fail the page."""
+    try:
+        from .pooled_field import math_crown
+
+        return math_crown(session, version, min_iterations)
+    except Exception:  # noqa: BLE001
+        log.debug("math crown unavailable", exc_info=True)
+        return None
 
 
 def _corner(r: dict, kind: str) -> dict:

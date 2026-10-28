@@ -314,7 +314,7 @@ def test_reading_thousands_of_profiles_does_not_overrun_the_sql_parameter_limit(
         assert len(out) == 5000
         # None of them have runs, so every one is the empty answer — the point is that it
         # answered at all.
-        assert all(v == {"metrics": {}, "iterations": 0, "run_count": 0} for v in out.values())
+        assert all(v == {"metrics": {}, "raw": {}, "iterations": 0, "run_count": 0} for v in out.values())
 
 
 def test_a_freshly_written_rollup_is_immediately_a_hit():

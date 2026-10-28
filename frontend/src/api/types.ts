@@ -1945,7 +1945,23 @@ export interface DuelCrown {
   overall_iterations?: number;
 }
 
+// The mathematical crown: the confident profile with the lowest median FCP × median LCP in
+// raw milliseconds. No perception curve, no weights; a reference that is never followed.
+export interface MathCrown {
+  fingerprint: string;
+  name: string | null;
+  label: string | null;
+  kind: "math";
+  fcp_ms: number;
+  lcp_ms: number;
+  product: number;
+  iterations: number;
+  profiles: number;
+  runner_up: { fingerprint: string; name: string | null; label: string | null; fcp_ms: number; lcp_ms: number } | null;
+}
+
 export interface CrownsOut {
+  math?: MathCrown | null;
   policy: CrowningPolicy;
   pooled: PooledCrown | null;
   duel: DuelCrown | null;
@@ -4523,6 +4539,7 @@ export interface OverallOut {
     pooled: OverallCorner | null;
     ring: OverallCorner | null;
     fused: OverallCorner | null;
+    math?: MathCrown | null;
     agree: boolean;
   } | Record<string, never>;
   movers: OverallProfile[];

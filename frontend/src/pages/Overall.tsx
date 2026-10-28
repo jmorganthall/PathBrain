@@ -38,6 +38,7 @@ import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 import HandshakeIcon from "@mui/icons-material/Handshake";
 import MilitaryTechIcon from "@mui/icons-material/MilitaryTech";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import SpeedIcon from "@mui/icons-material/Speed";
 import StackedLineChartIcon from "@mui/icons-material/StackedLineChart";
 
 import { api } from "../api/client";
@@ -649,6 +650,37 @@ export default function Overall() {
                     strong
                   />
                 </Stack>
+                {corners.math && (
+                  <Card variant="outlined" sx={{ mt: 1.5 }}>
+                    <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
+                      <Stack direction="row" spacing={1.25} alignItems="flex-start">
+                        <Box sx={{ flexShrink: 0, mt: 0.25 }}>
+                          <SpeedIcon sx={{ color: "success.main", fontSize: 30 }} />
+                        </Box>
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
+                            Fastest on paper
+                            <HelpTip title="The mathematical crown: the confident profile with the lowest median FCP × median LCP in raw milliseconds. No perception curve, no weights, no ring. It answers which profile paints first and shows main content fastest, not how a load feels, so it sits beside the records and Auto-apply never follows it." />
+                          </Typography>
+                          <Typography variant="h6" sx={{ lineHeight: 1.2 }} noWrap>
+                            <Link component={RouterLink} to={profileHref(corners.math.fingerprint)} underline="hover" color="inherit">
+                              {corners.math.name || corners.math.label || corners.math.fingerprint.slice(0, 8)}
+                            </Link>
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                            FCP {fmtNum(corners.math.fcp_ms, 0)} ms × LCP {fmtNum(corners.math.lcp_ms, 0)} ms ·{" "}
+                            {corners.math.iterations} iterations
+                            {corners.math.runner_up &&
+                              ` · next: ${corners.math.runner_up.name || corners.math.runner_up.label} (${fmtNum(
+                                corners.math.runner_up.fcp_ms,
+                                0
+                              )} × ${fmtNum(corners.math.runner_up.lcp_ms, 0)} ms)`}
+                          </Typography>
+                        </Box>
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                )}
                 {!corners.agree && corners.pooled && corners.fused && corners.pooled.fingerprint !== corners.fused.fingerprint && (
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
                     The pooled record had <b>{nameOf(corners.pooled)}</b> on top; once the ring's rounds are heard, <b>{nameOf(corners.fused)}</b> is. That is the ring correcting a pooled lead that was worth less than it looked.
