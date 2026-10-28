@@ -167,6 +167,9 @@ def _migrate() -> None:
         "challenger_races": {
             "incumbent_refreshes": "INTEGER DEFAULT 0",
         },
+        "profile_aggregates": {
+            "raw": "JSON",
+        },
         "duels": {
             "live": "JSON",
             "open_matches": "JSON",

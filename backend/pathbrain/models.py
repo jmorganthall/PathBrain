@@ -686,6 +686,11 @@ class ProfileAggregate(Base):
     # this profile's comparable runs. Full precision — rounding belongs at grade time, so
     # there is exactly one place that decides it.
     metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    # The same summary over the RAW measurements (milliseconds, from `Score.metric_values`)
+    # for the few metrics a reader wants unscored — `profile_aggregates.RAW_METRICS`. The
+    # mathematical crown reads these: fastest median FCP × LCP, no curve and no weights.
+    # None on a row written before the column existed, which `aggregates` treats as stale.
+    raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # What this was derived from. `source_scored_at` is here because a re-derive can rewrite
     # a Score **in place**: the run count and newest id would both be unchanged while the

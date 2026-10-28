@@ -4042,7 +4042,23 @@ def crowns(session: Session = Depends(get_session)) -> dict:
         # Whether the firewall was on the governing crown at the follower's last check.
         "on_crown": last.get("on_crown"),
         "checked_at": crown_follower.status().get("last_check_at"),
+        # The mathematical crown — lowest median FCP × LCP in raw ms — shown beside the
+        # verdicts as a reference. Never followed and never part of `agree`.
+        "math": _math_crown(session),
     }
+
+
+def _math_crown(session) -> dict | None:
+    try:
+        from ..pooled_field import math_crown
+
+        cfg = get_config(session)
+        version = ensure_current_methodology(session, cfg).version
+        min_iter = int((cfg.get("correlation") or {}).get("min_iterations") or 15)
+        return math_crown(session, version, min_iter)
+    except Exception:  # noqa: BLE001 — a reference tile can't be why the card fails
+        log.debug("math crown unavailable", exc_info=True)
+        return None
 
 
 @router.get("/settings/crown-follow")

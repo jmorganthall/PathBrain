@@ -278,3 +278,68 @@ def test_the_verdict_route_is_retired():
 
     assert "/api/settings/verdict" not in {getattr(r, "path", None) for r in app.routes}
     assert "/api/overall" in {getattr(r, "path", None) for r in app.routes}
+
+
+# ── The mathematical crown: lowest median FCP × median LCP, raw ms ─────────────
+
+
+def _add_raw(name: str, fcp: float, lcp: float, *, iterations: int = 20, runs: int = 3,
+             enabled: bool | None = None) -> None:
+    fp = _fp(name)
+    crown = _crown()
+    with session_scope() as s:
+        for _ in range(runs):
+            run = Run(status=RunStatus.COMPLETE, iterations=iterations,
+                      settings_fingerprint=fp, settings=_settings(fp, enabled=enabled))
+            s.add(run)
+            s.flush()
+            s.add(Score(run_id=run.id, methodology_version=VERSION, is_at_measure=False,
+                        comparability="exact", subscores={m: 80.0 for m in crown},
+                        axis_scores={}, weights_used={},
+                        metric_values={"fcp": fcp, "lcp": lcp}))
+
+
+def test_the_math_crown_is_the_lowest_fcp_times_lcp_among_confident_profiles():
+    """Pure milliseconds: the product decides, so a profile best on only one leg loses to
+    one that is close on both. A thin profile and the unshaped baseline are never it."""
+    _add_raw("balanced", fcp=300.0, lcp=700.0)          # 210,000
+    _add_raw("fast_fcp", fcp=250.0, lcp=900.0)          # 225,000 — best FCP, loses
+    _add_raw("thin", fcp=100.0, lcp=200.0, iterations=2, runs=1)   # below the bar
+    _add_raw(SQM_OFF_FINGERPRINT, fcp=90.0, lcp=150.0)  # the baseline, never crowned
+    with session_scope() as s:
+        crown = pooled_field.math_crown(s, VERSION, 15)
+    assert crown is not None and crown["fingerprint"] == _fp("balanced")
+    assert (crown["fcp_ms"], crown["lcp_ms"], crown["product"]) == (300.0, 700.0, 210000.0)
+    assert crown["runner_up"]["fingerprint"] == _fp("fast_fcp")
+    assert crown["profiles"] == 2
+
+
+def test_the_rollup_keeps_raw_medians_and_rebuilds_a_row_written_before_them():
+    _add_raw("old", fcp=320.0, lcp=710.0)
+    with session_scope() as s:
+        agg = profile_aggregates.aggregates(s, VERSION, [_fp("old")])
+    assert agg[_fp("old")]["raw"]["fcp"]["median"] == 320.0
+    # A row persisted before the column existed reads raw=None and is rebuilt, once.
+    with session_scope() as s:
+        row = s.query(ProfileAggregate).filter(
+            ProfileAggregate.methodology_version == VERSION,
+            ProfileAggregate.settings_fingerprint == _fp("old")).one()
+        row.raw = None
+    with session_scope() as s:
+        agg = profile_aggregates.aggregates(s, VERSION, [_fp("old")])
+    assert agg[_fp("old")]["raw"]["lcp"]["median"] == 710.0
+    with session_scope() as s:
+        row = s.query(ProfileAggregate).filter(
+            ProfileAggregate.methodology_version == VERSION,
+            ProfileAggregate.settings_fingerprint == _fp("old")).one()
+        assert row.raw and row.raw["lcp"]["median"] == 710.0
+
+
+def test_the_overall_corners_carry_the_math_crown_and_agree_ignores_it():
+    _add_raw("balanced", fcp=300.0, lcp=700.0)
+    _add_raw("fast_fcp", fcp=250.0, lcp=900.0)
+    with session_scope() as s:
+        out = overall_ranking.ranking(s, backtest=False)
+    corners = out["corners"]
+    assert corners["math"]["fingerprint"] == _fp("balanced")
+    assert set(corners) >= {"pooled", "ring", "fused", "math", "agree"}

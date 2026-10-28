@@ -124,3 +124,66 @@ def graded_field(session, version: str) -> list[dict]:
 
 
 __all__ = ["graded_field", "pooled_se", "quartile_grade", "se"]
+
+
+def math_crown(session, version: str, min_iterations: int) -> dict | None:
+    """The mathematical crown: the confident profile with the lowest **median FCP × median
+    LCP**, in raw milliseconds.
+
+    Every other verdict grades a profile — perception-calibrated subscores, weights, a
+    field prior, the ring's paired rounds. This one deliberately does none of that. It asks
+    the plainest question the measurements can answer, "which profile shows first paint and
+    main content fastest?", with the product making it scale-free: a 10% gain on either leg
+    counts the same. It is a reference beside the verdicts, never a crowning policy —
+    nothing applies it to the firewall.
+
+    Confident means ``iterations ≥ min_iterations`` (the crown's own bar); the unshaped
+    baseline is left out (`settings_profile.is_sqm_off_profile`). Ties break toward more
+    iterations. Returns the winner with its two medians, the product and the runner-up, or
+    None when no confident profile has both readings. Read off the rollup, so it costs what
+    `graded_field` costs."""
+    from . import profile_aggregates
+    from .refresh import list_profiles
+
+    stored = list_profiles(session)
+    if not stored:
+        return None
+    rolled = profile_aggregates.aggregates(session, version, [p["fingerprint"] for p in stored])
+    rows: list[dict] = []
+    for p in stored:
+        fp = p["fingerprint"]
+        if is_sqm_off_profile(fp, p.get("settings")):
+            continue
+        agg = rolled.get(fp) or {}
+        iters = int(agg.get("iterations") or 0)
+        if iters < int(min_iterations or 0):
+            continue
+        raw = agg.get("raw") or {}
+        fcp = (raw.get("fcp") or {}).get("median")
+        lcp = (raw.get("lcp") or {}).get("median")
+        if not isinstance(fcp, (int, float)) or not isinstance(lcp, (int, float)):
+            continue
+        if fcp <= 0 or lcp <= 0:
+            continue
+        rows.append({
+            "fingerprint": fp,
+            "name": p.get("name"),
+            "label": p.get("label"),
+            "kind": "math",
+            "fcp_ms": round(float(fcp), 1),
+            "lcp_ms": round(float(lcp), 1),
+            "product": float(fcp) * float(lcp),
+            "iterations": iters,
+        })
+    if not rows:
+        return None
+    rows.sort(key=lambda r: (r["product"], -r["iterations"], r["fingerprint"]))
+    best = dict(rows[0])
+    best["product"] = round(best["product"], 1)
+    ru = rows[1] if len(rows) > 1 else None
+    best["runner_up"] = None if ru is None else {
+        "fingerprint": ru["fingerprint"], "name": ru["name"], "label": ru["label"],
+        "fcp_ms": ru["fcp_ms"], "lcp_ms": ru["lcp_ms"],
+    }
+    best["profiles"] = len(rows)
+    return best
