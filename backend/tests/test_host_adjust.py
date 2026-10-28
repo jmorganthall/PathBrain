@@ -149,7 +149,10 @@ def test_a_duel_decides_on_adjusted_margins_and_keeps_the_raw_ones(monkeypatch):
     d = _wait_finish(duel_mod.start(duration_minutes=10))
     assert d.status == DuelStatus.COMPLETE, d.error
     m = d.matchups[0]
-    assert m["verdict"] != "incumbent", m["reason"]
+    # Adjusted, the margins are a tie with noise on it: never a CLEAR incumbent win. (A
+    # tiny lead either way is still recorded as a narrow win — even a tiny win is a win —
+    # and the record says it was not statistically clear.)
+    assert m["verdict"] != "incumbent" or m["narrow"] is True, m["reason"]
     assert m["host_adjust"]["active"] is True
     assert m["host_adjusted_rounds"] == m["pairs"] > 0
     assert all(abs(r + 2.1) < 0.3 for r in m["raw_deltas"])

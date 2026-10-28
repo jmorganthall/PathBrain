@@ -1265,6 +1265,23 @@ ABORTED = "aborted"
 _ABORTED_REASON_PREFIXES = ("aborted:", "window closed")
 
 
+def counts_as_evidence(m: dict) -> bool:
+    """Whether a match's rounds are evidence a pooling reader should keep — the fused
+    ranking, the lever book, a campaign's readings.
+
+    A verdict and the evidence behind it are different things. An ABORTED match still
+    fought every round on its record: the window closing, a carried match that could not
+    resume, a run of unusable legs — none of that un-measures the rounds that landed. So
+    every match with margins counts, except one whose margins are on another rubric's
+    scale (a carried match from before a publish, or one closed mid-session by a publish):
+    those are the only rounds that genuinely cannot be pooled with this one's. Pure."""
+    if not (m or {}).get("deltas"):
+        return False
+    if outcome(m) != ABORTED:
+        return True
+    return "methodology" not in str((m or {}).get("reason") or "").lower()
+
+
 def outcome(m: dict) -> str:
     """``"incumbent"`` | ``"challenger"`` | ``"draw"`` | ``"aborted"`` for one matchup.
 
@@ -1837,6 +1854,18 @@ def undecidable_bouts(
     """
     profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
     inc = (profiles.get(incumbent_fp) or {}).get("settings")
+    if not inc:
+        # A defender the field does not list (the fused #1 read off the rollup, a ring-rated
+        # profile with no current runs) still has stored settings: read them rather than
+        # waving every bout through.
+        try:
+            from .refresh import list_profiles  # noqa: PLC0415
+
+            with session_scope() as s:
+                stored = {p["fingerprint"]: p for p in list_profiles(s)}
+            inc = (stored.get(incumbent_fp) or {}).get("settings")
+        except Exception:  # noqa: BLE001 — best-effort; the seat gate checks again
+            inc = None
     if not inc:
         return {}
     every = list(profiles.values())
@@ -3059,6 +3088,46 @@ def _current_methodology_version(session) -> str | None:
     ).first()
 
 
+def _bout_cannot_differ(settings_by_fp: dict, challenger_fp: str, defender_fp: str) -> str | None:
+    """`decidability.cannot_differ` for one bout, on the session's own settings map — the
+    reason the two profiles cannot produce a different measurement, or None. Fails CLOSED
+    on what it can read: both sides' settings come from the books the session applies
+    from, so a defender missing from the field is still checked. Best-effort: an
+    unreadable comparison never refuses."""
+    a = (settings_by_fp.get(challenger_fp) or {}).get("settings")
+    b = (settings_by_fp.get(defender_fp) or {}).get("settings")
+    if not a or not b or challenger_fp == defender_fp:
+        return None
+    try:
+        return decidability.cannot_differ(a, b, profiles=list(settings_by_fp.values()))
+    except Exception:  # noqa: BLE001
+        log.debug("cannot_differ failed for %s vs %s", challenger_fp, defender_fp, exc_info=True)
+        return None
+
+
+def _carried_reference(
+    carried: list[dict], settings_by_fp: dict, baseline: list[dict] | None,
+    meth_version: str | None,
+) -> str | None:
+    """The defender the carried matches were fought against, when they can resume against
+    it: in this session's books, reachable from the live firewall, and fought under the
+    current methodology. With several references, the one holding the most rounds. Pure."""
+    rounds: dict[str, int] = {}
+    for snap in carried or []:
+        ref = str(snap.get("incumbent") or "")
+        if not ref or ref not in settings_by_fp:
+            continue
+        fought_under = snap.get("methodology")
+        if fought_under and meth_version and str(fought_under) != str(meth_version):
+            continue
+        if not _reachable((settings_by_fp.get(ref) or {}).get("settings"), baseline):
+            continue
+        rounds[ref] = rounds.get(ref, 0) + len(snap.get("deltas") or [])
+    if not rounds:
+        return None
+    return max(rounds, key=lambda fp: (rounds[fp], fp))
+
+
 def _carried_open_matches(duel_id: int) -> list[dict]:
     """The open matches the previous session left behind, MOVED onto this session's row
     so each is carried exactly once (a crashed session's row still holds them, since
@@ -3155,6 +3224,47 @@ def _decided_reason(paired: PairedEvidence, verdict: str, basis: str) -> str:
     )
 
 
+#: How a match that ends without a statistically clear result is recorded. "Even a tiny
+#: win is a win" is the rule the pooled crown has always followed (an argmax with no
+#: floor) and the margin floor defaults to 0 for the same reason — but a match only
+#: DECLARED a winner when the signed-rank test or the streak fired, and every match that
+#: reached its cap, its futility exit or a close it could not resume from was recorded as
+#: a draw or an abort. On a field whose top profiles sit 0.1–0.3 points apart that is
+#: nearly every match: eleven rounds at 7–4 with the challenger +0.38 ahead read "no
+#: result", and the rounds behind it were dropped from the fused ranking. Now the side
+#: ahead wins, labelled NARROW so the tape never claims evidence it does not have.
+NARROW_PREFIX = "narrow win"
+
+
+def _narrow_verdict(seat: _Seat) -> tuple[str, str] | None:
+    """``(verdict, reason)`` for an undecided match that is closing, or None when the two
+    sides are exactly level (no rounds, or a zero median and equal rounds won).
+
+    The median margin decides, since it is what every verdict is read on; equal medians
+    fall to rounds won. Pure."""
+    deltas = list(seat.deltas)
+    if not deltas:
+        return None
+    median = _median(deltas)
+    wi, wc = seat.sprt.wins_incumbent, seat.sprt.wins_challenger
+    if median > 0 or (median == 0 and wc > wi):
+        verdict = "challenger"
+    elif median < 0 or (median == 0 and wi > wc):
+        verdict = "incumbent"
+    else:
+        return None
+    direction = 1 if verdict == "challenger" else -1
+    lead, trail = (wc, wi) if verdict == "challenger" else (wi, wc)
+    try:
+        p = f"p={seat.paired.p_value(direction):.3f}"
+    except Exception:  # noqa: BLE001 — the reason is prose; never let it fail a close
+        p = "p unavailable"
+    return verdict, (
+        f"{NARROW_PREFIX} — ahead {lead}–{trail} on rounds, median Δ {median:+.2f}; "
+        f"not statistically clear ({p})"
+    )
+
+
 def _adjudicate(seat: _Seat, *, method: str, min_pairs: int, max_pairs: int,
                 min_margin: float) -> tuple[str | None, str]:
     """The stopping rule over one seat's margins so far — the same rule as before, on
@@ -3168,6 +3278,9 @@ def _adjudicate(seat: _Seat, *, method: str, min_pairs: int, max_pairs: int,
                 return "draw", f"boundary crossed but |median Δ| < {min_margin} — practically equal"
             return verdict, "SPRT boundary crossed"
         if verdict == "draw":
+            narrow = _narrow_verdict(seat)
+            if narrow is not None:
+                return narrow
             return "draw", (
                 "mutual futility (round wins ~50/50)"
                 if sprt.pairs < max_pairs
@@ -3183,9 +3296,14 @@ def _adjudicate(seat: _Seat, *, method: str, min_pairs: int, max_pairs: int,
     sign_verdict = sprt.decision(min_pairs, max_pairs)
     if sign_verdict in ("challenger", "incumbent") and abs(_median(deltas)) < min_margin:
         return "draw", f"one side wins the rounds, but by < {min_margin} Overall pts — practically equal"
-    if sign_verdict == "draw":
-        return "draw", "mutual futility (no consistent margin either way)"
-    if paired.pairs >= max_pairs:
+    if sign_verdict == "draw" or paired.pairs >= max_pairs:
+        # The match is over. A tiny win is a win: the side ahead takes it, as a narrow
+        # win; only an exactly level match is a draw.
+        narrow = _narrow_verdict(seat)
+        if narrow is not None:
+            return narrow
+        if sign_verdict == "draw":
+            return "draw", "mutual futility (no consistent margin either way)"
         return "draw", f"no decision in {max_pairs} rounds"
     return None, ""
 
@@ -3250,6 +3368,9 @@ def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: 
         "alpha_used": round(paired.nominal_alpha, 5),
         "verdict": verdict,
         "reason": reason,
+        # True when the side ahead took an undecided match (`_narrow_verdict`): a win on the
+        # record, and the tape says it was not statistically clear.
+        "narrow": str(reason or "").startswith(NARROW_PREFIX),
         "unusable_rounds": seat.unusable,
         "unusable_why": dict(seat.unusable_why) or None,
         # The shared-weather audit, aligned with the margins: per usable margin, the largest
@@ -3688,13 +3809,17 @@ def _run_ring(
         seat.paired.add(delta)
         _append_crown(seat, leg, usable)
 
-    def _close(seat: _Seat, verdict: str, reason: str, ref: dict | None = None) -> None:
+    def _close(seat: _Seat, verdict: str, reason: str, ref: dict | None = None,
+               methodology: str | None = None) -> None:
         if not seat.sessions or seat.sessions[-1] != duel_id:
             seat.sessions.append(duel_id)
         seat.verdict = verdict
         record = _match_record(
             seat, ref or inc, method=method, verdict=verdict, reason=reason,
-            cadence=cadence, only_browser=only_browser, methodology=meth_version,
+            cadence=cadence, only_browser=only_browser,
+            # A carried match is stamped with the rubric its rounds were READ under, not
+            # the one current at close — otherwise another scale's margins pass as this one's.
+            methodology=methodology or meth_version,
             host_model=host_desc,
         )
         matchups.append(record)
@@ -3801,6 +3926,7 @@ def _run_ring(
                 _session_round_budget(session, cfg, max(0.0, deadline - time.monotonic()))
                 if fused_target else None
             )
+            resuming = False
             if campaign is not None:
                 # The campaign's base defends, whatever the belt says: a variant that wins
                 # is a finding about the base, not the next base.
@@ -3815,6 +3941,25 @@ def _run_ring(
                 defender_fp, defender_why = select_incumbent(
                     session, field, baseline, cfg, ratings, fused=fused_target or False,
                 )
+                # Carried matches finish against the defender they started with. The
+                # Overall's #1 is a near-tie that moves night to night, and a carried match
+                # can only resume against its own reference — so re-picking the defender
+                # first closed every carried match unfinished, every night. Their defender
+                # stands in until they are seated; the drain below then finishes them
+                # before the newly picked #1 takes the ring.
+                resume_ref = (
+                    None if draining else _carried_reference(
+                        carried, settings_by_fp, baseline, meth_version,
+                    )
+                )
+                resuming = resume_ref is not None
+                if resume_ref is not None and resume_ref != defender_fp:
+                    n_carried = sum(1 for c in carried if str(c.get("incumbent")) == resume_ref)
+                    defender_fp = resume_ref
+                    defender_why = (
+                        f"resuming {n_carried} carried match(es) against the defender they "
+                        f"started with, before {defender_why}"
+                    )
             if defender_fp is None or defender_fp not in settings_by_fp:
                 if not matchups and not seated:
                     raise RuntimeError(
@@ -3910,6 +4055,12 @@ def _run_ring(
                 )
                 if snap is not None:
                     carried.remove(snap)
+                    same = _bout_cannot_differ(settings_by_fp, str(snap["challenger"]), incumbent_fp)
+                    if same:
+                        # Closed with its rounds counted, never resumed: another night on
+                        # it measures the same profile twice.
+                        unresumable.append((snap, f"the two profiles cannot differ — {same}"))
+                        continue
                     seat = _seat_from_snapshot(snap, settings_by_fp[str(snap["challenger"])], **seat_kw)
                     if "resumed" not in seat.why:
                         seat.why = f"{seat.why} — resumed with {len(seat.deltas)} round(s) carried over"
@@ -3920,6 +4071,10 @@ def _run_ring(
                              duel_id, len(seated), seat.fp, incumbent_fp, len(seat.deltas),
                              seat.sessions[:-1])
                     continue
+                if resuming:
+                    # This cycle's defender stood in only to finish its carried matches;
+                    # fresh challengers face whoever the ring picks once those are drained.
+                    break
                 variant: dict | None = None
                 if mode == "levers":
                     from . import levers as levers_mod
@@ -3962,6 +4117,19 @@ def _run_ring(
                         )
                 if challenger_fp is None or challenger_fp not in settings_by_fp:
                     break
+                same = (
+                    None if mode == "levers"
+                    else _bout_cannot_differ(settings_by_fp, challenger_fp, incumbent_fp)
+                )
+                if same:
+                    # The last gate before a seat, on the session's own books: the queue's
+                    # filter reads the field, and a defender the field does not list (the
+                    # fused #1, a carried reference) used to pass it silently — which is how
+                    # quantum 5800 met 5799 for twelve rounds.
+                    fought.add(frozenset((incumbent_fp, challenger_fp)))
+                    log.info("Duel %s: %s vs %s refused — %s", duel_id, challenger_fp,
+                             incumbent_fp, same)
+                    continue
                 if rematch_now == frozenset((incumbent_fp, challenger_fp)):
                     why_challenger = (
                         f"{why_challenger} — rematch: it won the last match without taking the belt"
@@ -3987,7 +4155,21 @@ def _run_ring(
             ref_fp = str(snap.get("incumbent") or "")
             ref = settings_by_fp.get(ref_fp) or {"fingerprint": ref_fp, "label": ref_fp, "name": None}
             stale = _seat_from_snapshot(snap, prof, **seat_kw)
-            _close(stale, "draw", f"aborted: carried over, but could not resume — {problem}", ref=ref)
+            fought_under = snap.get("methodology")
+            narrow = (
+                None if (fought_under and str(fought_under) != meth_version)
+                else _narrow_verdict(stale)
+            )
+            if narrow is not None:
+                # Its rounds were fought and they count: the side ahead takes it.
+                verdict, why = narrow
+                _close(stale, verdict, f"{why} — carried over, could not resume: {problem}", ref=ref)
+            elif stale.deltas and not (fought_under and str(fought_under) != meth_version):
+                _close(stale, "draw", f"level when closed — carried over, could not resume: {problem}", ref=ref)
+            else:
+                # No rounds, or rounds on another rubric's scale: nothing comparable to keep.
+                _close(stale, "draw", f"aborted: carried over, but could not resume — {problem}", ref=ref,
+                       methodology=str(fought_under) if fought_under else None)
             log.info("Duel %s: carried match %s vs %s closed — %s", duel_id, cfp, ref_fp, problem)
         _persist_open()
         if not seated:
@@ -5596,6 +5778,7 @@ def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
                         ),
                         "label": label,
                         "result": result,
+                        "narrow": bool(m.get("narrow")),
                         "pairs": int(m.get("pairs") or (pair_wins + pair_losses)),
                         "pair_wins": pair_wins,
                         "pair_losses": pair_losses,
