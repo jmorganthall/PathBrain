@@ -161,13 +161,17 @@ def test_rounds_fought_under_another_methodology_are_excluded_and_counted():
             {"incumbent": "a", "challenger": "d", "verdict": "draw",
              "deltas": [0.1, 0.2]},                        # pre-stamp: kept, counted
             {"incumbent": "a", "challenger": "e", "verdict": "aborted",
-             "methodology": "v-now", "deltas": [9.0]},      # produced no round
+             "methodology": "v-now", "deltas": [9.0]},      # aborted, but its round was fought
+            {"incumbent": "a", "challenger": "f", "verdict": "aborted",
+             "methodology": "v-now", "deltas": []},         # produced no round
         ],
     }]
     rr = o.ring_rounds(sessions, "v-now")
-    assert len(rr["rounds"]) == 5 and rr["matches"] == 2
+    # An aborted verdict does not un-measure the rounds that landed: e's round counts.
+    assert len(rr["rounds"]) == 6 and rr["matches"] == 3
     assert rr["excluded_methodology"] == 1 and rr["unstamped_matches"] == 1
-    assert all(r["b"] != "e" for r in rr["rounds"])
+    assert any(r["b"] == "e" for r in rr["rounds"])
+    assert all(r["b"] != "f" for r in rr["rounds"])
 
 
 # ── End to end: the endpoint and the crowning policy ───────────────────────────────────

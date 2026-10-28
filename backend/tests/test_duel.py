@@ -3814,32 +3814,116 @@ def test_an_open_match_is_carried_to_the_next_session_and_resumed(monkeypatch):
     assert d2.open_matches is None
 
 
-def test_a_carried_match_is_closed_when_the_belt_changed_hands(monkeypatch):
-    """A match is never switched to a different opponent: if the profile defending is not
-    the reference the carried match was fought against, it is closed with the reason —
-    counted as aborted, never silently dropped and never resumed against someone else."""
+def test_a_carried_match_resumes_against_its_own_defender_when_the_ranking_moved(monkeypatch):
+    """The Overall's #1 is a near-tie that moves night to night, and a carried match may
+    only resume against the defender it started with. Re-picking the defender first used
+    to close every carried match unfinished, every night (Duels #126-#131: eleven rounds
+    at 7-4 recorded as "no result"). Now the carried match's own defender stands in until
+    it is seated, finishes it, and only then hands the ring to the newly picked #1."""
     with session_scope() as s:
         s.query(Duel).delete()
     scores = {"aaa0000000x": 70.0, "bbb0000000x": 62.0, "ccc0000000x": 55.0}
     d1, _, _ = _ring_session_keep(monkeypatch, scores, seats=1, belt_every=2, cancel_after_legs=4)
     assert d1.open_matches and d1.open_matches[0]["incumbent"] == "aaa0000000x"
+    rounds_before = len(d1.open_matches[0]["deltas"])
 
-    # Session 2 crowns ccc on paper; with no decided ring record the pooled crown defends.
+    # Session 2 crowns ccc on paper; the carried match is still finished against aaa.
     field = _ring_field(("ccc0000000x", 80.0), ("aaa0000000x", 70.0), ("bbb0000000x", 62.0))
     d2, _, _ = _ring_session_keep(monkeypatch, scores, seats=1, belt_every=2, field=field)
     assert d2.status == DuelStatus.COMPLETE, d2.error
-    closed = [m for m in d2.matchups if str(m.get("reason", "")).startswith("aborted: carried over")]
-    assert len(closed) == 1
-    assert closed[0]["incumbent"] == "aaa0000000x" and closed[0]["challenger"] == "bbb0000000x"
-    assert "belt changed hands" in closed[0]["reason"]
-    # The pair is still free to be fought for real in this session (it was, once aaa took
-    # the belt back off ccc) — the carried record and the real one are separate matches.
-    real = [m for m in d2.matchups if m["challenger"] == "bbb0000000x" and m is not closed[0]]
-    assert all(not str(m.get("reason", "")).startswith("aborted") for m in real)
-    assert duel_mod.outcome(closed[0]) == duel_mod.ABORTED
-    assert closed[0]["sessions"] == [d1.id, d2.id]
+    assert not [m for m in d2.matchups if str(m.get("reason", "")).startswith("aborted")]
+    resumed = next(m for m in d2.matchups if m["challenger"] == "bbb0000000x" and m.get("carried"))
+    assert resumed["incumbent"] == "aaa0000000x"
+    assert resumed["sessions"] == [d1.id, d2.id]
+    assert resumed["pairs"] > rounds_before, "the carried rounds count toward the verdict"
+    assert resumed["verdict"] == "incumbent"
     with session_scope() as s:
         assert s.get(Duel, d1.id).open_matches is None
+
+
+def test_a_carried_match_that_cannot_resume_goes_to_the_side_ahead_and_keeps_its_rounds(monkeypatch):
+    """When a carried match genuinely cannot resume (its challenger left the field), the
+    rounds it fought are not thrown away: the side ahead takes it as a narrow win, and the
+    fused ranking counts its rounds."""
+    from pathbrain.overall_ranking import ring_rounds
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+    scores = {"aaa0000000x": 70.0, "bbb0000000x": 62.0, "ccc0000000x": 55.0}
+    d1, _, _ = _ring_session_keep(monkeypatch, scores, seats=1, belt_every=2, cancel_after_legs=4)
+    assert d1.open_matches
+    field = _ring_field(("aaa0000000x", 70.0), ("ccc0000000x", 55.0))
+    d2, _, _ = _ring_session_keep(monkeypatch, scores, seats=1, belt_every=2, field=field)
+    closed = next(m for m in d2.matchups if m["challenger"] == "bbb0000000x")
+    assert closed["verdict"] == "incumbent" and closed["narrow"] is True
+    assert closed["reason"].startswith(duel_mod.NARROW_PREFIX)
+    assert "no longer in the field" in closed["reason"]
+    assert duel_mod.outcome(closed) == "incumbent"
+    assert duel_mod.counts_as_evidence(closed)
+    rr = ring_rounds([{"id": d2.id, "matchups": [closed]}], closed["methodology"])
+    assert len(rr["rounds"]) == len(closed["deltas"]) > 0
+
+
+def test_a_match_that_ends_undecided_goes_to_the_side_ahead():
+    """Even a tiny win is a win. A match that reaches its cap or its futility exit without
+    a significant result goes to the side whose median margin is ahead, labelled narrow;
+    only an exactly level match is a draw."""
+    kw = dict(p1=0.7, alpha=0.05, min_margin=0.0, min_pairs=4, max_pairs=6, streak_wins=0)
+
+    def seat_with(deltas):
+        seat = duel_mod._Seat("cha", {"fingerprint": "cha", "label": "cha", "name": "Cha"}, "why", "inc", **kw)
+        for d in deltas:
+            seat.deltas.append(d)
+            seat.sprt.add_pair(d > 0)
+            seat.paired.add(d)
+        return seat
+
+    ahead = seat_with([0.4, -0.3, 0.5, -0.2, 0.3, -0.1])
+    verdict, reason = duel_mod._adjudicate(ahead, method="margins", min_pairs=4, max_pairs=6, min_margin=0.0)
+    assert verdict == "challenger" and reason.startswith(duel_mod.NARROW_PREFIX)
+    assert "not statistically clear" in reason
+
+    behind = seat_with([-0.4, 0.3, -0.5, 0.2, -0.3, 0.1])
+    assert duel_mod._adjudicate(behind, method="margins", min_pairs=4, max_pairs=6, min_margin=0.0)[0] == "incumbent"
+
+    level = seat_with([0.5, -0.5, 0.5, -0.5, 0.5, -0.5])
+    assert duel_mod._adjudicate(level, method="margins", min_pairs=4, max_pairs=6, min_margin=0.0)[0] == "draw"
+
+    # A raised margin floor is still the user's call: a lead under it stays a draw.
+    small = seat_with([0.1] * 6)
+    assert duel_mod._narrow_verdict(small)[0] == "challenger"
+
+
+def test_counts_as_evidence_keeps_aborted_rounds_except_another_rubrics():
+    base = {"incumbent": "a", "challenger": "b", "deltas": [0.4, -0.1], "verdict": "draw"}
+    assert duel_mod.counts_as_evidence({**base, "reason": "aborted: repeated unusable rounds"})
+    assert duel_mod.counts_as_evidence({**base, "reason": "window closed mid-matchup (undecided)"})
+    assert not duel_mod.counts_as_evidence({**base, "reason": (
+        "aborted: carried over, but could not resume — it was fought under methodology v16, "
+        "and the current one is v17")})
+    assert not duel_mod.counts_as_evidence({**base, "deltas": [], "reason": "aborted: x"})
+
+
+def test_an_immaterial_step_is_refused_even_when_the_defender_is_off_the_field():
+    """5800 vs 5799 fought twelve rounds because the queue's filter read the field and the
+    defender was not on it. The seat gate reads the session's own books."""
+    def prof(q):
+        return {"settings": [{"label": "Download", "download_bandwidth": "880Mbit", "quantum": q,
+                              "limit": 10240, "target": "3", "interval": "60", "ecn": True, "flows": 1024}]}
+
+    books = {"def": prof(5800), "near": prof(5799), "lo": prof(450), "hi": prof(10141)}
+    assert duel_mod._bout_cannot_differ(books, "near", "def")
+    assert duel_mod._bout_cannot_differ(books, "lo", "def") is None
+    # The queue filter no longer waves a bout through when the defender is off the field.
+    field = {"profiles": [{"fingerprint": fp, **p} for fp, p in books.items() if fp != "def"]}
+    import pathbrain.refresh as refresh_mod
+
+    orig = refresh_mod.list_profiles
+    refresh_mod.list_profiles = lambda s: [{"fingerprint": "def", **books["def"]}]
+    try:
+        assert "near" in duel_mod.undecidable_bouts(field, "def", ["near", "lo"])
+    finally:
+        refresh_mod.list_profiles = orig
 
 
 def test_a_crashed_session_keeps_its_open_matches_for_the_next_one():

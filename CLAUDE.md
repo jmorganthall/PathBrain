@@ -2507,6 +2507,41 @@ LLM-based. See `README.md` for the product overview.
     (`test_the_tape_never_asserts_an_inequality_that_is_false` parses every `p ≤ α` the
     reason can print and checks the arithmetic), because the bug was not in a number but in
     a template applied to two different things. `test_duel_verdict_reasons`.
+  - **Even a tiny win is a win, in the ring too — and nothing fought is thrown away**
+    (`duel._narrow_verdict` / `NARROW_PREFIX`, the record's `narrow`; `_carried_reference`;
+    `counts_as_evidence`; `_bout_cannot_differ`). The rule the pooled crown has always
+    followed (an argmax with no floor) and the margin floor's default of 0 were never
+    applied to the one place a verdict is *declared*: a match won only on the signed-rank
+    test or the streak, and everything else became a draw or an abort. On a field whose top
+    profiles sit 0.1–0.3 points apart that was nearly every match, and four ways compounded
+    into a week of nightly sessions with no result at all (Duels #125–#131). **(1) A match
+    that ends undecided goes to the side ahead** — its cap, its futility exit, or a carried
+    match that cannot resume: the median margin decides (rounds won break a zero median),
+    recorded as a real `"challenger"`/`"incumbent"` verdict with `narrow: true` and a reason
+    that says it was not statistically clear, so the standings, the ratings, the belt, the
+    cooldown and the tape all count it; only an exactly level match is a draw, and a raised
+    `min_margin` is still honoured. **(2) A carried match finishes against the defender it
+    started with**: the fused #1 is a near-tie that moved night to night, and a carried match
+    may only resume against its own reference, so re-picking the defender first closed every
+    carried match unfinished, every night. The carried matches' reference now stands in
+    (reachable, current methodology, most carried rounds first) until they are seated, no
+    fresh challenger is seated against it, and the existing drain finishes them before the
+    newly picked #1 takes the ring. **(3) An aborted verdict does not un-measure its rounds**:
+    the fused fit (`overall_ranking.ring_rounds`), the lever book (`lever_ledger`) and a
+    campaign's readings (`base_readings`) used to drop every aborted match, so 23 v17 rounds
+    fought on one night counted for nothing on the Best profile page. They now keep every
+    match with margins except one whose margins are on another rubric's scale, and a carried
+    close is stamped with the methodology its rounds were read under, not the one current at
+    close. **(4) The immaterial-step refusal fails closed**: the queue filter read the field,
+    and a defender the field did not list (the fused #1, a carried reference) passed every
+    bout — quantum 5800 met 5799 for twelve rounds. `undecidable_bouts` now reads the
+    defender's stored settings, and one gate at the seat (`_bout_cannot_differ`, on the
+    session's own books) refuses on every path, resumed matches included.
+    `test_a_match_that_ends_undecided_goes_to_the_side_ahead`,
+    `test_a_carried_match_resumes_against_its_own_defender_when_the_ranking_moved`,
+    `test_a_carried_match_that_cannot_resume_goes_to_the_side_ahead_and_keeps_its_rounds`,
+    `test_counts_as_evidence_keeps_aborted_rounds_except_another_rubrics`,
+    `test_an_immaterial_step_is_refused_even_when_the_defender_is_off_the_field`.
   - **A draw is not a title defence** (`duel.lineal_belt`). `defences` counted three
     different events as one — the holder won, the bout was a draw, and the holder *lost* but
     kept the belt on the shared-record gate — which on a ladder where most matches cannot
