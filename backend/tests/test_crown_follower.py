@@ -792,3 +792,82 @@ def test_the_follower_holds_while_a_regrade_is_running(monkeypatch):
     assert result["skipped"] is None
     assert result["applied"] is True and int(_OVERRIDES["quantum"]) == 2000
     assert len(_events("change")) == 1
+
+
+def _math_policy(monkeypatch, math_fp: str | None):
+    """Arm `crown_follow.policy = "math"` with a stubbed fastest-on-paper reading."""
+    from pathbrain import pooled_field
+
+    with session_scope() as session:
+        save_config(session, {"crown_follow": {"policy": "math"}})
+    monkeypatch.setattr(
+        pooled_field,
+        "math_crown",
+        lambda session, version, min_iterations: (
+            None
+            if math_fp is None
+            else {
+                "fingerprint": math_fp, "name": None, "label": "fast", "kind": "math",
+                "fcp_ms": 300.0, "lcp_ms": 650.0, "product": 195000.0, "iterations": 40,
+                "runner_up": None, "profiles": 3,
+            }
+        ),
+    )
+
+
+def test_under_the_math_policy_the_follower_writes_the_fastest_on_paper(monkeypatch):
+    """"Fastest on paper" is a crowning policy: chosen, it is what the follower writes —
+    not the pooled crown, which stays the tracked statistic."""
+    fast = _off_crown_target(2000)
+    pooled = _off_crown_target(3000)
+    fast_fp, pooled_fp = fingerprint(fast), fingerprint(pooled)
+    monkeypatch.setattr(
+        crown_follower,
+        "_compute_field",
+        lambda s: _field_for(_profile(pooled, overall=95.0), _profile(fast, overall=80.0), best=pooled_fp),
+    )
+    _math_policy(monkeypatch, fast_fp)
+    _enable()
+    try:
+        result = crown_follower.check()
+        assert result["policy"] == "math"
+        assert result["governing_source"] == "math"
+        assert result["governing_fingerprint"] == fast_fp
+        assert result["crown_fingerprint"] == pooled_fp
+        assert result["applied"] is True
+        assert result["live_fingerprint"] == fast_fp
+        assert "FCP 300 ms × LCP 650 ms" in result["governing_detail"]
+    finally:
+        with session_scope() as session:
+            save_config(session, {"crown_follow": {"policy": "fused"}})
+
+
+def test_the_math_policy_falls_back_to_pooled_and_says_so(monkeypatch):
+    pooled = _off_crown_target(3000)
+    pooled_fp = fingerprint(pooled)
+    monkeypatch.setattr(
+        crown_follower, "_compute_field", lambda s: _field_for(_profile(pooled), best=pooled_fp)
+    )
+    _math_policy(monkeypatch, None)
+    _enable()
+    try:
+        result = crown_follower.check()
+        assert result["policy"] == "math"
+        assert result["governing_source"] == "pooled"
+        assert result["governing_fingerprint"] == pooled_fp
+        assert "FCP and LCP" in result["governing_detail"]
+    finally:
+        with session_scope() as session:
+            save_config(session, {"crown_follow": {"policy": "fused"}})
+
+
+def test_the_math_policy_is_selectable_but_never_the_default(client):
+    from pathbrain import crowning
+
+    assert "math" in crowning.POLICIES and crowning.DEFAULT_POLICY == "fused"
+    try:
+        r = client.post("/api/settings/crown-follow", json={"policy": "math"})
+        assert r.status_code == 200, r.text
+        assert client.get("/api/settings/crown-follow").json()["config"]["policy"] == "math"
+    finally:
+        client.post("/api/settings/crown-follow", json={"policy": "fused"})

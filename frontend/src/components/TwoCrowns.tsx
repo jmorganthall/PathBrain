@@ -273,7 +273,7 @@ export default function TwoCrowns() {
                     )} × ${fmtNum(data.math.runner_up.lcp_ms, 0)} ms`
                   : `${data.math.iterations} iterations`
               }
-              governing={false}
+              governing={governing.source === "math"}
               href={`/profiles/${encodeURIComponent(data.math.fingerprint)}`}
             />
           )}

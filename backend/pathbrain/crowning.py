@@ -25,7 +25,9 @@ log = get_logger("crowning")
 #: ``"fused"`` (the default) is the one ranking fitted over BOTH records — the pooled medians
 #: as anchors, every ring round as a paired difference (`overall_ranking`). ``"pooled"`` and
 #: ``"duel"`` are its two corners, kept selectable so the three can be compared on one field.
-POLICIES = ("fused", "pooled", "duel")
+#: ``"math"`` follows the mathematical crown (`pooled_field.math_crown`: the confident
+#: profile with the lowest median FCP × median LCP in raw ms) — opt-in, never the default.
+POLICIES = ("fused", "pooled", "duel", "math")
 DEFAULT_POLICY = "fused"
 
 
@@ -85,6 +87,39 @@ def resolve(session, pooled_best_fp: str | None) -> dict:
             "detail": "the fused ranking names nobody yet — falling back to the pooled crown",
             "duel_champion": champion,
             "fused": None,
+        }
+
+    if policy == "math":
+        from .methodology import ensure_current_methodology
+        from .pooled_field import math_crown
+
+        math = None
+        try:
+            cfg = get_config(session)
+            version = ensure_current_methodology(session, cfg).version
+            min_iter = int((cfg.get("correlation") or {}).get("min_iterations") or 15)
+            math = math_crown(session, version, min_iter)
+        except Exception:  # noqa: BLE001 — a failed read falls back, it never stops the follower
+            log.warning("Crowning: the mathematical crown could not be computed", exc_info=True)
+        if math and math.get("fingerprint"):
+            return {
+                "policy": policy,
+                "fingerprint": math["fingerprint"],
+                "source": "math",
+                "detail": (
+                    f"fastest on paper — FCP {math['fcp_ms']:.0f} ms × LCP {math['lcp_ms']:.0f} ms"
+                    f" over {math['iterations']} iterations"
+                ),
+                "duel_champion": champion,
+                "math": math,
+            }
+        return {
+            "policy": policy,
+            "fingerprint": pooled_best_fp,
+            "source": "pooled",
+            "detail": "no confident profile has both FCP and LCP medians yet — falling back to the pooled crown",
+            "duel_champion": champion,
+            "math": None,
         }
 
     if policy == "duel":

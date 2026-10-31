@@ -71,7 +71,9 @@ export default function FollowBest() {
               ? "Auto-apply now follows the duel champion (falls back to the pooled best when no fresh verdict exists)."
               : next === "fused"
                 ? "Auto-apply now follows the Overall ranking — the pooled record and the duels fitted together (the Best profile page)."
-                : "Auto-apply now follows the pooled Overall — the all-time best by average.",
+                : next === "math"
+                  ? "Auto-apply now follows the fastest profile on paper — lowest median FCP × LCP (falls back to the pooled best when none qualifies)."
+                  : "Auto-apply now follows the pooled Overall — the all-time best by average.",
           sev: "info",
         });
         load();
@@ -262,6 +264,16 @@ export default function FollowBest() {
                   disabled={busy}
                 />
               </Tooltip>
+              <Tooltip title="Act on the fastest profile on paper: the confident profile with the lowest median FCP × median LCP in raw milliseconds. Ignores smoothness and has no tie test, so it can switch on small differences. Falls back to the pooled crown when no confident profile has both readings.">
+                <Chip
+                  size="small"
+                  label="Fastest on paper"
+                  color={policy === "math" ? "warning" : "default"}
+                  variant={policy === "math" ? "filled" : "outlined"}
+                  onClick={() => setPolicy("math")}
+                  disabled={busy}
+                />
+              </Tooltip>
             </Stack>
             {info?.duel_champion ? (
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
@@ -298,6 +310,10 @@ export default function FollowBest() {
                 ? "Following · Overall ranking"
                 : followedSource === "duel"
                   ? "Following · duel champion"
+                  : followedSource === "math"
+                    ? "Following · fastest on paper (FCP × LCP)"
+                    : policy === "math"
+                      ? "Following · pooled crown (no confident FCP × LCP reading yet)"
                   : policy === "duel"
                     ? "Following · pooled crown (no fresh duel verdict)"
                     : policy === "fused"

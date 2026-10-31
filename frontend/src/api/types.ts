@@ -1801,7 +1801,7 @@ export type AiStreamEvent =
 
 // ── Crown follower ("Follow best") ─────────────────────────────────────────────────
 
-export type CrowningPolicy = "fused" | "pooled" | "duel";
+export type CrowningPolicy = "fused" | "pooled" | "duel" | "math";
 
 export interface CrownFollowConfig {
   enabled: boolean;
@@ -1840,11 +1840,11 @@ export interface CrownCheckResult {
   crown_name?: string | null;
   crown_changed: boolean;
   // The crowning-policy resolution this check acted on.
-  policy?: "pooled" | "duel";
+  policy?: CrowningPolicy;
   governing_fingerprint?: string | null;
   governing_label?: string | null;
   governing_name?: string | null;
-  governing_source?: "fused" | "pooled" | "duel";
+  governing_source?: "fused" | "pooled" | "duel" | "math";
   governing_detail?: string;
   duel_champion?: DuelChampion | null;
   live_fingerprint: string | null;
@@ -1894,7 +1894,7 @@ export interface CrownFollowStatus {
   config: CrownFollowConfig;
   // The selectable crowning policies + the duel ladder's latest fresh champion (or null),
   // so the popover can show both verdicts side by side whatever the active policy.
-  policies: ("pooled" | "duel")[];
+  policies: CrowningPolicy[];
   duel_champion: DuelChampion | null;
   status: { last_check_at: string | null; last_result: CrownCheckResult | null };
   stats: CrownFollowStats;
@@ -1970,7 +1970,7 @@ export interface CrownsOut {
   // Champion's live pooled Overall minus the crown's — how far apart the two verdicts
   // sit on the one scale they share. Null until both have a live Overall.
   overall_delta?: number | null;
-  governing: { source: "fused" | "pooled" | "duel"; fingerprint: string | null; detail: string };
+  governing: { source: "fused" | "pooled" | "duel" | "math"; fingerprint: string | null; detail: string };
   agree: boolean;
   follow_enabled: boolean;
   on_crown: boolean | null;
