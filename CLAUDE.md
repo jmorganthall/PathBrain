@@ -3063,7 +3063,7 @@ LLM-based. See `README.md` for the product overview.
     default: the one ranking fitted over both records, `overall_ranking.crown`, with the
     pooled crown as the fallback when the fit names nobody), **"pooled"** (the all-time
     Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
-    `duel.latest_champion`, with pooled fallback) — the last two are the fused fit's corners,
+    `duel.latest_champion`, with pooled fallback) or **"math"** (opt-in: the fastest-on-paper profile, lowest median FCP × LCP, `pooled_field.math_crown`, pooled fallback) — the last two are the fused fit's corners,
     kept selectable so the three can be compared on one field. One policy, one write path:
     engines (race/duel) only measure and adjudicate; `crowning.resolve` selects; the **crown
     follower** is the only component that writes the firewall. The pooled crown *statistic*
@@ -3257,7 +3257,10 @@ LLM-based. See `README.md` for the product overview.
     in raw milliseconds** — no perception curve, no weights, no shrinkage, no ring; the
     product makes it scale-free, so a 10% gain on either leg counts the same, and a profile
     best on one leg loses to one close on both. A reference beside the verdicts: it is never
-    part of `corners.agree` and nothing follows it. The raw medians come from the rollup,
+    part of `corners.agree`, and automation follows it only when someone chooses the opt-in
+    `crown_follow.policy = "math"` (the **Fastest on paper** chip in the Auto-apply popover;
+    `crowning.resolve`, pooled fallback when no confident profile has both medians) — it
+    ignores smoothness and has no tie test, so it is never the default. The raw medians come from the rollup,
     which now keeps `raw` (`profile_aggregates.RAW_METRICS` = fcp/lcp, read in SQL off
     `Score.metric_values` as two scalars a run); a row written before the column existed
     reads `raw` None and is rebuilt once for that profile, like any stale stamp. When there is no answer the tile is not hidden: `corners.math_note` (and a warning in the log, if the read failed) says why, because a tile that silently vanishes reads the same as one that was never built.

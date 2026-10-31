@@ -352,8 +352,8 @@ def test_duel_endpoints(client):
     assert "duels" in client.get("/api/duel/history").json()
     # Crown-follow surface carries the policy + choices.
     cf = client.get("/api/settings/crown-follow").json()
-    assert cf["config"]["policy"] in ("fused", "pooled", "duel")
-    assert set(cf["policies"]) == {"fused", "pooled", "duel"}
+    assert cf["config"]["policy"] in ("fused", "pooled", "duel", "math")
+    assert set(cf["policies"]) == {"fused", "pooled", "duel", "math"}
     assert "duel_champion" in cf
     out = client.post("/api/settings/crown-follow", json={"policy": "duel"}).json()
     assert out["config"]["policy"] == "duel"
