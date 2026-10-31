@@ -4540,6 +4540,7 @@ export interface OverallOut {
     ring: OverallCorner | null;
     fused: OverallCorner | null;
     math?: MathCrown | null;
+    math_note?: string | null;
     agree: boolean;
   } | Record<string, never>;
   movers: OverallProfile[];

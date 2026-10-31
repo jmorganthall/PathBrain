@@ -704,6 +704,7 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     best = eligible[0] if eligible else None
     live_settings = _live_settings() if live else None
     ring_rating = ratings.get(ring_best_fp) or {}
+    math_best, math_note = _math_corner(session, version, min_iterations)
     out["corners"] = {
         "pooled": None if pooled_best is None else _corner(pooled_best, "pooled"),
         "ring": None if ring_best is None else {
@@ -719,7 +720,8 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
         "fused": None if best is None else _corner(best, "fused"),
         # The mathematical crown: lowest median FCP × median LCP in raw ms. A reference
         # beside the three records, never part of `agree` and never followed.
-        "math": _math_corner(session, version, min_iterations),
+        "math": math_best,
+        "math_note": math_note,
         "agree": bool(
             best is not None and pooled_best is not None and ring_best is not None
             and best["fingerprint"] == pooled_best["fingerprint"] == ring_best["fingerprint"]
@@ -790,15 +792,22 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     return out
 
 
-def _math_corner(session, version: str, min_iterations: int) -> dict | None:
-    """`pooled_field.math_crown`, best-effort: a reference tile must never fail the page."""
+def _math_corner(session, version: str, min_iterations: int) -> tuple[dict | None, str | None]:
+    """`pooled_field.math_crown`, best-effort: a reference tile must never fail the page —
+    and must never vanish without saying why, so a None comes with a sentence."""
     try:
         from .pooled_field import math_crown
 
-        return math_crown(session, version, min_iterations)
+        got = math_crown(session, version, min_iterations)
     except Exception:  # noqa: BLE001
-        log.debug("math crown unavailable", exc_info=True)
-        return None
+        log.warning("math crown unavailable", exc_info=True)
+        return None, "The fastest-on-paper reading failed to compute; the server log has the error."
+    if got is None:
+        return None, (
+            f"No profile with at least {min_iterations} iterations under {version} has both "
+            "an FCP and an LCP median yet, so there is no fastest-on-paper profile to name."
+        )
+    return got, None
 
 
 def _corner(r: dict, kind: str) -> dict:

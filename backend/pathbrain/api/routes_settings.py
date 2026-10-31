@@ -4057,7 +4057,7 @@ def _math_crown(session) -> dict | None:
         min_iter = int((cfg.get("correlation") or {}).get("min_iterations") or 15)
         return math_crown(session, version, min_iter)
     except Exception:  # noqa: BLE001 — a reference tile can't be why the card fails
-        log.debug("math crown unavailable", exc_info=True)
+        log.warning("math crown unavailable", exc_info=True)
         return None
 
 

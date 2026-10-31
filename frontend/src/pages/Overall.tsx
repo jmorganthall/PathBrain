@@ -681,6 +681,11 @@ export default function Overall() {
                     </CardContent>
                   </Card>
                 )}
+                {!corners.math && corners.math_note && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                    <b>Fastest on paper:</b> {corners.math_note}
+                  </Typography>
+                )}
                 {!corners.agree && corners.pooled && corners.fused && corners.pooled.fingerprint !== corners.fused.fingerprint && (
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
                     The pooled record had <b>{nameOf(corners.pooled)}</b> on top; once the ring's rounds are heard, <b>{nameOf(corners.fused)}</b> is. That is the ring correcting a pooled lead that was worth less than it looked.

@@ -3260,7 +3260,7 @@ LLM-based. See `README.md` for the product overview.
     part of `corners.agree` and nothing follows it. The raw medians come from the rollup,
     which now keeps `raw` (`profile_aggregates.RAW_METRICS` = fcp/lcp, read in SQL off
     `Score.metric_values` as two scalars a run); a row written before the column existed
-    reads `raw` None and is rebuilt once for that profile, like any stale stamp.
+    reads `raw` None and is rebuilt once for that profile, like any stale stamp. When there is no answer the tile is not hidden: `corners.math_note` (and a warning in the log, if the read failed) says why, because a tile that silently vanishes reads the same as one that was never built.
     `test_the_math_crown_is_the_lowest_fcp_times_lcp_among_confident_profiles`,
     `test_the_rollup_keeps_raw_medians_and_rebuilds_a_row_written_before_them`.
     **This module was `verdict.py`, and `GET /api/settings/verdict` is RETIRED.** It carried a

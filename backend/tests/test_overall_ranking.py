@@ -429,3 +429,23 @@ def test_a_profile_placed_by_ring_rounds_alone_is_never_the_crown():
             assert t is not None and t["best"] == _fp("top")
     finally:
         _clear_ledger()
+
+
+def test_a_missing_math_crown_says_why_instead_of_vanishing(monkeypatch):
+    """The fastest-on-paper tile used to disappear silently when no profile qualified or
+    the read failed, so a reader could not tell "not built yet" from "nothing qualifies"."""
+    import pathbrain.pooled_field as pf
+
+    monkeypatch.setattr(pf, "math_crown", lambda *a, **k: None)
+    best, note = o._math_corner(None, "v17", 15)
+    assert best is None and "15 iterations" in note and "v17" in note
+
+    def boom(*a, **k):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(pf, "math_crown", boom)
+    best, note = o._math_corner(None, "v17", 15)
+    assert best is None and "failed" in note
+
+    monkeypatch.setattr(pf, "math_crown", lambda *a, **k: {"fingerprint": "f"})
+    assert o._math_corner(None, "v17", 15) == ({"fingerprint": "f"}, None)
