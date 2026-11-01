@@ -2344,7 +2344,9 @@ def test_a_profiles_ring_record_is_signed_from_its_own_side():
     assert by_opp["rival"]["wins"] == 1 and by_opp["boss"]["losses"] == 1
     table = duel_mod.standings()
     row = next(r for r in table["standings"] if r["fingerprint"] == "mine")
-    assert out["record"]["rank"] == row["rank"] and out["rank_of"] == len(table["standings"])
+    # rank_of counts RANKED rows only: a provisional record has no number to be "of".
+    ranked = sum(1 for r in table["standings"] if r["rank"] is not None)
+    assert out["record"]["rank"] == row["rank"] and out["rank_of"] == ranked
     assert out["champion"]["fingerprint"] == table["champion"]["fingerprint"]
 
 
