@@ -778,6 +778,33 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "weights": {"fcp": 1.0, "lcp": 1.0, "cadence_cov": 1.0},
         },
     },
+    # A CANDIDATE, written so it can be audited before anyone decides to publish it — it is
+    # deliberately NOT ``CURRENT_METHODOLOGY``. Nothing adopts a registry version on its own:
+    # it only becomes current if someone points ``CURRENT_METHODOLOGY`` (or the Methodology
+    # page's version picker) at it, so until then it exists for the Crown agreement card.
+    "speed-smoothness-v18": {
+        "derivation_version": DERIVATION_VERSION,  # rubric change only — re-grade, never re-derive
+        "notes": (
+            "CANDIDATE — FCP and LCP only. The crown is FCP 1 · LCP 1 (weighted); the third leg "
+            "is dropped. Every smoothness leg the crown has carried has either read zero on this "
+            "link (worst_void_fraction), sat on a linear ramp (network_stall_all), or ranked the "
+            "field's clearest artifacts highest (cadence_cov), and on a fast link first paint and "
+            "main content land ~30 ms apart, so there is little journey between them to grade. "
+            "Same axes, metrics, thresholds and required set as v17 otherwise — cadence_cov and "
+            "network_stall_all stay scored in Smoothness and network_stall_all stays required — "
+            "so the only difference is what the Overall reads. Compare it to the current version "
+            "on the Methodology page's Crown agreement card before publishing: if the top of the "
+            "ranking barely moves, the third leg was buying nothing."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v17_assignments(),
+        "overall": {
+            "method": "weighted",
+            "metrics": ["fcp", "lcp"],
+            "required": ["fcp", "lcp"],
+            "weights": {"fcp": 1.0, "lcp": 1.0},
+        },
+    },
 }
 
 

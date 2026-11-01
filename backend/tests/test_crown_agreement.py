@@ -93,3 +93,27 @@ def test_the_route_sits_above_the_version_catch_all_and_an_unknown_version_404s(
     with session_scope() as s:
         assert crown_agreement.resolve_definition(s, "no-such-version") is None
         assert crown_agreement.resolve_definition(s, "speed-smoothness-v16")["overall"]["metrics"] == ["fcp", "lcp", "network_stall_all"]
+
+
+def test_the_fcp_lcp_candidate_is_registered_but_never_current(client):
+    """The FCP/LCP-only candidate exists to be audited before a publish: registered, clean
+    under the crown's guards, identical to v17 apart from what the Overall reads — and not
+    current, so nothing re-grades or re-crowns because it was written."""
+    from pathbrain.methodology import linear_ramp_legs
+    from pathbrain import metrics as metrics_mod
+
+    spec = METHODOLOGY_REGISTRY["speed-smoothness-v18"]
+    v17 = METHODOLOGY_REGISTRY["speed-smoothness-v17"]
+    assert CURRENT_METHODOLOGY != "speed-smoothness-v18"
+    assert spec["overall"]["metrics"] == ["fcp", "lcp"]
+    assert spec["overall"]["weights"] == {"fcp": 1.0, "lcp": 1.0}
+    assert spec["assignments"] == v17["assignments"] and spec["axes"] == v17["axes"]
+    assert not linear_ramp_legs(spec)
+    assert not metrics_mod.crown_ledger_violations(spec["overall"]["metrics"])
+    assert "speed-smoothness-v18" in crown_agreement.registry_versions()
+    r = client.get(
+        "/api/methodologies/crown-agreement?a=speed-smoothness-v17&b=speed-smoothness-v18&min_runs=5"
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["a"] == "speed-smoothness-v17" and body["b"] == "speed-smoothness-v18"
