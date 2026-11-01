@@ -48,6 +48,7 @@ import PageHeader from "../components/PageHeader";
 import StatTile from "../components/dashboard/StatTile";
 import { fmtNum } from "../utils/format";
 import { sopsColor } from "../theme";
+import PaperCostLine from "../components/PaperCostLine";
 
 const nameOf = (p: { name: string | null; label: string | null; fingerprint: string }) =>
   p.name || p.label || p.fingerprint.slice(0, 8);
@@ -131,6 +132,7 @@ function CornerTile({
                   {kind === "fused" &&
                     `fused ${fmtNum(corner.fused, 1)} · ${corner.iterations} iterations + ${corner.rounds} round${corner.rounds === 1 ? "" : "s"}`}
                 </Typography>
+                <PaperCostLine cost={corner.vs_paper} />
               </>
             ) : (
               <Typography variant="body2" color="text.disabled">

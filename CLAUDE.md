@@ -3264,6 +3264,18 @@ LLM-based. See `README.md` for the product overview.
     which now keeps `raw` (`profile_aggregates.RAW_METRICS` = fcp/lcp, read in SQL off
     `Score.metric_values` as two scalars a run); a row written before the column existed
     reads `raw` None and is rebuilt once for that profile, like any stale stamp. When there is no answer the tile is not hidden: `corners.math_note` (and a warning in the log, if the read failed) says why, because a tile that silently vanishes reads the same as one that was never built.
+    **Every other crown is priced against it** (`paper_cost`, `vs_paper` on the pooled /
+    ring / fused corners of `GET /api/overall` and on the pooled / duel / fused verdicts of
+    `GET /settings/crowns`, `components/PaperCostLine.tsx` under each tile). The
+    experience-graded verdicts may name a profile slower to paint, and whether that trade is
+    worth it — a smoother route a few minutes longer on a long commute, never one twice as
+    long — is the reader's call, which needs the price: per verdict its median FCP and LCP,
+    the milliseconds and percent each sits behind the fastest on paper (positive = slower),
+    the product's percent, and per leg whether the gap clears `PAPER_TIE_SIGMA` (2) × the
+    pooled SE of the two medians (IQR/√runs). A gap inside that is printed as *within noise*,
+    never as a cost. Read off the rollup; best-effort.
+    `test_paper_cost_prices_a_profile_in_milliseconds_and_percent_against_the_fastest`,
+    `test_a_gap_inside_the_noise_is_reported_as_noise_not_as_a_cost`.
     `test_the_math_crown_is_the_lowest_fcp_times_lcp_among_confident_profiles`,
     `test_the_rollup_keeps_raw_medians_and_rebuilds_a_row_written_before_them`.
     **This module was `verdict.py`, and `GET /api/settings/verdict` is RETIRED.** It carried a

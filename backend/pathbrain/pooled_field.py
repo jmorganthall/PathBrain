@@ -123,7 +123,7 @@ def graded_field(session, version: str) -> list[dict]:
     return out
 
 
-__all__ = ["graded_field", "pooled_se", "quartile_grade", "se"]
+__all__ = ["graded_field", "paper_cost", "pooled_se", "quartile_grade", "se", "math_crown"]
 
 
 def math_crown(session, version: str, min_iterations: int) -> dict | None:
@@ -187,3 +187,81 @@ def math_crown(session, version: str, min_iterations: int) -> dict | None:
     }
     best["profiles"] = len(rows)
     return best
+
+
+#: The tie bar for "within noise": the same 2σ the crown's own `crown_tie_sigma` uses.
+PAPER_TIE_SIGMA = 2.0
+
+
+def _leg(raw: dict, metric: str) -> tuple[float | None, float | None]:
+    """(median, SE of the median) for one raw leg off a rollup row — IQR/√runs, the
+    rollup's one SE arithmetic (`profile_aggregates.median_se`)."""
+    from .profile_aggregates import median_se
+
+    s = (raw or {}).get(metric) or {}
+    med = s.get("median")
+    if not isinstance(med, (int, float)) or med <= 0:
+        return None, None
+    p25, p75 = s.get("p25"), s.get("p75")
+    iqr = (p75 - p25) if isinstance(p25, (int, float)) and isinstance(p75, (int, float)) else None
+    return float(med), median_se(iqr, s.get("n"))
+
+
+def paper_cost(
+    session, version: str, math: dict | None, fingerprints: list[str],
+    sigma: float = PAPER_TIE_SIGMA,
+) -> dict[str, dict]:
+    """What each of these profiles costs in raw time against the fastest on paper.
+
+    The other crowns grade experience — smoothness, perception curves, the ring — and may
+    name a profile that is *slower* to paint than the mathematically fastest one. Whether
+    that trade is worth it ("a smoother route three minutes longer on a 45-minute commute")
+    is a person's call, and it cannot be made without the price. So per profile: its median
+    FCP and LCP, the milliseconds and percent each sits behind the fastest-on-paper profile
+    (positive = slower), the FCP × LCP product's percent, and whether each leg's gap clears
+    ``sigma`` × the pooled SE of the two medians — a gap inside the noise is reported as
+    such, never as a cost. Read off the rollup; a profile without both medians is left out.
+    """
+    from . import profile_aggregates
+
+    if not math or not math.get("fingerprint"):
+        return {}
+    ref_fp = math["fingerprint"]
+    wanted = [fp for fp in dict.fromkeys([ref_fp, *fingerprints]) if fp]
+    rolled = profile_aggregates.aggregates(session, version, wanted)
+    ref_raw = (rolled.get(ref_fp) or {}).get("raw") or {}
+    ref = {m: _leg(ref_raw, m) for m in ("fcp", "lcp")}
+    if ref["fcp"][0] is None or ref["lcp"][0] is None:
+        return {}
+    out: dict[str, dict] = {}
+    for fp in dict.fromkeys(fingerprints):
+        if not fp:
+            continue
+        if fp == ref_fp:
+            out[fp] = {"is_math": True, "fcp_ms": ref["fcp"][0], "lcp_ms": ref["lcp"][0],
+                       "fcp_delta_ms": 0.0, "lcp_delta_ms": 0.0, "fcp_pct": 0.0,
+                       "lcp_pct": 0.0, "product_pct": 0.0, "within_noise": True}
+            continue
+        raw = (rolled.get(fp) or {}).get("raw") or {}
+        legs = {m: _leg(raw, m) for m in ("fcp", "lcp")}
+        if legs["fcp"][0] is None or legs["lcp"][0] is None:
+            continue
+        row: dict = {"is_math": False}
+        clear_any = False
+        for m in ("fcp", "lcp"):
+            med, se = legs[m]
+            rmed, rse = ref[m]
+            delta = med - rmed
+            row[f"{m}_ms"] = round(med, 1)
+            row[f"{m}_delta_ms"] = round(delta, 1)
+            row[f"{m}_pct"] = round(100.0 * delta / rmed, 1)
+            bar = None if se is None or rse is None else sigma * (se ** 2 + rse ** 2) ** 0.5
+            row[f"{m}_bar_ms"] = None if bar is None else round(bar, 1)
+            row[f"{m}_clear"] = bar is not None and abs(delta) > bar
+            clear_any = clear_any or row[f"{m}_clear"]
+        row["product_pct"] = round(
+            100.0 * ((legs["fcp"][0] * legs["lcp"][0]) / (ref["fcp"][0] * ref["lcp"][0]) - 1.0), 1
+        )
+        row["within_noise"] = not clear_any
+        out[fp] = row
+    return out

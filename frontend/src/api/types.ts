@@ -1907,6 +1907,7 @@ export interface CrownFollowStatus {
 // Dashboard shows both and marks which one automation follows.
 
 export interface PooledCrown {
+  vs_paper?: PaperCost | null;
   fingerprint: string;
   label: string | null;
   name?: string | null;
@@ -1943,10 +1944,29 @@ export interface DuelCrown {
   // overall_now) — the number that lets the two crowns be compared at all.
   overall_now?: number | null;
   overall_iterations?: number;
+  vs_paper?: PaperCost | null;
 }
 
 // The mathematical crown: the confident profile with the lowest median FCP × median LCP in
 // raw milliseconds. No perception curve, no weights; a reference that is never followed.
+// What a verdict costs against the fastest on paper (positive = slower). `*_clear` says a
+// leg's gap clears twice the noise of the two medians; `within_noise` that neither does.
+export interface PaperCost {
+  is_math: boolean;
+  fcp_ms: number;
+  lcp_ms: number;
+  fcp_delta_ms: number;
+  lcp_delta_ms: number;
+  fcp_pct: number;
+  lcp_pct: number;
+  product_pct: number;
+  fcp_bar_ms?: number | null;
+  lcp_bar_ms?: number | null;
+  fcp_clear?: boolean;
+  lcp_clear?: boolean;
+  within_noise: boolean;
+}
+
 export interface MathCrown {
   fingerprint: string;
   name: string | null;
@@ -4417,6 +4437,7 @@ export interface ProfileSettingsView {
 // the "fused" crowning policy acts on.
 
 export interface FusedCrown {
+  vs_paper?: PaperCost | null;
   fingerprint: string;
   name: string | null;
   label: string | null;
@@ -4474,6 +4495,7 @@ export interface OverallCorner {
   // this methodology's alone), and whether the firewall can be set to it (null = unknown).
   ledger_rounds?: number;
   raceable?: boolean | null;
+  vs_paper?: PaperCost | null;
 }
 
 export interface OverallSlack {

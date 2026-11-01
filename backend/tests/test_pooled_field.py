@@ -343,3 +343,60 @@ def test_the_overall_corners_carry_the_math_crown_and_agree_ignores_it():
     corners = out["corners"]
     assert corners["math"]["fingerprint"] == _fp("balanced")
     assert set(corners) >= {"pooled", "ring", "fused", "math", "agree"}
+
+
+def _add_raw_runs(name: str, fcps: list[float], lcps: list[float], *, iterations: int = 20) -> None:
+    fp = _fp(name)
+    crown = _crown()
+    with session_scope() as s:
+        for fcp, lcp in zip(fcps, lcps):
+            run = Run(status=RunStatus.COMPLETE, iterations=iterations,
+                      settings_fingerprint=fp, settings=_settings(fp))
+            s.add(run)
+            s.flush()
+            s.add(Score(run_id=run.id, methodology_version=VERSION, is_at_measure=False,
+                        comparability="exact", subscores={m: 80.0 for m in crown},
+                        axis_scores={}, weights_used={},
+                        metric_values={"fcp": fcp, "lcp": lcp}))
+
+
+def test_paper_cost_prices_a_profile_in_milliseconds_and_percent_against_the_fastest():
+    """The price of an experience-graded verdict: how much slower to first paint and to
+    main content it is than the fastest on paper, per leg and on the product."""
+    _add_raw("balanced", fcp=300.0, lcp=700.0)
+    _add_raw("fast_fcp", fcp=250.0, lcp=900.0)
+    with session_scope() as s:
+        math = pooled_field.math_crown(s, VERSION, 15)
+        cost = pooled_field.paper_cost(s, VERSION, math, [_fp("fast_fcp"), _fp("balanced")])
+    slow = cost[_fp("fast_fcp")]
+    assert (slow["fcp_delta_ms"], slow["fcp_pct"]) == (-50.0, -16.7)   # faster first paint
+    assert (slow["lcp_delta_ms"], slow["lcp_pct"]) == (200.0, 28.6)    # slower main content
+    assert slow["product_pct"] == 7.1                                  # 225,000 / 210,000
+    assert slow["is_math"] is False and slow["within_noise"] is False
+    assert cost[_fp("balanced")]["is_math"] is True
+    assert cost[_fp("balanced")]["lcp_delta_ms"] == 0.0
+
+
+def test_a_gap_inside_the_noise_is_reported_as_noise_not_as_a_cost():
+    _add_raw("balanced", fcp=300.0, lcp=700.0)
+    _add_raw_runs("wobbly", fcps=[200.0, 310.0, 420.0], lcps=[500.0, 710.0, 900.0])
+    with session_scope() as s:
+        math = {"fingerprint": _fp("balanced")}
+        cost = pooled_field.paper_cost(s, VERSION, math, [_fp("wobbly")])
+    row = cost[_fp("wobbly")]
+    assert row["lcp_delta_ms"] == 10.0
+    assert row["lcp_clear"] is False and row["fcp_clear"] is False
+    assert row["within_noise"] is True
+
+
+def test_the_overall_corners_carry_their_price_against_the_fastest_on_paper():
+    _add_raw("balanced", fcp=300.0, lcp=700.0)
+    _add_raw("fast_fcp", fcp=250.0, lcp=900.0)
+    with session_scope() as s:
+        out = overall_ranking.ranking(s, backtest=False)
+    corners = out["corners"]
+    for k in ("pooled", "fused"):
+        if corners.get(k):
+            vp = corners[k]["vs_paper"]
+            assert vp is not None and {"fcp_pct", "lcp_pct", "product_pct", "within_noise"} <= set(vp)
+            assert vp["is_math"] == (corners[k]["fingerprint"] == corners["math"]["fingerprint"])
