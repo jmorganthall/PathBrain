@@ -4014,6 +4014,21 @@ def crowns(session: Session = Depends(get_session)) -> dict:
     if fused:
         fused_out = {**fused, "name": fused.get("name") or call_signs.get(fused["fingerprint"])}
 
+    # What each verdict costs in raw time against the fastest on paper — the price of the
+    # experience it was crowned for. Best-effort, like every reading on this card.
+    math = _math_crown(session)
+    if math:
+        try:
+            from ..pooled_field import paper_cost
+
+            version = ensure_current_methodology(session, get_config(session)).version
+            sides = [s for s in (pooled, duel_out, fused_out) if s and s.get("fingerprint")]
+            cost = paper_cost(session, version, math, [s["fingerprint"] for s in sides])
+            for side in sides:
+                side["vs_paper"] = cost.get(side["fingerprint"])
+        except Exception:  # noqa: BLE001
+            log.warning("Two-crowns: paper cost unavailable", exc_info=True)
+
     last = crown_follower.status().get("last_result") or {}
     return {
         "policy": resolution["policy"],
@@ -4043,8 +4058,8 @@ def crowns(session: Session = Depends(get_session)) -> dict:
         "on_crown": last.get("on_crown"),
         "checked_at": crown_follower.status().get("last_check_at"),
         # The mathematical crown — lowest median FCP × LCP in raw ms — shown beside the
-        # verdicts as a reference. Never followed and never part of `agree`.
-        "math": _math_crown(session),
+        # verdicts as a reference. Never part of `agree`.
+        "math": math,
     }
 
 

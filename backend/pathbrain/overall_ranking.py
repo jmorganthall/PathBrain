@@ -727,6 +727,7 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
             and best["fingerprint"] == pooled_best["fingerprint"] == ring_best["fingerprint"]
         ),
     }
+    _attach_paper_cost(session, version, out["corners"])
 
     if best is None:
         out["verdict"] = (
@@ -808,6 +809,24 @@ def _math_corner(session, version: str, min_iterations: int) -> tuple[dict | Non
             "an FCP and an LCP median yet, so there is no fastest-on-paper profile to name."
         )
     return got, None
+
+
+def _attach_paper_cost(session, version: str, corners: dict) -> None:
+    """Price each record's crown against the fastest on paper (`pooled_field.paper_cost`):
+    how much slower to first paint and to main content the experience-graded verdicts are.
+    Best-effort — a reference reading must never fail the page."""
+    math = corners.get("math")
+    if not math:
+        return
+    try:
+        from .pooled_field import paper_cost
+
+        sides = [k for k in ("pooled", "ring", "fused") if corners.get(k)]
+        cost = paper_cost(session, version, math, [corners[k]["fingerprint"] for k in sides])
+        for k in sides:
+            corners[k]["vs_paper"] = cost.get(corners[k]["fingerprint"])
+    except Exception:  # noqa: BLE001
+        log.warning("paper cost unavailable", exc_info=True)
 
 
 def _corner(r: dict, kind: str) -> dict:

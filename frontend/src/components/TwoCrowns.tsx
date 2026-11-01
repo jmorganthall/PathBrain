@@ -28,8 +28,9 @@ import HandshakeIcon from "@mui/icons-material/Handshake";
 import SpeedIcon from "@mui/icons-material/Speed";
 
 import { api } from "../api/client";
-import type { CrownsOut } from "../api/types";
+import type { CrownsOut, PaperCost } from "../api/types";
 import { fmtDateTime, fmtNum } from "../utils/format";
+import PaperCostLine from "./PaperCostLine";
 
 const fmtReign = (hours: number | null | undefined) => {
   if (hours == null) return "—";
@@ -51,6 +52,7 @@ function CrownTile({
   muted,
   onOpen,
   href,
+  cost,
 }: {
   icon: React.ReactNode;
   kind: string;
@@ -62,6 +64,7 @@ function CrownTile({
   muted?: boolean;
   onOpen?: () => void;
   href: string;
+  cost?: PaperCost | null;
 }) {
   const navigate = useNavigate();
   return (
@@ -109,6 +112,7 @@ function CrownTile({
           <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
             {subtitle}
           </Typography>
+          <PaperCostLine cost={cost} />
           {!!detail && (
             <Typography
               variant="caption"
@@ -201,6 +205,7 @@ export default function TwoCrowns() {
                 .filter(Boolean)
                 .join(" · ")}
               governing={governing.source === "pooled"}
+              cost={pooled.vs_paper}
               href={`/profiles/${encodeURIComponent(pooled.fingerprint)}`}
             />
           ) : (
@@ -240,6 +245,7 @@ export default function TwoCrowns() {
                   : `Verdict expired (older than ${duel.freshness_days}d) — run another duel to renew it`
               }
               governing={governing.source === "duel"}
+              cost={duel.vs_paper}
               muted={!duel.fresh}
               href="/duels"
               onOpen={() => navigate("/duels")}
@@ -288,6 +294,7 @@ export default function TwoCrowns() {
                   The fit names <b>{data.fused.name || data.fused.label || data.fused.fingerprint.slice(0, 8)}</b>
                   {" "}(Overall {fmtNum(data.fused.fused, 1)} ± {fmtNum(data.fused.fused_se, 2)}
                   {data.fused.tied_count ? `, ${data.fused.tied_count} tied` : ""}).{" "}
+                  <PaperCostLine cost={data.fused.vs_paper} />
                 </>
               ) : (
                 <>The fit names nobody yet, so the pooled crown stands in. </>
