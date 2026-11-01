@@ -536,6 +536,16 @@ def profile_why(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.get("/settings/profiles/{fingerprint}/conditions")
+def profile_conditions(fingerprint: str, session: Session = Depends(get_session)) -> dict:
+    """When this profile was measured (hour of day) and whether the machine was slow while it
+    was — a profile measured mostly in the host's slow hours wears that in its standing.
+    Read-only; see ``instrument_health.profile_conditions``."""
+    from .. import instrument_health
+
+    return instrument_health.profile_conditions(session, fingerprint)
+
+
 @router.get("/settings/profiles/{fingerprint}/verify-derivation")
 def verify_profile_derivation(
     fingerprint: str,

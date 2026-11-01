@@ -2599,9 +2599,17 @@ export default function Duels() {
                     >
                       <TableCell>
                         <Stack direction="row" spacing={0.75} alignItems="baseline">
-                          <Typography variant="body2">{r.rank}</Typography>
-                          {r.tied_with_leader && <TieMark pairs={r.pairs_to_separate} />}
-                          <RankGap ringRank={r.rank} pooledRank={pooledRank.get(r.fingerprint)} />
+                          {r.rank != null ? (
+                            <Typography variant="body2">{r.rank}</Typography>
+                          ) : (
+                            <Tooltip title="Unranked: a provisional rating (under 20 rounds, or only one opponent). Listed with its rating, but not ranked until the ring has enough evidence to place it.">
+                              <Typography variant="caption" color="text.secondary">
+                                unranked
+                              </Typography>
+                            </Tooltip>
+                          )}
+                          {r.tied_with_leader && r.rank != null && <TieMark pairs={r.pairs_to_separate} />}
+                          {r.rank != null && <RankGap ringRank={r.rank} pooledRank={pooledRank.get(r.fingerprint)} />}
                         </Stack>
                       </TableCell>
                       <TableCell sx={{ minWidth: 210 }}>

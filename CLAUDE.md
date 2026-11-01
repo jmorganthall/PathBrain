@@ -2253,9 +2253,18 @@ LLM-based. See `README.md` for the product overview.
     failure modes at once and `test_the_prior_is_calibrated_between_the_two_failure_modes` pins
     them — at 2 a 3–0 sweep over the *weakest* profile outrates a veteran that beat the whole
     field, and too heavy a prior stops a win over the *strongest* moving anyone, which is the
-    entire point. A rating is flagged **provisional** (still shown and ranked, marked `?`) until
-    it rests on ≥`PROVISIONAL_PAIRS` pairs **and** ≥2 opponents — one opponent is a single edge
-    restated, not a position in the network.
+    entire point. A rating is flagged **provisional** until it rests on ≥`PROVISIONAL_PAIRS`
+    pairs **and** ≥2 opponents — one opponent is a single edge restated, not a position in
+    the network. **A provisional record is listed but UNRANKED** (`_rank_key` sorts established
+    before provisional; `rank` is None and `unranked` True on the row; `rank_of` on the
+    profile ledger counts ranked rows only). It used to be ranked like any other, and on the
+    live ledger the "#1 of 32" and current champion rested on one match against one opponent
+    (20–10, p = 0.08) while every profile with hundreds of rounds sat mid-table: the luckiest
+    thin samples float to the top of a raw rating sort. Because the table sort and
+    `ledger_leader` share `_rank_key`, the rating-rule champion and the ring-#1 promotion are
+    the best *established* record too (a provisional one only when none is established).
+    `test_a_thin_winning_record_is_listed_unranked_below_established_ones`; tests about the
+    order itself on tiny ledgers use the `every_record_established` fixture.
     **The standings rank on the fitted RATING; the conservative floor is a column, not the
     order** (`duel.rank_sigma`, default **0**; `rating.RANK_SIGMA` = 1 defines the
     `rating_floor` = `rating − 1·rating_se` printed as the sortable **"Proven"** column). The
@@ -4139,6 +4148,17 @@ docker compose up --build   # -> http://localhost:8000
   comparability tip spells the token out. Best-effort throughout: an unreadable baseline, a
   run with too few host readings, or the gate switched off all degrade to `None` — a guess
   about the machine must never cost a real measurement. `test_instrument_health`.
+  **When a profile was measured** (`instrument_health.profile_conditions`,
+  `GET /api/settings/profiles/{fp}/conditions`, the **When it was measured** card on Profile
+  Detail). The pooled median averages whatever runs a profile got, and the machine is slower
+  for hours every night; a profile measured mostly then (the nightly duel window sits there)
+  wears it in its standing — on the live ledger a #214-of-222 profile had most of its runs
+  from one 05:00 session and was level with a #2 head to head. Per profile: runs by hour of
+  day (UTC, shown local) and `slow_share`, the share of its runs whose host-speed ratio
+  (`Run.instrument_health["ratio"]`, nothing the shaper moves) sits in the field's slowest
+  quarter — a fair sample puts 25% there, `flag` at `CONDITIONS_SLOW_SHARE` (50%). Bounded to
+  the newest runs, read-only, recorded only: nothing grades or gates on it.
+  `test_a_profile_measured_mostly_on_a_slow_machine_is_flagged`.
 - **Data-integrity audit (recipe vs. ingredients).**
  `GET /api/runs/{id}/verify-derivation`
   (`runner.verify_run_derivation`) and `GET /api/settings/profiles/{fp}/verify-derivation` are

@@ -380,7 +380,110 @@ def is_degraded(health: dict | None) -> bool:
     return bool(health) and health.get("verdict") == DEGRADED
 
 
+# ── When was a profile measured, and was the machine slow? ─────────────────────
+
+#: How many of a profile's newest runs, and of the field's, the reading looks at.
+CONDITIONS_PROFILE_RUNS = 500
+CONDITIONS_FIELD_RUNS = 5000
+#: Below this many readings a profile's share says nothing.
+CONDITIONS_MIN_RUNS = 5
+#: Flag when at least this share of a profile's runs fell in the machine's slowest quarter
+#: (a fair sample puts 25% there).
+CONDITIONS_SLOW_SHARE = 0.5
+
+
+def profile_conditions(session, fingerprint: str) -> dict:
+    """When a profile was measured, and whether the machine was slow while it was.
+
+    The pooled median is an average over the runs a profile happened to get, and the
+    machine is not equally fast all day: the research export found it ~30% slower for
+    about five hours every night. A profile measured mostly in those hours — the duel
+    window sits there — wears the machine's slowness in its standing. On the live ledger a
+    profile ranked #214 of 222 turned out to have most of its runs from one 05:00 session,
+    while head to head, under the same conditions, it was level with a #2.
+
+    So per profile: the hour of day of each run (UTC; the page shows local), and how its
+    runs' host-speed ratio (``Run.instrument_health["ratio"]``, the machine's own
+    host-side time against its healthy baseline — nothing the shaper moves) compares with
+    the field's. ``slow_share`` is the share of its runs in the field's slowest quarter of
+    readings: a fair sample puts 25% there, and ``flag`` is raised at
+    :data:`CONDITIONS_SLOW_SHARE`. Read-only and bounded by the question (the newest
+    :data:`CONDITIONS_PROFILE_RUNS` / :data:`CONDITIONS_FIELD_RUNS` runs); a run with no
+    reading is counted, never guessed.
+    """
+    from sqlalchemy import select
+
+    from .models import Run, RunStatus
+
+    ratio_col = Run.instrument_health["ratio"].as_float()
+    rows = session.execute(
+        select(Run.created_at, ratio_col)
+        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint == fingerprint)
+        .order_by(Run.id.desc())
+        .limit(CONDITIONS_PROFILE_RUNS)
+    ).all()
+    field = [
+        float(v) for (v,) in session.execute(
+            select(ratio_col)
+            .where(Run.status == RunStatus.COMPLETE, ratio_col.is_not(None))
+            .order_by(Run.id.desc())
+            .limit(CONDITIONS_FIELD_RUNS)
+        ).all()
+        if isinstance(v, (int, float))
+    ]
+    hours = [0] * 24
+    ratios: list[float] = []
+    for created, ratio in rows:
+        if created is not None:
+            hours[created.hour] += 1
+        if isinstance(ratio, (int, float)):
+            ratios.append(float(ratio))
+    out: dict = {
+        "fingerprint": fingerprint,
+        "runs": len(rows),
+        "runs_with_reading": len(ratios),
+        "hours_utc": hours,
+        "median_ratio": round(median(ratios), 3) if ratios else None,
+        "field_median_ratio": round(median(field), 3) if field else None,
+        "slow_cutoff": None,
+        "slow_share": None,
+        "flag": False,
+        "sentence": None,
+    }
+    if len(field) < 4 * CONDITIONS_MIN_RUNS:
+        out["sentence"] = "Not enough host-speed readings across the field to compare against yet."
+        return out
+    cutoff = _percentile(sorted(field), 75.0)
+    out["slow_cutoff"] = round(cutoff, 3)
+    if len(ratios) < CONDITIONS_MIN_RUNS:
+        out["sentence"] = (
+            f"Only {len(ratios)} of this profile's runs carry a host-speed reading — too few "
+            "to say whether it was measured on a slow machine."
+        )
+        return out
+    share = sum(1 for r in ratios if r > cutoff) / len(ratios)
+    out["slow_share"] = round(share, 3)
+    out["flag"] = share >= CONDITIONS_SLOW_SHARE
+    pct = round(100 * share)
+    if out["flag"]:
+        out["sentence"] = (
+            f"{pct}% of this profile's runs were measured while the machine was in its slowest "
+            f"quarter (a fair sample puts 25% there; median host time {out['median_ratio']:.2f}× "
+            f"healthy against the field's {out['field_median_ratio']:.2f}×). Its standing is "
+            "likely dragged down by when it was measured, not by its settings — a few runs at "
+            "a normal hour would show it."
+        )
+    else:
+        out["sentence"] = (
+            f"{pct}% of this profile's runs fell in the machine's slowest quarter (a fair "
+            "sample puts 25% there), so when it was measured is not skewing its standing much."
+        )
+    return out
+
+
 __all__ = [
+    "CONDITIONS_SLOW_SHARE",
+    "profile_conditions",
     "BASELINE_PERCENTILE",
     "Baseline",
     "DEGRADED",

@@ -72,7 +72,7 @@ export default function RingCard({ standings, limit = 5 }: Props) {
                 color="text.secondary"
                 sx={{ width: 22, flexShrink: 0, textAlign: "right", fontVariantNumeric: "tabular-nums" }}
               >
-                {r.rank}
+                {r.rank ?? "–"}
               </Typography>
               <Link
                 component={RouterLink}

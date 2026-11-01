@@ -2272,8 +2272,26 @@ export interface AlertAck {
 // A ranking earned in the ring: decided matchups only, nothing pooled or averaged over
 // history. Each row is one profile's record across every duel session in the ledger.
 
+// When a profile was measured and whether the machine was slow while it was
+// (GET /settings/profiles/{fp}/conditions). Hours are UTC; the page shifts them to local.
+export interface ProfileConditions {
+  fingerprint: string;
+  runs: number;
+  runs_with_reading: number;
+  hours_utc: number[];
+  median_ratio: number | null;
+  field_median_ratio: number | null;
+  slow_cutoff: number | null;
+  slow_share: number | null;
+  flag: boolean;
+  sentence: string | null;
+}
+
 export interface DuelStanding {
-  rank: number;
+  // Null for a provisional record (under 20 rounds or under 2 opponents): it is listed,
+  // keeps its rating, and gets no rank number until it is established.
+  rank: number | null;
+  unranked?: boolean;
   fingerprint: string;
   label: string;
   // Call sign, resolved by fingerprint — so rows recorded before naming read correctly.

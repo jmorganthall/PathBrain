@@ -1502,21 +1502,34 @@ def defender_reference(
     return ledger_leader(ratings, sigma=sigma) if rule == RATING_RULE else ledger_leader(ratings)
 
 
-def _rank_key(r: dict, sigma: float | None) -> tuple[float, int] | None:
-    """The standings' own ordering key for one fitted record: the rating with ``sigma``
-    standard errors subtracted (``None`` = the stored conservative floor), ties toward the
-    deeper record. ONE key, shared by the table sort and `ledger_leader`, so the champion
-    the rating rule names is row 1 by construction rather than by two implementations
-    agreeing."""
+def _rank_key(r: dict, sigma: float | None) -> tuple[int, float, int] | None:
+    """The standings' own ordering key for one fitted record: **established before
+    provisional**, then the rating with ``sigma`` standard errors subtracted (``None`` = the
+    stored conservative floor), ties toward the deeper record. ONE key, shared by the table
+    sort and `ledger_leader`, so the champion the rating rule names is row 1 by construction
+    rather than by two implementations agreeing.
+
+    Provisional records (`rating.PROVISIONAL_PAIRS` / `PROVISIONAL_OPPONENTS`) sort below
+    every established one. A thin record swings widest, so the luckiest thin records float
+    to the top of a raw rating sort: on the live ledger the "#1 of 32" rested on one match
+    against one opponent (20–10, p = 0.08) while every profile with hundreds of rounds sat
+    mid-table. A record that has met one opponent is one edge restated, not a position in
+    the network, so it may not lead the network. A record with no flag is read as
+    established, so callers that hand in a bare rating keep their old order."""
+    established = 0 if r.get("provisional") else 1
     if sigma is None:
         floor = r.get("rating_floor")
         if floor is None:
             return None
-        return (float(floor), int(r.get("pairs") or 0))
+        return (established, float(floor), int(r.get("pairs") or 0))
     rating = r.get("rating")
     if rating is None:
         return None
-    return (float(rating) - float(sigma) * float(r.get("rating_se") or 0.0), int(r.get("pairs") or 0))
+    return (
+        established,
+        float(rating) - float(sigma) * float(r.get("rating_se") or 0.0),
+        int(r.get("pairs") or 0),
+    )
 
 
 def ledger_leader(
@@ -5336,13 +5349,24 @@ def standings(limit_sessions: int = 50) -> dict:
         # rule names is row 1 by construction; points only split an exact tie on both.
         key=lambda r: (
             _rank_key({"rating": r.get("rating"), "rating_se": r.get("rating_se"),
-                       "pairs": r["rating_pairs"] or 0}, sigma) or (-1e9, 0),
+                       "pairs": r["rating_pairs"] or 0,
+                       "provisional": r.get("rating_provisional", True)}, sigma) or (-1, -1e9, 0),
             r["points"],
         ),
         reverse=True,
     )
-    for i, row in enumerate(table, start=1):
-        row["rank"] = i
+    # A provisional record is listed but carries NO rank number: "#1 of 32" on one match
+    # against one opponent reads as a finding, and it is not one. The established rows are
+    # numbered 1, 2, 3 … in order; the provisional ones follow, unranked, still sortable.
+    rank = 0
+    for row in table:
+        if row.get("rating_provisional", True):
+            row["rank"] = None
+            row["unranked"] = True
+        else:
+            rank += 1
+            row["rank"] = rank
+            row["unranked"] = False
 
     # ── Is the order meaningful? ─────────────────────────────────────────────────
     # Ranks stay strict (1, 2, 3 …) and nobody shares one. Sharing rank numbers would say
@@ -5812,7 +5836,9 @@ def profile_ledger(fingerprint: str, limit_sessions: int = 50) -> dict:
         # Has this profile ever fought? Distinguishes "no ring record" from "no ledger yet".
         "in_ring": bool(bouts),
         "record": record,
-        "rank_of": len(rows),
+        # Out of the RANKED rows: a provisional record has no number, so "#3 of 32" must
+        # not count the ten it cannot be compared with.
+        "rank_of": sum(1 for r in rows if r.get("rank") is not None),
         "champion": champion,
         "is_champion": bool(champion and champion.get("fingerprint") == fp),
         "opponents": opponents,

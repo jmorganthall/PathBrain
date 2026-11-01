@@ -231,3 +231,38 @@ def test_the_audit_prices_every_candidate_threshold(client):
     # Monotone by construction: a higher bar can never quarantine more runs.
     counts = [row["runs"] for row in priced]
     assert counts == sorted(counts, reverse=True)
+
+
+def test_a_profile_measured_mostly_on_a_slow_machine_is_flagged(client):
+    """A profile whose runs mostly fell in the machine's slowest quarter is flagged, with
+    its hours of day; one measured like the field is not."""
+    from datetime import datetime
+
+    from pathbrain.database import session_scope
+    from pathbrain.models import Run, RunStatus
+
+    with session_scope() as s:
+        s.query(Run).filter(Run.settings_fingerprint.in_(["slowfp", "fairfp", "fieldfp"])).delete(
+            synchronize_session=False
+        )
+        for i in range(40):  # the field: ratios 1.00 … 1.39
+            s.add(Run(status=RunStatus.COMPLETE, settings_fingerprint="fieldfp",
+                      created_at=datetime(2026, 10, 1, i % 24),
+                      instrument_health={"verdict": "healthy", "ratio": 1.0 + i / 100}))
+        for i in range(8):  # measured at 10:00 UTC on a slow machine
+            s.add(Run(status=RunStatus.COMPLETE, settings_fingerprint="slowfp",
+                      created_at=datetime(2026, 10, 30, 10),
+                      instrument_health={"verdict": "healthy", "ratio": 1.6}))
+        for i in range(8):  # measured like everyone else
+            s.add(Run(status=RunStatus.COMPLETE, settings_fingerprint="fairfp",
+                      created_at=datetime(2026, 10, 30, 15),
+                      instrument_health={"verdict": "healthy", "ratio": 1.05 + i / 50}))
+
+    slow = client.get("/api/settings/profiles/slowfp/conditions").json()
+    assert slow["flag"] is True and slow["slow_share"] == 1.0
+    assert slow["hours_utc"][10] == 8 and sum(slow["hours_utc"]) == 8
+    assert "slowest quarter" in slow["sentence"]
+    fair = client.get("/api/settings/profiles/fairfp/conditions").json()
+    assert fair["flag"] is False and fair["slow_share"] < 0.5
+    thin = client.get("/api/settings/profiles/nobody/conditions").json()
+    assert thin["runs"] == 0 and thin["flag"] is False
