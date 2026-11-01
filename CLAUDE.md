@@ -181,7 +181,12 @@ LLM-based. See `README.md` for the product overview.
     `instrument_drift.CROWN_KEYS` and `portable.CROWN_STAND_INS` follow the new leg
     (`test_instrument_drift_crown_keys_cover_the_current_crown`; the cadence of the synthetic
     waterfall's completions stands in for a real page's). `test_crown_agreement`,
-    `test_current_methodology_is_v17_rubric`. **v16** was **v15's browser metrics, thresholds and weighted crown
+    `test_current_methodology_is_v17_rubric`. **`speed-smoothness-v18` is a CANDIDATE, not
+    current**: FCP 1 · LCP 1 and nothing else in the crown, every other assignment v17's —
+    written so the Crown agreement card can price it against the current version before
+    anyone decides to publish it. Nothing adopts a registry version on its own; it becomes
+    current only if `CURRENT_METHODOLOGY` or the version picker is pointed at it.
+    `test_the_fcp_lcp_candidate_is_registered_but_never_current`. **v16** was **v15's browser metrics, thresholds and weighted crown
     byte-for-byte, minus every metric a probe plugin supplied** (the HTTP-socket `ttfb` and the
     Completion axis `dns`/`tcp`/`tls`/`jitter`/`packet_loss`), because runs now **measure only
     what the methodology requires** (`config.measurement.methodology_only`, default on:
