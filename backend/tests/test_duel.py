@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from pathbrain import challenger as challenger_mod
@@ -378,6 +380,18 @@ def _finished_duel(session, *, matchups, champion, when):
     return d
 
 
+@pytest.fixture
+def every_record_established(monkeypatch):
+    """For tests about the rating order itself, built on deliberately tiny ledgers: treat
+    every fitted record as established, so the provisional-below-established rule (pinned on
+    its own in `test_a_thin_winning_record_is_listed_unranked_below_established_ones`) does
+    not reorder a fixture that was never about thinness."""
+    from pathbrain import rating as rating_mod
+
+    monkeypatch.setattr(rating_mod, "PROVISIONAL_PAIRS", 0)
+    monkeypatch.setattr(rating_mod, "PROVISIONAL_OPPONENTS", 0)
+
+
 def _mu(inc, cha, verdict, *, wins_inc=6, wins_cha=4, delta=-2.0):
     return {
         "incumbent": inc,
@@ -395,10 +409,15 @@ def _mu(inc, cha, verdict, *, wins_inc=6, wins_cha=4, delta=-2.0):
     }
 
 
-def test_a_thin_winning_record_can_top_the_ladder_and_the_prior_is_the_lever():
-    """**Whoever wins the duel wins the duel.** The order is the fitted rating, so a
-    profile that won its match ranks above the one it beat — including when its record is
-    thin.
+def test_a_thin_winning_record_is_listed_unranked_below_established_ones():
+    """A provisional record is listed, keeps its rating, and gets **no rank number**; the
+    established records are numbered first, by rating.
+
+    The order used to let a thin record lead, and on the live ledger it did: "#1 of 32"
+    rested on one match against one opponent (20–10, p = 0.08) while every profile with
+    hundreds of rounds sat mid-table — the luckiest thin samples float to the top of a raw
+    rating sort. Among established records the rating still decides, so a winner is never
+    ranked under the profile it beat for want of an error bar (the floor's failure, below).
 
     This reverses an earlier decision, and the reversal is deliberate rather than a
     regression. Ranking on `rating - 1*SE` reads well as a statement about evidence and
@@ -443,7 +462,13 @@ def test_a_thin_winning_record_can_top_the_ladder_and_the_prior_is_the_lever():
     assert by_fp["newcomer"]["rating_se"] > by_fp["veteran"]["rating_se"]
     assert by_fp["veteran"]["rating_floor"] > by_fp["newcomer"]["rating_floor"]
     assert out["ranked_by"] == "rating"
-    assert out["standings"][0]["fingerprint"] == "newcomer", "it beat the veteran's opponent"
+    # The newcomer out-rates the veteran on the fit, and is still not ranked above it.
+    assert by_fp["newcomer"]["rating"] > by_fp["veteran"]["rating"]
+    assert out["standings"][0]["fingerprint"] == "veteran"
+    assert by_fp["veteran"]["rank"] == 1 and by_fp["veteran"]["unranked"] is False
+    assert by_fp["newcomer"]["rank"] is None and by_fp["newcomer"]["unranked"] is True
+    # The champion the rating rule names is row 1 — the established leader, not the snap.
+    assert (out.get("champion") or {}).get("fingerprint") == "veteran"
 
     # The prior is the honest lever for thin records: shrink them toward the field, rather
     # than letting a wide error bar overturn a match that actually happened.
@@ -461,7 +486,7 @@ def test_a_thin_winning_record_can_top_the_ladder_and_the_prior_is_the_lever():
             save_config(s, {"duel": {"rating_prior_pairs": 4.0}})
 
 
-def test_standings_rank_by_head_to_head_record():
+def test_standings_rank_by_head_to_head_record(every_record_established):
     """Ranking is earned in the ring — by the Bradley-Terry rating fitted to every pair,
     with the W-L-D / points columns kept beside it as the readable record."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -1456,7 +1481,7 @@ def test_the_defender_is_re_read_from_the_ledger_between_bouts():
     assert "the champion defends" in why
 
 
-def test_a_ring_leader_the_environment_cant_reach_does_not_defend():
+def test_a_ring_leader_the_environment_cant_reach_does_not_defend(every_record_established):
     """Who DEFENDS is reachability-filtered — an unreachable profile would abort on the
     first apply — so the ring's best *applicable* profile stands in instead."""
     field = {
@@ -1493,7 +1518,7 @@ def test_a_ring_leader_the_environment_cant_reach_does_not_defend():
     assert "the ring's #1 defends" in why
 
 
-def test_the_reigning_champion_is_always_row_one_of_the_table():
+def test_the_reigning_champion_is_always_row_one_of_the_table(every_record_established):
     """The reported bug: the reigning duel champion did not match the table.
 
     It couldn't have: the badge read a stored `Duel.champion_fingerprint` written at
@@ -2319,7 +2344,9 @@ def test_a_profiles_ring_record_is_signed_from_its_own_side():
     assert by_opp["rival"]["wins"] == 1 and by_opp["boss"]["losses"] == 1
     table = duel_mod.standings()
     row = next(r for r in table["standings"] if r["fingerprint"] == "mine")
-    assert out["record"]["rank"] == row["rank"] and out["rank_of"] == len(table["standings"])
+    # rank_of counts RANKED rows only: a provisional record has no number to be "of".
+    ranked = sum(1 for r in table["standings"] if r["rank"] is not None)
+    assert out["record"]["rank"] == row["rank"] and out["rank_of"] == ranked
     assert out["champion"]["fingerprint"] == table["champion"]["fingerprint"]
 
 
@@ -4014,7 +4041,7 @@ def test_the_rings_number_one_is_raced_even_when_the_pooled_field_has_never_hear
     assert "the ring's #1 isn't the champion" in why
 
 
-def test_an_unraceable_ring_leader_hands_the_promotion_to_the_best_raceable_one():
+def test_an_unraceable_ring_leader_hands_the_promotion_to_the_best_raceable_one(every_record_established):
     """The ring's #1 measured on settings the firewall can no longer be put on would fail
     every leg it was seated for — so it is never promoted, and the next-best rated profile
     the firewall CAN be set to takes the promotion instead."""

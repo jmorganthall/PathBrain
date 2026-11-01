@@ -1,5 +1,6 @@
 // Small typed API client for the PathBrain backend. Uses plain fetch.
 import type {
+  ProfileConditions,
   AxisSeriesResponse,
   BaselineConfig,
   BaselineTest,
@@ -406,6 +407,8 @@ export const api = {
     return request<CrownAgreement>(`/methodologies/crown-agreement?${q.toString()}`);
   },
   reachabilityAudit: () => request<ReachabilityAudit>(`/methodologies/reachability`),
+  profileConditions: (fp: string) =>
+    request<ProfileConditions>(`/settings/profiles/${encodeURIComponent(fp)}/conditions`),
   profileSettingsView: (fp: string) =>
     request<ProfileSettingsView>(`/settings/profiles/${encodeURIComponent(fp)}/settings`),
   methodology: (version: string) =>

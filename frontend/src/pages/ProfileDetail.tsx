@@ -52,6 +52,7 @@ import type {
   SettingsProfile,
 } from "../api/types";
 import ProfileSettingsCard from "../components/ProfileSettingsCard";
+import MeasuredWhenCard from "../components/MeasuredWhenCard";
 import SeriesChart from "../components/SeriesChart";
 import Waterfall from "../components/Waterfall";
 import WhyCard from "../components/WhyCard";
@@ -557,6 +558,10 @@ export default function ProfileDetail() {
           means nothing until you know what was graded. */}
       <ProfileSettingsCard fingerprint={fingerprint} />
 
+      {/* When it was measured, and whether the machine was slow then — a profile measured
+          mostly in the host's slow hours wears that in its standing. */}
+      <MeasuredWhenCard fingerprint={fingerprint} />
+
       {/* Standings: this profile's rank (1 = best) per Overall + headline axis, green→red. */}
       {standings.length > 0 && (
         <Card sx={{ mb: 2 }}>
@@ -629,7 +634,7 @@ export default function ProfileDetail() {
                     </Box>
                   )}
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                    {s.rank == null ? "no score" : `of ${s.total} · score ${s.raw}`}
+                    {s.rank == null ? "no score" : `of ${s.total} · score ${s.raw != null ? Number(s.raw.toFixed(2)) : "—"}`}
                   </Typography>
                 </Box>
               ))}
@@ -667,7 +672,7 @@ export default function ProfileDetail() {
             !ring.in_ring
               ? "Has not fought a duel yet."
               : `${ring.is_champion ? "Current duel champion · " : ""}${
-                  ring.record ? `duel rank #${ring.record.rank ?? "—"} · ${ring.record.wins}–${ring.record.losses}–${ring.record.draws}` : ""
+                  ring.record ? `${ring.record.rank != null ? `duel rank #${ring.record.rank}` : "unranked in the ring"} · ${ring.record.wins}–${ring.record.losses}–${ring.record.draws}` : ""
                 } over ${ring.matchups_analyzed} match${ring.matchups_analyzed === 1 ? "" : "es"}`
           }
           openWhen={!!ring.is_champion}
@@ -715,8 +720,11 @@ export default function ProfileDetail() {
                     {[
                       {
                         label: "Duel rank",
-                        value: `#${ring.record.rank}`,
-                        sub: `of ${ring.rank_of} in the ring`,
+                        value: ring.record.rank != null ? `#${ring.record.rank}` : "unranked",
+                        sub:
+                          ring.record.rank != null
+                            ? `of ${ring.rank_of} ranked in the ring`
+                            : "provisional: under 20 rounds or 1 opponent",
                         color: rankColor(ring.record.rank, ring.rank_of),
                         tip: "Where this profile sits in the head-to-head league table — a different ranking from the pooled standings above, earned only against opponents it actually faced.",
                       },
