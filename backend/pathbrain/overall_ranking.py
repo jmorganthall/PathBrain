@@ -83,8 +83,16 @@ log = get_logger(__name__)
 DEFAULT_SLACK = 0.5
 
 #: Fought pairs needed before the measured slack is trusted over the default. Under this,
-#: one odd night's disagreement would set the trust in every pooled median.
-MIN_SLACK_PAIRS = 5
+#: one odd night's disagreement would set the trust in every pooled median. It was 5, and
+#: five pairs were exactly what set τ to 8.94 on the live ledger — a slack that disarmed
+#: every pooled median on a field whose top sits 0.1–0.3 points apart, so a profile the
+#: ring had never fought kept its pooled number while every fought one was dragged toward
+#: its opponents, and a #33 on the pooled record was crowned.
+MIN_SLACK_PAIRS = 10
+
+#: Distinct profiles the measuring pairs must span. Ten pairs among three profiles is three
+#: profiles' worth of evidence about how far pooled medians stray, not a field's.
+MIN_SLACK_PROFILES = 6
 
 #: A round's margin variance when the ledger cannot measure its own noise yet. Wide, so an
 #: unmeasured ring never overrules a measured pooled record.
@@ -217,6 +225,7 @@ def pair_summaries(rounds: list[dict]) -> dict[tuple[str, str], dict]:
 
 def pooled_slack(
     pooled: dict[str, dict], pairs: dict[tuple[str, str], dict], sigma_round: float,
+    *, exclude: frozenset[str] | set[str] = frozenset(),
 ) -> dict:
     """τ, measured: how far pooled medians sit from the truth beyond their own error bars.
 
@@ -236,14 +245,33 @@ def pooled_slack(
     when the pooled record already disagrees less than its own bars allow). Still a
     median, so one failed leg's margin cannot set it.
 
-    Returns ``{tau, pairs, basis, excess_var, expected_var}``; ``basis`` is ``measured``
-    or ``default``. ``excess_var`` / ``expected_var`` are the plain medians, for the page.
+    **No single profile sets it** (the Witty Shrike incident). τ decides how much every
+    pooled median counts, so it must be a statement about the field, not about one
+    profile: the estimate needs `MIN_SLACK_PAIRS` pairs across `MIN_SLACK_PROFILES`
+    profiles, and it is the *smallest* τ left after removing any one profile's pairs (a
+    leave-one-profile-out read). Every fold must still meet the pair minimum — if the
+    ledger cannot measure τ without some one profile, it is not measuring the field, and
+    the default stands with ``rests_on`` naming that profile. A profile
+    whose pooled median is badly off — measured on a slow machine, say — inflates τ only if
+    the disagreement survives without it. ``driven_by`` names the profile whose removal
+    lowered τ, with the all-pairs value beside it as ``tau_all``.
+
+    **Profiles in ``exclude`` take no part** — the caller passes the profiles measured
+    mostly while the machine was slow (`instrument_health.slow_profiles`), whose pooled
+    median carries the machine and not the shaper. Counted as ``excluded_pairs``.
+
+    Returns ``{tau, pairs, profiles, basis, excess_var, expected_var, ...}``; ``basis`` is
+    ``measured`` or ``default``. ``excess_var`` / ``expected_var`` are the plain medians,
+    for the page.
     """
-    z2: list[float] = []
-    expected: list[float] = []
+    items: list[tuple[str, str, float, float]] = []
+    excluded_pairs = 0
     for (a, b), s in pairs.items():
         pa, pb = pooled.get(a), pooled.get(b)
         if not pa or not pb or pa.get("overall") is None or pb.get("overall") is None:
+            continue
+        if a in exclude or b in exclude:
+            excluded_pairs += 1
             continue
         z = (float(pb["overall"]) - float(pa["overall"])) - float(s["mean"])
         var = (
@@ -251,23 +279,52 @@ def pooled_slack(
             + (float(pb.get("se") or 0.0) ** 2)
             + (sigma_round ** 2) / max(1, int(s["n"]))
         )
-        z2.append(z * z)
-        expected.append(var)
-    if len(z2) < MIN_SLACK_PAIRS:
+        items.append((a, b, z * z, var))
+    profiles = {fp for a, b, _, _ in items for fp in (a, b)}
+    base = {
+        "pairs": len(items), "profiles": len(profiles),
+        "needed_pairs": MIN_SLACK_PAIRS, "needed_profiles": MIN_SLACK_PROFILES,
+        "excluded_pairs": excluded_pairs, "excluded_profiles": sorted(exclude & profiles_of(pairs)),
+    }
+    if len(items) < MIN_SLACK_PAIRS or len(profiles) < MIN_SLACK_PROFILES:
         return {
-            "tau": DEFAULT_SLACK, "pairs": len(z2), "basis": "default",
+            **base, "tau": DEFAULT_SLACK, "basis": "default",
             "excess_var": None, "expected_var": None,
-            "needed_pairs": MIN_SLACK_PAIRS,
         }
+    z2 = [it[2] for it in items]
+    expected = [it[3] for it in items]
     total_var = float(_median(z2) or 0.0) * MEDIAN_SQ_TO_VAR
     exp_var = float(_median(expected) or 0.0)
-    tau2 = _solve_slack_variance(z2, expected)
+    tau2_all = _solve_slack_variance(z2, expected)
+    tau2, driven_by = tau2_all, None
+    for fp in sorted(profiles):
+        sub = [it for it in items if fp not in (it[0], it[1])]
+        if len(sub) < MIN_SLACK_PAIRS:
+            # Without this one profile there is not enough left to measure τ at all, so
+            # the measurement is a statement about it rather than about the field.
+            return {
+                **base, "tau": DEFAULT_SLACK, "basis": "default", "rests_on": fp,
+                "tau_all": round(math.sqrt(tau2_all), 3),
+                "excess_var": round(total_var, 4), "expected_var": round(exp_var, 4),
+            }
+        t2 = _solve_slack_variance([it[2] for it in sub], [it[3] for it in sub])
+        if t2 < tau2:
+            tau2, driven_by = t2, fp
     return {
-        "tau": round(math.sqrt(tau2), 3), "pairs": len(z2), "basis": "measured",
+        **base,
+        "tau": round(math.sqrt(tau2), 3), "basis": "measured",
+        "tau_all": round(math.sqrt(tau2_all), 3),
+        "driven_by": driven_by,
         "excess_var": round(total_var, 4), "expected_var": round(exp_var, 4),
-        "needed_pairs": MIN_SLACK_PAIRS,
-        "method": "standardized: median of z²/(expected + 2τ²) = median χ²₁",
+        "method": (
+            "standardized: median of z²/(expected + 2τ²) = median χ²₁, "
+            "the smallest over leave-one-profile-out folds"
+        ),
     }
+
+
+def profiles_of(pairs) -> set[str]:
+    return {fp for key in pairs for fp in key}
 
 
 def _solve_slack_variance(z2: list[float], expected: list[float]) -> float:
@@ -492,7 +549,8 @@ def _name(p: dict) -> str:
 
 
 def _sentence(best: dict, runner: dict | None, lead: float | None, bar: float | None,
-              tied_count: int, need: int | None, slack: dict, moved: bool) -> str:
+              tied_count: int, need: int | None, slack: dict, moved: bool,
+              held: dict | None = None) -> str:
     who = _name(best)
     out = f"Run {who} — Overall {best['fused']:.1f} ± {best['fused_se']:.2f}."
     if best["rounds"] and best["pooled"] is not None:
@@ -507,7 +565,14 @@ def _sentence(best: dict, runner: dict | None, lead: float | None, bar: float | 
             f" That is its pooled median over {best['iterations']} iterations; the ring has "
             f"never fought it, so nothing head-to-head has tested the claim."
         )
-    if lead is None:
+    if held is not None:
+        out += (
+            f" It is the crown of the pooled record. The fit puts {held['name'] or 'another profile'} "
+            f"{held['gap']:.2f} points ahead of it, inside the ±{held['bar']:.2f} the evidence "
+            f"allows, and a lead inside the noise does not displace the measured crown — "
+            f"{tied_count} profile{'s are' if tied_count != 1 else ' is'} tied with it."
+        )
+    elif lead is None:
         out += " Nothing else is measured well enough to compare it against."
     elif bar is not None and lead > bar:
         out += (
@@ -524,12 +589,18 @@ def _sentence(best: dict, runner: dict | None, lead: float | None, bar: float | 
             out += f" About {need} more rounds between the top two would settle it."
         elif need is None and lead > 0:
             out += " More rounds would not settle it within any practical night."
-    if moved:
+    if moved and held is None:
         out += " The ring changed who is on top."
     if slack.get("basis") == "measured":
         out += (
             f" Pooled medians are trusted to ±{slack['tau']:.2f}, measured from "
             f"{slack['pairs']} pairs where the ring and the pooled record read the same gap."
+        )
+    elif slack.get("basis") == "default":
+        out += (
+            f" Pooled medians are trusted to ±{slack['tau']:.2f}, the default: the ring has "
+            f"{slack.get('pairs', 0)} usable pairs across {slack.get('profiles', 0)} profiles, and "
+            f"measuring it takes {slack.get('needed_pairs')} across {slack.get('needed_profiles')}."
         )
     return out
 
@@ -598,7 +669,19 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     noise = decidability.round_noise(sessions_data)
     sigma_round = float(noise["sigma"]) if noise and noise.get("sigma") else FALLBACK_ROUND_SIGMA
     pairs = pair_summaries(rounds)
-    slack = pooled_slack(pooled, pairs, sigma_round)
+    try:
+        from .instrument_health import slow_profiles
+
+        slow = slow_profiles(session, profiles_of(pairs))
+    except Exception:  # noqa: BLE001 — a refinement of τ, never a reason the ranking fails
+        log.warning("Overall ranking: could not read when the fought profiles were measured", exc_info=True)
+        slow = set()
+    slack = pooled_slack(pooled, pairs, sigma_round, exclude=slow)
+    if slack.get("driven_by"):
+        log.info(
+            "Overall ranking: τ %.2f with every pair, %.2f without %s — the smaller stands",
+            slack.get("tau_all") or 0.0, slack["tau"], slack["driven_by"],
+        )
     tau = float(slack["tau"])
 
     # ── The fit ───────────────────────────────────────────────────────────────────
@@ -656,6 +739,38 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
         )
     rows.sort(key=lambda r: (r["fused"], r["iterations"], r["rounds"]), reverse=True)
     eligible = [r for r in rows if r["eligible"]]
+    pooled_best = next(
+        (r for r in sorted(
+            [r for r in rows if r["confident"] and not r["is_sqm_off"]],
+            key=lambda r: (r["pooled"], r["iterations"]), reverse=True,
+        )),
+        None,
+    )
+    # The measured crown stands unless the fit can show something clearly ahead of it.
+    # With a wide slack every pooled median counts for little, a profile the ring never
+    # fought keeps its pooled number while every fought one is pulled toward its
+    # opponents — so the fused argmax can land on a profile far down the pooled record
+    # (a #33, 60% slower to first paint) purely for having never fought. A lead inside the
+    # noise bar is not evidence of anything, so it does not displace the profile the
+    # pooled record crowns; a clear one does, which is what the ring is for.
+    held = None
+    if (
+        eligible and pooled_best is not None and pooled_best.get("eligible")
+        and eligible[0]["fingerprint"] != pooled_best["fingerprint"]
+    ):
+        top = eligible[0]
+        se = diff_se(fit, top["fingerprint"], pooled_best["fingerprint"]) or 0.0
+        gap = top["fused"] - pooled_best["fused"]
+        hold_bar = max(min_margin, tie_sigma * se)
+        if gap <= hold_bar:
+            held = {
+                "fingerprint": top["fingerprint"], "name": top["name"],
+                "gap": round(gap, 2), "bar": round(hold_bar, 2),
+            }
+            eligible.remove(pooled_best)
+            eligible.insert(0, pooled_best)
+            rows.remove(pooled_best)
+            rows.insert(0, pooled_best)
     pooled_rank = {
         r["fingerprint"]: i + 1
         for i, r in enumerate(sorted(
@@ -691,13 +806,6 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     }
 
     # ── The three corners: what each kind of evidence says alone, and together ────
-    pooled_best = next(
-        (r for r in sorted(
-            [r for r in rows if r["confident"] and not r["is_sqm_off"]],
-            key=lambda r: (r["pooled"], r["iterations"]), reverse=True,
-        )),
-        None,
-    )
     ratings = ledger_ratings(session)
     ring_best_fp = ledger_leader(ratings, sigma=rank_sigma(duel_cfg))
     ring_best = next((r for r in rows if r["fingerprint"] == ring_best_fp), None)
@@ -776,7 +884,8 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
         ),
         "live": by_fp.get(live_fp) if live_fp else None,
         "on_firewall": None if live_fp is None else bool(live_fp == best["fingerprint"]),
-        "verdict": _sentence(best, runner, lead, bar, len(tied), need, slack, moved_top),
+        "crown_held": held,
+        "verdict": _sentence(best, runner, lead, bar, len(tied), need, slack, moved_top, held),
         "profiles": rows,
         "movers": sorted(
             [r for r in rows if r["rounds"] and r["moved"]],
@@ -1022,7 +1131,7 @@ def predictive_check(pooled: dict[str, dict], rounds: list[dict], sigma_round: f
 
 
 __all__ = [
-    "DEFAULT_SLACK", "MIN_SLACK_PAIRS", "MIN_RING_ROUNDS_FOR_CROWN",
+    "DEFAULT_SLACK", "MIN_SLACK_PAIRS", "MIN_SLACK_PROFILES", "MIN_RING_ROUNDS_FOR_CROWN",
     "ring_rounds", "pair_summaries", "pooled_slack", "fuse", "diff_se",
     "rounds_to_separate", "ranking", "crown", "ring_target", "predictive_check",
 ]

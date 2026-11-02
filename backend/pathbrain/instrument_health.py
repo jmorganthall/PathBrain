@@ -481,8 +481,56 @@ def profile_conditions(session, fingerprint: str) -> dict:
     return out
 
 
+def slow_profiles(session, fingerprints) -> set[str]:
+    """The profiles among ``fingerprints`` that `profile_conditions` would flag — measured
+    mostly while the machine was in its slowest quarter — in two queries rather than two
+    per profile, for callers that read the whole ring (`overall_ranking.pooled_slack`).
+    Same newest-run bounds, same cutoff, same share. Best-effort by the caller."""
+    from sqlalchemy import select
+
+    from .models import Run, RunStatus
+
+    fps = [fp for fp in dict.fromkeys(fingerprints) if fp]
+    if not fps:
+        return set()
+    ratio_col = Run.instrument_health["ratio"].as_float()
+    field = [
+        float(v) for (v,) in session.execute(
+            select(ratio_col)
+            .where(Run.status == RunStatus.COMPLETE, ratio_col.is_not(None))
+            .order_by(Run.id.desc())
+            .limit(CONDITIONS_FIELD_RUNS)
+        ).all()
+        if isinstance(v, (int, float))
+    ]
+    if len(field) < 4 * CONDITIONS_MIN_RUNS:
+        return set()
+    cutoff = _percentile(sorted(field), 75.0)
+    per: dict[str, list[float]] = {}
+    for start in range(0, len(fps), 500):
+        chunk = fps[start:start + 500]
+        for fp, ratio in session.execute(
+            select(Run.settings_fingerprint, ratio_col)
+            .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint.in_(chunk))
+            .order_by(Run.id.desc())
+        ).all():
+            got = per.setdefault(fp, [])
+            if len(got) >= CONDITIONS_PROFILE_RUNS:
+                continue
+            got.append(float(ratio) if isinstance(ratio, (int, float)) else float("nan"))
+    out: set[str] = set()
+    for fp, vals in per.items():
+        ratios = [v for v in vals if v == v]
+        if len(ratios) < CONDITIONS_MIN_RUNS:
+            continue
+        if sum(1 for r in ratios if r > cutoff) / len(ratios) >= CONDITIONS_SLOW_SHARE:
+            out.add(fp)
+    return out
+
+
 __all__ = [
     "CONDITIONS_SLOW_SHARE",
+    "slow_profiles",
     "profile_conditions",
     "BASELINE_PERCENTILE",
     "Baseline",
