@@ -266,3 +266,8 @@ def test_a_profile_measured_mostly_on_a_slow_machine_is_flagged(client):
     assert fair["flag"] is False and fair["slow_share"] < 0.5
     thin = client.get("/api/settings/profiles/nobody/conditions").json()
     assert thin["runs"] == 0 and thin["flag"] is False
+    # The batched read the fused ranking uses agrees with the per-profile card.
+    from pathbrain.instrument_health import slow_profiles
+
+    with session_scope() as s:
+        assert slow_profiles(s, ["slowfp", "fairfp", "nobody"]) == {"slowfp"}

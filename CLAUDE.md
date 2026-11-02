@@ -3169,10 +3169,26 @@ LLM-based. See `README.md` for the product overview.
     iid χ²₁, so τ² is the value that makes their median the χ²₁ median, solved by bisection,
     zero when the record already disagrees less than its bars allow — still a median, so one
     failed leg's margin cannot set it; under
-    `MIN_SLACK_PAIRS` it falls back to `DEFAULT_SLACK` = 0.5 and the page says *default*;
+    `MIN_SLACK_PAIRS` (10) pairs across `MIN_SLACK_PROFILES` (6) profiles it falls back to
+    `DEFAULT_SLACK` = 0.5 and the page says *default*. **No single profile sets it**: τ is
+    the smallest value left after removing any one profile's pairs, every such fold must
+    still meet the minimum (else the default stands, `rests_on` naming the profile the
+    reading depended on), and profiles measured mostly while the machine was slow
+    (`instrument_health.slow_profiles`, the batched form of `profile_conditions`) take no
+    part. Written after five pairs — most about one profile whose pooled median carried a
+    slow machine — measured τ at 8.94, disarmed every pooled median, and crowned a pooled
+    #33 (60% slower to first paint) for never having fought;
     **there is no setting for it and no slider** — a weight a person chooses on the evidence
     is exactly what the fit replaces; the page states whether τ was measured or defaulted, and
-    nothing lets anyone choose it). The crown is the argmax of the fused
+    nothing lets anyone choose it). **The measured crown stands unless the fit clearly
+    beats it** (`crown_held` on the response): when the fused argmax is not the pooled crown
+    and its lead over it sits inside `crown_tie_sigma` × the SE of their difference, the
+    pooled crown is named — a lead inside the noise is evidence of nothing, and with a wide
+    slack it is mostly the asymmetry that a profile the ring never fought keeps its pooled
+    number while fought ones are pulled toward their opponents; the verdict says so.
+    `test_one_profile_far_off_its_pooled_median_cannot_set_the_slack`,
+    `test_a_lead_inside_the_noise_does_not_displace_the_measured_crown`. Otherwise the crown
+    is the argmax of the fused
     Overall among profiles with enough evidence on **either** record (`min_iterations`
     pooled, or `MIN_RING_ROUNDS_FOR_CROWN` = 8 rounds) **that are anchored** — a profile
     the fit places from ring rounds alone has a fused Overall relative to its opponents,

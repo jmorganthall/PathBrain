@@ -348,10 +348,11 @@ def test_the_slack_solve_reads_each_pair_against_its_own_bars():
     # Inside the bars → zero, never negative.
     assert o._solve_slack_variance([0.01, 0.02, 0.03], [1.0, 1.0, 1.0]) == 0.0
     # Through the public function, with the diagnostics still reported.
-    pooled = {f"p{i}": {"overall": 70.0, "se": 0.1} for i in range(6)}
+    pooled = {f"p{i}": {"overall": 70.0, "se": 0.1} for i in range(12)}
     rounds: list[dict] = []
-    for i in range(5):
-        rounds += _rounds(f"p{i}", f"p{i + 1}", 0.0, 6, seed=i)
+    for i in range(12):
+        for step in (1, 2):
+            rounds += _rounds(f"p{i}", f"p{(i + step) % 12}", 0.0, 6, seed=i * 10 + step)
     s_ = o.pooled_slack(pooled, o.pair_summaries(rounds), SIGMA)
     assert s_["basis"] == "measured" and s_["tau"] >= 0.0
     assert s_["excess_var"] is not None and "standardized" in s_["method"]
@@ -449,3 +450,90 @@ def test_a_missing_math_crown_says_why_instead_of_vanishing(monkeypatch):
 
     monkeypatch.setattr(pf, "math_crown", lambda *a, **k: {"fingerprint": "f"})
     assert o._math_corner(None, "v17", 15) == ({"fingerprint": "f"}, None)
+
+
+# ── No single profile sets the slack; a lead inside the noise does not move the crown ──
+
+
+def _mesh(n: int, steps=(1, 2)) -> list[tuple[str, str]]:
+    return [(f"m{i}", f"m{(i + k) % n}") for i in range(n) for k in steps]
+
+
+def test_one_profile_far_off_its_pooled_median_cannot_set_the_slack():
+    """The Witty Shrike incident: five pairs, most of them about one profile whose pooled
+    median was badly off, set τ to ~9 and disarmed every pooled median. τ is now the
+    smallest left after removing any one profile, so the bad profile's disagreement does
+    not survive — and with too few pairs, or a ledger that cannot be read without one
+    profile, the default stands and says which."""
+    pooled = {f"m{i}": {"overall": 70.0, "se": 0.05} for i in range(12)}
+    pooled["bad"] = {"overall": 55.0, "se": 0.05}         # pooled says 15 points worse
+    rounds: list[dict] = []
+    for k, (a, b) in enumerate(_mesh(12)):
+        rounds += _rounds(a, b, 0.0, 6, seed=k)
+    for k, opp in enumerate(["m0", "m3", "m6", "m9"]):     # the ring says it is level
+        rounds += _rounds(opp, "bad", 0.0, 6, seed=100 + k)
+    pairs = o.pair_summaries(rounds)
+    s = o.pooled_slack(pooled, pairs, SIGMA)
+    assert s["basis"] == "measured"
+    assert s["tau"] < 1.0, s
+    # Excluding the profile (measured on a slow machine) is the other way it stays out.
+    s2 = o.pooled_slack(pooled, pairs, SIGMA, exclude={"bad"})
+    assert s2["excluded_pairs"] == 4 and s2["excluded_profiles"] == ["bad"]
+    # Five pairs — the old minimum — is a default now, and it says what it needs.
+    few = o.pooled_slack(pooled, o.pair_summaries(
+        sum((_rounds(opp, "bad", 0.0, 6, seed=k) for k, opp in enumerate(["m0", "m1", "m2", "m3", "m4"])), [])
+    ), SIGMA)
+    assert few["basis"] == "default" and few["tau"] == o.DEFAULT_SLACK
+    assert few["needed_pairs"] == o.MIN_SLACK_PAIRS >= 10
+    # A hub every pair runs through: τ cannot be read without it, so it is not read.
+    hub = o.pooled_slack(pooled, o.pair_summaries(
+        sum((_rounds("bad", f"m{i}", 0.0, 6, seed=i) for i in range(12)), [])
+    ), SIGMA)
+    assert hub["basis"] == "default" and hub["rests_on"] == "bad"
+
+
+def test_a_lead_inside_the_noise_does_not_displace_the_measured_crown(monkeypatch):
+    """A profile the ring never fought keeps its pooled number while fought profiles are
+    pulled toward their opponents; with a wide slack that let a #33 be crowned. The pooled
+    crown now stands unless the fused leader is clearly ahead of it."""
+    import pathbrain.overall_ranking as om
+
+    fit = {
+        "crown": {"fused": 37.0, "se": 4.0, "rounds": 12, "opponents": 3, "anchored": True},
+        "shrike": {"fused": 37.6, "se": 4.0, "rounds": 0, "opponents": 0, "anchored": True},
+        "__cov__": {},
+    }
+    pooled = {
+        "crown": {"fingerprint": "crown", "overall": 45.0, "se": 0.1, "iterations": 3000, "name": "Crown"},
+        "shrike": {"fingerprint": "shrike", "overall": 37.6, "se": 0.3, "iterations": 421, "name": "Witty Shrike"},
+    }
+
+    class _M:
+        version = "v-now"
+        definition = {"overall": {"method": "weighted"}}
+
+    monkeypatch.setattr(om, "get_config", lambda s: {"correlation": {"min_iterations": 15}})
+    monkeypatch.setattr(om, "ensure_current_methodology", lambda s, c: _M())
+    monkeypatch.setattr(om, "overall_method", lambda d: "weighted")
+    monkeypatch.setattr(om, "_pooled_field", lambda s, v: list(pooled.values()))
+    monkeypatch.setattr(om, "ring_rounds", lambda sd, v: {
+        "rounds": [], "matches": 0, "sessions": 0, "excluded_methodology": 0,
+        "unstamped_matches": 0, "weather_shifted_rounds": 0})
+    monkeypatch.setattr(om.decidability, "round_noise", lambda sd: None)
+    monkeypatch.setattr(om, "fuse", lambda *a, **k: fit)
+    monkeypatch.setattr(om, "diff_se", lambda f, a, b: 4.0)
+    monkeypatch.setattr(om, "_math_corner", lambda *a: (None, "n/a"))
+    import pathbrain.duel as duel
+    monkeypatch.setattr(duel, "_ledger_sessions", lambda s, n: [])
+    monkeypatch.setattr(duel, "ledger_ratings", lambda s: {})
+    monkeypatch.setattr(duel, "ledger_leader", lambda r, sigma=0: None)
+    out = om.ranking(None, backtest=False, live=False)
+    assert out["best"]["fingerprint"] == "crown"
+    assert out["crown_held"]["fingerprint"] == "shrike"
+    assert out["clear"] is False
+    assert "does not displace the measured crown" in out["verdict"]
+    assert out["profiles"][0]["fingerprint"] == "crown"
+    # A clear lead does displace it — that is what the ring is for.
+    monkeypatch.setattr(om, "diff_se", lambda f, a, b: 0.1)
+    out2 = om.ranking(None, backtest=False, live=False)
+    assert out2["best"]["fingerprint"] == "shrike" and out2["crown_held"] is None
