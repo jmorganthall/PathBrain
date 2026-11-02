@@ -4027,12 +4027,13 @@ def crowns(session: Session = Depends(get_session)) -> dict:
     # What each verdict costs in raw time against the fastest on paper — the price of the
     # experience it was crowned for. Best-effort, like every reading on this card.
     math = _math_crown(session)
+    lcp_first = resolution.get("lcp_first") or _lcp_first_crown(session)
     if math:
         try:
             from ..pooled_field import paper_cost
 
             version = ensure_current_methodology(session, get_config(session)).version
-            sides = [s for s in (pooled, duel_out, fused_out) if s and s.get("fingerprint")]
+            sides = [s for s in (pooled, duel_out, fused_out, lcp_first) if s and s.get("fingerprint")]
             cost = paper_cost(session, version, math, [s["fingerprint"] for s in sides])
             for side in sides:
                 side["vs_paper"] = cost.get(side["fingerprint"])
@@ -4070,7 +4071,23 @@ def crowns(session: Session = Depends(get_session)) -> dict:
         # The mathematical crown — lowest median FCP × LCP in raw ms — shown beside the
         # verdicts as a reference. Never part of `agree`.
         "math": math,
+        # The LCP-first crown — the fastest FCP among profiles within the configured band of
+        # the best LCP. A candidate for the real crown; never part of `agree`.
+        "lcp_first": lcp_first,
     }
+
+
+def _lcp_first_crown(session) -> dict | None:
+    try:
+        from ..pooled_field import lcp_band_pct, lcp_first_crown
+
+        cfg = get_config(session)
+        version = ensure_current_methodology(session, cfg).version
+        min_iter = int((cfg.get("correlation") or {}).get("min_iterations") or 15)
+        return lcp_first_crown(session, version, min_iter, lcp_band_pct(cfg))
+    except Exception:  # noqa: BLE001 — a reference tile can't be why the card fails
+        log.warning("LCP-first crown unavailable", exc_info=True)
+        return None
 
 
 def _math_crown(session) -> dict | None:
@@ -4140,6 +4157,7 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
             "interval_minutes": float(cfg.get("interval_minutes", 360) or 360),
             # The first-class crowning policy: which verdict the follower acts on.
             "policy": crowning.active_policy(session),
+            "lcp_band_pct": _band(session),
         },
         "policies": list(crowning.POLICIES),
         # The duel ladder's latest fresh champion (or null) — shown beside the pooled
@@ -4195,6 +4213,17 @@ def crown_follow_update(
                 status_code=400, detail=f"policy must be one of {list(crowning.POLICIES)}"
             )
         updates["policy"] = policy
+    if "lcp_band_pct" in (body or {}):
+        from ..pooled_field import LCP_BAND_RANGE
+
+        try:
+            band = float(body["lcp_band_pct"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="lcp_band_pct must be a number") from None
+        lo, hi = LCP_BAND_RANGE
+        if not (lo <= band <= hi):
+            raise HTTPException(status_code=400, detail=f"lcp_band_pct must be between {lo:g} and {hi:g}")
+        updates["lcp_band_pct"] = band
     if not updates:
         raise HTTPException(status_code=400, detail="Nothing to update")
 
@@ -4207,8 +4236,15 @@ def crown_follow_update(
             "enabled": bool(cfg.get("enabled", False)),
             "interval_minutes": float(cfg.get("interval_minutes", 360) or 360),
             "policy": crowning.active_policy(session),
+            "lcp_band_pct": _band(session),
         }
     }
+
+
+def _band(session) -> float:
+    from ..pooled_field import lcp_band_pct
+
+    return lcp_band_pct(get_config(session))
 
 
 @router.post("/settings/crown-follow/sync")

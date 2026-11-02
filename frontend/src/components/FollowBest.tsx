@@ -17,6 +17,7 @@ import Popover from "@mui/material/Popover";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
+import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
@@ -58,6 +59,32 @@ export default function FollowBest() {
   const enabled = info?.config.enabled ?? false;
   const policy = info?.config.policy ?? "fused";
 
+  const band = info?.config.lcp_band_pct ?? 10;
+  const [bandDraft, setBandDraft] = useState<string>(String(band));
+  useEffect(() => setBandDraft(String(band)), [band]);
+
+  const saveBand = () => {
+    const v = Number(bandDraft);
+    if (!Number.isFinite(v) || v === band) {
+      setBandDraft(String(band));
+      return;
+    }
+    if (v < 0 || v > 50) {
+      setSnack({ msg: "The LCP band must be between 0 and 50%.", sev: "error" });
+      setBandDraft(String(band));
+      return;
+    }
+    setBusy(true);
+    api
+      .crownFollowUpdate({ lcp_band_pct: v })
+      .then(() => {
+        setSnack({ msg: `LCP-first band set to ${v}% of the best LCP.`, sev: "info" });
+        load();
+      })
+      .catch((e) => setSnack({ msg: e instanceof Error ? e.message : "Could not save the band.", sev: "error" }))
+      .finally(() => setBusy(false));
+  };
+
   const setPolicy = (next: CrowningPolicy) => {
     if (next === policy) return;
     setBusy(true);
@@ -73,6 +100,8 @@ export default function FollowBest() {
                 ? "Auto-apply now follows the Overall ranking — the pooled record and the duels fitted together (the Best profile page)."
                 : next === "math"
                   ? "Auto-apply now follows the fastest profile on paper — lowest median FCP × LCP (falls back to the pooled best when none qualifies)."
+                  : next === "lcp_first"
+                    ? "Auto-apply now follows LCP first — the fastest FCP among profiles within the band of the best LCP (falls back to the pooled best when none qualifies)."
                   : "Auto-apply now follows the pooled Overall — the all-time best by average.",
           sev: "info",
         });
@@ -274,6 +303,36 @@ export default function FollowBest() {
                   disabled={busy}
                 />
               </Tooltip>
+              <Tooltip title="Main content first, then first paint: every confident profile whose median LCP is within the band of the best LCP qualifies, and the fastest median FCP among them is followed. Raw milliseconds, no weights. Falls back to the pooled crown when no confident profile has both readings.">
+                <Chip
+                  size="small"
+                  label="LCP first"
+                  color={policy === "lcp_first" ? "warning" : "default"}
+                  variant={policy === "lcp_first" ? "filled" : "outlined"}
+                  onClick={() => setPolicy("lcp_first")}
+                  disabled={busy}
+                />
+              </Tooltip>
+            </Stack>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
+              <Typography variant="caption" color="text.secondary">
+                LCP-first band: give up up to
+              </Typography>
+              <TextField
+                size="small"
+                type="number"
+                value={bandDraft}
+                onChange={(e) => setBandDraft(e.target.value)}
+                onBlur={saveBand}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveBand();
+                }}
+                disabled={busy}
+                inputProps={{ min: 0, max: 50, step: 1, style: { width: 44, padding: "2px 6px", fontSize: 12 } }}
+              />
+              <Typography variant="caption" color="text.secondary">
+                % of the best LCP for a faster FCP
+              </Typography>
             </Stack>
             {info?.duel_champion ? (
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
@@ -312,6 +371,10 @@ export default function FollowBest() {
                   ? "Following · duel champion"
                   : followedSource === "math"
                     ? "Following · fastest on paper (FCP × LCP)"
+                    : followedSource === "lcp_first"
+                      ? "Following · LCP first"
+                      : policy === "lcp_first"
+                        ? "Following · pooled crown (no confident FCP and LCP reading yet)"
                     : policy === "math"
                       ? "Following · pooled crown (no confident FCP × LCP reading yet)"
                   : policy === "duel"

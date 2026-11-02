@@ -813,6 +813,7 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     live_settings = _live_settings() if live else None
     ring_rating = ratings.get(ring_best_fp) or {}
     math_best, math_note = _math_corner(session, version, min_iterations)
+    lcp_first, lcp_first_note = _lcp_first_corner(session, cfg, version, min_iterations)
     out["corners"] = {
         "pooled": None if pooled_best is None else _corner(pooled_best, "pooled"),
         "ring": None if ring_best is None else {
@@ -830,6 +831,11 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
         # beside the three records, never part of `agree` and never followed.
         "math": math_best,
         "math_note": math_note,
+        # The LCP-first crown: the fastest FCP among profiles within the configured band of
+        # the best LCP. A candidate for the real crown, shown beside the records; never part
+        # of `agree`.
+        "lcp_first": lcp_first,
+        "lcp_first_note": lcp_first_note,
         "agree": bool(
             best is not None and pooled_best is not None and ring_best is not None
             and best["fingerprint"] == pooled_best["fingerprint"] == ring_best["fingerprint"]
@@ -920,6 +926,23 @@ def _math_corner(session, version: str, min_iterations: int) -> tuple[dict | Non
     return got, None
 
 
+def _lcp_first_corner(session, cfg: dict, version: str, min_iterations: int) -> tuple[dict | None, str | None]:
+    """`pooled_field.lcp_first_crown`, best-effort, and never silent when missing."""
+    try:
+        from .pooled_field import lcp_band_pct, lcp_first_crown
+
+        got = lcp_first_crown(session, version, min_iterations, lcp_band_pct(cfg))
+    except Exception:  # noqa: BLE001
+        log.warning("LCP-first crown unavailable", exc_info=True)
+        return None, "The LCP-first reading failed to compute; the server log has the error."
+    if got is None:
+        return None, (
+            f"No profile with at least {min_iterations} iterations under {version} has both "
+            "an FCP and an LCP median yet, so there is no LCP-first crown to name."
+        )
+    return got, None
+
+
 def _attach_paper_cost(session, version: str, corners: dict) -> None:
     """Price each record's crown against the fastest on paper (`pooled_field.paper_cost`):
     how much slower to first paint and to main content the experience-graded verdicts are.
@@ -930,7 +953,7 @@ def _attach_paper_cost(session, version: str, corners: dict) -> None:
     try:
         from .pooled_field import paper_cost
 
-        sides = [k for k in ("pooled", "ring", "fused") if corners.get(k)]
+        sides = [k for k in ("pooled", "ring", "fused", "lcp_first") if corners.get(k)]
         cost = paper_cost(session, version, math, [corners[k]["fingerprint"] for k in sides])
         for k in sides:
             corners[k]["vs_paper"] = cost.get(corners[k]["fingerprint"])

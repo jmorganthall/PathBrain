@@ -1801,7 +1801,7 @@ export type AiStreamEvent =
 
 // ── Crown follower ("Follow best") ─────────────────────────────────────────────────
 
-export type CrowningPolicy = "fused" | "pooled" | "duel" | "math";
+export type CrowningPolicy = "fused" | "pooled" | "duel" | "math" | "lcp_first";
 
 export interface CrownFollowConfig {
   enabled: boolean;
@@ -1811,6 +1811,8 @@ export interface CrownFollowConfig {
   // "pooled" = the all-time Overall argmax; "duel" = the duel ladder's fresh champion
   // (pooled fallback when no decisive fresh verdict exists).
   policy: CrowningPolicy;
+  // The LCP-first crown's band: a profile qualifies within this many percent of the best LCP.
+  lcp_band_pct?: number;
 }
 
 // The duel ladder's latest fresh champion (crowning candidate under policy "duel").
@@ -1844,7 +1846,7 @@ export interface CrownCheckResult {
   governing_fingerprint?: string | null;
   governing_label?: string | null;
   governing_name?: string | null;
-  governing_source?: "fused" | "pooled" | "duel" | "math";
+  governing_source?: "fused" | "pooled" | "duel" | "math" | "lcp_first";
   governing_detail?: string;
   duel_champion?: DuelChampion | null;
   live_fingerprint: string | null;
@@ -1980,8 +1982,33 @@ export interface MathCrown {
   runner_up: { fingerprint: string; name: string | null; label: string | null; fcp_ms: number; lcp_ms: number } | null;
 }
 
+// The LCP-first crown: the fastest median FCP among confident profiles whose median LCP is
+// within `band_pct` of the best. A candidate for the real crown; opt-in under Auto-apply.
+export interface LcpFirstProfile {
+  fingerprint: string;
+  name: string | null;
+  label: string | null;
+  fcp_ms: number;
+  lcp_ms: number;
+  iterations: number;
+}
+
+export interface LcpFirstCrown extends LcpFirstProfile {
+  kind: "lcp_first";
+  band_pct: number;
+  lcp_limit_ms: number;
+  lcp_behind_pct: number;
+  fcp_gain_ms: number;
+  best_lcp: LcpFirstProfile;
+  qualifiers: number;
+  profiles: number;
+  qualifying: LcpFirstProfile[];
+  vs_paper?: PaperCost | null;
+}
+
 export interface CrownsOut {
   math?: MathCrown | null;
+  lcp_first?: LcpFirstCrown | null;
   policy: CrowningPolicy;
   pooled: PooledCrown | null;
   duel: DuelCrown | null;
@@ -1990,7 +2017,7 @@ export interface CrownsOut {
   // Champion's live pooled Overall minus the crown's — how far apart the two verdicts
   // sit on the one scale they share. Null until both have a live Overall.
   overall_delta?: number | null;
-  governing: { source: "fused" | "pooled" | "duel" | "math"; fingerprint: string | null; detail: string };
+  governing: { source: "fused" | "pooled" | "duel" | "math" | "lcp_first"; fingerprint: string | null; detail: string };
   agree: boolean;
   follow_enabled: boolean;
   on_crown: boolean | null;
@@ -4581,6 +4608,8 @@ export interface OverallOut {
     fused: OverallCorner | null;
     math?: MathCrown | null;
     math_note?: string | null;
+    lcp_first?: LcpFirstCrown | null;
+    lcp_first_note?: string | null;
     agree: boolean;
   } | Record<string, never>;
   movers: OverallProfile[];
