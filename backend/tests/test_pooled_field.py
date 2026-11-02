@@ -314,6 +314,40 @@ def test_the_math_crown_is_the_lowest_fcp_times_lcp_among_confident_profiles():
     assert crown["profiles"] == 2
 
 
+def test_the_lcp_first_crown_is_the_fastest_fcp_within_the_band_of_the_best_lcp():
+    """The owner's rule on raw milliseconds: the best LCP sets a bar, every profile within
+    the band of it qualifies, and the fastest FCP among the qualifiers is crowned. A
+    profile with a blazing FCP but an LCP outside the band never is."""
+    _add_raw("best_lcp", fcp=340.0, lcp=600.0)
+    _add_raw("in_band", fcp=280.0, lcp=650.0)       # 8.3% behind — qualifies, faster FCP
+    _add_raw("edge", fcp=300.0, lcp=660.0)          # exactly 10% — qualifies
+    _add_raw("fast_fcp", fcp=200.0, lcp=700.0)      # 16.7% behind — out
+    _add_raw("thin", fcp=100.0, lcp=500.0, iterations=2, runs=1)   # below the bar
+    _add_raw(SQM_OFF_FINGERPRINT, fcp=90.0, lcp=400.0)            # the baseline, never
+    with session_scope() as s:
+        crown = pooled_field.lcp_first_crown(s, VERSION, 15, 10.0)
+    assert crown is not None and crown["fingerprint"] == _fp("in_band")
+    assert crown["kind"] == "lcp_first"
+    assert (crown["fcp_ms"], crown["lcp_ms"]) == (280.0, 650.0)
+    assert crown["best_lcp"]["fingerprint"] == _fp("best_lcp")
+    assert crown["lcp_limit_ms"] == 660.0 and crown["lcp_behind_pct"] == 8.3
+    assert crown["fcp_gain_ms"] == 60.0
+    assert crown["qualifiers"] == 3 and crown["profiles"] == 4
+    assert [q["fingerprint"] for q in crown["qualifying"]] == [
+        _fp("in_band"), _fp("edge"), _fp("best_lcp")]
+    # A zero band is "best LCP, full stop"; a wide one lets the fast-FCP profile in.
+    with session_scope() as s:
+        assert pooled_field.lcp_first_crown(s, VERSION, 15, 0.0)["fingerprint"] == _fp("best_lcp")
+        assert pooled_field.lcp_first_crown(s, VERSION, 15, 20.0)["fingerprint"] == _fp("fast_fcp")
+
+
+def test_the_lcp_band_is_read_from_config_and_clamped():
+    assert pooled_field.lcp_band_pct({}) == pooled_field.DEFAULT_LCP_BAND_PCT == 10.0
+    assert pooled_field.lcp_band_pct({"crown_follow": {"lcp_band_pct": 15}}) == 15.0
+    assert pooled_field.lcp_band_pct({"crown_follow": {"lcp_band_pct": 900}}) == 50.0
+    assert pooled_field.lcp_band_pct({"crown_follow": {"lcp_band_pct": "x"}}) == 10.0
+
+
 def test_the_rollup_keeps_raw_medians_and_rebuilds_a_row_written_before_them():
     _add_raw("old", fcp=320.0, lcp=710.0)
     with session_scope() as s:
@@ -342,7 +376,8 @@ def test_the_overall_corners_carry_the_math_crown_and_agree_ignores_it():
         out = overall_ranking.ranking(s, backtest=False)
     corners = out["corners"]
     assert corners["math"]["fingerprint"] == _fp("balanced")
-    assert set(corners) >= {"pooled", "ring", "fused", "math", "agree"}
+    assert corners["lcp_first"]["fingerprint"] == _fp("balanced")
+    assert set(corners) >= {"pooled", "ring", "fused", "math", "lcp_first", "agree"}
 
 
 def _add_raw_runs(name: str, fcps: list[float], lcps: list[float], *, iterations: int = 20) -> None:

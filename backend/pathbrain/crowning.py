@@ -27,7 +27,10 @@ log = get_logger("crowning")
 #: ``"duel"`` are its two corners, kept selectable so the three can be compared on one field.
 #: ``"math"`` follows the mathematical crown (`pooled_field.math_crown`: the confident
 #: profile with the lowest median FCP × median LCP in raw ms) — opt-in, never the default.
-POLICIES = ("fused", "pooled", "duel", "math")
+#: ``"lcp_first"`` follows the LCP-first crown (`pooled_field.lcp_first_crown`: the fastest
+#: FCP among profiles within `crown_follow.lcp_band_pct` of the best LCP) — opt-in for now,
+#: written as the candidate to become the real crown.
+POLICIES = ("fused", "pooled", "duel", "math", "lcp_first")
 DEFAULT_POLICY = "fused"
 
 
@@ -120,6 +123,40 @@ def resolve(session, pooled_best_fp: str | None) -> dict:
             "detail": "no confident profile has both FCP and LCP medians yet — falling back to the pooled crown",
             "duel_champion": champion,
             "math": None,
+        }
+
+    if policy == "lcp_first":
+        from .methodology import ensure_current_methodology
+        from .pooled_field import lcp_band_pct, lcp_first_crown
+
+        lf = None
+        try:
+            cfg = get_config(session)
+            version = ensure_current_methodology(session, cfg).version
+            min_iter = int((cfg.get("correlation") or {}).get("min_iterations") or 15)
+            lf = lcp_first_crown(session, version, min_iter, lcp_band_pct(cfg))
+        except Exception:  # noqa: BLE001 — a failed read falls back, it never stops the follower
+            log.warning("Crowning: the LCP-first crown could not be computed", exc_info=True)
+        if lf and lf.get("fingerprint"):
+            return {
+                "policy": policy,
+                "fingerprint": lf["fingerprint"],
+                "source": "lcp_first",
+                "detail": (
+                    f"LCP first — LCP {lf['lcp_ms']:.0f} ms (best {lf['best_lcp']['lcp_ms']:.0f}, "
+                    f"within {lf['band_pct']:g}%), fastest FCP {lf['fcp_ms']:.0f} ms of "
+                    f"{lf['qualifiers']} qualifying"
+                ),
+                "duel_champion": champion,
+                "lcp_first": lf,
+            }
+        return {
+            "policy": policy,
+            "fingerprint": pooled_best_fp,
+            "source": "pooled",
+            "detail": "no confident profile has both FCP and LCP medians yet — falling back to the pooled crown",
+            "duel_champion": champion,
+            "lcp_first": None,
         }
 
     if policy == "duel":

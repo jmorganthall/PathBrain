@@ -3077,7 +3077,7 @@ LLM-based. See `README.md` for the product overview.
     default: the one ranking fitted over both records, `overall_ranking.crown`, with the
     pooled crown as the fallback when the fit names nobody), **"pooled"** (the all-time
     Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
-    `duel.latest_champion`, with pooled fallback) or **"math"** (opt-in: the fastest-on-paper profile, lowest median FCP × LCP, `pooled_field.math_crown`, pooled fallback) — the last two are the fused fit's corners,
+    `duel.latest_champion`, with pooled fallback) or **"math"** (opt-in: the fastest-on-paper profile, lowest median FCP × LCP, `pooled_field.math_crown`, pooled fallback) or **"lcp_first"** (opt-in candidate: the fastest FCP within `lcp_band_pct` of the best LCP, `pooled_field.lcp_first_crown`, pooled fallback) — the last two are the fused fit's corners,
     kept selectable so the three can be compared on one field. One policy, one write path:
     engines (race/duel) only measure and adjudicate; `crowning.resolve` selects; the **crown
     follower** is the only component that writes the firewall. The pooled crown *statistic*
@@ -3308,6 +3308,22 @@ LLM-based. See `README.md` for the product overview.
     `test_a_gap_inside_the_noise_is_reported_as_noise_not_as_a_cost`.
     `test_the_math_crown_is_the_lowest_fcp_times_lcp_among_confident_profiles`,
     `test_the_rollup_keeps_raw_medians_and_rebuilds_a_row_written_before_them`.
+    **The LCP-first crown is the candidate for the real crown** (`lcp_first_crown`,
+    `crown_follow.lcp_band_pct` default 10, clamped to `LCP_BAND_RANGE`; `corners.lcp_first` on
+    `GET /api/overall`, `lcp_first` on `GET /settings/crowns`, the **LCP first · candidate**
+    tile on the Best profile page and the Dashboard's crowns card, opt-in policy
+    `crown_follow.policy = "lcp_first"` and the band field in the Auto-apply popover). The
+    owner's stated preference, applied as written: *LCP is the most important metric; give up
+    maybe 10% of the best LCP to reach FCP faster.* Among confident profiles (SQM off
+    excluded), the best median LCP sets a bar; every profile within `band_pct` of it qualifies;
+    the fastest median FCP among the qualifiers is crowned (ties → lower LCP, then more
+    iterations). Raw milliseconds off the rollup, the same `_raw_rows` read as the math crown —
+    no perception curve, no weights, no smoothness leg, no ring — so each crowning is a sentence
+    with its numbers in it (`best_lcp`, `lcp_behind_pct`, `fcp_gain_ms`, `qualifiers`). Shown
+    beside the records and never part of `agree`; the fused ranking stays the default until
+    this has been watched long enough to replace it.
+    `test_the_lcp_first_crown_is_the_fastest_fcp_within_the_band_of_the_best_lcp`,
+    `test_under_the_lcp_first_policy_the_follower_writes_the_lcp_first_crown`.
     **This module was `verdict.py`, and `GET /api/settings/verdict` is RETIRED.** It carried a
     second "which profile should I run?" answer — the pooled argmax among confident profiles,
     a tie set against `crown_tie_sigma` × the pooled SE, the margin over SQM off and a

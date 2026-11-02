@@ -26,6 +26,7 @@ import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 import MilitaryTechIcon from "@mui/icons-material/MilitaryTech";
 import HandshakeIcon from "@mui/icons-material/Handshake";
 import SpeedIcon from "@mui/icons-material/Speed";
+import ImageIcon from "@mui/icons-material/Image";
 
 import { api } from "../api/client";
 import type { CrownsOut, PaperCost } from "../api/types";
@@ -268,7 +269,7 @@ export default function TwoCrowns() {
             <CrownTile
               icon={<SpeedIcon sx={{ color: "success.main", fontSize: 34 }} />}
               kind="Fastest on paper"
-              what="The mathematical crown: the confident profile with the lowest median FCP × median LCP in raw milliseconds. No perception curve and no weights, so it is not a judgement of how a load feels. Auto-apply never follows it."
+              what="The mathematical crown: the confident profile with the lowest median FCP × median LCP in raw milliseconds. No perception curve and no weights, so it is not a judgement of how a load feels. Auto-apply follows it only if you choose it."
               title={data.math.name || data.math.label || data.math.fingerprint}
               subtitle={`FCP ${fmtNum(data.math.fcp_ms, 0)} ms × LCP ${fmtNum(data.math.lcp_ms, 0)} ms`}
               detail={
@@ -281,6 +282,25 @@ export default function TwoCrowns() {
               }
               governing={governing.source === "math"}
               href={`/profiles/${encodeURIComponent(data.math.fingerprint)}`}
+            />
+          )}
+          {data.lcp_first && (
+            <CrownTile
+              icon={<ImageIcon sx={{ color: "secondary.main", fontSize: 34 }} />}
+              kind="LCP first · candidate"
+              what={`Main content first, then first paint: the fastest median FCP among confident profiles whose median LCP is within ${fmtNum(data.lcp_first.band_pct, 0)}% of the best. Raw milliseconds, no weights.`}
+              title={data.lcp_first.name || data.lcp_first.label || data.lcp_first.fingerprint}
+              subtitle={`LCP ${fmtNum(data.lcp_first.lcp_ms, 0)} ms · FCP ${fmtNum(data.lcp_first.fcp_ms, 0)} ms`}
+              detail={
+                data.lcp_first.lcp_behind_pct > 0
+                  ? `${fmtNum(data.lcp_first.lcp_behind_pct, 1)}% behind the best LCP for ${fmtNum(
+                      data.lcp_first.fcp_gain_ms,
+                      0
+                    )} ms faster FCP · ${data.lcp_first.qualifiers} qualified`
+                  : `best LCP and fastest FCP of ${data.lcp_first.qualifiers} qualifying`
+              }
+              governing={governing.source === "lcp_first"}
+              href={`/profiles/${encodeURIComponent(data.lcp_first.fingerprint)}`}
             />
           )}
         </Stack>

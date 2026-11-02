@@ -549,7 +549,7 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ name }) }
     ),
   crownFollow: () => request<CrownFollowStatus>("/settings/crown-follow"),
-  crownFollowUpdate: (body: { enabled?: boolean; interval_minutes?: number; policy?: CrowningPolicy }) =>
+  crownFollowUpdate: (body: { enabled?: boolean; interval_minutes?: number; policy?: CrowningPolicy; lcp_band_pct?: number }) =>
     request<{ config: CrownFollowConfig }>("/settings/crown-follow", {
       method: "POST",
       body: JSON.stringify(body),

@@ -39,6 +39,7 @@ import HandshakeIcon from "@mui/icons-material/Handshake";
 import MilitaryTechIcon from "@mui/icons-material/MilitaryTech";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import SpeedIcon from "@mui/icons-material/Speed";
+import ImageIcon from "@mui/icons-material/Image";
 import StackedLineChartIcon from "@mui/icons-material/StackedLineChart";
 
 import { api } from "../api/client";
@@ -282,6 +283,10 @@ function DotWhisker({ rows, tieSigma }: { rows: OverallProfile[]; tieSigma: numb
 }
 
 // ── The page ──────────────────────────────────────────────────────────────────────────
+
+function lcpBehind(pct: number): string {
+  return pct <= 0 ? "the best" : `${fmtNum(pct, 1)}% behind the best`;
+}
 
 export default function Overall() {
   const [data, setData] = useState<OverallOut | null>(null);
@@ -662,7 +667,7 @@ export default function Overall() {
                         <Box sx={{ minWidth: 0 }}>
                           <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
                             Fastest on paper
-                            <HelpTip title="The mathematical crown: the confident profile with the lowest median FCP × median LCP in raw milliseconds. No perception curve, no weights, no ring. It answers which profile paints first and shows main content fastest, not how a load feels, so it sits beside the records and Auto-apply never follows it." />
+                            <HelpTip title="The mathematical crown: the confident profile with the lowest median FCP × median LCP in raw milliseconds. No perception curve, no weights, no ring. It answers which profile paints first and shows main content fastest, not how a load feels, so it sits beside the records and Auto-apply follows it only if you choose it." />
                           </Typography>
                           <Typography variant="h6" sx={{ lineHeight: 1.2 }} noWrap>
                             <Link component={RouterLink} to={profileHref(corners.math.fingerprint)} underline="hover" color="inherit">
@@ -682,6 +687,46 @@ export default function Overall() {
                       </Stack>
                     </CardContent>
                   </Card>
+                )}
+                {corners.lcp_first && (
+                  <Card variant="outlined" sx={{ mt: 1.5 }}>
+                    <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
+                      <Stack direction="row" spacing={1.25} alignItems="flex-start">
+                        <Box sx={{ flexShrink: 0, mt: 0.25 }}>
+                          <ImageIcon sx={{ color: "secondary.main", fontSize: 30 }} />
+                        </Box>
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
+                            LCP first · candidate crown
+                            <HelpTip title={`Main content first, then first paint: among confident profiles, every one whose median LCP is within ${fmtNum(corners.lcp_first.band_pct, 0)}% of the best LCP qualifies, and the fastest median FCP among them wins. Raw milliseconds, no weights, no smoothness leg. Change the band, or let Auto-apply follow it, from the Auto-apply popover.`} />
+                          </Typography>
+                          <Typography variant="h6" sx={{ lineHeight: 1.2 }} noWrap>
+                            <Link component={RouterLink} to={profileHref(corners.lcp_first.fingerprint)} underline="hover" color="inherit">
+                              {corners.lcp_first.name || corners.lcp_first.label || corners.lcp_first.fingerprint.slice(0, 8)}
+                            </Link>
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                            LCP {fmtNum(corners.lcp_first.lcp_ms, 0)} ms ({lcpBehind(corners.lcp_first.lcp_behind_pct)}) · FCP{" "}
+                            {fmtNum(corners.lcp_first.fcp_ms, 0)} ms, fastest of {corners.lcp_first.qualifiers} within{" "}
+                            {fmtNum(corners.lcp_first.band_pct, 0)}% · {corners.lcp_first.iterations} iterations
+                          </Typography>
+                          {corners.lcp_first.best_lcp.fingerprint !== corners.lcp_first.fingerprint && (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                              Best LCP is {corners.lcp_first.best_lcp.name || corners.lcp_first.best_lcp.label} at{" "}
+                              {fmtNum(corners.lcp_first.best_lcp.lcp_ms, 0)} ms with FCP {fmtNum(corners.lcp_first.best_lcp.fcp_ms, 0)} ms —
+                              this trade gives up {fmtNum(corners.lcp_first.lcp_ms - corners.lcp_first.best_lcp.lcp_ms, 0)} ms of LCP for{" "}
+                              {fmtNum(corners.lcp_first.fcp_gain_ms, 0)} ms of FCP.
+                            </Typography>
+                          )}
+                        </Box>
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                )}
+                {!corners.lcp_first && corners.lcp_first_note && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                    <b>LCP first:</b> {corners.lcp_first_note}
+                  </Typography>
                 )}
                 {!corners.math && corners.math_note && (
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>

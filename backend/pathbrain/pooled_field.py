@@ -123,31 +123,21 @@ def graded_field(session, version: str) -> list[dict]:
     return out
 
 
-__all__ = ["graded_field", "paper_cost", "pooled_se", "quartile_grade", "se", "math_crown"]
+__all__ = [
+    "graded_field", "paper_cost", "pooled_se", "quartile_grade", "se", "math_crown",
+    "lcp_first_crown", "lcp_band_pct", "DEFAULT_LCP_BAND_PCT",
+]
 
 
-def math_crown(session, version: str, min_iterations: int) -> dict | None:
-    """The mathematical crown: the confident profile with the lowest **median FCP × median
-    LCP**, in raw milliseconds.
-
-    Every other verdict grades a profile — perception-calibrated subscores, weights, a
-    field prior, the ring's paired rounds. This one deliberately does none of that. It asks
-    the plainest question the measurements can answer, "which profile shows first paint and
-    main content fastest?", with the product making it scale-free: a 10% gain on either leg
-    counts the same. It is a reference beside the verdicts, never a crowning policy —
-    nothing applies it to the firewall.
-
-    Confident means ``iterations ≥ min_iterations`` (the crown's own bar); the unshaped
-    baseline is left out (`settings_profile.is_sqm_off_profile`). Ties break toward more
-    iterations. Returns the winner with its two medians, the product and the runner-up, or
-    None when no confident profile has both readings. Read off the rollup, so it costs what
-    `graded_field` costs."""
+def _raw_rows(session, version: str, min_iterations: int) -> list[dict]:
+    """Every confident, shaped profile with both raw medians: ``{fingerprint, name, label,
+    fcp_ms, lcp_ms, iterations}``. The one read behind both raw-millisecond crowns."""
     from . import profile_aggregates
     from .refresh import list_profiles
 
     stored = list_profiles(session)
     if not stored:
-        return None
+        return []
     rolled = profile_aggregates.aggregates(session, version, [p["fingerprint"] for p in stored])
     rows: list[dict] = []
     for p in stored:
@@ -169,16 +159,43 @@ def math_crown(session, version: str, min_iterations: int) -> dict | None:
             "fingerprint": fp,
             "name": p.get("name"),
             "label": p.get("label"),
-            "kind": "math",
             "fcp_ms": round(float(fcp), 1),
             "lcp_ms": round(float(lcp), 1),
-            "product": float(fcp) * float(lcp),
+            "_fcp": float(fcp),
+            "_lcp": float(lcp),
             "iterations": iters,
         })
+    return rows
+
+
+def _public(r: dict) -> dict:
+    return {k: v for k, v in r.items() if not k.startswith("_")}
+
+
+def math_crown(session, version: str, min_iterations: int) -> dict | None:
+    """The mathematical crown: the confident profile with the lowest **median FCP × median
+    LCP**, in raw milliseconds.
+
+    Every other verdict grades a profile — perception-calibrated subscores, weights, a
+    field prior, the ring's paired rounds. This one deliberately does none of that. It asks
+    the plainest question the measurements can answer, "which profile shows first paint and
+    main content fastest?", with the product making it scale-free: a 10% gain on either leg
+    counts the same. A reference beside the verdicts; automation follows it only under the
+    opt-in ``math`` policy.
+
+    Confident means ``iterations ≥ min_iterations`` (the crown's own bar); the unshaped
+    baseline is left out (`settings_profile.is_sqm_off_profile`). Ties break toward more
+    iterations. Returns the winner with its two medians, the product and the runner-up, or
+    None when no confident profile has both readings. Read off the rollup, so it costs what
+    `graded_field` costs."""
+    rows = _raw_rows(session, version, min_iterations)
     if not rows:
         return None
+    for r in rows:
+        r["kind"] = "math"
+        r["product"] = r["_fcp"] * r["_lcp"]
     rows.sort(key=lambda r: (r["product"], -r["iterations"], r["fingerprint"]))
-    best = dict(rows[0])
+    best = _public(rows[0])
     best["product"] = round(best["product"], 1)
     ru = rows[1] if len(rows) > 1 else None
     best["runner_up"] = None if ru is None else {
@@ -187,6 +204,72 @@ def math_crown(session, version: str, min_iterations: int) -> dict | None:
     }
     best["profiles"] = len(rows)
     return best
+
+
+#: How far behind the best LCP a profile may sit and still qualify for the LCP-first crown,
+#: in percent. The owner's own statement of the trade: "we would sacrifice maybe 10% of best
+#: LCP to get to FCP faster".
+DEFAULT_LCP_BAND_PCT = 10.0
+#: The band is a stated trade, not a free dial: below 0 nothing qualifies but the best, and
+#: past 50% "LCP first" stops meaning anything.
+LCP_BAND_RANGE = (0.0, 50.0)
+#: Qualifiers listed on the response, best FCP first.
+LCP_FIRST_LISTED = 8
+
+
+def lcp_band_pct(cfg: dict | None) -> float:
+    """The configured band (`crown_follow.lcp_band_pct`), clamped to `LCP_BAND_RANGE`."""
+    raw = ((cfg or {}).get("crown_follow") or {}).get("lcp_band_pct", DEFAULT_LCP_BAND_PCT)
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        v = DEFAULT_LCP_BAND_PCT
+    lo, hi = LCP_BAND_RANGE
+    return min(hi, max(lo, v))
+
+
+def lcp_first_crown(
+    session, version: str, min_iterations: int, band_pct: float = DEFAULT_LCP_BAND_PCT,
+) -> dict | None:
+    """The LCP-first crown: main content first, then first paint, as the owner ranks them.
+
+    Among confident profiles (``iterations ≥ min_iterations``, the unshaped baseline left
+    out), find the best median LCP in raw milliseconds; every profile whose median LCP is
+    within ``band_pct`` percent of it **qualifies**; of the qualifiers the one with the
+    lowest median FCP is crowned (ties → lower LCP, then more iterations). No perception
+    curve, no weights, no smoothness leg, no ring — a stated preference applied to two
+    measured numbers, so every crowning reads as a sentence with its numbers in it.
+
+    Returns ``{fingerprint, name, label, kind: "lcp_first", fcp_ms, lcp_ms, iterations,
+    best_lcp: {fingerprint, name, lcp_ms, fcp_ms}, band_pct, lcp_limit_ms, lcp_behind_pct,
+    qualifiers, profiles, qualifying: [...]}`` or None when no confident profile has both
+    readings. Read off the rollup, like the math crown."""
+    rows = _raw_rows(session, version, min_iterations)
+    if not rows:
+        return None
+    band = max(0.0, float(band_pct))
+    best_lcp = min(rows, key=lambda r: (r["_lcp"], -r["iterations"], r["fingerprint"]))
+    limit = best_lcp["_lcp"] * (1.0 + band / 100.0)
+    qualifying = [r for r in rows if r["_lcp"] <= limit + 1e-9]
+    qualifying.sort(key=lambda r: (r["_fcp"], r["_lcp"], -r["iterations"], r["fingerprint"]))
+    win = qualifying[0]
+    out = _public(win)
+    out.update({
+        "kind": "lcp_first",
+        "band_pct": round(band, 1),
+        "lcp_limit_ms": round(limit, 1),
+        "lcp_behind_pct": round((win["_lcp"] / best_lcp["_lcp"] - 1.0) * 100.0, 1),
+        "best_lcp": {
+            "fingerprint": best_lcp["fingerprint"], "name": best_lcp["name"],
+            "label": best_lcp["label"], "lcp_ms": best_lcp["lcp_ms"],
+            "fcp_ms": best_lcp["fcp_ms"], "iterations": best_lcp["iterations"],
+        },
+        "fcp_gain_ms": round(best_lcp["_fcp"] - win["_fcp"], 1),
+        "qualifiers": len(qualifying),
+        "profiles": len(rows),
+        "qualifying": [_public(r) for r in qualifying[:LCP_FIRST_LISTED]],
+    })
+    return out
 
 
 #: The tie bar for "within noise": the same 2σ the crown's own `crown_tie_sigma` uses.
