@@ -181,9 +181,12 @@ def test_sweep_fields_endpoint_lists_sweepable_fields(client):
     assert resp.status_code == 200
     fields = resp.json()["fields"]
     by_key = {f["key"]: f for f in fields}
-    # Driven by the registry: quantum + target + interval are sweepable today, each with a
-    # label, a unit (quantum none, target/interval "ms"), and a starting range for the UI control.
-    assert set(by_key) == {"quantum", "target", "interval"}
+    # Driven by the registry: quantum + target + interval + bandwidth are sweepable today, each
+    # with a label, a unit (quantum none, target/interval "ms", bandwidth "Mbit"), and a
+    # starting range for the UI control.
+    assert set(by_key) == {"quantum", "target", "interval", "download_bandwidth"}
+    assert by_key["download_bandwidth"]["unit"] == "Mbit"
+    assert by_key["download_bandwidth"]["default"]["enabled"] is False
     assert by_key["quantum"]["unit"] is None
     assert by_key["target"]["unit"] == "ms"
     assert by_key["interval"]["unit"] == "ms"

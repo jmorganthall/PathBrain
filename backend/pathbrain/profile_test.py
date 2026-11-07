@@ -41,6 +41,7 @@ from sqlalchemy import func, select
 
 from . import coordinator
 from .database import session_scope
+from .firewall_write import apply_changes
 from .logging_config import get_logger
 from .session_runtime import describe_failure
 from .models import ProfileTest, ProfileTestStatus
@@ -117,15 +118,12 @@ def cancel(test_id: int | None = None) -> bool:
 
 
 def _apply_all(provider, changes: list[dict]) -> None:
-    """Write a planned change list as ONE profile switch: every field on every pipe, one
-    reconfigure (``provider.apply_many``). Used by every engine that switches profiles —
-    the profile test, the refresh, the challenger race, the duel and its restores — so a
-    switch costs the firewall one shaper reload however many fields differ."""
-    if not changes:
-        return
-    provider.apply_many([
-        {"pipe_uuid": ch["pipe_uuid"], "param": ch["param"], "value": ch["value"]} for ch in changes
-    ])
+    """Write a planned change list as ONE profile switch (``firewall_write.apply_changes``:
+    every field on every pipe, one reconfigure). Used by every engine that switches
+    profiles — the profile test, the refresh, the challenger race, the duel and its
+    restores. Kept as a name because those engines (and their tests) import it; the
+    write itself lives in ``firewall_write``."""
+    apply_changes(provider, changes)
 
 
 def _set_stage(pt_id: int, stage: str) -> None:

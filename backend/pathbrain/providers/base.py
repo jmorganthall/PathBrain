@@ -31,6 +31,19 @@ class FqCodelConfig:
         return asdict(self)
 
 
+class FirewallRejectedWrite(ValueError):
+    """The firewall answered a write and said no (a validation error, an unknown option).
+
+    A ``ValueError`` on purpose: the request was wrong, so it is never retried, and the
+    session runtime records it as a failed write rather than reading it as the firewall
+    being unreachable."""
+
+    def __init__(self, pipe_uuid: str | None, detail: object) -> None:
+        self.pipe_uuid = pipe_uuid
+        self.detail = detail
+        super().__init__(f"The firewall rejected the change to pipe {pipe_uuid}: {detail}")
+
+
 class ConfigProvider(ABC):
     """Base class for firewall configuration providers."""
 

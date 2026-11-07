@@ -14,6 +14,7 @@ from .. import job_queue
 from .. import sweep as sweep_mod
 from ..config_store import get_config
 from ..database import get_session
+from ..firewall_write import apply_changes
 from ..logging_config import get_logger
 from ..models import Run, RunStatus, Sweep
 from ..providers import get_provider
@@ -117,8 +118,10 @@ def sweep_fields() -> dict:
             {
                 "key": f.key,
                 "label": f.label,
-                "unit": f.unit,
+                "unit": f.unit or f.sweep_unit,
                 "default": f.sweep_default or default_range,
+                # Only ever swept downward from the live value (bandwidth): the page says so.
+                "never_above_live": f.never_above_live,
             }
             for f in SHAPER_FIELDS
             if f.sweepable
@@ -133,11 +136,21 @@ def sweep_preview(body: dict = Body(...), session: Session = Depends(get_session
     iterations = max(1, min(int(body.get("iterations") or sweep_mod.DEFAULT_SWEEP_ITERATIONS), MAX_ITERATIONS))
     dwell_s = max(0.0, float(body.get("dwell_minutes") or 0) * 60.0)
     variants = sweep_mod.generate_variants(spec)
+    # The same ceiling the sweep applies at start, so the preview never lists a variant
+    # the sweep will not run. Best-effort: an unreadable firewall previews every variant.
+    skipped: list[dict] = []
+    if any(f in sweep_mod.NEVER_ABOVE_LIVE for v in variants for f in v):
+        try:
+            baseline = sweep_mod._baseline(get_provider(), body.get("pipe_uuid"))
+            variants, skipped = sweep_mod.drop_above_live(variants, baseline, body.get("pipe_uuid"))
+        except Exception:  # noqa: BLE001
+            log.warning("sweep preview: could not read the live rate to cap bandwidth", exc_info=True)
     per = _recent_per_iteration_ms(session)
     est = sweep_mod.estimate(variants, iterations, dwell_s, per)
     return {
         "iterations": iterations,
         "variants": variants,
+        "skipped_above_live": skipped,
         "total_variants": est["total_variants"],
         "eta_ms": est["eta_ms"],
         "per_iteration_ms": per,
@@ -215,10 +228,11 @@ def apply_best(sweep_id: int, session: Session = Depends(get_session)) -> dict:
     pipe = best.get("pipe_uuid") or sw.pipe_uuid or None
     applied: dict = {}
     try:
-        for param in SWEEPABLE_FIELDS:
-            if best.get(param) is not None:
-                provider.apply({"pipe_uuid": pipe, "param": param, "value": best[param]})
-                applied[param] = best[param]
+        # One switch, one shaper reload — not one reload per field.
+        written = apply_changes(provider, [
+            {"pipe_uuid": pipe, "param": param, "value": best.get(param)} for param in SWEEPABLE_FIELDS
+        ])
+        applied = {ch["param"]: ch["value"] for ch in written}
     except Exception as exc:  # noqa: BLE001
         log.exception("apply-best failed for sweep %s", sweep_id)
         raise HTTPException(

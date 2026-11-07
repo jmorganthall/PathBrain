@@ -1031,6 +1031,9 @@ export interface SweepField {
   label: string;
   unit: string | null;
   default: SweepParamRange;
+  // Only ever swept downward from the value the pipe is on now (bandwidth): any variant
+  // above it is dropped before the sweep starts.
+  never_above_live?: boolean;
 }
 
 export interface SweepPipe {
@@ -1084,6 +1087,8 @@ export interface SweepPreview {
   eta_ms: number | null;
   per_iteration_ms: number | null;
   cap: number;
+  // Variants dropped because they would raise a pipe's bandwidth above its live rate.
+  skipped_above_live?: Record<string, unknown>[];
 }
 
 export interface TestApplyResult {

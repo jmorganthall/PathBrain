@@ -37,6 +37,32 @@ LLM-based. See `README.md` for the product overview.
     `apply()` does `setPipe` + `reconfigure` and is the **only firewall-write path**.
     `discover()` (read) + `apply()` (write) are the one read/write path; a provider's
     `writable_fields()` is the single accessor for *what it can change*.
+    **A pipe's speed is two OPNsense fields** (`bandwidth`, a whole number, and
+    `bandwidthMetric`, a bit/Kbit/Mbit/Gbit select): `discover` joins them into `"880Mbit"` and
+    `apply_many` splits them again (`opnsense.split_bandwidth` — a bare number keeps the pipe's
+    unit, a fraction steps down a unit until it is whole, an unreadable value fails before
+    anything is written). It used to write the joined string into the integer field alone,
+    which the firewall rejects. **Every `setPipe` reply is read** (`_rejection`): OPNsense
+    answers a validation failure with HTTP 200 and `{"result": "failed", "validations": …}`,
+    so the status alone said nothing and a rejected write was ledgered `ok`. A rejection now
+    raises `providers.base.FirewallRejectedWrite` (a `ValueError`: never retried, ledgered
+    `failed`), puts back any pipe the same call had already saved, and skips the reload.
+    `test_firewall_write`.
+  - `firewall_write.py` — **the one way PathBrain changes the firewall.** Three functions,
+    and every engine calls one of them rather than a provider method: `apply_changes`
+    (a change list as ONE switch: `apply_many`, one shaper reload; drops `None` values and
+    planner-only keys; `dry_run`; `reload=False` for the write probe alone),
+    `set_pipes_enabled` (the baseline test's SQM off/on; `best_effort` for restores) and
+    `reload_shaper` (the write probe's reload-only step). It used to be seven shapes — two
+    private `apply_many` wrappers, a sweep that restored one field at a time (and on startup
+    restored only a hard-coded quantum + target, stranding a swept CoDel interval), an
+    apply-best that paid one shaper reload per field — so a fix to how PathBrain writes could
+    reach some callers and miss others. `profile_test._apply_all` stays as a name (engines and
+    their tests import it) and delegates. The policy is still `session_runtime`'s guarded
+    provider underneath; this module owns the *shape*.
+    `test_no_module_writes_the_firewall_except_through_firewall_write` is an AST scan that
+    fails on any `.apply`/`.apply_many`/`.set_pipe_enabled`/`.reconfigure` call outside it,
+    `session_runtime` and `providers/`.
   - `shaper_fields.py` — **single source of truth for the SQM field model.** Each
     `ShaperField` (key, label, kind, `identity`/`writable`/`sweepable`) is declared once;
     `CANON_FIELDS` (profile identity / fingerprint), `FIELD_LABELS`, `WRITABLE_FIELDS`,
@@ -347,7 +373,11 @@ LLM-based. See `README.md` for the product overview.
     (`weather_adjusted_overall`, setup-stripped fcp/lcp) remains in the API payload but is
     **no longer rendered** — `weather_relative` is the one surfaced "vs weather" reading.
   - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a grid over the
-    registry's `SWEEPABLE_FIELDS` (quantum × target today). Applies each variant for real,
+    registry's `SWEEPABLE_FIELDS` (quantum, CoDel target/interval, and a pipe's **bandwidth** —
+    off by default, in Mbit, and only ever *lowered*: `ShaperField.never_above_live` drops any
+    variant above the pipe's live rate at start and in the preview, since above the real line
+    rate the shaper stops shaping and PathBrain cannot know that rate; Explore likewise never
+    steps bandwidth past the fastest rate already run). Applies each variant for real,
     benchmarks it, **restores the baseline at the end** (`reconcile_interrupted_sweeps`
     restores on startup too). Variant generation, value formatting (`shaper_fields.format_value`
     — the bare-number **wire** value; `format_display` adds the unit for labels only), apply,
@@ -4459,7 +4489,8 @@ every other kind's.
 Reserve a 4xx for a genuinely bad request (an unreachable profile, an empty spec, a no-op),
 never for "the pipeline is in use".
 
-⚠️ Firewall **writes** go only through `provider.apply()`. Eight callers use it, all
+⚠️ Firewall **writes** go only through `firewall_write` (which calls `provider.apply_many()`;
+an AST scan in `test_firewall_write` refuses any other caller). Eight callers use it, all
 snapshot/restore, reversible, or explicitly armed: the experiment engine (disarmed +
 dry-run by default), the Shotgun Sweep (restores baseline at end + on startup), config
 test-apply (+1 then revert), sweep apply-best (explicit, supervised), the

@@ -31,6 +31,15 @@ class ShaperField:
     # A sensible starting range for the sweep UI ({enabled, min, max, step}) so the
     # Shotgun Sweep page can render a control per sweepable field with no hardcoding.
     sweep_default: dict | None = None
+    # The unit the sweep's numbers are in, when the field is a rate with a unit of its own
+    # (bandwidth: "800" on the sweep page means 800Mbit). Display + wire only — unlike
+    # ``unit`` it does not make the field an option-keyed select.
+    sweep_unit: str | None = None
+    # Never propose or sweep a value above what the firewall is on now. For a pipe's
+    # bandwidth, above the real line rate the shaper is never the bottleneck and stops
+    # shaping, and PathBrain cannot know the line rate — the live rate is the one ceiling
+    # it can stand behind.
+    never_above_live: bool = False
 
 
 # Declared once, in canonical (display + fingerprint) order. ``writable=False`` means
@@ -39,7 +48,14 @@ class ShaperField:
 # structural pipe properties with no setPipe mapping, and ``flows`` because writing it
 # takes the household off the network (see the entry below).
 SHAPER_FIELDS: list[ShaperField] = [
-    ShaperField("download_bandwidth", "Download bandwidth", writable=True),
+    # A pipe's speed. OPNsense stores it as a number + a unit select; the provider splits
+    # "880Mbit" back into the two on write. Sweepable, off by default, and only ever
+    # downward from the live rate (``never_above_live``): below line rate the shaper owns
+    # the queue (fairer interleave under a burst) at the cost of peak throughput, which is
+    # the trade worth measuring; above it the shaper does nothing at all.
+    ShaperField("download_bandwidth", "Download bandwidth", writable=True, sweepable=True,
+                sweep_unit="Mbit", never_above_live=True,
+                sweep_default={"enabled": False, "min": 600, "max": 900, "step": 100}),
     ShaperField("upload_bandwidth", "Upload bandwidth"),
     ShaperField("quantum", "Quantum", kind="int", writable=True, sweepable=True,
                 sweep_default={"enabled": True, "min": 300, "max": 10000, "step": 757}),
@@ -83,14 +99,47 @@ def field(key: str) -> ShaperField | None:
     return _BY_KEY.get(key)
 
 
-def format_value(field_key: str, n: float) -> int:
+def format_value(field_key: str, n: float) -> int | str:
     """The provider-ready **wire** value for a numeric field: a bare int. The firewall's
     duration fields (CoDel ``target``/``interval``) are select options keyed by the bare number
     (OPNsense stores/echoes ``"3"``, not ``"3ms"``) — so the *value we write* must be that bare
     number. The ``"ms"`` unit is a **display** concern only (see ``format_display``). Writing
     ``"3ms"`` to a field keyed ``"3"`` silently doesn't take, which is exactly the "apply didn't
-    happen" failure it used to cause."""
+    happen" failure it used to cause.
+
+    A rate with a ``sweep_unit`` (bandwidth) is the one exception: its unit is part of the
+    value the firewall holds, so the sweep's ``800`` goes out as ``"800Mbit"``."""
+    f = _BY_KEY.get(field_key)
+    if f is not None and f.sweep_unit:
+        return f"{int(round(n))}{f.sweep_unit}"
     return int(round(n))
+
+
+_RATE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]*)(?:/s)?\s*$")
+_RATE_FACTORS = {"": None, "bit": 1, "kbit": 10**3, "mbit": 10**6, "gbit": 10**9,
+                 "k": 10**3, "m": 10**6, "g": 10**9,
+                 "bps": 1, "kbps": 10**3, "mbps": 10**6, "gbps": 10**9}
+
+
+def rate_bits(value, like=None) -> float | None:
+    """A bandwidth (``"880Mbit"``, ``"0.88Gbit"``, ``880``) in bits per second, or None.
+
+    A bare number takes its unit from ``like`` (the rate it is being compared with, e.g.
+    the pipe's live ``"880Mbit"``), and Mbit when there is none. Used to compare rates
+    written in different units; the provider owns how a rate is written."""
+    if value is None:
+        return None
+    m = _RATE_RE.match(str(value))
+    if not m:
+        return None
+    unit = m.group(2).lower()
+    if not unit:
+        lm = _RATE_RE.match(str(like)) if like is not None else None
+        unit = (lm.group(2).lower() if lm and lm.group(2) else "mbit")
+    factor = _RATE_FACTORS.get(unit)
+    if factor is None:
+        return None
+    return float(m.group(1)) * factor
 
 
 def format_display(field_key: str, value) -> str:
@@ -177,6 +226,17 @@ FIELD_LABELS: dict[str, str] = {f.key: f.label for f in SHAPER_FIELDS}
 WRITABLE_FIELDS: list[str] = [f.key for f in SHAPER_FIELDS if f.writable]
 NON_WRITABLE_FIELDS: list[str] = [f.key for f in SHAPER_FIELDS if f.identity and not f.writable]
 SWEEPABLE_FIELDS: list[str] = [f.key for f in SHAPER_FIELDS if f.sweepable]
+NEVER_ABOVE_LIVE: list[str] = [f.key for f in SHAPER_FIELDS if f.never_above_live]
+
+
+def above_live(field_key: str, value, live) -> bool:
+    """Would ``value`` raise a ``never_above_live`` field past the firewall's live value?
+    False for any other field, and False when either side cannot be read (nothing to
+    compare is not a reason to refuse — the provider still validates the write)."""
+    if field_key not in NEVER_ABOVE_LIVE:
+        return False
+    v, cap = rate_bits(value, like=live), rate_bits(live)
+    return v is not None and cap is not None and v > cap + 1e-6
 
 
 # ── Invariants ───────────────────────────────────────────────────────────────

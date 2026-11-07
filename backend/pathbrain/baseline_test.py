@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from . import coordinator
+from .firewall_write import set_pipes_enabled
 from .database import session_scope
 from .logging_config import get_logger
 from .session_runtime import describe_failure
@@ -123,11 +124,8 @@ def _disabled_pipes(baseline: list[dict]) -> list[dict]:
 
 def _restore(provider, baseline: list[dict]) -> None:
     """Re-enable every pipe we disabled, back to its snapshotted state. Never raises."""
-    for state in _disabled_pipes(baseline):
-        try:
-            provider.set_pipe_enabled(state.get("uuid"), True)
-        except Exception:  # noqa: BLE001 — best-effort per pipe; keep restoring the rest
-            log.exception("Baseline test: could not re-enable pipe %s", state.get("uuid"))
+    set_pipes_enabled(provider, [s.get("uuid") for s in _disabled_pipes(baseline)], True,
+                      best_effort=True)
 
 
 def _wait_settle(seconds: int) -> None:
@@ -160,8 +158,7 @@ def _drive(bt_id: int) -> None:
                 to_disable = _disabled_pipes(baseline)
                 if to_disable:
                     _set_stage(bt_id, f"Disabling SQM on {len(to_disable)} pipe(s)")
-                    for state in to_disable:
-                        provider.set_pipe_enabled(state.get("uuid"), False)
+                    set_pipes_enabled(provider, [st.get("uuid") for st in to_disable], False)
                 else:
                     _set_stage(bt_id, "SQM already off on all pipes")
 
