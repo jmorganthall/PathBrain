@@ -255,3 +255,55 @@ def test_the_sweep_page_offers_bandwidth_in_mbit_and_says_it_only_goes_down():
     bw = fields["download_bandwidth"]
     assert bw["unit"] == "Mbit" and bw["never_above_live"] is True
     assert bw["default"]["enabled"] is False
+
+
+class _StatefulOPNsense:
+    """An OPNsense that validates like the real one: ``bandwidth`` must be a whole number,
+    and a pipe whose payload fails validation is not saved AT ALL — every field in it,
+    including the ones that were fine, stays as it was."""
+
+    def __init__(self, pipes: dict):
+        self.pipes = pipes
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "GET":
+            return httpx.Response(200, json={"ts": {"pipes": {"pipe": self.pipes}}})
+        if "/setPipe/" in path:
+            uuid = path.rsplit("/", 1)[-1]
+            sent = json.loads(request.content)["pipe"]
+            if not str(sent.get("bandwidth", "")).isdigit():
+                return httpx.Response(200, json={"result": "failed",
+                                                 "validations": {"pipe.bandwidth": "Please specify a value"}})
+            pipe = self.pipes[uuid]
+            for k, v in sent.items():
+                if isinstance(pipe.get(k), dict):  # a select: move the selected flag
+                    pipe[k] = {key: {**opt, "selected": int(key == v)} for key, opt in pipe[k].items()}
+                else:
+                    pipe[k] = v
+            return httpx.Response(200, json={"result": "saved"})
+        return httpx.Response(200, json={"status": "ok"})
+
+
+def test_the_reported_upload_switch_now_takes(monkeypatch):
+    """The reported failure: "firewall did not accept 2 field(s): Upload·download_bandwidth
+    (wanted 880Mbit, is 900Mbit), Upload·target (wanted 3, is 4)". The bandwidth went out as
+    the string "880Mbit", the firewall rejected the whole pipe, and the target in the same
+    payload was lost with it. Split into number + unit, both fields land."""
+    from pathbrain.settings_profile import normalize, plan_apply
+
+    fake = _StatefulOPNsense({"up": _pipe(bandwidth="900", codel_target="4", description="Upload")})
+    p = _provider(fake, monkeypatch)
+    target = normalize(p.discover())
+    target[0]["download_bandwidth"] = "880Mbit"
+    target[0]["target"] = "3"
+    changes, _ = plan_apply(target, p.discover())
+    assert {c["param"] for c in changes} == {"download_bandwidth", "target"}
+
+    firewall_write.apply_changes(p, changes)
+
+    live = p.discover()[0]
+    assert live.download_bandwidth == "880Mbit"
+    assert str(live.target) == "3"
+    remaining, _ = plan_apply(target, p.discover())
+    assert remaining == []
