@@ -58,9 +58,11 @@ ALPHA = 0.05
 #: option list): halve and double. The coarsest probe that is still safe on a lever
 #: whose scale is unknown; the ring refines from whichever side wins.
 STEP_FACTOR = 2.0
-#: Levers the ring never generates a step for: a bandwidth is a string with a unit whose
-#: legal forms the provider owns, and moving it below line rate changes what the shaper
-#: *is* rather than how it schedules. Field siblings still count.
+#: Levers the ring never generates a step for. A bandwidth halved or doubled is the wrong
+#: probe: half the rate halves the household's throughput for every leg of the session, and
+#: double is above the line rate, where the shaper stops shaping. Bandwidth is measured on
+#: the Shotgun Sweep instead, downward from the live rate in steps a person picks
+#: (``ShaperField.never_above_live``). Field siblings still count.
 NO_GENERATE = frozenset({"download_bandwidth"})
 
 #: What fq_codel should do on an UNSATURATED link — the regime a page load runs in —

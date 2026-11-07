@@ -53,6 +53,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from . import coordinator
+from .firewall_write import apply_changes, reload_shaper
 from .database import session_scope
 from .logging_config import get_logger
 from .models import WriteProbe, WriteProbeStatus
@@ -577,9 +578,9 @@ def _drive(probe_id: int, changes: list[dict], firewall_target: str, through_tar
             if not _state.get("cancel"):
                 wrote = True
                 run_step("set_fields", "Writing the fields (no shaper reload)",
-                         lambda: provider.apply_many(changes, reload=False), settle_s)
+                         lambda: apply_changes(provider, changes, reload=False), settle_s)
             if not _state.get("cancel"):
-                run_step("reload", "Reloading the shaper", provider.reconfigure, settle_s)
+                run_step("reload", "Reloading the shaper", lambda: reload_shaper(provider), settle_s)
     except Exception as exc:  # noqa: BLE001
         err = describe_failure(exc)
         status = WriteProbeStatus.FAILED
@@ -591,7 +592,7 @@ def _drive(probe_id: int, changes: list[dict], firewall_target: str, through_tar
             try:
                 with coordinator.hold(f"write_probe#{probe_id}-restore"):
                     run_step("restore", "Restoring the original values (a full switch)",
-                             lambda: provider.apply_many(before, reload=True), settle_s)
+                             lambda: apply_changes(provider, before), settle_s)
             except Exception as exc:  # noqa: BLE001
                 restore_err = describe_failure(exc)
                 log.error("Write probe %s: RESTORE FAILED — %s", probe_id, restore_err)

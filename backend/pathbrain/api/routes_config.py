@@ -5,6 +5,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..firewall_write import apply_changes
 from ..config_store import default_rubric, get_config, reset_config, save_config
 from ..database import get_session
 from ..logging_config import get_logger
@@ -123,7 +124,7 @@ def test_apply(
 
     def _change(value: int, step: str) -> bool:
         try:
-            provider.apply({"pipe_uuid": uuid, "param": "quantum", "value": value})
+            apply_changes(provider, [{"pipe_uuid": uuid, "param": "quantum", "value": value}])
             steps.append({"step": step, "ok": True, "detail": f"set quantum = {value}"})
             return True
         except NotImplementedError:

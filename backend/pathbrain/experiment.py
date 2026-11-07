@@ -24,6 +24,7 @@ from statistics import median
 
 from sqlalchemy import select
 
+from .firewall_write import apply_changes
 from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
@@ -64,7 +65,7 @@ def _apply(provider, cfg: dict, value: str, dry_run: bool) -> bool:
         log.info("[dry-run] would apply %s=%s", cfg["param"], value)
         return True
     try:
-        provider.apply(changes)
+        apply_changes(provider, [changes])
         log.info("Applied %s=%s", cfg["param"], value)
         return True
     except Exception:  # noqa: BLE001

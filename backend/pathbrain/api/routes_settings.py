@@ -36,6 +36,7 @@ from ..methodology import (
 )
 from ..metrics import METRIC_ROLES, ROLE_WEATHER, all_metric_sources
 from ..models import BenchmarkResult, Run, RunStatus, Score
+from ..firewall_write import apply_changes, normalize_changes
 from ..providers import get_provider
 from ..runner import MAX_ITERATIONS
 from ..schemas import ApplySettings, TestSettings
@@ -3332,9 +3333,9 @@ def _write_changes(provider, changes: list[dict]) -> list[dict]:
     reload is what the firewall feels, so a switch now costs exactly one.)"""
     if not changes:
         return []
-    batch = [{"pipe_uuid": ch["pipe_uuid"], "param": ch["param"], "value": ch["value"]} for ch in changes]
+    batch = normalize_changes(changes)
     try:
-        provider.apply_many(batch)
+        apply_changes(provider, batch)
     except NotImplementedError as exc:
         raise HTTPException(
             status_code=400, detail=f"The {provider.name} provider can't write changes.",

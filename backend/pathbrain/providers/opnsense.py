@@ -13,10 +13,12 @@ live firewall to exercise it. The mock provider covers offline development.
 """
 from __future__ import annotations
 
+import re
+
 import httpx
 
 from ..logging_config import get_logger
-from .base import ConfigProvider, FqCodelConfig
+from .base import ConfigProvider, FirewallRejectedWrite, FqCodelConfig
 
 log = get_logger("providers.opnsense")
 
@@ -104,6 +106,91 @@ def _numeric_option_keys(field: object) -> list[float]:
         except (TypeError, ValueError):
             continue
     return sorted(out)
+
+
+# OPNsense keeps a pipe's speed in TWO fields: ``bandwidth`` (a whole number) and
+# ``bandwidthMetric`` (a select: bit / Kbit / Mbit / Gbit). ``discover`` joins them into the
+# one string PathBrain stores ("880Mbit"); a write has to split it again. Writing the joined
+# string into ``bandwidth`` alone puts "880Mbit" into an integer field, which the firewall
+# rejects — and since the setPipe reply was never read, it was ledgered as ``ok``.
+_BW_FACTORS = {"bit": 1, "kbit": 10**3, "mbit": 10**6, "gbit": 10**9}
+_BW_CANONICAL = {"bit": "bit", "kbit": "Kbit", "mbit": "Mbit", "gbit": "Gbit"}
+_BW_ORDER = ["gbit", "mbit", "kbit", "bit"]
+_BW_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]*)(?:/s)?\s*$")
+
+
+def _bw_unit(raw: str) -> str | None:
+    """A unit spelling as one of ``_BW_FACTORS``' keys ("Mbit", "mbps", "M" → "mbit")."""
+    u = raw.strip().lower()
+    if u.endswith("ps"):
+        u = u[:-2] + "it" if u[:-2].endswith("b") else u[:-2] + "bit"
+    if u in ("k", "m", "g"):
+        u += "bit"
+    return u if u in _BW_FACTORS else None
+
+
+def split_bandwidth(value: object, pipe: dict | None = None) -> tuple[str, str]:
+    """``value`` ("880Mbit", "0.88Gbit", 880) as OPNsense's ``(bandwidth, bandwidthMetric)``.
+
+    A bare number keeps the pipe's current unit. A fraction is restated in the next unit
+    down until it is whole ("0.88Gbit" → ("880", "Mbit")), because the firewall's field is
+    an integer. The unit is spelled the way the pipe's own option list spells it. Raises
+    ``ValueError`` — before anything is written — for a value it cannot read or that is
+    not a positive rate."""
+    m = _BW_RE.match(str(value))
+    if not m:
+        raise ValueError(f"Cannot read a bandwidth from {value!r} (expected e.g. '880Mbit')")
+    number = float(m.group(1))
+    unit_raw = m.group(2)
+    current = _selected((pipe or {}).get("bandwidthMetric"))
+    if unit_raw:
+        unit = _bw_unit(unit_raw)
+        if unit is None:
+            raise ValueError(f"Unknown bandwidth unit {unit_raw!r} in {value!r}")
+    else:
+        unit = _bw_unit(current or "Mbit") or "mbit"
+    bits = number * _BW_FACTORS[unit]
+    if bits < 1:
+        raise ValueError(f"A bandwidth must be a positive rate, got {value!r}")
+    # Keep the given unit when the number is already whole; otherwise step down.
+    for candidate in [unit] + [u for u in _BW_ORDER if _BW_FACTORS[u] < _BW_FACTORS[unit]]:
+        n = bits / _BW_FACTORS[candidate]
+        if abs(n - round(n)) < 1e-6 and round(n) >= 1:
+            unit = candidate
+            number = round(n)
+            break
+    else:
+        unit, number = "bit", round(bits)
+    options = (pipe or {}).get("bandwidthMetric")
+    spelled = _BW_CANONICAL[unit]
+    if isinstance(options, dict):
+        for key in options:
+            if str(key).lower() == unit:
+                spelled = str(key)
+                break
+        else:
+            raise ValueError(f"This pipe offers no {spelled} unit (options: {sorted(options)})")
+    return str(int(number)), spelled
+
+
+def _rejection(resp: httpx.Response) -> object | None:
+    """What the firewall objected to in a setPipe reply, or None when it saved.
+
+    OPNsense answers a failed validation with HTTP 200 and ``{"result": "failed",
+    "validations": {...}}``, so the status code alone says nothing. A reply that is not
+    JSON (or carries no result) is treated as saved — the post-apply verify still checks
+    that the value took."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    if body.get("validations"):
+        return body["validations"]
+    if str(body.get("result", "")).lower() == "failed":
+        return body
+    return None
 
 
 def _pipe_to_config(uuid: str, pipe: dict) -> FqCodelConfig:
@@ -230,6 +317,7 @@ class OPNsenseProvider(ConfigProvider):
         # Group by pipe, resolving each change's param to the wire field first so a bad
         # param fails before anything is written.
         payloads: dict[str, dict] = {}
+        originals: dict[str, dict] = {}
         applied: list[dict] = []
         for ch in changes:
             param = ch.get("param")
@@ -242,12 +330,33 @@ class OPNsenseProvider(ConfigProvider):
             if uuid not in payloads:
                 pipe = pipes[uuid]
                 payloads[uuid] = {k: (_selected(v) if isinstance(v, dict) else v) or "" for k, v in pipe.items()}
+                originals[uuid] = dict(payloads[uuid])
+            if field == "bandwidth":
+                number, metric = split_bandwidth(ch.get("value"), pipes[uuid])
+                payloads[uuid]["bandwidth"] = number
+                payloads[uuid]["bandwidthMetric"] = metric
+                applied.append({"uuid": uuid, "applied": {"bandwidth": number, "bandwidthMetric": metric}})
+                continue
             payloads[uuid][field] = str(ch.get("value"))
             applied.append({"uuid": uuid, "applied": {field: ch.get("value")}})
         with self._client() as client:
+            saved: list[str] = []
             for uuid, payload in payloads.items():
                 resp = client.post(f"{_SET_PIPE}/{uuid}", json={"pipe": payload})
                 resp.raise_for_status()
+                problem = _rejection(resp)
+                if problem is not None:
+                    # Put back any pipe this call already saved, so the stored config is
+                    # not left half-switched for the next reload to pick up. No reload ran,
+                    # so the running shaper never moved.
+                    for done in saved:
+                        try:
+                            client.post(f"{_SET_PIPE}/{done}", json={"pipe": originals[done]})
+                        except Exception:  # noqa: BLE001
+                            log.exception("OPNsense: could not put pipe %s back after a rejected write", done)
+                    log.error("OPNsense rejected setPipe on %s: %s", uuid, problem)
+                    raise FirewallRejectedWrite(uuid, problem)
+                saved.append(uuid)
             if reload:
                 rc = client.post(_RECONFIGURE, json={})
                 rc.raise_for_status()
@@ -283,6 +392,10 @@ class OPNsenseProvider(ConfigProvider):
         with self._client() as client:
             resp = client.post(f"{_SET_PIPE}/{uuid}", json={"pipe": payload})
             resp.raise_for_status()
+            problem = _rejection(resp)
+            if problem is not None:
+                log.error("OPNsense rejected enabled=%s on %s: %s", enabled, uuid, problem)
+                raise FirewallRejectedWrite(uuid, problem)
             rc = client.post(_RECONFIGURE, json={})
             rc.raise_for_status()
         log.info("OPNsense set pipe %s enabled=%s", uuid, enabled)

@@ -18,13 +18,14 @@ from sqlalchemy import select
 
 from . import coordinator
 from .database import session_scope
+from .firewall_write import apply_changes
 from .logging_config import get_logger
 from .session_runtime import describe_failure
 from .models import Run, RunStatus, Sweep, SweepStatus
 from .providers import get_provider
 from .runner import create_run, execute_run
 from .settings_profile import normalize
-from .shaper_fields import SWEEPABLE_FIELDS, format_display, format_value
+from .shaper_fields import NEVER_ABOVE_LIVE, SWEEPABLE_FIELDS, above_live, format_display, format_value
 
 log = get_logger("sweep")
 
@@ -149,13 +150,28 @@ def _baseline(provider, pipe_uuid: str | None = None) -> dict:
     }
 
 
-def _apply(provider, pipe_uuid: str | None, param: str, value, dry_run: bool) -> None:
-    if value is None:
-        return
-    if dry_run:
-        log.info("[sweep dry-run] would apply %s=%s", param, value)
-        return
-    provider.apply({"pipe_uuid": pipe_uuid or None, "param": param, "value": value})
+def _changes(pipe_uuid: str | None, values: dict) -> list[dict]:
+    """One change per sweepable field present in ``values`` (``None`` values are dropped
+    by ``firewall_write``)."""
+    return [{"pipe_uuid": pipe_uuid or None, "param": key, "value": values.get(key)}
+            for key in SWEEPABLE_FIELDS if key in values]
+
+
+def drop_above_live(variants: list[dict], baseline: dict, pipe_uuid: str | None) -> tuple[list[dict], list[dict]]:
+    """Split ``variants`` into (kept, dropped): a variant is dropped when it would raise a
+    ``never_above_live`` field (bandwidth) past the value its pipe is on now."""
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for v in variants:
+        uuid = v.get("pipe_uuid") or pipe_uuid
+        live = (baseline.get("pipes") or {}).get(uuid) if uuid else None
+        if live is None:
+            live = baseline
+        if any(above_live(k, v[k], live.get(k)) for k in SWEEPABLE_FIELDS if k in v):
+            dropped.append(v)
+        else:
+            kept.append(v)
+    return kept, dropped
 
 
 def _label(variant: dict, pipe_label: str | None = None) -> str:
@@ -171,13 +187,20 @@ def _label(variant: dict, pipe_label: str | None = None) -> str:
     return "sweep · " + " ".join(parts)
 
 
-def _restore_pipe(provider, baseline: dict, uuid: str | None, dry_run: bool) -> None:
-    """Set one pipe back to its baseline values for every sweepable field."""
+def _restore_changes(baseline: dict, uuid: str | None) -> list[dict]:
+    """The changes that put one pipe back to its baseline value for every sweepable field."""
     base = (baseline.get("pipes") or {}).get(uuid) if uuid else None
     if base is None:  # legacy baseline (no per-pipe map): use the top-level values
         base = baseline
-    for key in SWEEPABLE_FIELDS:
-        _apply(provider, uuid, key, base.get(key), dry_run)
+    return _changes(uuid, {key: base.get(key) for key in SWEEPABLE_FIELDS})
+
+
+def baseline_restore_changes(baseline: dict, pipe_uuid: str | None) -> list[dict]:
+    """Every change needed to put the whole sweep back to its baseline — one switch."""
+    pipes = baseline.get("pipes") or {}
+    if pipes:
+        return [ch for uuid in pipes for ch in _restore_changes(baseline, uuid)]
+    return _changes(pipe_uuid, {key: baseline.get(key) for key in SWEEPABLE_FIELDS})
 
 
 def _run_sops(run_id: int) -> float | None:
@@ -194,13 +217,7 @@ def _restore(provider, sweep_id: int) -> None:
             baseline = (sw.baseline or {}) if sw else {}
             dry_run = sw.dry_run if sw else False
             pipe_uuid = sw.pipe_uuid if sw else None
-        pipes = baseline.get("pipes") or {}
-        if pipes:
-            for uuid in pipes:
-                _restore_pipe(provider, baseline, uuid, dry_run)
-        else:  # legacy single-pipe baseline
-            for key in SWEEPABLE_FIELDS:
-                _apply(provider, pipe_uuid, key, baseline.get(key), dry_run)
+        apply_changes(provider, baseline_restore_changes(baseline, pipe_uuid), dry_run=dry_run)
         log.info("Sweep %s: restored baseline", sweep_id)
     except Exception:  # noqa: BLE001 — never raise out of cleanup
         log.exception("Sweep %s: baseline restore failed", sweep_id)
@@ -234,12 +251,21 @@ def start(spec: dict, iterations: int, dwell_s: float, dry_run: bool, pipe_uuid:
         raise RuntimeError("A sweep is already running.")
     variants = generate_variants(spec)
     if not variants:
-        raise ValueError("Enable at least one parameter (quantum or target) with a valid range.")
+        raise ValueError("Enable at least one parameter with a valid range.")
     if len(variants) > MAX_VARIANTS:
         raise ValueError(f"{len(variants)} variants exceeds the cap of {MAX_VARIANTS}.")
 
     provider = get_provider()
     baseline = _baseline(provider, pipe_uuid)  # may raise (discovery) — surfaced to caller
+    variants, skipped = drop_above_live(variants, baseline, pipe_uuid)
+    if not variants:
+        raise ValueError(
+            "Every variant would raise a pipe's bandwidth above the rate it is on now. "
+            "A sweep only ever lowers bandwidth: above the real line rate the shaper stops "
+            "shaping, and the live rate is the highest one PathBrain can vouch for."
+        )
+    if skipped:
+        log.info("Sweep: dropped %d variant(s) that would raise bandwidth above the live rate", len(skipped))
 
     with session_scope() as session:
         sweep = Sweep(
@@ -248,7 +274,7 @@ def start(spec: dict, iterations: int, dwell_s: float, dry_run: bool, pipe_uuid:
             iterations=iterations,
             dwell_s=dwell_s,
             pipe_uuid=pipe_uuid,
-            spec={**spec, "variants": variants},
+            spec={**spec, "variants": variants, "skipped_above_live": skipped},
             baseline=baseline,
             total_variants=len(variants),
             completed_variants=0,
@@ -307,11 +333,13 @@ def _drive(sweep_id: int) -> None:
                     # its baseline first so only this variant's pipe is off-baseline.
                     pipe = variant.get("pipe_uuid") or pipe_uuid
                     pipe_label = variant.get("pipe_label")
+                    # One switch: the previous pipe back to baseline and this variant's
+                    # values, with a single shaper reload.
+                    switch: list[dict] = []
                     if last_pipe is not None and last_pipe != pipe:
-                        _restore_pipe(provider, baseline, last_pipe, dry_run)
-                    for key in SWEEPABLE_FIELDS:
-                        if key in variant:
-                            _apply(provider, pipe, key, variant[key], dry_run)
+                        switch += _restore_changes(baseline, last_pipe)
+                    switch += _changes(pipe, variant)
+                    apply_changes(provider, switch, dry_run=dry_run)
                     last_pipe = pipe
                     # Let the change settle (and serve as a cancel checkpoint).
                     if dwell_s > 0 and cancel_evt.wait(dwell_s):
@@ -371,18 +399,9 @@ def reconcile_interrupted_sweeps() -> int:
             if not sw.dry_run:
                 try:
                     provider = provider or get_provider()
-                    pipes = baseline.get("pipes") or {}
-                    if pipes:
-                        for uuid, base in pipes.items():
-                            for param in ("quantum", "target"):
-                                if base.get(param) is not None:
-                                    provider.apply({"pipe_uuid": uuid, "param": param, "value": base[param]})
-                    else:  # legacy single-pipe baseline
-                        for param in ("quantum", "target"):
-                            if baseline.get(param) is not None:
-                                provider.apply(
-                                    {"pipe_uuid": sw.pipe_uuid or None, "param": param, "value": baseline[param]}
-                                )
+                    # Every sweepable field, not a hard-coded quantum + target: a sweep
+                    # over CoDel interval used to be left stranded on its test value.
+                    apply_changes(provider, baseline_restore_changes(baseline, sw.pipe_uuid))
                 except Exception:  # noqa: BLE001
                     log.exception("Sweep %s: restore on reconcile failed", sw.id)
             sw.status = SweepStatus.FAILED

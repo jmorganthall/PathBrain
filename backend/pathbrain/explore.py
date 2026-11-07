@@ -622,6 +622,13 @@ def _beyond(axis: dict, at_max: bool) -> tuple[float | None, str | None]:
     step = _step_for(axis)
     fld = shaper_field(axis["field"])
     default = (fld.sweep_default or {}) if fld else {}
+    if at_max and fld is not None and fld.never_above_live:
+        # A pipe's bandwidth is never stepped upward past what this link has run: above
+        # the real line rate the shaper stops shaping, and nothing here knows that rate.
+        return None, (
+            f"{axis['field_label']} is never raised past the fastest rate already run "
+            f"({axis['max']:g}) — above the real line rate the shaper stops shaping"
+        )
     if at_max:
         beyond = axis["max"] + step
         ceiling = default.get("max")

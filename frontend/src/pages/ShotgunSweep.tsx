@@ -347,7 +347,9 @@ export default function ShotgunSweep() {
                   hint={
                     f.key === "quantum"
                       ? `Bytes per scheduler turn. Step defaults to ½ MTU = ${halfMtu}.`
-                      : undefined
+                      : f.never_above_live
+                        ? "Only ever lowered: a value above what each pipe is on now is skipped, since above the real line rate the shaper stops shaping. Lower rates cut the household's peak throughput while that variant runs."
+                        : undefined
                   }
                 />
               );
@@ -374,6 +376,11 @@ export default function ShotgunSweep() {
                 {variantsOverCap && (
                   <Typography component="span" color="error.main" sx={{ ml: 1 }}>
                     (over the {preview.cap} cap — narrow the range)
+                  </Typography>
+                )}
+                {(preview.skipped_above_live?.length ?? 0) > 0 && (
+                  <Typography component="span" color="text.secondary" sx={{ ml: 1 }}>
+                    · {preview.skipped_above_live!.length} skipped (above a pipe's current bandwidth)
                   </Typography>
                 )}
                 {preview.eta_ms != null ? (
