@@ -4471,7 +4471,9 @@ docker compose up --build   # -> http://localhost:8000
   its fingerprint is reachable; and the ledger resolves each claim's profile from the **runs its
   profile test actually produced** (`job_group`), re-pointing and noting any row the benchmark
   contradicts — correlation by construction rather than by a hash agreeing with reality.
-- **Next:** multi-parameter Bayesian search + interleaved A/B with effect-size/CI + hysteresis;
+- **Next:** the evidence backbone in `docs/plan-learning-engine.md` (2026-11-09): one comparison
+  primitive (`evidence.py`), one belief layer generalising `fuse` (`beliefs.py`), audits as
+  conditions, then Explore on top of it (Thompson sampling, paired bets); hysteresis;
   routing intelligence / SD-WAN. (Latency-under-load/bufferbloat is explicitly **out of scope**.)
 
 ⚠️ **Every user-triggered session goes through `job_queue.submit()`, and no start path

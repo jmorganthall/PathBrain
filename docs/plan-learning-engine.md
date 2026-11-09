@@ -1,128 +1,173 @@
-# Plan: a self-learning experiment engine + a value-driven comparison engine
+# Plan: one evidence backbone, and a learning Explore on top of it
 
-Status: agreed design (grilling session, 2026-10-11). Nothing here is built yet.
+Status: **revised design, 2026-11-09**, replacing the phase order agreed on 2026-10-11 (that
+version is in git history). Decisions from it are kept unless marked *changed*. Phase 1 (the
+research export) is built; nothing else here is.
 
 ## Goal
 
-Find the profile that delivers the most pleasing human experience, using limited
-overnight test time as efficiently as possible:
+Find the profile that delivers the most pleasing human experience, using limited overnight
+test time as efficiently as possible, with **one system that follows itself**: every engine
+reads the same beliefs, writes the same kind of evidence, and reacts to the same audits.
 
-- **Experiment engine (Explore)** — proposes untested profiles with the most potential to
-  beat everything measured, and *learns* from every result.
-- **Comparison engine (duel)** — separates the candidates with paired, same-weather
-  evidence until the best one is known.
-- Both sit on top of **the right metrics** and **a sound crown**.
+## Why the revision (review of 2026-11-08, live data, read-only)
 
-## Where we start (review findings)
+The October plan treated Explore as the thing to rebuild. The data says the deeper fault is
+that each engine keeps its own yardstick, so a finding in one never reaches the others.
 
-- **Explore is a heuristic proposer with a scorecard, not a learner.** A prediction is
-  parent Overall + an independently summed per-lever delta from a four-tier evidence lookup
-  (`explore._predict`). The recommendation ledger widens bet bands by evidence class but
-  never corrects the predictions. Candidates come from the top 5 parents and a fixed move
-  menu; two-lever moves only from #1. Uncertainty is a kernel heuristic, the exploration
-  weight is fixed, and Explore optimizes the **pooled** Overall while the crown is the
-  **fused** ranking. It has never been validated in simulation.
-- **Budget:** ~5% of each duel window, 5-iteration solo bets → ~1–2 weak signals a night.
-- **Resolution:** the ring resolves ~0.85 Overall pts while top profiles sit ~0.1 apart;
-  ~60% of matches end with no result. A 0.1-pt edge needs roughly 850 rounds (~12 nights)
-  per pair at today's noise. Noise reduction is the highest-leverage fix.
-- **Crown fidelity:** FCP·1 + LCP·1 + sub-perceptible `network_stall_all`·0.5, cold first
-  visit only. Felt stalls, INP and warm repeat-visit clicks are not in it.
-- **Strong already:** the duel's paired/ABBA/weather-stamped design, the fused ranking,
-  instrument-health quarantine, the comparability gate.
+- **Three yardsticks.** The duel compares profiles as same-window paired margins. Explore's
+  ledger grades a bet against the all-time pooled best (37.8). The AI page reads all-time
+  per-profile distributions. They disagree by construction whenever the instrument moves.
+- **The instrument moved and only one card noticed.** Field daily median Overall ~36 from
+  Oct 11–25, ~27–29 from Oct 27–Nov 8. `instrument_drift` flags unexplained steps (LCP
+  654 ms → 2.0 s on Oct 19; 1.3 s → 2.7 s on Nov 2). Nothing downstream reacts.
+- **So the ledger reads 0 for 10.** Ten graded bets, mean error −12.2, none on target.
+  Against the median of all runs within ±4 h of each bet the same ten come out mean −0.6,
+  median +0.2, seven within about a point: level, not wrong.
+- **And the drift steers Explore backwards.** The measured evidence-class bands (9.9 for the
+  parent's neighbourhood, 13.2 for matched pairs) bury the best-evidenced candidates, and
+  the top bet becomes an upload-bandwidth step from a class too thin to be distrusted.
+- **Knowledge in one module is ignored by another.** `levers.MECHANISM` predicts CoDel
+  target/interval/limit/ECN inert on this unsaturated link; 39 of 67 proposed lever moves
+  (58%) went to upload limit, target and interval, and "upload target 3 → 4" was proposed
+  nine times. This plan held download bandwidth; Explore still proposes the Upload pipe's.
+- **A third of bets measure nothing.** 6 of 16 bets under v17 are pending although their
+  tests completed: one 5-iteration run per bet, and the site-coverage gate quarantines the
+  whole run when any page fails in any iteration (~22% of recent runs are incomparable).
+- **The ring is ahead of Explore.** The fused top three (Peppy Sloop, Mystic Meerkat,
+  Alpine Aurora; ratings 1565/1550/1547, SE 21–36, order not settled) all run Upload
+  quantum 500 with Download quantum 5800–6300. Explore is not proposing there.
+- **The ring has almost no controlled single-lever evidence**: the lever ledger uses 2 of
+  50 sessions (Download quantum, 45 rounds, −0.41 ± 0.26, no direction).
+
+## The principle
+
+One backbone in three layers, the same medallion shape the raw store already has:
+
+| Layer | Module | What it holds | Rule |
+|---|---|---|---|
+| Bronze | runs + raw (exists) | immutable observations | never modified |
+| Silver | `evidence.py` (new) | **margins**: every comparison PathBrain makes, as a same-window paired difference, stamped with methodology version, derivation version, weather severity and **instrument epoch** | the only place a comparison is computed |
+| Gold | `beliefs.py` (new, generalises `overall_ranking.fuse`) | a posterior per profile (θ, SE) and per lever effect, fitted from silver | recomputed on read, versioned, never stored as truth |
+
+Audits stop being cards and become **conditions every consumer honours**:
+
+- `instrument_drift` steps → **epoch boundaries**. Pooled anchors are only compared within an
+  epoch; a step is absorbed as an epoch offset instead of poisoning every comparison.
+- `levers.MECHANISM` + the lever ledger → **lever status**: `live`, `inert` (predicted, not
+  refuted), `surprise` (predicted inert, measured moving).
+- `reachability` + bandwidth held → part of one **`search_space()`** that every proposer
+  calls: writable ∩ reachable ∩ not held ∩ (live, or inert with its surprise check owed).
+
+Every consumer reads gold and writes silver:
+
+- **Crown / crown-follow / duel `ring_target`**: read θ (already the fused ranking today).
+- **Explore**: proposes from the lever-effect posterior; a bet is silver evidence.
+- **The recommendation ledger**: grades every claim in margin units against the same-window
+  control. One grading rule for every engine.
+- **The AI page**: its export reads beliefs and margins, not all-time distributions.
+
+Enforced the way the firewall write path is (`test_no_module_writes_the_firewall_except_
+through_firewall_write`): architecture tests that fail when a module computes a comparison
+outside `evidence.py`, builds a candidate outside `search_space()`, or reads pooled medians
+across an epoch boundary.
+
+## The belief model
+
+    θ_i      = f(x_i) + u_i            u_i ~ N(0, s²)        profile residual
+    ring     d_ab  = θ_b − θ_a + ε       ε ~ N(0, σ²)          σ = decidability.round_noise
+    pooled   μ_i,e = θ_i + c_e + η       η ~ N(0, SE² + τ²)    c_e = epoch offset
+
+`x_i` is the profile's live levers, normalised; `f` is a Bayesian quadratic (main effects
+plus the Download-quantum × Upload-quantum interaction) with a shrinkage prior. Everything is
+linear-Gaussian, so the posterior is closed form: the same weighted least-squares family as
+`fuse`, numpy only. `s`, `τ`, `c_e` and the prior scales are fitted by empirical Bayes, and
+refitted after every graded claim. That refit is the self-correction: a model that keeps
+missing widens or reshapes itself instead of having its bands widened from outside.
+
+**With `f ≡ 0` and one epoch it is exactly today's `fuse`**, pinned by an equivalence test,
+so the backbone can ship without moving the crown. A GP replaces the quadratic only if the
+ledger shows the quadratic missing systematically.
+
+## Explore on the backbone
+
+- **Search space**: `search_space()` only. Download quantum × Upload quantum first; inert
+  levers get one controlled surprise check each (a lever-session bout), as a hypothesis to
+  refute rather than open space to fill. Values: firewall-offered only, at most one step
+  past the measured edge per lever per night.
+- **Acquisition**: Thompson sampling. Draw a surface from the posterior, test its best
+  untested point. It balances exploring and exploiting with no hand-set weight and batches
+  naturally.
+- **Bets are paired bouts**: candidate vs the fused #1, interleaved 1-iteration legs
+  (ABBA), through the ring's own machinery, so a bet is the same silver record as a duel
+  round. Drift and time of day cancel, and a failed page costs one leg, not the bet.
+  Sequential stop: abandon when P(beats #1) < 5% or a round is worth more elsewhere; cap
+  rounds. Runs still land in the pooled record.
+- **Hypothesis ledger**: each bet names the model term it tests, in a sentence ("Upload
+  quantum 500 is worth +0.4 over 3000 when Download quantum is 5800–7300"), with predicted
+  margin ± sd and the result that would refute it. Status (open / supported / refuted) is
+  derived from the posterior on every read, like every other verdict here.
+- **"Is it learning?" card**: prediction error over time, the #1's θ over time, bets beating
+  the #1 vs a random-proposal baseline.
+
+## What the backbone retires
+
+| Today | Replaced by |
+|---|---|
+| `explore._predict` four-tier lookup, fixed-weight UCB, kernel uncertainty | the belief posterior + Thompson sampling |
+| ledger grading against the pooled best | margin grading against the same-window control |
+| evidence-class calibration bands | empirical-Bayes refit of the model |
+| AI export's all-time distributions | beliefs and margins |
+| 5-iteration solo profile tests as bets | paired bouts |
+
+Matched pairs, conditioned curves, basins and interactions stay as **display diagnostics**;
+they no longer price anything.
 
 ## Decisions
 
-### Objective and value
-1. **Any real gain counts.** No margin floor on what can win; `duel.min_margin` stays 0.
-2. **Tiny vs meaningful is a scheduling question, not a verdict.** Nothing is ever declared
-   dead or parked. Every lever, candidate and match carries a posterior (mean + uncertainty);
-   work is ordered by **expected improvement per hour**. A likely +0.00001 waits behind
-   larger expected gains and rises when they are resolved.
-3. **Revisit the crown before optimizing harder** — in order: (a) the existing cold-vs-warm
-   agreement audit, (b) a new felt-stall audit (does the crown rank profiles with perceptible
-   stalls / jank highly?), (c) blind 1–10 A/B ratings by the user via the calibration harness,
-   including a known fast-but-janky profile, to fit crown weights. Any change ships as a normal
-   methodology publish.
+Kept from 2026-10-11: **1–4** (any real gain counts; tiny vs meaningful is scheduling; revisit
+the crown before optimising harder; reduce per-round noise first), **8** (numpy allowed),
+**10** (search space ⊆ `WRITABLE_FIELDS`, tested), **12** (values: measured, or one step past
+the edge, firewall-offered), **13–17** (value-based duel stopping, one value-of-information
+scheduler, research export, simulator as the bar, the learning card).
 
-### Measurement noise (first)
-4. Reduce per-round noise before anything else, each technique measured on existing duel data
-   with "rounds saved" reported: (a) **per-site paired margins** within a round, (b)
-   **weather-covariate adjustment** of round margins (a CUPED-style correction, checked against
-   the existing variance decomposition), (c) **drop or replace the noisiest sites**.
+Changed:
 
-### Explore (the learner)
-5. **Target the fused Overall**, pooled used only as the prior for profiles the ring has
-   never fought.
-6. **A real surrogate model** fitted on *both* records, like `overall_ranking`: pooled medians
-   as noisy point observations (with the measured slack τ), ring rounds as exact pairwise
-   differences. Uncertainty comes from the model's own posterior. The recommendation ledger
-   closes the loop: systematic misses refit the model's noise and length-scale hyper-parameters
-   (self-learning), rather than only widening bands.
-7. **Acquisition = expected improvement over the crown** (probability × size), replacing the
-   fixed-weight UCB and the fixed move menu.
-8. **numpy is allowed** (pinned in `backend/requirements.txt`); nothing else new. scipy only if
-   the simulator shows it is needed.
-9. **Bets are measured head-to-head**, as duel legs paired with the current #1 (ABBA, shared
-   weather), with an **adaptive, value-based stopping rule**: continue while P(beats crown) ×
-   expected size justifies the next round, abandon early losers. Runs still enter the pooled
-   record. "Test now" stays as a manual shortcut.
+- **5** (target the fused Overall) → target **θ from `beliefs`**, which is the fused Overall
+  generalised; identical at `f ≡ 0`, one epoch.
+- **6** (surrogate GP on both records) → **quadratic on margins with epoch offsets**; GP is
+  the upgrade path.
+- **7** (EI acquisition) → **Thompson sampling** for proposing; expected improvement stays
+  as the value measure the scheduler (14) orders work by.
+- **9** (head-to-head bets) → unchanged in substance, **moved to phase 4** from phase 5.
+- **11** (download bandwidth excluded) → **both pipes' bandwidth held**, enforced in
+  `search_space()`.
 
-### Search-space safety (hard rules)
-10. **Only fields the registry marks writable** (`shaper_fields.WRITABLE_FIELDS`) are ever
-    experimented on. Non-writable fields (`flows` and any future one) are never proposed,
-    stepped or offered. A test asserts the model's search space ⊆ `WRITABLE_FIELDS`, so a field
-    made unwritable later drops out automatically.
-11. **Download bandwidth is excluded from experimentation entirely.** Explore and bets never
-    propose a new bandwidth value; it is held at its current value. (Its effects include
-    things PathBrain cannot measure.)
-12. **Values:** within the experimentable fields, anything already measured on this link, plus
-    **at most one step past the measured edge per lever per night**, and only to a value the
-    firewall itself offers.
+New:
 
-### Comparison engine (duel)
-13. **Duels stop on value, not a cap.** A match pauses when one more round is worth less than a
-    round elsewhere and resumes later with its evidence intact (carried matches). The
-    Wilcoxon/SPRT/streak rules still decide verdicts; `max_pairs` remains only as a safety cap.
-14. **One value-of-information scheduler** owns the night: each next block goes to the highest
-    expected gain per hour — a bet, a duel round that could flip #1, or a re-check — replacing
-    the fixed `explore_share` and the pair cap. Firewall writes keep every existing rule
-    (coordinator lock, snapshot/restore, write ledger, guard).
-
-### Data and validation
-15. **Research export** (new): a background job that writes a streamed `.zip` of JSONL files plus
-    a manifest — profiles + settings; every run with per-iteration crown metrics, nav phases,
-    weather covariates, instrument health, timestamps, methodology; every duel match with
-    per-round deltas, leg run ids, weather shifts, ending; the lever ledger; the Explore
-    recommendation ledger; config + every methodology definition. **Excludes** secrets/API keys,
-    the firewall address/credentials, and Away-test IPs/ISP data. Optional, off-by-default
-    **per-site per-iteration crown values** re-derived from raw, with an estimated cost shown
-    first. Date-range filter. Downloaded from the Data Dump page; progress in the jobs feed.
-16. **Simulator built from real data** (fitted response surface, measured round noise, slack and
-    weather), scoring each strategy by *nights until the true best is crowned*. It is the bar:
-    nothing replaces current behaviour unless it beats it there.
-17. **"Is it learning?" card:** model prediction error over time (should fall), crown fused
-    Overall over time (should rise or hold), and the share of bets beating their parent versus
-    a random-proposal baseline.
+- **18. One comparison primitive.** Every comparison is a silver margin from `evidence.py`.
+- **19. Audits are conditions.** Drift steps define epochs; lever status and reachability
+  define the search space; consumers honour them, tested.
+- **20. The crown keeps reading `f ≡ 0`** until a backtest shows the lever model improves
+  held-out ring predictions, and then only through a methodology-style publish.
 
 ## Phases (one PR each)
 
 | # | Phase | Done when |
 |---|-------|-----------|
-| 1 | Research export | Export of the full DB completes as a background job without blocking the API; manifest counts match table counts; secrets/IPs absent (test); per-site option works on a sample. |
-| 2 | Noise + crown audits (read-only) | Rounds-saved reported for per-site margins, weather adjustment and site pruning; cold-vs-warm and felt-stall audit results in hand; blind-rating protocol ready. Any crown change goes through a methodology publish. |
-| 3 | Simulator | Reproduces today's behaviour (no-result rate, resolution) from the exported data within stated tolerance; scores today's Explore + duel as the baseline. |
-| 4 | Surrogate model + fused target + EI | Beats the baseline in the simulator on nights-to-true-best; search-space ⊆ writable test passes; bandwidth never proposed (test). |
-| 5 | Head-to-head adaptive bets | Beats solo 5-iteration bets in the simulator. |
-| 6 | Value-of-information scheduler + value-based duel stopping | Beats fixed share + pair cap in the simulator; all firewall-write rules unchanged (existing guard tests green). |
-| 7 | "Is it learning?" card | Renders from existing endpoints; no field pass on page load. |
+| 1 | Research export | **Built.** |
+| 2 | Evidence layer: `evidence.py`, instrument epochs from `instrument_drift` steps, `search_space()`; duel rounds and the ledger's grading move onto it; ledger re-graded in margins | Architecture tests pass; the re-graded ledger reproduces the 2026-11-08 finding (bets level with the same-window control); bandwidth never in `search_space()` (test) |
+| 3 | Belief layer: `beliefs.py` generalising `fuse` with epochs and `f` | `f ≡ 0`, one epoch equals `fuse` (test); on the research export, predicts held-out ring margins at least as well as `fuse` |
+| 4 | Explore on beliefs: `search_space()`, Thompson sampling, paired bouts with sequential stop, hypothesis ledger | Beats today's Explore in the simulator on nights-to-true-best (decision 16); never proposes held or unwritable fields (test) |
+| 5 | Consumers: AI page export reads beliefs; "Is it learning?" card | Renders from existing endpoints; no field pass on page load |
+| 6 | Noise audits and the value-of-information scheduler (old phases 2 and 6) | As in the 2026-10-11 plan |
 
-## Bandwidth held (resolved)
+## Open
 
-- The duel, the challenger race, crown-follow and every other automatic switch **skip any
-  stored profile whose download bandwidth differs from the live value**; the reachability
-  card lists them as "bandwidth held". Enforced in the new scheduler's candidate filter (and
-  the existing engines' reachability checks), **not** by making the field non-writable in the
-  registry, so a person can still set it by hand.
-
-No open questions remain.
+- **The instrument step itself.** Epochs make every engine robust to it, but whether LCP
+  doubling twice is a site change, a Chromium or container update or the network matters for
+  whether the crown still measures what a person feels. Its own investigation.
+- **Explore's share of the night** stays at 5% until the scheduler (phase 6) replaces it.
+- **The site-coverage gate** quarantines a whole multi-iteration run on one failed page.
+  Paired 1-iteration legs make bets immune; whether the gate should work per iteration is a
+  methodology question, not decided here.
