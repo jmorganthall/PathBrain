@@ -2996,6 +2996,21 @@ LLM-based. See `README.md` for the product overview.
     landscape, so a scheduler can alternate *explore* (queue tonight's smartest bets) with
     *adjudicate* (duel the survivors) — the bets mature into pooled evidence as they run, and
     the ring then decides between them.
+  - `evidence.py` — **the evidence layer: one place where PathBrain compares two things**
+    (silver in `docs/plan-learning-engine.md`, phase 2). Three parts every consumer reads
+    instead of re-deriving. **Instrument epochs** (`instrument_epochs`, cached 15 min, never
+    raises): a sustained step in daily FCP/LCP medians from `instrument_drift.cohorts` (3 days
+    either side, `STEP_PCT`, the quantity's floor, all but one day per side on its own side of
+    the midpoint) is a boundary; a comparison never crosses one. **The comparison primitive**
+    (`control`, `margin`): a claim is graded as the candidate's margin over its parent measured
+    within `WINDOW_HOURS` (2) of it, else in the same epoch, else not as a margin at all.
+    **The search space** (`search_space`, `in_search_space`): bandwidth on either pipe is
+    `held` (decision 11); a lever the mechanism predicts inert is `inert` until one claim has
+    moved it, then `inert_checked` and closed, unless the ring catches it moving (`surprise`).
+    Explore stamps each axis with it, builds candidates only from proposable axes, strips the
+    button from holes and crown-leg moves outside it, and filters `bets` through it last.
+    `test_evidence` (the 2026-11-08 finding is pinned there: a bet level with its parent the
+    same night grades on target, where the absolute grade called it a ten-point miss).
   - `explore_tracker.py` — **the recommendation ledger: was the data right?** Explore's output is
     a *prediction*, and a prediction nobody scores is a horoscope — it costs the same night of
     benchmarking either way. So the **claim is stored before the measurement exists**
@@ -3055,6 +3070,14 @@ LLM-based. See `README.md` for the product overview.
     the firewall's night rather than the value, and a value the firewall genuinely rejects
     would otherwise be re-proposed, re-queued by the exploration share and re-failed every
     session. `test_explore_tracker_failed`.
+    **Claims are graded as margins** (phase 2 of the evidence backbone). The error is
+    `(actual - control) - (predicted - anchor)`, with the control from `evidence.control` and the
+    anchor recorded with the claim (`ExploreRecommendation.anchor`; older claims fall back to
+    `parent_overall`). Each row carries `grade_basis` (`margin` / `absolute`), `control` and
+    `margin`; a parented claim with no control is still graded absolutely, says so in its `why`,
+    and never reaches `summary.by_evidence_margin`, which is the only split `calibration()`
+    reads. An absolute grade across an instrument step measured the step: ten level bets read
+    as ten misses and buried the best-evidenced classes under 10- and 13-point bands.
   - `explore_share.py` — **the duel's exploration share: a slice of every window spent on
     Explore's best bet** (`duel.explore_share`, default 0.05; `duel.explore_iterations`,
     default 5; 0 = off; the *Exploration share* field in the Duels page's advanced rules,

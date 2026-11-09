@@ -3028,6 +3028,9 @@ export interface ExploreTestRequest {
   // not to whatever the firewall is currently on, so the test measures what was proposed.
   parent_fingerprint?: string;
   parent_overall?: number;
+  // The shrunk starting point the prediction was built on, so the ledger can grade the
+  // claimed margin over the parent rather than an absolute number.
+  anchor?: number;
   changes?: unknown;
   evidence?: string[];
   multi_lever?: boolean;
