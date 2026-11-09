@@ -2,7 +2,17 @@
 
 Status: **revised design, 2026-11-09**, replacing the phase order agreed on 2026-10-11 (that
 version is in git history). Decisions from it are kept unless marked *changed*. Phase 1 (the
-research export) is built; nothing else here is.
+research export) is built. Phase 2 is built except moving the duel's own round margins onto
+`evidence.py` (they are already same-window paired differences; the move is a refactor that
+touches `duel.py`, so it gets its own PR behind the firewall gate).
+
+**Phase 2 check on live data (2026-11-09, approximated from per-run Overalls through the
+API).** Of the ten graded bets, none had a parent run within two hours and five had one in
+the same instrument epoch. Those five went from absolute errors of −8.3 to −18.4 to margin
+errors of −0.1, −0.3, −2.4, −2.5 and −10.3; the last one claimed +9.8 over its parent from
+a matched pair, so its miss is real. The other five have no control at all, because their
+parents were never re-measured after the step. They stay graded absolutely and no longer
+calibrate anything. That gap is what phase 4's paired bouts close.
 
 ## Goal
 

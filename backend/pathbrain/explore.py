@@ -42,6 +42,7 @@ from __future__ import annotations
 import math
 
 from .levers import ALPHA as RING_ALPHA, MIN_ROUNDS as RING_MIN_ROUNDS, NULL_MARGIN as RING_NULL_MARGIN, NULL_ROUNDS as RING_NULL_ROUNDS
+from .evidence import in_search_space, search_space
 from .levers import MECHANISM as LEVER_MECHANISM
 from . import decidability
 from .logging_config import get_logger
@@ -1584,9 +1585,13 @@ def _candidates(
     parents = _parent_order(points)[:CANDIDATE_PARENTS]
 
     # (axis, value, why) worth trying, computed once per axis rather than per parent.
+    # Only levers in the shared search space (``evidence.search_space``, stamped on each axis
+    # by ``landscape``): never a held pipe speed, never an inert lever already tried. An axis
+    # with no stamp (a direct caller) is treated as proposable, as before the space existed.
     moves: list[tuple[str, float, str]] = [
         (key, value, why)
         for key, axis in axes.items()
+        if (axis.get("search") or {}).get("proposable", True)
         for value, why in _candidate_values(axis, by_key.get(key))
     ]
 
@@ -2291,6 +2296,36 @@ def _claimed_coords(session, profiles: list[dict], axes: dict[str, dict]) -> set
         return set()
 
 
+def _claimed(session) -> list[dict]:
+    """The ledger's paid-for proposals, or none when it can't be read."""
+    try:
+        from .explore_tracker import claimed_moves
+
+        return claimed_moves(session)
+    except Exception:  # noqa: BLE001 — bookkeeping must never take the landscape down
+        log.debug("Explore: could not read the ledger for the search space", exc_info=True)
+        return []
+
+
+def _confine_gaps(gaps: list[dict], space: dict[str, dict], axes: dict[str, dict]) -> None:
+    """A hole on a lever outside the search space stays reported, without a button."""
+    for gap in gaps or []:
+        if gap.get("candidate") and not in_search_space(gap["candidate"], space):
+            gap.pop("candidate", None)
+            label = (axes.get(gap.get("key")) or {}).get("field_label") or gap.get("key")
+            gap["blocked"] = f"{label} is outside the search space: {(space.get(gap.get('key')) or {}).get('reason')}"
+
+
+def _confine_legs(legs: dict | None, space: dict[str, dict]) -> None:
+    """Crown-leg moves outside the search space keep their finding and lose their button."""
+    for leg in (legs or {}).get("legs") or []:
+        for move in leg.get("moves") or []:
+            if move.get("candidate") and not in_search_space(move["candidate"], space):
+                move.pop("candidate", None)
+        if leg.get("combined") and not in_search_space(leg["combined"], space):
+            leg["combined"] = None
+
+
 def landscape(
     session,
     *,
@@ -2412,6 +2447,12 @@ def landscape(
     # axes. Empty (never absent) when the ledger can't be read.
     ring = ring_transitions(session)
     _ring_floor = ring_resolution(session)
+    # The one search space every proposer draws from: no held pipe speed, and an inert lever
+    # only while its one check is owed. Stamped on each axis so the page can say why a lever
+    # is not being proposed, and enforced again on every runnable proposal below.
+    space = search_space(axes, ring, _claimed(session))
+    for key, axis in axes.items():
+        axis["search"] = space[key]
 
     # Everything already tried, so nothing is proposed twice. Two sources, because a profile
     # can be *attempted* without ever appearing in the field:
@@ -2461,6 +2502,7 @@ def landscape(
     candidates = _candidates(
         points, axes, curves, gaps, max(1, int(suggestions)), pairs, already_tried=tried, ring=ring
     )
+    _confine_gaps(gaps, space, axes)
     best_established = _best_established(points)
     if noise_floor is not None:
         for c in candidates:
@@ -2475,6 +2517,7 @@ def landscape(
     except Exception:  # noqa: BLE001
         log.exception("Explore: crown-leg leaders could not be computed")
         legs = None
+    _confine_legs(legs, space)
 
     # What each evidence class has actually been worth on this link, which is what turns
     # "these are the best bets" from an opinion into a measurement. Best-effort: an
@@ -2517,8 +2560,11 @@ def landscape(
         # Ranked over EVERY runnable proposal on the page — the headline candidates, the
         # variant attached to each coverage hole, and the crown-leg moves — not just the
         # top section. They are all the same shape and all post the same payload.
+        # The last guard before anything is queued: every bet is inside the search space,
+        # whichever builder produced it.
         "bets": rank_bets(
-            runnable_candidates(candidates, gaps, legs), calib, best_established,
+            [c for c in runnable_candidates(candidates, gaps, legs) if in_search_space(c, space)],
+            calib, best_established,
             ring_resolution=_ring_floor,
         ),
         # What the duel could confirm tonight, so a proposal and its adjudicator agree on
@@ -2534,6 +2580,8 @@ def landscape(
         "profiles_modelled": len(points),
         "confident_only": confident_only and not fell_back,
         "exploration_weight": EXPLORATION_WEIGHT,
+        # What may be proposed, per axis, and why not when it may not.
+        "search_space": sorted(space.values(), key=lambda r: r["key"]),
         "reason": None,
     }
 

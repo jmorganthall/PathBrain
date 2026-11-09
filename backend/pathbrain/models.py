@@ -1027,6 +1027,11 @@ class ExploreRecommendation(Base):
     fingerprint: Mapped[str] = mapped_column(String(40))
     parent_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     parent_overall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The starting point the prediction was actually built on: the parent's Overall after the
+    # winner's-curse shrink. The claimed margin over the parent is ``predicted - anchor``, so
+    # the ledger needs it to grade a claim as a margin (``evidence.margin``). Null on claims
+    # recorded before it existed, which grade against ``parent_overall`` instead.
+    anchor: Mapped[float | None] = mapped_column(Float, nullable=True)
     label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 

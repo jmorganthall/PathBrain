@@ -216,6 +216,8 @@ class ExploreTest(BaseModel):
     iterations: int | None = None
     parent_fingerprint: str | None = None
     parent_overall: float | None = None
+    # The shrunk starting point the prediction was built on (the candidate's ``anchor``).
+    anchor: float | None = None
     changes: Any = None
     evidence: list[str] | None = None
     multi_lever: bool = False

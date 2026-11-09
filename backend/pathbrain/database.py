@@ -199,6 +199,7 @@ def _migrate() -> None:
         },
         "explore_recommendations": {
             "unreachable": "BOOLEAN DEFAULT 0",
+            "anchor": "FLOAT",
         },
         "score_results": {
             "sops_stdev": "FLOAT",

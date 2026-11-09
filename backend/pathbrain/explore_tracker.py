@@ -37,6 +37,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
+from . import evidence
 from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
@@ -104,7 +105,10 @@ def calibration(session, limit: int = 200) -> dict:
     """
     summary = recommendations(session, limit=limit).get("summary") or {}
     out: dict[str, dict] = {}
-    for row in summary.get("by_evidence") or []:
+    # Margins only. An absolute grade made across an instrument step measures the step, and
+    # that is how ten level bets once read as ten misses and buried the best-evidenced
+    # classes under 10- and 13-point bands (the 2026-11-08 review).
+    for row in summary.get("by_evidence_margin") or []:
         graded = int(row.get("graded") or 0)
         out[row["kind"]] = {
             "kind": row["kind"],
@@ -141,6 +145,7 @@ def record(
     fingerprint: str,
     parent_fingerprint: str | None = None,
     parent_overall: float | None = None,
+    anchor: float | None = None,
     label: str | None = None,
     summary: str | None = None,
     changes=None,
@@ -169,6 +174,7 @@ def record(
             fingerprint=fingerprint,
             parent_fingerprint=parent_fingerprint,
             parent_overall=parent_overall,
+            anchor=anchor,
             label=str(label)[:255] if label else None,
             summary=summary,
             changes=changes,
@@ -202,6 +208,7 @@ def _verdict(
     min_iterations: int,
     current_version: str,
     test_state: tuple[str | None, str | None] | None = None,
+    margin: dict | None = None,
 ) -> dict:
     """Grade one claim against what the link actually did.
 
@@ -212,10 +219,20 @@ def _verdict(
     good), and one made under a different methodology is **incomparable** — its number was
     never a claim about today's scale. ``test_state`` is the claim's profile test
     ``(status, error)`` when the caller has it.
+
+    ``margin`` is the claim restated as a margin over a same-window or same-epoch control
+    (``evidence.margin``). When it is there the error is the margin's: what the candidate
+    did against its parent measured in the same conditions, minus what the model said it
+    would. Only without one does the error fall back to the absolute difference, and the
+    row says so (``grade_basis``).
     """
     band = max(float(rec.uncertainty or 0.0), MIN_BAND)
     stale = bool(rec.methodology_version and rec.methodology_version != current_version)
-    error = None if (actual is None or rec.predicted is None) else round(actual - rec.predicted, 2)
+    if margin is not None and actual is not None:
+        error, basis = margin["error"], "margin"
+    else:
+        error = None if (actual is None or rec.predicted is None) else round(actual - rec.predicted, 2)
+        basis = "absolute"
     test_status, test_error = (test_state or (None, None))
 
     if getattr(rec, "unreachable", False):
@@ -250,6 +267,7 @@ def _verdict(
         "verdict": verdict,
         "band": round(band, 2),
         "error": error,
+        "grade_basis": basis,
         # Provisional while the profile is still short of the confidence bar: the number is
         # real, it just rests on too few iterations to argue with.
         "provisional": (
@@ -310,10 +328,26 @@ def _why(rec: ExploreRecommendation, kind: str, graded: dict, actual: float | No
 
     err = graded["error"]
     off = abs(err) if err is not None else 0.0
-    lead = (
-        f"Predicted {rec.predicted:.1f} ± {graded['band']:.1f} from {basis}; "
-        f"measured {actual:.1f} over {iterations} iteration{'' if iterations == 1 else 's'}"
-    )
+    m = graded.get("margin")
+    ctl = graded.get("control") or {}
+    plural = "" if iterations == 1 else "s"
+    if graded.get("grade_basis") == "margin" and m:
+        lead = (
+            f"Predicted {m['predicted']:+.1f} ± {graded['band']:.1f} over the parent from {basis}; "
+            f"measured {m['measured']:+.1f} over {iterations} iteration{plural}, against "
+            f"{ctl.get('label') or 'the parent'} ({ctl.get('overall', 0.0):.1f} over "
+            f"{ctl.get('iterations', 0)} iterations)"
+        )
+    else:
+        lead = (
+            f"Predicted {rec.predicted:.1f} ± {graded['band']:.1f} from {basis}; "
+            f"measured {actual:.1f} over {iterations} iteration{plural}"
+        )
+        if rec.parent_fingerprint:
+            lead = (
+                "No parent run in the same window or instrument epoch, so this is graded "
+                "against the absolute number and kept out of calibration. " + lead
+            )
     if verdict == "on_target":
         tail = (
             f" — inside the band ({err:+.1f}). The model priced this move and the controlled "
@@ -466,6 +500,11 @@ def _summarize(rows: list[dict]) -> dict:
         "beat_best": None,
         "beat_best_claimed": None,
         "by_evidence": [],
+        # The same split over the claims graded as margins against a same-window or
+        # same-epoch control — the only grades calibration is allowed to learn from.
+        "graded_margin": 0,
+        "mean_margin_error": None,
+        "by_evidence_margin": [],
     }
     if not graded:
         return out
@@ -485,15 +524,28 @@ def _summarize(rows: list[dict]) -> dict:
         out["beat_best_claimed"] = len(claimed)
         out["beat_best"] = sum(1 for r in claimed if r["actual"] > r["best_overall"])
 
+    out["by_evidence"] = _by_evidence(graded)
+    on_margin = [r for r in graded if r.get("grade_basis") == "margin"]
+    out["graded_margin"] = len(on_margin)
+    margin_errors = [r["error"] for r in on_margin if r["error"] is not None]
+    if margin_errors:
+        out["mean_margin_error"] = round(sum(margin_errors) / len(margin_errors), 2)
+    out["by_evidence_margin"] = _by_evidence(on_margin)
+    return out
+
+
+def _by_evidence(graded: list[dict]) -> list[dict]:
+    """Graded rows split by evidence class, strongest first."""
     by_kind: dict[str, list[dict]] = {}
     for r in graded:
         by_kind.setdefault(r["evidence_kind"], []).append(r)
+    out: list[dict] = []
     for kind in EVIDENCE_ORDER:
         group = by_kind.get(kind)
         if not group:
             continue
         errs = [g["error"] for g in group if g["error"] is not None]
-        out["by_evidence"].append({
+        out.append({
             "kind": kind,
             "label": EVIDENCE_LABELS[kind],
             "graded": len(group),
@@ -607,6 +659,17 @@ FAILED_TEST_STATES = ("failed", "cancelled")
 #: morning, or a value the firewall genuinely rejects would be re-proposed, re-queued by the
 #: exploration share and re-failed every session for ever.
 FAILED_CLAIM_COOLDOWN_DAYS = 7
+#: How far before the oldest claim the parents' runs are read for a control. A same-epoch
+#: control older than this is from a parent nobody has re-measured in a month, which is not
+#: a control worth grading against.
+CONTROL_LOOKBACK_DAYS = 30
+
+
+def _naive_utc(dt: datetime | None) -> datetime | None:
+    """Stored times are naive UTC, but a freshly created row can carry an aware one."""
+    if dt is None or dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _test_states(session, rows) -> dict[int, tuple[str | None, str | None]]:
@@ -667,7 +730,14 @@ def claimed_moves(session, limit: int = CLAIM_HISTORY) -> list[dict]:
             if isinstance(ch, dict) and ch.get("key") is not None and ch.get("to") is not None
         }
         if moves:
-            out.append({"parent_fingerprint": rec.parent_fingerprint, "moves": moves})
+            out.append({
+                "parent_fingerprint": rec.parent_fingerprint,
+                "moves": moves,
+                # The firewall never held the proposal, so it was attempted, not measured:
+                # it still blocks its coordinates, but pays no lever's owed check
+                # (``evidence.search_space``).
+                "unreachable": bool(getattr(rec, "unreachable", False)),
+            })
     return out
 
 
@@ -699,6 +769,13 @@ def recommendations(session, limit: int = 50) -> dict:
     fps = [r.fingerprint for r in rows] + [r.parent_fingerprint for r in rows if r.parent_fingerprint]
     measured: dict = {}
     claim_rows: dict[str, list] = {}
+    # The parents' dated runs too: a claim is graded as a margin over its parent measured in
+    # the same window (else the same instrument epoch), and that needs the runs, not a pooled
+    # rollup that spans every era. Bounded to a month before the oldest claim, which covers
+    # any epoch a control could come from.
+    dated_fps = {r.fingerprint for r in rows} | {r.parent_fingerprint for r in rows if r.parent_fingerprint}
+    created = [_naive_utc(r.created_at) for r in rows if r.created_at is not None]
+    dated_since = (min(created) - timedelta(days=CONTROL_LOOKBACK_DAYS)) if created else None
     if fps:
         try:
             # Parents grade on their whole pooled record (the parent IS an existing
@@ -710,16 +787,19 @@ def recommendations(session, limit: int = 50) -> dict:
             measured = profile_overalls(
                 session, fps, methodology.version, crown_metrics, crown_required, weights
             )
-            dated = session.execute(
+            dated_q = (
                 select(Run.settings_fingerprint, Run.created_at, Run.iterations,
                        Score.subscores, Score.comparability)
                 .join(Score, Score.run_id == Run.id)
                 .where(
                     Run.status == RunStatus.COMPLETE,
-                    Run.settings_fingerprint.in_(list({r.fingerprint for r in rows})),
+                    Run.settings_fingerprint.in_(list(dated_fps)),
                     Score.methodology_version == methodology.version,
                 )
-            ).all()
+            )
+            if dated_since is not None:
+                dated_q = dated_q.where(Run.created_at >= dated_since)
+            dated = session.execute(dated_q).all()
             for fp, created_at, iterations, subscores, comparability in dated:
                 claim_rows.setdefault(fp, []).append(
                     (created_at, iterations, subscores, comparability)
@@ -727,18 +807,50 @@ def recommendations(session, limit: int = 50) -> dict:
         except Exception:  # noqa: BLE001 — a scoring hiccup must not empty the ledger
             log.debug("Recommendation ledger: could not compute Overalls", exc_info=True)
 
-    def _measured_since_claim(rec) -> tuple[float | None, int]:
-        rows_for = claim_rows.get(rec.fingerprint)
-        if rows_for is None:
-            return None, 0
-        since = rec.created_at
-        eligible = [
-            (iterations, subscores, comparability)
-            for created_at, iterations, subscores, comparability in rows_for
-            if since is None or created_at is None or created_at >= since
+    def _since_claim(rec) -> list[tuple]:
+        since = _naive_utc(rec.created_at)
+        return [
+            row for row in claim_rows.get(rec.fingerprint) or []
+            if since is None or row[0] is None or _naive_utc(row[0]) >= since
         ]
-        samples, iters = _collect(eligible, crown_metrics)
+
+    def _grade(rows_) -> tuple[float | None, int]:
+        samples, iters = _collect([(i, sub, comp) for _, i, sub, comp in rows_], crown_metrics)
         return _grade_samples(samples, iters, crown_metrics, crown_required, weights)
+
+    def _measured_since_claim(rec) -> tuple[float | None, int]:
+        if rec.fingerprint not in claim_rows:
+            return None, 0
+        return _grade(_since_claim(rec))
+
+    # The instrument's epochs, read once (cached across reads): a control is never taken
+    # from a different era than the candidate it is compared with.
+    try:
+        epoch_times = evidence.instrument_epochs(session)["times"]
+    except Exception:  # noqa: BLE001 — one epoch is how the ledger behaved before epochs
+        epoch_times = []
+
+    def _control_for(rec) -> dict | None:
+        """The parent measured in the same conditions as the claim, graded, or None."""
+        parent = rec.parent_fingerprint
+        if not parent or parent == rec.fingerprint:
+            return None  # nothing to compare with, or the claim landed on its own parent
+        bet_times = [
+            row[0] for row in _since_claim(rec) if row[0] is not None and row[3] != "incomparable"
+        ]
+        picked = evidence.control(bet_times, claim_rows.get(parent) or [], epoch_times)
+        if not picked["kind"]:
+            return None
+        overall, iters = _grade(picked["rows"])
+        if overall is None:
+            return None
+        return {
+            "kind": picked["kind"],
+            "label": evidence.CONTROL_LABELS.get(picked["kind"], picked["kind"]),
+            "overall": round(overall, 2),
+            "iterations": iters,
+            "epoch": picked["epoch"],
+        }
     names = names_for(session, [fp for fp in fps if fp]) if fps else {}
     # The profile test behind each claim, so a claim whose test ended without a run reads
     # as failed rather than pending for ever.
@@ -752,10 +864,22 @@ def recommendations(session, limit: int = 50) -> dict:
     for rec in rows:
         actual, iterations = _measured_since_claim(rec)
         kind = evidence_kind(rec.evidence)
+        ctl = _control_for(rec) if actual is not None else None
+        reference = rec.anchor if getattr(rec, "anchor", None) is not None else rec.parent_overall
+        claim_margin = evidence.margin(
+            predicted=rec.predicted,
+            reference=reference,
+            actual=actual,
+            control_overall=(ctl or {}).get("overall"),
+        )
+        if claim_margin is not None:
+            claim_margin["reference"] = "anchor" if getattr(rec, "anchor", None) is not None else "parent_overall"
         graded = _verdict(
             rec, actual, iterations, min_iterations, methodology.version,
-            test_state=test_states.get(rec.id),
+            test_state=test_states.get(rec.id), margin=claim_margin,
         )
+        graded["control"] = ctl
+        graded["margin"] = claim_margin
         parent_actual, _ = measured.get(rec.parent_fingerprint or "", (None, 0))
         out.append({
             "id": rec.id,
@@ -792,8 +916,12 @@ def recommendations(session, limit: int = 50) -> dict:
                 None if (actual is None or rec.best_overall is None or graded["verdict"] in ("pending", "incomparable"))
                 else bool(actual > rec.best_overall)
             ),
+            # Against the parent measured in the same conditions when there is one: beating
+            # the parent's number from another era says nothing about the move.
             "beat_parent": (
-                None if (actual is None or rec.parent_overall is None or graded["verdict"] in ("pending", "incomparable"))
+                None if (actual is None or graded["verdict"] in ("pending", "incomparable"))
+                else bool(claim_margin["measured"] > 0) if claim_margin is not None
+                else None if rec.parent_overall is None
                 else bool(actual > rec.parent_overall)
             ),
         })

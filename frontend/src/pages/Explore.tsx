@@ -1700,6 +1700,7 @@ export default function Explore() {
           // the parent's stored settings rather than to whatever the firewall is on now.
           parent_fingerprint: c.parent.fingerprint,
           parent_overall: c.parent.overall,
+          anchor: c.anchor,
           changes: c.changes,
           evidence: c.evidence,
           multi_lever: c.multi_lever,
