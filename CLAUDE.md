@@ -3011,6 +3011,18 @@ LLM-based. See `README.md` for the product overview.
     button from holes and crown-leg moves outside it, and filters `bets` through it last.
     `test_evidence` (the 2026-11-08 finding is pinned there: a bet level with its parent the
     same night grades on target, where the absolute grade called it a ten-point miss).
+  - `beliefs.py` — **the belief layer: `fuse` generalised** (gold in
+    `docs/plan-learning-engine.md`, phase 3). θ_i = f(quantum) + u_i, read through the ring's
+    margins (σ from `round_noise`) and a pooled median **per instrument epoch** with an offset
+    c_e against the newest epoch; f is a quadratic over each pipe's log quantum (squares and
+    the Download × Upload interaction) with a shrinkage prior. Closed form, pure Python: every
+    profile the ring never fought is eliminated by a Schur complement onto the few surface and
+    epoch terms. s, τ and the surface's prior scale are chosen by empirical Bayes
+    (`empirical_bayes`, coordinate ascent on log grids). `fit_flat` is `fuse` exactly (test).
+    `backtest` holds a ring session out of everything, its `duel-N` runs included, and scores
+    pooled / fuse / epochs / levers / beliefs on held-out margins. `GET /api/beliefs`
+    (cached 15 min, never on a page load). **The crown still reads `fuse`** (decision 20; a
+    test fails if the crown modules import `beliefs`). `test_beliefs`.
   - `explore_tracker.py` — **the recommendation ledger: was the data right?** Explore's output is
     a *prediction*, and a prediction nobody scores is a horoscope — it costs the same night of
     benchmarking either way. So the **claim is stored before the measurement exists**

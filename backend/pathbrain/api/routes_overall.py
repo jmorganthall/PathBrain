@@ -30,3 +30,18 @@ def overall_ring_target(session: Session = Depends(get_session)) -> dict:
     """What the ring will fight next under the fused policy: the fused #1 and the profiles
     the fit cannot yet separate from it, most ambiguous first (`overall_ranking.ring_target`)."""
     return {"target": overall_ranking.ring_target(session)}
+
+
+@router.get("/beliefs")
+def beliefs_read(
+    session: Session = Depends(get_session),
+    backtest: bool = Query(True, description="Include the leave-one-session-out comparison with today's fit."),
+    refresh: bool = Query(False, description="Refit now instead of reusing the last read (15 minutes)."),
+) -> dict:
+    """The belief layer (`beliefs`): every profile's θ fitted from the ring's margins and
+    its pooled median per instrument epoch, with each epoch's offset and the quantum
+    surface. Read-only, and nothing reads it for the crown yet: ``backtest`` says whether it
+    predicts held-out ring margins better than today's fit, which is what the crown reads."""
+    from .. import beliefs
+
+    return beliefs.beliefs(session, with_backtest=backtest, refresh=refresh)

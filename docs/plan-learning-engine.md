@@ -4,7 +4,9 @@ Status: **revised design, 2026-11-09**, replacing the phase order agreed on 2026
 version is in git history). Decisions from it are kept unless marked *changed*. Phase 1 (the
 research export) is built. Phase 2 is built except moving the duel's own round margins onto
 `evidence.py` (they are already same-window paired differences; the move is a refactor that
-touches `duel.py`, so it gets its own PR behind the firewall gate).
+touches `duel.py`, so it gets its own PR behind the firewall gate). Phase 3 (the belief
+layer) is built: `beliefs.py`, `GET /api/beliefs`, with the backtest against `fuse` on the
+live ledger read from that endpoint once deployed. The crown has not moved.
 
 **Phase 2 check on live data (2026-11-09, approximated from per-run Overalls through the
 API).** Of the ten graded bets, none had a parent run within two hours and five had one in
