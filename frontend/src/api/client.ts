@@ -1,5 +1,6 @@
 // Small typed API client for the PathBrain backend. Uses plain fetch.
 import type {
+  SpeedBudget,
   FastestLegs,
   LegGaps,
   ProfileConditions,
@@ -561,6 +562,7 @@ export const api = {
     policy?: CrowningPolicy;
     lcp_band_pct?: number;
     fcp_band_pct?: number;
+    speed_budget?: Partial<SpeedBudget>;
   }) =>
     request<{ config: CrownFollowConfig }>("/settings/crown-follow", {
       method: "POST",

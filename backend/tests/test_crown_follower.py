@@ -380,12 +380,12 @@ def test_api_status_config_and_toggle(client):
     res = client.get("/api/settings/crown-follow")
     assert res.status_code == 200
     body = res.json()
-    assert body["config"] == {"enabled": False, "interval_minutes": 360.0, "policy": "fused", "lcp_band_pct": 10.0, "fcp_band_pct": 10.0}
+    assert body["config"] == {"enabled": False, "interval_minutes": 360.0, "policy": "fused", "lcp_band_pct": 10.0, "fcp_band_pct": 10.0, "speed_budget": {"enabled": True, "lcp_pct": 20.0, "fcp_pct": 25.0}}
     assert "stats" in body and "events" in body and "status" in body
 
     res = client.post("/api/settings/crown-follow", json={"enabled": True, "interval_minutes": 10})
     assert res.status_code == 200
-    assert res.json()["config"] == {"enabled": True, "interval_minutes": 10.0, "policy": "fused", "lcp_band_pct": 10.0, "fcp_band_pct": 10.0}
+    assert res.json()["config"] == {"enabled": True, "interval_minutes": 10.0, "policy": "fused", "lcp_band_pct": 10.0, "fcp_band_pct": 10.0, "speed_budget": {"enabled": True, "lcp_pct": 20.0, "fcp_pct": 25.0}}
     assert client.get("/api/settings/crown-follow").json()["config"]["enabled"] is True
 
     assert client.post("/api/settings/crown-follow", json={}).status_code == 400

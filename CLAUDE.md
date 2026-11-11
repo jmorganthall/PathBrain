@@ -3414,9 +3414,25 @@ LLM-based. See `README.md` for the product overview.
     reads "within noise", never as a cost). The line is on the Dashboard's verdict card and
     crowns card, every corner and candidate on the Best profile page, the Duels champion and
     claims-to-best strip, and the followed profile and duel champion in the Auto-apply
-    popover; it turns amber past 0% and red at 25% or more on either leg. Display only —
-    nothing gates on it. `test_leg_gaps_price_any_profile_against_the_fastest_fcp_and_the_fastest_lcp`,
+    popover; it turns amber past 0% and red at 25% or more on either leg.
+    `test_leg_gaps_price_any_profile_against_the_fastest_fcp_and_the_fastest_lcp`,
     `test_every_corner_on_the_overall_page_carries_its_gap_to_the_fastest_legs`.
+    **And Auto-apply holds the line: the speed budget** (`crowning.speed_budget` /
+    `budget_check` / `BUDGET_FALLBACK_ORDER`, `crown_follow.speed_budget` = `{enabled: true,
+    lcp_pct: 20, fcp_pct: 25}`, the switch and two fields in the Auto-apply popover,
+    `governing.speed_budget` on `GET /settings/crowns`, `speed_budget` on `GET /api/overall`).
+    Showing the price was half of it; the owner's terms were that "very pleasing but slow" is
+    not an acceptable trade. `crowning.resolve` now resolves the policy's crown
+    (`_resolve_policy`, the old body) and checks it against the fastest legs: a crown whose
+    LCP is **clearly** (past the 2σ noise rule) more than `lcp_pct` slower than the fastest
+    median LCP, or whose FCP is more than `fcp_pct` slower than the fastest median FCP, is
+    passed over for the first crown in `BUDGET_FALLBACK_ORDER` (LCP first, fused, FCP first,
+    pooled, duel, fastest on paper) that fits, and `detail` names the crown passed over, by how
+    much, and what is followed instead. When none fits, the policy's choice stands and says
+    so; a crown whose gaps cannot be read is never refused. The policy keeps its name — the
+    budget changes only which profile is written, never how a write is made. The Dashboard's
+    crowns card shows the pass-over as a warning and the verdict card marks a #1 over budget.
+    `test_speed_budget`.
     **This module was `verdict.py`, and `GET /api/settings/verdict` is RETIRED.** It carried a
     second "which profile should I run?" answer — the pooled argmax among confident profiles,
     a tie set against `crown_tie_sigma` × the pooled SE, the margin over SQM off and a

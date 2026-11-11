@@ -1811,6 +1811,20 @@ export type CrowningPolicy = "fused" | "pooled" | "duel" | "math" | "lcp_first" 
 // One crown against the field's fastest median FCP and fastest median LCP, leg by leg
 // (`pooled_field.leg_gaps`). Positive delta = slower. `clear` = the gap is past twice the
 // noise of the two medians; otherwise it is noise, never a cost.
+// The speed budget (`crowning.speed_budget`): Auto-apply will not follow a crown clearly
+// slower than the field's fastest LCP / FCP by more than these percentages.
+export interface SpeedBudget {
+  enabled: boolean;
+  lcp_pct: number;
+  fcp_pct: number;
+}
+export interface SpeedBudgetCheck extends SpeedBudget {
+  checked: boolean;
+  within?: boolean;
+  over?: { leg: "lcp" | "fcp"; pct: number; limit_pct: number; delta_ms: number }[];
+  replaced?: { fingerprint: string; source: string } | null;
+}
+
 export interface LegGap {
   ms: number;
   fastest_ms: number;
@@ -1849,6 +1863,7 @@ export interface CrownFollowConfig {
   lcp_band_pct?: number;
   // The FCP-first crown's band: a profile qualifies within this many percent of the best FCP.
   fcp_band_pct?: number;
+  speed_budget?: SpeedBudget;
 }
 
 // The duel ladder's latest fresh champion (crowning candidate under policy "duel").
@@ -2075,7 +2090,12 @@ export interface CrownsOut {
   // Champion's live pooled Overall minus the crown's — how far apart the two verdicts
   // sit on the one scale they share. Null until both have a live Overall.
   overall_delta?: number | null;
-  governing: { source: "fused" | "pooled" | "duel" | "math" | "lcp_first" | "fcp_first"; fingerprint: string | null; detail: string };
+  governing: {
+    source: "fused" | "pooled" | "duel" | "math" | "lcp_first" | "fcp_first";
+    fingerprint: string | null;
+    detail: string;
+    speed_budget?: SpeedBudgetCheck | null;
+  };
   agree: boolean;
   follow_enabled: boolean;
   on_crown: boolean | null;
@@ -4659,6 +4679,7 @@ export interface OverallOut {
   rounds_to_settle: number | null;
   vs_sqm_off: number | null;
   sqm_off_overall: number | null;
+  speed_budget?: SpeedBudgetCheck | null;
   live: OverallProfile | null;
   on_firewall: boolean | null;
   confident_profiles: number;

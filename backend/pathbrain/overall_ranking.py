@@ -897,6 +897,9 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
         "live": by_fp.get(live_fp) if live_fp else None,
         "on_firewall": None if live_fp is None else bool(live_fp == best["fingerprint"]),
         "crown_held": held,
+        # The speed budget on the #1: whether Auto-apply will follow it, or pass it over
+        # for a crown within budget (`crowning.resolve`). Read-only here.
+        "speed_budget": _budget_reading(session, best["fingerprint"]),
         "verdict": _sentence(best, runner, lead, bar, len(tied), need, slack, moved_top, held),
         "profiles": rows,
         "movers": sorted(
@@ -991,6 +994,24 @@ def _attach_paper_cost(session, version: str, corners: dict) -> None:
             corners[k]["vs_paper"] = cost.get(corners[k]["fingerprint"])
     except Exception:  # noqa: BLE001
         log.warning("paper cost unavailable", exc_info=True)
+
+
+def _budget_reading(session, fingerprint: str) -> dict | None:
+    """`crowning.budget_check` on the #1 with the configured budget beside it, best-effort."""
+    try:
+        from .config_store import get_config
+        from .crowning import budget_check, speed_budget
+
+        budget = speed_budget(get_config(session))
+        if not budget["enabled"]:
+            return {**budget, "checked": False}
+        check = budget_check(session, fingerprint, budget)
+        if check is None:
+            return {**budget, "checked": False}
+        return {**budget, "checked": True, "within": check["within"], "over": check["over"]}
+    except Exception:  # noqa: BLE001
+        log.warning("speed budget reading unavailable", exc_info=True)
+        return None
 
 
 def _corner(r: dict, kind: str) -> dict:

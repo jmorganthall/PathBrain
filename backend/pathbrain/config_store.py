@@ -343,6 +343,10 @@ DEFAULT_CONFIG: dict = {
         # profile qualifies when its median FCP is within this many percent of the best, and
         # the fastest LCP among the qualifiers is crowned.
         "fcp_band_pct": 10.0,
+        # The speed budget (`crowning.speed_budget`): Auto-apply will not follow a crown that
+        # is clearly slower than the field's fastest median LCP by more than lcp_pct, or the
+        # fastest median FCP by more than fcp_pct; it follows the first crown that fits.
+        "speed_budget": {"enabled": True, "lcp_pct": 20.0, "fcp_pct": 25.0},
         # Which verdict ORDERS the field: "ring" (default) or "pooled" (the old behaviour).
         #
         # A duel round is a paired, interleaved comparison under shared weather — a

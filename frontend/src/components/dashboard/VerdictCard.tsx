@@ -138,6 +138,15 @@ export default function VerdictCard() {
                 {best.rounds ? ` + ${best.rounds} ring round${best.rounds === 1 ? "" : "s"}` : ", never fought in the ring"}
               </Typography>
               <FastestGapLine gaps={bestCorner?.vs_fastest} fastest={corners.fastest} />
+              {data.speed_budget?.within === false && (
+                <Typography variant="caption" color="warning.main" sx={{ display: "block" }}>
+                  Over the speed budget (
+                  {(data.speed_budget.over ?? [])
+                    .map((o) => `${o.leg.toUpperCase()} +${o.pct.toFixed(0)}%, limit ${o.limit_pct}%`)
+                    .join(" · ")}
+                  ) — Auto-apply follows the first crown within it instead; the crowns card names it.
+                </Typography>
+              )}
             </Box>
           </Stack>
 

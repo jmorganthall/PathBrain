@@ -4068,6 +4068,9 @@ def crowns(session: Session = Depends(get_session)) -> dict:
             "source": resolution["source"],
             "fingerprint": resolution["fingerprint"],
             "detail": resolution["detail"],
+            # The speed-budget check on the policy's choice: within, or which crown it
+            # replaced and by how much it was over.
+            "speed_budget": resolution.get("speed_budget"),
         },
         # Champion's live pooled Overall minus the crown's — how far apart the two
         # verdicts sit on the one scale they share. None until both have a live Overall.
@@ -4202,6 +4205,7 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
             "policy": crowning.active_policy(session),
             "lcp_band_pct": _band(session),
             "fcp_band_pct": _band(session, "fcp_first"),
+            "speed_budget": crowning.speed_budget(get_config(session)),
         },
         "policies": list(crowning.POLICIES),
         # The duel ladder's latest fresh champion (or null) — shown beside the pooled
@@ -4270,6 +4274,25 @@ def crown_follow_update(
         if not (lo <= band <= hi):
             raise HTTPException(status_code=400, detail=f"{key} must be between {lo:g} and {hi:g}")
         updates[key] = band
+    if "speed_budget" in (body or {}):
+        raw = body["speed_budget"]
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="speed_budget must be an object")
+        sb = dict(crowning.speed_budget(get_config(session)))
+        if "enabled" in raw:
+            sb["enabled"] = bool(raw["enabled"])
+        lo, hi = crowning.SPEED_BUDGET_RANGE
+        for key in ("lcp_pct", "fcp_pct"):
+            if key not in raw:
+                continue
+            try:
+                v = float(raw[key])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"speed_budget.{key} must be a number") from None
+            if not (lo <= v <= hi):
+                raise HTTPException(status_code=400, detail=f"speed_budget.{key} must be between {lo:g} and {hi:g}")
+            sb[key] = v
+        updates["speed_budget"] = sb
     if not updates:
         raise HTTPException(status_code=400, detail="Nothing to update")
 
@@ -4284,6 +4307,7 @@ def crown_follow_update(
             "policy": crowning.active_policy(session),
             "lcp_band_pct": _band(session),
             "fcp_band_pct": _band(session, "fcp_first"),
+            "speed_budget": crowning.speed_budget(get_config(session)),
         }
     }
 

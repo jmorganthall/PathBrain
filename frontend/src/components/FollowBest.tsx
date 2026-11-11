@@ -102,6 +102,32 @@ export default function FollowBest() {
       .finally(() => setBusy(false));
   };
 
+  // The speed budget: how much slower than the fastest LCP / FCP a followed crown may be.
+  const budget = info?.config.speed_budget ?? { enabled: true, lcp_pct: 20, fcp_pct: 25 };
+  const [budgetDraft, setBudgetDraft] = useState({ lcp: String(budget.lcp_pct), fcp: String(budget.fcp_pct) });
+  useEffect(
+    () => setBudgetDraft({ lcp: String(budget.lcp_pct), fcp: String(budget.fcp_pct) }),
+    [budget.lcp_pct, budget.fcp_pct],
+  );
+  const saveBudget = (patch: { enabled?: boolean; lcp_pct?: number; fcp_pct?: number }) => {
+    for (const v of [patch.lcp_pct, patch.fcp_pct]) {
+      if (v !== undefined && (!Number.isFinite(v) || v < 0 || v > 200)) {
+        setSnack({ msg: "A speed budget must be between 0 and 200%.", sev: "error" });
+        setBudgetDraft({ lcp: String(budget.lcp_pct), fcp: String(budget.fcp_pct) });
+        return;
+      }
+    }
+    setBusy(true);
+    api
+      .crownFollowUpdate({ speed_budget: patch })
+      .then(() => {
+        setSnack({ msg: "Speed budget saved.", sev: "info" });
+        load();
+      })
+      .catch((e) => setSnack({ msg: e instanceof Error ? e.message : "Could not save the budget.", sev: "error" }))
+      .finally(() => setBusy(false));
+  };
+
   const setPolicy = (next: CrowningPolicy) => {
     if (next === policy) return;
     setBusy(true);
@@ -368,6 +394,43 @@ export default function FollowBest() {
                 </Typography>
               </Stack>
             ))}
+            <Tooltip title="Auto-apply will not follow a crown that is clearly slower than the field's fastest LCP or FCP by more than this. It follows the first crown that fits (LCP first, combined, FCP first, pooled, duel, fastest on paper) and says so. Gaps inside the measurement noise never count.">
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
+                <Switch
+                  size="small"
+                  checked={budget.enabled}
+                  onChange={(e) => saveBudget({ enabled: e.target.checked })}
+                  disabled={busy}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  Speed budget: at most
+                </Typography>
+                <TextField
+                  size="small"
+                  type="number"
+                  value={budgetDraft.lcp}
+                  onChange={(e) => setBudgetDraft((d) => ({ ...d, lcp: e.target.value }))}
+                  onBlur={() => Number(budgetDraft.lcp) !== budget.lcp_pct && saveBudget({ lcp_pct: Number(budgetDraft.lcp) })}
+                  disabled={busy || !budget.enabled}
+                  inputProps={{ min: 0, max: 200, step: 1, style: { width: 44, padding: "2px 6px", fontSize: 12 } }}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  % slower LCP,
+                </Typography>
+                <TextField
+                  size="small"
+                  type="number"
+                  value={budgetDraft.fcp}
+                  onChange={(e) => setBudgetDraft((d) => ({ ...d, fcp: e.target.value }))}
+                  onBlur={() => Number(budgetDraft.fcp) !== budget.fcp_pct && saveBudget({ fcp_pct: Number(budgetDraft.fcp) })}
+                  disabled={busy || !budget.enabled}
+                  inputProps={{ min: 0, max: 200, step: 1, style: { width: 44, padding: "2px 6px", fontSize: 12 } }}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  % slower FCP than the fastest
+                </Typography>
+              </Stack>
+            </Tooltip>
             {info?.duel_champion ? (
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
                 Duel champion:{" "}

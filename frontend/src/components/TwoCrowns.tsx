@@ -14,6 +14,7 @@
 // acts on, which is the crowning policy's job (top-bar Follow best).
 import { useCallback, useEffect, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
+import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
@@ -194,6 +195,19 @@ export default function TwoCrowns() {
             </Tooltip>
           )}
         </Stack>
+
+        {/* The speed budget passed the policy's choice over: say which crown, by how much,
+            and what Auto-apply follows instead — the trade made visible, not implied. */}
+        {governing.speed_budget?.replaced && (
+          <Alert severity="warning" variant="outlined" sx={{ mb: 1.5, py: 0 }}>
+            Over the speed budget: {governing.detail}.
+          </Alert>
+        )}
+        {governing.speed_budget?.within === false && !governing.speed_budget?.replaced && (
+          <Alert severity="warning" variant="outlined" sx={{ mb: 1.5, py: 0 }}>
+            {governing.detail}.
+          </Alert>
+        )}
 
         <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
           {pooled ? (

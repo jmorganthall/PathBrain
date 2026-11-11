@@ -42,8 +42,130 @@ def active_policy(session) -> str:
     return policy if policy in POLICIES else DEFAULT_POLICY
 
 
+#: The speed budget (``crown_follow.speed_budget``): how much slower than the field's fastest
+#: median LCP and fastest median FCP a crown may be before Auto-apply will not follow it.
+#: The owner's terms: "give up a little top-end speed for a smoother, more pleasing load" —
+#: never "very pleasing but slow". A gap counts only when it clears the 2σ noise rule
+#: (`pooled_field.leg_gaps`), so a crown is never refused over a difference nobody measured.
+DEFAULT_SPEED_BUDGET = {"enabled": True, "lcp_pct": 20.0, "fcp_pct": 25.0}
+SPEED_BUDGET_RANGE = (0.0, 200.0)
+#: Where Auto-apply looks when the chosen crown is over budget, in order: the speed-aware
+#: candidates first, the fastest on paper last. The first one within budget is followed.
+BUDGET_FALLBACK_ORDER = ("lcp_first", "fused", "fcp_first", "pooled", "duel", "math")
+
+
+def speed_budget(cfg: dict | None) -> dict:
+    """The configured budget, filled from the default and clamped."""
+    raw = ((cfg or {}).get("crown_follow") or {}).get("speed_budget") or {}
+    out = dict(DEFAULT_SPEED_BUDGET)
+    if isinstance(raw, dict):
+        if "enabled" in raw:
+            out["enabled"] = bool(raw["enabled"])
+        lo, hi = SPEED_BUDGET_RANGE
+        for key in ("lcp_pct", "fcp_pct"):
+            try:
+                out[key] = min(hi, max(lo, float(raw.get(key, out[key]))))
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def budget_check(session, fingerprint: str | None, budget: dict | None = None) -> dict | None:
+    """Is this profile within the speed budget? ``{within, over: [{leg, pct, limit_pct,
+    delta_ms}], gaps}`` or None when it cannot be told (no fastest legs, no medians) —
+    and "cannot tell" never refuses a crown."""
+    if not fingerprint:
+        return None
+    from .methodology import ensure_current_methodology
+    from .pooled_field import fastest_legs, leg_gaps
+
+    cfg = get_config(session)
+    budget = budget or speed_budget(cfg)
+    try:
+        version = ensure_current_methodology(session, cfg).version
+        min_iter = int((cfg.get("correlation") or {}).get("min_iterations") or 15)
+        fastest = fastest_legs(session, version, min_iter)
+        gaps = leg_gaps(session, version, fastest, [fingerprint]).get(fingerprint)
+    except Exception:  # noqa: BLE001 — a reading, never a reason the follower stops
+        log.warning("Crowning: the speed budget could not be read", exc_info=True)
+        return None
+    if not gaps:
+        return None
+    over = []
+    for leg in ("lcp", "fcp"):
+        g = gaps.get(leg)
+        limit = budget[f"{leg}_pct"]
+        if g and g.get("clear") and g["pct"] > limit:
+            over.append({"leg": leg, "pct": g["pct"], "limit_pct": limit, "delta_ms": g["delta_ms"]})
+    return {"within": not over, "over": over, "gaps": gaps}
+
+
+def _over_text(check: dict) -> str:
+    return ", ".join(
+        f"{o['leg'].upper()} +{o['pct']:.0f}% slower than the fastest (budget {o['limit_pct']:g}%)"
+        for o in check["over"]
+    )
+
+
 def resolve(session, pooled_best_fp: str | None) -> dict:
-    """Resolve the governing crown under the active policy.
+    """Resolve the governing crown under the active policy, within the speed budget.
+
+    The policy names a profile (`_resolve_policy`); when that profile is clearly slower
+    than the field's fastest LCP or FCP by more than the budget allows, the first crown in
+    `BUDGET_FALLBACK_ORDER` that fits is followed instead and ``detail`` says why. When
+    none fits, the policy's choice stands and ``detail`` says that too. ``speed_budget``
+    on the result records the check either way."""
+    policy = active_policy(session)
+    chosen = _resolve_policy(session, pooled_best_fp, policy)
+    budget = speed_budget(get_config(session))
+    if not budget["enabled"] or not chosen.get("fingerprint"):
+        chosen["speed_budget"] = {**budget, "checked": False}
+        return chosen
+    check = budget_check(session, chosen["fingerprint"], budget)
+    if check is None or check["within"]:
+        chosen["speed_budget"] = {**budget, "checked": check is not None, "within": True}
+        return chosen
+
+    tried = {chosen["fingerprint"]}
+    for alt_policy in BUDGET_FALLBACK_ORDER:
+        if alt_policy == policy:
+            continue
+        try:
+            alt = _resolve_policy(session, pooled_best_fp, alt_policy)
+        except Exception:  # noqa: BLE001
+            log.warning("Crowning: fallback %s could not be resolved", alt_policy, exc_info=True)
+            continue
+        fp = alt.get("fingerprint")
+        if not fp or fp in tried:
+            continue
+        tried.add(fp)
+        alt_check = budget_check(session, fp, budget)
+        if alt_check is not None and alt_check["within"]:
+            log.info("Crowning: %s crown %s is over the speed budget (%s); following %s %s",
+                     chosen["source"], chosen["fingerprint"], _over_text(check), alt["source"], fp)
+            return {
+                **alt,
+                "policy": policy,
+                "detail": (
+                    f"speed budget — the {chosen['source']} crown is {_over_text(check)}, so "
+                    f"Auto-apply follows the {alt['source']} crown instead ({alt['detail']})"
+                ),
+                "duel_champion": chosen.get("duel_champion"),
+                "speed_budget": {**budget, "checked": True, "within": False, "over": check["over"],
+                                 "replaced": {"fingerprint": chosen["fingerprint"],
+                                              "source": chosen["source"]}},
+            }
+    chosen["detail"] = (
+        f"{chosen['detail']} — over the speed budget ({_over_text(check)}), but no other "
+        "crown fits it either, so this one stands"
+    )
+    chosen["speed_budget"] = {**budget, "checked": True, "within": False, "over": check["over"],
+                              "replaced": None}
+    return chosen
+
+
+def _resolve_policy(session, pooled_best_fp: str | None, policy: str) -> dict:
+    """Resolve the governing crown under one policy, before the speed budget.
 
     Returns ``{policy, fingerprint, source, detail, duel_champion}``:
 
@@ -56,7 +178,6 @@ def resolve(session, pooled_best_fp: str | None) -> dict:
     """
     from . import duel as duel_mod
 
-    policy = active_policy(session)
     # Champion freshness, NOT the rematch cooldown — they used to share a field, and the
     # cooldown is now measured in hours. Automation must not abandon the champion just
     # because the ladder paused for an afternoon.
@@ -209,6 +330,9 @@ __all__ = [
     "active_ranking",
     "rank_field",
     "resolve",
+    "speed_budget",
+    "budget_check",
+    "DEFAULT_SPEED_BUDGET",
 ]
 
 
