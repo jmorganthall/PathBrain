@@ -43,13 +43,14 @@ import ImageIcon from "@mui/icons-material/Image";
 import StackedLineChartIcon from "@mui/icons-material/StackedLineChart";
 
 import { api } from "../api/client";
-import type { OverallCorner, OverallOut, OverallProfile } from "../api/types";
+import type { OverallCorner, OverallOut, OverallProfile, FastestLegs} from "../api/types";
 import { FoldCard, HelpTip } from "../components/Explain";
 import PageHeader from "../components/PageHeader";
 import StatTile from "../components/dashboard/StatTile";
 import { fmtNum } from "../utils/format";
 import { sopsColor } from "../theme";
 import PaperCostLine from "../components/PaperCostLine";
+import FastestGapLine from "../components/FastestGapLine";
 
 const nameOf = (p: { name: string | null; label: string | null; fingerprint: string }) =>
   p.name || p.label || p.fingerprint.slice(0, 8);
@@ -93,7 +94,9 @@ function CornerTile({
   what,
   icon,
   strong,
+  fastest,
 }: {
+  fastest?: FastestLegs | null;
   corner: OverallCorner | null;
   kind: "pooled" | "ring" | "fused";
   title: string;
@@ -133,6 +136,7 @@ function CornerTile({
                   {kind === "fused" &&
                     `fused ${fmtNum(corner.fused, 1)} · ${corner.iterations} iterations + ${corner.rounds} round${corner.rounds === 1 ? "" : "s"}`}
                 </Typography>
+                <FastestGapLine gaps={corner.vs_fastest} fastest={fastest} />
                 <PaperCostLine cost={corner.vs_paper} />
               </>
             ) : (
@@ -635,6 +639,7 @@ export default function Overall() {
                 </Stack>
                 <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
                   <CornerTile
+                    fastest={corners.fastest}
                     corner={corners.pooled}
                     kind="pooled"
                     title="Long-run average"
@@ -642,6 +647,7 @@ export default function Overall() {
                     icon={<EmojiEventsIcon sx={{ color: "warning.main", fontSize: 30 }} />}
                   />
                   <CornerTile
+                    fastest={corners.fastest}
                     corner={corners.ring}
                     kind="ring"
                     title="Head to head"
@@ -649,6 +655,7 @@ export default function Overall() {
                     icon={<MilitaryTechIcon sx={{ color: "info.main", fontSize: 30 }} />}
                   />
                   <CornerTile
+                    fastest={corners.fastest}
                     corner={corners.fused}
                     kind="fused"
                     title="Combined (used)"
@@ -683,6 +690,7 @@ export default function Overall() {
                                 0
                               )} × ${fmtNum(corners.math.runner_up.lcp_ms, 0)} ms)`}
                           </Typography>
+                          <FastestGapLine gaps={corners.math.vs_fastest} fastest={corners.fastest} />
                         </Box>
                       </Stack>
                     </CardContent>
@@ -718,10 +726,54 @@ export default function Overall() {
                               {fmtNum(corners.lcp_first.fcp_gain_ms, 0)} ms of FCP.
                             </Typography>
                           )}
+                          <FastestGapLine gaps={corners.lcp_first.vs_fastest} fastest={corners.fastest} />
+                          <PaperCostLine cost={corners.lcp_first.vs_paper} />
                         </Box>
                       </Stack>
                     </CardContent>
                   </Card>
+                )}
+                {corners.fcp_first && (
+                  <Card variant="outlined" sx={{ mt: 1.5 }}>
+                    <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
+                      <Stack direction="row" spacing={1.25} alignItems="flex-start">
+                        <Box sx={{ flexShrink: 0, mt: 0.25 }}>
+                          <ImageIcon sx={{ color: "info.main", fontSize: 30 }} />
+                        </Box>
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
+                            FCP first · candidate crown
+                            <HelpTip title={`First paint first, then main content: among confident profiles, every one whose median FCP is within ${fmtNum(corners.fcp_first.band_pct, 0)}% of the best FCP qualifies, and the fastest median LCP among them wins. Raw milliseconds, no weights, no smoothness leg. Change the band, or let Auto-apply follow it, from the Auto-apply popover.`} />
+                          </Typography>
+                          <Typography variant="h6" sx={{ lineHeight: 1.2 }} noWrap>
+                            <Link component={RouterLink} to={profileHref(corners.fcp_first.fingerprint)} underline="hover" color="inherit">
+                              {corners.fcp_first.name || corners.fcp_first.label || corners.fcp_first.fingerprint.slice(0, 8)}
+                            </Link>
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                            FCP {fmtNum(corners.fcp_first.fcp_ms, 0)} ms ({lcpBehind(corners.fcp_first.fcp_behind_pct)}) · LCP{" "}
+                            {fmtNum(corners.fcp_first.lcp_ms, 0)} ms, fastest of {corners.fcp_first.qualifiers} within{" "}
+                            {fmtNum(corners.fcp_first.band_pct, 0)}% · {corners.fcp_first.iterations} iterations
+                          </Typography>
+                          {corners.fcp_first.best_fcp.fingerprint !== corners.fcp_first.fingerprint && (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                              Best FCP is {corners.fcp_first.best_fcp.name || corners.fcp_first.best_fcp.label} at{" "}
+                              {fmtNum(corners.fcp_first.best_fcp.fcp_ms, 0)} ms with LCP {fmtNum(corners.fcp_first.best_fcp.lcp_ms, 0)} ms —
+                              this trade gives up {fmtNum(corners.fcp_first.fcp_ms - corners.fcp_first.best_fcp.fcp_ms, 0)} ms of FCP for{" "}
+                              {fmtNum(corners.fcp_first.lcp_gain_ms, 0)} ms of LCP.
+                            </Typography>
+                          )}
+                          <FastestGapLine gaps={corners.fcp_first.vs_fastest} fastest={corners.fastest} />
+                          <PaperCostLine cost={corners.fcp_first.vs_paper} />
+                        </Box>
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                )}
+                {!corners.fcp_first && corners.fcp_first_note && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                    <b>FCP first:</b> {corners.fcp_first_note}
+                  </Typography>
                 )}
                 {!corners.lcp_first && corners.lcp_first_note && (
                   <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>

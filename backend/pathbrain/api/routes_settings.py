@@ -4028,18 +4028,34 @@ def crowns(session: Session = Depends(get_session)) -> dict:
     # What each verdict costs in raw time against the fastest on paper — the price of the
     # experience it was crowned for. Best-effort, like every reading on this card.
     math = _math_crown(session)
-    lcp_first = resolution.get("lcp_first") or _lcp_first_crown(session)
+    lcp_first = resolution.get("lcp_first") or _leg_first(session, "lcp_first")
+    fcp_first = resolution.get("fcp_first") or _leg_first(session, "fcp_first")
     if math:
         try:
             from ..pooled_field import paper_cost
 
             version = ensure_current_methodology(session, get_config(session)).version
-            sides = [s for s in (pooled, duel_out, fused_out, lcp_first) if s and s.get("fingerprint")]
+            sides = [s for s in (pooled, duel_out, fused_out, lcp_first, fcp_first) if s and s.get("fingerprint")]
             cost = paper_cost(session, version, math, [s["fingerprint"] for s in sides])
             for side in sides:
                 side["vs_paper"] = cost.get(side["fingerprint"])
         except Exception:  # noqa: BLE001
             log.warning("Two-crowns: paper cost unavailable", exc_info=True)
+    # And each verdict against the field's fastest FCP and fastest LCP, leg by leg.
+    fastest = None
+    try:
+        from ..pooled_field import fastest_legs, leg_gaps
+
+        cfg_ = get_config(session)
+        version = ensure_current_methodology(session, cfg_).version
+        min_iter = int((cfg_.get("correlation") or {}).get("min_iterations") or 15)
+        fastest = fastest_legs(session, version, min_iter)
+        sides = [s for s in (pooled, duel_out, fused_out, math, lcp_first, fcp_first) if s and s.get("fingerprint")]
+        gaps = leg_gaps(session, version, fastest, [s["fingerprint"] for s in sides])
+        for side in sides:
+            side["vs_fastest"] = gaps.get(side["fingerprint"])
+    except Exception:  # noqa: BLE001
+        log.warning("Two-crowns: leg gaps unavailable", exc_info=True)
 
     last = crown_follower.status().get("last_result") or {}
     return {
@@ -4075,19 +4091,24 @@ def crowns(session: Session = Depends(get_session)) -> dict:
         # The LCP-first crown — the fastest FCP among profiles within the configured band of
         # the best LCP. A candidate for the real crown; never part of `agree`.
         "lcp_first": lcp_first,
+        # Its mirror — the fastest LCP among profiles within the band of the best FCP.
+        "fcp_first": fcp_first,
+        # The field's fastest FCP and fastest LCP and who holds them; every verdict above
+        # carries `vs_fastest`, its gap to each.
+        "fastest": fastest,
     }
 
 
-def _lcp_first_crown(session) -> dict | None:
+def _leg_first(session, kind: str) -> dict | None:
     try:
-        from ..pooled_field import lcp_band_pct, lcp_first_crown
+        from ..pooled_field import band_pct, leg_first_crown
 
         cfg = get_config(session)
         version = ensure_current_methodology(session, cfg).version
         min_iter = int((cfg.get("correlation") or {}).get("min_iterations") or 15)
-        return lcp_first_crown(session, version, min_iter, lcp_band_pct(cfg))
+        return leg_first_crown(session, version, min_iter, kind, band_pct(cfg, kind))
     except Exception:  # noqa: BLE001 — a reference tile can't be why the card fails
-        log.warning("LCP-first crown unavailable", exc_info=True)
+        log.warning("%s crown unavailable", kind, exc_info=True)
         return None
 
 
@@ -4102,6 +4123,27 @@ def _math_crown(session) -> dict | None:
     except Exception:  # noqa: BLE001 — a reference tile can't be why the card fails
         log.warning("math crown unavailable", exc_info=True)
         return None
+
+
+@router.get("/settings/fastest-gaps")
+def fastest_gaps(fp: list[str] = Query(default=[]), session: Session = Depends(get_session)) -> dict:
+    """Any profiles against the field's fastest FCP and fastest LCP, leg by leg — the one
+    reading behind the "vs fastest" line on every view that names a crown but does not
+    already carry it (the Duels champion, the Auto-apply popover). Same arithmetic as the
+    crowns card and the Best profile page (`pooled_field.leg_gaps`). Read off the rollup;
+    best-effort — an unreadable field returns an empty answer, never an error."""
+    wanted = [f for f in dict.fromkeys(fp) if f][:20]
+    try:
+        from ..pooled_field import fastest_legs, leg_gaps
+
+        cfg = get_config(session)
+        version = ensure_current_methodology(session, cfg).version
+        min_iter = int((cfg.get("correlation") or {}).get("min_iterations") or 15)
+        fastest = fastest_legs(session, version, min_iter)
+        return {"fastest": fastest, "gaps": leg_gaps(session, version, fastest, wanted)}
+    except Exception:  # noqa: BLE001
+        log.warning("fastest-gaps unavailable", exc_info=True)
+        return {"fastest": None, "gaps": {}}
 
 
 @router.get("/settings/crown-follow")
@@ -4159,6 +4201,7 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
             # The first-class crowning policy: which verdict the follower acts on.
             "policy": crowning.active_policy(session),
             "lcp_band_pct": _band(session),
+            "fcp_band_pct": _band(session, "fcp_first"),
         },
         "policies": list(crowning.POLICIES),
         # The duel ladder's latest fresh champion (or null) — shown beside the pooled
@@ -4214,17 +4257,19 @@ def crown_follow_update(
                 status_code=400, detail=f"policy must be one of {list(crowning.POLICIES)}"
             )
         updates["policy"] = policy
-    if "lcp_band_pct" in (body or {}):
-        from ..pooled_field import LCP_BAND_RANGE
+    for key in ("lcp_band_pct", "fcp_band_pct"):
+        if key not in (body or {}):
+            continue
+        from ..pooled_field import BAND_RANGE
 
         try:
-            band = float(body["lcp_band_pct"])
+            band = float(body[key])
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="lcp_band_pct must be a number") from None
-        lo, hi = LCP_BAND_RANGE
+            raise HTTPException(status_code=400, detail=f"{key} must be a number") from None
+        lo, hi = BAND_RANGE
         if not (lo <= band <= hi):
-            raise HTTPException(status_code=400, detail=f"lcp_band_pct must be between {lo:g} and {hi:g}")
-        updates["lcp_band_pct"] = band
+            raise HTTPException(status_code=400, detail=f"{key} must be between {lo:g} and {hi:g}")
+        updates[key] = band
     if not updates:
         raise HTTPException(status_code=400, detail="Nothing to update")
 
@@ -4238,14 +4283,15 @@ def crown_follow_update(
             "interval_minutes": float(cfg.get("interval_minutes", 360) or 360),
             "policy": crowning.active_policy(session),
             "lcp_band_pct": _band(session),
+            "fcp_band_pct": _band(session, "fcp_first"),
         }
     }
 
 
-def _band(session) -> float:
-    from ..pooled_field import lcp_band_pct
+def _band(session, kind: str = "lcp_first") -> float:
+    from ..pooled_field import band_pct
 
-    return lcp_band_pct(get_config(session))
+    return band_pct(get_config(session), kind)
 
 
 @router.post("/settings/crown-follow/sync")

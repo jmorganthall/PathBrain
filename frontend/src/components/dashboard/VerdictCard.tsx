@@ -38,6 +38,7 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 
 import { api } from "../../api/client";
+import FastestGapLine from "../FastestGapLine";
 import type { OverallOut, OverallProfile } from "../../api/types";
 import { fmtNum } from "../../utils/format";
 import { sopsColor } from "../../theme";
@@ -104,6 +105,13 @@ export default function VerdictCard() {
   }
 
   const onIt = data.on_firewall === true;
+  // The named profile against the field's fastest FCP and LCP — read off whichever corner
+  // names the same profile (the fused one, normally), so the price of the verdict sits
+  // directly under it.
+  const corners = (data.corners || {}) as OverallOut["corners"] & Record<string, never>;
+  const bestCorner = [corners.fused, corners.pooled, corners.ring].find(
+    (c) => c && c.fingerprint === best.fingerprint
+  );
 
   return (
     <Card sx={{ mb: 2, borderLeft: 4, borderColor: "primary.main" }}>
@@ -129,6 +137,7 @@ export default function VerdictCard() {
                 evidence · {best.iterations} iterations
                 {best.rounds ? ` + ${best.rounds} ring round${best.rounds === 1 ? "" : "s"}` : ", never fought in the ring"}
               </Typography>
+              <FastestGapLine gaps={bestCorner?.vs_fastest} fastest={corners.fastest} />
             </Box>
           </Stack>
 

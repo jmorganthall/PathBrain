@@ -10,6 +10,8 @@
 //
 // The duel never writes the firewall. Acting on a verdict is the crowning policy's job
 // (top-bar "Follow best" → Crowning policy = Duel champion), surfaced here as a banner.
+import FastestGapLine from "../components/FastestGapLine";
+import { useFastestGaps } from "../hooks/useFastestGaps";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -1685,6 +1687,9 @@ function ThreeClaims({
       who: nameOf(crowns?.pooled ?? null),
     },
   ].filter((c) => c.fp && c.who);
+  // Every claim's price against the field's fastest FCP and LCP — a ring verdict that
+  // paints twice as slowly as the fastest profile has to say so where it is claimed.
+  const claimGaps = useFastestGaps(claims.map((c) => c.fp));
   if (claims.length < 2) return null;
 
   const distinct = new Set(claims.map((c) => c.fp));
@@ -1730,6 +1735,18 @@ function ThreeClaims({
           </Typography>
         )}
       </Typography>
+      {claims
+        .filter((c, i, all) => all.findIndex((x) => x.fp === c.fp) === i)
+        .map((c) =>
+          c.fp && claimGaps.gaps[c.fp] ? (
+            <Box key={`gap-${c.key}`} sx={{ display: "flex", gap: 0.75, alignItems: "baseline" }}>
+              <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
+                {claims.filter((x) => x.fp === c.fp).map((x) => x.title).join(" + ")}:
+              </Typography>
+              <FastestGapLine gaps={claimGaps.gaps[c.fp]} fastest={claimGaps.fastest} />
+            </Box>
+          ) : null
+        )}
     </Box>
   );
 }
@@ -2042,6 +2059,9 @@ export default function Duels() {
     setOrder(key === "rank" || key === "name" ? "asc" : "desc");
   };
   const champion = table?.champion ?? null;
+  // How much faster or slower the champion paints than the field's fastest — the price
+  // of a ring win, stated beside it (the same line every crown view carries).
+  const championGaps = useFastestGaps([champion?.fingerprint]);
 
   // The head-to-head grid only makes sense for profiles that have actually met, so it's
   // capped at the top of the table (a full N×N over every profile ever dueled is mostly
@@ -2294,6 +2314,10 @@ export default function Duels() {
                       {champion.decisive ? "" : " · draws only, nothing proven"}
                       {champion.provisional ? " · provisional record" : ""}
                     </Typography>
+                    <FastestGapLine
+                      gaps={championGaps.gaps[champion.fingerprint]}
+                      fastest={championGaps.fastest}
+                    />
                     {/* The two verdicts, one line apart. The belt says who beat whom; the
                         ranking says what a record has demonstrated. They are allowed to
                         disagree, and when they do that IS the finding — so the card states

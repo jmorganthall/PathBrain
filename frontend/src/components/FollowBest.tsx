@@ -4,6 +4,8 @@
 // best profile change?"), and the recent crown-change ledger. Tracking (the ledger)
 // runs whether or not the switch is on — the switch only arms the firewall write.
 import { useCallback, useEffect, useState } from "react";
+import FastestGapLine from "./FastestGapLine";
+import { useFastestGaps } from "../hooks/useFastestGaps";
 import { Link as RouterLink } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -59,26 +61,41 @@ export default function FollowBest() {
   const enabled = info?.config.enabled ?? false;
   const policy = info?.config.policy ?? "fused";
 
-  const band = info?.config.lcp_band_pct ?? 10;
-  const [bandDraft, setBandDraft] = useState<string>(String(band));
-  useEffect(() => setBandDraft(String(band)), [band]);
+  // The two leg-first crowns' bands — one stated trade each, edited the same way.
+  const bands = {
+    lcp: info?.config.lcp_band_pct ?? 10,
+    fcp: info?.config.fcp_band_pct ?? 10,
+  };
+  const [bandDraft, setBandDraft] = useState<{ lcp: string; fcp: string }>({
+    lcp: String(bands.lcp),
+    fcp: String(bands.fcp),
+  });
+  useEffect(
+    () => setBandDraft({ lcp: String(bands.lcp), fcp: String(bands.fcp) }),
+    [bands.lcp, bands.fcp],
+  );
 
-  const saveBand = () => {
-    const v = Number(bandDraft);
-    if (!Number.isFinite(v) || v === band) {
-      setBandDraft(String(band));
+  const saveBand = (leg: "lcp" | "fcp") => {
+    const v = Number(bandDraft[leg]);
+    const current = bands[leg];
+    const reset = () => setBandDraft((d) => ({ ...d, [leg]: String(current) }));
+    if (!Number.isFinite(v) || v === current) {
+      reset();
       return;
     }
     if (v < 0 || v > 50) {
-      setSnack({ msg: "The LCP band must be between 0 and 50%.", sev: "error" });
-      setBandDraft(String(band));
+      setSnack({ msg: `The ${leg.toUpperCase()} band must be between 0 and 50%.`, sev: "error" });
+      reset();
       return;
     }
     setBusy(true);
     api
-      .crownFollowUpdate({ lcp_band_pct: v })
+      .crownFollowUpdate(leg === "lcp" ? { lcp_band_pct: v } : { fcp_band_pct: v })
       .then(() => {
-        setSnack({ msg: `LCP-first band set to ${v}% of the best LCP.`, sev: "info" });
+        setSnack({
+          msg: `${leg.toUpperCase()}-first band set to ${v}% of the best ${leg.toUpperCase()}.`,
+          sev: "info",
+        });
         load();
       })
       .catch((e) => setSnack({ msg: e instanceof Error ? e.message : "Could not save the band.", sev: "error" }))
@@ -102,6 +119,8 @@ export default function FollowBest() {
                   ? "Auto-apply now follows the fastest profile on paper — lowest median FCP × LCP (falls back to the pooled best when none qualifies)."
                   : next === "lcp_first"
                     ? "Auto-apply now follows LCP first — the fastest FCP among profiles within the band of the best LCP (falls back to the pooled best when none qualifies)."
+                  : next === "fcp_first"
+                    ? "Auto-apply now follows FCP first — the fastest LCP among profiles within the band of the best FCP (falls back to the pooled best when none qualifies)."
                   : "Auto-apply now follows the pooled Overall — the all-time best by average.",
           sev: "info",
         });
@@ -168,6 +187,9 @@ export default function FollowBest() {
     last?.governing_name || last?.governing_label || last?.crown_name || followedFp;
   const followedLabel = last?.governing_label ?? last?.crown_label ?? null;
   const followedSource = last?.governing_source ?? "fused";
+  // What the followed profile (and the duel champion) give up against the field's fastest
+  // FCP and LCP — the trade automation is making, stated where it is chosen.
+  const legGaps = useFastestGaps([followedFp, info?.duel_champion?.fingerprint]);
   const pooledDiffers = !!(
     last?.crown_fingerprint &&
     followedFp &&
@@ -313,27 +335,39 @@ export default function FollowBest() {
                   disabled={busy}
                 />
               </Tooltip>
+              <Tooltip title="First paint first, then main content: every confident profile whose median FCP is within the band of the best FCP qualifies, and the fastest median LCP among them is followed. Raw milliseconds, no weights. Falls back to the pooled crown when no confident profile has both readings.">
+                <Chip
+                  size="small"
+                  label="FCP first"
+                  color={policy === "fcp_first" ? "warning" : "default"}
+                  variant={policy === "fcp_first" ? "filled" : "outlined"}
+                  onClick={() => setPolicy("fcp_first")}
+                  disabled={busy}
+                />
+              </Tooltip>
             </Stack>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
-              <Typography variant="caption" color="text.secondary">
-                LCP-first band: give up up to
-              </Typography>
-              <TextField
-                size="small"
-                type="number"
-                value={bandDraft}
-                onChange={(e) => setBandDraft(e.target.value)}
-                onBlur={saveBand}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") saveBand();
-                }}
-                disabled={busy}
-                inputProps={{ min: 0, max: 50, step: 1, style: { width: 44, padding: "2px 6px", fontSize: 12 } }}
-              />
-              <Typography variant="caption" color="text.secondary">
-                % of the best LCP for a faster FCP
-              </Typography>
-            </Stack>
+            {(["lcp", "fcp"] as const).map((leg) => (
+              <Stack key={leg} direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
+                <Typography variant="caption" color="text.secondary">
+                  {leg.toUpperCase()}-first band: give up up to
+                </Typography>
+                <TextField
+                  size="small"
+                  type="number"
+                  value={bandDraft[leg]}
+                  onChange={(e) => setBandDraft((d) => ({ ...d, [leg]: e.target.value }))}
+                  onBlur={() => saveBand(leg)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveBand(leg);
+                  }}
+                  disabled={busy}
+                  inputProps={{ min: 0, max: 50, step: 1, style: { width: 44, padding: "2px 6px", fontSize: 12 } }}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  {leg === "lcp" ? "% of the best LCP for a faster FCP" : "% of the best FCP for a faster LCP"}
+                </Typography>
+              </Stack>
+            ))}
             {info?.duel_champion ? (
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
                 Duel champion:{" "}
@@ -347,6 +381,10 @@ export default function FollowBest() {
                 {policy === "duel" && !info.duel_champion.decisive
                   ? " — not decisive, follower falls back to the pooled crown"
                   : ""}
+                <FastestGapLine
+                  gaps={legGaps.gaps[info.duel_champion.fingerprint]}
+                  fastest={legGaps.fastest}
+                />
               </Typography>
             ) : (
               <Typography variant="caption" color="text.disabled" sx={{ display: "block", mt: 0.5 }}>
@@ -373,7 +411,9 @@ export default function FollowBest() {
                     ? "Following · fastest on paper (FCP × LCP)"
                     : followedSource === "lcp_first"
                       ? "Following · LCP first"
-                      : policy === "lcp_first"
+                      : followedSource === "fcp_first"
+                        ? "Following · FCP first"
+                      : policy === "lcp_first" || policy === "fcp_first"
                         ? "Following · pooled crown (no confident FCP and LCP reading yet)"
                     : policy === "math"
                       ? "Following · pooled crown (no confident FCP × LCP reading yet)"
@@ -404,6 +444,7 @@ export default function FollowBest() {
                     <Chip size="small" label="firewall elsewhere" color="warning" variant="outlined" />
                   )}
                 </Typography>
+                <FastestGapLine gaps={followedFp ? legGaps.gaps[followedFp] : null} fastest={legGaps.fastest} />
                 {/* The settings that name stands for — kept, demoted, clamped. A summary is
                     what you read once you already know which profile you are looking at. */}
                 {followedName !== followedLabel && followedLabel && (

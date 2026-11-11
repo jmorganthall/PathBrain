@@ -813,7 +813,8 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     live_settings = _live_settings() if live else None
     ring_rating = ratings.get(ring_best_fp) or {}
     math_best, math_note = _math_corner(session, version, min_iterations)
-    lcp_first, lcp_first_note = _lcp_first_corner(session, cfg, version, min_iterations)
+    lcp_first, lcp_first_note = _leg_first_corner(session, cfg, version, min_iterations, "lcp_first")
+    fcp_first, fcp_first_note = _leg_first_corner(session, cfg, version, min_iterations, "fcp_first")
     out["corners"] = {
         "pooled": None if pooled_best is None else _corner(pooled_best, "pooled"),
         "ring": None if ring_best is None else {
@@ -836,12 +837,17 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
         # of `agree`.
         "lcp_first": lcp_first,
         "lcp_first_note": lcp_first_note,
+        # Its mirror: the fastest LCP among profiles within the configured band of the best
+        # FCP. Shown beside the records the same way; never part of `agree`.
+        "fcp_first": fcp_first,
+        "fcp_first_note": fcp_first_note,
         "agree": bool(
             best is not None and pooled_best is not None and ring_best is not None
             and best["fingerprint"] == pooled_best["fingerprint"] == ring_best["fingerprint"]
         ),
     }
     _attach_paper_cost(session, version, out["corners"])
+    _attach_leg_gaps(session, version, min_iterations, out["corners"])
 
     if best is None:
         out["verdict"] = (
@@ -926,21 +932,47 @@ def _math_corner(session, version: str, min_iterations: int) -> tuple[dict | Non
     return got, None
 
 
-def _lcp_first_corner(session, cfg: dict, version: str, min_iterations: int) -> tuple[dict | None, str | None]:
-    """`pooled_field.lcp_first_crown`, best-effort, and never silent when missing."""
+def _leg_first_corner(
+    session, cfg: dict, version: str, min_iterations: int, kind: str,
+) -> tuple[dict | None, str | None]:
+    """`pooled_field.leg_first_crown` (LCP first or FCP first), best-effort, and never
+    silent when missing."""
+    title = "LCP-first" if kind == "lcp_first" else "FCP-first"
     try:
-        from .pooled_field import lcp_band_pct, lcp_first_crown
+        from .pooled_field import band_pct, leg_first_crown
 
-        got = lcp_first_crown(session, version, min_iterations, lcp_band_pct(cfg))
+        got = leg_first_crown(session, version, min_iterations, kind, band_pct(cfg, kind))
     except Exception:  # noqa: BLE001
-        log.warning("LCP-first crown unavailable", exc_info=True)
-        return None, "The LCP-first reading failed to compute; the server log has the error."
+        log.warning("%s crown unavailable", title, exc_info=True)
+        return None, f"The {title} reading failed to compute; the server log has the error."
     if got is None:
         return None, (
             f"No profile with at least {min_iterations} iterations under {version} has both "
-            "an FCP and an LCP median yet, so there is no LCP-first crown to name."
+            f"an FCP and an LCP median yet, so there is no {title} crown to name."
         )
     return got, None
+
+
+#: Every corner that names a profile, in the order the page shows them.
+CORNER_KINDS = ("pooled", "ring", "fused", "math", "lcp_first", "fcp_first")
+
+
+def _attach_leg_gaps(session, version: str, min_iterations: int, corners: dict) -> None:
+    """Each corner against the field's fastest FCP and fastest LCP, leg by leg
+    (`pooled_field.leg_gaps`), plus who holds those two records. Best-effort."""
+    try:
+        from .pooled_field import fastest_legs, leg_gaps
+
+        fastest = fastest_legs(session, version, min_iterations)
+        corners["fastest"] = fastest
+        if not fastest:
+            return
+        sides = [k for k in CORNER_KINDS if corners.get(k)]
+        gaps = leg_gaps(session, version, fastest, [corners[k]["fingerprint"] for k in sides])
+        for k in sides:
+            corners[k]["vs_fastest"] = gaps.get(corners[k]["fingerprint"])
+    except Exception:  # noqa: BLE001
+        log.warning("leg gaps unavailable", exc_info=True)
 
 
 def _attach_paper_cost(session, version: str, corners: dict) -> None:
@@ -953,7 +985,7 @@ def _attach_paper_cost(session, version: str, corners: dict) -> None:
     try:
         from .pooled_field import paper_cost
 
-        sides = [k for k in ("pooled", "ring", "fused", "lcp_first") if corners.get(k)]
+        sides = [k for k in ("pooled", "ring", "fused", "lcp_first", "fcp_first") if corners.get(k)]
         cost = paper_cost(session, version, math, [corners[k]["fingerprint"] for k in sides])
         for k in sides:
             corners[k]["vs_paper"] = cost.get(corners[k]["fingerprint"])

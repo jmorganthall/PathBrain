@@ -29,8 +29,10 @@ log = get_logger("crowning")
 #: profile with the lowest median FCP × median LCP in raw ms) — opt-in, never the default.
 #: ``"lcp_first"`` follows the LCP-first crown (`pooled_field.lcp_first_crown`: the fastest
 #: FCP among profiles within `crown_follow.lcp_band_pct` of the best LCP) — opt-in for now,
-#: written as the candidate to become the real crown.
-POLICIES = ("fused", "pooled", "duel", "math", "lcp_first")
+#: written as the candidate to become the real crown. ``"fcp_first"`` is its mirror (the
+#: fastest LCP among profiles within `crown_follow.fcp_band_pct` of the best FCP), opt-in.
+#: Both run the one `pooled_field.leg_first_crown`.
+POLICIES = ("fused", "pooled", "duel", "math", "lcp_first", "fcp_first")
 DEFAULT_POLICY = "fused"
 
 
@@ -125,30 +127,36 @@ def resolve(session, pooled_best_fp: str | None) -> dict:
             "math": None,
         }
 
-    if policy == "lcp_first":
+    if policy in ("lcp_first", "fcp_first"):
+        from . import pooled_field
         from .methodology import ensure_current_methodology
-        from .pooled_field import lcp_band_pct, lcp_first_crown
+        from .pooled_field import LEG_FIRST, band_pct
 
+        spec = LEG_FIRST[policy]
+        lead, then = spec["lead"], spec["then"]
         lf = None
         try:
             cfg = get_config(session)
             version = ensure_current_methodology(session, cfg).version
             min_iter = int((cfg.get("correlation") or {}).get("min_iterations") or 15)
-            lf = lcp_first_crown(session, version, min_iter, lcp_band_pct(cfg))
+            # Read by name (`lcp_first_crown` / `fcp_first_crown`), the two public entry
+            # points onto the one `leg_first_crown` rule.
+            lf = getattr(pooled_field, f"{policy}_crown")(session, version, min_iter, band_pct(cfg, policy))
         except Exception:  # noqa: BLE001 — a failed read falls back, it never stops the follower
-            log.warning("Crowning: the LCP-first crown could not be computed", exc_info=True)
+            log.warning("Crowning: the %s crown could not be computed", policy, exc_info=True)
         if lf and lf.get("fingerprint"):
+            best = lf[f"best_{lead}"]
             return {
                 "policy": policy,
                 "fingerprint": lf["fingerprint"],
-                "source": "lcp_first",
+                "source": policy,
                 "detail": (
-                    f"LCP first — LCP {lf['lcp_ms']:.0f} ms (best {lf['best_lcp']['lcp_ms']:.0f}, "
-                    f"within {lf['band_pct']:g}%), fastest FCP {lf['fcp_ms']:.0f} ms of "
-                    f"{lf['qualifiers']} qualifying"
+                    f"{lead.upper()} first — {lead.upper()} {lf[f'{lead}_ms']:.0f} ms "
+                    f"(best {best[f'{lead}_ms']:.0f}, within {lf['band_pct']:g}%), fastest "
+                    f"{then.upper()} {lf[f'{then}_ms']:.0f} ms of {lf['qualifiers']} qualifying"
                 ),
                 "duel_champion": champion,
-                "lcp_first": lf,
+                policy: lf,
             }
         return {
             "policy": policy,
@@ -156,7 +164,7 @@ def resolve(session, pooled_best_fp: str | None) -> dict:
             "source": "pooled",
             "detail": "no confident profile has both FCP and LCP medians yet — falling back to the pooled crown",
             "duel_champion": champion,
-            "lcp_first": None,
+            policy: None,
         }
 
     if policy == "duel":

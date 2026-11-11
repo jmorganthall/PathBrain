@@ -1,5 +1,7 @@
 // Small typed API client for the PathBrain backend. Uses plain fetch.
 import type {
+  FastestLegs,
+  LegGaps,
   ProfileConditions,
   AxisSeriesResponse,
   BaselineConfig,
@@ -549,7 +551,17 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ name }) }
     ),
   crownFollow: () => request<CrownFollowStatus>("/settings/crown-follow"),
-  crownFollowUpdate: (body: { enabled?: boolean; interval_minutes?: number; policy?: CrowningPolicy; lcp_band_pct?: number }) =>
+  fastestGaps: (fps: string[]) =>
+    request<{ fastest: FastestLegs | null; gaps: Record<string, LegGaps> }>(
+      `/settings/fastest-gaps?${fps.map((f) => `fp=${encodeURIComponent(f)}`).join("&")}`
+    ),
+  crownFollowUpdate: (body: {
+    enabled?: boolean;
+    interval_minutes?: number;
+    policy?: CrowningPolicy;
+    lcp_band_pct?: number;
+    fcp_band_pct?: number;
+  }) =>
     request<{ config: CrownFollowConfig }>("/settings/crown-follow", {
       method: "POST",
       body: JSON.stringify(body),

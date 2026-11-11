@@ -339,6 +339,10 @@ DEFAULT_CONFIG: dict = {
         # when its median LCP is within this many percent of the best, and the fastest FCP
         # among the qualifiers is crowned. The owner's stated trade: ~10% of LCP for FCP.
         "lcp_band_pct": 10.0,
+        # The FCP-first crown's band (`pooled_field.fcp_first_crown`), the mirror trade: a
+        # profile qualifies when its median FCP is within this many percent of the best, and
+        # the fastest LCP among the qualifiers is crowned.
+        "fcp_band_pct": 10.0,
         # Which verdict ORDERS the field: "ring" (default) or "pooled" (the old behaviour).
         #
         # A duel round is a paired, interleaved comparison under shared weather — a
