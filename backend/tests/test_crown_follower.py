@@ -380,12 +380,12 @@ def test_api_status_config_and_toggle(client):
     res = client.get("/api/settings/crown-follow")
     assert res.status_code == 200
     body = res.json()
-    assert body["config"] == {"enabled": False, "interval_minutes": 360.0, "policy": "fused", "lcp_band_pct": 10.0}
+    assert body["config"] == {"enabled": False, "interval_minutes": 360.0, "policy": "fused", "lcp_band_pct": 10.0, "fcp_band_pct": 10.0, "speed_budget": {"enabled": True, "lcp_pct": 20.0, "fcp_pct": 25.0}}
     assert "stats" in body and "events" in body and "status" in body
 
     res = client.post("/api/settings/crown-follow", json={"enabled": True, "interval_minutes": 10})
     assert res.status_code == 200
-    assert res.json()["config"] == {"enabled": True, "interval_minutes": 10.0, "policy": "fused", "lcp_band_pct": 10.0}
+    assert res.json()["config"] == {"enabled": True, "interval_minutes": 10.0, "policy": "fused", "lcp_band_pct": 10.0, "fcp_band_pct": 10.0, "speed_budget": {"enabled": True, "lcp_pct": 20.0, "fcp_pct": 25.0}}
     assert client.get("/api/settings/crown-follow").json()["config"]["enabled"] is True
 
     assert client.post("/api/settings/crown-follow", json={}).status_code == 400
@@ -928,3 +928,46 @@ def test_the_lcp_first_policy_and_band_are_settable_but_not_the_default(client):
         assert client.post("/api/settings/crown-follow", json={"lcp_band_pct": 80}).status_code == 400
     finally:
         client.post("/api/settings/crown-follow", json={"policy": "fused", "lcp_band_pct": 10})
+
+
+def test_under_the_fcp_first_policy_the_follower_writes_the_fcp_first_crown(monkeypatch):
+    """"FCP first" is the mirror policy: chosen, it is what the follower writes, read through
+    its own band, and the detail states the trade in numbers."""
+    from pathbrain import pooled_field
+
+    fast = _off_crown_target(2000)
+    pooled = _off_crown_target(3000)
+    fast_fp, pooled_fp = fingerprint(fast), fingerprint(pooled)
+    monkeypatch.setattr(
+        crown_follower,
+        "_compute_field",
+        lambda s: _field_for(_profile(pooled, overall=95.0), _profile(fast, overall=80.0), best=pooled_fp),
+    )
+    seen: dict = {}
+
+    def _stub(session, version, min_iterations, band_pct=10.0):
+        seen["band"] = band_pct
+        return {
+            "fingerprint": fast_fp, "name": None, "label": "fast", "kind": "fcp_first",
+            "lead": "fcp", "then": "lcp",
+            "fcp_ms": 320.0, "lcp_ms": 600.0, "iterations": 40, "band_pct": band_pct,
+            "fcp_limit_ms": 330.0, "fcp_behind_pct": 6.7, "lcp_gain_ms": 100.0,
+            "best_fcp": {"fingerprint": pooled_fp, "name": None, "label": "p",
+                         "lcp_ms": 700.0, "fcp_ms": 300.0, "iterations": 40},
+            "qualifiers": 3, "profiles": 4, "qualifying": [],
+        }
+
+    monkeypatch.setattr(pooled_field, "fcp_first_crown", _stub)
+    with session_scope() as session:
+        save_config(session, {"crown_follow": {"policy": "fcp_first", "fcp_band_pct": 15}})
+    _enable()
+    try:
+        result = crown_follower.check()
+        assert result["governing_source"] == "fcp_first"
+        assert result["governing_fingerprint"] == fast_fp
+        assert result["applied"] is True
+        assert seen["band"] == 15.0
+        assert "FCP 320 ms (best 300, within 15%)" in result["governing_detail"]
+    finally:
+        with session_scope() as session:
+            save_config(session, {"crown_follow": {"policy": "fused", "fcp_band_pct": 10}})

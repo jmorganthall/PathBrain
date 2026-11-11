@@ -126,6 +126,8 @@ def graded_field(session, version: str) -> list[dict]:
 __all__ = [
     "graded_field", "paper_cost", "pooled_se", "quartile_grade", "se", "math_crown",
     "lcp_first_crown", "lcp_band_pct", "DEFAULT_LCP_BAND_PCT",
+    "fcp_first_crown", "fcp_band_pct", "DEFAULT_FCP_BAND_PCT",
+    "leg_first_crown", "band_pct", "LEG_FIRST", "fastest_legs", "leg_gaps",
 ]
 
 
@@ -210,66 +212,112 @@ def math_crown(session, version: str, min_iterations: int) -> dict | None:
 #: in percent. The owner's own statement of the trade: "we would sacrifice maybe 10% of best
 #: LCP to get to FCP faster".
 DEFAULT_LCP_BAND_PCT = 10.0
+#: The mirror trade for the FCP-first crown: give up this much of the best first paint to
+#: reach main content sooner. Same default, its own dial.
+DEFAULT_FCP_BAND_PCT = 10.0
 #: The band is a stated trade, not a free dial: below 0 nothing qualifies but the best, and
-#: past 50% "LCP first" stops meaning anything.
+#: past 50% "LCP first" stops meaning anything. One range for both leg-first crowns.
 LCP_BAND_RANGE = (0.0, 50.0)
-#: Qualifiers listed on the response, best FCP first.
+BAND_RANGE = LCP_BAND_RANGE
+#: Qualifiers listed on the response, best on the second leg first.
 LCP_FIRST_LISTED = 8
+
+#: The two leg-first crowns: which leg sets the bar, and which one is raced inside it.
+#: One rule, two orders — never two implementations.
+LEG_FIRST = {
+    "lcp_first": {"lead": "lcp", "then": "fcp", "config": "lcp_band_pct",
+                  "default": DEFAULT_LCP_BAND_PCT},
+    "fcp_first": {"lead": "fcp", "then": "lcp", "config": "fcp_band_pct",
+                  "default": DEFAULT_FCP_BAND_PCT},
+}
+
+
+def band_pct(cfg: dict | None, kind: str) -> float:
+    """A leg-first crown's configured band (`crown_follow.<lead>_band_pct`), clamped."""
+    spec = LEG_FIRST[kind]
+    raw = ((cfg or {}).get("crown_follow") or {}).get(spec["config"], spec["default"])
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        v = spec["default"]
+    lo, hi = BAND_RANGE
+    return min(hi, max(lo, v))
 
 
 def lcp_band_pct(cfg: dict | None) -> float:
     """The configured band (`crown_follow.lcp_band_pct`), clamped to `LCP_BAND_RANGE`."""
-    raw = ((cfg or {}).get("crown_follow") or {}).get("lcp_band_pct", DEFAULT_LCP_BAND_PCT)
-    try:
-        v = float(raw)
-    except (TypeError, ValueError):
-        v = DEFAULT_LCP_BAND_PCT
-    lo, hi = LCP_BAND_RANGE
-    return min(hi, max(lo, v))
+    return band_pct(cfg, "lcp_first")
 
 
-def lcp_first_crown(
-    session, version: str, min_iterations: int, band_pct: float = DEFAULT_LCP_BAND_PCT,
+def fcp_band_pct(cfg: dict | None) -> float:
+    """The configured band (`crown_follow.fcp_band_pct`), clamped to `BAND_RANGE`."""
+    return band_pct(cfg, "fcp_first")
+
+
+def leg_first_crown(
+    session, version: str, min_iterations: int, kind: str, band_pct: float | None = None,
 ) -> dict | None:
-    """The LCP-first crown: main content first, then first paint, as the owner ranks them.
+    """A leg-first crown: one leg sets the bar, the other is raced inside it.
 
     Among confident profiles (``iterations ≥ min_iterations``, the unshaped baseline left
-    out), find the best median LCP in raw milliseconds; every profile whose median LCP is
-    within ``band_pct`` percent of it **qualifies**; of the qualifiers the one with the
-    lowest median FCP is crowned (ties → lower LCP, then more iterations). No perception
-    curve, no weights, no smoothness leg, no ring — a stated preference applied to two
-    measured numbers, so every crowning reads as a sentence with its numbers in it.
+    out), find the best median of the **lead** leg in raw milliseconds; every profile whose
+    lead median is within ``band_pct`` percent of it **qualifies**; of the qualifiers the
+    one with the lowest median on the **then** leg is crowned (ties → lower lead, then more
+    iterations). ``lcp_first`` leads with LCP and races FCP; ``fcp_first`` leads with FCP
+    and races LCP. No perception curve, no weights, no smoothness leg, no ring — a stated
+    preference applied to two measured numbers, so every crowning reads as a sentence with
+    its numbers in it.
 
-    Returns ``{fingerprint, name, label, kind: "lcp_first", fcp_ms, lcp_ms, iterations,
-    best_lcp: {fingerprint, name, lcp_ms, fcp_ms}, band_pct, lcp_limit_ms, lcp_behind_pct,
-    qualifiers, profiles, qualifying: [...]}`` or None when no confident profile has both
-    readings. Read off the rollup, like the math crown."""
+    Returns ``{fingerprint, name, label, kind, fcp_ms, lcp_ms, iterations, band_pct,
+    best_<lead>: {...}, <lead>_limit_ms, <lead>_behind_pct, <then>_gain_ms, qualifiers,
+    profiles, qualifying: [...]}`` or None when no confident profile has both readings."""
+    spec = LEG_FIRST[kind]
+    lead, then = spec["lead"], spec["then"]
     rows = _raw_rows(session, version, min_iterations)
     if not rows:
         return None
-    band = max(0.0, float(band_pct))
-    best_lcp = min(rows, key=lambda r: (r["_lcp"], -r["iterations"], r["fingerprint"]))
-    limit = best_lcp["_lcp"] * (1.0 + band / 100.0)
-    qualifying = [r for r in rows if r["_lcp"] <= limit + 1e-9]
-    qualifying.sort(key=lambda r: (r["_fcp"], r["_lcp"], -r["iterations"], r["fingerprint"]))
+    band = max(0.0, float(spec["default"] if band_pct is None else band_pct))
+    lk, tk = f"_{lead}", f"_{then}"
+    best = min(rows, key=lambda r: (r[lk], -r["iterations"], r["fingerprint"]))
+    limit = best[lk] * (1.0 + band / 100.0)
+    qualifying = [r for r in rows if r[lk] <= limit + 1e-9]
+    qualifying.sort(key=lambda r: (r[tk], r[lk], -r["iterations"], r["fingerprint"]))
     win = qualifying[0]
     out = _public(win)
     out.update({
-        "kind": "lcp_first",
+        "kind": kind,
+        "lead": lead,
+        "then": then,
         "band_pct": round(band, 1),
-        "lcp_limit_ms": round(limit, 1),
-        "lcp_behind_pct": round((win["_lcp"] / best_lcp["_lcp"] - 1.0) * 100.0, 1),
-        "best_lcp": {
-            "fingerprint": best_lcp["fingerprint"], "name": best_lcp["name"],
-            "label": best_lcp["label"], "lcp_ms": best_lcp["lcp_ms"],
-            "fcp_ms": best_lcp["fcp_ms"], "iterations": best_lcp["iterations"],
+        f"{lead}_limit_ms": round(limit, 1),
+        f"{lead}_behind_pct": round((win[lk] / best[lk] - 1.0) * 100.0, 1),
+        f"best_{lead}": {
+            "fingerprint": best["fingerprint"], "name": best["name"],
+            "label": best["label"], "lcp_ms": best["lcp_ms"],
+            "fcp_ms": best["fcp_ms"], "iterations": best["iterations"],
         },
-        "fcp_gain_ms": round(best_lcp["_fcp"] - win["_fcp"], 1),
+        f"{then}_gain_ms": round(best[tk] - win[tk], 1),
         "qualifiers": len(qualifying),
         "profiles": len(rows),
         "qualifying": [_public(r) for r in qualifying[:LCP_FIRST_LISTED]],
     })
     return out
+
+
+def lcp_first_crown(
+    session, version: str, min_iterations: int, band_pct: float = DEFAULT_LCP_BAND_PCT,
+) -> dict | None:
+    """The LCP-first crown: main content first, then first paint, as the owner ranks them
+    (`leg_first_crown` with LCP setting the bar and FCP raced inside it)."""
+    return leg_first_crown(session, version, min_iterations, "lcp_first", band_pct)
+
+
+def fcp_first_crown(
+    session, version: str, min_iterations: int, band_pct: float = DEFAULT_FCP_BAND_PCT,
+) -> dict | None:
+    """The FCP-first crown: first paint first, then main content — the mirror of
+    `lcp_first_crown` (`leg_first_crown` with FCP setting the bar and LCP raced inside it)."""
+    return leg_first_crown(session, version, min_iterations, "fcp_first", band_pct)
 
 
 #: The tie bar for "within noise": the same 2σ the crown's own `crown_tie_sigma` uses.
@@ -347,4 +395,70 @@ def paper_cost(
         )
         row["within_noise"] = not clear_any
         out[fp] = row
+    return out
+
+
+def fastest_legs(session, version: str, min_iterations: int) -> dict | None:
+    """The field's fastest median FCP and fastest median LCP, each with the profile that
+    holds it — usually two different profiles. Confident, shaped profiles only (the same
+    read as the math and leg-first crowns). None when no profile has both medians."""
+    rows = _raw_rows(session, version, min_iterations)
+    if not rows:
+        return None
+    out: dict = {"profiles": len(rows)}
+    for m in ("fcp", "lcp"):
+        r = min(rows, key=lambda x: (x[f"_{m}"], -x["iterations"], x["fingerprint"]))
+        out[m] = {"fingerprint": r["fingerprint"], "name": r["name"], "label": r["label"],
+                  "ms": r[f"{m}_ms"], "iterations": r["iterations"]}
+    return out
+
+
+def leg_gaps(
+    session, version: str, fastest: dict | None, fingerprints: list[str],
+    sigma: float = PAPER_TIE_SIGMA,
+) -> dict[str, dict]:
+    """How much faster or slower each profile is than the field's fastest FCP and fastest
+    LCP, leg by leg.
+
+    `paper_cost` prices a profile against ONE reference, the best FCP × LCP product, which
+    is rarely the fastest on either leg alone. This answers the plainer question every crown
+    view should be able to state: per leg, this profile's median, the milliseconds and
+    percent behind the field's fastest median on that leg (positive = slower; 0 for the
+    holder), and whether the gap clears ``sigma`` × the pooled SE of the two medians — a gap
+    inside that is noise, never a cost. Read off the rollup; a profile without the leg's
+    median gets no entry for that leg.
+    """
+    from . import profile_aggregates
+
+    if not fastest:
+        return {}
+    refs = {m: (fastest.get(m) or {}).get("fingerprint") for m in ("fcp", "lcp")}
+    wanted = [fp for fp in dict.fromkeys([*refs.values(), *fingerprints]) if fp]
+    rolled = profile_aggregates.aggregates(session, version, wanted)
+    ref = {m: _leg((rolled.get(refs[m]) or {}).get("raw") or {}, m) if refs[m] else (None, None)
+           for m in ("fcp", "lcp")}
+    out: dict[str, dict] = {}
+    for fp in dict.fromkeys(fingerprints):
+        if not fp:
+            continue
+        raw = (rolled.get(fp) or {}).get("raw") or {}
+        row: dict = {}
+        for m in ("fcp", "lcp"):
+            med, se = _leg(raw, m)
+            rmed, rse = ref[m]
+            if med is None or rmed is None:
+                continue
+            delta = med - rmed
+            bar = None if se is None or rse is None else sigma * (se ** 2 + rse ** 2) ** 0.5
+            row[m] = {
+                "ms": round(med, 1),
+                "fastest_ms": round(rmed, 1),
+                "delta_ms": round(delta, 1),
+                "pct": round(100.0 * delta / rmed, 1),
+                "bar_ms": None if bar is None else round(bar, 1),
+                "clear": bar is not None and abs(delta) > bar,
+                "is_fastest": fp == refs[m],
+            }
+        if row:
+            out[fp] = row
     return out

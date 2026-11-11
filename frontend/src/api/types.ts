@@ -1806,7 +1806,50 @@ export type AiStreamEvent =
 
 // ── Crown follower ("Follow best") ─────────────────────────────────────────────────
 
-export type CrowningPolicy = "fused" | "pooled" | "duel" | "math" | "lcp_first";
+export type CrowningPolicy = "fused" | "pooled" | "duel" | "math" | "lcp_first" | "fcp_first";
+
+// One crown against the field's fastest median FCP and fastest median LCP, leg by leg
+// (`pooled_field.leg_gaps`). Positive delta = slower. `clear` = the gap is past twice the
+// noise of the two medians; otherwise it is noise, never a cost.
+// The speed budget (`crowning.speed_budget`): Auto-apply will not follow a crown clearly
+// slower than the field's fastest LCP / FCP by more than these percentages.
+export interface SpeedBudget {
+  enabled: boolean;
+  lcp_pct: number;
+  fcp_pct: number;
+}
+export interface SpeedBudgetCheck extends SpeedBudget {
+  checked: boolean;
+  within?: boolean;
+  over?: { leg: "lcp" | "fcp"; pct: number; limit_pct: number; delta_ms: number }[];
+  replaced?: { fingerprint: string; source: string } | null;
+}
+
+export interface LegGap {
+  ms: number;
+  fastest_ms: number;
+  delta_ms: number;
+  pct: number;
+  bar_ms: number | null;
+  clear: boolean;
+  is_fastest: boolean;
+}
+export interface LegGaps {
+  fcp?: LegGap;
+  lcp?: LegGap;
+}
+export interface FastestLegHolder {
+  fingerprint: string;
+  name: string | null;
+  label: string | null;
+  ms: number;
+  iterations: number;
+}
+export interface FastestLegs {
+  profiles: number;
+  fcp: FastestLegHolder;
+  lcp: FastestLegHolder;
+}
 
 export interface CrownFollowConfig {
   enabled: boolean;
@@ -1818,6 +1861,9 @@ export interface CrownFollowConfig {
   policy: CrowningPolicy;
   // The LCP-first crown's band: a profile qualifies within this many percent of the best LCP.
   lcp_band_pct?: number;
+  // The FCP-first crown's band: a profile qualifies within this many percent of the best FCP.
+  fcp_band_pct?: number;
+  speed_budget?: SpeedBudget;
 }
 
 // The duel ladder's latest fresh champion (crowning candidate under policy "duel").
@@ -1851,7 +1897,7 @@ export interface CrownCheckResult {
   governing_fingerprint?: string | null;
   governing_label?: string | null;
   governing_name?: string | null;
-  governing_source?: "fused" | "pooled" | "duel" | "math" | "lcp_first";
+  governing_source?: "fused" | "pooled" | "duel" | "math" | "lcp_first" | "fcp_first";
   governing_detail?: string;
   duel_champion?: DuelChampion | null;
   live_fingerprint: string | null;
@@ -1915,6 +1961,7 @@ export interface CrownFollowStatus {
 
 export interface PooledCrown {
   vs_paper?: PaperCost | null;
+  vs_fastest?: LegGaps | null;
   fingerprint: string;
   label: string | null;
   name?: string | null;
@@ -1952,6 +1999,7 @@ export interface DuelCrown {
   overall_now?: number | null;
   overall_iterations?: number;
   vs_paper?: PaperCost | null;
+  vs_fastest?: LegGaps | null;
 }
 
 // The mathematical crown: the confident profile with the lowest median FCP × median LCP in
@@ -1985,6 +2033,7 @@ export interface MathCrown {
   iterations: number;
   profiles: number;
   runner_up: { fingerprint: string; name: string | null; label: string | null; fcp_ms: number; lcp_ms: number } | null;
+  vs_fastest?: LegGaps | null;
 }
 
 // The LCP-first crown: the fastest median FCP among confident profiles whose median LCP is
@@ -2009,11 +2058,30 @@ export interface LcpFirstCrown extends LcpFirstProfile {
   profiles: number;
   qualifying: LcpFirstProfile[];
   vs_paper?: PaperCost | null;
+  vs_fastest?: LegGaps | null;
+}
+
+// The mirror: the fastest median LCP among confident profiles whose median FCP is within
+// `band_pct` of the best. Opt-in under Auto-apply.
+export interface FcpFirstCrown extends LcpFirstProfile {
+  kind: "fcp_first";
+  band_pct: number;
+  fcp_limit_ms: number;
+  fcp_behind_pct: number;
+  lcp_gain_ms: number;
+  best_fcp: LcpFirstProfile;
+  qualifiers: number;
+  profiles: number;
+  qualifying: LcpFirstProfile[];
+  vs_paper?: PaperCost | null;
+  vs_fastest?: LegGaps | null;
 }
 
 export interface CrownsOut {
   math?: MathCrown | null;
   lcp_first?: LcpFirstCrown | null;
+  fcp_first?: FcpFirstCrown | null;
+  fastest?: FastestLegs | null;
   policy: CrowningPolicy;
   pooled: PooledCrown | null;
   duel: DuelCrown | null;
@@ -2022,7 +2090,12 @@ export interface CrownsOut {
   // Champion's live pooled Overall minus the crown's — how far apart the two verdicts
   // sit on the one scale they share. Null until both have a live Overall.
   overall_delta?: number | null;
-  governing: { source: "fused" | "pooled" | "duel" | "math" | "lcp_first"; fingerprint: string | null; detail: string };
+  governing: {
+    source: "fused" | "pooled" | "duel" | "math" | "lcp_first" | "fcp_first";
+    fingerprint: string | null;
+    detail: string;
+    speed_budget?: SpeedBudgetCheck | null;
+  };
   agree: boolean;
   follow_enabled: boolean;
   on_crown: boolean | null;
@@ -4491,6 +4564,7 @@ export interface ProfileSettingsView {
 
 export interface FusedCrown {
   vs_paper?: PaperCost | null;
+  vs_fastest?: LegGaps | null;
   fingerprint: string;
   name: string | null;
   label: string | null;
@@ -4549,6 +4623,7 @@ export interface OverallCorner {
   ledger_rounds?: number;
   raceable?: boolean | null;
   vs_paper?: PaperCost | null;
+  vs_fastest?: LegGaps | null;
 }
 
 export interface OverallSlack {
@@ -4604,6 +4679,7 @@ export interface OverallOut {
   rounds_to_settle: number | null;
   vs_sqm_off: number | null;
   sqm_off_overall: number | null;
+  speed_budget?: SpeedBudgetCheck | null;
   live: OverallProfile | null;
   on_firewall: boolean | null;
   confident_profiles: number;
@@ -4618,6 +4694,9 @@ export interface OverallOut {
     math_note?: string | null;
     lcp_first?: LcpFirstCrown | null;
     lcp_first_note?: string | null;
+    fcp_first?: FcpFirstCrown | null;
+    fcp_first_note?: string | null;
+    fastest?: FastestLegs | null;
     agree: boolean;
   } | Record<string, never>;
   movers: OverallProfile[];

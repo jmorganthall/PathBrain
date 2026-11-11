@@ -14,6 +14,7 @@
 // acts on, which is the crowning policy's job (top-bar Follow best).
 import { useCallback, useEffect, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
+import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
@@ -29,9 +30,10 @@ import SpeedIcon from "@mui/icons-material/Speed";
 import ImageIcon from "@mui/icons-material/Image";
 
 import { api } from "../api/client";
-import type { CrownsOut, PaperCost } from "../api/types";
+import type { CrownsOut, PaperCost, FastestLegs, LegGaps} from "../api/types";
 import { fmtDateTime, fmtNum } from "../utils/format";
 import PaperCostLine from "./PaperCostLine";
+import FastestGapLine from "./FastestGapLine";
 
 const fmtReign = (hours: number | null | undefined) => {
   if (hours == null) return "—";
@@ -53,8 +55,7 @@ function CrownTile({
   muted,
   onOpen,
   href,
-  cost,
-}: {
+  cost, gaps, fastest}: {
   icon: React.ReactNode;
   kind: string;
   what: string;
@@ -66,6 +67,8 @@ function CrownTile({
   onOpen?: () => void;
   href: string;
   cost?: PaperCost | null;
+  gaps?: LegGaps | null;
+  fastest?: FastestLegs | null;
 }) {
   const navigate = useNavigate();
   return (
@@ -113,6 +116,7 @@ function CrownTile({
           <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
             {subtitle}
           </Typography>
+          <FastestGapLine gaps={gaps} fastest={fastest} />
           <PaperCostLine cost={cost} />
           {!!detail && (
             <Typography
@@ -192,6 +196,19 @@ export default function TwoCrowns() {
           )}
         </Stack>
 
+        {/* The speed budget passed the policy's choice over: say which crown, by how much,
+            and what Auto-apply follows instead — the trade made visible, not implied. */}
+        {governing.speed_budget?.replaced && (
+          <Alert severity="warning" variant="outlined" sx={{ mb: 1.5, py: 0 }}>
+            Over the speed budget: {governing.detail}.
+          </Alert>
+        )}
+        {governing.speed_budget?.within === false && !governing.speed_budget?.replaced && (
+          <Alert severity="warning" variant="outlined" sx={{ mb: 1.5, py: 0 }}>
+            {governing.detail}.
+          </Alert>
+        )}
+
         <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
           {pooled ? (
             <CrownTile
@@ -207,6 +224,8 @@ export default function TwoCrowns() {
                 .join(" · ")}
               governing={governing.source === "pooled"}
               cost={pooled.vs_paper}
+              gaps={pooled.vs_fastest}
+              fastest={data.fastest}
               href={`/profiles/${encodeURIComponent(pooled.fingerprint)}`}
             />
           ) : (
@@ -247,6 +266,8 @@ export default function TwoCrowns() {
               }
               governing={governing.source === "duel"}
               cost={duel.vs_paper}
+              gaps={duel.vs_fastest}
+              fastest={data.fastest}
               muted={!duel.fresh}
               href="/duels"
               onOpen={() => navigate("/duels")}
@@ -281,6 +302,8 @@ export default function TwoCrowns() {
                   : `${data.math.iterations} iterations`
               }
               governing={governing.source === "math"}
+              gaps={data.math.vs_fastest}
+              fastest={data.fastest}
               href={`/profiles/${encodeURIComponent(data.math.fingerprint)}`}
             />
           )}
@@ -300,7 +323,30 @@ export default function TwoCrowns() {
                   : `best LCP and fastest FCP of ${data.lcp_first.qualifiers} qualifying`
               }
               governing={governing.source === "lcp_first"}
+              gaps={data.lcp_first.vs_fastest}
+              fastest={data.fastest}
               href={`/profiles/${encodeURIComponent(data.lcp_first.fingerprint)}`}
+            />
+          )}
+          {data.fcp_first && (
+            <CrownTile
+              icon={<ImageIcon sx={{ color: "info.main", fontSize: 34 }} />}
+              kind="FCP first · candidate"
+              what={`First paint first, then main content: the fastest median LCP among confident profiles whose median FCP is within ${fmtNum(data.fcp_first.band_pct, 0)}% of the best. Raw milliseconds, no weights.`}
+              title={data.fcp_first.name || data.fcp_first.label || data.fcp_first.fingerprint}
+              subtitle={`FCP ${fmtNum(data.fcp_first.fcp_ms, 0)} ms · LCP ${fmtNum(data.fcp_first.lcp_ms, 0)} ms`}
+              detail={
+                data.fcp_first.fcp_behind_pct > 0
+                  ? `${fmtNum(data.fcp_first.fcp_behind_pct, 1)}% behind the best FCP for ${fmtNum(
+                      data.fcp_first.lcp_gain_ms,
+                      0
+                    )} ms faster LCP · ${data.fcp_first.qualifiers} qualified`
+                  : `best FCP and fastest LCP of ${data.fcp_first.qualifiers} qualifying`
+              }
+              governing={governing.source === "fcp_first"}
+              gaps={data.fcp_first.vs_fastest}
+              fastest={data.fastest}
+              href={`/profiles/${encodeURIComponent(data.fcp_first.fingerprint)}`}
             />
           )}
         </Stack>
@@ -314,6 +360,7 @@ export default function TwoCrowns() {
                   The fit names <b>{data.fused.name || data.fused.label || data.fused.fingerprint.slice(0, 8)}</b>
                   {" "}(Overall {fmtNum(data.fused.fused, 1)} ± {fmtNum(data.fused.fused_se, 2)}
                   {data.fused.tied_count ? `, ${data.fused.tied_count} tied` : ""}).{" "}
+                  <FastestGapLine gaps={data.fused.vs_fastest} fastest={data.fastest} />
                   <PaperCostLine cost={data.fused.vs_paper} />
                 </>
               ) : (

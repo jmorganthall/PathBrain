@@ -435,3 +435,71 @@ def test_the_overall_corners_carry_their_price_against_the_fastest_on_paper():
             vp = corners[k]["vs_paper"]
             assert vp is not None and {"fcp_pct", "lcp_pct", "product_pct", "within_noise"} <= set(vp)
             assert vp["is_math"] == (corners[k]["fingerprint"] == corners["math"]["fingerprint"])
+
+
+def test_the_fcp_first_crown_is_the_fastest_lcp_within_the_band_of_the_best_fcp():
+    """The mirror rule: the best FCP sets the bar, every profile within the band of it
+    qualifies, and the fastest LCP among the qualifiers is crowned."""
+    _add_raw("best_fcp", fcp=300.0, lcp=700.0)
+    _add_raw("in_band", fcp=320.0, lcp=600.0)       # 6.7% behind on FCP — qualifies, faster LCP
+    _add_raw("edge", fcp=330.0, lcp=650.0)          # exactly 10% — qualifies
+    _add_raw("fast_lcp", fcp=400.0, lcp=500.0)      # 33% behind on FCP — out
+    _add_raw("thin", fcp=100.0, lcp=300.0, iterations=2, runs=1)
+    _add_raw(SQM_OFF_FINGERPRINT, fcp=90.0, lcp=300.0)
+    with session_scope() as s:
+        crown = pooled_field.fcp_first_crown(s, VERSION, 15, 10.0)
+    assert crown is not None and crown["fingerprint"] == _fp("in_band")
+    assert crown["kind"] == "fcp_first" and crown["lead"] == "fcp" and crown["then"] == "lcp"
+    assert crown["best_fcp"]["fingerprint"] == _fp("best_fcp")
+    assert crown["fcp_limit_ms"] == 330.0 and crown["fcp_behind_pct"] == 6.7
+    assert crown["lcp_gain_ms"] == 100.0
+    assert crown["qualifiers"] == 3 and crown["profiles"] == 4
+    with session_scope() as s:
+        assert pooled_field.fcp_first_crown(s, VERSION, 15, 0.0)["fingerprint"] == _fp("best_fcp")
+        assert pooled_field.fcp_first_crown(s, VERSION, 15, 40.0)["fingerprint"] == _fp("fast_lcp")
+
+
+def test_both_leg_first_crowns_are_one_rule_read_in_two_orders():
+    """`lcp_first_crown` and `fcp_first_crown` are the one `leg_first_crown`; swapping the
+    two legs of every profile swaps which crown names which profile."""
+    _add_raw("a", fcp=300.0, lcp=700.0)
+    _add_raw("b", fcp=320.0, lcp=600.0)
+    _add_raw("c", fcp=500.0, lcp=500.0)
+    with session_scope() as s:
+        lf = pooled_field.leg_first_crown(s, VERSION, 15, "lcp_first", 10.0)
+        ff = pooled_field.leg_first_crown(s, VERSION, 15, "fcp_first", 10.0)
+        assert lf == pooled_field.lcp_first_crown(s, VERSION, 15, 10.0)
+        assert ff == pooled_field.fcp_first_crown(s, VERSION, 15, 10.0)
+
+
+def test_leg_gaps_price_any_profile_against_the_fastest_fcp_and_the_fastest_lcp():
+    """Each leg against its own record holder — usually two different profiles — with the
+    same noise rule as the paper cost: a gap inside 2× the pooled SE is not a cost."""
+    _add_raw_runs("fast_fcp", [200.0, 201.0, 199.0], [800.0, 801.0, 799.0])
+    _add_raw_runs("fast_lcp", [400.0, 401.0, 399.0], [500.0, 501.0, 499.0])
+    _add_raw_runs("slow", [400.0, 401.0, 399.0], [1000.0, 1001.0, 999.0])
+    with session_scope() as s:
+        fastest = pooled_field.fastest_legs(s, VERSION, 15)
+        assert fastest["fcp"]["fingerprint"] == _fp("fast_fcp") and fastest["fcp"]["ms"] == 200.0
+        assert fastest["lcp"]["fingerprint"] == _fp("fast_lcp") and fastest["lcp"]["ms"] == 500.0
+        gaps = pooled_field.leg_gaps(s, VERSION, fastest, [_fp("slow"), _fp("fast_lcp")])
+    slow = gaps[_fp("slow")]
+    assert slow["lcp"]["delta_ms"] == 500.0 and slow["lcp"]["pct"] == 100.0 and slow["lcp"]["clear"]
+    assert slow["fcp"]["delta_ms"] == 200.0 and slow["fcp"]["pct"] == 100.0
+    assert not slow["lcp"]["is_fastest"]
+    assert gaps[_fp("fast_lcp")]["lcp"]["is_fastest"] and gaps[_fp("fast_lcp")]["lcp"]["delta_ms"] == 0.0
+
+
+def test_every_corner_on_the_overall_page_carries_its_gap_to_the_fastest_legs(client):
+    _add_raw_runs("fast_fcp", [200.0, 201.0, 199.0], [800.0, 801.0, 799.0])
+    _add_raw_runs("fast_lcp", [400.0, 401.0, 399.0], [500.0, 501.0, 499.0])
+    corners = client.get("/api/overall").json()["corners"]
+    assert corners["fastest"]["lcp"]["fingerprint"] == _fp("fast_lcp")
+    for kind in ("math", "lcp_first", "fcp_first"):
+        assert corners[kind] is not None, kind
+        assert set(corners[kind]["vs_fastest"]) == {"fcp", "lcp"}, kind
+    gaps = client.get("/api/settings/fastest-gaps", params={"fp": [_fp("fast_fcp")]}).json()
+    assert gaps["gaps"][_fp("fast_fcp")]["fcp"]["is_fastest"] is True
+    crowns = client.get("/api/settings/crowns").json()
+    assert crowns["fcp_first"]["fingerprint"] == _fp("fast_fcp")
+    assert crowns["fastest"]["fcp"]["fingerprint"] == _fp("fast_fcp")

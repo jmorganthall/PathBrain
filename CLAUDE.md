@@ -3142,7 +3142,7 @@ LLM-based. See `README.md` for the product overview.
     default: the one ranking fitted over both records, `overall_ranking.crown`, with the
     pooled crown as the fallback when the fit names nobody), **"pooled"** (the all-time
     Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
-    `duel.latest_champion`, with pooled fallback) or **"math"** (opt-in: the fastest-on-paper profile, lowest median FCP × LCP, `pooled_field.math_crown`, pooled fallback) or **"lcp_first"** (opt-in candidate: the fastest FCP within `lcp_band_pct` of the best LCP, `pooled_field.lcp_first_crown`, pooled fallback) — the last two are the fused fit's corners,
+    `duel.latest_champion`, with pooled fallback) or **"math"** (opt-in: the fastest-on-paper profile, lowest median FCP × LCP, `pooled_field.math_crown`, pooled fallback) or **"lcp_first"** (opt-in candidate: the fastest FCP within `lcp_band_pct` of the best LCP, `pooled_field.lcp_first_crown`, pooled fallback) or its mirror **"fcp_first"** (the fastest LCP within `fcp_band_pct` of the best FCP) — the last three are references beside the fused fit,
     kept selectable so the three can be compared on one field. One policy, one write path:
     engines (race/duel) only measure and adjudicate; `crowning.resolve` selects; the **crown
     follower** is the only component that writes the firewall. The pooled crown *statistic*
@@ -3389,6 +3389,50 @@ LLM-based. See `README.md` for the product overview.
     this has been watched long enough to replace it.
     `test_the_lcp_first_crown_is_the_fastest_fcp_within_the_band_of_the_best_lcp`,
     `test_under_the_lcp_first_policy_the_follower_writes_the_lcp_first_crown`.
+    **FCP first is its mirror, and both are one rule** (`leg_first_crown`, `LEG_FIRST`,
+    `fcp_first_crown`, `crown_follow.fcp_band_pct` default 10; `corners.fcp_first` on `GET
+    /api/overall`, `fcp_first` on `GET /settings/crowns`, the **FCP first · candidate** tile,
+    the opt-in policy `crown_follow.policy = "fcp_first"` and its own band field in the
+    Auto-apply popover): the best median FCP sets the bar, every confident profile within the
+    band qualifies, and the fastest median LCP among them is crowned. `lcp_first_crown` and
+    `fcp_first_crown` are the two named entry points onto the one function (the policy calls
+    them by name), so the two crowns cannot drift into two implementations.
+    `test_the_fcp_first_crown_is_the_fastest_lcp_within_the_band_of_the_best_fcp`,
+    `test_both_leg_first_crowns_are_one_rule_read_in_two_orders`,
+    `test_under_the_fcp_first_policy_the_follower_writes_the_fcp_first_crown`.
+    **Every crown says how much speed it gives up, leg by leg, wherever it is named**
+    (`fastest_legs`, `leg_gaps`, `vs_fastest` on every corner of `GET /api/overall` and every
+    verdict of `GET /settings/crowns` plus `fastest` beside them, `GET
+    /api/settings/fastest-gaps?fp=` for views that carry neither, `components/FastestGapLine`
+    + `hooks/useFastestGaps`). The point of an experience-graded crown is "give up a little
+    top-end speed for a smoother, more pleasing load"; somewhere along the way the ring's
+    champion came to paint about twice as slowly as the fastest profile, and no screen said
+    so. `paper_cost` prices against ONE reference (the best FCP × LCP product), which is
+    rarely the fastest on either leg; this prices each leg against its own record holder —
+    the field's fastest median LCP and fastest median FCP among confident profiles, usually
+    two profiles — in milliseconds and percent, with the same 2σ noise rule (a gap inside it
+    reads "within noise", never as a cost). The line is on the Dashboard's verdict card and
+    crowns card, every corner and candidate on the Best profile page, the Duels champion and
+    claims-to-best strip, and the followed profile and duel champion in the Auto-apply
+    popover; it turns amber past 0% and red at 25% or more on either leg.
+    `test_leg_gaps_price_any_profile_against_the_fastest_fcp_and_the_fastest_lcp`,
+    `test_every_corner_on_the_overall_page_carries_its_gap_to_the_fastest_legs`.
+    **And Auto-apply holds the line: the speed budget** (`crowning.speed_budget` /
+    `budget_check` / `BUDGET_FALLBACK_ORDER`, `crown_follow.speed_budget` = `{enabled: true,
+    lcp_pct: 20, fcp_pct: 25}`, the switch and two fields in the Auto-apply popover,
+    `governing.speed_budget` on `GET /settings/crowns`, `speed_budget` on `GET /api/overall`).
+    Showing the price was half of it; the owner's terms were that "very pleasing but slow" is
+    not an acceptable trade. `crowning.resolve` now resolves the policy's crown
+    (`_resolve_policy`, the old body) and checks it against the fastest legs: a crown whose
+    LCP is **clearly** (past the 2σ noise rule) more than `lcp_pct` slower than the fastest
+    median LCP, or whose FCP is more than `fcp_pct` slower than the fastest median FCP, is
+    passed over for the first crown in `BUDGET_FALLBACK_ORDER` (LCP first, fused, FCP first,
+    pooled, duel, fastest on paper) that fits, and `detail` names the crown passed over, by how
+    much, and what is followed instead. When none fits, the policy's choice stands and says
+    so; a crown whose gaps cannot be read is never refused. The policy keeps its name — the
+    budget changes only which profile is written, never how a write is made. The Dashboard's
+    crowns card shows the pass-over as a warning and the verdict card marks a #1 over budget.
+    `test_speed_budget`.
     **This module was `verdict.py`, and `GET /api/settings/verdict` is RETIRED.** It carried a
     second "which profile should I run?" answer — the pooled argmax among confident profiles,
     a tie set against `crown_tie_sigma` × the pooled SE, the margin over SQM off and a

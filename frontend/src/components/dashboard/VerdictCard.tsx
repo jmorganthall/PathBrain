@@ -38,6 +38,7 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 
 import { api } from "../../api/client";
+import FastestGapLine from "../FastestGapLine";
 import type { OverallOut, OverallProfile } from "../../api/types";
 import { fmtNum } from "../../utils/format";
 import { sopsColor } from "../../theme";
@@ -104,6 +105,13 @@ export default function VerdictCard() {
   }
 
   const onIt = data.on_firewall === true;
+  // The named profile against the field's fastest FCP and LCP — read off whichever corner
+  // names the same profile (the fused one, normally), so the price of the verdict sits
+  // directly under it.
+  const corners = (data.corners || {}) as OverallOut["corners"] & Record<string, never>;
+  const bestCorner = [corners.fused, corners.pooled, corners.ring].find(
+    (c) => c && c.fingerprint === best.fingerprint
+  );
 
   return (
     <Card sx={{ mb: 2, borderLeft: 4, borderColor: "primary.main" }}>
@@ -129,6 +137,16 @@ export default function VerdictCard() {
                 evidence · {best.iterations} iterations
                 {best.rounds ? ` + ${best.rounds} ring round${best.rounds === 1 ? "" : "s"}` : ", never fought in the ring"}
               </Typography>
+              <FastestGapLine gaps={bestCorner?.vs_fastest} fastest={corners.fastest} />
+              {data.speed_budget?.within === false && (
+                <Typography variant="caption" color="warning.main" sx={{ display: "block" }}>
+                  Over the speed budget (
+                  {(data.speed_budget.over ?? [])
+                    .map((o) => `${o.leg.toUpperCase()} +${o.pct.toFixed(0)}%, limit ${o.limit_pct}%`)
+                    .join(" · ")}
+                  ) — Auto-apply follows the first crown within it instead; the crowns card names it.
+                </Typography>
+              )}
             </Box>
           </Stack>
 
