@@ -449,7 +449,7 @@ export default function RunDetail() {
               <HelpTip title="These are the readings the shaper cannot move: the browser's own context setup and close, its timing reads, and render to first paint. They are compared against what this machine does when it is well (the 25th percentile of recent history). When they run far slow, the host is inside FCP and LCP through the render phase — so the run measures the machine, not the link." />
             </Stack>
             {run.instrument_health_why && (
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                 {run.instrument_health_why}
               </Typography>
             )}
@@ -587,7 +587,7 @@ export default function RunDetail() {
                       <TableCell>{s.methodology_version}</TableCell>
                       <TableCell>{s.is_at_measure ? "At measure" : "At present"}</TableCell>
                       <TableCell>
-                        <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
+                        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                           {Object.entries(s.axis_scores).length === 0 && "—"}
                           {Object.entries(s.axis_scores).map(([axis, val]) => (
                             <Box component="span" key={axis}>
@@ -631,7 +631,7 @@ export default function RunDetail() {
       <Typography variant="h6" sx={{ mb: 0.5 }}>
         Plugin Results
       </Typography>
-      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
         Each value is the <strong>median across this run's iterations</strong> (± stdev) — hover a
         value for mean/range, or a metric name for what it means.
         {baseline && baseline.run_count > 0 && (
@@ -843,7 +843,7 @@ export default function RunDetail() {
                           </Box>
                         </Box>
                       ))}
-                      <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
+                      <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
                         {shots.map((s) => (
                           <Box key={s.url} sx={{ width: 160 }}>
                             <Box

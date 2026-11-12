@@ -436,7 +436,7 @@ export default function ShotgunSweep() {
             </Stack>
 
             {running && (
-              <Box sx={{ mb: 1.5 }}>
+              <Box sx={{ mb: 2 }}>
                 <LinearProgress
                   variant="determinate"
                   value={sweep.total_variants ? (sweep.completed_variants / sweep.total_variants) * 100 : 0}

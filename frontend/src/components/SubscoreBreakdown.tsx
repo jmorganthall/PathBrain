@@ -75,7 +75,7 @@ export default function SubscoreBreakdown({
   }
 
   return (
-    <Stack spacing={1.5}>
+    <Stack spacing={2}>
       {keys.map((k) => {
         const value = score.subscores[k];
         const weight = score.weights_used[k];

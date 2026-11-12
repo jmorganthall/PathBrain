@@ -16,10 +16,11 @@ export default function EmptyState({ title, description, action, icon }: Props) 
       sx={{
         display: "flex",
         flexDirection: "column",
-        alignItems: "center",
-        textAlign: "center",
-        py: 8,
-        gap: 1.5,
+        // UI6/SP4: one left edge for the icon, title, text and action.
+        alignItems: "flex-start",
+        textAlign: "left",
+        py: 6,
+        gap: 2,
         color: "text.secondary",
       }}
     >
@@ -30,11 +31,11 @@ export default function EmptyState({ title, description, action, icon }: Props) 
         {title}
       </Typography>
       {description && (
-        <Typography variant="body2" sx={{ maxWidth: 420 }}>
+        <Typography variant="body2" sx={{ maxWidth: "65ch" }}>
           {description}
         </Typography>
       )}
-      {action && <Box sx={{ mt: 2 }}>{action}</Box>}
+      {action && <Box sx={{ mt: 1 }}>{action}</Box>}
     </Box>
   );
 }

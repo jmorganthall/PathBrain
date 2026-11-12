@@ -49,7 +49,7 @@ export default function PageHeader({
         spacing={1}
         useFlexGap
       >
-        <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0 }}>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
           {icon && (
             <Box sx={{ display: "flex", color: "primary.main", "& svg": { fontSize: 28 } }} aria-hidden>
               {icon}
@@ -66,7 +66,7 @@ export default function PageHeader({
         )}
       </Stack>
       {lead && (
-        <Blurb variant="body2" more={more} sx={{ mt: 0.5, mb: 0, maxWidth: 880 }}>
+        <Blurb variant="body2" more={more} sx={{ mt: 0.5, mb: 0, maxWidth: "75ch" }}>
           {lead}
         </Blurb>
       )}

@@ -54,6 +54,11 @@ export function HelpTip({
           borderRadius: "50%",
           outline: "none",
           "&:focus-visible": { boxShadow: (t) => `0 0 0 2px ${t.palette.primary.main}` },
+          // MO1: a 44px tap area on touch screens, without moving the text around it.
+          position: "relative",
+          "@media (pointer: coarse)": {
+            "&::after": { content: '""', position: "absolute", width: 44, height: 44, left: "50%", top: "50%", transform: "translate(-50%, -50%)" },
+          },
           ...sx,
         }}
       >
@@ -81,7 +86,7 @@ export function Blurb({
   const [open, setOpen] = useState(false);
   const id = useId();
   return (
-    <Box sx={{ mb: 1.5, ...sx }}>
+    <Box sx={{ mb: 2, ...sx }}>
       <Typography variant={variant} color="text.secondary" component="div">
         {children}
         {more != null && (
@@ -90,7 +95,7 @@ export function Blurb({
             <Link
               component="button"
               type="button"
-              underline="hover"
+             
               aria-expanded={open}
               aria-controls={id}
               onClick={() => setOpen((v) => !v)}
@@ -108,7 +113,7 @@ export function Blurb({
             variant={variant}
             color="text.secondary"
             component="div"
-            sx={{ mt: 0.75, pl: 1.5, borderLeft: 2, borderColor: "divider" }}
+            sx={{ mt: 1, pl: 2, borderLeft: 2, borderColor: "divider" }}
           >
             {more}
           </Typography>
@@ -164,7 +169,7 @@ export function FoldCard({
         onKeyDown={onKey}
         sx={{
           px: 2,
-          py: 1.5,
+          py: 2,
           display: "flex",
           flexWrap: "wrap",
           alignItems: "center",

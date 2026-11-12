@@ -36,7 +36,7 @@ export default function RingCard({ standings, limit = 5 }: Props) {
   const span = hi - lo || 1;
 
   return (
-    <Stack spacing={1.25}>
+    <Stack spacing={1}>
       {champ && (
         <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
           <MilitaryTechIcon sx={{ color: "info.main" }} />
@@ -45,7 +45,7 @@ export default function RingCard({ standings, limit = 5 }: Props) {
               <Link
                 component={RouterLink}
                 to={`/profiles/${encodeURIComponent(champ.fingerprint)}`}
-                underline="hover"
+               
                 color="inherit"
               >
                 {champ.name || champ.label || champ.fingerprint}
@@ -77,7 +77,7 @@ export default function RingCard({ standings, limit = 5 }: Props) {
               <Link
                 component={RouterLink}
                 to={`/profiles/${encodeURIComponent(r.fingerprint)}`}
-                underline="hover"
+               
                 color="inherit"
                 variant="body2"
                 noWrap
@@ -116,7 +116,7 @@ export default function RingCard({ standings, limit = 5 }: Props) {
                     width: `${Math.max(4, Math.min(100, pct))}%`,
                     height: "100%",
                     borderRadius: 3,
-                    bgcolor: "#7c4dff",
+                    bgcolor: "#a88bff",
                     opacity: isChamp ? 1 : 0.7,
                   }}
                 />

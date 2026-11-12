@@ -299,7 +299,7 @@ function JobRow({
         ...(indent ? { borderLeft: 2, borderColor: "divider", ml: 2 } : {}),
       }}
     >
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.25 }}>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
         <StatusIcon status={job.status} />
         <Typography
           variant={indent ? "caption" : "body2"}
@@ -309,7 +309,7 @@ function JobRow({
           sx={{ fontWeight: indent ? 500 : 600, flexGrow: 1, wordBreak: "break-word" }}
         >
           {job.href ? (
-            <Link component={RouterLink} to={job.href} color="inherit" underline="hover">
+            <Link component={RouterLink} to={job.href} color="inherit">
               {job.label}
             </Link>
           ) : (
@@ -332,7 +332,7 @@ function JobRow({
               size="small"
               onClick={() => onCancel(job)}
               aria-label={indent ? "cancel this chunk" : "cancel this job"}
-              sx={{ p: 0.25 }}
+              sx={{ p: 0.5 }}
             >
               <CloseIcon fontSize="inherit" />
             </IconButton>
@@ -347,7 +347,7 @@ function JobRow({
         />
       )}
       {(job.message || job.error || job.status === "running") && (
-        <Stack direction="row" spacing={0.75} alignItems="baseline" flexWrap="wrap" useFlexGap>
+        <Stack direction="row" spacing={1} alignItems="baseline" flexWrap="wrap" useFlexGap>
           <Typography variant="caption" color={job.error ? "error.main" : "text.secondary"}>
             {job.error ?? job.message}
             {determinate && job.status === "running" ? ` · ${Math.round(pct)}%` : ""}
@@ -473,7 +473,7 @@ export default function JobStatus() {
         transformOrigin={{ vertical: "top", horizontal: "right" }}
         slotProps={{ paper: { sx: { width: 380, maxHeight: 480, overflow: "auto" } } }}
       >
-        <Typography variant="subtitle2" sx={{ px: 2, pt: 1.5, pb: 0.5 }}>
+        <Typography variant="subtitle2" sx={{ px: 2, pt: 2, pb: 0.5 }}>
           Jobs{running > 0 ? ` — ${running} running` : ""}
         </Typography>
         <Divider />

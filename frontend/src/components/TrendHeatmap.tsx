@@ -114,7 +114,7 @@ export default function TrendHeatmap({ data, nowWeekday, nowHour }: Props) {
         ))}
       </Box>
 
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }}>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 2 }}>
         <Typography variant="caption" color="text.secondary">
           worse
         </Typography>

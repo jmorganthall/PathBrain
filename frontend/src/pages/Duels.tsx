@@ -414,7 +414,7 @@ const CARD_REASON: Record<string, string> = {
 
 const PRESET_GRID = {
   display: "grid",
-  gap: 1.5,
+  gap: 2,
   gridTemplateColumns: {
     xs: "1fr",
     sm: "repeat(2, minmax(0, 1fr))",
@@ -424,7 +424,7 @@ const PRESET_GRID = {
 
 const FIELD_GRID = {
   display: "grid",
-  gap: 1.5,
+  gap: 2,
   gridTemplateColumns: {
     xs: "1fr",
     sm: "repeat(2, minmax(0, 1fr))",
@@ -652,7 +652,7 @@ function SideDot({ color, right = false }: { color: string; right?: boolean }) {
         borderRadius: "50%",
         bgcolor: color,
         verticalAlign: "middle",
-        ...(right ? { ml: 0.75 } : { mr: 0.75 }),
+        ...(right ? { ml: 1 } : { mr: 1 }),
       }}
     />
   );
@@ -834,7 +834,7 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
   );
 
   return (
-    <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 1, border: 1, borderColor: "divider" }}>
+    <Box sx={{ mt: 2, p: 2, borderRadius: 1, border: 1, borderColor: "divider" }}>
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
         <Chip size="small" label={`Match ${live.bout}`} />
         <Typography variant="caption" color="text.secondary" sx={{ flexGrow: 1 }}>
@@ -867,7 +867,7 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
         <Box sx={{ width: `${share}%`, bgcolor: CHALLENGER_COLOR }} />
       </Box>
 
-      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
         {summary}
       </Typography>
 
@@ -883,7 +883,7 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
             "Those rounds still count exactly as before — this flags which margins to trust less."
           }
         >
-          <Typography variant="caption" color="warning.main" sx={{ display: "block", mt: 0.25 }}>
+          <Typography variant="caption" color="warning.main" sx={{ display: "block", mt: 0.5 }}>
             {live.weather!.shifted_rounds} round{live.weather!.shifted_rounds === 1 ? "" : "s"} fought
             across a weather shift (max {live.weather!.max_shift ?? "—"} severity pts between legs).
           </Typography>
@@ -1018,7 +1018,7 @@ function MatchScoreboard({ live }: { live: DuelLive }) {
               </Tooltip>
             ))}
           </Box>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.25 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
             Round by round: <SideDot color={CHALLENGER_COLOR} />
             {chaName} up · <SideDot color={HOLDER_COLOR} />
             {incName} down — taller = won by more.
@@ -1362,7 +1362,7 @@ function RingStanding({
   };
   const measured = readings.filter((r) => r.margin != null);
   return (
-    <Box sx={{ mt: 1.5, mb: 1 }}>
+    <Box sx={{ mt: 2, mb: 1 }}>
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
         <Typography variant="body2" sx={{ fontWeight: 700 }}>
           Where things stand
@@ -1497,7 +1497,7 @@ function RingStanding({
           )}
         </Typography>
       )}
-      <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+      <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 3 }}>
         {readings.map((r) => (
           <Typography
             component="li"
@@ -1521,7 +1521,7 @@ function ExploreShareLine({ explore }: { explore: DuelExplore }) {
   const min = (s: number) => Math.round(s / 60);
   const bets = explore.bets ?? [];
   return (
-    <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.75 }}>
+    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
       <Chip
         size="small"
         variant="outlined"
@@ -1564,7 +1564,7 @@ function RingBoard({ live }: { live: DuelLive }) {
     return (
       <Box>
         {live.legs && live.legs.length > 0 && (
-          <Box sx={{ mt: 1.5 }}>
+          <Box sx={{ mt: 2 }}>
             <LegStrip legs={live.legs} seats={seats} reference={live.reference} />
           </Box>
         )}
@@ -1593,7 +1593,7 @@ function RingBoard({ live }: { live: DuelLive }) {
   const d = live.design;
   const readings = seats.map((b) => readSeat(b, incName));
   return (
-    <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 1, border: 1, borderColor: "divider" }}>
+    <Box sx={{ mt: 2, p: 2, borderRadius: 1, border: 1, borderColor: "divider" }}>
       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
         <Typography variant="body2" sx={{ fontWeight: 700 }}>
           <SideDot color={HOLDER_COLOR} />
@@ -1705,7 +1705,7 @@ function ThreeClaims({
   }
 
   return (
-    <Box sx={{ mt: 1.5 }}>
+    <Box sx={{ mt: 2 }}>
       <Typography variant="caption" color="text.secondary" component="div">
         Claims to best:{" "}
         {claims.map((c, i) => (
@@ -1739,7 +1739,7 @@ function ThreeClaims({
         .filter((c, i, all) => all.findIndex((x) => x.fp === c.fp) === i)
         .map((c) =>
           c.fp && claimGaps.gaps[c.fp] ? (
-            <Box key={`gap-${c.key}`} sx={{ display: "flex", gap: 0.75, alignItems: "baseline" }}>
+            <Box key={`gap-${c.key}`} sx={{ display: "flex", gap: 1, alignItems: "baseline" }}>
               <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
                 {claims.filter((x) => x.fp === c.fp).map((x) => x.title).join(" + ")}:
               </Typography>
@@ -2166,7 +2166,7 @@ export default function Duels() {
           ).
           <HelpTip title="Not draws: the ladder couldn't measure these matches, so nothing was decided and the pairs stay eligible to race again. A match still open when the window closes is now carried to the next session with its rounds, so 'window closed' aborts only come from sessions before that change." />
           {(health.abort_reasons?.length ?? 0) > 0 && (
-            <Box component="ul" sx={{ m: 0, mt: 1, pl: 2.5 }}>
+            <Box component="ul" sx={{ m: 0, mt: 1, pl: 3 }}>
               {health.abort_reasons!.slice(0, 4).map((r) => (
                 <li key={r.reason}>
                   <Typography variant="caption">
@@ -2177,7 +2177,7 @@ export default function Duels() {
             </Box>
           )}
           {health.reasons.length > 0 && (
-            <Box component="ul" sx={{ m: 0, mt: 1, pl: 2.5 }}>
+            <Box component="ul" sx={{ m: 0, mt: 1, pl: 3 }}>
               {health.reasons.slice(0, 4).map((r) => (
                 <li key={r.reason}>
                   <Typography variant="caption">
@@ -2255,7 +2255,7 @@ export default function Duels() {
             alignItems={{ xs: "flex-start", sm: "center" }}
             justifyContent="space-between"
           >
-            <Stack direction="row" spacing={1.5} alignItems="center">
+            <Stack direction="row" spacing={2} alignItems="center">
               <MilitaryTechIcon color={champion ? "warning" : "disabled"} sx={{ fontSize: 40 }} />
               <Box>
                 <Typography variant="overline" color="text.secondary">
@@ -2266,7 +2266,7 @@ export default function Duels() {
                     <Typography variant="h6" sx={{ lineHeight: 1.2 }}>
                       <Link
                         component="button"
-                        underline="hover"
+                       
                         onClick={() =>
                           navigate(`/profiles/${encodeURIComponent(champion.fingerprint)}`)
                         }
@@ -2555,7 +2555,7 @@ export default function Duels() {
             strong profile counts for more. Hover a column header for its meaning; click to sort.
           </Blurb>
           {loadingStandings && standings.length === 0 ? (
-            <Box sx={{ mt: 1.5 }}>
+            <Box sx={{ mt: 2 }}>
               <LinearProgress />
               <Typography variant="caption" color="text.secondary">
                 Reading the ledger…
@@ -2569,7 +2569,7 @@ export default function Duels() {
             // happened, with a full match tape visible directly underneath.
             <Alert
               severity="error"
-              sx={{ mt: 1.5 }}
+              sx={{ mt: 2 }}
               action={
                 <Button size="small" onClick={() => void loadAll()}>
                   Retry
@@ -2579,12 +2579,12 @@ export default function Duels() {
               Couldn&apos;t load the ladder standings. {standingsError}
             </Alert>
           ) : standings.length === 0 ? (
-            <Alert severity="info" sx={{ mt: 1.5 }}>
+            <Alert severity="info" sx={{ mt: 2 }}>
               No matches on the ledger yet. A duel needs a confident pooled crown to defend and
               at least one reachable heir to challenge it.
             </Alert>
           ) : (
-            <TableContainer sx={{ mt: 1.5 }}>
+            <TableContainer sx={{ mt: 2 }}>
               <Table size="small">
                 <TableHead>
                   <TableRow>
@@ -2622,7 +2622,7 @@ export default function Duels() {
                       }}
                     >
                       <TableCell>
-                        <Stack direction="row" spacing={0.75} alignItems="baseline">
+                        <Stack direction="row" spacing={1} alignItems="baseline">
                           {r.rank != null ? (
                             <Typography variant="body2">{r.rank}</Typography>
                           ) : (
@@ -2643,7 +2643,7 @@ export default function Duels() {
                           )}
                           <Link
                             component="button"
-                            underline="hover"
+                           
                             onClick={() =>
                               navigate(`/profiles/${encodeURIComponent(r.fingerprint)}`)
                             }
@@ -2659,7 +2659,7 @@ export default function Duels() {
                               color="info"
                               variant="outlined"
                               title="This profile is currently on the firewall."
-                              sx={{ height: 18, "& .MuiChip-label": { px: 0.75, fontSize: 11 } }}
+                              sx={{ height: 18, "& .MuiChip-label": { px: 1, fontSize: 11 } }}
                             />
                           )}
                         </Stack>
@@ -2780,11 +2780,11 @@ export default function Duels() {
             </Typography>
 
             {decide.card && (
-              <Box sx={{ mt: 1.5 }}>
+              <Box sx={{ mt: 2 }}>
                 <Typography variant="body2" sx={{ mb: 1 }}>
                   {decide.card.verdict}
                 </Typography>
-                <Stack spacing={0.75}>
+                <Stack spacing={1}>
                   {(decide.card.entries ?? []).map((e) => (
                     <Stack
                       key={e.fingerprint}
@@ -2858,7 +2858,7 @@ export default function Duels() {
 
           {/* ── When ───────────────────────────────────────────────────────────────── */}
           <Divider sx={{ my: 2 }} />
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
             <ScheduleIcon fontSize="small" color="action" />
             <Typography variant="subtitle2">Nightly window</Typography>
             <FormControlLabel
@@ -2942,7 +2942,7 @@ export default function Duels() {
             <GavelIcon fontSize="small" color="action" />
             <Typography variant="subtitle2">How sure before calling a winner</Typography>
           </Stack>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
             Shorter streaks decide sooner but get it wrong more often.
             <HelpTip title="A match ends when one side wins enough rounds back to back, or wins most of them convincingly. A wrong call costs little on a ladder that runs every night: the next match corrects it, and the standings are what you read." />
           </Typography>
@@ -2955,7 +2955,7 @@ export default function Duels() {
               severity="info"
               variant="outlined"
               icon={<StraightenIcon fontSize="small" />}
-              sx={{ mb: 1.5, py: 0.25 }}
+              sx={{ mb: 2, py: 0.5 }}
             >
               <Typography variant="caption">
                 This ring resolves <b>{decide.power.min_margin.toFixed(2)} Overall pts</b>
@@ -2977,7 +2977,7 @@ export default function Duels() {
                   key={preset.key}
                   onClick={() => !busy && void patch({ preset: preset.key })}
                   sx={{
-                    p: 1.5,
+                    p: 2,
                     borderRadius: 2,
                     border: 2,
                     borderColor: selected ? "primary.main" : "divider",
@@ -3009,12 +3009,12 @@ export default function Duels() {
           <Button
             size="small"
             onClick={() => setShowAdvanced((v) => !v)}
-            sx={{ mt: 1.5, textTransform: "none" }}
+            sx={{ mt: 2, textTransform: "none" }}
           >
             {showAdvanced ? "Hide" : "Show"} advanced settings
           </Button>
           <Collapse in={showAdvanced}>
-            <Box sx={{ ...FIELD_GRID, mt: 1.5 }}>
+            <Box sx={{ ...FIELD_GRID, mt: 2 }}>
               <NumField
                 label="Min rounds"
                 value={cfg?.min_pairs ?? 8}
@@ -3207,7 +3207,7 @@ export default function Duels() {
             {/* The number that prices raising the belt cadence: how much the measured
                 weather actually moves between legs 1–4 apart, from this link's own duel
                 runs. On demand — it stamps every recent leg. */}
-            <Box sx={{ mt: 1.5 }}>
+            <Box sx={{ mt: 2 }}>
               <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                 <Button size="small" variant="outlined" onClick={() => void loadDistance()} disabled={distanceBusy}>
                   {distanceBusy ? "Stamping legs…" : "Measure weather shift by distance"}
@@ -3256,7 +3256,7 @@ export default function Duels() {
                 </TableContainer>
               )}
             </Box>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
               <Typography variant="caption" color="text.secondary">
                 Judge matches by:
               </Typography>
@@ -3377,13 +3377,13 @@ export default function Duels() {
       >
 
           {card?.reason && (
-            <Alert severity="info" sx={{ mt: 1.5 }}>
+            <Alert severity="info" sx={{ mt: 2 }}>
               {card.reason}
             </Alert>
           )}
 
           {card?.incumbent && (
-            <Box sx={{ mt: 1.5 }}>
+            <Box sx={{ mt: 2 }}>
               <Typography variant="body2">
                 <MilitaryTechIcon sx={{ fontSize: 16, verticalAlign: "text-bottom", color: "warning.main" }} />{" "}
                 <b>{card.incumbent.name || card.incumbent.label}</b> defends
@@ -3425,7 +3425,7 @@ export default function Duels() {
                         <TableCell>
                           <Link
                             component="button"
-                            underline="hover"
+                           
                             onClick={() => navigate(`/profiles/${encodeURIComponent(c.fingerprint)}`)}
                             sx={{ font: "inherit", textAlign: "left" }}
                             title={c.label ?? undefined}
@@ -3471,15 +3471,15 @@ export default function Duels() {
             the challenger&apos;s.
           </Typography>
           {loadingLedger && ledger.length === 0 ? (
-            <Box sx={{ mt: 1.5 }}>
+            <Box sx={{ mt: 2 }}>
               <LinearProgress />
             </Box>
           ) : ledger.length === 0 ? (
-            <Alert severity="info" sx={{ mt: 1.5 }}>
+            <Alert severity="info" sx={{ mt: 2 }}>
               No duel sessions recorded yet.
             </Alert>
           ) : (
-            <Stack spacing={1.5} sx={{ mt: 1.5 }}>
+            <Stack spacing={2} sx={{ mt: 2 }}>
               {ledger.slice(0, tapeShown).map((d) => (
                 <Box key={d.id}>
                   <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
@@ -3641,7 +3641,7 @@ function PhoneStanding() {
       summary="Per device, per profile: the Away test's own readings at home, ranked — and whether the device agrees with the crown."
       openWhen={hasPhoneData}
     >
-      <Stack spacing={1.5}>
+      <Stack spacing={2}>
         <Typography variant="body2" color="text.secondary">
           The crown is ranked by PathBrain's wired headless Chromium. The person feels the Internet on a warm browser
           on Wi-Fi. Every home run a phone uploads is stamped with the profile the firewall was on, so this is the

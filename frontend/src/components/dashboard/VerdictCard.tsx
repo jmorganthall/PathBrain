@@ -88,7 +88,7 @@ export default function VerdictCard() {
     return (
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Stack direction="row" spacing={1.5} alignItems="center">
+          <Stack direction="row" spacing={2} alignItems="center">
             <EmojiEventsIcon sx={{ color: "text.disabled", fontSize: 34 }} />
             <Box>
               <Typography variant="overline" color="text.secondary">
@@ -117,7 +117,7 @@ export default function VerdictCard() {
     <Card sx={{ mb: 2, borderLeft: 4, borderColor: "primary.main" }}>
       <CardContent>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }}>
-          <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+          <Stack direction="row" spacing={2} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
             <EmojiEventsIcon sx={{ color: "warning.main", fontSize: 40, flexShrink: 0 }} />
             <Box sx={{ minWidth: 0 }}>
               <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
@@ -127,7 +127,7 @@ export default function VerdictCard() {
                 <Box
                   component={RouterLink}
                   to={`/profiles/${encodeURIComponent(best.fingerprint)}`}
-                  sx={{ color: "inherit", textDecoration: "none", "&:hover": { textDecoration: "underline" } }}
+                  sx={{ color: "inherit", textDecoration: "underline", textDecorationColor: "rgba(232,234,237,0.4)", textUnderlineOffset: "0.18em" }}
                 >
                   {nameOf(best)}
                 </Box>
@@ -182,12 +182,12 @@ export default function VerdictCard() {
           </Stack>
         </Stack>
 
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
           {data.verdict}
         </Typography>
 
         {/* The two facts that make the verdict usable, as chips rather than prose repeats. */}
-        <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap alignItems="center">
+        <Stack direction="row" spacing={1} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap alignItems="center">
           {lead != null && bar != null && (
             <Tooltip
               title={
@@ -240,12 +240,12 @@ export default function VerdictCard() {
         </Stack>
 
         {tiedCount > 0 && (
-          <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: "divider" }}>
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+          <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
               Statistically tied with it ({tiedCount}) — the evidence does not separate these,
               so any of them is a defensible thing to run:
             </Typography>
-            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               {tied.map((p) => (
                 <TiedChip key={p.fingerprint} p={p} />
               ))}

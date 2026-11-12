@@ -3772,7 +3772,7 @@ LLM-based. See `README.md` for the product overview.
   parsed every other page plus recharts — over a second of blank screen on a phone before a
   single request was sent. Now the shell paints immediately, each page is its own small chunk
   (Duels ~40 kB), and the 384 kB chart bundle loads only for the three views that draw charts.
-  Keep new pages lazy. **The shell is written for a first-time reader** (`docs/gui-ux-audit.md`
+  Keep new pages lazy. **The UI rules live in `theme.ts`** (the ui-dos-and-donts rules, IDs noted inline): dark-gray surfaces that get lighter as they rise (`SURFACE`), off-white/soft-gray text with every pair checked ≥ 4.5:1 (table at the top of the file), desaturated colours as named `COLORS` (use them, never a raw saturated hex), dark text on every filled button, 1.5 body line height, running text capped at 75ch, sentence-case buttons, underlined links, 16px inputs, tabular numbers in tables, an icon in front of every error message, 44px tap targets on touch screens, and dialogs as bottom sheets on a phone. Page code keeps to the rest: one filled button per view (secondary actions outlined), spacing only from 0.5/1/2/3/4 (4–32px), numbers right-aligned, a visible label on every field, and a chart highlights one series (`SeriesChart` bolds `overall`, or the line marked `emphasis`, and quiets the rest). **The shell is written for a first-time reader** (`docs/gui-ux-audit.md`
   is the audit this came from): the drawer is grouped (Dashboard · Results · Find a better
   profile · Other tests · System) with a one-line hover per page, and the nav labels say what
   a page *shows* rather than what its engine is called — the routes and component files keep

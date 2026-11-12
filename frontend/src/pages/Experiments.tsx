@@ -126,7 +126,7 @@ export default function Experiments() {
                 </Button>
               )}
             </Stack>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
               {status.enabled ? "Sweeping" : "Configured to sweep"} <b>{status.param}</b> over{" "}
               <b>{status.candidates.length ? status.candidates.join(", ") : "— (no candidates set)"}</b>
               {" · "}
@@ -214,7 +214,7 @@ export default function Experiments() {
                     <TableHead>
                       <TableRow>
                         <TableCell>When</TableCell>
-                        <TableCell>Value</TableCell>
+                        <TableCell align="right">Value</TableCell>
                         <TableCell align="right">Overall</TableCell>
                         <TableCell>Applied</TableCell>
                         <TableCell>Run</TableCell>
@@ -224,7 +224,7 @@ export default function Experiments() {
                       {detail.trials.map((t) => (
                         <TableRow key={t.id}>
                           <TableCell>{fmtDateTime(t.created_at)}</TableCell>
-                          <TableCell>{t.value}</TableCell>
+                          <TableCell align="right">{t.value}</TableCell>
                           <TableCell align="right">{t.sops ?? "—"}</TableCell>
                           <TableCell>{t.applied ? "yes" : "dry-run"}</TableCell>
                           <TableCell>

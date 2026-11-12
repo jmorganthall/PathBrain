@@ -25,15 +25,15 @@ interface Segment {
 // Wall-clock order. Network prefix (stall→request) in cool blues; the document
 // response in amber; the render/paint tail (render→load) in purples/pink.
 const SEGMENTS: Segment[] = [
-  { key: "nav_stall", src: "nav_stall_ms", label: "Pre-connect stall", color: "#546e7a" },
-  { key: "nav_dns", src: "nav_dns_ms", label: "DNS", color: "#4dd0e1" },
+  { key: "nav_stall", src: "nav_stall_ms", label: "Pre-connect stall", color: "#6b7884" },
+  { key: "nav_dns", src: "nav_dns_ms", label: "DNS", color: "#6fd0dc" },
   { key: "nav_tcp", src: "nav_tcp_ms", label: "TCP connect", color: "#4fc3f7" },
   { key: "nav_tls", src: "nav_tls_ms", label: "TLS handshake", color: "#64b5f6" },
-  { key: "nav_request", src: "nav_request_ms", label: "Request / TTFB wait", color: "#7986cb" },
+  { key: "nav_request", src: "nav_request_ms", label: "Request / TTFB wait", color: "#9fa8da" },
   // Body delivery: the one SQM-facing phase (amber, between the cool setup prefix and
   // the warm client render), so the eye lands on the phase shaping actually moves.
-  { key: "nav_response", src: "nav_response_ms", label: "Body delivery (SQM)", color: "#ffb74d" },
-  { key: "nav_render", src: "nav_render_ms", label: "Client render → FCP", color: "#ab47bc" },
+  { key: "nav_response", src: "nav_response_ms", label: "Body delivery (SQM)", color: "#f6c06b" },
+  { key: "nav_render", src: "nav_render_ms", label: "Client render → FCP", color: "#c58af9" },
   { key: "nav_fcp_lcp", src: "nav_fcp_lcp_ms", label: "First → largest paint", color: "#ce93d8" },
   { key: "nav_lcp_load", src: "nav_lcp_load_ms", label: "Largest paint → load", color: "#f48fb1" },
 ];
@@ -126,7 +126,7 @@ export default function Waterfall({ metrics, height = 40 }: { metrics: MetricMap
   return (
     <Box>
       {/* Milestone ticks + the stacked phase bar. */}
-      <Box sx={{ position: "relative", pt: 2.5 }}>
+      <Box sx={{ position: "relative", pt: 3 }}>
         <Box sx={{ position: "relative" }}>
           <Box
             sx={{
@@ -192,25 +192,25 @@ export default function Waterfall({ metrics, height = 40 }: { metrics: MetricMap
 
       {/* Crux summary: the three regimes — setup (weather) · delivery (shapeable) ·
           client render (shaping-immune). Delivery is the phase to judge a profile on. */}
-      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
+      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
         <Typography variant="caption" color="text.secondary">
           Total <b>{fmtMs(total)}</b>
         </Typography>
         <Tooltip arrow title="DNS/TCP/TLS/TTFB up to the first byte. Weather-dominated — driven by path/server conditions, not your shaper.">
-          <Typography variant="caption" sx={{ color: "#7986cb", cursor: "help" }}>
+          <Typography variant="caption" sx={{ color: "#9fa8da", cursor: "help" }}>
             Setup (to first byte) <b>{fmtMs(setupMs)}</b>
           </Typography>
         </Tooltip>
         {typeof deliveryMs === "number" && (
           <Tooltip arrow title="responseStart→responseEnd: body delivery through your queue. The one SQM-facing phase — judge a profile on this.">
-            <Typography variant="caption" sx={{ color: "#ffa726", cursor: "help", fontWeight: 500 }}>
+            <Typography variant="caption" sx={{ color: "#f5a65b", cursor: "help", fontWeight: 500 }}>
               Delivery (SQM) <b>{fmtMs(deliveryMs)}</b>
             </Typography>
           </Tooltip>
         )}
         {typeof clientMs === "number" && (
           <Tooltip arrow title="responseEnd→FCP: parse/style/layout/paint. Pure client CPU — shaping can't move it. Should be near-constant across profiles.">
-            <Typography variant="caption" sx={{ color: "#ab47bc", cursor: "help" }}>
+            <Typography variant="caption" sx={{ color: "#c58af9", cursor: "help" }}>
               Client render <b>{fmtMs(clientMs)}</b>
             </Typography>
           </Tooltip>
@@ -227,7 +227,7 @@ export default function Waterfall({ metrics, height = 40 }: { metrics: MetricMap
         }}
       >
         {parts.map((p) => (
-          <Stack key={p.key} direction="row" spacing={0.75} alignItems="center">
+          <Stack key={p.key} direction="row" spacing={1} alignItems="center">
             <Box sx={{ width: 10, height: 10, borderRadius: 0.5, bgcolor: p.color, flex: "0 0 auto" }} />
             <Typography variant="caption" color="text.secondary" noWrap title={p.label}>
               {p.label}

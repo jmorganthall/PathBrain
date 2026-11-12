@@ -16,6 +16,8 @@ export interface SeriesLine {
   key: string;
   name: string;
   color: string;
+  /** Draw this line bold and quiet the others (DB6). Defaults to the `overall` key. */
+  emphasis?: boolean;
 }
 
 export interface SeriesBand {
@@ -47,6 +49,13 @@ export default function SeriesChart<T extends { timestamp: string }>({
   const theme = useTheme();
   const grid = "rgba(255,255,255,0.08)";
   const axis = theme.palette.text.secondary;
+
+  // DB6: one highlighted series, the rest quieted. An explicit `emphasis` wins; otherwise
+  // the Overall is the line that matters whenever it is drawn.
+  const emphasised = new Set(
+    lines.some((l) => l.emphasis) ? lines.filter((l) => l.emphasis).map((l) => l.key) : lines.filter((l) => l.key === "overall").map((l) => l.key),
+  );
+  const quiet = emphasised.size > 0 && emphasised.size < lines.length;
 
   const formatted = data.map((p) => {
     const rec = p as Record<string, unknown>;
@@ -94,7 +103,8 @@ export default function SeriesChart<T extends { timestamp: string }>({
             dataKey={l.key as string}
             name={l.name}
             stroke={l.color}
-            strokeWidth={2}
+            strokeWidth={quiet ? (emphasised.has(l.key) ? 3 : 1.5) : 2}
+            strokeOpacity={quiet && !emphasised.has(l.key) ? 0.45 : 1}
             dot={false}
             connectNulls
             isAnimationActive={false}

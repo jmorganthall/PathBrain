@@ -143,10 +143,10 @@ export default function History() {
                   data={series}
                   yDomain={[0, 100]}
                   lines={[
-                    { key: "overall", name: "Overall", color: "#eceff1" },
-                    { key: "responsiveness", name: "Responsiveness", color: "#ffa726" },
-                    { key: "smoothness", name: "Smoothness", color: "#ab47bc" },
-                    { key: "speed", name: "Speed", color: "#4dd0e1" },
+                    { key: "overall", name: "Overall", color: "#e8eaed" },
+                    { key: "responsiveness", name: "Responsiveness", color: "#f5a65b" },
+                    { key: "smoothness", name: "Smoothness", color: "#c58af9" },
+                    { key: "speed", name: "Speed", color: "#6fd0dc" },
                   ]}
                 />
               </CardContent>
@@ -161,10 +161,10 @@ export default function History() {
                   data={series}
                   unit="ms"
                   lines={[
-                    { key: "dns_ms", name: "DNS", color: "#7c4dff" },
-                    { key: "tcp_ms", name: "TCP", color: "#4dd0e1" },
-                    { key: "tls_ms", name: "TLS", color: "#ffb74d" },
-                    { key: "ttfb_ms", name: "TTFB", color: "#66bb6a" },
+                    { key: "dns_ms", name: "DNS", color: "#a88bff" },
+                    { key: "tcp_ms", name: "TCP", color: "#6fd0dc" },
+                    { key: "tls_ms", name: "TLS", color: "#f6c06b" },
+                    { key: "ttfb_ms", name: "TTFB", color: "#81c995" },
                   ]}
                 />
               </CardContent>
@@ -179,7 +179,7 @@ export default function History() {
                   data={series}
                   unit="ms"
                   height={220}
-                  lines={[{ key: "jitter_ms", name: "Jitter", color: "#ef5350" }]}
+                  lines={[{ key: "jitter_ms", name: "Jitter", color: "#f28b82" }]}
                 />
               </CardContent>
             </Card>

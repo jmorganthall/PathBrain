@@ -275,7 +275,7 @@ export default function FollowBest() {
         transformOrigin={{ vertical: "top", horizontal: "right" }}
         slotProps={{ paper: { sx: { p: 2, width: 360, maxWidth: "95vw" } } }}
       >
-        <Stack spacing={1.25}>
+        <Stack spacing={1}>
           <Stack direction="row" alignItems="center" spacing={1}>
             <EmojiEventsIcon fontSize="small" color={enabled ? "warning" : "disabled"} />
             <Typography variant="subtitle2" sx={{ flexGrow: 1 }}>
@@ -310,7 +310,7 @@ export default function FollowBest() {
             <Typography variant="caption" color="text.secondary">
               Which ranking to follow
             </Typography>
-            <Stack direction="row" spacing={0.75} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
+            <Stack direction="row" spacing={1} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
               <Tooltip title="Act on the one ranking fitted over BOTH records — each profile's pooled median, corrected by every head-to-head round it fought. The default; the other two are its corners. See the Overall page.">
                 <Chip
                   size="small"
@@ -373,7 +373,7 @@ export default function FollowBest() {
               </Tooltip>
             </Stack>
             {(["lcp", "fcp"] as const).map((leg) => (
-              <Stack key={leg} direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
+              <Stack key={leg} direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
                 <Typography variant="caption" color="text.secondary">
                   {leg.toUpperCase()}-first band: give up up to
                 </Typography>
@@ -395,7 +395,7 @@ export default function FollowBest() {
               </Stack>
             ))}
             <Tooltip title="Auto-apply will not follow a crown that is clearly slower than the field's fastest LCP or FCP by more than this. It follows the first crown that fits (LCP first, combined, FCP first, pooled, duel, fastest on paper) and says so. Gaps inside the measurement noise never count.">
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
                 <Switch
                   size="small"
                   checked={budget.enabled}
@@ -493,7 +493,7 @@ export default function FollowBest() {
                     component={RouterLink}
                     to={`/profiles/${encodeURIComponent(followedFp)}`}
                     onClick={() => setAnchor(null)}
-                    underline="hover"
+                   
                   >
                     {followedName}
                   </Link>{" "}

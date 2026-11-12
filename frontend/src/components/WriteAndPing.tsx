@@ -65,7 +65,7 @@ function StepRow({ step }: { step: WriteProbeStep }) {
   const fw = step.targets?.firewall;
   const th = step.targets?.through;
   return (
-    <Box sx={{ py: 0.75, borderBottom: 1, borderColor: "divider" }}>
+    <Box sx={{ py: 1, borderBottom: 1, borderColor: "divider" }}>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
         <Typography variant="body2" sx={{ fontWeight: 600, flex: 1, minWidth: 0 }}>
           {step.label}
@@ -87,7 +87,7 @@ function StepRow({ step }: { step: WriteProbeStep }) {
         </Stack>
       </Stack>
       {step.failed && (
-        <Typography variant="caption" color="error" sx={{ display: "block", mt: 0.25 }}>
+        <Typography variant="caption" color="error" sx={{ display: "block", mt: 0.5 }}>
           {step.failed}
         </Typography>
       )}
@@ -223,7 +223,7 @@ export default function WriteAndPing({
           </Alert>
         )}
 
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 2 }} flexWrap="wrap">
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }} flexWrap="wrap">
           <TextField
             select size="small" label="Pipe" value={pipeUuid} disabled={pipes.length === 0}
             sx={{ minWidth: 180 }}
@@ -353,7 +353,7 @@ export default function WriteAndPing({
                       ? "warning"
                       : "success"
                 }
-                sx={{ mt: 1.5 }}
+                sx={{ mt: 2 }}
               >
                 {shown.verdict}
               </Alert>

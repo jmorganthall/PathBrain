@@ -62,7 +62,7 @@ export function GlossaryDialog({ open, onClose }: { open: boolean; onClose: () =
         </IconButton>
       </DialogTitle>
       <DialogContent dividers>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           PathBrain measures how fast the internet <em>feels</em> under each set of firewall
           shaper settings, ranks those settings, and can keep the firewall on the best one.
           These are the words it uses to say so.
@@ -70,10 +70,11 @@ export function GlossaryDialog({ open, onClose }: { open: boolean; onClose: () =
         <TextField
           size="small"
           fullWidth
-          placeholder="Find a term"
+          label="Find a term"
+          placeholder="e.g. crown, duel, weather"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          sx={{ mb: 1.5 }}
+          sx={{ mb: 2 }}
           InputProps={{
             startAdornment: (
               <InputAdornment position="start">
@@ -82,7 +83,7 @@ export function GlossaryDialog({ open, onClose }: { open: boolean; onClose: () =
             ),
           }}
         />
-        <Stack component="dl" spacing={1.5} sx={{ m: 0 }}>
+        <Stack component="dl" spacing={2} sx={{ m: 0 }}>
           {rows.map((e) => (
             <Box key={e.id}>
               <Typography component="dt" variant="subtitle2" sx={{ lineHeight: 1.3 }}>
@@ -98,7 +99,7 @@ export function GlossaryDialog({ open, onClose }: { open: boolean; onClose: () =
                 {e.to && (
                   <>
                     {" "}
-                    <Link component={RouterLink} to={e.to} underline="hover" onClick={onClose}>
+                    <Link component={RouterLink} to={e.to} onClick={onClose}>
                       Open
                     </Link>
                   </>

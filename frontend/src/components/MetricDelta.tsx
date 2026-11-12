@@ -71,8 +71,8 @@ export default function MetricDelta({
         sx={{
           display: "inline-flex",
           alignItems: "center",
-          gap: 0.25,
-          ml: 0.75,
+          gap: 0.5,
+          ml: 1,
           verticalAlign: "middle",
           color,
           cursor: "help",

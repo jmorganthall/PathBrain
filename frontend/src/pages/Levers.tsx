@@ -557,7 +557,7 @@ export default function Levers() {
               )}
             </Stack>
           ) : (
-            <Stack spacing={1.5}>
+            <Stack spacing={2}>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
                 <FormControl size="small" sx={{ minWidth: 280 }}>
                   <InputLabel id="new-base" shrink>New campaign on…</InputLabel>
@@ -580,7 +580,7 @@ export default function Levers() {
                   Step 1 — pick the profile whose settings to test, usually the best one. A base with an open campaign is selected instead of duplicated.
                 </Typography>
               </Stack>
-              <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ md: "center" }}>
+              <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }}>
                 <FormControl size="small" sx={{ minWidth: 260 }}>
                   <InputLabel id="campaign-pick" shrink>Campaign</InputLabel>
                   <Select
@@ -673,7 +673,7 @@ export default function Levers() {
             None yet. Start one above; each match it decides lands in the ledger.
           </Typography>
         ) : (
-          <Stack spacing={1.5}>
+          <Stack spacing={2}>
             {history.map((d) => (
               <Box key={d.id}>
                 <Typography variant="subtitle2">

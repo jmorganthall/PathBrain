@@ -73,7 +73,7 @@ function AttemptRow({ attempt }: { attempt: UpdateAttempt }) {
     .filter(Boolean)
     .join(" ");
   return (
-    <Box sx={{ py: 0.75, borderTop: 1, borderColor: "divider" }}>
+    <Box sx={{ py: 1, borderTop: 1, borderColor: "divider" }}>
       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
         <Tooltip title={v.what}>
           <Chip size="small" label={v.label} color={v.color} sx={{ height: 20 }} />
@@ -87,7 +87,7 @@ function AttemptRow({ attempt }: { attempt: UpdateAttempt }) {
         </Typography>
       </Stack>
       {(attempt.detail || attempt.error || attempt.response_body) && (
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.25 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
           {attempt.detail || attempt.error || attempt.response_body}
         </Typography>
       )}
@@ -170,14 +170,14 @@ function WatchtowerIntegration() {
             variant={configured ? "filled" : "outlined"}
           />
         </Stack>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           One-click updates via Watchtower's HTTP API. When configured, the top-bar "Update
           available" chip gains an "Update now" button that pulls the newer image and recreates this
           container.
         </Typography>
 
         {configured ? (
-          <Stack spacing={0.5} sx={{ mb: 1.5 }}>
+          <Stack spacing={0.5} sx={{ mb: 2 }}>
             <Typography variant="caption" color="text.secondary">
               URL:{" "}
               <Box component="span" sx={{ fontFamily: "monospace" }}>
@@ -189,7 +189,7 @@ function WatchtowerIntegration() {
             </Typography>
           </Stack>
         ) : (
-          <Alert severity="info" sx={{ mb: 1.5 }}>
+          <Alert severity="info" sx={{ mb: 2 }}>
             Set <code>WATCHTOWER_URL</code> (and <code>WATCHTOWER_TOKEN</code>) in
             your environment / compose file to enable one-click updates.
           </Alert>

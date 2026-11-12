@@ -69,12 +69,12 @@ import { useNow } from "../utils/useNow";
 // Colors for the headline axis lines/gauges (amber = responsiveness, cyan = speed,
 // violet = smoothness, …). Fixed per axis, never cycled.
 const AXIS_COLORS: Record<string, string> = {
-  overall: "#eceff1",
-  responsiveness: "#ffa726",
-  speed: "#4dd0e1",
-  smoothness: "#ab47bc",
-  stability: "#81c784",
-  completion: "#90a4ae",
+  overall: "#e8eaed",
+  responsiveness: "#f5a65b",
+  speed: "#6fd0dc",
+  smoothness: "#c58af9",
+  stability: "#9fd5a6",
+  completion: "#9aa6b2",
 };
 // The over-time chart's headline series are the CROWN LEGS, which are metric keys and so
 // are never in the map above — a publish changes them. Falling back to one colour for
@@ -82,7 +82,7 @@ const AXIS_COLORS: Record<string, string> = {
 // be three, so an unknown key takes a distinct colour by position instead. Deliberately
 // keyed on index rather than hashed off the key: a hash gives two legs near-identical hues
 // often enough to matter, and position here is stable within a render.
-const SERIES_COLORS = ["#4dd0e1", "#ffa726", "#ab47bc", "#81c784", "#f06292", "#90a4ae"];
+const SERIES_COLORS = ["#6fd0dc", "#f5a65b", "#c58af9", "#9fd5a6", "#f48fb1", "#9aa6b2"];
 const axisColor = (key: string, index = 0) =>
   AXIS_COLORS[key] ?? SERIES_COLORS[index % SERIES_COLORS.length];
 
@@ -110,7 +110,7 @@ function CardTitle({
   right?: React.ReactNode;
 }) {
   return (
-    <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ mb: 1.5 }}>
+    <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
       <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
         {title}
         {help && <HelpTip title={help} />}
@@ -128,7 +128,7 @@ function RunDots({ runs }: { runs: RunSummary[] }) {
     <Stack direction="row" spacing={0.35} flexWrap="wrap" useFlexGap sx={{ maxWidth: 96, justifyContent: "flex-end" }}>
       {ordered.map((r) => {
         const s = r.status.toLowerCase();
-        const color = s === "failed" || s === "error" ? "#ef5350" : isRunning(s) ? "#4dd0e1" : "#66bb6a";
+        const color = s === "failed" || s === "error" ? "#f28b82" : isRunning(s) ? "#6fd0dc" : "#81c995";
         return (
           <Box
             key={r.id}
@@ -598,7 +598,7 @@ export default function Dashboard() {
       <Box
         sx={{
           display: "grid",
-          gap: 1.5,
+          gap: 2,
           mb: 2,
           gridTemplateColumns: { xs: "repeat(2, 1fr)", sm: "repeat(3, 1fr)", md: "repeat(4, 1fr)", xl: "repeat(7, 1fr)" },
         }}
@@ -632,7 +632,7 @@ export default function Dashboard() {
           label="Avg iteration"
           value={estimate?.per_iteration_ms != null ? fmtDuration(estimate.per_iteration_ms) : "—"}
           caption={iterCaption}
-          aside={<Sparkline values={iterSeries} color="#4dd0e1" width={72} />}
+          aside={<Sparkline values={iterSeries} color="#6fd0dc" width={72} />}
           to="/methodology?audit=instrument"
           help="What one iteration of the suite costs, priced from the most recent runs first. The sparkline is the per-iteration time of the last 30 runs, oldest to newest. Climbing? Tap to run the instrument-drift audit: it says whether the measurement got slower (grading at risk) or the run got bigger (nothing graded moved)."
         />
@@ -752,7 +752,7 @@ export default function Dashboard() {
                                 <ScoreGauge value={sub ?? null} size={104} label="" />
                               </Box>
                             </Tooltip>
-                            <Typography variant="caption" sx={{ display: "block", mt: 0.25, lineHeight: 1.2 }}>
+                            <Typography variant="caption" sx={{ display: "block", mt: 0.5, lineHeight: 1.2 }}>
                               {meta.label}
                             </Typography>
                             <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
@@ -771,14 +771,14 @@ export default function Dashboard() {
                         );
                       })}
                     </Stack>
-                    <Stack spacing={0.75} sx={{ minWidth: 130 }}>
+                    <Stack spacing={1} sx={{ minWidth: 130 }}>
                       <Typography variant="caption" color="text.disabled">
                         Other axes
                       </Typography>
                       {allAxes.map((a) => {
                         const stat = rolling.axis_scores[a.key];
                         return (
-                          <Stack key={a.key} direction="row" justifyContent="space-between" spacing={1.5}>
+                          <Stack key={a.key} direction="row" justifyContent="space-between" spacing={2}>
                             <Typography variant="caption" color="text.secondary" noWrap>
                               {a.label}
                             </Typography>
@@ -876,7 +876,7 @@ export default function Dashboard() {
                                   sx={{
                                     width: `${Math.max(0, Math.min(100, pct ?? 0))}%`,
                                     height: "100%",
-                                    bgcolor: "#4dd0e1",
+                                    bgcolor: "#6fd0dc",
                                     opacity: 0.8,
                                   }}
                                 />
@@ -901,9 +901,9 @@ export default function Dashboard() {
                 )}
 
                 {/* Test current settings: the action that belongs to the live profile. */}
-                <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: "divider" }}>
+                <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
                   {testActive ? (
-                    <Stack spacing={0.75}>
+                    <Stack spacing={1}>
                       <Stack direction="row" justifyContent="space-between" alignItems="center">
                         <Typography variant="body2">
                           Testing · {fmtDuration(testRemainMs)} left · {currentTest?.iterations_run ?? 0} it ·{" "}
@@ -946,7 +946,7 @@ export default function Dashboard() {
                     </Stack>
                   )}
                   {currentTest && !testActive && currentTest.status && currentTest.status !== "pending" && (
-                    <Typography variant="caption" color="text.disabled" sx={{ display: "block", mt: 0.75 }}>
+                    <Typography variant="caption" color="text.disabled" sx={{ display: "block", mt: 1 }}>
                       Last test {currentTest.status} · {currentTest.iterations_run} iteration
                       {currentTest.iterations_run === 1 ? "" : "s"} across {currentTest.runs_created} run
                       {currentTest.runs_created === 1 ? "" : "s"}
@@ -970,7 +970,7 @@ export default function Dashboard() {
                 />
                 <ActiveJobs jobs={jobs?.data.jobs ?? []} receivedAt={jobs?.receivedAt ?? Date.now()} />
                 {latest && (
-                  <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: "divider" }}>
+                  <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
                     <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                       <Typography variant="caption" color="text.secondary">
                         Last run
@@ -998,7 +998,7 @@ export default function Dashboard() {
                       const done = latest.iterations_completed ?? 0;
                       const determinate = done > 0 && total > 0;
                       return (
-                        <Box sx={{ mt: 0.75 }}>
+                        <Box sx={{ mt: 1 }}>
                           <LinearProgress
                             variant={determinate ? "determinate" : "indeterminate"}
                             value={determinate ? (done / total) * 100 : undefined}

@@ -76,7 +76,7 @@ function CrownTile({
       sx={{
         flex: 1,
         minWidth: 0,
-        p: 1.5,
+        p: 2,
         borderRadius: 2,
         border: 1,
         borderColor: governing ? "primary.main" : "divider",
@@ -84,12 +84,12 @@ function CrownTile({
         opacity: muted ? 0.7 : 1,
       }}
     >
-      <Stack direction="row" spacing={1.5} alignItems="flex-start">
+      <Stack direction="row" spacing={2} alignItems="flex-start">
         <Tooltip title={what}>
-          <Box sx={{ display: "flex", pt: 0.25 }}>{icon}</Box>
+          <Box sx={{ display: "flex", pt: 0.5 }}>{icon}</Box>
         </Tooltip>
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
               {kind}
             </Typography>
@@ -106,7 +106,7 @@ function CrownTile({
           <Typography variant="subtitle1" noWrap sx={{ lineHeight: 1.3 }}>
             <Link
               component="button"
-              underline="hover"
+             
               onClick={() => (onOpen ? onOpen() : navigate(href))}
               sx={{ font: "inherit", textAlign: "left" }}
             >
@@ -199,17 +199,17 @@ export default function TwoCrowns() {
         {/* The speed budget passed the policy's choice over: say which crown, by how much,
             and what Auto-apply follows instead — the trade made visible, not implied. */}
         {governing.speed_budget?.replaced && (
-          <Alert severity="warning" variant="outlined" sx={{ mb: 1.5, py: 0 }}>
+          <Alert severity="warning" variant="outlined" sx={{ mb: 2, py: 0 }}>
             Over the speed budget: {governing.detail}.
           </Alert>
         )}
         {governing.speed_budget?.within === false && !governing.speed_budget?.replaced && (
-          <Alert severity="warning" variant="outlined" sx={{ mb: 1.5, py: 0 }}>
+          <Alert severity="warning" variant="outlined" sx={{ mb: 2, py: 0 }}>
             {governing.detail}.
           </Alert>
         )}
 
-        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
           {pooled ? (
             <CrownTile
               icon={<EmojiEventsIcon sx={{ color: "warning.main", fontSize: 34 }} />}
@@ -352,7 +352,7 @@ export default function TwoCrowns() {
         </Stack>
 
         {governing.source === "fused" && (
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
             <Chip size="small" color="primary" label="following · combined ranking" sx={{ height: 20 }} />
             <Typography variant="caption" color="text.secondary">
               {data.fused ? (
@@ -366,7 +366,7 @@ export default function TwoCrowns() {
               ) : (
                 <>The fit names nobody yet, so the pooled crown stands in. </>
               )}
-              <Link component={RouterLink} to="/overall" underline="hover">
+              <Link component={RouterLink} to="/overall">
                 See how on the Best profile page
               </Link>
               .
@@ -375,7 +375,7 @@ export default function TwoCrowns() {
         )}
 
         {!agree && pooled && duel && (
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
             The two disagree — normal, and worth a look: the overall crown wins on the whole
             record, the champion won its bouts under matched conditions.
             {delta != null && (

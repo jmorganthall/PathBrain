@@ -101,7 +101,7 @@ function ClientEditor({ value, onChange }: { value: BrowserClient; onChange: (c:
           sx={{ minWidth: 320, flexGrow: 1 }}
         />
       </Stack>
-      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mt: 1.5 }}>
+      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mt: 2 }}>
         <TextField
           size="small"
           type="number"
@@ -253,7 +253,7 @@ function VersionRow({ m }: { m: MethodologySummary }) {
         </Typography>
       )}
       {m.notes && (
-        <Blurb variant="caption" sx={{ mt: 0.25, mb: 0 }} moreLabel="Show" lessLabel="Hide" more={m.notes}>
+        <Blurb variant="caption" sx={{ mt: 0.5, mb: 0 }} moreLabel="Show" lessLabel="Hide" more={m.notes}>
           Version notes
         </Blurb>
       )}
@@ -528,7 +528,7 @@ export default function Methodology() {
                   </Button>
                 )}
               </Stack>
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1.5 }} alignItems={{ sm: "center" }}>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 2 }} alignItems={{ sm: "center" }}>
                 <TextField
                   select
                   size="small"
@@ -573,7 +573,7 @@ export default function Methodology() {
             <Typography variant="h6" gutterBottom>
               Proposed re-anchor — {proposalMetric.label}
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
               <b>{proposalMetric.label}</b> scores ~100 for most profiles, so it can&apos;t rank them.
               Tightening “best” publishes a new version forked from <b>{current?.version}</b>.
               {saturatedCount > 1 && (
@@ -675,7 +675,7 @@ export default function Methodology() {
               : "This version measures whatever Config says. Publish a list here to pin it."
           }
         >
-          <Typography variant="body2" sx={{ mb: 1.5 }}>
+          <Typography variant="body2" sx={{ mb: 2 }}>
             Every browser score is an average over these pages, loaded as this client, so both
             are part of the methodology.
             <HelpTip title="Changing a site — or the client the pages are loaded as — publishes a new version. Runs measured against the old list or as the old client keep their scores under the old version and are quarantined as legacy under the new one — never pooled with the new measurements. Until fresh runs arrive, the heirs card, the challenger race and the duel ladder are ordered by the previous version's standings, so its winners get measured first; a duel already running when you publish re-seeds itself the same way." />
@@ -786,7 +786,7 @@ function IdleWaitAudit() {
       title="Idle-wait audit"
       summary="Does the post-load network-idle wait ever move LCP on your sites? Read off stored raw; suggests the smallest safe cap."
     >
-      <Stack spacing={1.5}>
+      <Stack spacing={2}>
         <Typography variant="body2" color="text.secondary">
           After each page load the browser waits up to <b>browser.networkidle_timeout_s</b> for the network to go
           quiet. The smoothness metrics are bounded to the load event, so that wait can only change <b>LCP</b>,
@@ -937,7 +937,7 @@ function InstrumentDriftAudit({ autoRun }: { autoRun: boolean }) {
       summary="Runs getting longer? Says whether the measurement got slower (grading at risk) or the run got bigger (nothing graded moved)."
       openWhen={autoRun}
     >
-      <Stack spacing={1.5}>
+      <Stack spacing={2}>
         <Typography variant="body2" color="text.secondary">
           The Dashboard's <b>Avg iteration</b> is a wall clock, and a wall clock can climb for two opposite reasons.
           The run can get <b>bigger</b> — the methodology-only scope measures the crown on every iteration where
@@ -1250,7 +1250,7 @@ function CrownAgreementAudit({ autoRun, versions }: { autoRun: boolean; versions
       summary="Did the last publish change who wins? Two rubrics priced on the same profiles' medians, ranked both ways."
       openWhen={autoRun}
     >
-      <Stack spacing={1.5}>
+      <Stack spacing={2}>
         <Typography variant="body2" color="text.secondary">
           A publish that changes the crown — a new leg, a re-weight, a re-anchored threshold — is a decision about
           what <b>best</b> means, and the one number that says what it did is how far the ranking moved. Every profile
@@ -1375,7 +1375,7 @@ function WarmCrownAudit({ autoRun }: { autoRun: boolean }) {
       summary="Do the first-visit (what the crown grades) and repeat-visit (what most clicks feel like) instruments rank the profiles alike?"
       openWhen={autoRun}
     >
-      <Stack spacing={1.5}>
+      <Stack spacing={2}>
         <Typography variant="body2" color="text.secondary">
           The crown grades a <b>first visit</b>: a fresh browser context per page, every handshake paid. Most of a
           person's clicks are not that — a site's next page reuses its connections — so with <b>browser.warm_loads</b>{" "}

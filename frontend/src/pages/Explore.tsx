@@ -340,7 +340,7 @@ function TestButtons({
         <span>
           <Button
             size="small"
-            variant="contained"
+            variant="outlined"
             startIcon={testing ? <CircularProgress size={14} /> : <BoltIcon />}
             disabled={testing}
             onClick={() => onTest(candidate, quickIterations, keyId)}
@@ -394,7 +394,7 @@ function CrownLegPanel({
   return (
     <Box
       sx={{
-        p: 1.5,
+        p: 2,
         borderRadius: 2,
         border: 1,
         borderColor: weakest ? "warning.main" : "divider",
@@ -423,7 +423,7 @@ function CrownLegPanel({
         )}
       </Stack>
 
-      <Stack spacing={0.4} sx={{ mb: 1.25 }}>
+      <Stack spacing={0.4} sx={{ mb: 1 }}>
         {leg.leaders.map((l, i) => (
           <Stack key={l.fingerprint} direction="row" spacing={1} alignItems="baseline" sx={{ minWidth: 0 }}>
             <Typography variant="caption" color="text.secondary" sx={{ width: 16, textAlign: "right", flexShrink: 0 }}>
@@ -431,7 +431,7 @@ function CrownLegPanel({
             </Typography>
             <Link
               component="button"
-              underline="hover"
+             
               variant="body2"
               onClick={() => navigate(`/profiles/${encodeURIComponent(l.fingerprint)}`)}
               sx={{ minWidth: 0, textAlign: "left", fontWeight: l.is_reference ? 700 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}
@@ -527,7 +527,7 @@ function CrownLegPanel({
             );
           })}
           {leg.combined && (
-            <Box sx={{ pt: 0.75, borderTop: 1, borderColor: "divider" }}>
+            <Box sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>
               <Typography variant="body2">
                 <b>All of the above at once</b>
                 <Typography component="span" variant="caption" color="text.secondary">
@@ -585,7 +585,7 @@ function CrownLegsCard({
           : `${refName} leads on every measurement the Overall is built from.`
       }
     >
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
           The Overall is built from {legs.legs.map((l) => l.label).join(" · ")}. For each leg: who
           leads it, where <b>{refName}</b> (the best profile, Overall {fmtNum(legs.reference.overall, 1)})
           stands, and the lever moves that would take it toward what the leaders do
@@ -604,7 +604,7 @@ function CrownLegsCard({
         <Box
           sx={{
             display: "grid",
-            gap: 1.5,
+            gap: 2,
             gridTemplateColumns: { xs: "1fr", md: `repeat(${Math.min(legs.legs.length, 3)}, minmax(0, 1fr))` },
           }}
         >
@@ -676,7 +676,7 @@ function CandidateCard({
             <span>
               <Button
                 size="small"
-                variant="contained"
+                variant="outlined"
                 startIcon={testing ? <CircularProgress size={14} /> : <BoltIcon />}
                 disabled={testing}
                 onClick={() => onTest(candidate, quickIterations)}
@@ -703,7 +703,7 @@ function CandidateCard({
         </Stack>
 
         {candidate.changes.map((ch) => (
-          <Typography key={ch.key} variant="body2" sx={{ mb: 0.25 }}>
+          <Typography key={ch.key} variant="body2" sx={{ mb: 0.5 }}>
             <b>
               {ch.pipe} {ch.field_label}
             </b>{" "}
@@ -715,7 +715,7 @@ function CandidateCard({
           </Typography>
         ))}
 
-        <Stack direction="row" spacing={0.75} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
+        <Stack direction="row" spacing={1} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
           {candidate.ring && candidate.ring.state !== "null" && (
             <Tooltip
               title={`The duel ring made this exact move in ${candidate.ring.rounds} paired, same-weather round${candidate.ring.rounds === 1 ? "" : "s"} (median ${candidate.ring.margin >= 0 ? "+" : ""}${fmtNum(candidate.ring.margin, 2)} Overall). Controlled by design, where a matched pair is controlled by coincidence — the strongest evidence on the page. What it cannot promise is that the effect transfers from the bases it fought at to this one; "Was the data right?" grades that as its own class.`}
@@ -755,7 +755,7 @@ function CandidateCard({
           Starting from{" "}
           <Link
             component="button"
-            underline="hover"
+           
             onClick={() => navigate(`/profiles/${encodeURIComponent(candidate.parent.fingerprint)}`)}
             sx={{ font: "inherit" }}
           >
@@ -863,7 +863,7 @@ function GapRow({
               <span>
                 <Button
                   size="small"
-                  variant="contained"
+                  variant="outlined"
                   startIcon={testing ? <CircularProgress size={14} /> : <BoltIcon />}
                   disabled={testing}
                   onClick={() => onTest(candidate, quickIterations, key)}
@@ -1193,12 +1193,12 @@ function BasinsCard({ basins }: { basins: ExploreBasin[] }) {
         ) : (
           <>
             {separated > 0 ? (
-              <Alert severity="warning" sx={{ mb: 1.5 }}>
+              <Alert severity="warning" sx={{ mb: 2 }}>
                 {separated} of the {solid} well-surrounded optima sit two or more levers from a
                 better one. One-lever-at-a-time search won&apos;t cross between them.
               </Alert>
             ) : (
-              <Alert severity="info" sx={{ mb: 1.5 }}>
+              <Alert severity="info" sx={{ mb: 2 }}>
                 {solid === 0
                   ? "No optimum has more than one measured sibling yet. Measure one-lever variants around the leaders to make this a real map."
                   : "Every well-surrounded optimum can still be improved by a single change."}
@@ -1244,7 +1244,7 @@ function BasinsCard({ basins }: { basins: ExploreBasin[] }) {
                       <TableCell>
                         <Link
                           component="button"
-                          underline="hover"
+                         
                           onClick={() => navigate(`/profiles/${encodeURIComponent(b.fingerprint)}`)}
                           sx={{ font: "inherit", textAlign: "left", whiteSpace: "nowrap" }}
                           title={b.label}
@@ -1349,7 +1349,7 @@ function RecommendationRow({ rec }: { rec: ExploreRecommendation }) {
   const v = VERDICTS[rec.verdict] ?? VERDICTS.unscored;
   return (
     <Card variant="outlined">
-      <CardContent sx={{ pb: 1.5 }}>
+      <CardContent sx={{ pb: 2 }}>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
           <Tooltip title={v.tip}>
             <Chip size="small" color={v.color} label={v.label} />
@@ -1376,10 +1376,10 @@ function RecommendationRow({ rec }: { rec: ExploreRecommendation }) {
           </Typography>
         </Stack>
 
-        <Typography variant="body2" sx={{ mb: 0.25 }}>
+        <Typography variant="body2" sx={{ mb: 0.5 }}>
           <Link
             component="button"
-            underline="hover"
+           
             onClick={() => navigate(`/profiles/${encodeURIComponent(rec.fingerprint)}`)}
             sx={{ font: "inherit", fontWeight: 600 }}
           >
@@ -1482,20 +1482,20 @@ function RecommendationLedger({ ledger }: { ledger: ExploreLedger }) {
       title="How past suggestions turned out"
       summary={`${s.graded} graded against measurements · ${s.pending} waiting on data`}
     >
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
           Every suggestion you&apos;ve tested: what it predicted against what the link then did.
           <HelpTip title="The claim is recorded before it's measured. Verdicts are recomputed on every read, so a re-grade or fresh runs move them. A claim made under an older methodology is reported as incomparable rather than graded on a different yardstick. Most rows note that they were filed under a different fingerprint than the one predicted at start: that is expected, not a fault — the firewall echoes a CoDel duration back as a string, so the same setting hashes differently. The apply is verified field by field before any benchmark runs, and each claim is graded against the runs it actually produced." />
         </Typography>
 
         {s.graded === 0 ? (
-          <Alert severity="info" sx={{ mb: 1.5 }}>
+          <Alert severity="info" sx={{ mb: 2 }}>
             {s.pending > 0
               ? `${s.pending} recommendation${s.pending === 1 ? "" : "s"} recorded and waiting on data. A verdict appears as soon as the profile has comparable runs.`
               : "Nothing graded yet — test a recommendation above and its prediction will be scored here."}
           </Alert>
         ) : (
           <>
-            <Stack direction="row" spacing={3} sx={{ mb: 1.5 }} flexWrap="wrap" useFlexGap>
+            <Stack direction="row" spacing={3} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
               <Tooltip title="Recommendations with a measurement on the current methodology. Pending and incomparable ones are excluded rather than counted as successes — that's the difference between a calibration statistic and a flattering one.">
                 <Box>
                   <Typography variant="caption" color="text.secondary">
@@ -1607,8 +1607,8 @@ function RecommendationLedger({ ledger }: { ledger: ExploreLedger }) {
           </>
         )}
 
-        <Divider sx={{ my: 1.5 }} />
-        <Stack spacing={1.5}>
+        <Divider sx={{ my: 2 }} />
+        <Stack spacing={2}>
           {paged.map((rec) => (
             <RecommendationRow key={rec.id} rec={rec} />
           ))}
@@ -1794,7 +1794,7 @@ export default function Explore() {
         actions={
           <>
             {!!data?.bets?.length && (
-              <Button variant="contained" color="secondary" startIcon={<CasinoIcon />} onClick={() => setBetsOpen(true)}>
+              <Button variant="contained" startIcon={<CasinoIcon />} onClick={() => setBetsOpen(true)}>
                 Run the best bets
               </Button>
             )}
@@ -1847,13 +1847,13 @@ export default function Explore() {
           <Card sx={{ mb: 2 }}>
             <CardContent>
               <Typography variant="h6">What to test next</Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
                 Existing profiles with one lever moved to an untried value, ranked by{" "}
                 <b>upside</b>.
                 <HelpTip title="Upside = predicted score plus what we don't know. The question is where you might beat everything measured, not where you'd score respectably." />
               </Typography>
               {data.candidates.length > 0 && data.candidates_clear_noise === false && (
-                <Alert severity="warning" sx={{ mb: 1.5 }}>
+                <Alert severity="warning" sx={{ mb: 2 }}>
                   <b>No candidate clears the noise floor</b> of{" "}
                   <b>{fmtNum(data.noise_floor ?? null, 1)}</b> Overall points. Look at{" "}
                   <b>Holes in coverage</b> below instead, where something genuinely untested could
@@ -1865,7 +1865,7 @@ export default function Explore() {
                   No untested combination stands out yet. Collect more runs, or widen a sweep.
                 </Alert>
               ) : (
-                <Stack spacing={1.5}>
+                <Stack spacing={2}>
                   {data.candidates.map((c, i) => (
                     <CandidateCard
                       key={c.changes.map((ch) => `${ch.key}:${ch.to}`).join("|")}
@@ -1907,7 +1907,7 @@ export default function Explore() {
               <Box
                 sx={{
                   display: "grid",
-                  gap: 1.5,
+                  gap: 2,
                   gridTemplateColumns: { xs: "1fr", md: "1fr 1fr", xl: "repeat(3, 1fr)" },
                 }}
               >
@@ -1948,7 +1948,7 @@ export default function Explore() {
                   No meaningful holes — every lever is sampled evenly across its range.
                 </Typography>
               ) : (
-                <Stack divider={<Divider flexItem />} spacing={0.75}>
+                <Stack divider={<Divider flexItem />} spacing={1}>
                   {data.gaps
                     .slice(gapPage * ROWS_PER_PAGE, gapPage * ROWS_PER_PAGE + ROWS_PER_PAGE)
                     .map((g, i) => (
@@ -1979,7 +1979,7 @@ export default function Explore() {
                 </>
               }
             >
-                <Stack spacing={1.5}>
+                <Stack spacing={2}>
                   {data.interactions.slice(0, 4).map((it) => (
                     <Box key={`${it.a}|${it.b}`}>
                       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>

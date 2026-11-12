@@ -68,12 +68,12 @@ import { sopsColor } from "../theme";
 
 // Headline colours mirror the Dashboard/History charts (Overall is the bright lead line).
 const AXIS_COLORS: Record<string, string> = {
-  overall: "#eceff1",
-  responsiveness: "#ffa726",
-  speed: "#4dd0e1",
-  smoothness: "#ab47bc",
-  stability: "#81c784",
-  completion: "#90a4ae",
+  overall: "#e8eaed",
+  responsiveness: "#f5a65b",
+  speed: "#6fd0dc",
+  smoothness: "#c58af9",
+  stability: "#9fd5a6",
+  completion: "#9aa6b2",
 };
 // The over-time chart's headline series are the CROWN LEGS, which are metric keys and so
 // are never in the map above — a publish changes them. Falling back to one colour for
@@ -81,7 +81,7 @@ const AXIS_COLORS: Record<string, string> = {
 // be three, so an unknown key takes a distinct colour by position instead. Deliberately
 // keyed on index rather than hashed off the key: a hash gives two legs near-identical hues
 // often enough to matter, and position here is stable within a render.
-const SERIES_COLORS = ["#4dd0e1", "#ffa726", "#ab47bc", "#81c784", "#f06292", "#90a4ae"];
+const SERIES_COLORS = ["#6fd0dc", "#f5a65b", "#c58af9", "#9fd5a6", "#f48fb1", "#9aa6b2"];
 const axisColor = (key: string, index = 0) =>
   AXIS_COLORS[key] ?? SERIES_COLORS[index % SERIES_COLORS.length];
 
@@ -569,14 +569,14 @@ export default function ProfileDetail() {
             <Typography variant="h6" gutterBottom>
               Standings
             </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
               Rank among all {standings[0].total || 0} measured profiles (1 = best).
               <HelpTip title="For the Overall and each crown metric the current methodology scores on. The red arrow is how far behind #1 it is, as a percent." />
             </Typography>
             {/* Crown lead vs noise: the measured signal-to-noise behind #1 — is the lead real, or is
                 the top a statistical tie? Numbers, not adjectives. */}
             {crownConf && crownConf.gap_to_runner_up != null && crownConf.noise_threshold != null && (
-              <Alert severity={crownConf.clear_lead ? "success" : "info"} icon={false} sx={{ mb: 1.5, py: 0.25 }}>
+              <Alert severity={crownConf.clear_lead ? "success" : "info"} icon={false} sx={{ mb: 2, py: 0.5 }}>
                 <Typography variant="caption">
                   {crownConf.clear_lead ? (
                     <>
@@ -600,14 +600,14 @@ export default function ProfileDetail() {
             <Box
               sx={{
                 display: "grid",
-                gap: 1.5,
+                gap: 2,
                 gridTemplateColumns: { xs: "repeat(2, 1fr)", sm: `repeat(${standings.length}, 1fr)` },
               }}
             >
               {standings.map((s) => (
                 <Box
                   key={s.key}
-                  sx={{ p: 1.5, borderRadius: 1, border: 1, borderColor: "divider", textAlign: "center" }}
+                  sx={{ p: 2, borderRadius: 1, border: 1, borderColor: "divider", textAlign: "center" }}
                 >
                   <Typography variant="overline" color="text.secondary" sx={{ display: "block" }}>
                     {s.label}
@@ -623,7 +623,7 @@ export default function ProfileDetail() {
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        gap: 0.25,
+                        gap: 0.5,
                         color: "error.main",
                       }}
                     >
@@ -695,7 +695,7 @@ export default function ProfileDetail() {
               </Typography>
             ) : (
               <>
-                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
                   Head-to-head record over {ring.matchups_analyzed} match
                   {ring.matchups_analyzed === 1 ? "" : "es"} in {ring.sessions_analyzed} session
                   {ring.sessions_analyzed === 1 ? "" : "s"}.
@@ -712,7 +712,7 @@ export default function ProfileDetail() {
                   <Box
                     sx={{
                       display: "grid",
-                      gap: 1.5,
+                      gap: 2,
                       mb: 2,
                       gridTemplateColumns: { xs: "repeat(2, 1fr)", sm: "repeat(4, 1fr)" },
                     }}
@@ -759,7 +759,7 @@ export default function ProfileDetail() {
                       <Tooltip key={b.label} title={b.tip}>
                         <Box
                           sx={{
-                            p: 1.5,
+                            p: 2,
                             borderRadius: 1,
                             border: 1,
                             borderColor: "divider",
@@ -855,7 +855,7 @@ export default function ProfileDetail() {
                     {/* The headline. "Beat 12 profiles Overall ranks above it" is the whole
                         finding; without it the reader has to derive it from the rows. */}
                     {ring.versus_overall && (
-                      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                         Of {ring.versus_overall.decided_opponents} decided pairing
                         {ring.versus_overall.decided_opponents === 1 ? "" : "s"}, it{" "}
                         <b>beat {ring.versus_overall.beat_higher_overall}</b> profile
@@ -882,7 +882,7 @@ export default function ProfileDetail() {
                         >
                           <Link
                             component="button"
-                            underline="hover"
+                           
                             onClick={() =>
                               navigate(`/profiles/${encodeURIComponent(o.fingerprint)}`)
                             }
@@ -964,7 +964,7 @@ export default function ProfileDetail() {
                           <Link
                             component="button"
                             type="button"
-                            underline="hover"
+                           
                             color="inherit"
                             sx={{ font: "inherit", fontWeight: 600, textAlign: "left", minWidth: 0 }}
                             onClick={() => navigate(`/profiles/${encodeURIComponent(b.opponent)}`)}
@@ -1028,7 +1028,7 @@ export default function ProfileDetail() {
                             <Link
                               component="button"
                               type="button"
-                              underline="hover"
+                             
                               color="inherit"
                               onClick={() => navigate(`/profiles/${encodeURIComponent(b.opponent)}`)}
                             >
@@ -1308,7 +1308,7 @@ export default function ProfileDetail() {
               </Stack>
               {/* Ingredients check: did we collect the SAME raw old vs new? (URLs / LoAF / composition) */}
               {audit.collection && (
-                <Box sx={{ mt: 2, pt: 1.5, borderTop: 1, borderColor: "divider" }}>
+                <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
                   <Typography variant="subtitle2" gutterBottom>
                     Raw collection (ingredients)
                   </Typography>
@@ -1318,7 +1318,7 @@ export default function ProfileDetail() {
                       : "Same ingredients: old and new runs loaded the same URLs with the same coverage."}
                   </Alert>
                   {audit.collection.changed && (
-                    <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+                    <Stack spacing={0.5} sx={{ mt: 0.5 }}>
                       {audit.collection.urls_added.length > 0 && (
                         <Typography variant="body2" color="warning.main">
                           URLs only in new runs: {audit.collection.urls_added.join(", ")}
