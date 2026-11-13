@@ -1,10 +1,11 @@
 // Top-bar "Follow best" control: a switch that arms the crown follower (keep the
 // firewall's SQM settings on the crowned best profile as the crown changes), plus a
 // popover with the follower's status, the crown-churn statistics ("how often does the
-// best profile change?"), and the recent crown-change ledger. Tracking (the ledger)
+// best profile change?"), and the recent crown-change ledger. The popover reads top-down:
+// the profile being followed and its cost first, then the rule that picks it, the speed
+// limit over that rule, the other verdicts for reference, and the churn of the pooled crown. Tracking (the ledger)
 // runs whether or not the switch is on — the switch only arms the firewall write.
-import { useCallback, useEffect, useState } from "react";
-import FastestGapLine from "./FastestGapLine";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useFastestGaps } from "../hooks/useFastestGaps";
 import { Link as RouterLink } from "react-router-dom";
 import Alert from "@mui/material/Alert";
@@ -12,21 +13,30 @@ import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
+import Collapse from "@mui/material/Collapse";
 import Divider from "@mui/material/Divider";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import IconButton from "@mui/material/IconButton";
+import InputAdornment from "@mui/material/InputAdornment";
 import Link from "@mui/material/Link";
 import Popover from "@mui/material/Popover";
+import Radio from "@mui/material/Radio";
+import RadioGroup from "@mui/material/RadioGroup";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
+import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 
 import { api } from "../api/client";
-import type { CrownFollowStatus, CrowningPolicy } from "../api/types";
-import { fmtTimeShort } from "../utils/format";
+import type { CrownFollowStatus, CrowningPolicy, LegGap, LegGaps } from "../api/types";
+import { fmtTimeShort, parseApiDate } from "../utils/format";
 
 const POLL_MS = 60_000;
 
@@ -37,10 +47,150 @@ function fmtHours(h: number | null | undefined): string {
   return `${(h / 24).toFixed(1)} d`;
 }
 
+function fmtDateShort(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = parseApiDate(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// The rankings Auto-apply can follow, in the order the popover lists them. `hint` is the
+// one line under each option; the long form stays in the tooltip.
+const POLICIES: { value: CrowningPolicy; name: string; hint: string; tip: string }[] = [
+  {
+    value: "fused",
+    name: "Overall",
+    hint: "Pooled results corrected by every duel. The default.",
+    tip: "Act on the one ranking fitted over BOTH records — each profile's pooled median, corrected by every head-to-head round it fought. See the Overall page.",
+  },
+  {
+    value: "pooled",
+    name: "Pooled overall",
+    hint: "Best all-time average.",
+    tip: "Act on the all-time pooled Overall argmax — the stable, weather-averaged map of the whole field.",
+  },
+  {
+    value: "duel",
+    name: "Duel champion",
+    hint: "Latest head-to-head winner.",
+    tip: "Act on the duel ladder's latest head-to-head champion (interleaved same-weather verdicts). Falls back to the pooled crown when no decisive fresh duel exists.",
+  },
+  {
+    value: "math",
+    name: "Fastest on paper",
+    hint: "Lowest FCP × LCP. Ignores smoothness.",
+    tip: "The confident profile with the lowest median FCP × median LCP in raw milliseconds. Has no tie test, so it can switch on small differences. Falls back to the pooled crown when no confident profile has both readings.",
+  },
+  {
+    value: "lcp_first",
+    name: "LCP first",
+    hint: "Best main-content time, then fastest first paint.",
+    tip: "Every confident profile whose median LCP is within the allowance of the best LCP qualifies, and the fastest median FCP among them is followed. Raw milliseconds, no weights. Falls back to the pooled crown when no confident profile has both readings.",
+  },
+  {
+    value: "fcp_first",
+    name: "FCP first",
+    hint: "Best first paint, then fastest main content.",
+    tip: "Every confident profile whose median FCP is within the allowance of the best FCP qualifies, and the fastest median LCP among them is followed. Raw milliseconds, no weights. Falls back to the pooled crown when no confident profile has both readings.",
+  },
+];
+
+const policyName = (p: string | undefined) => POLICIES.find((x) => x.value === p)?.name ?? "pooled overall";
+
+// Same colour rule as FastestGapLine: amber past 0%, red at 25% or more, noise never counts.
+function gapTone(g?: LegGap): "success" | "neutral" | "warning" | "error" {
+  if (!g) return "neutral";
+  if (g.is_fastest) return "success";
+  if (!g.clear || g.delta_ms <= 0) return "neutral";
+  return g.pct >= 25 ? "error" : "warning";
+}
+
+// One leg of "how far behind the fastest is this profile?" as a small tile: the verdict
+// large, the percent beneath it.
+function LegTile({ leg, gap }: { leg: "LCP" | "FCP"; gap?: LegGap }) {
+  const tone = gapTone(gap);
+  let value = "—";
+  let sub = "no median yet";
+  if (gap?.is_fastest) {
+    value = "Fastest";
+    sub = `${gap.ms.toFixed(0)} ms`;
+  } else if (gap && !gap.clear) {
+    value = "Within noise";
+    sub = `${gap.ms.toFixed(0)} ms`;
+  } else if (gap) {
+    const slower = gap.delta_ms > 0;
+    value = `${slower ? "+" : "−"}${Math.abs(gap.delta_ms).toFixed(0)} ms`;
+    sub = `${Math.abs(gap.pct).toFixed(0)}% ${slower ? "slower" : "faster"}`;
+  }
+  const color =
+    tone === "success"
+      ? "success.main"
+      : tone === "error"
+        ? "error.main"
+        : tone === "warning"
+          ? "warning.main"
+          : "text.primary";
+  return (
+    <Box sx={{ bgcolor: "background.default", borderRadius: 1, p: 1, minWidth: 0 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+        {leg} vs fastest
+      </Typography>
+      <Typography
+        sx={{ fontWeight: 700, fontSize: 16, color, display: "flex", alignItems: "center", gap: 0.5 }}
+      >
+        {tone === "error" && <WarningAmberIcon sx={{ fontSize: 16 }} />}
+        {value}
+      </Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: "tabular-nums" }}>
+        {sub}
+      </Typography>
+    </Box>
+  );
+}
+
+// "Download: 880Mbit q6300 t3 i60 ecn | Upload: 880Mbit q500 t3 i60 ecn" → two rows. Any
+// label that is not in that shape is shown as-is.
+function shapingRows(label: string | null | undefined): { dir: string; text: string }[] | null {
+  if (!label) return null;
+  const rows = label.split("|").map((part) => {
+    const m = part.trim().match(/^(Download|Upload):\s*(.*)$/i);
+    return m ? { dir: m[1].toLowerCase() === "download" ? "↓ Down" : "↑ Up", text: m[2] } : null;
+  });
+  return rows.every(Boolean) ? (rows as { dir: string; text: string }[]) : null;
+}
+
+// Which legs of a profile clearly exceed the speed budget (gaps inside the noise never count,
+// the same rule `crowning.budget_check` applies).
+function overBudget(
+  gaps: LegGaps | null | undefined,
+  budget: { enabled: boolean; lcp_pct: number; fcp_pct: number },
+): string[] {
+  if (!budget.enabled || !gaps) return [];
+  const out: string[] = [];
+  if (gaps.lcp?.clear && gaps.lcp.pct > budget.lcp_pct) out.push("LCP");
+  if (gaps.fcp?.clear && gaps.fcp.pct > budget.fcp_pct) out.push("FCP");
+  return out;
+}
+
+function SectionTitle({ children, action }: { children: ReactNode; action?: ReactNode }) {
+  return (
+    <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+      <Typography
+        variant="overline"
+        color="text.secondary"
+        sx={{ lineHeight: 1.5, letterSpacing: "0.06em", fontWeight: 600 }}
+      >
+        {children}
+      </Typography>
+      {action}
+    </Stack>
+  );
+}
+
 export default function FollowBest() {
   const [info, setInfo] = useState<CrownFollowStatus | null>(null);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [busy, setBusy] = useState(false); // toggle or sync in flight
+  const [showChanges, setShowChanges] = useState(false);
   const [snack, setSnack] = useState<{ msg: string; sev: "success" | "error" | "info" } | null>(
     null,
   );
@@ -215,13 +365,93 @@ export default function FollowBest() {
   const followedSource = last?.governing_source ?? "fused";
   // What the followed profile (and the duel champion) give up against the field's fastest
   // FCP and LCP — the trade automation is making, stated where it is chosen.
-  const legGaps = useFastestGaps([followedFp, info?.duel_champion?.fingerprint]);
+  const legGaps = useFastestGaps([
+    followedFp,
+    info?.duel_champion?.fingerprint,
+    last?.crown_fingerprint,
+  ]);
   const pooledDiffers = !!(
     last?.crown_fingerprint &&
     followedFp &&
     last.crown_fingerprint !== followedFp
   );
   const changes = (info?.events ?? []).filter((e) => e.kind === "change").slice(0, 5);
+
+  const followedGaps = followedFp ? legGaps.gaps[followedFp] : null;
+  const shaping = shapingRows(followedLabel);
+  // When the follower wrote something other than the chosen policy's own pick (a fallback,
+  // or the speed budget passing the pick over), say why in one line.
+  const fallbackNote =
+    followedSource !== policy
+      ? last?.governing_detail ||
+        (policy === "duel"
+          ? "No fresh duel verdict — following the pooled crown instead."
+          : policy === "fused"
+            ? "The Overall ranking names nobody yet — following the pooled crown instead."
+            : policy === "math" || policy === "lcp_first" || policy === "fcp_first"
+              ? "No confident FCP and LCP reading yet — following the pooled crown instead."
+              : null)
+      : null;
+  const pctField = (
+    label: string,
+    value: string,
+    onChange: (v: string) => void,
+    onCommit: () => void,
+    disabled: boolean,
+    max: number,
+    width?: number,
+  ) => (
+    <TextField
+      size="small"
+      sx={width ? { width } : undefined}
+      type="number"
+      label={label}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={onCommit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") onCommit();
+      }}
+      disabled={disabled}
+      slotProps={{
+        input: { endAdornment: <InputAdornment position="end">%</InputAdornment> },
+        htmlInput: { min: 0, max, step: 1, inputMode: "numeric", style: { fontSize: 16 } },
+      }}
+    />
+  );
+  const duelFp = info?.duel_champion?.fingerprint;
+  const duelOver = duelFp ? overBudget(legGaps.gaps[duelFp], budget) : [];
+  const pooledFp = last?.crown_fingerprint ?? null;
+  const pooledOver = pooledDiffers && pooledFp ? overBudget(legGaps.gaps[pooledFp], budget) : [];
+  const gapSummary = (fp: string | null | undefined) => {
+    const g = fp ? legGaps.gaps[fp] : null;
+    if (!g) return null;
+    const one = (name: string, x?: LegGap) =>
+      !x
+        ? null
+        : x.is_fastest
+          ? `${name} fastest`
+          : !x.clear
+            ? `${name} within noise`
+            : `${name} ${x.delta_ms > 0 ? "+" : "−"}${Math.abs(x.delta_ms).toFixed(0)} ms (${x.delta_ms > 0 ? "+" : "−"}${Math.abs(x.pct).toFixed(0)}%)`;
+    return [one("LCP", g.lcp), one("FCP", g.fcp)].filter(Boolean) as string[];
+  };
+  const others: { fp: string; name: string; role: string; over: string[]; note?: string }[] = [];
+  if (pooledDiffers && pooledFp)
+    others.push({
+      fp: pooledFp,
+      name: last?.crown_name || last?.crown_label || pooledFp,
+      role: "Pooled overall winner · its changes are tracked below",
+      over: pooledOver,
+    });
+  if (info?.duel_champion && duelFp !== followedFp)
+    others.push({
+      fp: info.duel_champion.fingerprint,
+      name: info.duel_champion.name || info.duel_champion.label || info.duel_champion.fingerprint,
+      role: `Duel champion · duel #${info.duel_champion.duel_id}${info.duel_champion.decisive ? "" : " · by draws only"}`,
+      over: duelOver,
+    });
+  const intervalH = Math.round(((info?.config.interval_minutes ?? 360) / 60) * 10) / 10;
 
   return (
     <>
@@ -273,358 +503,402 @@ export default function FollowBest() {
         onClose={() => setAnchor(null)}
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
         transformOrigin={{ vertical: "top", horizontal: "right" }}
-        slotProps={{ paper: { sx: { p: 2, width: 360, maxWidth: "95vw" } } }}
+        slotProps={{ paper: { sx: { p: 2, width: 360, maxWidth: "95vw", borderRadius: 2 } } }}
       >
-        <Stack spacing={1}>
+        <Stack spacing={3}>
+          {/* 1 — One switch, named for what it does. Its state is spelled out in the
+              status pill under the profile name, not in a second chip up here. */}
           <Stack direction="row" alignItems="center" spacing={1}>
-            <EmojiEventsIcon fontSize="small" color={enabled ? "warning" : "disabled"} />
-            <Typography variant="subtitle2" sx={{ flexGrow: 1 }}>
-              Auto-apply best
+            <Typography sx={{ flexGrow: 1, fontWeight: 650, fontSize: 16, letterSpacing: "-0.01em" }}>
+              Auto-apply best profile
             </Typography>
-            <Chip
-              size="small"
-              label={enabled ? "applying" : "tracking only"}
-              color={enabled ? "warning" : "default"}
-              variant="outlined"
-            />
             {/* The popover always carries the switch — on phones it's the only one (the
                 toolbar switch is hidden on xs to keep the update button visible). */}
             <Switch
-              size="small"
               checked={enabled}
               disabled={busy || info === null}
               onChange={(e) => toggle(e.target.checked)}
               inputProps={{ "aria-label": "Auto-apply best" }}
             />
           </Stack>
-          <Typography variant="caption" color="text.secondary">
-            When on, the firewall is switched to whichever profile the chosen ranking names best.
-            Re-checked after every run, with a full check every{" "}
-            {Math.round(((info?.config.interval_minutes ?? 360) / 60) * 10) / 10} h.
-          </Typography>
 
-          {/* The first-class CROWNING POLICY: which verdict the follower acts on. The pooled
-              crown statistic is always computed and shown; this only selects what automation
-              applies. One policy, one follower, one write path. */}
-          <Box>
-            <Typography variant="caption" color="text.secondary">
-              Which ranking to follow
-            </Typography>
-            <Stack direction="row" spacing={1} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
-              <Tooltip title="Act on the one ranking fitted over BOTH records — each profile's pooled median, corrected by every head-to-head round it fought. The default; the other two are its corners. See the Overall page.">
-                <Chip
-                  size="small"
-                  label="Overall (both records)"
-                  color={policy === "fused" ? "warning" : "default"}
-                  variant={policy === "fused" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("fused")}
-                  disabled={busy}
-                />
-              </Tooltip>
-              <Tooltip title="Act on the all-time pooled Overall argmax — the stable, weather-averaged map of the whole field.">
-                <Chip
-                  size="small"
-                  label="Pooled Overall"
-                  color={policy === "pooled" ? "warning" : "default"}
-                  variant={policy === "pooled" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("pooled")}
-                  disabled={busy}
-                />
-              </Tooltip>
-              <Tooltip title="Act on the duel ladder's latest head-to-head champion (interleaved same-weather verdicts). Falls back to the pooled crown when no decisive fresh duel exists.">
-                <Chip
-                  size="small"
-                  label="Duel champion"
-                  color={policy === "duel" ? "warning" : "default"}
-                  variant={policy === "duel" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("duel")}
-                  disabled={busy}
-                />
-              </Tooltip>
-              <Tooltip title="Act on the fastest profile on paper: the confident profile with the lowest median FCP × median LCP in raw milliseconds. Ignores smoothness and has no tie test, so it can switch on small differences. Falls back to the pooled crown when no confident profile has both readings.">
-                <Chip
-                  size="small"
-                  label="Fastest on paper"
-                  color={policy === "math" ? "warning" : "default"}
-                  variant={policy === "math" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("math")}
-                  disabled={busy}
-                />
-              </Tooltip>
-              <Tooltip title="Main content first, then first paint: every confident profile whose median LCP is within the band of the best LCP qualifies, and the fastest median FCP among them is followed. Raw milliseconds, no weights. Falls back to the pooled crown when no confident profile has both readings.">
-                <Chip
-                  size="small"
-                  label="LCP first"
-                  color={policy === "lcp_first" ? "warning" : "default"}
-                  variant={policy === "lcp_first" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("lcp_first")}
-                  disabled={busy}
-                />
-              </Tooltip>
-              <Tooltip title="First paint first, then main content: every confident profile whose median FCP is within the band of the best FCP qualifies, and the fastest median LCP among them is followed. Raw milliseconds, no weights. Falls back to the pooled crown when no confident profile has both readings.">
-                <Chip
-                  size="small"
-                  label="FCP first"
-                  color={policy === "fcp_first" ? "warning" : "default"}
-                  variant={policy === "fcp_first" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("fcp_first")}
-                  disabled={busy}
-                />
-              </Tooltip>
-            </Stack>
-            {(["lcp", "fcp"] as const).map((leg) => (
-              <Stack key={leg} direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+          {/* 2 — The answer first: which profile automation follows, whether the firewall
+              is on it, and what it costs against the fastest legs. What the follower WRITES
+              is the governing crown — the one the crowning policy resolved — never the
+              pooled crown, which is shown below as a reference. */}
+          <Box sx={{ bgcolor: "action.hover", borderRadius: 1.5, p: 2 }}>
+            <Stack spacing={2}>
+              <Box>
                 <Typography variant="caption" color="text.secondary">
-                  {leg.toUpperCase()}-first band: give up up to
+                  {last?.on_crown === true ? "On the firewall now" : "Best profile"} · by{" "}
+                  {policyName(followedSource)}
                 </Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={bandDraft[leg]}
-                  onChange={(e) => setBandDraft((d) => ({ ...d, [leg]: e.target.value }))}
-                  onBlur={() => saveBand(leg)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") saveBand(leg);
-                  }}
-                  disabled={busy}
-                  inputProps={{ min: 0, max: 50, step: 1, style: { width: 44, padding: "2px 6px", fontSize: 12 } }}
-                />
-                <Typography variant="caption" color="text.secondary">
-                  {leg === "lcp" ? "% of the best LCP for a faster FCP" : "% of the best FCP for a faster LCP"}
-                </Typography>
-              </Stack>
-            ))}
-            <Tooltip title="Auto-apply will not follow a crown that is clearly slower than the field's fastest LCP or FCP by more than this. It follows the first crown that fits (LCP first, combined, FCP first, pooled, duel, fastest on paper) and says so. Gaps inside the measurement noise never count.">
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
-                <Switch
-                  size="small"
-                  checked={budget.enabled}
-                  onChange={(e) => saveBudget({ enabled: e.target.checked })}
-                  disabled={busy}
-                />
-                <Typography variant="caption" color="text.secondary">
-                  Speed budget: at most
-                </Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={budgetDraft.lcp}
-                  onChange={(e) => setBudgetDraft((d) => ({ ...d, lcp: e.target.value }))}
-                  onBlur={() => Number(budgetDraft.lcp) !== budget.lcp_pct && saveBudget({ lcp_pct: Number(budgetDraft.lcp) })}
-                  disabled={busy || !budget.enabled}
-                  inputProps={{ min: 0, max: 200, step: 1, style: { width: 44, padding: "2px 6px", fontSize: 12 } }}
-                />
-                <Typography variant="caption" color="text.secondary">
-                  % slower LCP,
-                </Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={budgetDraft.fcp}
-                  onChange={(e) => setBudgetDraft((d) => ({ ...d, fcp: e.target.value }))}
-                  onBlur={() => Number(budgetDraft.fcp) !== budget.fcp_pct && saveBudget({ fcp_pct: Number(budgetDraft.fcp) })}
-                  disabled={busy || !budget.enabled}
-                  inputProps={{ min: 0, max: 200, step: 1, style: { width: 44, padding: "2px 6px", fontSize: 12 } }}
-                />
-                <Typography variant="caption" color="text.secondary">
-                  % slower FCP than the fastest
-                </Typography>
-              </Stack>
-            </Tooltip>
-            {info?.duel_champion ? (
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-                Duel champion:{" "}
-                <b>
-                  {info.duel_champion.name ||
-                    info.duel_champion.label ||
-                    info.duel_champion.fingerprint}
-                </b>
-                {info.duel_champion.decisive ? "" : " (by draws only)"} · duel #
-                {info.duel_champion.duel_id}
-                {policy === "duel" && !info.duel_champion.decisive
-                  ? " — not decisive, follower falls back to the pooled crown"
-                  : ""}
-                <FastestGapLine
-                  gaps={legGaps.gaps[info.duel_champion.fingerprint]}
-                  fastest={legGaps.fastest}
-                />
-              </Typography>
-            ) : (
-              <Typography variant="caption" color="text.disabled" sx={{ display: "block", mt: 0.5 }}>
-                No fresh duel verdict yet{policy === "duel" ? " — the follower falls back to the pooled crown" : ""}.
-              </Typography>
-            )}
-          </Box>
-
-          <Divider />
-
-          {/* What the follower actually WRITES is the governing crown — the one the crowning
-              policy resolved. This block used to render the pooled crown under the heading
-              "Crown", with the on-crown chip beside it, while `policy = "duel"` was applying
-              the duel champion: the popover named one profile and the firewall was on
-              another, and the chip belonged to neither line. The pooled crown is still
-              shown, demoted, because it is the tracked statistic the churn stats count. */}
-          <Box>
-            <Typography variant="caption" color="text.secondary">
-              {followedSource === "fused"
-                ? "Following · Overall ranking"
-                : followedSource === "duel"
-                  ? "Following · duel champion"
-                  : followedSource === "math"
-                    ? "Following · fastest on paper (FCP × LCP)"
-                    : followedSource === "lcp_first"
-                      ? "Following · LCP first"
-                      : followedSource === "fcp_first"
-                        ? "Following · FCP first"
-                      : policy === "lcp_first" || policy === "fcp_first"
-                        ? "Following · pooled crown (no confident FCP and LCP reading yet)"
-                    : policy === "math"
-                      ? "Following · pooled crown (no confident FCP × LCP reading yet)"
-                  : policy === "duel"
-                    ? "Following · pooled crown (no fresh duel verdict)"
-                    : policy === "fused"
-                      ? "Following · pooled crown (the Overall ranking names nobody yet)"
-                      : "Following · pooled crown"}
-            </Typography>
-            {followedFp ? (
-              <>
-                <Typography variant="body2">
+                {followedFp ? (
                   <Link
                     component={RouterLink}
                     to={`/profiles/${encodeURIComponent(followedFp)}`}
                     onClick={() => setAnchor(null)}
-                   
-                  >
-                    {followedName}
-                  </Link>{" "}
-                  {/* The chip belongs to the FOLLOWED profile — `on_crown` is computed
-                      against the governing target, so pinning it to the pooled crown (as
-                      it was) described a profile it wasn't measuring. */}
-                  {last?.on_crown === true && (
-                    <Chip size="small" label="on the firewall" color="success" variant="outlined" />
-                  )}
-                  {last?.on_crown === false && (
-                    <Chip size="small" label="firewall elsewhere" color="warning" variant="outlined" />
-                  )}
-                </Typography>
-                <FastestGapLine gaps={followedFp ? legGaps.gaps[followedFp] : null} fastest={legGaps.fastest} />
-                {/* The settings that name stands for — kept, demoted, clamped. A summary is
-                    what you read once you already know which profile you are looking at. */}
-                {followedName !== followedLabel && followedLabel && (
-                  <Typography
-                    variant="caption"
-                    color="text.disabled"
-                    title={followedLabel}
                     sx={{
-                      display: "-webkit-box",
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: "vertical",
-                      overflow: "hidden",
+                      display: "block",
+                      fontSize: 22,
+                      fontWeight: 700,
+                      letterSpacing: "-0.02em",
+                      lineHeight: 1.25,
                     }}
                   >
+                    {followedName}
+                  </Link>
+                ) : (
+                  <Typography sx={{ fontSize: 18, fontWeight: 600 }} color="text.secondary">
+                    {stats?.current_crown_name ||
+                      stats?.current_crown_label ||
+                      stats?.current_crown_fingerprint ||
+                      "No confident crown yet"}
+                  </Typography>
+                )}
+                <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+                  {!enabled ? (
+                    <Chip size="small" label="Tracking only — not applied" variant="outlined" />
+                  ) : last?.on_crown === true ? (
+                    <Chip size="small" icon={<CheckCircleIcon />} label="Applied" color="success" variant="outlined" />
+                  ) : last?.on_crown === false ? (
+                    <Chip
+                      size="small"
+                      icon={<WarningAmberIcon />}
+                      label="Firewall is on a different profile"
+                      color="warning"
+                      variant="outlined"
+                    />
+                  ) : null}
+                </Stack>
+                {fallbackNote && (
+                  <Typography variant="caption" color="warning.main" sx={{ display: "block", mt: 1 }}>
+                    {fallbackNote}
+                  </Typography>
+                )}
+              </Box>
+
+              {followedFp && (
+                <Tooltip title="Each leg against the field's fastest median on that leg. A gap counts only when it clears twice the noise of the two medians.">
+                  <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}>
+                    <LegTile leg="LCP" gap={followedGaps?.lcp} />
+                    <LegTile leg="FCP" gap={followedGaps?.fcp} />
+                  </Box>
+                </Tooltip>
+              )}
+
+              {/* The settings that name stands for, one row per direction. */}
+              {followedName !== followedLabel && followedLabel && (
+                shaping ? (
+                  <Box
+                    component="dl"
+                    sx={{ m: 0, display: "grid", gridTemplateColumns: "auto 1fr", columnGap: 1, rowGap: 0.5 }}
+                  >
+                    {shaping.map((r) => (
+                      <Box key={r.dir} sx={{ display: "contents" }}>
+                        <Typography component="dt" variant="caption" color="text.secondary">
+                          {r.dir}
+                        </Typography>
+                        <Typography
+                          component="dd"
+                          variant="caption"
+                          sx={{ m: 0, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}
+                        >
+                          {r.text}
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Box>
+                ) : (
+                  <Typography variant="caption" color="text.secondary" title={followedLabel}>
                     {followedLabel}
                   </Typography>
-                )}
-                {/* The other verdict, when it names someone else. Saying it outright is the
-                    point: the churn stats and the change list below are all about THIS
-                    profile, which is not the one on the firewall. */}
-                {pooledDiffers && (
-                  <Typography variant="caption" color="warning.main" display="block">
-                    Pooled crown is{" "}
-                    {last?.crown_name || last?.crown_label || last?.crown_fingerprint} — tracked
-                    below, not followed.
-                  </Typography>
-                )}
-              </>
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                {stats?.current_crown_name ||
-                  stats?.current_crown_label ||
-                  stats?.current_crown_fingerprint ||
-                  "No confident crown yet"}
-              </Typography>
-            )}
-            <Typography variant="caption" color="text.disabled">
-              Last check: {info?.status.last_check_at ? fmtTimeShort(info.status.last_check_at) : "—"}
-              {last?.apply_skipped ? ` · ${last.apply_skipped}` : ""}
-              {last?.error ? ` · ${last.error}` : ""}
-            </Typography>
-          </Box>
+                )
+              )}
 
-          {/* Churn stats: how often does the best profile change? */}
-          <Box>
-            <Typography variant="caption" color="text.secondary">
-              Crown stability
-            </Typography>
-            {stats && stats.tracked_since ? (
-              <>
-                <Typography variant="body2">
-                  Changed <b>{stats.changes_7d}×</b> in 7 days ({stats.changes_24h}× in 24 h,{" "}
-                  {stats.changes_30d}× in 30 days)
-                </Typography>
+              {(last?.apply_skipped || last?.error) && (
+                <Alert severity={last?.error ? "error" : "info"} sx={{ py: 0 }}>
+                  {last?.error || last?.apply_skipped}
+                </Alert>
+              )}
+
+              <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
                 <Typography variant="caption" color="text.secondary">
-                  Median reign {fmtHours(stats.median_reign_hours)} · current reign{" "}
-                  {fmtHours(stats.current_reign_hours)}
-                  {stats.changes_per_day != null ? ` · ${stats.changes_per_day}/day` : ""} · tracked
-                  since {fmtTimeShort(stats.tracked_since)}
+                  Checked {info?.status.last_check_at ? fmtTimeShort(info.status.last_check_at) : "—"}
+                  <br />
+                  Full check every {intervalH} h
                 </Typography>
-              </>
-            ) : (
-              <Typography variant="body2" color="text.secondary">
-                No crown observations yet — stats appear after the first check.
+                <Button
+                  variant="outlined"
+                  onClick={syncNow}
+                  disabled={busy}
+                  startIcon={busy ? <CircularProgress size={14} /> : undefined}
+                  sx={{ flexShrink: 0, whiteSpace: "nowrap" }}
+                >
+                  Check now
+                </Button>
+              </Stack>
+            </Stack>
+          </Box>
+
+          {/* 3 — The CROWNING POLICY: which verdict the follower acts on. One radio list;
+              the LCP-first / FCP-first allowance appears only under its own option, since
+              it means nothing to the others. */}
+          <Box>
+            <SectionTitle>Pick the best profile by</SectionTitle>
+            <RadioGroup
+              value={policy}
+              onChange={(e) => setPolicy(e.target.value as CrowningPolicy)}
+              sx={{ gap: 0.5 }}
+            >
+              {POLICIES.map((p) => {
+                const selected = policy === p.value;
+                const leg = p.value === "lcp_first" ? "lcp" : p.value === "fcp_first" ? "fcp" : null;
+                const other = leg === "lcp" ? "FCP" : "LCP";
+                return (
+                  <Box
+                    key={p.value}
+                    sx={{
+                      border: 1,
+                      borderColor: selected ? "primary.main" : "transparent",
+                      bgcolor: selected ? "action.hover" : "transparent",
+                      borderRadius: 1,
+                      px: 1,
+                      py: 0.5,
+                    }}
+                  >
+                    <Tooltip title={p.tip} placement="left" enterDelay={600}>
+                      <FormControlLabel
+                        value={p.value}
+                        disabled={busy}
+                        control={<Radio size="small" sx={{ alignSelf: "flex-start", mt: -0.5 }} />}
+                        sx={{ m: 0, alignItems: "flex-start", width: "100%" }}
+                        label={
+                          <Box>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                              {p.name}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {p.hint}
+                            </Typography>
+                          </Box>
+                        }
+                      />
+                    </Tooltip>
+                    {selected && leg && (
+                      <Stack spacing={0.5} sx={{ pl: 4, pt: 1, pb: 1 }}>
+                        {pctField(
+                          `${leg.toUpperCase()} allowance`,
+                          bandDraft[leg],
+                          (v) => setBandDraft((d) => ({ ...d, [leg]: v })),
+                          () => saveBand(leg),
+                          busy,
+                          50,
+                          150,
+                        )}
+                        <Typography variant="caption" color="text.secondary">
+                          Accept up to this much slower {leg.toUpperCase()} than the best, to get a
+                          faster {other}.
+                        </Typography>
+                      </Stack>
+                    )}
+                  </Box>
+                );
+              })}
+            </RadioGroup>
+          </Box>
+
+          {/* 4 — The speed budget: a guardrail over whichever ranking is chosen. */}
+          <Box>
+            <SectionTitle
+              action={
+                <Switch
+                  checked={budget.enabled}
+                  onChange={(e) => saveBudget({ enabled: e.target.checked })}
+                  disabled={busy}
+                  inputProps={{ "aria-label": "Speed limit" }}
+                />
+              }
+            >
+              Speed limit
+            </SectionTitle>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
+              {budget.enabled
+                ? "Never follow a profile clearly slower than the fastest by more than:"
+                : "Off — the chosen ranking is followed however slow its pick is."}
+            </Typography>
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 2,
+                opacity: budget.enabled ? 1 : 0.5,
+              }}
+            >
+              {pctField(
+                "Max LCP slowdown",
+                budgetDraft.lcp,
+                (v) => setBudgetDraft((d) => ({ ...d, lcp: v })),
+                () => Number(budgetDraft.lcp) !== budget.lcp_pct && saveBudget({ lcp_pct: Number(budgetDraft.lcp) }),
+                busy || !budget.enabled,
+                200,
+              )}
+              {pctField(
+                "Max FCP slowdown",
+                budgetDraft.fcp,
+                (v) => setBudgetDraft((d) => ({ ...d, fcp: v })),
+                () => Number(budgetDraft.fcp) !== budget.fcp_pct && saveBudget({ fcp_pct: Number(budgetDraft.fcp) }),
+                busy || !budget.enabled,
+                200,
+              )}
+            </Box>
+            {budget.enabled && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                If the pick is over the limit, the first ranking whose pick fits is followed instead.
               </Typography>
             )}
           </Box>
 
-          {/* Recent crown changes */}
-          {changes.length > 0 && (
+          {/* 5 — The other verdicts, for reference. Never written to the firewall. */}
+          {(others.length > 0 || !info?.duel_champion) && (
             <Box>
-              <Typography variant="caption" color="text.secondary">
-                Recent changes
-              </Typography>
-              <Stack spacing={0.5} sx={{ mt: 0.5 }}>
-                {changes.map((e) => (
-                  <Typography key={e.id} variant="caption" sx={{ display: "block" }}>
-                    {fmtTimeShort(e.created_at)} ·{" "}
-                    {e.previous_fingerprint
-                      ? `${e.previous_name || e.previous_label || e.previous_fingerprint} → ${
-                          e.name || e.label || e.fingerprint
-                        }`
-                      : `tracking started (${e.name || e.label || e.fingerprint})`}
-                    {e.applied && (
-                      <Chip
-                        size="small"
-                        label="applied"
-                        color="success"
-                        variant="outlined"
-                        sx={{ ml: 0.5, height: 16, fontSize: "0.65rem" }}
-                      />
-                    )}
-                    {e.error && (
-                      <Chip
-                        size="small"
-                        label="apply failed"
-                        color="error"
-                        variant="outlined"
-                        sx={{ ml: 0.5, height: 16, fontSize: "0.65rem" }}
-                      />
-                    )}
+              <SectionTitle>Other winners · not applied</SectionTitle>
+              <Stack divider={<Divider flexItem />} spacing={1}>
+                {others.map((o) => {
+                  const parts = gapSummary(o.fp);
+                  return (
+                    <Stack key={o.fp} direction="row" spacing={1} justifyContent="space-between">
+                      <Box sx={{ minWidth: 0 }}>
+                        <Link
+                          component={RouterLink}
+                          to={`/profiles/${encodeURIComponent(o.fp)}`}
+                          onClick={() => setAnchor(null)}
+                          variant="body2"
+                          sx={{ fontWeight: 600 }}
+                        >
+                          {o.name}
+                        </Link>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                          {o.role}
+                        </Typography>
+                      </Box>
+                      <Box sx={{ textAlign: "right", flexShrink: 0 }}>
+                        {o.over.length > 0 && (
+                          <Typography
+                            variant="caption"
+                            color="error.main"
+                            sx={{ display: "flex", alignItems: "center", gap: 0.5, fontWeight: 600, justifyContent: "flex-end" }}
+                          >
+                            <WarningAmberIcon sx={{ fontSize: 14 }} />
+                            Over speed limit
+                          </Typography>
+                        )}
+                        {parts?.map((t) => (
+                          <Typography
+                            key={t}
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{ display: "block", fontVariantNumeric: "tabular-nums" }}
+                          >
+                            {t}
+                          </Typography>
+                        ))}
+                      </Box>
+                    </Stack>
+                  );
+                })}
+                {!info?.duel_champion && (
+                  <Typography variant="caption" color="text.secondary">
+                    No fresh duel verdict yet.
                   </Typography>
-                ))}
+                )}
               </Stack>
             </Box>
           )}
 
-          <Stack direction="row" spacing={1} justifyContent="flex-end">
-            <Button
-              size="small"
-              onClick={syncNow}
-              disabled={busy}
-              startIcon={busy ? <CircularProgress size={12} /> : undefined}
-            >
-              Check now
-            </Button>
-          </Stack>
+          <Divider sx={{ mx: -2 }} />
+
+          {/* 6 — Churn of the POOLED crown: how often does the best profile change? Led by
+              one number, the supporting readings beneath it. */}
+          <Box>
+            <SectionTitle>How often the pooled winner changes</SectionTitle>
+            {stats && stats.tracked_since ? (
+              <>
+                <Stack direction="row" alignItems="baseline" spacing={1}>
+                  <Typography sx={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em" }}>
+                    {stats.changes_7d} {stats.changes_7d === 1 ? "change" : "changes"}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    in the last 7 days
+                  </Typography>
+                </Stack>
+                <Box sx={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 1, mt: 1 }}>
+                  {[
+                    ["24 h", `${stats.changes_24h}`],
+                    ["30 days", `${stats.changes_30d}`],
+                    ["Per day", stats.changes_per_day != null ? `${stats.changes_per_day}` : "—"],
+                    ["Current reign", fmtHours(stats.current_reign_hours)],
+                    ["Median reign", fmtHours(stats.median_reign_hours)],
+                    ["Tracked since", fmtDateShort(stats.tracked_since)],
+                  ].map(([k, v]) => (
+                    <Box key={k} sx={{ bgcolor: "action.hover", borderRadius: 1, p: 1 }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                        {k}
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 650, fontVariantNumeric: "tabular-nums" }}>
+                        {v}
+                      </Typography>
+                    </Box>
+                  ))}
+                </Box>
+              </>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                No observations yet — this appears after the first check.
+              </Typography>
+            )}
+
+            {changes.length > 0 && (
+              <Box sx={{ mt: 2 }}>
+                <Button
+                  size="small"
+                  onClick={() => setShowChanges((v) => !v)}
+                  endIcon={showChanges ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                  sx={{ px: 0, minWidth: 0, color: "text.secondary" }}
+                >
+                  Recent changes ({changes.length})
+                </Button>
+                <Collapse in={showChanges}>
+                  <Stack spacing={1} sx={{ mt: 1 }}>
+                    {changes.map((e) => (
+                      <Box
+                        key={e.id}
+                        sx={{ display: "grid", gridTemplateColumns: "104px 1fr", gap: 1, alignItems: "baseline" }}
+                      >
+                        <Typography variant="caption" color="text.secondary">
+                          {fmtTimeShort(e.created_at)}
+                        </Typography>
+                        <Typography variant="caption">
+                          {e.previous_fingerprint
+                            ? `${e.previous_name || e.previous_label || e.previous_fingerprint} → ${
+                                e.name || e.label || e.fingerprint
+                              }`
+                            : `Tracking started (${e.name || e.label || e.fingerprint})`}
+                          {e.applied && " · applied"}
+                          {e.error && (
+                            <Box component="span" sx={{ color: "error.main" }}>
+                              {" "}
+                              · apply failed
+                            </Box>
+                          )}
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Stack>
+                </Collapse>
+              </Box>
+            )}
+          </Box>
         </Stack>
       </Popover>
 
