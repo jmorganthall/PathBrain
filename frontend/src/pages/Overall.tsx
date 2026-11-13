@@ -114,9 +114,9 @@ function CornerTile({
         bgcolor: strong ? "action.selected" : "transparent",
       }}
     >
-      <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
-        <Stack direction="row" spacing={1.25} alignItems="flex-start">
-          <Box sx={{ flexShrink: 0, mt: 0.25 }}>{icon}</Box>
+      <CardContent sx={{ py: 2, "&:last-child": { pb: 2 } }}>
+        <Stack direction="row" spacing={1} alignItems="flex-start">
+          <Box sx={{ flexShrink: 0, mt: 0.5 }}>{icon}</Box>
           <Box sx={{ minWidth: 0 }}>
             <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
               {title}
@@ -125,7 +125,7 @@ function CornerTile({
             {corner ? (
               <>
                 <Typography variant="h6" sx={{ lineHeight: 1.2 }} noWrap>
-                  <Link component={RouterLink} to={profileHref(corner.fingerprint)} underline="hover" color="inherit">
+                  <Link component={RouterLink} to={profileHref(corner.fingerprint)} color="inherit">
                     {nameOf(corner)}
                   </Link>
                 </Typography>
@@ -218,7 +218,7 @@ function DotWhisker({ rows, tieSigma }: { rows: OverallProfile[]; tieSigma: numb
                   noWrap
                   component={RouterLink}
                   to={profileHref(r.fingerprint)}
-                  sx={{ color: "inherit", textDecoration: "none", "&:hover": { textDecoration: "underline" }, minWidth: 0 }}
+                  sx={{ color: "inherit", textDecoration: "underline", textDecorationColor: "rgba(232,234,237,0.4)", textUnderlineOffset: "0.18em", minWidth: 0 }}
                 >
                   {nameOf(r)}
                 </Typography>
@@ -365,14 +365,14 @@ export default function Overall() {
           <Card sx={{ mb: 2, borderLeft: 4, borderColor: "primary.main", opacity: loading ? 0.7 : 1 }}>
             <CardContent>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }}>
-                <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+                <Stack direction="row" spacing={2} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
                   <EmojiEventsIcon sx={{ color: "warning.main", fontSize: 40, flexShrink: 0 }} />
                   <Box sx={{ minWidth: 0 }}>
                     <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
                       Run this profile
                     </Typography>
                     <Typography variant="h5" sx={{ lineHeight: 1.2 }}>
-                      <Link component={RouterLink} to={profileHref(best.fingerprint)} underline="hover" color="inherit">
+                      <Link component={RouterLink} to={profileHref(best.fingerprint)} color="inherit">
                         {nameOf(best)}
                       </Link>
                     </Typography>
@@ -414,11 +414,11 @@ export default function Overall() {
                 </Stack>
               </Stack>
 
-              <Typography variant="body1" sx={{ mt: 1.5 }}>
+              <Typography variant="body1" sx={{ mt: 2 }}>
                 {data.verdict}
               </Typography>
 
-              <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap alignItems="center">
+              <Stack direction="row" spacing={1} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap alignItems="center">
                 <Button size="small" variant="outlined" component={RouterLink} to={profileHref(best.fingerprint)}>
                   Open profile
                 </Button>
@@ -456,11 +456,11 @@ export default function Overall() {
               </Stack>
 
               {data.tied_count > 0 && (
-                <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: "divider" }}>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+                <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
                     Tied with it on all the evidence ({data.tied_count}) — running any of these is defensible:
                   </Typography>
-                  <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                     {data.tied.map((p) => (
                       <Tooltip
                         key={p.fingerprint}
@@ -486,7 +486,7 @@ export default function Overall() {
                 <Typography variant="h6" sx={{ mb: 0.5 }}>
                   Top profiles at a glance
                 </Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
                   Each profile's combined Overall (filled dot) beside its pooled-only position (hollow). A bar that reaches the leader's line is a tie.
                 </Typography>
                 <DotWhisker rows={chartRows} tieSigma={data.tie_sigma} />
@@ -549,8 +549,8 @@ export default function Overall() {
                         <TableRow key={r.fingerprint} hover sx={{ opacity: r.eligible ? 1 : 0.6 }}>
                           <TableCell align="right">{r.fused_rank ?? "—"}</TableCell>
                           <TableCell sx={{ maxWidth: 260 }}>
-                            <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
-                              <Link component={RouterLink} to={profileHref(r.fingerprint)} underline="hover" color="inherit" noWrap>
+                            <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                              <Link component={RouterLink} to={profileHref(r.fingerprint)} color="inherit" noWrap>
                                 {nameOf(r)}
                               </Link>
                               {isBest && <EmojiEventsIcon sx={{ fontSize: 15, color: "warning.main" }} />}
@@ -637,7 +637,7 @@ export default function Overall() {
                     <Chip size="small" variant="outlined" label="they disagree" sx={{ flexShrink: 0 }} />
                   )}
                 </Stack>
-                <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+                <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                   <CornerTile
                     fastest={corners.fastest}
                     corner={corners.pooled}
@@ -665,10 +665,10 @@ export default function Overall() {
                   />
                 </Stack>
                 {corners.math && (
-                  <Card variant="outlined" sx={{ mt: 1.5 }}>
-                    <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
-                      <Stack direction="row" spacing={1.25} alignItems="flex-start">
-                        <Box sx={{ flexShrink: 0, mt: 0.25 }}>
+                  <Card variant="outlined" sx={{ mt: 2 }}>
+                    <CardContent sx={{ py: 2, "&:last-child": { pb: 2 } }}>
+                      <Stack direction="row" spacing={1} alignItems="flex-start">
+                        <Box sx={{ flexShrink: 0, mt: 0.5 }}>
                           <SpeedIcon sx={{ color: "success.main", fontSize: 30 }} />
                         </Box>
                         <Box sx={{ minWidth: 0 }}>
@@ -677,7 +677,7 @@ export default function Overall() {
                             <HelpTip title="The mathematical crown: the confident profile with the lowest median FCP × median LCP in raw milliseconds. No perception curve, no weights, no ring. It answers which profile paints first and shows main content fastest, not how a load feels, so it sits beside the records and Auto-apply follows it only if you choose it." />
                           </Typography>
                           <Typography variant="h6" sx={{ lineHeight: 1.2 }} noWrap>
-                            <Link component={RouterLink} to={profileHref(corners.math.fingerprint)} underline="hover" color="inherit">
+                            <Link component={RouterLink} to={profileHref(corners.math.fingerprint)} color="inherit">
                               {corners.math.name || corners.math.label || corners.math.fingerprint.slice(0, 8)}
                             </Link>
                           </Typography>
@@ -697,10 +697,10 @@ export default function Overall() {
                   </Card>
                 )}
                 {corners.lcp_first && (
-                  <Card variant="outlined" sx={{ mt: 1.5 }}>
-                    <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
-                      <Stack direction="row" spacing={1.25} alignItems="flex-start">
-                        <Box sx={{ flexShrink: 0, mt: 0.25 }}>
+                  <Card variant="outlined" sx={{ mt: 2 }}>
+                    <CardContent sx={{ py: 2, "&:last-child": { pb: 2 } }}>
+                      <Stack direction="row" spacing={1} alignItems="flex-start">
+                        <Box sx={{ flexShrink: 0, mt: 0.5 }}>
                           <ImageIcon sx={{ color: "secondary.main", fontSize: 30 }} />
                         </Box>
                         <Box sx={{ minWidth: 0 }}>
@@ -709,7 +709,7 @@ export default function Overall() {
                             <HelpTip title={`Main content first, then first paint: among confident profiles, every one whose median LCP is within ${fmtNum(corners.lcp_first.band_pct, 0)}% of the best LCP qualifies, and the fastest median FCP among them wins. Raw milliseconds, no weights, no smoothness leg. Change the band, or let Auto-apply follow it, from the Auto-apply popover.`} />
                           </Typography>
                           <Typography variant="h6" sx={{ lineHeight: 1.2 }} noWrap>
-                            <Link component={RouterLink} to={profileHref(corners.lcp_first.fingerprint)} underline="hover" color="inherit">
+                            <Link component={RouterLink} to={profileHref(corners.lcp_first.fingerprint)} color="inherit">
                               {corners.lcp_first.name || corners.lcp_first.label || corners.lcp_first.fingerprint.slice(0, 8)}
                             </Link>
                           </Typography>
@@ -734,10 +734,10 @@ export default function Overall() {
                   </Card>
                 )}
                 {corners.fcp_first && (
-                  <Card variant="outlined" sx={{ mt: 1.5 }}>
-                    <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
-                      <Stack direction="row" spacing={1.25} alignItems="flex-start">
-                        <Box sx={{ flexShrink: 0, mt: 0.25 }}>
+                  <Card variant="outlined" sx={{ mt: 2 }}>
+                    <CardContent sx={{ py: 2, "&:last-child": { pb: 2 } }}>
+                      <Stack direction="row" spacing={1} alignItems="flex-start">
+                        <Box sx={{ flexShrink: 0, mt: 0.5 }}>
                           <ImageIcon sx={{ color: "info.main", fontSize: 30 }} />
                         </Box>
                         <Box sx={{ minWidth: 0 }}>
@@ -746,7 +746,7 @@ export default function Overall() {
                             <HelpTip title={`First paint first, then main content: among confident profiles, every one whose median FCP is within ${fmtNum(corners.fcp_first.band_pct, 0)}% of the best FCP qualifies, and the fastest median LCP among them wins. Raw milliseconds, no weights, no smoothness leg. Change the band, or let Auto-apply follow it, from the Auto-apply popover.`} />
                           </Typography>
                           <Typography variant="h6" sx={{ lineHeight: 1.2 }} noWrap>
-                            <Link component={RouterLink} to={profileHref(corners.fcp_first.fingerprint)} underline="hover" color="inherit">
+                            <Link component={RouterLink} to={profileHref(corners.fcp_first.fingerprint)} color="inherit">
                               {corners.fcp_first.name || corners.fcp_first.label || corners.fcp_first.fingerprint.slice(0, 8)}
                             </Link>
                           </Typography>
@@ -771,27 +771,27 @@ export default function Overall() {
                   </Card>
                 )}
                 {!corners.fcp_first && corners.fcp_first_note && (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
                     <b>FCP first:</b> {corners.fcp_first_note}
                   </Typography>
                 )}
                 {!corners.lcp_first && corners.lcp_first_note && (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
                     <b>LCP first:</b> {corners.lcp_first_note}
                   </Typography>
                 )}
                 {!corners.math && corners.math_note && (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
                     <b>Fastest on paper:</b> {corners.math_note}
                   </Typography>
                 )}
                 {!corners.agree && corners.pooled && corners.fused && corners.pooled.fingerprint !== corners.fused.fingerprint && (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
                     The pooled record had <b>{nameOf(corners.pooled)}</b> on top; once the ring's rounds are heard, <b>{nameOf(corners.fused)}</b> is. That is the ring correcting a pooled lead that was worth less than it looked.
                   </Typography>
                 )}
                 {!corners.agree && corners.ring && corners.fused && corners.ring.fingerprint !== corners.fused.fingerprint && corners.pooled?.fingerprint === corners.fused.fingerprint && (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
                     {corners.ring.raceable === false ? (
                       <>
                         The ring alone puts <b>{nameOf(corners.ring)}</b> on top, but its settings differ from the firewall in a field PathBrain never writes, so it can't be raced against <b>{nameOf(corners.fused)}</b> — its rating is history, not a live claim. The ladder races the best rated profile it can apply instead.
@@ -817,7 +817,7 @@ export default function Overall() {
                 <Stack spacing={0.5}>
                   {data.movers.map((m) => (
                     <Typography key={m.fingerprint} variant="body2">
-                      <Link component={RouterLink} to={profileHref(m.fingerprint)} underline="hover" color="inherit">
+                      <Link component={RouterLink} to={profileHref(m.fingerprint)} color="inherit">
                         <b>{nameOf(m)}</b>
                       </Link>{" "}
                       {m.moved! > 0 ? "climbed" : "dropped"} from #{m.pooled_rank} to #{m.fused_rank} after {m.rounds} round{m.rounds === 1 ? "" : "s"} against {m.opponents} opponent{m.opponents === 1 ? "" : "s"}
@@ -831,7 +831,7 @@ export default function Overall() {
           {/* ── What went in ──────────────────────────────────────────────────── */}
           {inputs && (
             <FoldCard title="What went in" summary="The evidence this ranking is built from, all read from data already on disk.">
-                <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ mb: 2 }}>
+                <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ mb: 2 }}>
                   <StatTile
                     label="Pooled record"
                     value={inputs.pooled_profiles}
@@ -881,7 +881,7 @@ export default function Overall() {
           <FoldCard title="Which method predicted recent nights best?" summary="Each recent duel session, predicted by a ranking rebuilt without it. Lower is better.">
               {data.backtest ? (
                 <>
-                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 1.5 }}>
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }}>
                     {(["pooled", "ring", "fused"] as const).map((k) => (
                       <StatTile
                         key={k}

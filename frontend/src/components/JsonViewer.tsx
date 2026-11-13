@@ -28,7 +28,7 @@ export default function JsonViewer({ data, label = "details", defaultOpen = fals
           component="pre"
           sx={{
             mt: 1,
-            p: 1.5,
+            p: 2,
             borderRadius: 1.5,
             bgcolor: "rgba(0,0,0,0.35)",
             border: "1px solid rgba(255,255,255,0.06)",

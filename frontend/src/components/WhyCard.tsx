@@ -505,7 +505,7 @@ export default function WhyCard({
             </Typography>
             <BurstTable burst={data.burst} bName={data.b.name} />
           </Box>
-          <Stack spacing={0.25}>
+          <Stack spacing={0.5}>
             {data.notes.map((n) => (
               <Typography key={n} variant="caption" color="text.secondary">
                 {n}

@@ -17,11 +17,11 @@ import Typography from "@mui/material/Typography";
 export type Tone = "good" | "warn" | "bad" | "info" | "idle";
 
 const TONE_COLOR: Record<Tone, string> = {
-  good: "#66bb6a",
-  warn: "#ffb74d",
-  bad: "#ef5350",
-  info: "#4dd0e1",
-  idle: "#546e7a",
+  good: "#81c995",
+  warn: "#f6c06b",
+  bad: "#f28b82",
+  info: "#6fd0dc",
+  idle: "#6b7884",
 };
 
 export function toneColor(tone: Tone): string {
@@ -59,8 +59,8 @@ export default function StatTile({
   minHeight = 108,
 }: Props) {
   const body = (
-    <Box sx={{ p: 1.75, minHeight, display: "flex", flexDirection: "column", gap: 0.5, minWidth: 0 }}>
-      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+    <Box sx={{ p: 2, minHeight, display: "flex", flexDirection: "column", gap: 0.5, minWidth: 0 }}>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
         {tone && (
           <Box
             component="span"

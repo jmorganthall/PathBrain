@@ -233,13 +233,13 @@ export default function Baseline() {
         {/* Run now */}
         <Card sx={{ flex: 1 }}>
           <CardContent>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
               <PlayArrowIcon fontSize="small" color="action" />
               <Typography variant="h6">Run now</Typography>
               {/* Nightly schedule */}
         <Card sx={{ flex: 1 }}>
           <CardContent>
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
               <ScheduleIcon fontSize="small" color="action" />
               <Typography variant="h6">Nightly schedule</Typography>
             </Stack>
@@ -253,7 +253,7 @@ export default function Baseline() {
               }
               label={cfg?.enabled ? "Armed — runs automatically" : "Off — manual only"}
             />
-            <Stack direction="row" spacing={1.5} sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
+            <Stack direction="row" spacing={2} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap>
               <TextField
                 size="small"
                 type="time"
@@ -286,9 +286,9 @@ export default function Baseline() {
                 onChange={(v) => patchConfig({ settle_seconds: v })}
               />
             </Stack>
-            <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mt: 2 }}>
+            <Stack direction="row" spacing={2} alignItems="center" sx={{ mt: 2 }}>
               <Button
-                variant="contained"
+                variant="outlined"
                 startIcon={<SaveIcon />}
                 onClick={saveConfig}
                 disabled={!cfg || saving}
@@ -312,7 +312,7 @@ export default function Baseline() {
               Run one now: disables SQM, settles, benchmarks the chosen iterations, then restores.
               Data is saved in chunks, so an interrupted test keeps what it measured.
             </Typography>
-            <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
+            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
               <NumField
                 label="Iterations"
                 value={iterations}
@@ -327,7 +327,7 @@ export default function Baseline() {
                 onChange={setSettle}
               />
             </Stack>
-            <Stack direction="row" spacing={1.5} sx={{ mt: 2 }}>
+            <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
               <Button
                 variant="contained"
                 color="primary"
@@ -378,7 +378,7 @@ export default function Baseline() {
                 <LinearProgress
                   variant={test.status === "running" ? "determinate" : "indeterminate"}
                   value={progress}
-                  sx={{ mb: 1.5, borderRadius: 1, height: 8 }}
+                  sx={{ mb: 2, borderRadius: 1, height: 8 }}
                 />
               )}
               <Typography variant="body2" sx={{ mb: 1 }}>
@@ -419,20 +419,20 @@ export default function Baseline() {
 
               {test.run_ids.length > 0 && (
                 <>
-                  <Divider sx={{ my: 1.5 }} />
+                  <Divider sx={{ my: 2 }} />
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
                     Runs collected:
                   </Typography>
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                     {test.run_ids.map((id) => (
-                      <Link key={id} component={RouterLink} to={`/runs/${id}`} underline="hover">
+                      <Link key={id} component={RouterLink} to={`/runs/${id}`}>
                         #{id}
                       </Link>
                     ))}
                   </Stack>
-                  <Typography variant="body2" sx={{ mt: 1.5 }}>
+                  <Typography variant="body2" sx={{ mt: 2 }}>
                     Compare against your shaped profiles on the{" "}
-                    <Link component={RouterLink} to="/settings" underline="hover">
+                    <Link component={RouterLink} to="/settings">
                       Profile standings
                     </Link>{" "}
                     page — the SQM-off runs form their own “No Shaper” profile.

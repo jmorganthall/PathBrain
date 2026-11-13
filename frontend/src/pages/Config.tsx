@@ -65,7 +65,7 @@ const EXP_PARAMS = ["quantum", "limit", "target", "interval", "bandwidth"];
 // decide which runs are comparable, so editing them here would silently pool two site sets.
 function SiteListOwnedNotice({ version }: { version: string }) {
   return (
-    <Alert severity="info" sx={{ mb: 1.5 }}>
+    <Alert severity="info" sx={{ mb: 2 }}>
       Sites are set by the current methodology (<b>{version}</b>). Change them on the{" "}
       <Link component={RouterLink} to="/methodology">
         Methodology page
@@ -101,7 +101,7 @@ function NumberField(props: {
       error={Boolean(error)}
       helperText={error ?? helperText ?? undefined}
       sx={fullWidth ? undefined : { width }}
-      inputProps={{ step, min, max }}
+      inputProps={{ step, min, max, inputMode: Number.isInteger(step) && (min ?? 0) >= 0 ? "numeric" : "decimal" }}
       disabled={disabled}
     />
   );
@@ -447,7 +447,7 @@ export default function Config() {
               error={
                 Number.isInteger(d.monitoring.interval_minutes) && d.monitoring.interval_minutes >= 1
                   ? null
-                  : "≥ 1"
+                  : "Must be a whole number ≥ 1"
               }
             />
           </Stack>
@@ -886,10 +886,10 @@ export default function Config() {
               label="Force HTTP/3 (QUIC)"
             />
           </Stack>
-          <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 0.5 }}>
+          <Typography variant="subtitle2" sx={{ mt: 3, mb: 0.5 }}>
             Loaded as
           </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
             The client every page is loaded as. Sites serve a headless shell, a tiny viewport or an
             automated client a different page than they serve a person, so this is part of what the
             scores measure
@@ -922,7 +922,7 @@ export default function Config() {
               disabled={Boolean(siteOwner)}
             />
           </Stack>
-          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mt: 1.5 }}>
+          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mt: 2 }}>
             <NumberField
               label="Viewport width"
               value={d.browser.viewport?.width ?? 0}
@@ -1176,7 +1176,7 @@ export default function Config() {
                 </span>
               </Tooltip>
               <Button
-                variant="contained"
+                variant="outlined"
                 startIcon={<TravelExploreIcon />}
                 onClick={handleDiscover}
                 disabled={discovering || testing}
@@ -1204,7 +1204,7 @@ export default function Config() {
                   {testResult.error}
                 </Typography>
               )}
-              <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+              <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 3 }}>
                 {testResult.steps.map((s, i) => (
                   <Box component="li" key={i} sx={{ fontSize: 13 }}>
                     {s.ok ? "✓" : "✗"} {s.step}: {s.detail}
@@ -1278,7 +1278,7 @@ export default function Config() {
               {snapshots.slice(0, 10).map((s) => (
                 <Box
                   key={s.id}
-                  sx={{ p: 1.5, borderRadius: 1.5, border: "1px solid rgba(255,255,255,0.06)" }}
+                  sx={{ p: 2, borderRadius: 1.5, border: "1px solid rgba(255,255,255,0.06)" }}
                 >
                   <Stack direction="row" justifyContent="space-between" alignItems="center">
                     <Stack direction="row" spacing={1} alignItems="center">

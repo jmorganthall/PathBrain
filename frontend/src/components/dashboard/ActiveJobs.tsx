@@ -35,7 +35,7 @@ export default function ActiveJobs({ jobs, receivedAt, limit = 4 }: Props) {
   }
   const elapsed = Math.max(0, now - receivedAt);
   return (
-    <Stack spacing={1.25}>
+    <Stack spacing={1}>
       {running.map((j) => {
         const queued = !!j.queued;
         let pct: number | null = null;
@@ -59,7 +59,7 @@ export default function ActiveJobs({ jobs, receivedAt, limit = 4 }: Props) {
             <Stack direction="row" spacing={1} alignItems="baseline" justifyContent="space-between" sx={{ minWidth: 0 }}>
               <Typography variant="body2" noWrap sx={{ minWidth: 0, fontWeight: 500 }} title={j.detail ?? undefined}>
                 {j.href ? (
-                  <Link component={RouterLink} to={j.href} underline="hover" color="inherit">
+                  <Link component={RouterLink} to={j.href} color="inherit">
                     {j.label}
                   </Link>
                 ) : (
@@ -83,7 +83,7 @@ export default function ActiveJobs({ jobs, receivedAt, limit = 4 }: Props) {
               sx={{ mt: 0.5, height: 6, borderRadius: 3, bgcolor: "rgba(255,255,255,0.06)" }}
             />
             {j.message && (
-              <Typography variant="caption" color="text.disabled" noWrap component="div" sx={{ mt: 0.25 }}>
+              <Typography variant="caption" color="text.disabled" noWrap component="div" sx={{ mt: 0.5 }}>
                 {j.message}
               </Typography>
             )}

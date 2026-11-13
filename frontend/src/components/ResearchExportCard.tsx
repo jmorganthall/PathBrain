@@ -141,7 +141,7 @@ export default function ResearchExportCard() {
         </Stack>
 
         {estimate && (
-          <Typography variant="body2" sx={{ mt: 1.5 }}>
+          <Typography variant="body2" sx={{ mt: 2 }}>
             {estimate.runs.toLocaleString()} runs · {estimate.duels.toLocaleString()} duel sessions
             {" · per-site pass "}
             {estimate.per_site_seconds != null
@@ -150,12 +150,12 @@ export default function ResearchExportCard() {
           </Typography>
         )}
         {waiting && (
-          <Alert severity="info" sx={{ mt: 1.5 }}>
+          <Alert severity="info" sx={{ mt: 2 }}>
             Exporting in the background — progress is in the jobs menu. The file appears below when it's done.
           </Alert>
         )}
         {error && (
-          <Alert severity="error" sx={{ mt: 1.5 }}>
+          <Alert severity="error" sx={{ mt: 2 }}>
             {error}
           </Alert>
         )}

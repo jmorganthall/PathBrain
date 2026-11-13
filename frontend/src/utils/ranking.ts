@@ -41,8 +41,8 @@ export function rankByMetric(profiles: SettingsProfile[], key: string): MetricRa
 
 // rank 1 → green, last → red, linearly through amber. A single-profile pool is "best".
 export function rankColor(rank: number | null | undefined, total: number): string {
-  if (rank == null) return "#90a4ae"; // no value → neutral grey
-  if (total <= 1) return "#66bb6a";
+  if (rank == null) return "#9aa6b2"; // no value → neutral grey
+  if (total <= 1) return "#81c995";
   const frac = (rank - 1) / (total - 1); // 0 = best … 1 = worst
   const hue = 120 * (1 - frac); // 120° green → 0° red
   return `hsl(${Math.round(hue)}, 70%, 55%)`;

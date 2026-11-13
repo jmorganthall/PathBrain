@@ -383,7 +383,7 @@ export default function LocationQuadrant({ map }: { map: PortableLocationMap }) 
     <Box>
       {controls}
       {incomparable.length > 0 && (
-        <Box sx={{ mb: 1, px: 1, py: 0.75, borderRadius: 1, bgcolor: "warning.dark", color: "warning.contrastText" }}>
+        <Box sx={{ mb: 1, px: 1, py: 1, borderRadius: 1, bgcolor: "warning.dark", color: "warning.contrastText" }}>
           <Typography variant="caption" component="span" sx={{ fontWeight: 700 }}>
             ⚠ Setup-bound axis:{" "}
           </Typography>
@@ -464,7 +464,7 @@ export default function LocationQuadrant({ map }: { map: PortableLocationMap }) 
           </ScatterChart>
         </ResponsiveContainer>
       </Box>
-      <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1.5 }}>
+      <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 2 }}>
         The <b style={{ color: homeColor }}>ringed</b> dot is home on the current profile, and the lines run through it:{" "}
         {bothHigher ? (
           <>right-and-up of it is better on both axes.</>

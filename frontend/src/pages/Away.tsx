@@ -197,7 +197,7 @@ function Provenance({ cmp }: { cmp: PortableReference | null }) {
   const p = cmp.provenance;
   if (!cmp.available) {
     return (
-      <Alert severity="info" sx={{ mt: 1.5 }}>
+      <Alert severity="info" sx={{ mt: 2 }}>
         No "vs home" yet: {cmp.reason} ({p.home_runs_on_device} of {p.min_home_runs})
       </Alert>
     );
@@ -211,7 +211,7 @@ function Provenance({ cmp }: { cmp: PortableReference | null }) {
   if (p.profile) parts.push(`on ${p.profile.summary || p.profile.fingerprint.slice(0, 8)}`);
   else if (p.profile_note) parts.push(p.profile_note);
   return (
-    <Box sx={{ mt: 1.5 }}>
+    <Box sx={{ mt: 2 }}>
       <Typography variant="body2" color="text.secondary">
         {parts.join(" · ")}
       </Typography>
@@ -627,8 +627,8 @@ export default function Away() {
 
       <Card sx={{ mb: 2 }}>
         <CardContent>
-          <Stack spacing={1.5}>
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
+          <Stack spacing={2}>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }}>
               <TextField
                 size="small"
                 label="This device"
@@ -803,7 +803,7 @@ export default function Away() {
               )}
             </Stack>
             {canToggle && (
-              <Box sx={{ mb: 1.5 }}>
+              <Box sx={{ mb: 2 }}>
                 <ToggleButtonGroup
                   exclusive
                   size="small"
@@ -822,7 +822,7 @@ export default function Away() {
             )}
             <ScoreLine run={result} cmp={activeRef} />
             <Provenance cmp={activeRef} />
-            <Divider sx={{ my: 1.5 }} />
+            <Divider sx={{ my: 2 }} />
             <MetricTable run={result} cmp={activeRef} meta={recipe.metrics} />
             <OriginTable run={result} cmp={activeRef} />
             <Failures run={result} />

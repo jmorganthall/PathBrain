@@ -76,7 +76,7 @@ export default function ReachabilityCard() {
           </Button>
         </Stack>
 
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
           Reads the firewall as it stands now — so a profile is "reachable" relative to the
           settings the firewall is currently on, not in the abstract.
         </Typography>

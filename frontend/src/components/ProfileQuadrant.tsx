@@ -193,7 +193,7 @@ export default function ProfileQuadrant({
   const bestColor = theme.palette.warning.main;
   // The unshaped "SQM off" baseline — the honest floor every shaped profile is measured
   // against — is always drawn in fuchsia so it's instantly locatable, whatever its score.
-  const baselineColor = "#e5399e";
+  const baselineColor = "#ee7fbf";
   const bothHigher = xField.higherIsBetter && yField.higherIsBetter;
 
   // Baseline takes precedence so it's always fuchsia; the crown still gets its ring (stroke).
@@ -260,13 +260,13 @@ export default function ProfileQuadrant({
           sx={{
             mb: 1,
             px: 1,
-            py: 0.75,
+            py: 1,
             borderRadius: 1,
             bgcolor: "warning.dark",
             color: "warning.contrastText",
             display: "flex",
             alignItems: "flex-start",
-            gap: 0.75,
+            gap: 1,
           }}
         >
           <Typography variant="caption" component="span" sx={{ fontWeight: 700 }}>

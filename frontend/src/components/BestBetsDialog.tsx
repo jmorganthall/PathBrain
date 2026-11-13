@@ -166,7 +166,7 @@ export default function BestBetsDialog({
           </TextField>
         </Stack>
 
-        <Divider sx={{ mb: 1.5 }} />
+        <Divider sx={{ mb: 2 }} />
 
         <Typography variant="subtitle2" gutterBottom>
           These {picked.length} would be queued

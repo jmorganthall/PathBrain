@@ -122,10 +122,10 @@ export default function Weather() {
                   The most a weather adjustment could ever remove — a ceiling, not a promise.
                   <HelpTip title="Adjusted within-profile R² of the clean covariates against each crown metric and the Overall. The profile is held fixed, so its identity can't masquerade as weather. Linear and in-sample." />
                 </Typography>
-                <Alert severity="info" icon={false} sx={{ mb: 1.5, py: 0.5 }}>
+                <Alert severity="info" icon={false} sx={{ mb: 2, py: 0.5 }}>
                   <Typography variant="caption">{data.variance.headline}</Typography>
                 </Alert>
-                <Stack spacing={0.75}>
+                <Stack spacing={1}>
                   {data.variance.outcomes.map((o) => (
                     <Box key={o.outcome}>
                       <Stack direction="row" spacing={1} alignItems="baseline" flexWrap="wrap" useFlexGap>
@@ -160,7 +160,7 @@ export default function Weather() {
                           <LinearProgress
                             variant="determinate"
                             value={Math.min(100, o.explained_share * 100)}
-                            sx={{ height: 5, borderRadius: 2, mt: 0.25 }}
+                            sx={{ height: 5, borderRadius: 2, mt: 0.5 }}
                           />
                         </Tooltip>
                       )}

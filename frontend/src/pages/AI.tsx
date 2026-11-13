@@ -96,7 +96,7 @@ function RelationshipsCard({
                   <TableCell>Lever</TableCell>
                   <TableCell>Outcome</TableCell>
                   <TableCell align="right">ρ</TableCell>
-                  <TableCell align="center">n</TableCell>
+                  <TableCell align="right">n</TableCell>
                   <TableCell>Relationship</TableCell>
                 </TableRow>
               </TableHead>
@@ -114,7 +114,7 @@ function RelationshipsCard({
                       >
                         {r.spearman == null ? "—" : r.spearman.toFixed(2)}
                       </TableCell>
-                      <TableCell align="center" sx={{ color: "text.secondary" }}>
+                      <TableCell align="right" sx={{ color: "text.secondary" }}>
                         {r.n}
                       </TableCell>
                       <TableCell>
@@ -163,7 +163,7 @@ function RelationshipsCard({
             <Typography variant="subtitle2" sx={{ mb: 1 }}>
               Model's interpretation
             </Typography>
-            <Stack spacing={0.75}>
+            <Stack spacing={1}>
               {rels.map((r, i) => (
                 <Stack
                   key={i}
@@ -308,9 +308,9 @@ function CoverageGapsCard({ gaps }: { gaps?: CoverageGap[] }) {
           </RouterLink>
           .
         </Typography>
-        <Stack spacing={1.25}>
+        <Stack spacing={1}>
           {rows.map((g, i) => (
-            <Box key={i} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
+            <Box key={i} sx={{ p: 2, border: 1, borderColor: "divider", borderRadius: 1 }}>
               <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
                 <Chip size="small" color="primary" label={`${g.pipe} ${g.field_label}`} />
                 <Chip size="small" variant="outlined" label={actionLabel[g.action]} />
@@ -679,7 +679,7 @@ export default function AI() {
               InputProps={{ sx: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 13 } }}
             />
             <Stack direction="row" spacing={1}>
-              <Button variant="contained" onClick={save} disabled={saving}>
+              <Button variant="outlined" onClick={save} disabled={saving}>
                 {saving ? "Saving…" : "Save settings"}
               </Button>
               {cfg && (
@@ -830,7 +830,7 @@ export default function AI() {
                 </Typography>
               )}
             </Stack>
-            {testActive && <LinearProgress sx={{ mb: 1.5 }} />}
+            {testActive && <LinearProgress sx={{ mb: 2 }} />}
             {/* Step-by-step readout so it's clear the firewall is being written and measured. */}
             <Typography variant="body2" sx={{ mb: 1 }}>
               {activeTest.stage ||
@@ -897,14 +897,14 @@ export default function AI() {
               </Alert>
             )}
 
-            <Stack spacing={1.5}>
+            <Stack spacing={2}>
               {result.suggestions.map((s, i) => {
                 const likelihood =
                   typeof s.displacement_likelihood === "number"
                     ? (s.displacement_likelihood as number)
                     : null;
                 return (
-                  <Box key={i} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
+                  <Box key={i} sx={{ p: 2, border: 1, borderColor: "divider", borderRadius: 1 }}>
                     <Stack
                       direction="row"
                       spacing={1}
@@ -924,7 +924,7 @@ export default function AI() {
                       <Box sx={{ flex: 1 }} />
                       <Button
                         size="small"
-                        variant="contained"
+                        variant="outlined"
                         startIcon={
                           testingIdx === i ? <CircularProgress size={14} color="inherit" /> : <ScienceIcon />
                         }
@@ -994,7 +994,7 @@ export default function AI() {
               component="pre"
               sx={{
                 m: 0,
-                p: 1.5,
+                p: 2,
                 maxHeight: "40vh",
                 overflow: "auto",
                 fontSize: 12,

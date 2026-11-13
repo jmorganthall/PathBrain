@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link as RouterLink } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Badge from "@mui/material/Badge";
@@ -131,7 +131,7 @@ const INFRA_LABELS: Record<string, string> = {
 
 // The unshaped "SQM off" baseline is always rendered in fuchsia (row accent + chip + scatter
 // dot) so it's instantly locatable as the honest floor every shaped profile is measured against.
-const BASELINE_COLOR = "#e5399e";
+const BASELINE_COLOR = "#ee7fbf";
 
 function completionSummary(p: SettingsProfile): string {
   const parts = Object.entries(p.completion_metrics).map(
@@ -291,7 +291,7 @@ export function ProfileDiffCard({
             parentheses, which on a phone is four lines of "q4814 t3ms i60ms ecn" between the
             two profiles being compared — and the field-by-field diff right below says
             everything those summaries did, better. They stay as the hover. */}
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
           Best profile <b title={diff.best.label}>{diff.best.name || diff.best.label}</b> vs
           next‑best{" "}
           <b title={diff.comparison.label}>{diff.comparison.name || diff.comparison.label}</b>.
@@ -557,7 +557,7 @@ function HeirsCard({
           </Box>
           <Tooltip title="Adaptively measure these limited-data / stale profiles against the crown, one iteration at a time.">
             <span>
-              <Button size="small" variant="contained" color="secondary" onClick={onRace} disabled={raceDisabled}>
+              <Button size="small" variant="outlined" onClick={onRace} disabled={raceDisabled}>
                 Race them
               </Button>
             </span>
@@ -584,7 +584,7 @@ function HeirsCard({
                     {h.label}
                   </Typography>
                 )}
-                <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.25 }} flexWrap="wrap">
+                <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.5 }} flexWrap="wrap">
                   <Chip size="small" variant="outlined" label={HEIR_REASON_LABEL[h.reason] ?? h.reason} />
                   <Typography variant="caption" color="text.secondary">
                     {h.iterations_to_min > 0
@@ -1382,7 +1382,7 @@ export default function Settings() {
           </Typography>
           These metrics score ~100 for most profiles, so they can&apos;t tell them apart. Re-anchor
           “best” to fix it:
-          <Box component="ul" sx={{ mt: 0.75, mb: 0, pl: 3 }}>
+          <Box component="ul" sx={{ mt: 1, mb: 0, pl: 3 }}>
             {saturation
               .filter((s) => s.flagged)
               .map((s) => (
@@ -1565,12 +1565,11 @@ export default function Settings() {
                 comparable under the current methodology. Surfaced here so the empty state isn't a
                 dead end right after a methodology change quarantines history. */}
             {diag && diag.distinct_profiles > 0 && (
-              <Stack direction="row" justifyContent="center" sx={{ mt: 2 }}>
+              <Stack direction="row" justifyContent="flex-start" sx={{ mt: 2 }}>
                 <Tooltip title="Benchmark every stored profile again, or just the top N best performers, then restore your current settings.">
                   <span>
                     <Button
-                      variant="contained"
-                      color="secondary"
+                      variant="outlined"
                       startIcon={<ScienceIcon />}
                       onClick={() => setRefreshOpen(true)}
                       disabled={raceRunning || testRunning || refreshRunning || applying}
@@ -1998,7 +1997,7 @@ export default function Settings() {
                                 : "Not measured"
                           }
                         >
-                          <Stack direction="row" spacing={0.75} alignItems="center">
+                          <Stack direction="row" spacing={1} alignItems="center">
                             <Box
                               sx={{
                                 width: 6,
@@ -2024,8 +2023,9 @@ export default function Settings() {
                           <Box sx={{ minWidth: 0 }}>
                             <Typography
                               variant="body2"
-                              sx={{ wordBreak: "break-word", cursor: "pointer", color: "primary.light", "&:hover": { textDecoration: "underline" } }}
-                              onClick={() => navigate(`/profiles/${encodeURIComponent(p.fingerprint)}`)}
+                              component={RouterLink}
+                              to={`/profiles/${encodeURIComponent(p.fingerprint)}`}
+                              sx={{ display: "block", wordBreak: "break-word", color: "primary.light", textDecoration: "underline", textDecorationColor: "rgba(111,208,220,0.45)", textUnderlineOffset: "0.18em" }}
                               title="View this profile's run history"
                             >
                               {p.name || p.label}
@@ -2396,8 +2396,8 @@ export default function Settings() {
                 return (
                   <Box
                     sx={{
-                      mt: 1.5,
-                      p: 1.5,
+                      mt: 2,
+                      p: 2,
                       borderRadius: 1,
                       border: 1,
                       borderColor: "divider",
@@ -2445,7 +2445,7 @@ export default function Settings() {
                       {/* The crown metrics that compute this profile's Overall — driven entirely by
                           the methodology's `overall_metrics`, so this breakdown tracks the crown with
                           no hardcoding. Each chip is the metric's standing (1 = best) + raw median. */}
-                      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 0.75 }}>
+                      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mt: 1 }}>
                         {rankedMetrics
                           .filter((m) => m.metricKey)
                           .map((m) => {
@@ -2500,7 +2500,7 @@ export default function Settings() {
                         <span>
                           <Button
                             size="small"
-                            variant="contained"
+                            variant="outlined"
                             onClick={() => handleApplyClick(sp)}
                             disabled={applying || sp.fingerprint === currentFingerprint}
                           >
@@ -2543,7 +2543,7 @@ export default function Settings() {
           title="Data health"
           summary={`${diag.total_completed} completed runs · ${diag.unstamped} without captured settings · ${diag.distinct_profiles} distinct profiles`}
         >
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
               <Tooltip title="Stamp the current firewall settings onto past runs that captured none (e.g. before discovery worked). Only do this if the firewall is unchanged since those runs.">
                 <span>
                   <Button startIcon={<RestorePageIcon />} onClick={handleBackfill} disabled={busy} size="small" variant="outlined">
@@ -2748,7 +2748,7 @@ export default function Settings() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setRaceOpen(false)}>Cancel</Button>
-          <Button variant="contained" color="secondary" startIcon={<ScienceIcon />} onClick={handleStartRace}>
+          <Button variant="contained" startIcon={<ScienceIcon />} onClick={handleStartRace}>
             Start race
           </Button>
         </DialogActions>

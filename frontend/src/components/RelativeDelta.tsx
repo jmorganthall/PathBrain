@@ -24,9 +24,9 @@ function fmtVal(v: number | null | undefined, unit: string): string {
   return unit ? `${n} ${unit}` : n;
 }
 
-const NEUTRAL = "#90a4ae";
-const GOOD = "#66bb6a";
-const BAD = "#ef5350";
+const NEUTRAL = "#9aa6b2";
+const GOOD = "#81c995";
+const BAD = "#f28b82";
 
 function tone(r: TrendRelative): string {
   if (r.delta == null || r.band === "typical") return NEUTRAL;

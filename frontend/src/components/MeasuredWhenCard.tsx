@@ -36,11 +36,11 @@ export default function MeasuredWhenCard({ fingerprint }: { fingerprint: string 
           When it was measured
         </Typography>
         {data.sentence && (
-          <Alert severity={data.flag ? "warning" : "info"} variant="outlined" sx={{ mb: 1.5 }}>
+          <Alert severity={data.flag ? "warning" : "info"} variant="outlined" sx={{ mb: 2 }}>
             {data.sentence}
           </Alert>
         )}
-        <Stack direction="row" spacing={0.25} alignItems="flex-end" sx={{ height: 48 }}>
+        <Stack direction="row" spacing={0.5} alignItems="flex-end" sx={{ height: 48 }}>
           {local.map((n, h) => (
             <Tooltip key={h} title={`${String(h).padStart(2, "0")}:00 — ${n} run${n === 1 ? "" : "s"}`}>
               <Box

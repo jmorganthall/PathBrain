@@ -40,7 +40,7 @@ export default function StringListEditor({
 
   return (
     <Box>
-      <Typography variant="subtitle2">{label}</Typography>
+      <Typography variant="subtitle2" component="div">{label}</Typography>
       {helperText && (
         <Typography variant="caption" color="text.secondary">
           {helperText}
@@ -56,12 +56,13 @@ export default function StringListEditor({
                 fullWidth
                 value={value}
                 placeholder={placeholder}
+                inputProps={{ "aria-label": `${label} ${i + 1}` }}
                 onChange={(e) => update(i, e.target.value)}
                 error={Boolean(err)}
                 helperText={err ?? undefined}
                 disabled={disabled}
               />
-              <IconButton aria-label="remove" onClick={() => remove(i)} sx={{ mt: 0.5 }} disabled={disabled}>
+              <IconButton aria-label={`Remove ${label.toLowerCase()} ${i + 1}`} onClick={() => remove(i)} sx={{ mt: 0.5 }} disabled={disabled}>
                 <DeleteOutlineIcon fontSize="small" />
               </IconButton>
             </Stack>

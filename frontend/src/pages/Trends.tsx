@@ -210,7 +210,7 @@ export default function Trends() {
                       dataKey="band"
                       name="IQR"
                       stroke="none"
-                      fill="#4dd0e1"
+                      fill="#6fd0dc"
                       fillOpacity={0.15}
                       isAnimationActive={false}
                       activeDot={false}
@@ -219,7 +219,7 @@ export default function Trends() {
                       type="monotone"
                       dataKey="median"
                       name={`Median ${heatmap.label}`}
-                      stroke="#4dd0e1"
+                      stroke="#6fd0dc"
                       strokeWidth={2}
                       dot={false}
                       isAnimationActive={false}

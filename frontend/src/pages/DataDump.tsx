@@ -204,7 +204,7 @@ export default function DataDump() {
               component="pre"
               sx={{
                 m: 0,
-                p: 1.5,
+                p: 2,
                 maxHeight: "50vh",
                 overflow: "auto",
                 fontSize: 12,
@@ -272,7 +272,7 @@ export default function DataDump() {
               component="pre"
               sx={{
                 m: 0,
-                p: 1.5,
+                p: 2,
                 maxHeight: "65vh",
                 overflow: "auto",
                 fontSize: 12,

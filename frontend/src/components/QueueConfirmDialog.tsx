@@ -90,7 +90,7 @@ export default function QueueConfirmDialog({
           )}
         </Typography>
 
-        <Typography variant="body2" sx={{ mt: 1.5 }}>
+        <Typography variant="body2" sx={{ mt: 2 }}>
           Queue <strong>{pending.label}</strong>? Nothing is applied to the firewall while it
           waits, and you can cancel it from the jobs menu at any point before it starts.
         </Typography>
@@ -98,7 +98,7 @@ export default function QueueConfirmDialog({
         {waiting.length > 0 && (
           <List dense sx={{ mt: 1, mb: 0 }}>
             {waiting.map((job) => (
-              <ListItem key={`${job.kind}-${job.ticket_id ?? job.id}`} disableGutters sx={{ py: 0.25 }}>
+              <ListItem key={`${job.kind}-${job.ticket_id ?? job.id}`} disableGutters sx={{ py: 0.5 }}>
                 <ListItemText
                   primary={job.label}
                   secondary={`queued · ${KIND_NAMES[job.kind] ?? job.kind}`}
@@ -110,7 +110,7 @@ export default function QueueConfirmDialog({
           </List>
         )}
 
-        <Alert severity="info" sx={{ mt: 1.5 }}>
+        <Alert severity="info" sx={{ mt: 2 }}>
           No estimate of when it starts: the job ahead might finish in minutes or run until
           morning.
         </Alert>

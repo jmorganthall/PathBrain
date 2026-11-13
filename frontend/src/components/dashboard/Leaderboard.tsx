@@ -24,7 +24,7 @@ interface Props {
   limit?: number;
 }
 
-const BAR = "#4dd0e1";
+const BAR = "#6fd0dc";
 
 export default function Leaderboard({
   profiles,
@@ -87,7 +87,7 @@ export default function Leaderboard({
               <Link
                 component={RouterLink}
                 to={`/profiles/${encodeURIComponent(p.fingerprint)}`}
-                underline="hover"
+               
                 color="inherit"
                 variant="body2"
                 noWrap

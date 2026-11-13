@@ -264,7 +264,7 @@ function VersionFooter() {
           target="_blank"
           rel="noopener noreferrer"
           color="warning.main"
-          underline="hover"
+         
         >
           update available ({info.latest_sha_short})
         </Link>
@@ -310,7 +310,7 @@ function VersionFooter() {
               component="button"
               type="button"
               onClick={() => !checking && checkNow()}
-              underline="hover"
+             
               color="inherit"
               sx={{ font: "inherit", verticalAlign: "baseline" }}
             >
@@ -400,7 +400,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
   const drawerContent = (
     <Box>
-      <Toolbar sx={{ gap: 1.5 }}>
+      <Toolbar sx={{ gap: 2 }}>
         <HubIcon color="primary" />
         <Typography variant="h6" noWrap sx={{ fontWeight: 700 }}>
           PathBrain
@@ -413,7 +413,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             {group.title && (
               <ListSubheader
                 disableSticky
-                sx={{ bgcolor: "transparent", lineHeight: 2.2, mt: 1, px: 1.5, fontSize: 11, letterSpacing: 1, textTransform: "uppercase" }}
+                sx={{ bgcolor: "transparent", lineHeight: 2.2, mt: 1, px: 2, fontSize: 11, letterSpacing: 1, textTransform: "uppercase" }}
               >
                 {group.title}
               </ListSubheader>
@@ -426,7 +426,7 @@ export default function Layout({ children }: { children: ReactNode }) {
                     to={item.to}
                     selected={isActive(item.to)}
                     onClick={() => setMobileOpen(false)}
-                    sx={{ borderRadius: 2, mb: 0.25, py: 0.6 }}
+                    sx={{ borderRadius: 2, mb: 0.5, py: 0.6 }}
                   >
                     <ListItemIcon sx={{ minWidth: 36 }}>{item.icon}</ListItemIcon>
                     <ListItemText primary={item.label} primaryTypographyProps={{ fontSize: 14 }} />
@@ -462,7 +462,7 @@ export default function Layout({ children }: { children: ReactNode }) {
               <MenuIcon />
             </IconButton>
           )}
-          <HubIcon color="primary" sx={{ mr: 1.5, display: { md: "none" } }} />
+          <HubIcon color="primary" sx={{ mr: 2, display: { md: "none" } }} />
           <Typography variant="h6" noWrap sx={{ fontWeight: 700, flexGrow: 1, minWidth: 0 }}>
             PathBrain
           </Typography>
