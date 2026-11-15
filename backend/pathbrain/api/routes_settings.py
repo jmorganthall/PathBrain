@@ -32,6 +32,7 @@ from ..methodology import (
     overall_metrics,
     overall_method,
     overall_weights,
+    ranking_crown,
     weighted_score,
 )
 from ..metrics import METRIC_ROLES, ROLE_WEATHER, all_metric_sources
@@ -65,15 +66,11 @@ from ..weather import cohort_residuals, run_severities
 _CORNER_AXES = ("responsiveness", "smoothness", "speed")
 
 # The crown corners over a small set of per-metric 0–100 subscores (perception-calibrated
-# by the scoring engine, carried on every Score). The **authoritative** set is always the
-# current methodology's ``overall`` spec (``methodology.overall_metrics`` — under v10,
-# FCP × LCP × stall_energy). These module constants are ONLY a static FALLBACK for a
-# methodology that has no overall spec at all (pre-v5); they intentionally don't track the
-# current crown. Everything that corners — the live ``_crown_corner`` fallback,
-# ``crown_spreads``, ``optimistic_overall``, and the challenger race — reads the
-# methodology-resolved set, so the crown always follows the methodology and never drifts.
-CROWN_METRICS = ("fcp", "total_stall", "load_event")
-CROWN_REQUIRED = ("fcp", "total_stall", "load_event")
+# by the scoring engine, carried on every Score). The set is always read from the current
+# methodology (``methodology.ranking_crown``: its ``overall`` spec, or for a definition with
+# none, the legacy crown it names). Everything that corners — ``_crown_corner``,
+# ``crown_spreads``, ``optimistic_overall``, and the challenger race — reads that set, so
+# the crown always follows the methodology and this module names no crown leg.
 
 # Non-metric numeric fields the /api/metrics catalog doesn't describe, exposed so the
 # UI's chart-axis pickers + column selector can offer them (metric fields get their
@@ -100,8 +97,8 @@ _PROFILE_FIELDS = [
 
 def _crown_corner(
     subscores: dict | None,
-    metrics: tuple | list = CROWN_METRICS,
-    required: tuple | list = CROWN_REQUIRED,
+    metrics: tuple | list,
+    required: tuple | list,
 ) -> float | None:
     """Live fallback for the methodology's Overall: corner over the crown metric subscores,
     requiring ``required`` and folding in the rest when present. ``metrics``/``required``
@@ -2293,20 +2290,18 @@ def _compute_profiles_uncached(
     endpoint and the challenger race (``challenger.py``) so both rank profiles with
     identical logic. Each profile carries ``axis_spreads`` ({axis: {median,p25,p75,n}})
     for the display columns and ``crown_spreads`` (same shape, keyed by the methodology's
-    resolved crown metrics — ``overall_metrics``, not the module fallback ``CROWN_METRICS``)
+    resolved crown metrics — ``methodology.ranking_crown``)
     so a caller can compute an ``optimistic_overall`` for not-yet-confident profiles."""
     min_runs = _min_runs(session)
     min_iterations = _min_iterations(session)
     min_samples = int((get_config(session).get("trends", {}) or {}).get("min_samples", 3) or 3)
     rows = _completed_runs_with_scores(session)
-    # The crown metric set, from the current methodology's `overall` spec — the single
-    # source of truth shared by the persisted Overall, the live fallback, crown_spreads,
-    # optimistic_overall, and the challenger race (fallback to the module default for a
-    # pre-v5 methodology with no overall spec).
+    # The crown metric set, from the current methodology — the single source of truth
+    # shared by the persisted Overall, the live fallback, crown_spreads, optimistic_overall,
+    # and the challenger race (a definition with no `overall` spec ranks by the legacy crown
+    # the methodology names: `methodology.ranking_crown`).
     methodology = ensure_current_methodology(session, get_config(session))
-    crown_metrics, crown_required = overall_metrics(methodology.definition or {})
-    if not crown_metrics:
-        crown_metrics, crown_required = list(CROWN_METRICS), list(CROWN_REQUIRED)
+    crown_metrics, crown_required = ranking_crown(methodology.definition or {})
     # Per crown metric: is higher raw better? Drives which end of the field is "best" when
     # normalizing the raw measurement (the crown's scale). Read from the methodology's metric
     # defs (all current crown metrics are lower-is-better).

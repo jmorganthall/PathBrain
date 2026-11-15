@@ -1270,6 +1270,23 @@ def overall_metrics(definition: dict) -> tuple[list[str], list[str]]:
     return list(spec.get("metrics") or []), list(spec.get("required") or [])
 
 
+#: The registry version whose crown a definition with no ``overall`` spec ranks by: one of
+#: v1–v4 pinned in config, or a version id the registry does not hold (built from the live
+#: catalog, which carries no overall spec). Its legs (FCP, total stall, load event) are the
+#: set the settings view has always fallen back to, so moving the fallback here changes
+#: nothing anyone sees.
+LEGACY_CROWN_VERSION = "speed-smoothness-v6"
+
+
+def ranking_crown(definition: dict | None) -> tuple[list[str], list[str]]:
+    """The crown ``(metrics, required)`` the profile ranking corners over for a definition:
+    its own ``overall`` spec, or, when it has none, ``LEGACY_CROWN_VERSION``'s."""
+    metrics, required = overall_metrics(definition or {})
+    if metrics:
+        return metrics, required
+    return overall_metrics(build_definition_from_spec(METHODOLOGY_REGISTRY[LEGACY_CROWN_VERSION]))
+
+
 def crown_keys(version: str = CURRENT_METHODOLOGY) -> tuple[str, ...]:
     """The crown legs of a registry version as **browser source keys** (``fcp_ms``,
     ``lcp_ms``, …), in the order its ``overall`` spec lists them — the names the raw browser
