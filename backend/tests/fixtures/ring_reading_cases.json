@@ -1,0 +1,458 @@
+[
+ {
+  "name": "no rounds yet",
+  "board": {
+   "pairs": 0,
+   "median_margin": null,
+   "margins": [],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "unmeasured",
+  "verdict": "nothing"
+ },
+ {
+  "name": "rounds but no median",
+  "board": {
+   "pairs": 12,
+   "median_margin": null,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "unmeasured",
+  "verdict": "nothing"
+ },
+ {
+  "name": "ahead, unproven",
+  "board": {
+   "pairs": 12,
+   "median_margin": 0.8,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "ahead",
+  "verdict": "unproven"
+ },
+ {
+  "name": "behind, unproven",
+  "board": {
+   "pairs": 12,
+   "median_margin": -0.8,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "behind",
+  "verdict": "unproven"
+ },
+ {
+  "name": "dead level",
+  "board": {
+   "pairs": 12,
+   "median_margin": 0.0,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "level",
+  "verdict": "inside_floor"
+ },
+ {
+  "name": "level with no floor",
+  "board": {
+   "pairs": 12,
+   "median_margin": 0.0,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.0,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "level",
+  "verdict": "unproven"
+ },
+ {
+  "name": "inside the floor beats a proven p",
+  "board": {
+   "pairs": 12,
+   "median_margin": 0.3,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.001,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "ahead",
+  "verdict": "inside_floor"
+ },
+ {
+  "name": "proven by p",
+  "board": {
+   "pairs": 12,
+   "median_margin": 0.8,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.01,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "ahead",
+  "verdict": "called"
+ },
+ {
+  "name": "p exactly alpha is proven",
+  "board": {
+   "pairs": 12,
+   "median_margin": 0.8,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.05,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "ahead",
+  "verdict": "called"
+ },
+ {
+  "name": "called by streak",
+  "board": {
+   "pairs": 12,
+   "median_margin": -1.2,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 5,
+    "side": "incumbent",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "behind",
+  "verdict": "called"
+ },
+ {
+  "name": "streak of zero needed is not a call",
+  "board": {
+   "pairs": 12,
+   "median_margin": 0.8,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 0,
+    "side": null,
+    "needed": 0
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "ahead",
+  "verdict": "unproven"
+ },
+ {
+  "name": "too early",
+  "board": {
+   "pairs": 4,
+   "median_margin": 0.8,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "ahead",
+  "verdict": "too_early"
+ },
+ {
+  "name": "too early but proven is called",
+  "board": {
+   "pairs": 4,
+   "median_margin": 0.8,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.001,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "ahead",
+  "verdict": "called"
+ },
+ {
+  "name": "no p-value yet",
+  "board": {
+   "pairs": 12,
+   "median_margin": 0.8,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": null,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "ahead",
+  "verdict": "unproven"
+ },
+ {
+  "name": "exactly min_pairs is not too early",
+  "board": {
+   "pairs": 10,
+   "median_margin": 0.8,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "ahead",
+  "verdict": "unproven"
+ },
+ {
+  "name": "floor of zero never applies",
+  "board": {
+   "pairs": 12,
+   "median_margin": 0.01,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.0,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "ahead",
+  "verdict": "unproven"
+ },
+ {
+  "name": "margin exactly the floor is outside it",
+  "board": {
+   "pairs": 12,
+   "median_margin": -0.5,
+   "margins": [
+    0.5,
+    1.1
+   ],
+   "min_pairs": 10,
+   "min_margin": 0.5,
+   "p_value": 0.2,
+   "alpha": 0.05,
+   "streak": {
+    "length": 1,
+    "side": "challenger",
+    "needed": 5
+   },
+   "challenger": {
+    "fingerprint": "bbb",
+    "name": "B",
+    "label": "b"
+   }
+  },
+  "standing": "behind",
+  "verdict": "unproven"
+ }
+]

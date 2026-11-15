@@ -2706,6 +2706,13 @@ export interface DuelLive {
     max_shift: number | null;
     threshold: number;
   } | null;
+  // How this board stands against the belt and whether it is settled, computed by the
+  // backend (`ring_reading.read_board`). Absent from an older backend; the page then reads
+  // the board itself (`utils/ringReading.ts`).
+  reading?: {
+    standing: "ahead" | "behind" | "level" | "unmeasured";
+    verdict: "called" | "too_early" | "unproven" | "inside_floor" | "nothing";
+  } | null;
   // ── The ring (absent on sessions recorded by the pair engine) ──
   // Every seated match's own scoreboard (this same shape, without these ring fields), in
   // seat order; `measuring` marks the one whose leg is running. The top level mirrors the

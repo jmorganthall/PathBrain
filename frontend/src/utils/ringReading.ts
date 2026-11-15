@@ -38,15 +38,19 @@ export function seatName(board: DuelLive): string {
   return board.challenger.name || board.challenger.label || "challenger";
 }
 
-/** Read one seat's board into a standing, a verdict and a sentence. */
-export function readSeat(board: DuelLive, beltName: string): SeatReading {
-  const name = seatName(board);
+/**
+ * The standing and verdict the backend sent (`board.reading`, from `ring_reading.read_board`),
+ * or, from an older backend that sends none, the same rule worked out here.
+ */
+export function boardReading(board: DuelLive): { standing: Standing; verdict: Verdict } {
+  if (board.reading) return { standing: board.reading.standing, verdict: board.reading.verdict };
+  return localReading(board);
+}
+
+/** The fallback: the rule as the browser computed it before the backend sent it. */
+function localReading(board: DuelLive): { standing: Standing; verdict: Verdict } {
   const rounds = board.pairs;
   const margin = board.median_margin;
-  const margins = board.margins ?? [];
-  const lo = margins.length ? Math.min(...margins) : null;
-  const hi = margins.length ? Math.max(...margins) : null;
-
   let standing: Standing = "unmeasured";
   if (rounds > 0 && margin != null) standing = margin > 0 ? "ahead" : margin < 0 ? "behind" : "level";
 
@@ -59,6 +63,18 @@ export function readSeat(board: DuelLive, beltName: string): SeatReading {
     else if (rounds < board.min_pairs) verdict = "too_early";
     else verdict = "unproven";
   }
+  return { standing, verdict };
+}
+
+/** Read one seat's board into a standing, a verdict and a sentence. */
+export function readSeat(board: DuelLive, beltName: string): SeatReading {
+  const name = seatName(board);
+  const rounds = board.pairs;
+  const margin = board.median_margin;
+  const margins = board.margins ?? [];
+  const lo = margins.length ? Math.min(...margins) : null;
+  const hi = margins.length ? Math.max(...margins) : null;
+  const { standing, verdict } = boardReading(board);
 
   const sentence = (() => {
     if (standing === "unmeasured") {
