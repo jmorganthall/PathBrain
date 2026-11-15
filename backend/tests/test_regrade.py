@@ -257,3 +257,55 @@ def test_with_no_prior_standings_the_order_is_newest_first():
             # Another test's prior standings are in the DB; the contract then is the
             # best-first one pinned above.
             assert "prior version" in info["ordered_by"]
+
+
+def test_regrade_of_a_run_captured_under_the_current_version_keeps_its_at_measure_row():
+    # S21b: before, a re-grade under the run's own capture version rewrote the at-measure
+    # row in place (is_at_measure was "versions match"), and with write-once at-measure rows
+    # it would now raise. A re-grade always writes the at-present row instead, beside it.
+    rid = _seed_run_with_raw(resources_present=True)
+    with session_scope() as s:
+        methodology = ensure_current_methodology(s, get_config(s))
+        run = s.get(Run, rid)
+        run.methodology_version = methodology.version  # captured under the current version
+        s.add(Score(run_id=rid, methodology_version=methodology.version, is_at_measure=True,
+                    comparability="exact", axis_scores={"overall": 12.5}, subscores={},
+                    weights_used={}, metric_values={"captured": 1.0}))
+        s.commit()
+    for _ in range(2):  # two passes: the second refreshes the at-present row in place
+        with session_scope() as s:
+            run = s.get(Run, rid)
+            methodology = ensure_current_methodology(s, get_config(s))
+            score = score_run_under(s, run, methodology, artifact_base="/nonexistent")
+            assert score is not None and score.is_at_measure is False
+    with session_scope() as s:
+        rows = s.scalars(select(Score).where(Score.run_id == rid).order_by(Score.id)).all()
+        assert [r.is_at_measure for r in rows] == [True, False]
+        assert rows[0].axis_scores == {"overall": 12.5}            # capture record untouched
+        assert rows[0].metric_values == {"captured": 1.0}
+        assert rows[1].metric_values.get("longest_stall") is not None  # the re-grade
+
+
+def test_the_full_regrade_pass_does_not_trip_the_write_once_rule(monkeypatch):
+    # The pass visits runs captured under the current version too; none may hit the
+    # at-measure ValueError (it would be counted as an error, not raised). The pass is
+    # pointed at this test's run only, so it doesn't re-grade the shared test DB's history.
+    import pathbrain.runner as runner_mod
+    rid = _seed_run_with_raw(resources_present=True)
+    with session_scope() as s:
+        methodology = ensure_current_methodology(s, get_config(s))
+        run = s.get(Run, rid)
+        run.methodology_version = methodology.version
+        s.add(Score(run_id=rid, methodology_version=methodology.version, is_at_measure=True,
+                    comparability="exact", axis_scores={"overall": 12.5}, subscores={},
+                    weights_used={}, metric_values={}))
+        s.commit()
+    monkeypatch.setattr(runner_mod, "regrade_order", lambda session, min_iterations: (
+        [rid], {"unscorable": 0, "ordered_by": "test"}))
+    with session_scope() as s:
+        summary = score_history_under_current(s)
+        s.commit()
+    assert summary["errors"] == 0
+    with session_scope() as s:
+        flags = s.scalars(select(Score.is_at_measure).where(Score.run_id == rid).order_by(Score.id)).all()
+    assert flags == [True, False]

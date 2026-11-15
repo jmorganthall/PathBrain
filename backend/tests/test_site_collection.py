@@ -395,7 +395,10 @@ def test_scoring_under_a_sites_version_quarantines_other_site_sets():
             ok = score_metrics_under(s, run_id, version, meth, iter_metrics, site_set=declared)
             assert ok.comparability == "exact"
             s.flush()  # the upsert re-reads (run × version); an unflushed row would double-insert
-            bad = score_metrics_under(s, run_id, version, meth, iter_metrics, site_set=other)
+            # Scored again, as a re-grade: the at-measure row is written once (S21b), so the
+            # second interpretation is the at-present row beside it.
+            bad = score_metrics_under(s, run_id, version, meth, iter_metrics, site_set=other,
+                                      regrade=True)
             assert bad.comparability == "incomparable" and bad.missing_metrics == [SITE_SET_MARKER]
             # It still SCORES — the number is kept for the version it was measured under; the
             # quarantine is what keeps it out of this version's pooled standings.

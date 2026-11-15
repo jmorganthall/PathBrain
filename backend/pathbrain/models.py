@@ -358,7 +358,8 @@ class Score(Base):
       current when the run was collected (``is_at_measure=True``). Written once at
       capture, never overwritten.
     * **score-at-present** — the row for the *current* methodology; added/refreshed by
-      re-grading (Phase 3), which never touches the at-measure row of another version.
+      re-grading (Phase 3), which never touches an at-measure row, of this version or any
+      other. A run captured under the current version so holds both rows for it (S21b).
 
     ``comparability`` records whether this run's raw can reproduce the methodology's
     metrics: ``exact`` (all present), ``partial`` (some optional ones missing —
@@ -367,11 +368,15 @@ class Score(Base):
     """
 
     __tablename__ = "scores"
-    # The unique constraint indexes (run_id, methodology_version) — good for joining by
-    # run_id. The aggregations also filter by methodology_version alone (all scores under
-    # the current methodology), which that index can't serve; add a leading-column index.
+    # The unique constraint indexes (run_id, methodology_version, is_at_measure) — good for
+    # joining by run_id. A pair holds at most two rows: the at-measure row, written once at
+    # capture, and the at-present row a re-grade keeps beside it (S21b); readers take the
+    # newest through ``methodology.latest_score``. The aggregations also filter by
+    # methodology_version alone, which that index can't serve; add a leading-column index.
     __table_args__ = (
-        UniqueConstraint("run_id", "methodology_version", name="uq_score_run_methodology"),
+        UniqueConstraint(
+            "run_id", "methodology_version", "is_at_measure", name="uq_score_run_methodology_measure"
+        ),
         Index("ix_scores_methodology_version", "methodology_version"),
     )
 

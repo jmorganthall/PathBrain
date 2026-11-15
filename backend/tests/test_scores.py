@@ -226,7 +226,7 @@ def test_every_crown_leg_is_labelled_and_weighted_from_the_frozen_definition(cli
         assert leg["weight"] == body["overall_weights"].get(leg["key"])
 
 
-# ── S20: at-measure rows are write-once (S21 builds this) ───────────────────
+# ── S20 design, built in S21b: at-measure rows are write-once ───────────────
 
 
 def _at_measure_run(s):
@@ -241,7 +241,6 @@ def _at_measure_run(s):
     return run, version
 
 
-@pytest.mark.xfail(strict=True, reason="S21 builds this")
 def test_a_second_at_measure_write_raises():
     # The capture-time record is written once; a second at-measure write for the same
     # (run, version) is refused rather than overwriting it (or adding a second row).
@@ -255,7 +254,6 @@ def test_a_second_at_measure_write_raises():
         assert [(r.is_at_measure, r.axis_scores["overall"]) for r in rows] == [(True, 70.0)]
 
 
-@pytest.mark.xfail(strict=True, reason="S21 builds this")
 def test_a_regrade_writes_an_at_present_row_beside_the_at_measure_row():
     # A re-grade under the run's own version leaves the at-measure row as captured and
     # keeps one at-present row, which is the newest ("latest") row for the pair.
@@ -264,6 +262,7 @@ def test_a_regrade_writes_an_at_present_row_beside_the_at_measure_row():
     with session_scope() as s:
         run, version = _at_measure_run(s)
         upsert_score(s, run.id, version, is_at_measure=False, axis_scores={"overall": 80.0})
+        s.flush()  # the app's sessions don't autoflush; each re-grade pass commits its row
         upsert_score(s, run.id, version, is_at_measure=False, axis_scores={"overall": 85.0})
         s.flush()
         rows = s.scalars(select(Score).where(Score.run_id == run.id).order_by(Score.id)).all()

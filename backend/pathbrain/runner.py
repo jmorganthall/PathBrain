@@ -720,7 +720,7 @@ def missing_pages(config: dict | None, browser_raw: dict | None) -> list[str]:
 
 def score_metrics_under(
     session, run_id, run_methodology_version, methodology, iter_metrics, site_set=None,
-    client_set=None, pages_missing=None, run=None,
+    client_set=None, pages_missing=None, run=None, regrade=False,
 ):
     """Score per-iteration ``{plugin: metrics}`` under a methodology's frozen rubric,
     across every axis it defines, and upsert the (run × methodology) Score.
@@ -728,7 +728,8 @@ def score_metrics_under(
     Generic multi-axis: each axis is scored with ``compute_score`` over its own
     metric sources/weights/thresholds, so Speed/Smoothness/Stability/Completion (or
     any future axes) all fall out of the definition. ``is_at_measure`` is set when the
-    methodology matches the run's capture-time version. ``site_set`` is the run's stamp
+    methodology matches the run's capture-time version and this is the capture, not a
+    re-grade (``regrade=True`` always writes the at-present row). ``site_set`` is the run's stamp
     (`methodology.site_set_from_config` over its ``config_used``), which comparability
     holds against the version's declared sites. Returns the Score, or ``None`` when
     nothing was scorable. Caller commits.
@@ -810,7 +811,9 @@ def score_metrics_under(
         session,
         run_id,
         methodology.version,
-        is_at_measure=(run_methodology_version == methodology.version),
+        # Capture writes the at-measure row (once); a re-grade always writes the at-present
+        # row, even under the run's own version, so the capture record is never rewritten.
+        is_at_measure=(not regrade and run_methodology_version == methodology.version),
         axis_scores=axis_scores,
         subscores=subscores,
         weights_used=weights_used,
@@ -852,7 +855,7 @@ def _cached_iteration_metrics(session, run_id: int) -> list[dict[str, dict]] | N
 
 def score_run_under(session, run, methodology, artifact_base: str | None = None):
     """Score a run from its preserved raw under a methodology, writing a Score row
-    (the at-present record). Never mutates a different version's at-measure row.
+    (the at-present record). Never mutates an at-measure row, this version's included.
 
     Scores every axis the methodology defines (Speed/Smoothness/…). **Fast path:** when the
     run's cached metrics were already derived under the current derivation, they're reused
@@ -882,6 +885,7 @@ def score_run_under(session, run, methodology, artifact_base: str | None = None)
         client_set=client_set_from_config(run.config_used),
         pages_missing=missing_pages(run.config_used, browser_raw),
         run=run,
+        regrade=True,
     )
 
 

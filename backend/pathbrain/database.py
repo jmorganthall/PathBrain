@@ -7,6 +7,7 @@ time-series sink alongside the relational store).
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -14,6 +15,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
+from .logging_config import get_logger
 
 
 class Base(DeclarativeBase):
@@ -114,6 +116,7 @@ def _install_sqlite_pragmas(eng) -> None:
             cur.close()
 
 
+log = get_logger("database")
 settings = get_settings()
 engine = _make_engine(settings.database_url)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
@@ -128,14 +131,116 @@ def init_db() -> None:
     _migrate()
 
 
-def _migrate() -> None:
-    """Lightweight additive migrations for SQLite.
+#: S21b's scores rebuild: the old one-row-per-pair key clause, and the key that replaces it.
+_SCORES_OLD_UNIQUE = re.compile(
+    r'(?:CONSTRAINT\s+"?\w+"?\s+)?UNIQUE\s*\(\s*"?run_id"?\s*,\s*"?methodology_version"?\s*\)',
+    re.IGNORECASE,
+)
+_SCORES_NEW_UNIQUE = (
+    "CONSTRAINT uq_score_run_methodology_measure UNIQUE (run_id, methodology_version, is_at_measure)"
+)
+SCORES_BACKUP_TABLE = "scores_backup_s21b"
+
+
+def _scores_has_old_key(cur) -> bool:
+    """Whether the live ``scores`` table still has a unique index on exactly
+    (run_id, methodology_version) — read from the schema itself, not a flag."""
+    for row in cur.execute("PRAGMA index_list(scores)").fetchall():
+        name, unique = row[1], row[2]
+        if unique:
+            cols = [r[2] for r in cur.execute(f'PRAGMA index_info("{name}")').fetchall()]
+            if cols == ["run_id", "methodology_version"]:
+                return True
+    return False
+
+
+def _migrate_scores_unique(eng) -> bool:
+    """Widen ``scores``' unique key to include ``is_at_measure`` (S21b), once.
+
+    SQLite can't alter a table constraint, so the table is rebuilt the documented way: a new
+    table from the live table's own DDL with only the key clause swapped (every column, type
+    and the run FK kept as they are), every row copied with its id, the old table dropped,
+    the new one renamed, and the old table's indexes and triggers recreated — all in one
+    transaction, with foreign-key enforcement off around it and checked before commit.
+
+    Before anything changes, ``scores`` is copied to :data:`SCORES_BACKUP_TABLE`, which is
+    created only if absent and never overwritten. "Already migrated" is read from the live
+    schema (no unique index on exactly the old pair), not from a flag. Returns True when it
+    rebuilt the table."""
+    raw = eng.raw_connection()
+    dbapi = raw.driver_connection
+    saved_isolation = dbapi.isolation_level
+    dbapi.isolation_level = None  # manual transaction control for the rebuild
+    cur = dbapi.cursor()
+    fk_on = False
+    try:
+        if not cur.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scores'"
+        ).fetchone() or not _scores_has_old_key(cur):
+            return False  # no table yet (create_all builds the new key) or already migrated
+        fk_on = bool(cur.execute("PRAGMA foreign_keys").fetchone()[0])
+        if fk_on:
+            cur.execute("PRAGMA foreign_keys=OFF")  # a no-op inside a transaction, so first
+        cur.execute("BEGIN IMMEDIATE")
+        try:
+            # Re-check under the write lock: another process may have migrated meanwhile.
+            if not _scores_has_old_key(cur):
+                cur.execute("ROLLBACK")
+                return False
+            ddl = cur.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='scores'"
+            ).fetchone()[0]
+            new_ddl, n = _SCORES_OLD_UNIQUE.subn(_SCORES_NEW_UNIQUE, ddl)
+            if n != 1:
+                raise RuntimeError(f"scores rebuild: expected one old unique clause, found {n}")
+            new_ddl = re.sub(r'^CREATE TABLE\s+"?scores"?', "CREATE TABLE scores_s21b_new", new_ddl, count=1)
+            if not cur.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (SCORES_BACKUP_TABLE,)
+            ).fetchone():
+                cur.execute(f"CREATE TABLE {SCORES_BACKUP_TABLE} AS SELECT * FROM scores")
+            extras = [
+                sql for (sql,) in cur.execute(
+                    "SELECT sql FROM sqlite_master WHERE tbl_name='scores' "
+                    "AND type IN ('index', 'trigger') AND sql IS NOT NULL"
+                ).fetchall()
+            ]
+            cols = ", ".join(f'"{r[1]}"' for r in cur.execute("PRAGMA table_info(scores)").fetchall())
+            before = cur.execute("SELECT count(*) FROM scores").fetchone()[0]
+            cur.execute(new_ddl)
+            cur.execute(f"INSERT INTO scores_s21b_new ({cols}) SELECT {cols} FROM scores")
+            cur.execute("DROP TABLE scores")
+            cur.execute("ALTER TABLE scores_s21b_new RENAME TO scores")
+            for sql in extras:
+                cur.execute(sql)
+            after = cur.execute("SELECT count(*) FROM scores").fetchone()[0]
+            if after != before:
+                raise RuntimeError(f"scores rebuild: {before} rows before, {after} after")
+            if cur.execute("PRAGMA foreign_key_check(scores)").fetchone():
+                raise RuntimeError("scores rebuild: foreign_key_check failed")
+            cur.execute("COMMIT")
+        except Exception:
+            cur.execute("ROLLBACK")
+            raise
+    finally:
+        if fk_on:
+            cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+        dbapi.isolation_level = saved_isolation
+        raw.close()
+    log.info("scores: unique key now includes is_at_measure (%d rows; backup in %s)",
+             after, SCORES_BACKUP_TABLE)
+    return True
+
+
+def _migrate(eng=None) -> None:
+    """Lightweight migrations for SQLite (additive, plus S21b's one ``scores`` rebuild).
 
     ``create_all`` never alters existing tables, so columns added after a
     database already exists (e.g. on a deployed volume) must be added by hand.
     This adds any missing columns; it is idempotent and data-preserving.
     """
-    if engine.dialect.name != "sqlite":
+    eng = eng if eng is not None else engine
+    if eng.dialect.name != "sqlite":
         return
 
     from sqlalchemy import text
@@ -228,7 +333,8 @@ def _migrate() -> None:
         ("ix_scores_methodology_version", "scores", "methodology_version"),
         ("ix_link_gaps_at", "link_gaps", "at"),
     ]
-    with engine.begin() as conn:
+    _migrate_scores_unique(eng)
+    with eng.begin() as conn:
         for table, columns in new_columns.items():
             existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
             if not existing:

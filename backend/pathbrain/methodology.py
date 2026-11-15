@@ -1682,17 +1682,28 @@ def latest_score():
 
 
 def upsert_score(session: Session, run_id: int, version: str, *, is_at_measure: bool, **fields) -> Score:
-    """Create or refresh the Score row for ``(run, methodology)``.
+    """Write the Score row for ``(run, methodology, is_at_measure)``.
 
-    Used both at capture (at-measure) and, later, by re-grading (at-present). The
-    UNIQUE(run_id, methodology_version) constraint guarantees one row per pairing."""
+    The **at-measure** row (``is_at_measure=True``) is the capture-time record: it is
+    written once, and a second at-measure write for the same run and version raises
+    ``ValueError`` rather than overwrite it. The **at-present** row (``False``) is what a
+    re-grade writes; it is created or refreshed in place, beside the at-measure row. The
+    UNIQUE(run_id, methodology_version, is_at_measure) constraint backs this up."""
     row = session.scalar(
-        select(Score).where(Score.run_id == run_id, Score.methodology_version == version)
+        select(Score).where(
+            Score.run_id == run_id,
+            Score.methodology_version == version,
+            Score.is_at_measure == is_at_measure,
+        )
     )
+    if row is not None and is_at_measure:
+        raise ValueError(
+            f"run {run_id} already has its at-measure score under {version}; "
+            "at-measure rows are written once (a re-grade writes the at-present row)"
+        )
     if row is None:
-        row = Score(run_id=run_id, methodology_version=version)
+        row = Score(run_id=run_id, methodology_version=version, is_at_measure=is_at_measure)
         session.add(row)
-    row.is_at_measure = is_at_measure
     for k, v in fields.items():
         setattr(row, k, v)
     # `computed_at` defaults on INSERT only, so an in-place re-grade left it reading as the
