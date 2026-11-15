@@ -66,6 +66,7 @@ from statistics import median
 from sqlalchemy import and_, func, select
 
 from .interpret import DERIVATION_VERSION
+from .methodology import CURRENT_METHODOLOGY, crown_keys
 from .models import BenchmarkResult, Run, RunStatus, ScoreResult
 from .stats import spearman
 
@@ -119,9 +120,9 @@ QUANTITIES: dict[str, dict] = {
     "pages": {"label": "Pages per browser iteration", "unit": "", "floor": 0.5, "family": "mix"},
 }
 CLIENT_KEYS = ("nav_render_ms", "inp_ms", "cls")
-# The current crown's readings, by browser source key (`test_instrument_drift` pins that
-# this covers `methodology.overall_metrics` for the current version).
-CROWN_KEYS = ("fcp_ms", "lcp_ms", "cadence_cov")
+# The current crown's readings, by browser source key, read from the methodology
+# (`methodology.crown_keys`) so a publish cannot leave a leg out of the drift readout.
+CROWN_KEYS = crown_keys(CURRENT_METHODOLOGY)
 # A step in any of these is a step in what the crown reads — the instrument, not the schedule.
 INSTRUMENT_KEYS = CLIENT_KEYS + CROWN_KEYS + ("page_clock_ms", "nav_network_ms")
 PHASE_KEYS = ("context_ms", "goto_ms", "idle_ms", "reads_ms", "warm_ms", "close_ms")
