@@ -458,9 +458,12 @@ def settings_profiles(
     # them per ask was most of this endpoint's time on the NAS.
     from .. import profile_aggregates
 
+    from .. import phase_timing
+
     timer = _PhaseTimer()
-    with profile_aggregates.request_memo():
+    with profile_aggregates.request_memo(), phase_timing.recording() as laps:
         result = _settings_profiles(session, complete_only, tz_offset, crown_metrics, timer)
+    timer.laps = laps
     # Where the time went, per phase, as a Server-Timing header (visible in the browser's
     # network panel or a fetch) and one log line. Read-only diagnostics: the payload is
     # unchanged.
@@ -475,6 +478,8 @@ class _PhaseTimer:
     def __init__(self) -> None:
         self._start = self._last = time.perf_counter()
         self.phases: list[tuple[str, float]] = []
+        # Steps inside the phases (``phase_timing`` laps): ``{name: [total_ms, count]}``.
+        self.laps: dict = {}
 
     def mark(self, name: str) -> None:
         now = time.perf_counter()
@@ -482,7 +487,8 @@ class _PhaseTimer:
         self._last = now
 
     def _all(self) -> list[tuple[str, float]]:
-        return [*self.phases, ("total", (time.perf_counter() - self._start) * 1000.0)]
+        steps = [(name, ms) for name, (ms, _n) in self.laps.items()]
+        return [*self.phases, ("total", (time.perf_counter() - self._start) * 1000.0), *steps]
 
     def header(self) -> str:
         return ", ".join(f"{name};dur={ms:.0f}" for name, ms in self._all())

@@ -132,5 +132,8 @@ def test_the_profiles_endpoint_reports_where_its_time_went(client):
     timing = r.headers.get("server-timing", "")
     names = [part.split(";")[0].strip() for part in timing.split(",")]
     assert names[0] == "field"
-    assert names[-1] == "total"
+    assert "total" in names
     assert "discover" in names
+    # The steps inside the phases follow the total, named by the function they time.
+    steps = names[names.index("total") + 1:]
+    assert "rank_field-ratings" in steps

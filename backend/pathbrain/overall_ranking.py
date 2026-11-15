@@ -613,6 +613,9 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     and ``live=False`` the firewall read (the crown follower needs neither — it reads the
     firewall itself).
     """
+    from .phase_timing import laps
+
+    lap = laps("ranking")
     cfg = get_config(session)
     corr = cfg.get("correlation") or {}
     min_iterations = int(corr.get("min_iterations") or 15)
@@ -623,6 +626,7 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     methodology = ensure_current_methodology(session, cfg)
     version = methodology.version
     method = overall_method(methodology.definition or {})
+    lap("methodology")
 
     out: dict = {
         "methodology": version,
@@ -663,10 +667,13 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
 
     field = _pooled_field(session, version)
     pooled = {p["fingerprint"]: p for p in field}
+    lap("pooled")
     sessions_data = _ledger_sessions(session, 200)
+    lap("ledger")
     rr = ring_rounds(sessions_data, version)
     rounds = rr["rounds"]
     noise = decidability.round_noise(sessions_data)
+    lap("rounds")
     sigma_round = float(noise["sigma"]) if noise and noise.get("sigma") else FALLBACK_ROUND_SIGMA
     pairs = pair_summaries(rounds)
     try:
@@ -676,7 +683,9 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     except Exception:  # noqa: BLE001 — a refinement of τ, never a reason the ranking fails
         log.warning("Overall ranking: could not read when the fought profiles were measured", exc_info=True)
         slow = set()
+    lap("slow")
     slack = pooled_slack(pooled, pairs, sigma_round, exclude=slow)
+    lap("slack")
     if slack.get("driven_by"):
         log.info(
             "Overall ranking: τ %.2f with every pair, %.2f without %s — the smaller stands",
@@ -687,6 +696,7 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     # ── The fit ───────────────────────────────────────────────────────────────────
     fit = fuse(pooled, rounds, sigma_round, tau)
     ring_only = fuse(pooled, rounds, sigma_round, tau, anchor_scale=0.0)
+    lap("fit")
 
     rows: list[dict] = []
     for fp, f in fit.items():
@@ -805,16 +815,22 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
         "slack": slack,
     }
 
+    lap("rows")
     # ── The three corners: what each kind of evidence says alone, and together ────
     ratings = ledger_ratings(session)
+    lap("ratings")
     ring_best_fp = ledger_leader(ratings, sigma=rank_sigma(duel_cfg))
     ring_best = next((r for r in rows if r["fingerprint"] == ring_best_fp), None)
     best = eligible[0] if eligible else None
     live_settings = _live_settings() if live else None
     ring_rating = ratings.get(ring_best_fp) or {}
+    lap("live")
     math_best, math_note = _math_corner(session, version, min_iterations)
+    lap("math")
     lcp_first, lcp_first_note = _leg_first_corner(session, cfg, version, min_iterations, "lcp_first")
+    lap("lcp_first")
     fcp_first, fcp_first_note = _leg_first_corner(session, cfg, version, min_iterations, "fcp_first")
+    lap("fcp_first")
     out["corners"] = {
         "pooled": None if pooled_best is None else _corner(pooled_best, "pooled"),
         "ring": None if ring_best is None else {
@@ -846,8 +862,11 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
             and best["fingerprint"] == pooled_best["fingerprint"] == ring_best["fingerprint"]
         ),
     }
+    lap("corners")
     _attach_paper_cost(session, version, out["corners"])
+    lap("paper_cost")
     _attach_leg_gaps(session, version, min_iterations, out["corners"])
+    lap("leg_gaps")
 
     if best is None:
         out["verdict"] = (
@@ -877,6 +896,7 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
             tied.append(r)
     best["tied_with_leader"] = False
     best["gap_to_leader"] = 0.0
+    lap("ties")
 
     live_fp = _live_fingerprint(live_settings) if live_settings is not None else None
     by_fp = {r["fingerprint"]: r for r in rows}
@@ -907,6 +927,7 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
             key=lambda r: (abs(r["moved"] or 0), r["rounds"]), reverse=True,
         )[:MAX_MOVERS],
     })
+    lap("verdict")
     if backtest:
         try:
             out["backtest"] = predictive_check(

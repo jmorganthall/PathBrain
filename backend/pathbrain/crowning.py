@@ -427,13 +427,17 @@ def rank_field(session, field: dict, ratings: dict | None = None) -> dict:
     matches, which produced no rounds and therefore demonstrated nothing.
     """
     from . import duel as duel_mod
+    from .phase_timing import laps
 
+    lap = laps("rank_field")
     ranking = active_ranking(session)
     profiles = list(field.get("profiles") or [])
     if ratings is None:
         ratings = duel_mod.ledger_ratings(session)
     sigma = duel_mod.rank_sigma(get_config(session).get("duel", {}) or {})
+    lap("ratings")
     fused_by_fp = _fused_scores(session) if ranking == "fused" else {}
+    lap("fused")
 
     entries: list[dict] = []
     for p in profiles:
