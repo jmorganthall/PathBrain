@@ -47,6 +47,7 @@ from sqlalchemy import delete, func, select
 
 from .database import session_scope
 from .logging_config import get_logger
+from .methodology import CURRENT_METHODOLOGY, crown_metric_keys
 from .models import ProfileAggregate, Run, RunStatus, Score
 
 log = get_logger("profile_aggregates")
@@ -152,9 +153,13 @@ def _quartiles(values: list[float]) -> tuple[float | None, float | None]:
 
 
 #: Metrics whose RAW medians (milliseconds, off `Score.metric_values`) the rollup keeps
-#: beside the subscores. Read in SQL as two scalars per run, so they cost nothing like the
-#: subscore document decode.
-RAW_METRICS: tuple[str, ...] = ("fcp", "lcp")
+#: beside the subscores: the current crown's millisecond legs. A deliberate filter, not
+#: the whole crown: the raw-millisecond crowns (`pooled_field`: fastest median FCP × LCP,
+#: the leg-first bands) compare times, and a unitless leg like ``cadence_cov`` has no
+#: millisecond median to keep. Read in SQL as one scalar per metric per run, so they cost
+#: nothing like the subscore document decode.
+RAW_METRICS_UNIT = "ms"
+RAW_METRICS: tuple[str, ...] = crown_metric_keys(CURRENT_METHODOLOGY, unit=RAW_METRICS_UNIT)
 
 
 def _summary(values: list[float]) -> dict:

@@ -105,8 +105,10 @@ parallel with C once S4 is done.
   are gone and their tests pass unchanged.
   The names stay as derived values (callers import them), no longer literals. `EPOCH_KEYS` keeps
   cadence out through a documented `evidence.EPOCH_EXCLUDED_KEYS` filter (its daily medians are too coarse).
-- [ ] **S11. Raw metric list from the methodology.** Same for
+- [x] **S11. Raw metric list from the methodology.** Same for
   `profile_aggregates.RAW_METRICS`.
+  Read as the crown's millisecond legs (`methodology.crown_metric_keys(unit="ms")`): cadence is
+  unitless and the raw-ms crowns compare times, so it stays out by a named filter.
 - [ ] **S12. Drop the settings fallback.** Remove `CROWN_METRICS` in
   `api/routes_settings.py:75` and make its callers read the methodology; add a test that the
   Overall page and the duel name the same crown legs.

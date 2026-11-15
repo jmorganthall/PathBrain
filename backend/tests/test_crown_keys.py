@@ -30,3 +30,35 @@ def test_crown_keys_agree_with_the_browser_sources_of_every_registry_version():
 
 def test_an_unknown_version_has_no_crown_keys():
     assert methodology.crown_keys("not-a-version") == ()
+
+
+# ── S11: the rollup's raw metrics ──────────────────────────────────────────────────────
+
+#: The literal `profile_aggregates.RAW_METRICS` held before S11, for the current methodology.
+OLD_PROFILE_AGGREGATES_RAW_METRICS = ("fcp", "lcp")
+
+
+def test_raw_metrics_read_equals_the_old_literal_for_the_current_methodology():
+    from pathbrain import profile_aggregates
+
+    assert CURRENT_METHODOLOGY == "speed-smoothness-v17", "re-check this literal on a new current"
+    assert profile_aggregates.RAW_METRICS == OLD_PROFILE_AGGREGATES_RAW_METRICS
+
+
+def test_raw_metrics_are_the_crowns_millisecond_legs():
+    from pathbrain import profile_aggregates
+
+    assert profile_aggregates.RAW_METRICS_UNIT == "ms"
+    every = methodology.crown_metric_keys()
+    assert every == ("fcp", "lcp", "cadence_cov")
+    assert profile_aggregates.RAW_METRICS == tuple(k for k in every if k != "cadence_cov")
+
+
+def test_crown_metric_keys_follow_each_registry_versions_overall_spec():
+    from pathbrain.methodology import overall_metrics
+
+    for version, spec in METHODOLOGY_REGISTRY.items():
+        d = build_definition_from_spec(spec)
+        listed = [k for k in overall_metrics(d)[0] if k in {m["key"] for m in d["metrics"]}]
+        assert methodology.crown_metric_keys(version) == tuple(listed), version
+    assert methodology.crown_metric_keys("not-a-version") == ()
