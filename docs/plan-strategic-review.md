@@ -64,7 +64,7 @@ parallel with C once S4 is done.
   rule may live, the firewall write path, test commands, PR style. Move the long-form
   Conventions and Phase map text verbatim to `docs/history/` too.
   Done when: CLAUDE.md is under 20 KB and every rule in it points to a file or test.
-- [ ] **S3. Size guard.** Add a test that fails if CLAUDE.md passes 25 KB, with a message
+- [x] **S3. Size guard.** Add a test that fails if CLAUDE.md passes 25 KB, with a message
   pointing to `docs/history/`. Done when: the test passes on S2's file.
 
 ## Phase B: take the host's noise out of the night (rec 1)
