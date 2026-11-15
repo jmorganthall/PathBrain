@@ -17,6 +17,7 @@ from ..interpret import DERIVATION_VERSION
 from ..models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
 from ..runner import rederive_run, rescore_run, score_history_under_current
 from ..schemas import ScoreOut
+from ..settings_overrides import effective_fingerprint
 from ..scoring import compute_score
 
 router = APIRouter()
@@ -255,7 +256,7 @@ def _window_scores(session: Session, hours: int, fingerprint: str | None = None)
         latest_score(),
     ]
     if fingerprint:
-        conds.append(Run.settings_fingerprint == fingerprint)
+        conds.append(effective_fingerprint() == fingerprint)
     rows = (
         session.execute(
             select(Score).join(Run, Run.id == Score.run_id).where(*conds).order_by(Run.created_at)
@@ -448,7 +449,7 @@ def axis_series(
         latest_score(),
     ]
     if fingerprint:
-        conds.append(Run.settings_fingerprint == fingerprint)
+        conds.append(effective_fingerprint() == fingerprint)
     rows = session.execute(
         select(Score, Run).join(Run, Run.id == Score.run_id).where(*conds)
         .order_by(Run.created_at.desc())

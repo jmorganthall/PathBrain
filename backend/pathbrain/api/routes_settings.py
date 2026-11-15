@@ -69,7 +69,7 @@ from ..ranking import (  # noqa: F401 — moved to `ranking` (S16, S17); re-expo
     _spread,
     _weather_covariates,
 )
-from ..settings_overrides import effective_fingerprint, effective_settings, record as record_override
+from ..settings_overrides import effective_fingerprint, effective_settings, overrides_for, record as record_override
 from ..models import BenchmarkResult, Run, RunStatus, Score
 from ..firewall_write import apply_changes, normalize_changes
 from ..providers import get_provider
@@ -370,19 +370,33 @@ def refingerprint_runs(
     a run whose stored settings say ``target: "5ms"`` or ``5`` re-keys onto the profile the
     firewall reports as ``"5"``. A run recorded off a real OPNsense ``discover()`` is already in
     that form and is left untouched — on a live install this re-keys nothing but SQM-off
-    history; on a mock-backed dev database it also folds the mock's ``"5ms"`` spellings."""
+    history; on a mock-backed dev database it also folds the mock's ``"5ms"`` spellings.
+
+    **Overridden runs (S22)** are re-keyed from their *effective* settings, and the new key is
+    appended as a ``settings_fingerprint`` override (source ``refingerprint``) — their row is
+    never written, so the correction history stays complete and the row keeps what was
+    captured. A run with no override is re-keyed in place as before: its row *is* its record."""
     runs = session.scalars(
-        select(Run).where(Run.status == RunStatus.COMPLETE, Run.settings.is_not(None))
+        select(Run).where(Run.status == RunStatus.COMPLETE, effective_settings().is_not(None))
     ).all()
+    found = overrides_for(session, [r.id for r in runs])
     rekeyed = 0
     for run in runs:
+        over = found.get(run.id)
+        settings = over.get("settings", run.settings) if over else run.settings
+        current_fp = over.get("settings_fingerprint", run.settings_fingerprint) if over else run.settings_fingerprint
         try:
-            new_fp = fingerprint(run.settings or [])
+            new_fp = fingerprint(settings or [])
         except Exception:  # noqa: BLE001 — one odd row must not abort the whole re-key
             continue
-        if new_fp != run.settings_fingerprint:
+        if new_fp == current_fp:
+            continue
+        if over:
+            record_override(session, run.id, "settings_fingerprint", new_fp, source="refingerprint",
+                            reason=f"re-keyed from {current_fp!r} under the current fingerprint scheme")
+        else:
             run.settings_fingerprint = new_fp
-            rekeyed += 1
+        rekeyed += 1
     session.commit()
     log.info("Re-fingerprinted %d of %d completed runs", rekeyed, len(runs))
     if rekeyed:

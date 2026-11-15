@@ -215,6 +215,7 @@ def noise_pairs(session, methodology_version: str, sessions: int = SESSIONS) -> 
     :data:`MAX_LEG_GAP` legs of each other in one session, as ``(Δ log readings, Δ Overall)``."""
     from .models import Duel, Run, Score
     from .methodology import latest_score
+    from .settings_overrides import effective_fingerprint
 
     xs: list[list[float]] = []
     ys: list[float] = []
@@ -224,7 +225,7 @@ def noise_pairs(session, methodology_version: str, sessions: int = SESSIONS) -> 
         ids = [i for i in (run_ids or []) if isinstance(i, int)]
         if len(ids) < 2:
             continue
-        fps = dict(session.execute(select(Run.id, Run.settings_fingerprint).where(Run.id.in_(ids))).all())
+        fps = dict(session.execute(select(Run.id, effective_fingerprint()).where(Run.id.in_(ids))).all())
         overall = {
             rid: (axes or {}).get("overall")
             for rid, axes in session.execute(

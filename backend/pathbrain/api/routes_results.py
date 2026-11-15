@@ -13,6 +13,7 @@ from ..config_store import get_config
 from ..database import get_session
 
 from ..methodology import ensure_current_methodology, latest_score
+from ..settings_overrides import effective_fingerprint, overlay, overlay_run
 from ..interpret.smoothness import longest_void_diagnostic
 from ..metrics import has_latest_metrics
 from ..raw_access import browser_url_observations
@@ -77,6 +78,7 @@ def _pause_diagnostics(run: Run) -> list[dict] | None:
 
 
 def _serialize_run(run: Run, overall: float | None = None) -> RunDetail:
+    overlay_run(run)  # effective settings/fingerprint (S22), read-only
     return RunDetail(
         id=run.id,
         created_at=run.created_at,
@@ -139,7 +141,7 @@ def profile_pause_rollup(fingerprint: str, session: Session = Depends(get_sessio
     WHAT causes them, not just a single run. Reads at most ``PROFILE_PAUSE_RUN_LIMIT`` recent runs."""
     runs = session.scalars(
         select(Run)
-        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint == fingerprint)
+        .where(Run.status == RunStatus.COMPLETE, effective_fingerprint() == fingerprint)
         .order_by(Run.created_at.desc())
         .limit(PROFILE_PAUSE_RUN_LIMIT)
         .options(selectinload(Run.results))
@@ -242,9 +244,10 @@ def get_result_baseline(
     rows = session.execute(
         select(Run, ScoreResult.sops)
         .join(ScoreResult, ScoreResult.run_id == Run.id)
-        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint.is_not(None))
+        .where(Run.status == RunStatus.COMPLETE, effective_fingerprint().is_not(None))
         .order_by(Run.created_at.desc())
     ).all()
+    overlay(session, [r for r, _ in rows] + ([run] if run is not None else []))
     groups: dict[str, dict] = {}
     for r, sops in rows:
         g = groups.setdefault(

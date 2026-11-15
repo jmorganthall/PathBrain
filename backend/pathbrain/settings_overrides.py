@@ -81,3 +81,20 @@ def record(session, run_id: int, field: str, value, *, source: str, reason: str 
     row = SettingsOverride(run_id=run_id, field=field, value=value, source=source, reason=reason)
     session.add(row)
     return row
+
+
+def overlay_run(run) -> None:
+    """:func:`overlay` for one run, through the session it was loaded in."""
+    from sqlalchemy.orm import object_session
+
+    session = object_session(run)
+    if session is not None:
+        overlay(session, [run])
+
+
+def overrides_stamp(session) -> tuple:
+    """A change stamp over the override table, for caches keyed on run ids and counts
+    (an override re-keys an old run without moving either)."""
+    return tuple(session.execute(
+        select(func.max(SettingsOverride.id), func.count(SettingsOverride.id))
+    ).one())

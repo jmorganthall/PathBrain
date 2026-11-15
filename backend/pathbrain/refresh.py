@@ -34,6 +34,7 @@ from .methodology import latest_score
 from .session_runtime import describe_failure
 from .models import Methodology, ProfileRefresh, ProfileRefreshStatus, Run, RunStatus, Score
 from .profile_names import names_for
+from .settings_overrides import effective_fingerprint, effective_settings, overrides_stamp
 from .profile_test import _apply_all
 from .providers import get_provider
 from .runner import MAX_ITERATIONS, create_run, execute_run
@@ -90,22 +91,25 @@ def _latest_settings_by_fingerprint(session) -> dict[str, list]:
     """``{fingerprint: newest settings}`` over every completed run, from the incremental
     cache. Ascending id order within a top-up, so the last seen per fingerprint is the newest
     — the same answer the full descending scan gave, without the scan."""
+    # Effective values (S22): a run's own settings, or its override.
     base = (
-        select(Run.id, Run.settings_fingerprint, Run.settings)
+        select(Run.id, effective_fingerprint(), effective_settings())
         .where(
             Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint.is_not(None),
-            Run.settings.is_not(None),
+            effective_fingerprint().is_not(None),
+            effective_settings().is_not(None),
         )
     )
     max_id, count = session.execute(
         select(func.max(Run.id), func.count(Run.id)).where(
             Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint.is_not(None),
-            Run.settings.is_not(None),
+            effective_fingerprint().is_not(None),
+            effective_settings().is_not(None),
         )
     ).one()
     max_id, count = int(max_id or 0), int(count or 0)
+    # An override can re-key an old run without moving max id or count: rebuild when one lands.
+    ov_stamp = overrides_stamp(session)
     with _PROFILES_LOCK:
         cached_max, cached_count = _PROFILES_CACHE["max_id"], _PROFILES_CACHE["count"]
         # The top-up is only sound if what the cache saw is still what the table holds. Two
@@ -116,11 +120,12 @@ def _latest_settings_by_fingerprint(session) -> dict[str, list]:
         # reissued id lands there first) — one primary-key lookup, checked on the fast path
         # too. Either → rebuild from scratch, the rare path priced only when it happens.
         probe = (
-            session.execute(select(Run.settings_fingerprint).where(Run.id == cached_max)).scalar()
+            session.execute(select(effective_fingerprint()).where(Run.id == cached_max)).scalar()
             if cached_max
             else None
         )
-        intact = bool(cached_max) and probe == _PROFILES_CACHE["max_fp"]
+        intact = (bool(cached_max) and probe == _PROFILES_CACHE["max_fp"]
+                  and _PROFILES_CACHE.get("ov_stamp") == ov_stamp)
         if intact and max_id == cached_max and count == cached_count:
             return dict(_PROFILES_CACHE["latest"])
         latest = dict(_PROFILES_CACHE["latest"])
@@ -133,7 +138,8 @@ def _latest_settings_by_fingerprint(session) -> dict[str, list]:
             latest[fp] = settings
             if rid == max_id:
                 max_fp = fp
-        _PROFILES_CACHE.update({"max_id": max_id, "max_fp": max_fp, "count": count, "latest": latest})
+        _PROFILES_CACHE.update({"max_id": max_id, "max_fp": max_fp, "count": count, "latest": latest,
+                                "ov_stamp": ov_stamp})
         return dict(latest)
 
 
@@ -182,11 +188,11 @@ def _overall_by_profile(session, version: str) -> dict[str, float]:
     a methodology version — the winner-first ranking signal. Reads the same first-class Overall
     the crown ranks on, so 'top profiles' here means the same thing Settings-Impact showed."""
     rows = session.execute(
-        select(Run.settings_fingerprint, Score.axis_scores)
+        select(effective_fingerprint(), Score.axis_scores)
         .join(Score, Score.run_id == Run.id)
         .where(
             Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint.is_not(None),
+            effective_fingerprint().is_not(None),
             Score.methodology_version == version,
             latest_score(),
         )
@@ -252,11 +258,11 @@ def _prior_methodology_versions(session) -> list[str]:
 
 def _prior_field_under(session, version: str, min_iterations: int | None) -> dict | None:
     rows = session.execute(
-        select(Run.settings_fingerprint, Run.iterations, Score.axis_scores)
+        select(effective_fingerprint(), Run.iterations, Score.axis_scores)
         .join(Score, Score.run_id == Run.id)
         .where(
             Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint.is_not(None),
+            effective_fingerprint().is_not(None),
             Score.methodology_version == version,
             Score.comparability != "incomparable",
             latest_score(),

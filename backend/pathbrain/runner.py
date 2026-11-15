@@ -916,8 +916,10 @@ def regrade_order(session, min_iterations: int | None = None) -> tuple[list[int]
     run ids and ``{ordered_by, prior_profiles, unscorable}``. The ORDER is the whole of
     this: every run that can score still scores, in one pass."""
     has_result = exists().where(BenchmarkResult.run_id == Run.id)
+    from .settings_overrides import effective_fingerprint
+
     rows = session.execute(
-        select(Run.id, Run.settings_fingerprint)
+        select(Run.id, effective_fingerprint())
         .where(Run.status == RunStatus.COMPLETE, has_result)
     ).all()
     unscorable = int(session.scalar(

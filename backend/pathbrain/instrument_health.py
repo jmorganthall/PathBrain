@@ -414,11 +414,12 @@ def profile_conditions(session, fingerprint: str) -> dict:
     from sqlalchemy import select
 
     from .models import Run, RunStatus
+    from .settings_overrides import effective_fingerprint
 
     ratio_col = Run.instrument_health["ratio"].as_float()
     rows = session.execute(
         select(Run.created_at, ratio_col)
-        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint == fingerprint)
+        .where(Run.status == RunStatus.COMPLETE, effective_fingerprint() == fingerprint)
         .order_by(Run.id.desc())
         .limit(CONDITIONS_PROFILE_RUNS)
     ).all()
@@ -489,6 +490,7 @@ def slow_profiles(session, fingerprints) -> set[str]:
     from sqlalchemy import select
 
     from .models import Run, RunStatus
+    from .settings_overrides import effective_fingerprint
 
     fps = [fp for fp in dict.fromkeys(fingerprints) if fp]
     if not fps:
@@ -510,8 +512,8 @@ def slow_profiles(session, fingerprints) -> set[str]:
     for start in range(0, len(fps), 500):
         chunk = fps[start:start + 500]
         for fp, ratio in session.execute(
-            select(Run.settings_fingerprint, ratio_col)
-            .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint.in_(chunk))
+            select(effective_fingerprint(), ratio_col)
+            .where(Run.status == RunStatus.COMPLETE, effective_fingerprint().in_(chunk))
             .order_by(Run.id.desc())
         ).all():
             got = per.setdefault(fp, [])

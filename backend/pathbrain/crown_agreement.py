@@ -72,11 +72,13 @@ def load_profiles(session, sources: dict[str, str], *, limit: int = LIMIT) -> di
         return {}
     metrics = BenchmarkResult.metrics
     keys = list(sources)
-    cols = [Run.id, Run.settings_fingerprint] + [metrics[sources[k]].as_float() for k in keys]
+    from .settings_overrides import effective_fingerprint
+
+    cols = [Run.id, effective_fingerprint()] + [metrics[sources[k]].as_float() for k in keys]
     q = (
         select(*cols)
         .join(BenchmarkResult, and_(BenchmarkResult.run_id == Run.id, BenchmarkResult.plugin == "browser"))
-        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint.is_not(None))
+        .where(Run.status == RunStatus.COMPLETE, effective_fingerprint().is_not(None))
         .order_by(Run.id.desc())
         .limit(max(1, int(limit)))
     )
