@@ -127,9 +127,11 @@ parallel with C once S4 is done.
   literals (`"fcp_ms"`, `"lcp_ms"`, `"cadence_cov"`) outside `methodology.py` and an allow-list.
   Built as a ratchet (`test_crown_literal_guard.py`): per-file counts with a reason each, also
   counting `"fcp"`/`"lcp"`; 13 files, 88 literals, 42 marked to move (crowning.py, pooled_field.py).
-- [ ] **S16. Move the ranking engine out, part 1.** Pure move of the percentile crown helpers
+- [x] **S16. Move the ranking engine out, part 1.** Pure move of the percentile crown helpers
   (`_crown_corner`, `_percentile_norm`, `_crown_field_values`, `_crown_tie_params`, about
   lines 101–300) from `routes_settings.py` to a new `pathbrain/ranking.py`. No behaviour change.
+  Moved verbatim (78 lines); routes_settings re-exports them. No other private helper was used only by
+  these four, and the moved code held no crown literals, so S15's allow-list is unchanged.
 - [ ] **S17. Move the ranking engine out, part 2.** Move the remaining ranking code (around
   lines 2340–2740) to `ranking.py`; routes only call it. Done when: `routes_settings.py` is
   under about 3,500 lines and tests pass unchanged.
