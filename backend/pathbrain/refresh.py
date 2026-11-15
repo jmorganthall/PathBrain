@@ -91,21 +91,18 @@ def _latest_settings_by_fingerprint(session) -> dict[str, list]:
     """``{fingerprint: newest settings}`` over every completed run, from the incremental
     cache. Ascending id order within a top-up, so the last seen per fingerprint is the newest
     — the same answer the full descending scan gave, without the scan."""
-    # Effective values (S22): a run's own settings, or its override.
+    # Effective values (S22): a run's own settings, or its override. The rows are every
+    # completed run; one without an effective fingerprint or settings is skipped below
+    # rather than filtered in SQL, so the change stamp can count completed runs straight
+    # off the status index. Filtering the stamp on the effective values made it evaluate
+    # the override lookups and read every run row on every call, which on the NAS cost
+    # about ten seconds per Profiles step that asked for the list.
     base = (
         select(Run.id, effective_fingerprint(), effective_settings())
-        .where(
-            Run.status == RunStatus.COMPLETE,
-            effective_fingerprint().is_not(None),
-            effective_settings().is_not(None),
-        )
+        .where(Run.status == RunStatus.COMPLETE)
     )
     max_id, count = session.execute(
-        select(func.max(Run.id), func.count(Run.id)).where(
-            Run.status == RunStatus.COMPLETE,
-            effective_fingerprint().is_not(None),
-            effective_settings().is_not(None),
-        )
+        select(func.max(Run.id), func.count(Run.id)).where(Run.status == RunStatus.COMPLETE)
     ).one()
     max_id, count = int(max_id or 0), int(count or 0)
     # An override can re-key an old run without moving max id or count: rebuild when one lands.
@@ -135,9 +132,11 @@ def _latest_settings_by_fingerprint(session) -> dict[str, list]:
             rows = session.execute(base.order_by(Run.id.asc())).all()
         max_fp = _PROFILES_CACHE["max_fp"]
         for rid, fp, settings in rows:
-            latest[fp] = settings
             if rid == max_id:
                 max_fp = fp
+            if fp is None or settings is None:
+                continue
+            latest[fp] = settings
         _PROFILES_CACHE.update({"max_id": max_id, "max_fp": max_fp, "count": count, "latest": latest,
                                 "ov_stamp": ov_stamp})
         return dict(latest)
@@ -151,9 +150,15 @@ def list_profiles(session) -> list[dict]:
     labelled *"refresh · Speedy Sloth"* says which profile it measured, while one labelled
     with the settings summary makes the reader decode the settings to find out.
     """
+    from . import profile_aggregates
+
+    # Inside one request (the Profiles list asks seven times) the list is read once.
+    memo = profile_aggregates.request_cache()
+    if memo is not None and "list_profiles" in memo:
+        return [dict(p) for p in memo["list_profiles"]]
     latest = _latest_settings_by_fingerprint(session)
     names = names_for(session, list(latest))
-    return [
+    out = [
         {
             "fingerprint": fp,
             "settings": settings,
@@ -162,6 +167,9 @@ def list_profiles(session) -> list[dict]:
         }
         for fp, settings in latest.items()
     ]
+    if memo is not None:
+        memo["list_profiles"] = [dict(p) for p in out]
+    return out
 
 
 # ── Winner-first prioritization ──────────────────────────────────────────────
