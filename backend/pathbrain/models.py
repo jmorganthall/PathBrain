@@ -373,11 +373,17 @@ class Score(Base):
     # capture, and the at-present row a re-grade keeps beside it (S21b); readers take the
     # newest through ``methodology.latest_score``. The aggregations also filter by
     # methodology_version alone, which that index can't serve; add a leading-column index.
+    # ``latest_score``'s NOT EXISTS probes (run_id, methodology_version, id > ?) once per
+    # row. Without an index ending in ``id``, SQLite serves that probe from
+    # ix_scores_methodology_version as (methodology_version=? AND rowid>?), a scan of every
+    # newer row under the version, so the field read goes quadratic in history (60s+ at
+    # ~40k runs). ix_scores_run_methodology_id answers it with a single seek.
     __table_args__ = (
         UniqueConstraint(
             "run_id", "methodology_version", "is_at_measure", name="uq_score_run_methodology_measure"
         ),
         Index("ix_scores_methodology_version", "methodology_version"),
+        Index("ix_scores_run_methodology_id", "run_id", "methodology_version", "id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
