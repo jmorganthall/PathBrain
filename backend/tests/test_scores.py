@@ -1,6 +1,7 @@
 """Tests for the (run × methodology) Score table (Phase 2)."""
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
 
 from pathbrain.config_store import get_config
@@ -223,3 +224,49 @@ def test_every_crown_leg_is_labelled_and_weighted_from_the_frozen_definition(cli
     for leg in legs:
         assert leg["label"] and leg["label"] != leg["key"], f"{leg['key']} has no label"
         assert leg["weight"] == body["overall_weights"].get(leg["key"])
+
+
+# ── S20: at-measure rows are write-once (S21 builds this) ───────────────────
+
+
+def _at_measure_run(s):
+    from pathbrain.methodology import upsert_score
+
+    version = ensure_current_methodology(s, get_config(s)).version
+    run = Run(status=RunStatus.COMPLETE)
+    s.add(run)
+    s.flush()
+    upsert_score(s, run.id, version, is_at_measure=True, axis_scores={"overall": 70.0})
+    s.flush()
+    return run, version
+
+
+@pytest.mark.xfail(strict=True, reason="S21 builds this")
+def test_a_second_at_measure_write_raises():
+    # The capture-time record is written once; a second at-measure write for the same
+    # (run, version) is refused rather than overwriting it (or adding a second row).
+    from pathbrain.methodology import upsert_score
+
+    with session_scope() as s:
+        run, version = _at_measure_run(s)
+        with pytest.raises(ValueError, match="at-measure"):
+            upsert_score(s, run.id, version, is_at_measure=True, axis_scores={"overall": 90.0})
+        rows = s.scalars(select(Score).where(Score.run_id == run.id)).all()
+        assert [(r.is_at_measure, r.axis_scores["overall"]) for r in rows] == [(True, 70.0)]
+
+
+@pytest.mark.xfail(strict=True, reason="S21 builds this")
+def test_a_regrade_writes_an_at_present_row_beside_the_at_measure_row():
+    # A re-grade under the run's own version leaves the at-measure row as captured and
+    # keeps one at-present row, which is the newest ("latest") row for the pair.
+    from pathbrain.methodology import upsert_score
+
+    with session_scope() as s:
+        run, version = _at_measure_run(s)
+        upsert_score(s, run.id, version, is_at_measure=False, axis_scores={"overall": 80.0})
+        upsert_score(s, run.id, version, is_at_measure=False, axis_scores={"overall": 85.0})
+        s.flush()
+        rows = s.scalars(select(Score).where(Score.run_id == run.id).order_by(Score.id)).all()
+        assert [(r.is_at_measure, r.axis_scores["overall"]) for r in rows] == [
+            (True, 70.0), (False, 85.0),
+        ]
