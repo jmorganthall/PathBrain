@@ -13,7 +13,7 @@ because any write since may have moved the firewall. Otherwise the stamp is NULL
 time is stored with it, since a change made outside PathBrain (by hand in OPNsense) leaves no
 ledger row.
 
-Off by default (``PATHBRAIN_FIELD_INGEST_ENABLED``).
+Off by default: ingest needs a LAN token in config (``PATHBRAIN_FIELD_INGEST_TOKEN``, S33).
 """
 from __future__ import annotations
 
