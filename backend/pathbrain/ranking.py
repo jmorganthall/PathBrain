@@ -404,6 +404,9 @@ def _completed_runs_with_scores(session: Session):
     selected at all, and ``Run.config_used`` (a full benchmark-config snapshot per run
     that no caller reads) is deferred for the same reason.
     """
+    from .phase_timing import laps
+
+    lap = laps("field_rows")
     methodology = ensure_current_methodology(session, get_config(session))
     filters = (
         Run.status == RunStatus.COMPLETE,
@@ -418,6 +421,7 @@ def _completed_runs_with_scores(session: Session):
         .where(*filters)
         .order_by(Run.created_at)
     ).all()
+    lap("runs_scores")
     metrics_by_run: dict[int, dict[str, dict]] = {}
     for run_id, plugin, metrics in session.execute(
         select(BenchmarkResult.run_id, BenchmarkResult.plugin, BenchmarkResult.metrics)
@@ -426,9 +430,11 @@ def _completed_runs_with_scores(session: Session):
         .where(*filters)
     ):
         metrics_by_run.setdefault(run_id, {})[plugin] = metrics or {}
+    lap("results")
     # Callers read run.settings / run.settings_fingerprint: give them the effective values
     # (override if present, else the run's own) as loaded state, never written back.
     overlay_settings(session, [run for run, _ in rows])
+    lap("overlay")
     return [(run, score, metrics_by_run.get(run.id, {})) for run, score in rows]
 
 
@@ -478,10 +484,14 @@ def _compute_profiles_uncached(
     for the display columns and ``crown_spreads`` (same shape, keyed by the methodology's
     resolved crown metrics — ``methodology.ranking_crown``)
     so a caller can compute an ``optimistic_overall`` for not-yet-confident profiles."""
+    from .phase_timing import laps
+
+    lap = laps("field")
     min_runs = _min_runs(session)
     min_iterations = _min_iterations(session)
     min_samples = int((get_config(session).get("trends", {}) or {}).get("min_samples", 3) or 3)
     rows = _completed_runs_with_scores(session)
+    lap("rows")
     # The crown metric set, from the current methodology — the single source of truth
     # shared by the persisted Overall, the live fallback, crown_spreads, optimistic_overall,
     # and the challenger race (a definition with no `overall` spec ranks by the legacy crown
@@ -514,6 +524,7 @@ def _compute_profiles_uncached(
             host_model = host_adjust_mod.model_for(session, methodology.version)
     except Exception:  # noqa: BLE001 — a reading, never a failed field
         host_model = None
+    lap("host_model")
     # ── Recent-evidence window (the "Overall (recent)" COLUMN, not the verdict) ──────
     # A per-profile window over its most recent ``crown_window_iterations`` iterations
     # (walking runs newest-first until the window fills). This briefly WAS the verdict
@@ -555,6 +566,7 @@ def _compute_profiles_uncached(
         instrument_health_mod.health_by_run(session, [run.id for run, _, _ in rows])
         if host_model is not None and host_model.active else {}
     )
+    lap("health")
     for run, score, results_by_plugin in rows:
         comparable = _comparable(score)
         if complete_only and not comparable:
@@ -714,6 +726,7 @@ def _compute_profiles_uncached(
     # exactly two display-only fields. The engines that call `compute_profiles` for the
     # *field* — the duel, the challenger race, the crown follower, explore — read neither,
     # so they were paying for it on every call.
+    lap("runs")
     if include_weather:
         _w_sev = run_severities([covs for _, _, covs in weather_runs], _clean_covs)
         weather_rel_by_fp, weather_sev_by_fp = cohort_residuals(
@@ -721,6 +734,7 @@ def _compute_profiles_uncached(
         )
     else:
         weather_rel_by_fp, weather_sev_by_fp = {}, {}
+    lap("weather")
     # Tie/significance parameters — shared by the crown-tie machinery below and the
     # per-profile current-form check inside the loop.
     tie_margin, tie_sigma = _crown_tie_params(session)
@@ -905,6 +919,7 @@ def _compute_profiles_uncached(
                 },
             }
         )
+    lap("groups")
     # ── Normalize pass: field percentile-normalized raw crown ───────────────────────
     # Now that the whole field is built, map each crown metric's raw measurement to its
     # percentile within the field's distribution, then corner. Percentile (rank) normalization
@@ -1152,6 +1167,7 @@ def _compute_profiles_uncached(
             **best["form"],
         }
 
+    lap("crown")
     # ── Weather-beater flags + crown-suspect (flag-and-steer; the crown stays raw) ──
     # A profile whose "vs weather" residual standing is far above its raw Overall standing
     # delivered average outcomes in conditions where the field delivered below-average ones —
@@ -1193,6 +1209,7 @@ def _compute_profiles_uncached(
                 "coverage": top["weather_relative"]["coverage"],
             }
 
+    lap("flags")
     return {
         "profiles": profiles,
         "count": len(profiles),
