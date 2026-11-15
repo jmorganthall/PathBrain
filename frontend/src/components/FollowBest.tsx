@@ -11,11 +11,13 @@ import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
+import Collapse from "@mui/material/Collapse";
 import CircularProgress from "@mui/material/CircularProgress";
 import Divider from "@mui/material/Divider";
 import IconButton from "@mui/material/IconButton";
 import Link from "@mui/material/Link";
 import Popover from "@mui/material/Popover";
+import Radio from "@mui/material/Radio";
 import Snackbar from "@mui/material/Snackbar";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
@@ -61,100 +63,56 @@ export default function FollowBest() {
   const enabled = info?.config.enabled ?? false;
   const policy = info?.config.policy ?? "fused";
 
-  // The two leg-first crowns' bands — one stated trade each, edited the same way.
-  const bands = {
-    lcp: info?.config.lcp_band_pct ?? 10,
-    fcp: info?.config.fcp_band_pct ?? 10,
+  // ── The draft: pick a ranking, set its options, then Apply ─────────────────────────
+  // Nothing below the ranking list saves on its own. The choice, the chosen ranking's
+  // band and the speed budget are edited as one draft and written together by Apply, so
+  // the follower acts on a settled choice instead of on every click and keystroke on the
+  // way to it. The on/off switch stays instant: it is the master switch, not a setting.
+  const saved = draftFrom(info);
+  const [draft, setDraft] = useState<Draft>(saved);
+  const dirty = !sameDraft(draft, saved);
+  const savedKey = JSON.stringify(saved);
+  useEffect(() => {
+    // Follow the server while nothing is being edited (the 60 s poll, another tab).
+    if (!dirty) setDraft(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedKey]);
+  const openPopover = (el: HTMLElement) => {
+    setDraft(saved); // every visit starts from what is actually saved
+    setAnchor(el);
   };
-  const [bandDraft, setBandDraft] = useState<{ lcp: string; fcp: string }>({
-    lcp: String(bands.lcp),
-    fcp: String(bands.fcp),
-  });
-  useEffect(
-    () => setBandDraft({ lcp: String(bands.lcp), fcp: String(bands.fcp) }),
-    [bands.lcp, bands.fcp],
-  );
+  const edit = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
 
-  const saveBand = (leg: "lcp" | "fcp") => {
-    const v = Number(bandDraft[leg]);
-    const current = bands[leg];
-    const reset = () => setBandDraft((d) => ({ ...d, [leg]: String(current) }));
-    if (!Number.isFinite(v) || v === current) {
-      reset();
+  const apply = () => {
+    const problem = validateDraft(draft);
+    if (problem) {
+      setSnack({ msg: problem, sev: "error" });
       return;
     }
-    if (v < 0 || v > 50) {
-      setSnack({ msg: `The ${leg.toUpperCase()} band must be between 0 and 50%.`, sev: "error" });
-      reset();
-      return;
-    }
+    const body: Parameters<typeof api.crownFollowUpdate>[0] = {};
+    if (draft.policy !== saved.policy) body.policy = draft.policy;
+    if (Number(draft.lcpBand) !== Number(saved.lcpBand)) body.lcp_band_pct = Number(draft.lcpBand);
+    if (Number(draft.fcpBand) !== Number(saved.fcpBand)) body.fcp_band_pct = Number(draft.fcpBand);
+    const sb: { enabled?: boolean; lcp_pct?: number; fcp_pct?: number } = {};
+    if (draft.budgetOn !== saved.budgetOn) sb.enabled = draft.budgetOn;
+    if (Number(draft.budgetLcp) !== Number(saved.budgetLcp)) sb.lcp_pct = Number(draft.budgetLcp);
+    if (Number(draft.budgetFcp) !== Number(saved.budgetFcp)) sb.fcp_pct = Number(draft.budgetFcp);
+    if (Object.keys(sb).length) body.speed_budget = sb;
+    if (!Object.keys(body).length) return;
     setBusy(true);
     api
-      .crownFollowUpdate(leg === "lcp" ? { lcp_band_pct: v } : { fcp_band_pct: v })
+      .crownFollowUpdate(body)
       .then(() => {
+        const name = RANKINGS.find((r) => r.policy === draft.policy)?.label ?? draft.policy;
         setSnack({
-          msg: `${leg.toUpperCase()}-first band set to ${v}% of the best ${leg.toUpperCase()}.`,
-          sev: "info",
+          msg: enabled
+            ? `Applied: following ${name}. The firewall switches within a minute if that names a different profile.`
+            : `Saved: ${name} is the ranking to follow. Auto-apply is off, so the firewall stays as it is.`,
+          sev: "success",
         });
         load();
       })
-      .catch((e) => setSnack({ msg: e instanceof Error ? e.message : "Could not save the band.", sev: "error" }))
-      .finally(() => setBusy(false));
-  };
-
-  // The speed budget: how much slower than the fastest LCP / FCP a followed crown may be.
-  const budget = info?.config.speed_budget ?? { enabled: true, lcp_pct: 20, fcp_pct: 25 };
-  const [budgetDraft, setBudgetDraft] = useState({ lcp: String(budget.lcp_pct), fcp: String(budget.fcp_pct) });
-  useEffect(
-    () => setBudgetDraft({ lcp: String(budget.lcp_pct), fcp: String(budget.fcp_pct) }),
-    [budget.lcp_pct, budget.fcp_pct],
-  );
-  const saveBudget = (patch: { enabled?: boolean; lcp_pct?: number; fcp_pct?: number }) => {
-    for (const v of [patch.lcp_pct, patch.fcp_pct]) {
-      if (v !== undefined && (!Number.isFinite(v) || v < 0 || v > 200)) {
-        setSnack({ msg: "A speed budget must be between 0 and 200%.", sev: "error" });
-        setBudgetDraft({ lcp: String(budget.lcp_pct), fcp: String(budget.fcp_pct) });
-        return;
-      }
-    }
-    setBusy(true);
-    api
-      .crownFollowUpdate({ speed_budget: patch })
-      .then(() => {
-        setSnack({ msg: "Speed budget saved.", sev: "info" });
-        load();
-      })
-      .catch((e) => setSnack({ msg: e instanceof Error ? e.message : "Could not save the budget.", sev: "error" }))
-      .finally(() => setBusy(false));
-  };
-
-  const setPolicy = (next: CrowningPolicy) => {
-    if (next === policy) return;
-    setBusy(true);
-    setInfo((v) => (v ? { ...v, config: { ...v.config, policy: next } } : v));
-    api
-      .crownFollowUpdate({ policy: next })
-      .then(() => {
-        setSnack({
-          msg:
-            next === "duel"
-              ? "Auto-apply now follows the duel champion (falls back to the pooled best when no fresh verdict exists)."
-              : next === "fused"
-                ? "Auto-apply now follows the Overall ranking — the pooled record and the duels fitted together (the Best profile page)."
-                : next === "math"
-                  ? "Auto-apply now follows the fastest profile on paper — lowest median FCP × LCP (falls back to the pooled best when none qualifies)."
-                  : next === "lcp_first"
-                    ? "Auto-apply now follows LCP first — the fastest FCP among profiles within the band of the best LCP (falls back to the pooled best when none qualifies)."
-                  : next === "fcp_first"
-                    ? "Auto-apply now follows FCP first — the fastest LCP among profiles within the band of the best FCP (falls back to the pooled best when none qualifies)."
-                  : "Auto-apply now follows the pooled Overall — the all-time best by average.",
-          sev: "info",
-        });
-        load();
-      })
-      .catch((e) =>
-        setSnack({ msg: e instanceof Error ? e.message : "Could not change policy.", sev: "error" }),
-      )
+      .catch((e) => setSnack({ msg: e instanceof Error ? e.message : "Could not save.", sev: "error" }))
       .finally(() => setBusy(false));
   };
 
@@ -233,7 +191,7 @@ export default function FollowBest() {
               : "Auto-apply is OFF — the best profile is tracked but never applied for you. Click for history."
           }
         >
-          <IconButton size="small" onClick={(e) => setAnchor(e.currentTarget)}>
+          <IconButton size="small" onClick={(e) => openPopover(e.currentTarget)}>
             <EmojiEventsIcon fontSize="small" color={enabled ? "warning" : "disabled"} />
           </IconButton>
         </Tooltip>
@@ -246,7 +204,7 @@ export default function FollowBest() {
             userSelect: "none",
             whiteSpace: "nowrap",
           }}
-          onClick={(e) => setAnchor(e.currentTarget as HTMLElement)}
+          onClick={(e) => openPopover(e.currentTarget as HTMLElement)}
         >
           Auto-apply best
         </Typography>
@@ -303,157 +261,155 @@ export default function FollowBest() {
             {Math.round(((info?.config.interval_minutes ?? 360) / 60) * 10) / 10} h.
           </Typography>
 
-          {/* The first-class CROWNING POLICY: which verdict the follower acts on. The pooled
-              crown statistic is always computed and shown; this only selects what automation
-              applies. One policy, one follower, one write path. */}
+          {/* The first-class CROWNING POLICY: which verdict the follower acts on. Pick one;
+              only that ranking's own settings show under it; Apply writes the whole draft.
+              The pooled crown is always computed and shown below either way. */}
           <Box>
             <Typography variant="caption" color="text.secondary">
               Which ranking to follow
             </Typography>
-            <Stack direction="row" spacing={1} sx={{ mt: 0.5 }} flexWrap="wrap" useFlexGap>
-              <Tooltip title="Act on the one ranking fitted over BOTH records — each profile's pooled median, corrected by every head-to-head round it fought. The default; the other two are its corners. See the Overall page.">
-                <Chip
-                  size="small"
-                  label="Overall (both records)"
-                  color={policy === "fused" ? "warning" : "default"}
-                  variant={policy === "fused" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("fused")}
-                  disabled={busy}
-                />
-              </Tooltip>
-              <Tooltip title="Act on the all-time pooled Overall argmax — the stable, weather-averaged map of the whole field.">
-                <Chip
-                  size="small"
-                  label="Pooled Overall"
-                  color={policy === "pooled" ? "warning" : "default"}
-                  variant={policy === "pooled" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("pooled")}
-                  disabled={busy}
-                />
-              </Tooltip>
-              <Tooltip title="Act on the duel ladder's latest head-to-head champion (interleaved same-weather verdicts). Falls back to the pooled crown when no decisive fresh duel exists.">
-                <Chip
-                  size="small"
-                  label="Duel champion"
-                  color={policy === "duel" ? "warning" : "default"}
-                  variant={policy === "duel" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("duel")}
-                  disabled={busy}
-                />
-              </Tooltip>
-              <Tooltip title="Act on the fastest profile on paper: the confident profile with the lowest median FCP × median LCP in raw milliseconds. Ignores smoothness and has no tie test, so it can switch on small differences. Falls back to the pooled crown when no confident profile has both readings.">
-                <Chip
-                  size="small"
-                  label="Fastest on paper"
-                  color={policy === "math" ? "warning" : "default"}
-                  variant={policy === "math" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("math")}
-                  disabled={busy}
-                />
-              </Tooltip>
-              <Tooltip title="Main content first, then first paint: every confident profile whose median LCP is within the band of the best LCP qualifies, and the fastest median FCP among them is followed. Raw milliseconds, no weights. Falls back to the pooled crown when no confident profile has both readings.">
-                <Chip
-                  size="small"
-                  label="LCP first"
-                  color={policy === "lcp_first" ? "warning" : "default"}
-                  variant={policy === "lcp_first" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("lcp_first")}
-                  disabled={busy}
-                />
-              </Tooltip>
-              <Tooltip title="First paint first, then main content: every confident profile whose median FCP is within the band of the best FCP qualifies, and the fastest median LCP among them is followed. Raw milliseconds, no weights. Falls back to the pooled crown when no confident profile has both readings.">
-                <Chip
-                  size="small"
-                  label="FCP first"
-                  color={policy === "fcp_first" ? "warning" : "default"}
-                  variant={policy === "fcp_first" ? "filled" : "outlined"}
-                  onClick={() => setPolicy("fcp_first")}
-                  disabled={busy}
-                />
-              </Tooltip>
+            <Stack sx={{ mt: 0.5 }} spacing={0.25} role="radiogroup" aria-label="Which ranking to follow">
+              {RANKINGS.map((r) => {
+                const chosen = draft.policy === r.policy;
+                return (
+                  <Box
+                    key={r.policy}
+                    sx={{
+                      borderRadius: 1,
+                      border: 1,
+                      borderColor: chosen ? "warning.main" : "transparent",
+                      bgcolor: chosen ? "action.selected" : "transparent",
+                    }}
+                  >
+                    <Stack
+                      direction="row"
+                      alignItems="flex-start"
+                      spacing={0.5}
+                      onClick={() => !busy && edit({ policy: r.policy })}
+                      sx={{ cursor: busy ? "default" : "pointer", pr: 1 }}
+                    >
+                      <Radio
+                        size="small"
+                        checked={chosen}
+                        disabled={busy}
+                        onChange={() => edit({ policy: r.policy })}
+                        inputProps={{ "aria-label": r.label }}
+                        sx={{ p: 0.5 }}
+                      />
+                      <Box sx={{ py: 0.5 }}>
+                        <Typography variant="body2" sx={{ lineHeight: 1.3 }}>
+                          {r.label}
+                          {policy === r.policy && (
+                            <Typography component="span" variant="caption" color="text.secondary">
+                              {" "}· current
+                            </Typography>
+                          )}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
+                          {r.blurb}
+                        </Typography>
+                      </Box>
+                    </Stack>
+                    <Collapse in={chosen} unmountOnExit>
+                      <Box sx={{ pl: 4.5, pr: 1, pb: 1 }}>
+                        {(r.policy === "lcp_first" || r.policy === "fcp_first") && (
+                          <BandField
+                            leg={r.policy === "lcp_first" ? "lcp" : "fcp"}
+                            value={r.policy === "lcp_first" ? draft.lcpBand : draft.fcpBand}
+                            onChange={(v) => edit(r.policy === "lcp_first" ? { lcpBand: v } : { fcpBand: v })}
+                            disabled={busy}
+                          />
+                        )}
+                        {r.policy === "duel" &&
+                          (info?.duel_champion ? (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                              Current champion:{" "}
+                              <b>
+                                {info.duel_champion.name ||
+                                  info.duel_champion.label ||
+                                  info.duel_champion.fingerprint}
+                              </b>
+                              {info.duel_champion.decisive ? "" : " (by draws only)"} · duel #
+                              {info.duel_champion.duel_id}
+                              {!info.duel_champion.decisive
+                                ? ". Not decisive, so the pooled crown is followed instead."
+                                : ""}
+                              <FastestGapLine
+                                gaps={legGaps.gaps[info.duel_champion.fingerprint]}
+                                fastest={legGaps.fastest}
+                              />
+                            </Typography>
+                          ) : (
+                            <Typography variant="caption" color="text.disabled" sx={{ display: "block" }}>
+                              No fresh duel verdict yet, so the pooled crown is followed instead.
+                            </Typography>
+                          ))}
+                        {r.policy !== "lcp_first" && r.policy !== "fcp_first" && r.policy !== "duel" && (
+                          <Typography variant="caption" color="text.disabled" sx={{ display: "block" }}>
+                            No extra settings for this ranking.
+                          </Typography>
+                        )}
+                      </Box>
+                    </Collapse>
+                  </Box>
+                );
+              })}
             </Stack>
-            {(["lcp", "fcp"] as const).map((leg) => (
-              <Stack key={leg} direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
-                <Typography variant="caption" color="text.secondary">
-                  {leg.toUpperCase()}-first band: give up up to
-                </Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={bandDraft[leg]}
-                  onChange={(e) => setBandDraft((d) => ({ ...d, [leg]: e.target.value }))}
-                  onBlur={() => saveBand(leg)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") saveBand(leg);
-                  }}
-                  disabled={busy}
-                  inputProps={{ min: 0, max: 50, step: 1, style: { width: 44, padding: "2px 6px", fontSize: 12 } }}
-                />
-                <Typography variant="caption" color="text.secondary">
-                  {leg === "lcp" ? "% of the best LCP for a faster FCP" : "% of the best FCP for a faster LCP"}
-                </Typography>
-              </Stack>
-            ))}
-            <Tooltip title="Auto-apply will not follow a crown that is clearly slower than the field's fastest LCP or FCP by more than this. It follows the first crown that fits (LCP first, combined, FCP first, pooled, duel, fastest on paper) and says so. Gaps inside the measurement noise never count.">
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
-                <Switch
-                  size="small"
-                  checked={budget.enabled}
-                  onChange={(e) => saveBudget({ enabled: e.target.checked })}
-                  disabled={busy}
-                />
-                <Typography variant="caption" color="text.secondary">
-                  Speed budget: at most
-                </Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={budgetDraft.lcp}
-                  onChange={(e) => setBudgetDraft((d) => ({ ...d, lcp: e.target.value }))}
-                  onBlur={() => Number(budgetDraft.lcp) !== budget.lcp_pct && saveBudget({ lcp_pct: Number(budgetDraft.lcp) })}
-                  disabled={busy || !budget.enabled}
-                  inputProps={{ min: 0, max: 200, step: 1, style: { width: 44, padding: "2px 6px", fontSize: 12 } }}
-                />
-                <Typography variant="caption" color="text.secondary">
-                  % slower LCP,
-                </Typography>
-                <TextField
-                  size="small"
-                  type="number"
-                  value={budgetDraft.fcp}
-                  onChange={(e) => setBudgetDraft((d) => ({ ...d, fcp: e.target.value }))}
-                  onBlur={() => Number(budgetDraft.fcp) !== budget.fcp_pct && saveBudget({ fcp_pct: Number(budgetDraft.fcp) })}
-                  disabled={busy || !budget.enabled}
-                  inputProps={{ min: 0, max: 200, step: 1, style: { width: 44, padding: "2px 6px", fontSize: 12 } }}
-                />
-                <Typography variant="caption" color="text.secondary">
-                  % slower FCP than the fastest
-                </Typography>
-              </Stack>
+
+            {/* The speed budget guards whichever ranking is chosen, so it sits under the
+                list rather than inside one option. */}
+            <Tooltip title="Auto-apply will not follow a profile that is clearly slower than the field's fastest LCP or FCP by more than this; it follows the first ranking whose pick fits and says so. Gaps inside the measurement noise never count.">
+              <Box sx={{ mt: 1 }}>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Switch
+                    size="small"
+                    checked={draft.budgetOn}
+                    onChange={(e) => edit({ budgetOn: e.target.checked })}
+                    disabled={busy}
+                    inputProps={{ "aria-label": "Speed budget" }}
+                  />
+                  <Typography variant="caption" color="text.secondary">
+                    Speed budget (applies to any ranking)
+                  </Typography>
+                </Stack>
+                <Collapse in={draft.budgetOn} unmountOnExit>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ pl: 1 }} flexWrap="wrap" useFlexGap>
+                    <Typography variant="caption" color="text.secondary">
+                      At most
+                    </Typography>
+                    <PctField value={draft.budgetLcp} onChange={(v) => edit({ budgetLcp: v })} disabled={busy} max={200} label="LCP budget" />
+                    <Typography variant="caption" color="text.secondary">
+                      % slower LCP and
+                    </Typography>
+                    <PctField value={draft.budgetFcp} onChange={(v) => edit({ budgetFcp: v })} disabled={busy} max={200} label="FCP budget" />
+                    <Typography variant="caption" color="text.secondary">
+                      % slower FCP than the fastest
+                    </Typography>
+                  </Stack>
+                </Collapse>
+              </Box>
             </Tooltip>
-            {info?.duel_champion ? (
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-                Duel champion:{" "}
-                <b>
-                  {info.duel_champion.name ||
-                    info.duel_champion.label ||
-                    info.duel_champion.fingerprint}
-                </b>
-                {info.duel_champion.decisive ? "" : " (by draws only)"} · duel #
-                {info.duel_champion.duel_id}
-                {policy === "duel" && !info.duel_champion.decisive
-                  ? " — not decisive, follower falls back to the pooled crown"
-                  : ""}
-                <FastestGapLine
-                  gaps={legGaps.gaps[info.duel_champion.fingerprint]}
-                  fastest={legGaps.fastest}
-                />
-              </Typography>
-            ) : (
-              <Typography variant="caption" color="text.disabled" sx={{ display: "block", mt: 0.5 }}>
-                No fresh duel verdict yet{policy === "duel" ? " — the follower falls back to the pooled crown" : ""}.
-              </Typography>
-            )}
+
+            <Stack direction="row" spacing={1} justifyContent="flex-end" alignItems="center" sx={{ mt: 1 }}>
+              {dirty && (
+                <Typography variant="caption" color="warning.main" sx={{ flexGrow: 1 }}>
+                  Not applied yet
+                </Typography>
+              )}
+              <Button size="small" onClick={() => setDraft(saved)} disabled={busy || !dirty}>
+                Discard
+              </Button>
+              <Button
+                size="small"
+                variant="contained"
+                color="warning"
+                onClick={apply}
+                disabled={busy || !dirty}
+                startIcon={busy && dirty ? <CircularProgress size={12} /> : undefined}
+              >
+                Apply
+              </Button>
+            </Stack>
           </Box>
 
           <Divider />
@@ -641,5 +597,126 @@ export default function FollowBest() {
         ) : undefined}
       </Snackbar>
     </>
+  );
+}
+
+// ── Ranking choices and the draft ──────────────────────────────────────────────────
+
+const RANKINGS: { policy: CrowningPolicy; label: string; blurb: string }[] = [
+  {
+    policy: "fused",
+    label: "Overall (both records)",
+    blurb: "Pooled results and head-to-head duels fitted together. The default.",
+  },
+  { policy: "pooled", label: "Pooled Overall", blurb: "The all-time best by average across every run." },
+  {
+    policy: "duel",
+    label: "Duel champion",
+    blurb: "The latest head-to-head winner, measured in the same weather.",
+  },
+  {
+    policy: "math",
+    label: "Fastest on paper",
+    blurb: "Lowest FCP × LCP in milliseconds. Can switch on small differences.",
+  },
+  {
+    policy: "lcp_first",
+    label: "LCP first",
+    blurb: "Among profiles close to the best LCP, the one with the fastest FCP.",
+  },
+  {
+    policy: "fcp_first",
+    label: "FCP first",
+    blurb: "Among profiles close to the best FCP, the one with the fastest LCP.",
+  },
+];
+
+type Draft = {
+  policy: CrowningPolicy;
+  lcpBand: string;
+  fcpBand: string;
+  budgetOn: boolean;
+  budgetLcp: string;
+  budgetFcp: string;
+};
+
+function draftFrom(info: CrownFollowStatus | null): Draft {
+  const budget = info?.config.speed_budget ?? { enabled: true, lcp_pct: 20, fcp_pct: 25 };
+  return {
+    policy: info?.config.policy ?? "fused",
+    lcpBand: String(info?.config.lcp_band_pct ?? 10),
+    fcpBand: String(info?.config.fcp_band_pct ?? 10),
+    budgetOn: budget.enabled,
+    budgetLcp: String(budget.lcp_pct),
+    budgetFcp: String(budget.fcp_pct),
+  };
+}
+
+function sameDraft(a: Draft, b: Draft): boolean {
+  return (
+    a.policy === b.policy &&
+    a.budgetOn === b.budgetOn &&
+    Number(a.lcpBand) === Number(b.lcpBand) &&
+    Number(a.fcpBand) === Number(b.fcpBand) &&
+    Number(a.budgetLcp) === Number(b.budgetLcp) &&
+    Number(a.budgetFcp) === Number(b.budgetFcp)
+  );
+}
+
+function validateDraft(d: Draft): string | null {
+  const inRange = (v: string, max: number) => {
+    const n = Number(v);
+    return v.trim() !== "" && Number.isFinite(n) && n >= 0 && n <= max;
+  };
+  if (d.policy === "lcp_first" && !inRange(d.lcpBand, 50)) return "The LCP band must be between 0 and 50%.";
+  if (d.policy === "fcp_first" && !inRange(d.fcpBand, 50)) return "The FCP band must be between 0 and 50%.";
+  if (d.budgetOn && (!inRange(d.budgetLcp, 200) || !inRange(d.budgetFcp, 200)))
+    return "A speed budget must be between 0 and 200%.";
+  return null;
+}
+
+function PctField(props: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+  max: number;
+  label: string;
+}) {
+  return (
+    <TextField
+      size="small"
+      type="number"
+      value={props.value}
+      onChange={(e) => props.onChange(e.target.value)}
+      disabled={props.disabled}
+      inputProps={{
+        min: 0,
+        max: props.max,
+        step: 1,
+        "aria-label": props.label,
+        style: { width: 44, padding: "2px 6px", fontSize: 12 },
+      }}
+    />
+  );
+}
+
+function BandField(props: {
+  leg: "lcp" | "fcp";
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+}) {
+  const leg = props.leg.toUpperCase();
+  const other = props.leg === "lcp" ? "FCP" : "LCP";
+  return (
+    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+      <Typography variant="caption" color="text.secondary">
+        Close means within
+      </Typography>
+      <PctField value={props.value} onChange={props.onChange} disabled={props.disabled} max={50} label={`${leg} band`} />
+      <Typography variant="caption" color="text.secondary">
+        % of the best {leg}, traded for a faster {other}.
+      </Typography>
+    </Stack>
   );
 }
