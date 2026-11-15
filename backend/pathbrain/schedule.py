@@ -82,6 +82,57 @@ def next_window(days: list[int], start_hour: int, section: dict) -> datetime | N
     return None
 
 
+def blackout_ranges(section: dict | None) -> list[tuple[int, int]]:
+    """The ``blackout`` list of a schedule section as ``(start_hour, end_hour)`` pairs.
+
+    Each entry is ``{"start_hour": h, "end_hour": h}`` or a two-item list. Hours are local
+    to the section's ``timezone``, the start inclusive and the end exclusive; a start after
+    the end straddles midnight. Malformed entries and empty ranges (start == end) are
+    skipped rather than raising, so a bad value never stops the scheduler."""
+    out: list[tuple[int, int]] = []
+    for item in (section or {}).get("blackout") or []:
+        try:
+            if isinstance(item, dict):
+                start, end = int(item["start_hour"]), int(item["end_hour"])
+            else:
+                start, end = int(item[0]), int(item[1])
+        except (KeyError, IndexError, TypeError, ValueError):
+            log.warning("schedule: ignoring malformed blackout entry %r", item)
+            continue
+        if not (0 <= start <= 23 and 0 <= end <= 24) or start == end:
+            continue
+        out.append((start, end))
+    return out
+
+
+def in_blackout(local: datetime, ranges: list[tuple[int, int]]) -> bool:
+    """Is this local wall-clock moment inside any blackout range? Pure."""
+    minutes = local.hour * 60 + local.minute
+    for start, end in ranges:
+        lo, hi = start * 60, end * 60
+        if lo < hi:
+            if lo <= minutes < hi:
+                return True
+        elif minutes >= lo or minutes < hi:  # straddles midnight
+            return True
+    return False
+
+
+def in_blackout_now(section: dict | None, now: datetime | None = None) -> bool:
+    """``in_blackout`` for a schedule section at ``now`` (default: the current moment),
+    read in the section's own zone. False with no blackout set, and never raises."""
+    ranges = blackout_ranges(section)
+    if not ranges:
+        return False
+    try:
+        zone = schedule_zone(section or {})
+        local = (now or datetime.now(timezone.utc)).astimezone(zone)
+        return in_blackout(local, ranges)
+    except Exception:  # noqa: BLE001 — a schedule check must never raise
+        log.debug("schedule: could not evaluate blackout", exc_info=True)
+        return False
+
+
 def _entry(kind: str, label: str, *, enabled: bool, at: datetime | None, detail: str | None) -> dict:
     return {
         "kind": kind,
@@ -193,4 +244,4 @@ def status(config: dict, monitoring: dict | None = None) -> dict:
     return {"next": nxt, "upcoming": items}
 
 
-__all__ = ["upcoming", "status", "next_daily", "next_window"]
+__all__ = ["upcoming", "status", "next_daily", "next_window", "blackout_ranges", "in_blackout", "in_blackout_now"]

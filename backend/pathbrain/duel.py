@@ -3559,6 +3559,7 @@ def _run_ring(
     deadline: float,
     run_ids: list[int],
     campaign: dict | None = None,
+    honour_blackout: bool = False,
 ) -> tuple[list[dict], str | None, int]:
     """Run the ring until the window closes. Returns ``(matchups, last reference, iterations)``.
 
@@ -3665,8 +3666,22 @@ def _run_ring(
             )
     explore_board: dict | None = None
 
+    from .schedule import blackout_ranges, in_blackout_now
+
+    blackout_on = bool(honour_blackout and blackout_ranges(cfg))
+    blackout_hit = {"logged": False}
+
     def _stopped() -> bool:
-        return time.monotonic() >= deadline or bool(_state.get("cancel"))
+        if time.monotonic() >= deadline or bool(_state.get("cancel")):
+            return True
+        # A scheduled session closes at a blackout's edge like a window close: open
+        # matches are carried, no round starts inside it (``duel.blackout``).
+        if blackout_on and in_blackout_now(cfg):
+            if not blackout_hit["logged"]:
+                blackout_hit["logged"] = True
+                log.info("Duel %s: blackout hours began — closing the window", duel_id)
+            return True
+        return False
 
     def _persist_matchups() -> None:
         with session_scope() as session:
@@ -4534,6 +4549,7 @@ def _drive(duel_id: int) -> None:
                 d.started_at = datetime.now(timezone.utc)
                 d.baseline = baseline
                 duration_s = d.duration_s
+                trigger = d.trigger or "manual"
                 cfg = _duel_config(session)
                 if d.mode:
                     # The session's kind was chosen at start (the Levers page): it governs
@@ -4579,6 +4595,8 @@ def _drive(duel_id: int) -> None:
                 heirs=heirs, baseline=baseline, settings_by_fp=settings_by_fp, weather=weather,
                 meth_version=meth_version, deadline=deadline, run_ids=run_ids,
                 campaign=campaign,
+                # Blackout governs the schedule, not a session someone started by hand.
+                honour_blackout=trigger in ("scheduled", "continuous"),
             )
             log.info("Duel %s: ring closed — %d match(es), %d iteration(s)",
                      duel_id, len(matchups), iterations_run)
