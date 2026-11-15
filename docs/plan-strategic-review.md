@@ -59,7 +59,7 @@ parallel with C once S4 is done.
 - [x] **S1. Move the diary.** Moved the `## Layout` section (lines 10–4081, the design diary)
   verbatim to `docs/history/claude-md-diary.md` with a short header; CLAUDE.md keeps a
   five-line Layout that links to it. (Done first, so no text is lost between PRs.)
-- [ ] **S2. Write the rulebook.** Condense what is left (Conventions and Phase map, about 530
+- [x] **S2. Write the rulebook.** Condense what is left (Conventions and Phase map, about 530
   lines) into a CLAUDE.md of about 100–150 lines: layout, the medallion rule, where a crown
   rule may live, the firewall write path, test commands, PR style. Move the long-form
   Conventions and Phase map text verbatim to `docs/history/` too.
