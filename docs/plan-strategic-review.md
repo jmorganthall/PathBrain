@@ -109,9 +109,11 @@ parallel with C once S4 is done.
   `profile_aggregates.RAW_METRICS`.
   Read as the crown's millisecond legs (`methodology.crown_metric_keys(unit="ms")`): cadence is
   unitless and the raw-ms crowns compare times, so it stays out by a named filter.
-- [ ] **S12. Drop the settings fallback.** Remove `CROWN_METRICS` in
+- [x] **S12. Drop the settings fallback.** Remove `CROWN_METRICS` in
   `api/routes_settings.py:75` and make its callers read the methodology; add a test that the
   Overall page and the duel name the same crown legs.
+  The fallback only fired for a definition with no `overall` spec (a pinned v1–v4, or an
+  unregistered version id); that case now reads `methodology.ranking_crown` (v6's legs, the same set).
 - [ ] **S13. Leg-first specs from the definition.** Build `pooled_field.LEG_FIRST` from the
   methodology's legs instead of a literal dict.
 - [ ] **S14. Frontend reads the verdict.** `frontend/src/utils/ringReading.ts` stops
