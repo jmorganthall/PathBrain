@@ -1472,7 +1472,7 @@ def apply_warmup_report(session) -> dict:
     what the apply itself costs. Diagnosis only — no score is changed.
     """
     from .config_store import get_config
-    from .methodology import ensure_current_methodology
+    from .methodology import ensure_current_methodology, latest_score
 
     methodology = ensure_current_methodology(session, get_config(session))
     rows = session.execute(
@@ -1482,6 +1482,7 @@ def apply_warmup_report(session) -> dict:
             Run.status == RunStatus.COMPLETE,
             Run.job_group.isnot(None),
             Score.methodology_version == methodology.version,
+            latest_score(),
         )
         .order_by(Run.id)
     ).all()

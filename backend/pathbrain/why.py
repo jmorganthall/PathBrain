@@ -43,6 +43,7 @@ from .config_store import get_config
 from .interpret import derive
 from .logging_config import get_logger
 from .methodology import (
+    latest_score,
     corner_score,
     ensure_current_methodology,
     overall_method,
@@ -207,6 +208,7 @@ def _comparable(version: str, fp: str):
         Run.settings_fingerprint == fp,
         Score.methodology_version == version,
         Score.comparability != "incomparable",
+        latest_score(),
     )
 
 

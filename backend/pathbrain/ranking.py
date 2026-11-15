@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, defer
 
 from . import host_adjust as host_adjust_mod
 from .config_store import get_config
-from .methodology import corner_score, ensure_current_methodology, overall_from_definition, overall_method, overall_weights, ranking_crown, weighted_score
+from .methodology import corner_score, ensure_current_methodology, latest_score, overall_from_definition, overall_method, overall_weights, ranking_crown, weighted_score
 from .metrics import METRIC_ROLES, ROLE_WEATHER, all_metric_sources
 from .models import BenchmarkResult, Run, RunStatus, Score
 from .scoring import COMPLETION_METRIC_SOURCES
@@ -407,6 +407,7 @@ def _completed_runs_with_scores(session: Session):
         Run.status == RunStatus.COMPLETE,
         Run.settings_fingerprint.is_not(None),
         Score.methodology_version == methodology.version,
+        latest_score(),
     )
     rows = session.execute(
         select(Run, Score)

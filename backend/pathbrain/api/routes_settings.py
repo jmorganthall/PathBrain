@@ -26,6 +26,7 @@ from ..database import get_session
 from .. import job_queue
 from ..logging_config import get_logger
 from ..methodology import (
+    latest_score,
     corner_score,
     ensure_current_methodology,
     overall_from_definition,
@@ -295,6 +296,7 @@ def settings_diagnostics(session: Session = Depends(get_session)) -> dict:
             Run.status == RunStatus.COMPLETE,
             Score.methodology_version == methodology.version,
             Score.comparability.is_distinct_from("incomparable"),
+            latest_score(),
         )
     ) or 0
     recent = [
@@ -1794,6 +1796,7 @@ def _field_stamp(session: Session) -> tuple:
     max_run, run_count = session.execute(
         select(func.max(Run.id), func.count(Run.id)).where(Run.status == RunStatus.COMPLETE)
     ).one()
+    # A change stamp over every row (not routed through latest_score): any write moves it.
     max_score, score_count = session.execute(
         select(func.max(Score.id), func.count(Score.id))
     ).one()
@@ -1939,6 +1942,7 @@ def _profile_iterations(session: Session, fingerprint_: str) -> int:
             Run.status == RunStatus.COMPLETE,
             Run.settings_fingerprint == fingerprint_,
             Score.methodology_version == methodology.version,
+            latest_score(),
         )
     ).all()
     return sum(int(run.iterations or 1) for run, score in rows if _comparable(score))
@@ -3082,6 +3086,7 @@ def settings_impact(
             Run.status == RunStatus.COMPLETE,
             Run.settings_fingerprint.is_not(None),
             Score.methodology_version == methodology.version,
+            latest_score(),
         )
         .order_by(Run.created_at)
     ).all()

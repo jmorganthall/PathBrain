@@ -12,7 +12,7 @@ from .. import host_pressure, instrument_health
 from ..config_store import get_config
 from ..database import get_session
 
-from ..methodology import ensure_current_methodology
+from ..methodology import ensure_current_methodology, latest_score
 from ..interpret.smoothness import longest_void_diagnostic
 from ..metrics import has_latest_metrics
 from ..raw_access import browser_url_observations
@@ -44,7 +44,8 @@ def _current_overall(session: Session, run_id: int) -> float | None:
         select(Score).where(
             Score.run_id == run_id,
             Score.methodology_version == methodology.version,
-        )
+            latest_score(),
+        ).order_by(Score.id.desc())
     ).first()
     if score is None or score.comparability == "incomparable":
         return None

@@ -184,7 +184,7 @@ def compare_smoothness(
     earliness, perceived time, …) plus the speed-side loadEventEnd/LCP for each
     configTag, so the smoothness-vs-speed tradeoff between two settings is legible."""
     from ..config_store import get_config
-    from ..methodology import ensure_current_methodology
+    from ..methodology import ensure_current_methodology, latest_score
     from ..models import Score
 
     rows = session.execute(
@@ -208,6 +208,7 @@ def compare_smoothness(
             select(Score.run_id).where(
                 Score.methodology_version == methodology.version,
                 Score.comparability != "incomparable",
+                latest_score(),
             )
         )
     )

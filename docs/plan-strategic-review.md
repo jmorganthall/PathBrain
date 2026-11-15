@@ -199,7 +199,12 @@ parallel with C once S4 is done.
     overwritten some at-measure rows in place, and their capture values can't be recovered.
     Those rows have `computed_at` well after the run finished, so S21 can count them and
     report the count.
-- [ ] **S21. Insert-only at-measure, build.** Make S20's test pass; reads pick the newest row.
+- [x] **S21a. One "latest score" selector.** `methodology.latest_score()` (the newest row per
+  `(run, version)`); every reader goes through it. No schema or write change, so behaviour is neutral today.
+  Not routed: `routes_score.py` run_scores and `research_export` want every row on purpose; the refresh and
+  Settings-Impact change stamps count every row; `upsert_score`'s lookup is S21b's.
+- [ ] **S21b. Insert-only at-measure, build.** The schema change, write-once at-measure, re-grades write
+  `is_at_measure=False` (`runner.py:813`); make S20's tests pass. `_migrate` copies `scores` to a backup first.
 - [ ] **S22. Settings overrides instead of backfill.** Replace `/settings/backfill`
   (`routes_settings.py:685`), which stamps today's settings onto old runs, with a
   `settings_overrides` table that records the correction beside the run.

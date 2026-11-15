@@ -290,6 +290,8 @@ def _runs(session, run_ids: list[int], current: str, by_plugin, progress: Callab
         # Every version's verdict, but the heavy per-metric blobs only for the current one:
         # a long history carries a score row per published version per run.
         scores: dict[int, list] = {}
+        # Exports every row with its is_at_measure flag on purpose, so the two queries here
+        # are not routed through methodology.latest_score.
         for row in session.execute(
             select(
                 Score.run_id, Score.methodology_version, Score.is_at_measure, Score.comparability,

@@ -30,6 +30,7 @@ from sqlalchemy import func, select
 from . import coordinator
 from .database import session_scope
 from .logging_config import get_logger
+from .methodology import latest_score
 from .session_runtime import describe_failure
 from .models import Methodology, ProfileRefresh, ProfileRefreshStatus, Run, RunStatus, Score
 from .profile_names import names_for
@@ -187,6 +188,7 @@ def _overall_by_profile(session, version: str) -> dict[str, float]:
             Run.status == RunStatus.COMPLETE,
             Run.settings_fingerprint.is_not(None),
             Score.methodology_version == version,
+            latest_score(),
         )
     ).all()
     buckets: dict[str, list[float]] = {}
@@ -220,6 +222,7 @@ def prior_field(session, min_iterations: int | None = None) -> dict | None:
     # ~120k-row decode this used to do on every read happens once per change instead —
     # it is read on every Settings-Impact load and every ladder session since the seed
     # stopped being gated on the crown.
+    # A change stamp over every row (not routed through latest_score): any write moves it.
     stamp = session.execute(
         select(func.count(Score.id), func.max(Score.id), func.max(Score.computed_at)).where(
             Score.methodology_version.in_(versions[:3])
@@ -256,6 +259,7 @@ def _prior_field_under(session, version: str, min_iterations: int | None) -> dic
             Run.settings_fingerprint.is_not(None),
             Score.methodology_version == version,
             Score.comparability != "incomparable",
+            latest_score(),
         )
     ).all()
     buckets: dict[str, list[float]] = {}

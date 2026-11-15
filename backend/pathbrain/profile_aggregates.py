@@ -47,7 +47,7 @@ from sqlalchemy import delete, func, select
 
 from .database import session_scope
 from .logging_config import get_logger
-from .methodology import CURRENT_METHODOLOGY, crown_metric_keys
+from .methodology import CURRENT_METHODOLOGY, crown_metric_keys, latest_score
 from .models import ProfileAggregate, Run, RunStatus, Score
 
 log = get_logger("profile_aggregates")
@@ -83,6 +83,7 @@ def _comparable_runs(version: str):
         Run.settings_fingerprint.is_not(None),
         Score.methodology_version == version,
         Score.comparability != "incomparable",
+        latest_score(),
     )
 
 
