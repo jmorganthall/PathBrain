@@ -24,8 +24,6 @@ EXEMPT = frozenset({"methodology.py", "metrics.py"})
 
 #: file (relative to pathbrain/) → (count, literals in that count still to move, why).
 ALLOWED: dict[str, tuple[int, int, str]] = {
-    "api/routes_settings.py": (2, 0, "FCP and LCP are milestone sums that bake in connection "
-                                     "setup: a fact about the metrics, not a crown choice"),
     "api/routes_smoothness.py": (2, 0, "the Smoothness page's catalog of every smoothness and "
                                        "speed reading, crown or not"),
     "calibration/smoothness_calibration.py": (2, 0, "the browser's paint-timing entry name"),
@@ -44,6 +42,9 @@ ALLOWED: dict[str, tuple[int, int, str]] = {
     "pooled_field.py": (40, 38, "to move: _raw_rows, the math crown, fastest_legs and leg_gaps "
                                 "read fcp/lcp by name (38); the two leg-first policy leads in "
                                 "LEG_FIRST_POLICIES are policy (2, S13)"),
+    "ranking.py": (2, 0, "FCP and LCP are milestone sums that bake in connection setup: a "
+                         "fact about the metrics, not a crown choice (moved from "
+                         "api/routes_settings.py in S17)"),
     "portable.py": (6, 0, "the portable kit's own frozen rubric and its stand-in map keyed by "
                           "every crown metric any version used"),
 }
