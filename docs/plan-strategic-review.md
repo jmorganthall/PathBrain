@@ -253,8 +253,18 @@ parallel with C once S4 is done.
   presets) stay in config; the abort streaks (`MAX_CONSECUTIVE_*`) end a session, not decide a verdict,
   and stay in duel.py. Old module names stay as aliases. Duel rows don't store the version yet (S25);
   the duel reads the code's current version, and the weather scale reads the stamper's version.
-- [ ] **S25. Version the verdict rules, part 2.** Each duel row stores the methodology version
+- [x] **S25. Version the verdict rules, part 2.** Each duel row stores the methodology version
   it was judged under; a test shows an old duel keeps its verdict after a rule change.
+  Built: nullable `duels.judged_under` (additive column), set with every persist of the session's
+  matches to the version it judged under (it follows a mid-session re-seed). A session judges under
+  `verdict_rules(meth_version)` through `duel.judging_under`, and the evidence objects keep the rules
+  they were built with. Backfill: an idempotent pass fills NULL rows from the last decided match's
+  `verdict_methodology` or `methodology`; a row with neither stays NULL, which `methodology.judged_rules`
+  reads as `DEFAULT_VERDICT_RULES` (stated there once). Re-judging: nothing re-judges a past verdict.
+  `regrade_ledger` re-reads rounds, keeps the verdict and its `verdict_methodology`, and leaves
+  `judged_under` alone; its weather-shift recount falls back to the match's judged rules, not the
+  current ones. A carried match is resumed only under its own version (unchanged). Writing a new
+  `judged_under` for an old duel is left to a future explicit regrade path; none exists.
 - [ ] **S26. Retire legacy score paths.** Deprecate `/score/rescore` and `/score/rederive` in
   favour of the methodology-aware endpoint in `routes_score.py`; retire `score_results` reads.
 

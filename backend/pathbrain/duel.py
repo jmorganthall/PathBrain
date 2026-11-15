@@ -34,6 +34,7 @@ import math
 import threading
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from time import perf_counter as _perf
 from datetime import datetime, timedelta, timezone
 
@@ -49,7 +50,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .session_runtime import FailureStreak, FirewallUnavailable, SessionAbort, describe_failure
-from .methodology import latest_score, overall_metrics, verdict_rules
+from .methodology import VerdictRules, judged_rules, latest_score, overall_metrics, verdict_rules
 from .models import Duel, DuelStatus, LeverCampaign, Methodology, Score
 from .rating import ELO_SCALE, PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
 from .providers import get_provider
@@ -118,6 +119,28 @@ def cancel_requested() -> bool:
     return active() and bool(_state.get("cancel"))
 
 
+# ── Which version's verdict rules a judgement runs under (S24/S25) ──────────────────────
+#
+# A session judges its matches under ``verdict_rules(meth_version)``; outside a session
+# (the readouts, a test) the code's current version. Held per thread/context so a session
+# re-seeding to a new version mid-way moves only its own judgements.
+_JUDGING: ContextVar[str | None] = ContextVar("duel_judging_under", default=None)
+
+
+def _rules() -> VerdictRules:
+    return verdict_rules(_JUDGING.get())
+
+
+@contextmanager
+def judging_under(version: str | None):
+    """Judge everything inside under ``version``'s verdict rules."""
+    token = _JUDGING.set(version)
+    try:
+        yield
+    finally:
+        _JUDGING.reset(token)
+
+
 # ── Sequential stopping rule (Wald SPRT on the pair-win rate) ─────────────────────────
 
 
@@ -130,8 +153,8 @@ class SprtState:
     the pair wins are hovering around 50/50), and ``None`` while undecided.
     """
 
-    def __init__(self, p1: float, alpha: float) -> None:
-        rules = verdict_rules()
+    def __init__(self, p1: float, alpha: float, rules: VerdictRules | None = None) -> None:
+        rules = self.rules = rules or _rules()
         p1 = min(max(p1, rules.sprt_p1_min), rules.sprt_p1_max)
         alpha = min(max(alpha, rules.alpha_min), rules.alpha_max)
         null_p = rules.sprt_null_p
@@ -318,7 +341,7 @@ def sprt_requirements(p1: float, alpha: float, min_pairs: int, max_pairs: int) -
     * ``restrictive`` — True when the cap demands a near-sweep (>80% of pairs), i.e. the
       rule will mostly return draws.
     """
-    rules = verdict_rules()
+    rules = _rules()
     p1 = min(max(float(p1 or rules.sprt_default_p1), rules.sprt_p1_min), rules.sprt_p1_max)
     alpha = min(max(float(alpha or rules.paired_default_alpha), rules.alpha_min), rules.alpha_max)
     win_step = math.log(p1 / rules.sprt_null_p)
@@ -375,7 +398,7 @@ def _rank_sum_counts(n: int) -> list[int]:
 WILCOXON_MIN_PAIRS = verdict_rules().wilcoxon_min_pairs  # alias; the rule lives in the methodology (S24)
 
 
-def wilcoxon_p(deltas: list[float], direction: int = 1) -> float:
+def wilcoxon_p(deltas: list[float], direction: int = 1, rules: VerdictRules | None = None) -> float:
     """One-sided p-value that the paired differences favour ``direction`` (+1 = positive).
 
     Exact for small samples (the regime a duel actually runs in — a normal approximation
@@ -385,7 +408,7 @@ def wilcoxon_p(deltas: list[float], direction: int = 1) -> float:
     Under ``WILCOXON_MIN_PAIRS`` rounds this returns 1.0 meaning *the test cannot speak*,
     which is not the same claim as a large p-value from a test that could.
     """
-    rules = verdict_rules()
+    rules = rules or _rules()
     d = [x * direction for x in deltas if x != 0]
     n = len(d)
     if n < rules.wilcoxon_min_pairs:  # too little to distinguish from chance at any sane alpha
@@ -417,7 +440,7 @@ def wilcoxon_p(deltas: list[float], direction: int = 1) -> float:
     return 0.5 * math.erfc(z / math.sqrt(2))
 
 
-def peek_penalty(peeks: int) -> float:
+def peek_penalty(peeks: int, rules: VerdictRules | None = None) -> float:
     """How much to tighten the nominal threshold for testing after every pair.
 
     Fitted by simulation (null margins, sequential peeking) so the realized false-positive
@@ -425,7 +448,7 @@ def peek_penalty(peeks: int) -> float:
     11, alpha/9 at 36. Without it a 40-pair bout would call a coin-flip a winner a quarter
     of the time.
     """
-    rules = verdict_rules()
+    rules = rules or _rules()
     return max(rules.peek_penalty_floor,
                rules.peek_penalty_slope * math.log(max(peeks, 2)) - rules.peek_penalty_offset)
 
@@ -447,8 +470,9 @@ class PairedEvidence:
         min_pairs: int,
         max_pairs: int,
         streak_wins: int = 0,
+        rules: VerdictRules | None = None,
     ) -> None:
-        rules = verdict_rules()
+        rules = self.rules = rules or _rules()
         self.alpha = min(max(float(alpha or rules.paired_default_alpha), rules.alpha_min), rules.alpha_max)
         self.min_margin = max(float(min_margin or 0.0), 0.0)
         self.min_pairs = max(int(min_pairs or 1), 1)
@@ -462,7 +486,7 @@ class PairedEvidence:
     @property
     def nominal_alpha(self) -> float:
         peeks = self.max_pairs - self.min_pairs + 1
-        return self.alpha / peek_penalty(peeks)
+        return self.alpha / peek_penalty(peeks, self.rules)
 
     def add(self, delta: float) -> None:
         self.deltas.append(float(delta))
@@ -472,7 +496,7 @@ class PairedEvidence:
         return len(self.deltas)
 
     def p_value(self, direction: int = 1) -> float:
-        return wilcoxon_p(self.deltas, direction)
+        return wilcoxon_p(self.deltas, direction, self.rules)
 
     @property
     def current_streak(self) -> tuple[int, int]:
@@ -615,11 +639,11 @@ def _live_scoreboard(
         # the verdict math never reads it.
         "weather": {
             "shifted_rounds": sum(
-                1 for w in (weather_shifts or []) if w is not None and w >= verdict_rules().round_weather_shift
+                1 for w in (weather_shifts or []) if w is not None and w >= _rules().round_weather_shift
             ),
             "last_shift": (weather_shifts[-1] if weather_shifts else None),
             "max_shift": max((w for w in (weather_shifts or []) if w is not None), default=None),
-            "threshold": verdict_rules().round_weather_shift,
+            "threshold": _rules().round_weather_shift,
         },
     }
 
@@ -2413,6 +2437,7 @@ def _ledger_sessions(session, limit_sessions: int = 50) -> list[dict]:
             "matchups": list(d.matchups or []),
             "champion_fingerprint": d.champion_fingerprint,
             "champion_label": d.champion_label,
+            "judged_under": d.judged_under,
             "finished_at": d.finished_at.isoformat() if d.finished_at else None,
         }
         for d in rows
@@ -2982,6 +3007,8 @@ def _regrade_record(m: dict, *, version: str, overall: dict[int, float],
         m["max_leg_distance"] = max(distances, default=None)
     if "weather_shifted_rounds" in m:
         threshold = m.get("weather_shift_threshold")
+        if threshold is None:  # never the current rules: the ones this match was judged by
+            threshold = judged_rules(m.get("verdict_methodology") or old_version).round_weather_shift
         m["weather_shifted_rounds"] = sum(
             1 for w in m["weather_shifts"]
             if w is not None and threshold is not None and float(w) >= float(threshold)
@@ -3236,7 +3263,7 @@ def _decided_reason(paired: PairedEvidence, verdict: str, basis: str) -> str:
     median = _median(paired.deltas)
     if basis == "streak":
         streak, _ = paired.current_streak
-        min_pairs = verdict_rules().wilcoxon_min_pairs
+        min_pairs = paired.rules.wilcoxon_min_pairs
         if paired.pairs < min_pairs:
             stat = (
                 f"the signed-rank test needs {min_pairs} rounds to say anything, "
@@ -3413,10 +3440,10 @@ def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: 
         # severity shift between the challenger leg and a belt leg it was compared with.
         "weather_shifts": list(seat.weather_shifts),
         "weather_shifted_rounds": sum(
-            1 for w in seat.weather_shifts if w is not None and w >= verdict_rules().round_weather_shift
+            1 for w in seat.weather_shifts if w is not None and w >= seat.paired.rules.round_weather_shift
         ),
         "weather_max_shift": max((w for w in seat.weather_shifts if w is not None), default=None),
-        "weather_shift_threshold": verdict_rules().round_weather_shift,
+        "weather_shift_threshold": seat.paired.rules.round_weather_shift,
         # How far (in legs) each margin's challenger leg sat from the belt legs it was
         # compared against — 1 under strict alternation, up to belt_every-1 otherwise.
         "leg_distances": list(seat.leg_distances),
@@ -3520,7 +3547,7 @@ def _ring_live(*, matchups_done: int, inc: dict, seats_list: list[_Seat], curren
             "p_value": None, "alpha": None,
             "streak": {"length": 0, "side": None, "needed": streak_needed},
             "weather": {"shifted_rounds": 0, "last_shift": None, "max_shift": None,
-                        "threshold": verdict_rules().round_weather_shift},
+                        "threshold": _rules().round_weather_shift},
             "measuring": False,
             "between_matches": True,
         }
@@ -3556,6 +3583,13 @@ def _host_readings(run_ids: list[int | None]) -> list[dict | None]:
     with session_scope() as session:
         found = dict(session.execute(select(Run.id, Run.host_pressure).where(Run.id.in_(wanted))).all())
     return [found.get(int(r)) if r is not None else None for r in run_ids]
+
+
+def _run_ring_judged(**kw) -> tuple[list[dict], str | None, int]:
+    """:func:`_run_ring` with its matches judged under the session's methodology version
+    (S25): a new match uses that version's verdict rules."""
+    with judging_under(kw.get("meth_version")):
+        return _run_ring(**kw)
 
 
 def _run_ring(
@@ -3702,6 +3736,7 @@ def _run_ring(
             d = session.get(Duel, duel_id)
             if d is not None:
                 d.matchups = list(matchups)
+                d.judged_under = meth_version  # the rules these verdicts were reached by (S25)
 
     def _persist_open() -> None:
         # The open matches' full adjudication state, on the row, after every change — so
@@ -3939,6 +3974,7 @@ def _run_ring(
             ))
             seated.remove(seat)
         meth_version = new_version
+        _JUDGING.set(new_version)  # new matches from here on are judged by the new rules
         field = _seeded_field(session, compute_profiles(session, include_weather=False))
         heirs = _engine_heirs(_compute_heirs(field, session, baseline))
         # In place: `_drive` names the champion off the same dict after the ring closes.
@@ -4428,7 +4464,7 @@ def weather_by_distance(limit_sessions: int = 10, max_legs: int = 400) -> dict:
     stamper = _weather_stamper(meth_version)
     if stamper is None:
         return {"available": False, "reason": "no weather yardstick could be built from recent runs",
-                "threshold": verdict_rules().round_weather_shift, "by_distance": [], "sessions_analyzed": len(sequences)}
+                "threshold": verdict_rules(meth_version).round_weather_shift, "by_distance": [], "sessions_analyzed": len(sequences)}
     # "N legs apart" only means anything within a run of back-to-back legs. A session's
     # run_ids also span the seams where the ladder stepped aside for queued work (the zipper
     # yield) or stalled, and two legs either side of a forty-minute detour are not adjacent
@@ -4485,11 +4521,11 @@ def weather_by_distance(limit_sessions: int = 10, max_legs: int = 400) -> dict:
             "pairs": len(shifts),
             "median_shift": round(_median(ordered), 1),
             "p75_shift": round(ordered[min(len(ordered) - 1, int(0.75 * len(ordered)))], 1),
-            "shifted_share": round(sum(1 for x in shifts if x >= verdict_rules().round_weather_shift) / len(shifts), 3),
+            "shifted_share": round(sum(1 for x in shifts if x >= verdict_rules(meth_version).round_weather_shift) / len(shifts), 3),
         })
     return {
         "available": True,
-        "threshold": verdict_rules().round_weather_shift,
+        "threshold": verdict_rules(meth_version).round_weather_shift,
         "by_distance": out,
         "sessions_analyzed": sessions_used,
         "stretches": len(stamped),
@@ -4604,7 +4640,7 @@ def _drive(duel_id: int) -> None:
                      ", ".join(f"{k} {v:.0f}s" for k, v in timings.items()))
             settings_by_fp = {p["fingerprint"]: p for p in field.get("profiles", [])}
             deadline = time.monotonic() + duration_s
-            matchups, incumbent_fp, iterations_run = _run_ring(
+            matchups, incumbent_fp, iterations_run = _run_ring_judged(
                 duel_id=duel_id, lease=lease, provider=provider, cfg=cfg, field=field,
                 heirs=heirs, baseline=baseline, settings_by_fp=settings_by_fp, weather=weather,
                 meth_version=meth_version, deadline=deadline, run_ids=run_ids,
@@ -5213,6 +5249,7 @@ def standings(limit_sessions: int = 50) -> dict:
                 "matchups": list(d.matchups or []),
                 "champion_fingerprint": d.champion_fingerprint,
                 "champion_label": d.champion_label,
+                "judged_under": d.judged_under,
                 "finished_at": d.finished_at.isoformat() if d.finished_at else None,
             }
             for d in rows
@@ -5988,6 +6025,7 @@ def _serialize(d: Duel, session=None, matchup_limit: int | None = None) -> dict:
         ],
         "champion_fingerprint": d.champion_fingerprint,
         "champion_label": d.champion_label,
+        "judged_under": d.judged_under,
         "error": d.error,
         "created_at": d.created_at.isoformat() if d.created_at else None,
         "started_at": d.started_at.isoformat() if d.started_at else None,

@@ -924,6 +924,16 @@ def verdict_rules(version: str | None = None) -> VerdictRules:
     return _verdict_rules(str(version or CURRENT_METHODOLOGY))  # registry records are frozen
 
 
+def judged_rules(judged_under: str | None) -> VerdictRules:
+    """The verdict rules a past duel was judged by (S25), from its ``Duel.judged_under``.
+
+    **NULL means** :data:`DEFAULT_VERDICT_RULES`: a duel row written before S25 recorded no
+    version it could be backfilled from, and every duel decided before then was decided by
+    exactly those rules (no version stated others). The one place that says so. Never the
+    current version: a past verdict is read under the rules it was reached by."""
+    return verdict_rules(judged_under) if judged_under else DEFAULT_VERDICT_RULES
+
+
 def linear_ramp_legs(spec: dict) -> dict[str, float]:
     """``{crown key: best}`` for every crown leg whose ``best`` threshold is not positive —
     the legs `scoring.engine._normalize` scores on a LINEAR ramp instead of the perceptual
