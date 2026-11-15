@@ -69,6 +69,7 @@ from ..ranking import (  # noqa: F401 — moved to `ranking` (S16, S17); re-expo
     _spread,
     _weather_covariates,
 )
+from ..settings_overrides import effective_fingerprint, effective_settings, record as record_override
 from ..models import BenchmarkResult, Run, RunStatus, Score
 from ..firewall_write import apply_changes, normalize_changes
 from ..providers import get_provider
@@ -208,7 +209,7 @@ def verify_profile_derivation(
     art = get_settings().artifact_dir
     total = session.scalar(
         select(func.count()).select_from(Run).where(
-            Run.status == RunStatus.COMPLETE, Run.settings_fingerprint == fingerprint
+            Run.status == RunStatus.COMPLETE, effective_fingerprint() == fingerprint
         )
     ) or 0
     if total == 0:
@@ -216,7 +217,7 @@ def verify_profile_derivation(
 
     base = (
         select(Run)
-        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint == fingerprint)
+        .where(Run.status == RunStatus.COMPLETE, effective_fingerprint() == fingerprint)
         .options(selectinload(Run.results))
     )
     oldest = list(session.scalars(base.order_by(Run.created_at.asc()).limit(sample)).all())
@@ -278,7 +279,7 @@ def settings_diagnostics(session: Session = Depends(get_session)) -> dict:
     # Only the identity columns are needed (id/created_at/label/fingerprint) — not each run's
     # `settings` JSON. Pull just those so counting all history doesn't load every run's blob.
     completed = session.execute(
-        select(Run.id, Run.created_at, Run.label, Run.settings_fingerprint)
+        select(Run.id, Run.created_at, Run.label, effective_fingerprint().label("settings_fingerprint"))
         .where(Run.status == RunStatus.COMPLETE)
         .order_by(Run.created_at.desc())
     ).all()
@@ -321,11 +322,15 @@ def settings_diagnostics(session: Session = Depends(get_session)) -> dict:
 
 @router.post("/settings/backfill")
 def backfill_settings(session: Session = Depends(get_session)) -> dict:
-    """Stamp the *current* firewall settings onto completed runs that have none.
+    """Attribute the *current* firewall settings to completed runs that have none.
 
     Use when historical runs predate settings-capture (or ran while discovery was
     failing) AND the firewall hasn't changed since — they then aggregate into the
-    current profile. Only touches runs with no captured settings.
+    current profile. Only touches runs with no settings, captured or overridden.
+
+    The run rows are never changed (S22): each run gets two append-only
+    ``settings_overrides`` rows (settings and fingerprint, source ``backfill``), which the
+    ranking and profile readers apply through :mod:`pathbrain.settings_overrides`.
     """
     provider = get_provider()
     try:
@@ -337,14 +342,18 @@ def backfill_settings(session: Session = Depends(get_session)) -> dict:
             status_code=502, detail=f"{provider.name} discovery failed: {type(exc).__name__}: {exc}"
         ) from exc
 
-    runs = session.scalars(
-        select(Run).where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint.is_(None))
+    run_ids = session.scalars(
+        select(Run.id).where(Run.status == RunStatus.COMPLETE, effective_fingerprint().is_(None))
     ).all()
-    for run in runs:
-        run.settings = normalized
-        run.settings_fingerprint = fp
+    reason = "settings-less run attributed to the firewall profile current at backfill"
+    for run_id in run_ids:
+        record_override(session, run_id, "settings", normalized, source="backfill", reason=reason)
+        record_override(session, run_id, "settings_fingerprint", fp, source="backfill", reason=reason)
     session.commit()
-    return {"updated": len(runs), "fingerprint": fp}
+    if run_ids:
+        # The field cache's stamp counts runs and scores, which an override moves neither of.
+        invalidate_profiles_cache()
+    return {"updated": len(run_ids), "fingerprint": fp}
 
 
 @router.post("/settings/refingerprint")
@@ -1893,12 +1902,13 @@ def compute_profiles(
 
 def _profile_settings(session: Session, fingerprint_: str) -> list[dict] | None:
     """The stored normalized settings for a profile (latest run that captured it)."""
-    run = session.scalars(
-        select(Run)
-        .where(Run.settings_fingerprint == fingerprint_, Run.settings.is_not(None))
+    settings = session.scalars(
+        select(effective_settings())
+        .where(effective_fingerprint() == fingerprint_, effective_settings().is_not(None))
         .order_by(Run.created_at.desc())
+        .limit(1)
     ).first()
-    return run.settings if run else None
+    return settings if settings is not None else None
 
 
 @router.get("/settings/profiles/{fingerprint_}/settings")
@@ -1940,7 +1950,7 @@ def _profile_iterations(session: Session, fingerprint_: str) -> int:
         .join(Score, Score.run_id == Run.id)
         .where(
             Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint == fingerprint_,
+            effective_fingerprint() == fingerprint_,
             Score.methodology_version == methodology.version,
             latest_score(),
         )
@@ -3078,13 +3088,13 @@ def settings_impact(
     methodology = ensure_current_methodology(session, get_config(session))
     rows = session.execute(
         select(
-            Run.settings_fingerprint, Run.settings, Run.iterations, Run.created_at,
+            effective_fingerprint(), effective_settings(), Run.iterations, Run.created_at,
             Score.axis_scores, Score.comparability,
         )
         .join(Score, Score.run_id == Run.id)
         .where(
             Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint.is_not(None),
+            effective_fingerprint().is_not(None),
             Score.methodology_version == methodology.version,
             latest_score(),
         )

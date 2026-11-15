@@ -723,6 +723,7 @@ def _load(session) -> dict:
     from .models import Run, Score
     from .overall_ranking import FALLBACK_ROUND_SIGMA, ring_rounds
     from .profile_aggregates import _comparable_runs
+    from .settings_overrides import effective_fingerprint
     from .refresh import list_profiles
     from .settings_profile import is_sqm_off_profile
 
@@ -733,7 +734,7 @@ def _load(session) -> dict:
     weights = overall_weights(definition)
     boundaries = evidence.instrument_epochs(session)["times"]
     rows = session.execute(
-        select(Run.settings_fingerprint, Run.created_at, Run.iterations, Score.subscores, Run.job_group)
+        select(effective_fingerprint(), Run.created_at, Run.iterations, Score.subscores, Run.job_group)
         .join(Score, Score.run_id == Run.id)
         .where(*_comparable_runs(version))
     ).all()

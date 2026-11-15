@@ -14,7 +14,7 @@ from pathbrain.methodology import (
     build_definition_from_spec,
     overall_metrics,
 )
-from pathbrain.models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
+from pathbrain.models import BenchmarkResult, Run, RunStatus, Score, ScoreResult, SettingsOverride
 from pathbrain.settings_profile import diff_profiles, fingerprint, normalize, summarize
 from pathbrain.providers.mock import MockProvider
 
@@ -776,6 +776,10 @@ def test_backfill_stamps_null_runs(client):
     assert resp.status_code == 200
     assert resp.json()["updated"] >= 1
     assert resp.json()["fingerprint"]  # mock provider yields a stable fingerprint
+    # Backfill now writes override rows (S22). Drop them: tests here delete runs, SQLite
+    # reuses a deleted run's id, and a leftover override would attach to the new run.
+    with session_scope() as session:
+        session.query(SettingsOverride).delete()
 
 
 # Kept last: seeds a distinct profile and only queries by its own fingerprint, so
@@ -1082,6 +1086,7 @@ def _wipe_runs() -> None:
     """Clear all runs/scores so a test asserting a *global* property (the SQM-off bar) isn't
     perturbed by profiles other tests left in the shared session-scoped DB."""
     with session_scope() as session:
+        session.query(SettingsOverride).delete()
         session.query(Score).delete()
         session.query(ScoreResult).delete()
         session.query(BenchmarkResult).delete()

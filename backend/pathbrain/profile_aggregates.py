@@ -48,6 +48,7 @@ from sqlalchemy import delete, func, select
 from .database import session_scope
 from .logging_config import get_logger
 from .methodology import CURRENT_METHODOLOGY, crown_metric_keys, latest_score
+from .settings_overrides import effective_fingerprint
 from .models import ProfileAggregate, Run, RunStatus, Score
 
 log = get_logger("profile_aggregates")
@@ -80,7 +81,7 @@ def _comparable_runs(version: str):
     was built from."""
     return (
         Run.status == RunStatus.COMPLETE,
-        Run.settings_fingerprint.is_not(None),
+        effective_fingerprint().is_not(None),  # a run's own fingerprint, or its override (S22)
         Score.methodology_version == version,
         Score.comparability != "incomparable",
         latest_score(),
@@ -110,9 +111,10 @@ def stamps(session, version: str, fingerprints: list[str] | None = None) -> dict
     safe to use: verifying is orders of magnitude cheaper than computing, so there is never
     a reason to skip it.
     """
+    fp_col = effective_fingerprint()
     base = (
         select(
-            Run.settings_fingerprint,
+            fp_col,
             func.max(Run.id),
             func.count(Run.id),
             func.sum(func.coalesce(Run.iterations, 1)),
@@ -120,10 +122,10 @@ def stamps(session, version: str, fingerprints: list[str] | None = None) -> dict
         )
         .join(Score, Score.run_id == Run.id)
         .where(*_comparable_runs(version))
-        .group_by(Run.settings_fingerprint)
+        .group_by(fp_col)
     )
     queries = (
-        [base.where(Run.settings_fingerprint.in_(chunk))
+        [base.where(fp_col.in_(chunk))
          for chunk in _chunks(list(dict.fromkeys(fingerprints)))]
         if fingerprints else [base]
     )
@@ -182,11 +184,11 @@ def _recompute(session, version: str, fingerprints: list[str]) -> dict[str, dict
         row
         for chunk in _chunks(fingerprints)
         for row in session.execute(
-            select(Run.settings_fingerprint, Run.iterations, Run.id,
+            select(effective_fingerprint(), Run.iterations, Run.id,
                    Score.computed_at, Score.subscores,
                    *[Score.metric_values[m].as_float() for m in RAW_METRICS])
             .join(Score, Score.run_id == Run.id)
-            .where(*_comparable_runs(version), Run.settings_fingerprint.in_(chunk))
+            .where(*_comparable_runs(version), effective_fingerprint().in_(chunk))
         )
     ]
 

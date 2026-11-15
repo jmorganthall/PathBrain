@@ -208,9 +208,17 @@ parallel with C once S4 is done.
   Built: the key is `UNIQUE(run_id, methodology_version, is_at_measure)`, rebuilt once on start (about 4 s per
   120k rows; needs free disk of about twice the `scores` table). **To restore the rows from the backup** (app
   stopped): `DELETE FROM scores; INSERT INTO scores SELECT * FROM scores_backup_s21b;`
-- [ ] **S22. Settings overrides instead of backfill.** Replace `/settings/backfill`
+- [x] **S22a. Settings overrides instead of backfill.** Replace `/settings/backfill`
   (`routes_settings.py:685`), which stamps today's settings onto old runs, with a
   `settings_overrides` table that records the correction beside the run.
+  Built: append-only `settings_overrides` (created by `create_all`), `/settings/backfill` writes two rows per
+  run (same request/response), and `pathbrain/settings_overrides.py` gives the effective value (SQL
+  `effective_fingerprint()`/`effective_settings()`, or `overlay()` for loaded runs). Routed: ranking
+  (`_completed_runs_with_scores`), `profile_aggregates`, `beliefs`, and routes_settings' own readers.
+- [ ] **S22b. Route the remaining settings readers** through `settings_overrides`: `refresh`, `explore_tracker`,
+  `why`, `runner`, `publish_followthrough`, `levers`, `reachability`, `instrument_health`, `warm_agreement`,
+  `crown_agreement`, `host_adjust`, `portable`, `research_export`, and routes `results`, `history`,
+  `score`, `smoothness`. Decide what `/settings/refingerprint` does with an overridden run.
 - [ ] **S23. Instrument health as a derived table.** Move instrument health off the run row
   into a derived, versioned table (`instrument_health_v`), filled by the derive step.
 - [ ] **S24. Version the verdict rules, part 1.** Move the duel's verdict constants
