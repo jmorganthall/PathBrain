@@ -265,6 +265,43 @@ def _migrate_instrument_health(eng) -> int:
     return copied or 0
 
 
+def _duel_judged_under(matchups) -> str | None:
+    """What an old duel row already says it was judged under: its last decided match's
+    ``verdict_methodology`` (set when a ledger re-grade re-read it) or ``methodology``."""
+    for m in reversed([x for x in (matchups or []) if isinstance(x, dict)]):
+        if m.get("verdict"):
+            v = m.get("verdict_methodology") or m.get("methodology")
+            if v:
+                return str(v)
+    return None
+
+
+def _backfill_duel_judged_under(conn) -> int:
+    """S25: fill ``duels.judged_under`` on old rows from what their matches record. Only
+    NULL rows are read and only a found version is written, so it is idempotent; a row whose
+    matches name no version stays NULL (read as the default rules)."""
+    import json
+
+    from sqlalchemy import text
+
+    if not list(conn.execute(text("PRAGMA table_info(duels)"))):
+        return 0
+    done = 0
+    for duel_id, raw in conn.execute(text(
+        "SELECT id, matchups FROM duels WHERE judged_under IS NULL AND matchups IS NOT NULL"
+    )).all():
+        try:
+            version = _duel_judged_under(json.loads(raw) if isinstance(raw, str) else raw)
+        except (TypeError, ValueError):
+            version = None
+        if version:
+            conn.execute(text("UPDATE duels SET judged_under = :v WHERE id = :i"), {"v": version, "i": duel_id})
+            done += 1
+    if done:
+        log.info("Duels: recorded judged_under on %d old session(s) from their matches", done)
+    return done
+
+
 def _migrate(eng=None) -> None:
     """Lightweight migrations for SQLite (additive, plus S21b's one ``scores`` rebuild).
 
@@ -290,6 +327,9 @@ def _migrate(eng=None) -> None:
             "job_group_total": "INTEGER",
             "instrument_health": "JSON",
             "host_pressure": "JSON",
+        },
+        "duels": {
+            "judged_under": "VARCHAR(64)",
         },
 
         "benchmark_results": {
@@ -376,6 +416,7 @@ def _migrate(eng=None) -> None:
             for name, ddl in columns.items():
                 if name not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+        _backfill_duel_judged_under(conn)
         for name, table, cols in new_indexes:
             # Skip if the table isn't there yet (create_all will build it + its indexes).
             if not list(conn.execute(text(f"PRAGMA table_info({table})"))):

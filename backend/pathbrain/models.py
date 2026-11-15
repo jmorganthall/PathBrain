@@ -868,6 +868,12 @@ class Duel(Base):
     # The ladder's final incumbent (the duel champion) when the session completed.
     champion_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
     champion_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The methodology version whose verdict rules (``methodology.verdict_rules``) this
+    # session's matches were judged under (S25). Set when the session records its matches;
+    # NULL on an old row with nothing to backfill it from, read as the default rules
+    # (``methodology.judged_rules``). A match's own ``verdict_methodology`` /
+    # ``methodology`` names the version for that match when a session re-seeded mid-way.
+    judged_under: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class LeverCampaign(Base):
