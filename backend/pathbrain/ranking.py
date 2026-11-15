@@ -9,10 +9,13 @@ code that stayed there. Read-only: nothing here writes the firewall.
 """
 from __future__ import annotations
 
+import threading
+from dataclasses import dataclass
+from datetime import datetime
 from statistics import median, quantiles
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session, defer
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from . import host_adjust as host_adjust_mod
 from . import instrument_health as instrument_health_mod
@@ -21,7 +24,7 @@ from .methodology import corner_score, ensure_current_methodology, latest_score,
 from .metrics import METRIC_ROLES, ROLE_WEATHER, all_metric_sources
 from .models import BenchmarkResult, Run, RunStatus, Score
 from .scoring import COMPLETION_METRIC_SOURCES
-from .settings_overrides import effective_fingerprint, overlay as overlay_settings
+from .settings_overrides import effective_fingerprint, effective_settings, overrides_stamp
 from . import profile_names
 from .settings_profile import diff_profiles, is_sqm_off_profile, summarize
 from .trends import RunPoint, _BaselineResolver, bucket_values, profile_relative
@@ -392,34 +395,82 @@ def _spread(vals: list[float]) -> dict:
     }
 
 
-def _completed_runs_with_scores(session: Session):
-    """Chronological ``(Run, Score, results_by_plugin)`` for completed runs with settings,
-    scored under the current methodology.
+@dataclass(frozen=True, slots=True)
+class FieldRun:
+    """The part of a completed ``Run`` the field build reads, with overrides applied.
 
-    ``results_by_plugin`` is each run's plugin metric cache (``{plugin: metrics}``),
-    fetched as **plain rows in one bulk query** rather than eager-loaded ORM entities:
-    materializing ~6 ``BenchmarkResult`` instances per run across all history (plus the
-    relationship machinery) dominated the Settings-Impact load as runs piled up. The
-    heavy immutable JSON blobs (``raw`` observations + per-target ``details``) are never
-    selected at all, and ``Run.config_used`` (a full benchmark-config snapshot per run
-    that no caller reads) is deferred for the same reason.
-    """
+    Plain values, not an ORM row, so one load can serve every caller until the history
+    changes (see :func:`_completed_runs_with_scores`)."""
+
+    id: int
+    created_at: datetime | None
+    settings: dict | None
+    settings_fingerprint: str
+    iterations: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class FieldScore:
+    """The part of a run's latest current-methodology ``Score`` the field build reads."""
+
+    id: int
+    comparability: str
+    axis_scores: dict | None
+    subscores: dict | None
+    metric_values: dict | None
+
+
+# One load of the field's rows, shared by every caller and extended rather than re-read
+# when the only change since is new completed runs. A new run used to send the next reader
+# back through every run in history (most of the Profiles page's first load); now it reads
+# that run's rows and appends them. Anything else that moves under the loaded runs (a
+# re-grade, a deleted or late-completing run, an override, another methodology) reloads all
+# of it, and `invalidate_rows_cache` drops it on the paths that rewrite history in place.
+_ROWS_LOCK = threading.Lock()
+_ROWS_CACHE: dict = {"base": None, "upto": None, "check": None, "rows": None}
+
+
+def invalidate_rows_cache() -> None:
+    """Drop the shared field rows (called with the field memo on in-place rewrites)."""
+    with _ROWS_LOCK:
+        _ROWS_CACHE.update({"base": None, "upto": None, "check": None, "rows": None})
+
+
+def _rows_check(session: Session, upto: int) -> tuple:
+    """What must not have moved under the runs up to ``upto`` for loaded rows to stand:
+    how many of them are complete, and every Score row on them (any write moves it)."""
+    complete = session.execute(
+        select(func.count(Run.id)).where(Run.status == RunStatus.COMPLETE, Run.id <= upto)
+    ).scalar_one()
+    scores = tuple(session.execute(
+        select(func.max(Score.id), func.count(Score.id)).where(Score.run_id <= upto)
+    ).one())
+    return (complete, scores)
+
+
+def _load_rows(session: Session, version: str, after: int | None = None) -> list[tuple]:
+    """``(FieldRun, FieldScore, results_by_plugin)`` for the qualifying runs, all of them
+    or only those with an id above ``after``, in (created_at, id) order."""
     from .phase_timing import laps
 
     lap = laps("field_rows")
-    methodology = ensure_current_methodology(session, get_config(session))
-    filters = (
+    fp_col = effective_fingerprint()  # a run's own fingerprint, or its override (S22)
+    filters = [
         Run.status == RunStatus.COMPLETE,
-        effective_fingerprint().is_not(None),  # a run's own fingerprint, or its override (S22)
-        Score.methodology_version == methodology.version,
+        fp_col.is_not(None),
+        Score.methodology_version == version,
         latest_score(),
-    )
-    rows = session.execute(
-        select(Run, Score)
+    ]
+    if after is not None:
+        filters.append(Run.id > after)
+    raw = session.execute(
+        select(
+            Run.id, Run.created_at, effective_settings(), fp_col, Run.iterations,
+            Score.id, Score.comparability, Score.axis_scores, Score.subscores, Score.metric_values,
+        )
         .join(Score, Score.run_id == Run.id)
-        .options(defer(Run.config_used))
         .where(*filters)
-        .order_by(Run.created_at)
+        .order_by(Run.created_at, Run.id)
     ).all()
     lap("runs_scores")
     metrics_by_run: dict[int, dict[str, dict]] = {}
@@ -431,11 +482,58 @@ def _completed_runs_with_scores(session: Session):
     ):
         metrics_by_run.setdefault(run_id, {})[plugin] = metrics or {}
     lap("results")
-    # Callers read run.settings / run.settings_fingerprint: give them the effective values
-    # (override if present, else the run's own) as loaded state, never written back.
-    overlay_settings(session, [run for run, _ in rows])
-    lap("overlay")
-    return [(run, score, metrics_by_run.get(run.id, {})) for run, score in rows]
+    rows = [
+        (
+            FieldRun(rid, created, settings, fp, iterations),
+            FieldScore(sid, comparability, axis, sub, mv),
+            metrics_by_run.get(rid, {}),
+        )
+        for rid, created, settings, fp, iterations, sid, comparability, axis, sub, mv in raw
+    ]
+    lap("build")
+    return rows
+
+
+def _completed_runs_with_scores(session: Session):
+    """Chronological ``(FieldRun, FieldScore, results_by_plugin)`` for completed runs with
+    settings, scored under the current methodology.
+
+    ``results_by_plugin`` is each run's plugin metric cache (``{plugin: metrics}``),
+    fetched as **plain rows in one bulk query**. Runs and scores are read as plain columns
+    too, only the ones callers use, with overrides applied in SQL: building ORM rows for
+    every run in history (and decoding columns nobody reads) was most of this read.
+    The rows are shared across callers (see ``_ROWS_CACHE``); treat them as read-only.
+    """
+    from .phase_timing import laps
+
+    lap = laps("field_rows")
+    methodology = ensure_current_methodology(session, get_config(session))
+    # The engine itself, compared by identity, so a second database in one process (the
+    # tests' private ones) can never be served the first one's rows.
+    base = (session.get_bind(), methodology.version, overrides_stamp(session))
+    newest = session.execute(
+        select(func.max(Run.id)).where(Run.status == RunStatus.COMPLETE)
+    ).scalar_one() or 0
+    with _ROWS_LOCK:
+        cached = dict(_ROWS_CACHE)
+    if cached["base"] == base and cached["rows"] is not None and cached["upto"] <= newest:
+        if _rows_check(session, cached["upto"]) == cached["check"]:
+            if newest == cached["upto"]:
+                lap("cached")
+                return list(cached["rows"])
+            fresh = _load_rows(session, methodology.version, after=cached["upto"])
+            rows = sorted(cached["rows"] + fresh, key=lambda r: (r[0].created_at, r[0].id))
+            lap("appended")
+            _store_rows(base, newest, _rows_check(session, newest), rows)
+            return list(rows)
+    rows = _load_rows(session, methodology.version)
+    _store_rows(base, newest, _rows_check(session, newest), rows)
+    return list(rows)
+
+
+def _store_rows(base: tuple, upto: int, check: tuple, rows: list) -> None:
+    with _ROWS_LOCK:
+        _ROWS_CACHE.update({"base": base, "upto": upto, "check": check, "rows": rows})
 
 
 # --- Metric-based "vs weather": how much do conditions move the crown metrics? ----------

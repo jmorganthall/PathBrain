@@ -149,9 +149,10 @@ ALLOWED: dict[str, tuple[int, str]] = {
                        "serialize_run reads a PortableRun, not a Run"),
     "api/routes_settings.py": (5, "refingerprint: the row-only in-place re-key (write) and the "
                                   "row fallbacks beside overrides_for (3); two reads of runs "
-                                  "from _completed_runs_with_scores, which overlays"),
+                                  "from _completed_runs_with_scores, which applies overrides"),
     "research_export.py": (2, "the raw row values exported beside the effective ones"),
-    "ranking.py": (5, "reads of runs overlaid in _completed_runs_with_scores (and a comment)"),
+    "ranking.py": (4, "reads of FieldRuns, whose fingerprint _completed_runs_with_scores "
+                      "reads through effective_fingerprint"),
     "api/routes_results.py": (2, "_serialize_run overlays first; the baseline overlays its rows"),
     "api/routes_history.py": (1, "history_dump overlays its runs"),
     "api/routes_smoothness.py": (2, "the single run and the compared rows are overlaid"),

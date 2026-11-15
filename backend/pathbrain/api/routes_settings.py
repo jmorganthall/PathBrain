@@ -21,6 +21,7 @@ from .. import crowning
 from .. import host_adjust as host_adjust_mod
 from .. import profile_test as profile_test_mod
 from .. import refresh as refresh_mod
+from .. import ranking as ranking_mod
 from .. import why as why_mod
 from ..config_store import get_config, save_config
 from ..database import get_session
@@ -1904,6 +1905,7 @@ def invalidate_profiles_cache() -> None:
     global _weather_memo
     with _FIELD_LOCK:
         _FIELD_CACHE.clear()
+    ranking_mod.invalidate_rows_cache()
     profile_aggregates.invalidate()
     # The seed's caches (stored-profile list keyed on run ids, prior-version field keyed on
     # its scores) are blind to an in-place re-key for the same reason the field memo is.
