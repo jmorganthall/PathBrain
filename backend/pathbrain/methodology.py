@@ -1276,16 +1276,32 @@ def crown_keys(version: str = CURRENT_METHODOLOGY) -> tuple[str, ...]:
     readings and the instrument audits use. Crown legs that are not browser readings are
     left out. Empty for a version the registry does not hold (a GUI-published one) or one
     with no overall spec. Published versions are frozen, so the answer never changes."""
+    return tuple(
+        m["source_key"] for m in _crown_entries(version)
+        if m.get("plugin") == "browser" and m.get("source_key")
+    )
+
+
+def crown_metric_keys(version: str = CURRENT_METHODOLOGY, *, unit: str | None = None) -> tuple[str, ...]:
+    """The crown legs of a registry version as **metric keys** (``fcp``, ``lcp``, …), in
+    the order its ``overall`` spec lists them; with ``unit``, only the legs measured in it
+    (``unit="ms"`` keeps the timings and drops a unitless leg like ``cadence_cov``). Empty
+    for a version the registry does not hold."""
+    return tuple(
+        m["key"] for m in _crown_entries(version)
+        if unit is None or (m.get("unit") or "") == unit
+    )
+
+
+def _crown_entries(version: str) -> list[dict]:
+    """The frozen definition's metric entries for a registry version's crown, in crown order."""
     spec = METHODOLOGY_REGISTRY.get(version)
     if not spec:
-        return ()
+        return []
     definition = build_definition_from_spec(spec)
     keys, _required = overall_metrics(definition)
     by_key = {m["key"]: m for m in definition.get("metrics", []) if isinstance(m, dict)}
-    return tuple(
-        by_key[k]["source_key"] for k in keys
-        if k in by_key and by_key[k].get("plugin") == "browser" and by_key[k].get("source_key")
-    )
+    return [by_key[k] for k in keys if k in by_key]
 
 
 def _effective(m: metrics_mod.MetricDef, config: dict) -> tuple[float, float | None, float | None]:
