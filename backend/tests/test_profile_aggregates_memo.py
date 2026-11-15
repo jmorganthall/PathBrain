@@ -124,3 +124,13 @@ def test_the_profiles_endpoint_reads_inside_one_memo(client):
         r = client.get("/api/settings/profiles")
     assert r.status_code == 200
     assert all(seen)
+
+
+def test_the_profiles_endpoint_reports_where_its_time_went(client):
+    r = client.get("/api/settings/profiles")
+    assert r.status_code == 200
+    timing = r.headers.get("server-timing", "")
+    names = [part.split(";")[0].strip() for part in timing.split(",")]
+    assert names[0] == "field"
+    assert names[-1] == "total"
+    assert "discover" in names

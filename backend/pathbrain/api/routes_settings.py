@@ -7,11 +7,12 @@ configurable threshold.
 from __future__ import annotations
 
 import threading
+import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from statistics import median, quantiles
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, defer, selectinload
 
@@ -416,6 +417,7 @@ def refingerprint_runs(
 
 @router.get("/settings/profiles")
 def settings_profiles(
+    response: Response,
     session: Session = Depends(get_session),
     complete_only: bool = Query(
         True, description="Only aggregate runs with the latest (paint) SOPS metrics."
@@ -456,20 +458,53 @@ def settings_profiles(
     # them per ask was most of this endpoint's time on the NAS.
     from .. import profile_aggregates
 
+    timer = _PhaseTimer()
     with profile_aggregates.request_memo():
-        return _settings_profiles(session, complete_only, tz_offset, crown_metrics)
+        result = _settings_profiles(session, complete_only, tz_offset, crown_metrics, timer)
+    # Where the time went, per phase, as a Server-Timing header (visible in the browser's
+    # network panel or a fetch) and one log line. Read-only diagnostics: the payload is
+    # unchanged.
+    response.headers["Server-Timing"] = timer.header()
+    log.info("GET /settings/profiles: %s", timer.summary())
+    return result
+
+
+class _PhaseTimer:
+    """Wall-clock per phase of one Profiles read, in milliseconds."""
+
+    def __init__(self) -> None:
+        self._start = self._last = time.perf_counter()
+        self.phases: list[tuple[str, float]] = []
+
+    def mark(self, name: str) -> None:
+        now = time.perf_counter()
+        self.phases.append((name, (now - self._last) * 1000.0))
+        self._last = now
+
+    def _all(self) -> list[tuple[str, float]]:
+        return [*self.phases, ("total", (time.perf_counter() - self._start) * 1000.0)]
+
+    def header(self) -> str:
+        return ", ".join(f"{name};dur={ms:.0f}" for name, ms in self._all())
+
+    def summary(self) -> str:
+        return " ".join(f"{name}={ms:.0f}ms" for name, ms in self._all())
 
 
 def _settings_profiles(
-    session: Session, complete_only: bool, tz_offset: int, crown_metrics: str | None
+    session: Session, complete_only: bool, tz_offset: int, crown_metrics: str | None,
+    timer: _PhaseTimer | None = None,
 ) -> dict:
+    mark = timer.mark if timer is not None else (lambda _name: None)
     custom = [m.strip() for m in (crown_metrics or "").split(",") if m.strip()] or None
     result = compute_profiles(
         session, complete_only=complete_only, tz_offset=tz_offset, custom_crown_metrics=custom
     )
+    mark("field")
     # One live discovery per request, shared by the active-row fingerprint and the heirs'
     # reachability filter (two separate discover() round-trips used to stall the page).
     live = _discover_live_normalized()
+    mark("discover")
     # The live profile, for flagging the active row only — it no longer influences the crown
     # (the crown follows the highest median Overall, whoever wins, by any margin).
     result["current_fingerprint"] = _current_fingerprint(live)
@@ -483,7 +518,9 @@ def _settings_profiles(
     # than going blank. The seed is a copy: the memoized field never carries it, and the
     # standings below stay the current version's own (nothing seeded is scored).
     seeded = _seeded_field(session, result)
+    mark("seed")
     result["heirs"] = _compute_heirs(seeded, session, live)
+    mark("heirs")
     result["seeded"] = _seed_summary(session, seeded)
     result["metric_thresholds"] = _metric_thresholds(definition)
     result["saturation"] = _saturation_report(result["profiles"], definition)
@@ -501,7 +538,9 @@ def _settings_profiles(
     # apart. `best_fingerprint` stays the POOLED crown on purpose: the duel's own
     # matchmaking reads it as the independent opinion, and re-pointing it at the ring would
     # make the ladder choose who gets checked against the ladder.
+    mark("extras")
     ranked = crowning.rank_field(session, result)
+    mark("rank")
     by_fp = ranked["by_fingerprint"]
     for profile in result["profiles"]:
         entry = by_fp.get(profile["fingerprint"]) or {}
