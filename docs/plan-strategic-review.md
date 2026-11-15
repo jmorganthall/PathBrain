@@ -132,9 +132,11 @@ parallel with C once S4 is done.
   lines 101–300) from `routes_settings.py` to a new `pathbrain/ranking.py`. No behaviour change.
   Moved verbatim (78 lines); routes_settings re-exports them. No other private helper was used only by
   these four, and the moved code held no crown literals, so S15's allow-list is unchanged.
-- [ ] **S17. Move the ranking engine out, part 2.** Move the remaining ranking code (around
+- [x] **S17. Move the ranking engine out, part 2.** Move the remaining ranking code (around
   lines 2340–2740) to `ranking.py`; routes only call it. Done when: `routes_settings.py` is
   under about 3,500 lines and tests pass unchanged.
+  `_compute_profiles_uncached` and the 25 helpers and constants it reaches moved (4362 → 3159 lines);
+  `compute_profiles` (the field cache and single-flight) stays in routes, which re-exports every moved name.
 
 ## Phase D: stop rewriting history (rec 5)
 
