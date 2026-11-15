@@ -114,8 +114,10 @@ parallel with C once S4 is done.
   Overall page and the duel name the same crown legs.
   The fallback only fired for a definition with no `overall` spec (a pinned v1–v4, or an
   unregistered version id); that case now reads `methodology.ranking_crown` (v6's legs, the same set).
-- [ ] **S13. Leg-first specs from the definition.** Build `pooled_field.LEG_FIRST` from the
+- [x] **S13. Leg-first specs from the definition.** Build `pooled_field.LEG_FIRST` from the
   methodology's legs instead of a literal dict.
+  Only `then` is derived (the other millisecond crown leg); each policy's lead and band stay named
+  policy data (`LEG_FIRST_POLICIES`). A policy the crown cannot serve falls back to the pooled crown.
 - [ ] **S14. Frontend reads the verdict.** `frontend/src/utils/ringReading.ts` stops
   re-deriving the verdict state; the backend sends it. Done when: the UI shows the same states
   for the fixtures in the existing tests.

@@ -19,6 +19,7 @@ screen, so the pooled sentence is gone and what survives is the arithmetic both 
 from __future__ import annotations
 
 from .config_store import get_config
+from .profile_aggregates import RAW_METRICS
 from .logging_config import get_logger
 from .methodology import ensure_current_methodology, overall_metrics, overall_weights
 from .settings_profile import is_sqm_off_profile
@@ -222,14 +223,36 @@ BAND_RANGE = LCP_BAND_RANGE
 #: Qualifiers listed on the response, best on the second leg first.
 LCP_FIRST_LISTED = 8
 
-#: The two leg-first crowns: which leg sets the bar, and which one is raced inside it.
-#: One rule, two orders — never two implementations.
-LEG_FIRST = {
-    "lcp_first": {"lead": "lcp", "then": "fcp", "config": "lcp_band_pct",
-                  "default": DEFAULT_LCP_BAND_PCT},
-    "fcp_first": {"lead": "fcp", "then": "lcp", "config": "fcp_band_pct",
-                  "default": DEFAULT_FCP_BAND_PCT},
+#: The leg-first policies: a deliberate choice of which crown leg SETS the bar, with the
+#: band dial each one reads. This is policy, not crown: "lcp_first" is the owner's stated
+#: trade (keep within a band of the best LCP, then get to FCP faster), "fcp_first" its
+#: mirror. Which legs exist is the methodology's business, read below.
+LEG_FIRST_POLICIES = {
+    "lcp_first": {"lead": "lcp", "config": "lcp_band_pct", "default": DEFAULT_LCP_BAND_PCT},
+    "fcp_first": {"lead": "fcp", "config": "fcp_band_pct", "default": DEFAULT_FCP_BAND_PCT},
 }
+
+
+def _leg_first(policies: dict, legs: tuple[str, ...]) -> dict:
+    """Each policy with its ``then`` leg: the one other millisecond crown leg. A policy
+    whose lead is not a crown leg, or that has no single other leg to race, is left out
+    (and logged) rather than guessed — `crowning` then falls back to the pooled crown."""
+    out: dict = {}
+    for kind, spec in policies.items():
+        others = [k for k in legs if k != spec["lead"]]
+        if spec["lead"] not in legs or len(others) != 1:
+            log.warning("Leg-first crown %s needs %s and one other millisecond crown leg; "
+                        "the crown's are %s", kind, spec["lead"], list(legs))
+            continue
+        out[kind] = {"lead": spec["lead"], "then": others[0], "config": spec["config"],
+                     "default": spec["default"]}
+    return out
+
+
+#: The two leg-first crowns: which leg sets the bar, and which one is raced inside it.
+#: One rule, two orders — never two implementations. The legs are the current crown's
+#: millisecond legs (`profile_aggregates.RAW_METRICS`, the medians `_raw_rows` reads).
+LEG_FIRST = _leg_first(LEG_FIRST_POLICIES, RAW_METRICS)
 
 
 def band_pct(cfg: dict | None, kind: str) -> float:
