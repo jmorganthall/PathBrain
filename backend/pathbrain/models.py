@@ -384,6 +384,9 @@ class Score(Base):
         ),
         Index("ix_scores_methodology_version", "methodology_version"),
         Index("ix_scores_run_methodology_id", "run_id", "methodology_version", "id"),
+        # The field caches' "has any score under these runs been rewritten?" probe
+        # (`profile_aggregates.newest_score_under`) walks this from the newest down.
+        Index("ix_scores_computed_at", "computed_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

@@ -438,7 +438,8 @@ def invalidate_rows_cache() -> None:
 
 def _rows_check(session: Session, upto: int) -> tuple:
     """What must not have moved under the runs up to ``upto`` for loaded rows to stand:
-    how many of them are complete, and every Score row on them (any write moves it)."""
+    how many of them are complete, their Score rows (a new one moves the id and count, an
+    in-place re-grade the newest ``computed_at``), and the newest run itself."""
     complete = session.execute(
         select(func.count(Run.id)).where(Run.status == RunStatus.COMPLETE, Run.id <= upto)
     ).scalar_one()
@@ -450,12 +451,17 @@ def _rows_check(session: Session, upto: int) -> tuple:
     newest = tuple(session.execute(
         select(Run.created_at, effective_fingerprint()).where(Run.id == upto)
     ).one_or_none() or ())
-    return (complete, scores, newest)
+    from .profile_aggregates import newest_score_under
+
+    return (complete, scores, newest_score_under(session, upto), newest)
 
 
-def _load_rows(session: Session, version: str, after: int | None = None) -> list[tuple]:
+def _load_rows(
+    session: Session, version: str, after: int | None = None, upto: int | None = None
+) -> list[tuple]:
     """``(FieldRun, FieldScore, results_by_plugin)`` for the qualifying runs, all of them
-    or only those with an id above ``after``, in (created_at, id) order."""
+    or only those with an id above ``after`` and at most ``upto``, in (created_at, id)
+    order."""
     from .phase_timing import laps
 
     lap = laps("field_rows")
@@ -468,6 +474,8 @@ def _load_rows(session: Session, version: str, after: int | None = None) -> list
     ]
     if after is not None:
         filters.append(Run.id > after)
+    if upto is not None:
+        filters.append(Run.id <= upto)
     raw = session.execute(
         select(
             Run.id, Run.created_at, effective_settings(), fp_col, Run.iterations,
@@ -526,13 +534,18 @@ def _completed_runs_with_scores(session: Session):
             if newest == cached["upto"]:
                 lap("cached")
                 return list(cached["rows"])
-            fresh = _load_rows(session, methodology.version, after=cached["upto"])
+            # The check is read before the rows, and the rows are bounded by ``newest``: a
+            # run landing or a score moving meanwhile then shows up as a change on the next
+            # read, rather than being appended twice or filed under a check that includes it.
+            check = _rows_check(session, newest)
+            fresh = _load_rows(session, methodology.version, after=cached["upto"], upto=newest)
             rows = sorted(cached["rows"] + fresh, key=lambda r: (r[0].created_at, r[0].id))
             lap("appended")
-            _store_rows(base, newest, _rows_check(session, newest), rows)
+            _store_rows(base, newest, check, rows)
             return list(rows)
-    rows = _load_rows(session, methodology.version)
-    _store_rows(base, newest, _rows_check(session, newest), rows)
+    check = _rows_check(session, newest)
+    rows = _load_rows(session, methodology.version, upto=newest)
+    _store_rows(base, newest, check, rows)
     return list(rows)
 
 

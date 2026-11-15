@@ -40,6 +40,7 @@ stamp, so a duel invalidates the two profiles it measured and nothing else.
 """
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -50,7 +51,7 @@ from sqlalchemy import delete, func, select
 from .database import session_scope
 from .logging_config import get_logger
 from .methodology import CURRENT_METHODOLOGY, crown_metric_keys, latest_score
-from .settings_overrides import effective_fingerprint
+from .settings_overrides import effective_fingerprint, overrides_stamp
 from .models import ProfileAggregate, Run, RunStatus, Score
 
 log = get_logger("profile_aggregates")
@@ -106,14 +107,23 @@ def median_se(iqr: float | None, runs: int | None) -> float | None:
     return max(0.0, float(iqr)) / (int(runs) ** 0.5)
 
 
-def stamps(session, version: str, fingerprints: list[str] | None = None) -> dict[str, Stamp]:
+def stamps(
+    session, version: str, fingerprints: list[str] | None = None, *,
+    after: int | None = None, upto: int | None = None,
+) -> dict[str, Stamp]:
     """``{fingerprint: Stamp}`` — what each profile's rollup *should* be built from, now.
 
     One grouped query returning a row per profile. This is the whole reason the cache is
     safe to use: verifying is orders of magnitude cheaper than computing, so there is never
-    a reason to skip it.
+    a reason to skip it. ``after`` and ``upto`` bound it to runs in that id range (what
+    :func:`_field_stamps` reads and merges into stamps it already holds).
     """
     fp_col = effective_fingerprint()
+    filters = list(_comparable_runs(version))
+    if after is not None:
+        filters.append(Run.id > after)
+    if upto is not None:
+        filters.append(Run.id <= upto)
     base = (
         select(
             fp_col,
@@ -123,7 +133,7 @@ def stamps(session, version: str, fingerprints: list[str] | None = None) -> dict
             func.max(Score.computed_at),
         )
         .join(Score, Score.run_id == Run.id)
-        .where(*_comparable_runs(version))
+        .where(*filters)
         .group_by(fp_col)
     )
     queries = (
@@ -137,6 +147,112 @@ def stamps(session, version: str, fingerprints: list[str] | None = None) -> dict
             if fp:
                 out[fp] = (max_id, int(runs or 0), int(iters or 0), scored_at)
     return out
+
+
+# The whole field's stamps, kept between reads. The grouped query behind them scans every
+# comparable run, and on the NAS that was most of the fused ranking's pooled step on a warm
+# Profiles load (about 4s of 6). They are kept until something under the runs they were read
+# from moves, and a new completed run is merged in rather than re-scanned for.
+_STAMPS_LOCK = threading.Lock()
+_STAMPS_CACHE: dict = {"base": None, "upto": None, "check": None, "stamps": None}
+
+#: A request for at least this many profiles reads through the field's kept stamps; a
+#: smaller one (a duel's two profiles, `why`'s one) keeps its own scoped query, which on a
+#: miss is far cheaper than reading the field to answer it.
+_FIELD_MIN = 20
+
+
+def invalidate_stamps_cache() -> None:
+    """Drop the kept field stamps (the in-place rewrite paths call this with the rest)."""
+    with _STAMPS_LOCK:
+        _STAMPS_CACHE.update({"base": None, "upto": None, "check": None, "stamps": None})
+
+
+def newest_score_under(session, upto: int):
+    """When the newest Score on a run up to ``upto`` was written. An in-place re-grade moves
+    nothing else (`upsert_score` refreshes the at-present row and its ``computed_at``), so
+    this is the one thing that tells a cache keyed on ids and counts that its scores moved.
+    Walks the ``computed_at`` index from the newest down and stops at the first old run,
+    which in practice is past only the scores of runs newer than ``upto``."""
+    return session.execute(
+        select(Score.computed_at)
+        # ``+ 0`` keeps SQLite off the run_id index, which it otherwise picks for this
+        # range (nearly every row) and then sorts them all to find the newest.
+        .where(Score.run_id + 0 <= upto)
+        .order_by(Score.computed_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _stamps_check(session, upto: int) -> tuple:
+    """What must not have moved under the runs up to ``upto`` for kept stamps to stand."""
+    complete = session.execute(
+        select(func.count(Run.id)).where(Run.status == RunStatus.COMPLETE, Run.id <= upto)
+    ).scalar_one()
+    scores = tuple(session.execute(
+        select(func.max(Score.id), func.count(Score.id)).where(Score.run_id <= upto)
+    ).one())
+    # The newest run itself: counts alone can't tell a deleted run from a new one that
+    # reused its id (SQLite hands out the freed top id again).
+    newest = tuple(session.execute(
+        select(Run.created_at, effective_fingerprint()).where(Run.id == upto)
+    ).one_or_none() or ())
+    return (complete, scores, newest_score_under(session, upto), newest)
+
+
+def _merge(held: dict[str, Stamp], new: dict[str, Stamp]) -> dict[str, Stamp]:
+    """Stamps over two disjoint sets of runs, combined: what one grouped query over both
+    would have returned (max, count, sum, max)."""
+    out = dict(held)
+    for fp, (max_id, runs, iters, scored_at) in new.items():
+        old = out.get(fp)
+        if old is None:
+            out[fp] = (max_id, runs, iters, scored_at)
+            continue
+        ids = [i for i in (old[0], max_id) if i is not None]
+        times = [t for t in (old[3], scored_at) if t is not None]
+        out[fp] = (max(ids) if ids else None, old[1] + runs, old[2] + iters,
+                   max(times) if times else None)
+    return out
+
+
+def _field_stamps(session, version: str) -> dict[str, Stamp]:
+    """Every profile's stamp, from the kept copy where nothing under it moved."""
+    from .phase_timing import laps
+
+    lap = laps("aggregates")
+    # The engine itself, compared by identity, so a second database in one process (the
+    # tests' private ones) can never be served the first one's stamps.
+    base = (session.get_bind(), version, overrides_stamp(session))
+    newest = session.execute(
+        select(func.max(Run.id)).where(Run.status == RunStatus.COMPLETE)
+    ).scalar_one() or 0
+    with _STAMPS_LOCK:
+        held = dict(_STAMPS_CACHE)
+    if (held["base"] == base and held["stamps"] is not None and held["upto"] <= newest
+            and _stamps_check(session, held["upto"]) == held["check"]):
+        if newest == held["upto"]:
+            lap("stamps_cached")
+            return dict(held["stamps"])
+        # The check is read before the runs, and the runs are bounded by ``newest``: a run
+        # landing or a score moving meanwhile then shows up as a change on the next read,
+        # rather than being counted twice or filed under a check that already includes it.
+        check = _stamps_check(session, newest)
+        merged = _merge(held["stamps"],
+                        stamps(session, version, after=held["upto"], upto=newest))
+        lap("stamps_appended")
+        _store_stamps(base, newest, check, merged)
+        return dict(merged)
+    check = _stamps_check(session, newest)
+    fresh = stamps(session, version, upto=newest)
+    lap("stamps")
+    _store_stamps(base, newest, check, fresh)
+    return dict(fresh)
+
+
+def _store_stamps(base: tuple, upto: int, check: tuple, held: dict) -> None:
+    with _STAMPS_LOCK:
+        _STAMPS_CACHE.update({"base": base, "upto": upto, "check": check, "stamps": held})
 
 
 def _stored_stamp(row: ProfileAggregate) -> Stamp:
@@ -366,7 +482,11 @@ def _aggregates(
     for any profile where that would have given a different answer, it did.
     """
     wanted = [fp for fp in dict.fromkeys(fingerprints) if fp] if fingerprints else None
-    fresh = stamps(session, version, wanted)
+    if wanted is None or len(wanted) >= _FIELD_MIN:
+        field = _field_stamps(session, version)
+        fresh = field if wanted is None else {fp: field[fp] for fp in wanted if fp in field}
+    else:
+        fresh = stamps(session, version, wanted)
     if wanted is None:
         wanted = list(fresh)
 
@@ -437,6 +557,7 @@ def invalidate(fingerprints: list[str] | None = None, version: str | None = None
     paths that rewrite scores wholesale (re-grade, re-derive, refingerprint) so the rebuild
     happens once at a known moment instead of being discovered profile by profile.
     """
+    invalidate_stamps_cache()
     try:
         with session_scope() as session:
             stmt = delete(ProfileAggregate)

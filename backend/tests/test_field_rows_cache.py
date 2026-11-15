@@ -132,6 +132,26 @@ def test_a_new_score_row_is_read_fresh(seeded):
     assert not appended
 
 
+def test_a_regrade_in_place_is_read_fresh(seeded):
+    """A re-grade rewrites the at-present row in place: no new id, no new count, only its
+    ``computed_at`` moves. The shared rows must still notice."""
+    from pathbrain.methodology import upsert_score
+
+    version, ids = seeded
+    with session_scope() as s:
+        upsert_score(s, ids[0], version, is_at_measure=False, comparability="exact",
+                     axis_scores={"overall": 70.0}, subscores={}, weights_used={},
+                     metric_values={})
+    got, _ = _read()
+    assert got[ids[0]][2] == 70.0
+    with session_scope() as s:
+        upsert_score(s, ids[0], version, is_at_measure=False, comparability="exact",
+                     axis_scores={"overall": 88.0}, subscores={}, weights_used={},
+                     metric_values={})
+    got, cached = _read()
+    assert not cached and got[ids[0]][2] == 88.0
+
+
 def test_an_override_is_read_fresh(seeded):
     _, ids = seeded
     _read()

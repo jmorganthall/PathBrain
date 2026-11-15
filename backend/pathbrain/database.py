@@ -421,6 +421,8 @@ def _migrate(eng=None) -> None:
         ("ix_scores_methodology_version", "scores", "methodology_version"),
         # latest_score()'s NOT EXISTS probe; without it the probe scans the version's rows.
         ("ix_scores_run_methodology_id", "scores", "run_id, methodology_version, id"),
+        # The field caches' rewrite probe (`profile_aggregates.newest_score_under`).
+        ("ix_scores_computed_at", "scores", "computed_at"),
         ("ix_link_gaps_at", "link_gaps", "at"),
     ]
     _migrate_scores_unique(eng)
