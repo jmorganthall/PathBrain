@@ -80,7 +80,7 @@ parallel with C once S4 is done.
 - [ ] **S5. Josh: decide the host fix.** Read the NAS slowdown task's finding. Choose one:
   move the NAS's 07:00 UTC job out of the window, end the window before it, or run the
   sensor on a dedicated quiet box. No code.
-- [ ] **S6. Host-quiet gate in config.** Add a `host_quiet` block to `config_store.py`
+- [x] **S6. Host-quiet gate in config.** Add a `host_quiet` block to `config_store.py`
   (`enabled`, `max_host_share`) and a pure function in `host_pressure.py` that says whether a
   run was measured on a quiet host. Unit tests only. Done when: the function is covered and
   nothing calls it yet.

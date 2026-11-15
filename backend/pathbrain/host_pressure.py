@@ -275,3 +275,45 @@ def explain(s: dict | None) -> str | None:
         "quiet": "The NAS was quiet",
     }.get(s.get("attribution"), "Host load")
     return f"{lead} while this ran: {numbers}." if numbers else f"{lead} while this ran."
+
+
+# ── The host-quiet gate (config ``host_quiet``) ──────────────────────────────────────
+
+#: Used when a config carries no ``host_quiet`` block: the gate is off.
+HOST_QUIET_DEFAULTS = {"enabled": False, "max_host_share": 0.0}
+
+
+def host_quiet_config(cfg: dict | None) -> dict:
+    """The ``host_quiet`` block of a full config, or the block itself, over the defaults."""
+    cfg = cfg or {}
+    block = cfg.get("host_quiet") if isinstance(cfg.get("host_quiet"), dict) else cfg
+    return {**HOST_QUIET_DEFAULTS, **{k: block[k] for k in HOST_QUIET_DEFAULTS if k in block}}
+
+
+def host_share(pressures: list[dict | None]) -> float | None:
+    """The share of runs with a reading whose attribution is ``host``. None when no run
+    carries a reading this module can attribute."""
+    readings = [attribute(p) for p in pressures or [] if p]
+    readings = [r for r in readings if r is not None]
+    if not readings:
+        return None
+    return sum(1 for r in readings if r == "host") / len(readings)
+
+
+def measured_quiet(pressures: list[dict | None], cfg: dict | None) -> bool:
+    """Were these runs (a round's legs) measured on a quiet enough host?
+
+    Pure. True whenever the gate is off, and when no run carries a reading it can
+    attribute (no opinion never quarantines). Otherwise True when the share of ``host``
+    runs is at most ``max_host_share``."""
+    gate = host_quiet_config(cfg)
+    if not gate["enabled"]:
+        return True
+    share = host_share(pressures)
+    if share is None:
+        return True
+    try:
+        limit = float(gate["max_host_share"])
+    except (TypeError, ValueError):
+        limit = 0.0
+    return share <= limit + 1e-9

@@ -238,6 +238,13 @@ DEFAULT_CONFIG: dict = {
         # does this machine do lately?"), never by all of time.
         "baseline_runs": 400,
     },
+    # Host-quiet gate (`host_pressure.measured_quiet`): a round counts only when at most
+    # `max_host_share` of its legs ran while the NAS was busy with something other than
+    # PathBrain. Off by default; nothing reads it until an engine opts in.
+    "host_quiet": {
+        "enabled": False,
+        "max_host_share": 0.0,
+    },
     # What a publish does by itself once history is re-graded (`publish_followthrough`): the
     # prior methodology's top `reseed_top` winners (confident under it) that have fewer than
     # `reseed_iterations` comparable iterations under the new version are queued for exactly
