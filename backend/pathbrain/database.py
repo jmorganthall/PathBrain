@@ -328,10 +328,6 @@ def _migrate(eng=None) -> None:
             "instrument_health": "JSON",
             "host_pressure": "JSON",
         },
-        "duels": {
-            "judged_under": "VARCHAR(64)",
-        },
-
         "benchmark_results": {
             "raw": "JSON",
         },
@@ -354,6 +350,7 @@ def _migrate(eng=None) -> None:
             "mode": "VARCHAR(16)",
             "campaign_id": "INTEGER",
             "explore": "JSON",
+            "judged_under": "VARCHAR(64)",  # S25
         },
         "current_tests": {
             "target_fingerprint": "VARCHAR(40)",
