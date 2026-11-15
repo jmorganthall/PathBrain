@@ -10,7 +10,9 @@ from datetime import datetime
 
 import pathbrain.experiment as eng
 from pathbrain.database import session_scope
-from pathbrain.models import Experiment, ExperimentStatus, Run, RunStatus, ScoreResult
+from pathbrain.config_store import get_config
+from pathbrain.methodology import ensure_current_methodology
+from pathbrain.models import Experiment, ExperimentStatus, ExperimentTrial, Run, RunStatus, Score, ScoreResult
 from pathbrain.providers import mock as mockmod
 
 
@@ -34,9 +36,11 @@ def test_in_window():
     assert eng.in_window({"days": [], "start_hour": 22, "end_hour": 4}, t) is True
 
 
-def _stub_benchmarks(monkeypatch):
-    """Replace create_run/execute_run so a 'run' is instant and its SOPS depends
-    on the currently-applied quantum (3000 is the good one)."""
+def _stub_benchmarks(monkeypatch, *, versioned=True):
+    """Replace create_run/execute_run so a 'run' is instant and its score depends
+    on the currently-applied quantum (3000 is the good one). Like a real run, it writes
+    both the legacy ScoreResult and the versioned Score under the current methodology
+    (``versioned=False`` leaves the versioned row out)."""
 
     def fake_create_run(label=None, notes=None, iterations=None):
         q = int(mockmod._OVERRIDES.get("quantum", 1514))
@@ -46,6 +50,10 @@ def _stub_benchmarks(monkeypatch):
             s.add(run)
             s.flush()
             s.add(ScoreResult(run_id=run.id, sops=sops, subscores={}, weights_used={}, metric_values={}))
+            if versioned:
+                version = ensure_current_methodology(s, get_config(s)).version
+                s.add(Score(run_id=run.id, methodology_version=version, is_at_measure=True,
+                            axis_scores={"overall": sops}))
             return run.id
 
     monkeypatch.setattr(eng, "create_run", fake_create_run)
@@ -143,6 +151,64 @@ def test_disarm_aborts_and_restores(client, monkeypatch):
     # Disarm -> abort + restore baseline.
     client.put("/api/config", json={"experiment": {"enabled": False}})
     eng.step()
+    assert int(mockmod._OVERRIDES.get("quantum", 1514)) == 1514
+    client.post("/api/config/reset")
+    _reset()
+
+
+def _latest_experiment(s):
+    return s.scalars(
+        __import__("sqlalchemy").select(Experiment).order_by(Experiment.id.desc())
+    ).first()
+
+
+def test_trials_ignore_a_regrade_of_run_score(client, monkeypatch):
+    # S18: a re-grade overwrites the legacy ``run.score`` in place. The experiment judges
+    # on the versioned Score, so flipping every ScoreResult (good value now looks worst)
+    # must not move the outcome while the versioned rows stay put.
+    _reset()
+    _stub_benchmarks(monkeypatch)
+    real_execute = eng.execute_run
+
+    def regrade(run_id):
+        real_execute(run_id)
+        with session_scope() as s:
+            sr = s.scalars(
+                __import__("sqlalchemy").select(ScoreResult).where(ScoreResult.run_id == run_id)
+            ).one()
+            sr.sops = 100.0 - sr.sops  # 90 -> 10, 70 -> 30
+
+    monkeypatch.setattr(eng, "execute_run", regrade)
+    _run_cycle(client, auto_promote=False)
+
+    with session_scope() as s:
+        exp = _latest_experiment(s)
+        assert exp.status == ExperimentStatus.COMPLETED
+        assert exp.result["winner"] == "3000"
+        trials = s.scalars(
+            __import__("sqlalchemy").select(ExperimentTrial).where(ExperimentTrial.experiment_id == exp.id)
+        ).all()
+        assert trials and {t.sops for t in trials} <= {70.0, 90.0}
+    client.post("/api/config/reset")
+    _reset()
+
+
+def test_trials_without_a_versioned_score_read_as_missing(client, monkeypatch):
+    # S18: no Score row under the current methodology -> the trial's score is None (no
+    # fallback to run.score.sops), so no value has data and nothing can win.
+    _reset()
+    _stub_benchmarks(monkeypatch, versioned=False)
+    _run_cycle(client, auto_promote=True)
+
+    with session_scope() as s:
+        exp = _latest_experiment(s)
+        assert exp.status == ExperimentStatus.COMPLETED
+        trials = s.scalars(
+            __import__("sqlalchemy").select(ExperimentTrial).where(ExperimentTrial.experiment_id == exp.id)
+        ).all()
+        assert trials and all(t.sops is None for t in trials)
+        assert exp.result["winner"] is None
+        assert exp.result["final_value"] == "1514"
     assert int(mockmod._OVERRIDES.get("quantum", 1514)) == 1514
     client.post("/api/config/reset")
     _reset()

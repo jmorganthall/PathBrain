@@ -27,8 +27,10 @@ from sqlalchemy import select
 from .firewall_write import apply_changes
 from .config_store import get_config
 from .database import session_scope
+from .duel import _run_overall
 from .logging_config import get_logger
-from .models import Experiment, ExperimentStatus, ExperimentTrial, Run
+from .methodology import ensure_current_methodology
+from .models import Experiment, ExperimentStatus, ExperimentTrial
 from .providers import get_provider
 from .runner import create_run, execute_run
 from .settings_profile import fingerprint, normalize
@@ -151,8 +153,12 @@ def _run_trial_step(session, exp: Experiment, cfg: dict) -> None:
     current = _state["current_value"]
     run_id = create_run(label=f"exp{exp.id} {exp.param}={current}")
     execute_run(run_id)
-    run = session.get(Run, run_id)
-    sops = run.score.sops if run and run.score else None
+    # Judge the trial on the run's versioned Score under the current methodology (its
+    # persisted Overall), not ``run.score.sops``, which a re-grade overwrites in place. A
+    # run with no Score row for that version reads as missing (None), as in the duel's
+    # reader; ``_finalize`` already leaves None trials out of the medians.
+    version = ensure_current_methodology(session, get_config(session)).version
+    sops = _run_overall(run_id, version)
     session.add(
         ExperimentTrial(
             experiment_id=exp.id, value=current, run_id=run_id, sops=sops, applied=not exp.dry_run

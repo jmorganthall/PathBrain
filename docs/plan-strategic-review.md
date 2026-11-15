@@ -140,8 +140,9 @@ parallel with C once S4 is done.
 
 ## Phase D: stop rewriting history (rec 5)
 
-- [ ] **S18. Experiments read versioned scores.** `experiment.py:155` reads `scores` for the
+- [x] **S18. Experiments read versioned scores.** `experiment.py:155` reads `scores` for the
   current methodology instead of `run.score.sops`.
+  Reads the Score row's persisted Overall via the duel's `_run_overall`; no row reads as missing (None, skipped).
 - [ ] **S19. Sweeps read versioned scores.** Same for `sweep.py:209`.
 - [ ] **S20. Insert-only at-measure, design.** Write a half-page note in this file: how
   `methodology.upsert_score` (line ~1616) becomes insert-only for `is_at_measure=True` rows,
