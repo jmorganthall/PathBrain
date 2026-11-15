@@ -310,8 +310,12 @@ def seed_field_from_prior(session, field: dict, min_iterations: int | None = Non
     it never ranked has no standing to seed with (the race's own no-data pass still covers
     those). With no crown at all every stored profile is seeded, as before, so a field with
     nothing measured still has a full queue."""
+    from .phase_timing import laps
+
+    lap = laps("seed")
     out = {**field, "profiles": [dict(p) for p in field.get("profiles", [])]}
     prior = prior_field(session, min_iterations)
+    lap("prior_field")
     if not prior:
         return out
     has_crown = bool(out.get("best_fingerprint"))
@@ -319,7 +323,9 @@ def seed_field_from_prior(session, field: dict, min_iterations: int | None = Non
     for p in out["profiles"]:
         p["prior_overall"] = prior["overall"].get(p["fingerprint"])
     added = 0
-    for p in list_profiles(session):
+    stored = list_profiles(session)
+    lap("list_profiles")
+    for p in stored:
         if p["fingerprint"] in known:
             continue
         prior_overall = prior["overall"].get(p["fingerprint"])
