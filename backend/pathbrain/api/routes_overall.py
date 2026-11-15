@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from .. import overall_ranking
+from .. import overall_ranking, profile_aggregates
 from ..database import get_session
 from ..logging_config import get_logger
 
@@ -22,7 +22,8 @@ def overall(
     three corners (pooled alone, ring alone, together); what the ring changed; and how
     well each verdict predicted past nights. Read-only, and there is nothing to set: the
     pooled slack is measured from the ledger, never chosen."""
-    return overall_ranking.ranking(session, backtest=backtest)
+    with profile_aggregates.request_memo():
+        return overall_ranking.ranking(session, backtest=backtest)
 
 
 @router.get("/overall/ring-target")

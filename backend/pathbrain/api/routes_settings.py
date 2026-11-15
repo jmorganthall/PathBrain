@@ -451,6 +451,18 @@ def settings_profiles(
     Also returns ``current_fingerprint``: the profile the firewall is on *right now*
     (best-effort live discovery), so the UI can flag the active row.
     """
+    # One verification of the per-profile rollups for the whole read: the heirs, the seeded
+    # field and the fused ranking below each ask for the same aggregates, and re-verifying
+    # them per ask was most of this endpoint's time on the NAS.
+    from .. import profile_aggregates
+
+    with profile_aggregates.request_memo():
+        return _settings_profiles(session, complete_only, tz_offset, crown_metrics)
+
+
+def _settings_profiles(
+    session: Session, complete_only: bool, tz_offset: int, crown_metrics: str | None
+) -> dict:
     custom = [m.strip() for m in (crown_metrics or "").split(",") if m.strip()] or None
     result = compute_profiles(
         session, complete_only=complete_only, tz_offset=tz_offset, custom_crown_metrics=custom

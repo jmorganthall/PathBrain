@@ -40,6 +40,8 @@ stamp, so a duel invalidates the two profiles it measured and nothing else.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from statistics import median, quantiles
 
@@ -286,7 +288,64 @@ def _persist(version: str, computed: dict[str, dict]) -> None:
         log.debug("Could not persist profile aggregates", exc_info=True)
 
 
+#: The per-request memo (see :func:`request_memo`). ``None`` outside one, so every caller that
+#: doesn't opt in — the crown follower, the duel, a background job — verifies on every call.
+_MEMO: ContextVar[dict | None] = ContextVar("profile_aggregates_memo", default=None)
+
+
+@contextmanager
+def request_memo():
+    """Verify the rollups once per read, not once per reader.
+
+    One ``/settings/profiles`` request asks for the same field's aggregates nine times over
+    (the pooled field, each crown, the leg gaps, the budget reading…), and each ask re-ran
+    the grouped stamp query across every scored run. On the NAS that was most of a
+    twenty-second page load. Inside this block the first ask verifies and the rest reuse
+    its answer, so a read sees one consistent snapshot of the field instead of nine.
+
+    Scope it to a single read-only request. Nothing inside the block may write runs or
+    scores and then expect a fresh aggregate; outside the block nothing changes.
+    """
+    token = _MEMO.set({})
+    try:
+        yield
+    finally:
+        _MEMO.reset(token)
+
+
+def _empty_aggregate() -> dict:
+    return {"metrics": {}, "raw": {}, "iterations": 0, "run_count": 0}
+
+
 def aggregates(
+    session, version: str, fingerprints: list[str] | None = None, *, persist: bool = True
+) -> dict[str, dict]:
+    """``{fingerprint: {metrics, iterations, run_count}}``, verified fresh — or, inside
+    :func:`request_memo`, verified once for the request."""
+    memo = _MEMO.get()
+    if memo is None:
+        return _aggregates(session, version, fingerprints, persist=persist)
+    slot = memo.setdefault(version, {"full": None, "by_fp": {}})
+    by_fp: dict[str, dict] = slot["by_fp"]
+    if fingerprints is None:
+        if slot["full"] is None:
+            full = _aggregates(session, version, None, persist=persist)
+            by_fp.update(full)
+            slot["full"] = list(full)
+        return {fp: by_fp[fp] for fp in slot["full"]}
+    wanted = [fp for fp in dict.fromkeys(fingerprints) if fp]
+    missing = [fp for fp in wanted if fp not in by_fp]
+    if missing:
+        if slot["full"] is not None:
+            # The full field was read already: a profile absent from it has no comparable
+            # runs, which is exactly what an uncached read would have answered.
+            by_fp.update({fp: _empty_aggregate() for fp in missing})
+        else:
+            by_fp.update(_aggregates(session, version, missing, persist=persist))
+    return {fp: by_fp[fp] for fp in wanted}
+
+
+def _aggregates(
     session, version: str, fingerprints: list[str] | None = None, *, persist: bool = True
 ) -> dict[str, dict]:
     """``{fingerprint: {metrics, iterations, run_count}}``, verified fresh.
@@ -321,7 +380,7 @@ def aggregates(
             # No comparable runs at all. Answerable without touching the cache — and a
             # stored row here is a leftover (its runs were re-graded out of comparability),
             # so it must not be served.
-            out[fp] = {"metrics": {}, "raw": {}, "iterations": 0, "run_count": 0}
+            out[fp] = _empty_aggregate()
             continue
         # A row written before the raw medians existed (`raw` None) is rebuilt once, for
         # that profile alone — the same per-profile repair any stale stamp gets.
