@@ -677,7 +677,7 @@ def _ratio_check(session, upto: int) -> tuple:
     return (complete, verdicts, newest)
 
 
-def _load_ratios(session, after: int | None = None) -> list[tuple]:
+def _load_ratios(session, after: int | None = None, upto: int | None = None) -> list[tuple]:
     from sqlalchemy import select
 
     from .models import Run, RunStatus
@@ -687,6 +687,8 @@ def _load_ratios(session, after: int | None = None) -> list[tuple]:
     filters = [Run.status == RunStatus.COMPLETE]
     if after is not None:
         filters.append(Run.id > after)
+    if upto is not None:
+        filters.append(Run.id <= upto)
     return [
         (rid, fp, float(ratio) if isinstance(ratio, (int, float)) and not isinstance(ratio, bool) else None)
         for rid, fp, ratio in session.execute(
@@ -714,10 +716,13 @@ def _run_ratios(session) -> list[tuple]:
             and _ratio_check(session, cached["upto"]) == cached["check"]):
         if newest == cached["upto"]:
             return cached["rows"]
-        rows = cached["rows"] + _load_ratios(session, after=cached["upto"])
+        # Check first, rows bounded by ``newest``: a run landing meanwhile is read next time
+        # rather than twice, and a verdict moving meanwhile re-reads rather than sticking.
+        check = _ratio_check(session, newest)
+        rows = cached["rows"] + _load_ratios(session, after=cached["upto"], upto=newest)
     else:
-        rows = _load_ratios(session)
-    check = _ratio_check(session, newest)
+        check = _ratio_check(session, newest)
+        rows = _load_ratios(session, upto=newest)
     with _RATIO_LOCK:
         _RATIO_CACHE.update({"base": base, "upto": newest, "check": check, "rows": rows})
     return rows
