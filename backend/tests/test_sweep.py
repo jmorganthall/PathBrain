@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 
 from pathbrain import sweep as sweep_mod
 from pathbrain.database import session_scope
-from pathbrain.models import Run, RunStatus, ScoreResult, Sweep, SweepStatus
+from pathbrain.config_store import get_config
+from pathbrain.methodology import ensure_current_methodology
+from pathbrain.models import Run, RunStatus, Score, ScoreResult, Sweep, SweepStatus
 from pathbrain.providers import get_provider
 from pathbrain.providers import mock as mock_mod
 
@@ -88,18 +90,24 @@ def test_estimate_eta():
 # ── driver: applies each variant for real, then restores the baseline ────────
 
 
-def _fake_execute(run_id: int) -> None:
-    """Stand-in for the network-heavy execute_run: mark the run scored."""
+def _fake_execute(run_id: int, *, legacy: float = 80.0, overall: float | None = 80.0) -> None:
+    """Stand-in for the network-heavy execute_run: mark the run scored. Like a real run it
+    writes the legacy ScoreResult and the versioned Score under the current methodology
+    (``overall=None`` leaves the versioned row out)."""
     with session_scope() as s:
         run = s.get(Run, run_id)
         run.status = RunStatus.COMPLETE
         run.finished_at = datetime.now(timezone.utc)
         s.add(
             ScoreResult(
-                run_id=run_id, sops=80.0, subscores={}, weights_used={},
+                run_id=run_id, sops=legacy, subscores={}, weights_used={},
                 metric_values={"longest_stall": 1500.0},
             )
         )
+        if overall is not None:
+            version = ensure_current_methodology(s, get_config(s)).version
+            s.add(Score(run_id=run_id, methodology_version=version, is_at_measure=True,
+                        axis_scores={"overall": overall}))
 
 
 def test_sweep_driver_applies_and_restores(monkeypatch):
@@ -221,3 +229,58 @@ def test_a_sweep_variant_runs_one_chunk_by_default(client):
         json={"spec": {"quantum": {"enabled": True, "min": 1500, "max": 3000, "step": 750}}},
     )
     assert resp.status_code == 200 and resp.json()["iterations"] == 5
+
+
+# ── S19: variants are judged on the versioned score ──────────────────────────
+
+
+def _two_variant_sweep(monkeypatch, execute):
+    mock_mod._OVERRIDES.clear()
+    monkeypatch.setattr(sweep_mod, "execute_run", execute)
+    monkeypatch.setattr(sweep_mod, "_wait_for_idle", lambda *a, **k: None)
+    spec = {
+        "quantum": {"enabled": True, "min": 1600, "max": 1700, "step": 100},
+        "target": {"enabled": False},
+    }
+    sweep_id = sweep_mod.start(spec, iterations=2, dwell_s=0.0, dry_run=False, pipe_uuid=None)
+    sweep_mod._state["thread"].join(timeout=10)
+    assert not sweep_mod.active()
+    return sweep_id
+
+
+def test_sweep_ignores_a_regrade_of_run_score(client, monkeypatch):
+    # A re-grade overwrites the legacy run.score in place. Here the legacy score says
+    # q1600 wins while the versioned Overall says q1700; the sweep must follow the latter.
+    def execute(run_id):
+        q = int(mock_mod._OVERRIDES.get("quantum", 1514))
+        good = q == 1700
+        _fake_execute(run_id, legacy=10.0 if good else 95.0, overall=90.0 if good else 70.0)
+
+    sweep_id = _two_variant_sweep(monkeypatch, execute)
+    with session_scope() as s:
+        sw = s.get(Sweep, sweep_id)
+        assert sw.status == SweepStatus.COMPLETE
+        assert {r["quantum"]: r["sops"] for r in sw.results} == {1600: 70.0, 1700: 90.0}
+    assert get_provider().discover()[0].quantum == 1514  # baseline restored
+
+    body = client.get(f"/api/sweep/{sweep_id}").json()["sweep"]
+    assert [r["quantum"] for r in body["results"]][0] == 1700
+    res = client.post(f"/api/sweep/{sweep_id}/apply-best")
+    assert res.status_code == 200 and res.json()["sops"] == 90.0
+    assert get_provider().discover()[0].quantum == 1700
+    mock_mod._OVERRIDES.clear()
+
+
+def test_sweep_without_versioned_scores_reads_as_missing(client, monkeypatch):
+    # No Score row under the current methodology: every variant's score is None (no
+    # fallback to run.score.sops), the sweep still completes and restores the baseline,
+    # and apply-best refuses rather than pick a variant.
+    sweep_id = _two_variant_sweep(monkeypatch, lambda rid: _fake_execute(rid, overall=None))
+    with session_scope() as s:
+        sw = s.get(Sweep, sweep_id)
+        assert sw.status == SweepStatus.COMPLETE
+        assert [r["sops"] for r in sw.results] == [None, None]
+    assert get_provider().discover()[0].quantum == 1514
+    res = client.post(f"/api/sweep/{sweep_id}/apply-best")
+    assert res.status_code == 400
+    assert get_provider().discover()[0].quantum == 1514

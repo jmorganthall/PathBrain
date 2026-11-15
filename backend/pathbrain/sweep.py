@@ -17,9 +17,12 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from . import coordinator
+from .config_store import get_config
 from .database import session_scope
+from .duel import _run_overall
 from .firewall_write import apply_changes
 from .logging_config import get_logger
+from .methodology import ensure_current_methodology
 from .session_runtime import describe_failure
 from .models import Run, RunStatus, Sweep, SweepStatus
 from .providers import get_provider
@@ -204,9 +207,13 @@ def baseline_restore_changes(baseline: dict, pipe_uuid: str | None) -> list[dict
 
 
 def _run_sops(run_id: int) -> float | None:
+    """The variant run's score: its versioned Score under the current methodology (the
+    persisted Overall), not ``run.score.sops``, which a re-grade overwrites in place. A
+    run with no Score row for that version reads as missing (None), as in the duel's
+    reader; the results ranking and apply-best already skip None variants."""
     with session_scope() as session:
-        run = session.get(Run, run_id)
-        return run.score.sops if run and run.score else None
+        version = ensure_current_methodology(session, get_config(session)).version
+    return _run_overall(run_id, version)
 
 
 def _restore(provider, sweep_id: int) -> None:
