@@ -118,9 +118,11 @@ parallel with C once S4 is done.
   methodology's legs instead of a literal dict.
   Only `then` is derived (the other millisecond crown leg); each policy's lead and band stay named
   policy data (`LEG_FIRST_POLICIES`). A policy the crown cannot serve falls back to the pooled crown.
-- [ ] **S14. Frontend reads the verdict.** `frontend/src/utils/ringReading.ts` stops
+- [x] **S14. Frontend reads the verdict.** `frontend/src/utils/ringReading.ts` stops
   re-deriving the verdict state; the backend sends it. Done when: the UI shows the same states
   for the fixtures in the existing tests.
+  There were no frontend tests, so the 17-case table (`tests/fixtures/ring_reading_cases.json`) is new;
+  `test_ring_reading.py` runs the TS through node (skipped without node_modules). Served on `/api/duel/status`.
 - [ ] **S15. Guard test.** A test that scans `backend/pathbrain` for crown metric key
   literals (`"fcp_ms"`, `"lcp_ms"`, `"cadence_cov"`) outside `methodology.py` and an allow-list.
 - [ ] **S16. Move the ranking engine out, part 1.** Pure move of the percentile crown helpers

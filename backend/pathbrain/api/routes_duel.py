@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from .. import duel
 from .. import explore_share
+from .. import ring_reading
 from ..config_store import get_config, save_config
 from ..database import get_session, session_scope
 from .. import job_queue
@@ -403,6 +404,9 @@ def duel_status(session: Session = Depends(get_session)) -> dict:
     payload = duel.current() or {"status": None}
     if payload.get("status") in ("running", "pending"):
         _leg_progress(session, payload.get("live"))
+    # How each seat stands and whether it is settled, by the duel's rule rather than the
+    # browser's (`ring_reading`).
+    ring_reading.annotate_live(payload.get("live"))
     return payload
 
 
