@@ -56,15 +56,16 @@ parallel with C once S4 is done.
 
 ## Phase A: CLAUDE.md becomes a rulebook (rec 3)
 
-- [ ] **S1. Write the rulebook.** Draft a new CLAUDE.md of about 100–150 lines from the
-  Conventions (line ~4101 on) and Phase map (~4346 on) sections: layout, the medallion rule,
-  where a crown rule may live, the firewall write path, test commands, PR style.
-  Done when: the new file is under 20 KB and every rule in it points to a file or test.
-- [ ] **S2. Move the diary.** Move lines 10–4082 (the design diary) verbatim to
-  `docs/history/claude-md-diary.md` with a one-paragraph header. CLAUDE.md links to it.
-  Done when: `git diff --stat` shows a move, not a rewrite, and no content is lost.
+- [x] **S1. Move the diary.** Moved the `## Layout` section (lines 10–4081, the design diary)
+  verbatim to `docs/history/claude-md-diary.md` with a short header; CLAUDE.md keeps a
+  five-line Layout that links to it. (Done first, so no text is lost between PRs.)
+- [ ] **S2. Write the rulebook.** Condense what is left (Conventions and Phase map, about 530
+  lines) into a CLAUDE.md of about 100–150 lines: layout, the medallion rule, where a crown
+  rule may live, the firewall write path, test commands, PR style. Move the long-form
+  Conventions and Phase map text verbatim to `docs/history/` too.
+  Done when: CLAUDE.md is under 20 KB and every rule in it points to a file or test.
 - [ ] **S3. Size guard.** Add a test that fails if CLAUDE.md passes 25 KB, with a message
-  pointing to `docs/history/`. Done when: the test passes on S1's file.
+  pointing to `docs/history/`. Done when: the test passes on S2's file.
 
 ## Phase B: take the host's noise out of the night (rec 1)
 
