@@ -98,7 +98,8 @@ test("the store keeps only the newest records past the cap", () => {
 test("the manifest grants exactly the default sites up front, nothing wider", () => {
   const m = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
   assert.equal(m.manifest_version, 3);
-  assert.deepEqual(m.permissions.slice().sort(), ["scripting", "storage"]);
+  assert.deepEqual(m.permissions.slice().sort(), ["alarms", "scripting", "storage"]);
+  assert.ok(typeof m.key === "string" && m.key.length > 300, "the key pins the extension ID that PathBrain's CORS allows");
   assert.deepEqual(m.host_permissions.slice().sort(), R.matchPatterns(R.DEFAULT_SITES).sort());
   assert.equal(m.content_scripts, undefined, "the recorder is registered per granted site, not declared for all");
 });

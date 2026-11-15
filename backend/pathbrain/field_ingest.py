@@ -72,6 +72,18 @@ def known_fingerprint(session: Session) -> tuple[str | None, str | None, datetim
     return str(fp), SOURCE_CROWN_CHECK, seen
 
 
+#: The one path the extension's origin may call cross-origin (main._field_ingest_cors).
+INGEST_PATH = "/api/field/records"
+
+
+def allowed_origins() -> frozenset[str]:
+    """The extension origins from config (PATHBRAIN_FIELD_INGEST_ORIGINS)."""
+    from .config import get_settings
+
+    raw = get_settings().field_ingest_origins or ""
+    return frozenset(o.strip().rstrip("/") for o in raw.split(",") if o.strip())
+
+
 class BatchRefused(ValueError):
     """The batch is not a list of JSON objects within the size limits."""
 

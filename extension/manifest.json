@@ -2,12 +2,14 @@
   "manifest_version": 3,
   "name": "PathBrain Field Recorder",
   "short_name": "PathBrain",
-  "version": "0.1.0",
-  "description": "Records page-load timings (TTFB, FCP, LCP, CLS, long tasks) on the sites on its list, by hostname only, kept in this browser.",
+  "version": "0.2.0",
+  "description": "Records page-load timings (TTFB, FCP, LCP, CLS, long tasks) on the sites on its list, by hostname only, and can upload them to your PathBrain.",
   "minimum_chrome_version": "111",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0UWB690x1NvBi67CeFzeqR1T9p1uck0je87y6aH2mbNmfaOmjJ0G1yMpzx5iFdD3T8a5D/aMMialK8AWdZpbc52f5HW/Gl+gSzzQ5PzOeHGZ6RUpZBcnJEu06YyCJupKS2qkDq4g3KnrO4g1iyGkFTOMB8TF+qc8iw5tnxasUesecvbq+7TPaKDtXLbruSACIh3KDpMFgL/SfYANz6O72SfFoyPtbrqhAVsfvvHXRQv0ge7VKFg2+kxjoe2XXfvqkA26ISMNTS3RZUyr7KdQwwNyJGvnoAamNCkgacUfe0XE3xVhj5QfQkjRmLIflKdlBpzYYi4DzRfLvVwyNXHRBQIDAQAB",
   "permissions": [
-    "storage",
-    "scripting"
+    "alarms",
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
     "*://facebook.com/*",

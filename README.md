@@ -549,6 +549,7 @@ Copy [`.env.example`](.env.example) to `.env` and edit. Most are prefixed
 | `PATHBRAIN_OPNSENSE_TIMEOUT_S` | `30` | Per-call HTTP timeout (one attempt; calls are retried) |
 | `PATHBRAIN_UPDATE_CHECK` | `true` | Check whether a newer build is pullable |
 | `PATHBRAIN_GIT_SHA` | — | Build commit, stamped into the image by CI |
+| `PATHBRAIN_FIELD_INGEST_ORIGINS` | the field recorder's pinned ID | Origins allowed to call `/api/field/records` cross-origin, comma-separated (that endpoint only) |
 | `PATHBRAIN_FIELD_INGEST_TOKEN` | empty (off) | LAN token for `POST /api/field/records` from the field recorder extension; empty disables ingest. Secret: keep it in `.env` |
 | `WATCHTOWER_URL` / `WATCHTOWER_TOKEN` | — | Watchtower HTTP API, for the "Update now" button (deliberately **unprefixed**) |
 

@@ -317,7 +317,15 @@ parallel with C once S4 is done.
   in `.env.example`, both compose files and the README. Differed: the rating page (S29) is not
   built yet, so only ingest is gated; the same dependency (`routes_field._token_ok`) is there
   for it.
-- [ ] **S34. Extension uploads.** The extension posts to S32 with the token.
+- [x] **S34. Extension uploads.** The extension posts to S32 with the token.
+  Built: the options page takes the PathBrain address and token (Edge asks to allow that one
+  address). The service worker keeps an outbox, posts batches of 200 every 5 minutes (or on
+  "Send now"), and drops a batch only on a 200; any failure keeps it for the next round. The
+  content script never touches the network, so pages never wait. The manifest's public `key`
+  pins the extension ID (`ocfdagedpmcnfecmanjblkkjejeoakkf`); a middleware in `main.py` allows
+  that origin, as `chrome-extension://` and `extension://`, on `/api/field/records` only
+  (`PATHBRAIN_FIELD_INGEST_ORIGINS` overrides). Node tests drive the real service worker
+  against a fake `chrome.*` and `fetch`.
 - [ ] **S35. Ratings vs metrics view.** A page that plots ratings against crown legs and
   real-browser metrics per profile, with counts.
 - [ ] **S36. Josh: fit and publish.** When there are enough ratings (target: 100 per profile
