@@ -644,6 +644,27 @@ class CurrentTest(Base):
     run_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
+class SettingsOverride(Base):
+    """A correction to a run's recorded settings, kept **beside** the run (S22).
+
+    Append-only: a run row's ``settings`` / ``settings_fingerprint`` stay as captured, and
+    a correction is a new row here. Readers see "the newest override for the field if
+    present, else the run's own" through :mod:`pathbrain.settings_overrides`. ``field`` is
+    the run column corrected (``settings`` or ``settings_fingerprint``); ``value`` is the
+    corrected value; ``source`` says what wrote it (e.g. ``backfill``)."""
+
+    __tablename__ = "settings_overrides"
+    __table_args__ = (Index("ix_settings_overrides_run_field", "run_id", "field", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"))
+    field: Mapped[str] = mapped_column(String(64))
+    value: Mapped[object] = mapped_column(JSON, nullable=True)
+    source: Mapped[str] = mapped_column(String(64))
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class ProfileAggregate(Base):
     """Per-profile rollup of the runs behind it — the layer between the run and the profile.
 

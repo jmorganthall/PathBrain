@@ -20,6 +20,7 @@ from .methodology import corner_score, ensure_current_methodology, latest_score,
 from .metrics import METRIC_ROLES, ROLE_WEATHER, all_metric_sources
 from .models import BenchmarkResult, Run, RunStatus, Score
 from .scoring import COMPLETION_METRIC_SOURCES
+from .settings_overrides import effective_fingerprint, overlay as overlay_settings
 from . import profile_names
 from .settings_profile import diff_profiles, is_sqm_off_profile, summarize
 from .trends import RunPoint, _BaselineResolver, bucket_values, profile_relative
@@ -405,7 +406,7 @@ def _completed_runs_with_scores(session: Session):
     methodology = ensure_current_methodology(session, get_config(session))
     filters = (
         Run.status == RunStatus.COMPLETE,
-        Run.settings_fingerprint.is_not(None),
+        effective_fingerprint().is_not(None),  # a run's own fingerprint, or its override (S22)
         Score.methodology_version == methodology.version,
         latest_score(),
     )
@@ -424,6 +425,9 @@ def _completed_runs_with_scores(session: Session):
         .where(*filters)
     ):
         metrics_by_run.setdefault(run_id, {})[plugin] = metrics or {}
+    # Callers read run.settings / run.settings_fingerprint: give them the effective values
+    # (override if present, else the run's own) as loaded state, never written back.
+    overlay_settings(session, [run for run, _ in rows])
     return [(run, score, metrics_by_run.get(run.id, {})) for run, score in rows]
 
 
