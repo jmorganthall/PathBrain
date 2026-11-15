@@ -100,9 +100,11 @@ parallel with C once S4 is done.
 
 ## Phase C: one source for crown rules (rec 6)
 
-- [ ] **S10. Crown keys from the methodology.** Add `methodology.crown_keys(version)` and use
+- [x] **S10. Crown keys from the methodology.** Add `methodology.crown_keys(version)` and use
   it for `instrument_drift.CROWN_KEYS` and `evidence.EPOCH_KEYS`. Done when: both constants
   are gone and their tests pass unchanged.
+  The names stay as derived values (callers import them), no longer literals. `EPOCH_KEYS` keeps
+  cadence out through a documented `evidence.EPOCH_EXCLUDED_KEYS` filter (its daily medians are too coarse).
 - [ ] **S11. Raw metric list from the methodology.** Same for
   `profile_aggregates.RAW_METRICS`.
 - [ ] **S12. Drop the settings fallback.** Remove `CROWN_METRICS` in

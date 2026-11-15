@@ -40,15 +40,19 @@ from statistics import median
 
 from .levers import MECHANISM as LEVER_MECHANISM
 from .logging_config import get_logger
+from .methodology import CURRENT_METHODOLOGY, crown_keys
 
 log = get_logger("evidence")
 
 # ── instrument epochs ────────────────────────────────────────────────────────────────
 
-#: The crown readings whose step makes a new epoch. ``instrument_drift.CROWN_KEYS`` minus
-#: cadence, whose daily medians are too coarse to place a boundary on. A step in FCP or LCP
-#: is a step in what the Overall is built from.
-EPOCH_KEYS = ("fcp_ms", "lcp_ms")
+#: Crown readings that never place an epoch boundary: cadence's daily medians are too
+#: coarse to place a boundary on. A deliberate filter over the crown, not an omission.
+EPOCH_EXCLUDED_KEYS = frozenset({"cadence_cov"})
+#: The crown readings whose step makes a new epoch: the current crown
+#: (``methodology.crown_keys``) minus ``EPOCH_EXCLUDED_KEYS``. A step in FCP or LCP is a
+#: step in what the Overall is built from.
+EPOCH_KEYS = tuple(k for k in crown_keys(CURRENT_METHODOLOGY) if k not in EPOCH_EXCLUDED_KEYS)
 #: Days either side of a boundary that must agree. A step is a level change sustained over
 #: this many qualifying days on both sides, all but one of them on their own side of the
 #: midpoint, so a single bad day is never an epoch.

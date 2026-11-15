@@ -1270,6 +1270,24 @@ def overall_metrics(definition: dict) -> tuple[list[str], list[str]]:
     return list(spec.get("metrics") or []), list(spec.get("required") or [])
 
 
+def crown_keys(version: str = CURRENT_METHODOLOGY) -> tuple[str, ...]:
+    """The crown legs of a registry version as **browser source keys** (``fcp_ms``,
+    ``lcp_ms``, …), in the order its ``overall`` spec lists them — the names the raw browser
+    readings and the instrument audits use. Crown legs that are not browser readings are
+    left out. Empty for a version the registry does not hold (a GUI-published one) or one
+    with no overall spec. Published versions are frozen, so the answer never changes."""
+    spec = METHODOLOGY_REGISTRY.get(version)
+    if not spec:
+        return ()
+    definition = build_definition_from_spec(spec)
+    keys, _required = overall_metrics(definition)
+    by_key = {m["key"]: m for m in definition.get("metrics", []) if isinstance(m, dict)}
+    return tuple(
+        by_key[k]["source_key"] for k in keys
+        if k in by_key and by_key[k].get("plugin") == "browser" and by_key[k].get("source_key")
+    )
+
+
 def _effective(m: metrics_mod.MetricDef, config: dict) -> tuple[float, float | None, float | None]:
     """A metric's weight + best/worst thresholds, with stored config overriding the
     registry defaults (so a snapshot reflects *this instance's* actual rubric)."""
