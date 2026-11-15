@@ -240,9 +240,19 @@ parallel with C once S4 is done.
   ranking's host model, `host_adjust`, `profile_conditions`/`slow_profiles`, research export (effective
   + raw + `instrument_health_verdicts.jsonl`). One sprint, no split. Ratchet:
   `tests/test_instrument_health_derived.py`.
-- [ ] **S24. Version the verdict rules, part 1.** Move the duel's verdict constants
+- [x] **S24. Version the verdict rules, part 1.** Move the duel's verdict constants
   (`ROUND_WEATHER_SHIFT`, `WEATHER_SCALE_SAMPLE`, SPRT and Pocock settings) into the
   methodology record, read through one accessor.
+  Built: `methodology.VerdictRules` (frozen) via `methodology.verdict_rules(version)`; v17 and the v18
+  candidate state them as `verdict_rules` in the registry record (outside the frozen definition, so no
+  stored definition changes), and every other version, fork base or GUI version falls back to
+  `DEFAULT_VERDICT_RULES`, today's values. Moved, beyond the two named: `WILCOXON_MIN_PAIRS`, the
+  exact-test cutoff (25), the Pocock-style peek penalty (3.32, 2.97, floor 2.0), the SPRT null p (0.5),
+  p1 clamps (0.501/0.999) and default (0.70), the alpha clamps (0.001/0.2) and default (0.05).
+  User dials (`duel.p1`, `alpha`, `min_pairs`, `max_pairs`, `min_margin`, `streak_wins`, `method`, the
+  presets) stay in config; the abort streaks (`MAX_CONSECUTIVE_*`) end a session, not decide a verdict,
+  and stay in duel.py. Old module names stay as aliases. Duel rows don't store the version yet (S25);
+  the duel reads the code's current version, and the weather scale reads the stamper's version.
 - [ ] **S25. Version the verdict rules, part 2.** Each duel row stores the methodology version
   it was judged under; a test shows an old duel keeps its verdict after a rule change.
 - [ ] **S26. Retire legacy score paths.** Deprecate `/score/rescore` and `/score/rederive` in

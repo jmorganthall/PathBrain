@@ -49,7 +49,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .session_runtime import FailureStreak, FirewallUnavailable, SessionAbort, describe_failure
-from .methodology import latest_score, overall_metrics
+from .methodology import latest_score, overall_metrics, verdict_rules
 from .models import Duel, DuelStatus, LeverCampaign, Methodology, Score
 from .rating import ELO_SCALE, PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
 from .providers import get_provider
@@ -131,10 +131,12 @@ class SprtState:
     """
 
     def __init__(self, p1: float, alpha: float) -> None:
-        p1 = min(max(p1, 0.501), 0.999)
-        alpha = min(max(alpha, 0.001), 0.2)
-        self.win_step = math.log(p1 / 0.5)
-        self.loss_step = math.log((1 - p1) / 0.5)
+        rules = verdict_rules()
+        p1 = min(max(p1, rules.sprt_p1_min), rules.sprt_p1_max)
+        alpha = min(max(alpha, rules.alpha_min), rules.alpha_max)
+        null_p = rules.sprt_null_p
+        self.win_step = math.log(p1 / null_p)
+        self.loss_step = math.log((1 - p1) / (1 - null_p))
         # Symmetric error rates: A = ln((1-b)/a), B = ln(b/(1-a)) with a = b = alpha.
         self.upper = math.log((1 - alpha) / alpha)
         self.lower = -self.upper
@@ -316,10 +318,11 @@ def sprt_requirements(p1: float, alpha: float, min_pairs: int, max_pairs: int) -
     * ``restrictive`` — True when the cap demands a near-sweep (>80% of pairs), i.e. the
       rule will mostly return draws.
     """
-    p1 = min(max(float(p1 or 0.70), 0.501), 0.999)
-    alpha = min(max(float(alpha or 0.05), 0.001), 0.2)
-    win_step = math.log(p1 / 0.5)
-    loss_step = math.log((1 - p1) / 0.5)
+    rules = verdict_rules()
+    p1 = min(max(float(p1 or rules.sprt_default_p1), rules.sprt_p1_min), rules.sprt_p1_max)
+    alpha = min(max(float(alpha or rules.paired_default_alpha), rules.alpha_min), rules.alpha_max)
+    win_step = math.log(p1 / rules.sprt_null_p)
+    loss_step = math.log((1 - p1) / (1 - rules.sprt_null_p))
     upper = math.log((1 - alpha) / alpha)
     sweep = max(int(math.ceil(upper / win_step)), int(min_pairs or 0))
     cap = max(int(max_pairs or 0), 0)
@@ -369,7 +372,7 @@ def _rank_sum_counts(n: int) -> list[int]:
 #: flat 1.0 — **"no opinion", not "no effect"**. Naming it matters because that 1.0 is
 #: printed: a match decided by the streak rule at three rounds used to report
 #: ``p=1.0000 ≤ 0.0214``, which is both false and the opposite of what the sentinel means.
-WILCOXON_MIN_PAIRS = 4
+WILCOXON_MIN_PAIRS = verdict_rules().wilcoxon_min_pairs  # alias; the rule lives in the methodology (S24)
 
 
 def wilcoxon_p(deltas: list[float], direction: int = 1) -> float:
@@ -382,9 +385,10 @@ def wilcoxon_p(deltas: list[float], direction: int = 1) -> float:
     Under ``WILCOXON_MIN_PAIRS`` rounds this returns 1.0 meaning *the test cannot speak*,
     which is not the same claim as a large p-value from a test that could.
     """
+    rules = verdict_rules()
     d = [x * direction for x in deltas if x != 0]
     n = len(d)
-    if n < WILCOXON_MIN_PAIRS:  # too little to distinguish from chance at any sane alpha
+    if n < rules.wilcoxon_min_pairs:  # too little to distinguish from chance at any sane alpha
         return 1.0
     order = sorted(range(n), key=lambda i: abs(d[i]))
     ranks = [0.0] * n
@@ -399,7 +403,7 @@ def wilcoxon_p(deltas: list[float], direction: int = 1) -> float:
         i = j + 1
     w_pos = sum(r for r, x in zip(ranks, d) if x > 0)
 
-    if n <= 25 and all(float(r).is_integer() for r in ranks):  # exact, no ties
+    if n <= rules.wilcoxon_exact_max_pairs and all(float(r).is_integer() for r in ranks):  # exact, no ties
         counts = _rank_sum_counts(n)
         total = sum(counts)
         at_least = sum(c for w, c in enumerate(counts) if w >= w_pos)
@@ -421,7 +425,9 @@ def peek_penalty(peeks: int) -> float:
     11, alpha/9 at 36. Without it a 40-pair bout would call a coin-flip a winner a quarter
     of the time.
     """
-    return max(2.0, 3.32 * math.log(max(peeks, 2)) - 2.97)
+    rules = verdict_rules()
+    return max(rules.peek_penalty_floor,
+               rules.peek_penalty_slope * math.log(max(peeks, 2)) - rules.peek_penalty_offset)
 
 
 class PairedEvidence:
@@ -442,7 +448,8 @@ class PairedEvidence:
         max_pairs: int,
         streak_wins: int = 0,
     ) -> None:
-        self.alpha = min(max(float(alpha or 0.05), 0.001), 0.2)
+        rules = verdict_rules()
+        self.alpha = min(max(float(alpha or rules.paired_default_alpha), rules.alpha_min), rules.alpha_max)
         self.min_margin = max(float(min_margin or 0.0), 0.0)
         self.min_pairs = max(int(min_pairs or 1), 1)
         self.max_pairs = max(int(max_pairs or 1), self.min_pairs)
@@ -608,11 +615,11 @@ def _live_scoreboard(
         # the verdict math never reads it.
         "weather": {
             "shifted_rounds": sum(
-                1 for w in (weather_shifts or []) if w is not None and w >= ROUND_WEATHER_SHIFT
+                1 for w in (weather_shifts or []) if w is not None and w >= verdict_rules().round_weather_shift
             ),
             "last_shift": (weather_shifts[-1] if weather_shifts else None),
             "max_shift": max((w for w in (weather_shifts or []) if w is not None), default=None),
-            "threshold": ROUND_WEATHER_SHIFT,
+            "threshold": verdict_rules().round_weather_shift,
         },
     }
 
@@ -779,8 +786,9 @@ def _field_options(provider) -> dict[str, list[float]]:
 # still counts toward the verdict exactly as before (down-weighting or discarding would
 # change adjudication, which is a separate decision for a separate day) — the flag says
 # which margins to trust less when reading a surprising bout, on the tape and live.
-ROUND_WEATHER_SHIFT = 25.0   #: severity points between a round's legs that read as "the weather moved"
-WEATHER_SCALE_SAMPLE = 5000  #: most recent completed runs the severity scale is built from
+# Aliases: the rules live in the methodology record (S24, ``methodology.verdict_rules``).
+ROUND_WEATHER_SHIFT = verdict_rules().round_weather_shift    #: severity points between a round's legs that read as "the weather moved"
+WEATHER_SCALE_SAMPLE = verdict_rules().weather_scale_sample  #: most recent completed runs the severity scale is built from
 
 
 def _covariate_sources() -> dict:
@@ -871,7 +879,7 @@ def _weather_stamper(meth_version: str) -> _WeatherStamper | None:
                 select(Run.id)
                 .where(Run.status == RunStatus.COMPLETE)
                 .order_by(Run.id.desc())
-                .limit(WEATHER_SCALE_SAMPLE)
+                .limit(verdict_rules(meth_version).weather_scale_sample)
                 .subquery()
             )
             rows = session.execute(
@@ -3228,9 +3236,10 @@ def _decided_reason(paired: PairedEvidence, verdict: str, basis: str) -> str:
     median = _median(paired.deltas)
     if basis == "streak":
         streak, _ = paired.current_streak
-        if paired.pairs < WILCOXON_MIN_PAIRS:
+        min_pairs = verdict_rules().wilcoxon_min_pairs
+        if paired.pairs < min_pairs:
             stat = (
-                f"the signed-rank test needs {WILCOXON_MIN_PAIRS} rounds to say anything, "
+                f"the signed-rank test needs {min_pairs} rounds to say anything, "
                 f"so it has no opinion yet"
             )
         else:
@@ -3404,10 +3413,10 @@ def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: 
         # severity shift between the challenger leg and a belt leg it was compared with.
         "weather_shifts": list(seat.weather_shifts),
         "weather_shifted_rounds": sum(
-            1 for w in seat.weather_shifts if w is not None and w >= ROUND_WEATHER_SHIFT
+            1 for w in seat.weather_shifts if w is not None and w >= verdict_rules().round_weather_shift
         ),
         "weather_max_shift": max((w for w in seat.weather_shifts if w is not None), default=None),
-        "weather_shift_threshold": ROUND_WEATHER_SHIFT,
+        "weather_shift_threshold": verdict_rules().round_weather_shift,
         # How far (in legs) each margin's challenger leg sat from the belt legs it was
         # compared against — 1 under strict alternation, up to belt_every-1 otherwise.
         "leg_distances": list(seat.leg_distances),
@@ -3511,7 +3520,7 @@ def _ring_live(*, matchups_done: int, inc: dict, seats_list: list[_Seat], curren
             "p_value": None, "alpha": None,
             "streak": {"length": 0, "side": None, "needed": streak_needed},
             "weather": {"shifted_rounds": 0, "last_shift": None, "max_shift": None,
-                        "threshold": ROUND_WEATHER_SHIFT},
+                        "threshold": verdict_rules().round_weather_shift},
             "measuring": False,
             "between_matches": True,
         }
@@ -4419,7 +4428,7 @@ def weather_by_distance(limit_sessions: int = 10, max_legs: int = 400) -> dict:
     stamper = _weather_stamper(meth_version)
     if stamper is None:
         return {"available": False, "reason": "no weather yardstick could be built from recent runs",
-                "threshold": ROUND_WEATHER_SHIFT, "by_distance": [], "sessions_analyzed": len(sequences)}
+                "threshold": verdict_rules().round_weather_shift, "by_distance": [], "sessions_analyzed": len(sequences)}
     # "N legs apart" only means anything within a run of back-to-back legs. A session's
     # run_ids also span the seams where the ladder stepped aside for queued work (the zipper
     # yield) or stalled, and two legs either side of a forty-minute detour are not adjacent
@@ -4476,11 +4485,11 @@ def weather_by_distance(limit_sessions: int = 10, max_legs: int = 400) -> dict:
             "pairs": len(shifts),
             "median_shift": round(_median(ordered), 1),
             "p75_shift": round(ordered[min(len(ordered) - 1, int(0.75 * len(ordered)))], 1),
-            "shifted_share": round(sum(1 for x in shifts if x >= ROUND_WEATHER_SHIFT) / len(shifts), 3),
+            "shifted_share": round(sum(1 for x in shifts if x >= verdict_rules().round_weather_shift) / len(shifts), 3),
         })
     return {
         "available": True,
-        "threshold": ROUND_WEATHER_SHIFT,
+        "threshold": verdict_rules().round_weather_shift,
         "by_distance": out,
         "sessions_analyzed": sessions_used,
         "stretches": len(stamped),
