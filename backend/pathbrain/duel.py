@@ -44,6 +44,7 @@ from . import coordinator
 from . import profile_names
 from . import decidability
 from . import host_adjust
+from . import host_pressure
 from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
@@ -2741,6 +2742,9 @@ class _Seat:
         self.bad_streak = 0
         self.unusable = 0
         self.unusable_why: dict[str, int] = {}
+        # Rounds measured but not counted because the host-quiet gate failed them
+        # (``host_quiet``): ``{"challenger": run_id, "belt": [run_ids], "host_share": x}``.
+        self.quarantined: list[dict] = []
         self.legs = 0
         self.verdict: str | None = None
         self.reason = ""
@@ -2815,6 +2819,7 @@ def _seat_snapshot(seat: _Seat, duel_id: int, methodology: str | None = None) ->
         "legs": int(seat.legs),
         "unusable": int(seat.unusable),
         "unusable_why": dict(seat.unusable_why),
+        "host_quarantined": [dict(x) for x in seat.quarantined],
         "bad_streak": int(seat.bad_streak),
         "sessions": sorted(set(int(x) for x in seat.sessions) | {int(duel_id)}),
     }
@@ -2855,6 +2860,7 @@ def _seat_from_snapshot(snap: dict, profile: dict, *, p1: float, alpha: float,
     seat.legs = int(snap.get("legs") or 0)
     seat.unusable = int(snap.get("unusable") or 0)
     seat.unusable_why = {str(k): int(v) for k, v in (snap.get("unusable_why") or {}).items()}
+    seat.quarantined = [dict(x) for x in (snap.get("host_quarantined") or []) if isinstance(x, dict)]
     seat.bad_streak = int(snap.get("bad_streak") or 0)
     seat.sessions = [int(x) for x in (snap.get("sessions") or [])]
     return seat
@@ -3386,6 +3392,9 @@ def _match_record(seat: _Seat, inc: dict, *, method: str, verdict: str, reason: 
         "narrow": str(reason or "").startswith(NARROW_PREFIX),
         "unusable_rounds": seat.unusable,
         "unusable_why": dict(seat.unusable_why) or None,
+        # Rounds the host-quiet gate measured but did not count (``host_quiet``); each was
+        # replaced by another round. None when the gate is off or failed nothing.
+        "host_quarantined_rounds": [dict(x) for x in seat.quarantined] or None,
         # The shared-weather audit, aligned with the margins: per usable margin, the largest
         # severity shift between the challenger leg and a belt leg it was compared with.
         "weather_shifts": list(seat.weather_shifts),
@@ -3522,6 +3531,19 @@ def _ring_live(*, matchups_done: int, inc: dict, seats_list: list[_Seat], curren
     }
 
 
+def _host_readings(run_ids: list[int | None]) -> list[dict | None]:
+    """The stored ``Run.host_pressure`` of each run, aligned with ``run_ids`` (None where a
+    run is missing or has no reading). Read only when the host-quiet gate is on."""
+    from .models import Run
+
+    wanted = [int(r) for r in run_ids if r is not None]
+    if not wanted:
+        return [None for _ in run_ids]
+    with session_scope() as session:
+        found = dict(session.execute(select(Run.id, Run.host_pressure).where(Run.id.in_(wanted))).all())
+    return [found.get(int(r)) if r is not None else None for r in run_ids]
+
+
 def _run_ring(
     *,
     duel_id: int,
@@ -3571,6 +3593,11 @@ def _run_ring(
         with session_scope() as session:
             host_model = host_adjust.model_for(session, meth_version)
     host_desc = host_model.describe() if host_model is not None else {"active": False, "why": "switched off"}
+    # The host-quiet gate (``host_quiet``), read once per session. Off: nothing below reads
+    # a host reading and every round counts exactly as before.
+    with session_scope() as session:
+        quiet_gate = host_pressure.host_quiet_config(get_config(session))
+    quiet_cap = max(0, int(quiet_gate.get("max_replacement_rounds") or 0))
     cadence = belt_every(cfg)
     n_seats = seats(cfg)
     only_browser = browser_only(cfg)
@@ -3799,6 +3826,18 @@ def _run_ring(
                     _dominant_reason(seat.unusable_why) or "repeated unusable rounds"
                 )
             return
+        if quiet_gate["enabled"] and len(seat.quarantined) < quiet_cap:
+            ids = [leg.run_id] + [f.run_id for f in usable]
+            pressures = _host_readings(ids)
+            if not host_pressure.measured_quiet(pressures, quiet_gate):
+                # Recorded, not counted: the match asks for a replacement round.
+                seat.quarantined.append({
+                    "challenger": leg.run_id, "belt": [f.run_id for f in usable],
+                    "host_share": round(host_pressure.host_share(pressures) or 0.0, 3),
+                })
+                log.info("Duel %s: round on run %s quarantined (host busy) — %d of %d replacements",
+                         duel_id, leg.run_id, len(seat.quarantined), quiet_cap)
+                return
         seat.bad_streak = 0
         reference = sum(f.value for f in usable) / len(usable)
         raw = leg.value - reference
