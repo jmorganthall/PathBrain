@@ -145,9 +145,60 @@ parallel with C once S4 is done.
   Reads the Score row's persisted Overall via the duel's `_run_overall`; no row reads as missing (None, skipped).
 - [x] **S19. Sweeps read versioned scores.** Same for `sweep.py:209`.
   Same reader as S18; no row reads as None, so ranking and apply-best skip it and an all-None sweep has nothing to apply.
-- [ ] **S20. Insert-only at-measure, design.** Write a half-page note in this file: how
+- [x] **S20. Insert-only at-measure, design.** Write a half-page note in this file: how
   `methodology.upsert_score` (line ~1616) becomes insert-only for `is_at_measure=True` rows,
   and what reads "latest". Add a failing test that a second at-measure write raises.
+
+  *Design (S20).* Today a `(run, version)` pair has one `scores` row, and a re-grade under
+  the run's own version rewrites it in place with `is_at_measure=True`. That happens because
+  `runner.score_metrics_under` (`runner.py:813`) sets the flag to `run.methodology_version ==
+  methodology.version` for capture (`runner.py:1364`) and re-grade (`score_run_under`,
+  `runner.py:879`) alike. So the capture-time record is lost.
+  - **Write rule.** The at-measure row is written once, at capture. `upsert_score`
+    (`methodology.py:1667`) looks rows up by `(run, version, is_at_measure)`. A second
+    at-measure write for the same run and version raises `ValueError` and does not insert:
+    a second capture of one run is a bug, and raising surfaces it where a silent second
+    row would hide it.
+  - **Re-grades.** `score_run_under` always writes `is_at_measure=False`. It upserts one
+    at-present row beside the at-measure row and never touches the at-measure row. So a pair
+    holds at most two rows: then (at-measure) and now (latest re-grade). Re-grading again
+    rewrites only the now row.
+  - **What "latest" means.** For every reader of a run's score under a version, "latest" is
+    the at-present row if one exists, else the at-measure row. That is the newest row by
+    `id`, which always beats `computed_at` order because the at-present row is written
+    later. S21 adds one selector for this in `methodology.py` (the newest row per
+    `(run_id, version)`) and routes every reader through it.
+  - **Readers that join or group** would count a run twice once two rows can exist, so
+    these must use the selector:
+    - `ranking.py:413`, `ranking.py:422`
+    - `profile_aggregates.py:120`, `profile_aggregates.py:187`
+    - `beliefs.py:737`
+    - `why.py:225`, `why.py:325`
+    - `refresh.py:185`, `refresh.py:253`
+    - `explore_tracker.py:793`
+    - `host_adjust.py:230`
+    - `publish_followthrough.py:76`
+    - `runner.py:1480`
+    - `duel.py:879`, `duel.py:3053`
+    - `routes_settings.py:293`, `routes_settings.py:1937`, `routes_settings.py:3080`
+    - `routes_trends.py:65`
+    - `routes_score.py:259`, `routes_score.py:448`
+  - **Single-run readers** that today take `.first()` or `scalar()` and need an order:
+    - `duel.py:712`, `duel.py:748`, `duel.py:846`, `duel.py:932`
+    - `routes_results.py:44`
+    - `routes_history.py:27`, where the `{run_id: row}` map is last-wins
+  - **Readers that want both rows on purpose:**
+    - `routes_score.py:194` (then vs now), which already orders by `is_at_measure desc`
+    - `research_export.py:295`/`:303`, which exports the flag
+  - **Schema.** Replace `UNIQUE(run_id, methodology_version)` (`uq_score_run_methodology`)
+    with `UNIQUE(run_id, methodology_version, is_at_measure)`. No new column is needed: `id`
+    orders newest. SQLite can't drop a constraint, so `database._migrate` rebuilds `scores`
+    once (create, copy, drop, rename). It finds the old constraint in `sqlite_master.sql`,
+    which makes it idempotent.
+  - **Existing rows** are kept as they are. A same-version re-grade before S21 has already
+    overwritten some at-measure rows in place, and their capture values can't be recovered.
+    Those rows have `computed_at` well after the run finished, so S21 can count them and
+    report the count.
 - [ ] **S21. Insert-only at-measure, build.** Make S20's test pass; reads pick the newest row.
 - [ ] **S22. Settings overrides instead of backfill.** Replace `/settings/backfill`
   (`routes_settings.py:685`), which stamps today's settings onto old runs, with a
@@ -218,3 +269,4 @@ parallel with C once S4 is done.
 - S37: which crown policy survives.
 - S36: how many ratings are enough before fitting weights.
 - Legacy methodology configs (v1–v4 or an unknown version): the Overall page and the duel read no crown legs, while the settings ranking falls back to v6's. Predates S12; decide whether to align.
+- Sweep page's relative reading asks for the `sops` axis, which v17 has no longer, so it likely always reads empty (routes_sweep.py; predates S19).
