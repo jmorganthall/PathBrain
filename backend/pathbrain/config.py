@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -62,9 +62,11 @@ class Settings(BaseSettings):
     # These two are the exception to the ``PATHBRAIN_`` prefix: they read the **unprefixed**
     # ``WATCHTOWER_URL`` / ``WATCHTOWER_TOKEN`` env vars (a ``validation_alias`` bypasses the
     # class-wide prefix), so they line up with the Watchtower-style naming used in deployment.
-    # Real-browser field records (S32): ``POST /api/field/records`` from the field recorder
-    # extension. Off by default; the route answers 404 until this is set.
-    field_ingest_enabled: bool = False
+    # Real-browser field records (S32/S33): ``POST /api/field/records`` from the field recorder
+    # extension, accepted only with this LAN token (``Authorization: Bearer <token>``). Empty
+    # (the default) disables ingest: the route answers 404. A ``SecretStr`` so the value never
+    # shows in a repr, a log line or an error; set it in ``.env`` as PATHBRAIN_FIELD_INGEST_TOKEN.
+    field_ingest_token: SecretStr = SecretStr("")
 
     watchtower_url: str = Field(default="", validation_alias="WATCHTOWER_URL")
     watchtower_token: str = Field(default="", validation_alias="WATCHTOWER_TOKEN")

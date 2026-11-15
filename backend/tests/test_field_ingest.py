@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine, select, text
+from pydantic import SecretStr
 from sqlalchemy.exc import DBAPIError
 
 from pathbrain import crown_follower, field_ingest
@@ -26,9 +27,13 @@ REC = {"v": 1, "host": "www.youtube.com", "recorded_at": "2026-11-15T10:00:00.00
        "hidden_before_paint": False}
 
 
+TOKEN = "s33-test-token-9f2c"
+AUTH = {"Authorization": f"Bearer {TOKEN}"}
+
+
 @pytest.fixture()
 def enabled(monkeypatch):
-    monkeypatch.setattr(get_settings(), "field_ingest_enabled", True)
+    monkeypatch.setattr(get_settings(), "field_ingest_token", SecretStr(TOKEN))
 
 
 @pytest.fixture()
@@ -65,9 +70,9 @@ def _max_id():
 
 
 def test_ingest_is_off_by_default(client):
-    assert get_settings().field_ingest_enabled is False
+    assert get_settings().field_ingest_token.get_secret_value() == ""
     before = _max_id()
-    r = client.post(URL, json={"records": [REC]})
+    r = client.post(URL, json={"records": [REC]}, headers=AUTH)
     assert r.status_code == 404
     assert _rows_after(before) == []
 
@@ -77,7 +82,7 @@ def test_records_are_stored_unchanged_with_a_known_stamp(client, enabled, no_pro
     _reading(monkeypatch, "fp-live-123", seen)
     odd = dict(REC, extra_field={"kept": True})  # raw: even fields we don't know are kept
     before = _max_id()
-    r = client.post(URL, json={"records": [REC, odd]})
+    r = client.post(URL, json={"records": [REC, odd]}, headers=AUTH)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["stored"] == 2 and body["firewall_fingerprint"] == "fp-live-123"
@@ -93,7 +98,7 @@ def test_the_stamp_is_null_when_nothing_is_known(client, enabled, no_provider, m
     for fp, at in ((None, None), ("fp-x", None), (None, datetime.now(timezone.utc))):
         _reading(monkeypatch, fp, at)
         before = _max_id()
-        assert client.post(URL, json={"records": [REC]}).status_code == 200
+        assert client.post(URL, json={"records": [REC]}, headers=AUTH).status_code == 200
         [row] = _rows_after(before)
         assert row.firewall_fingerprint is None and row.fingerprint_source is None
     assert no_provider == []
@@ -110,7 +115,7 @@ def test_a_firewall_write_after_the_reading_voids_the_stamp(client, enabled, no_
         write_id = w.id
     try:
         before = _max_id()
-        assert client.post(URL, json={"records": [REC]}).status_code == 200
+        assert client.post(URL, json={"records": [REC]}, headers=AUTH).status_code == 200
         [row] = _rows_after(before)
         assert row.firewall_fingerprint is None
         assert no_provider == []
@@ -137,13 +142,13 @@ def test_the_stamp_reader_never_raises_on_bad_state(monkeypatch):
 ])
 def test_bad_batches_are_refused_whole(client, enabled, payload):
     before = _max_id()
-    assert client.post(URL, json=payload).status_code == 422
+    assert client.post(URL, json=payload, headers=AUTH).status_code == 422
     assert _rows_after(before) == []
 
 
 def test_the_table_is_append_only(client, enabled):
     before = _max_id()
-    assert client.post(URL, json={"records": [REC]}).status_code == 200
+    assert client.post(URL, json={"records": [REC]}, headers=AUTH).status_code == 200
     [row] = _rows_after(before)
     with session_scope() as s:
         for sql in ("UPDATE field_records SET firewall_fingerprint = 'x' WHERE id = :i",

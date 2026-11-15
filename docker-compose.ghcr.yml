@@ -91,6 +91,8 @@ services:
       # Keep the token in a .env file.
       WATCHTOWER_URL: "${WATCHTOWER_URL:-}"
       WATCHTOWER_TOKEN: "${WATCHTOWER_TOKEN:-}"
+      # Field recorder ingest token (secret, from .env). Empty = ingest off.
+      PATHBRAIN_FIELD_INGEST_TOKEN: "${PATHBRAIN_FIELD_INGEST_TOKEN:-}"
     volumes:
       - pathbrain-data:/data
 

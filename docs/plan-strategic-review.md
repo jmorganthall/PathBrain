@@ -308,8 +308,15 @@ parallel with C once S4 is done.
   check, else NULL; the reading's time and source are stored with it. No provider apply,
   reload or discover per upload (a test makes them fail). A hand change in OPNsense leaves no
   ledger row, so analysis should weigh `fingerprint_seen_at`.
-- [ ] **S33. LAN token.** The ingest endpoint and rating page accept only a LAN token from
+- [x] **S33. LAN token.** The ingest endpoint and rating page accept only a LAN token from
   config. Tests for accepted and refused.
+  Built: `POST /api/field/records` needs `Authorization: Bearer <PATHBRAIN_FIELD_INGEST_TOKEN>`.
+  Empty token (the default) disables ingest (404); missing 401; wrong 403; compared in constant
+  time. The setting is a `SecretStr`, and a test checks the token never reaches a log line, a
+  response or the settings repr. It replaces S32's `PATHBRAIN_FIELD_INGEST_ENABLED`. Documented
+  in `.env.example`, both compose files and the README. Differed: the rating page (S29) is not
+  built yet, so only ingest is gated; the same dependency (`routes_field._token_ok`) is there
+  for it.
 - [ ] **S34. Extension uploads.** The extension posts to S32 with the token.
 - [ ] **S35. Ratings vs metrics view.** A page that plots ratings against crown legs and
   real-browser metrics per profile, with counts.
