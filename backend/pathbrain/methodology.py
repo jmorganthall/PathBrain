@@ -15,8 +15,8 @@ import json
 from datetime import datetime, timezone
 from math import sqrt
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import exists, select
+from sqlalchemy.orm import Session, aliased
 
 from . import metrics as metrics_mod
 from .config_store import get_config, save_config
@@ -1662,6 +1662,23 @@ def score_fields_from_score_result(sr: ScoreResult) -> dict:
         "comparability": comparability,
         "missing_metrics": missing or None,
     }
+
+
+def latest_score():
+    """SQL condition: this ``Score`` row is the latest for its ``(run, methodology)`` pair.
+
+    The one "latest" selector every reader of a run's score under a version goes through
+    (S21a). "Latest" is the newest row by ``id``: no newer row exists for the same run and
+    version. Today a pair holds one row (the unique constraint), so this filters nothing;
+    once at-measure rows are kept write-once beside an at-present re-grade (S21b), it picks
+    the re-grade and keeps join/group readers from counting a run twice. Use it inside
+    ``.where(...)`` wherever ``Score`` is selected or joined."""
+    newer = aliased(Score)
+    return ~exists().where(
+        newer.run_id == Score.run_id,
+        newer.methodology_version == Score.methodology_version,
+        newer.id > Score.id,
+    )
 
 
 def upsert_score(session: Session, run_id: int, version: str, *, is_at_measure: bool, **fields) -> Score:

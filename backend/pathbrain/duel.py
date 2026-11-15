@@ -49,7 +49,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .session_runtime import FailureStreak, FirewallUnavailable, SessionAbort, describe_failure
-from .methodology import overall_metrics
+from .methodology import latest_score, overall_metrics
 from .models import Duel, DuelStatus, LeverCampaign, Methodology, Score
 from .rating import ELO_SCALE, PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
 from .providers import get_provider
@@ -710,8 +710,9 @@ def _run_overall(run_id: int, methodology_version: str) -> float | None:
     with session_scope() as session:
         score = session.scalars(
             select(Score).where(
-                Score.run_id == run_id, Score.methodology_version == methodology_version
-            )
+                Score.run_id == run_id, Score.methodology_version == methodology_version,
+                latest_score(),
+            ).order_by(Score.id.desc())
         ).first()
         if score is None:
             return None
@@ -746,8 +747,9 @@ def _run_crown(run_id: int, methodology_version: str) -> dict[str, float] | None
             return None
         score = session.scalars(
             select(Score).where(
-                Score.run_id == run_id, Score.methodology_version == methodology_version
-            )
+                Score.run_id == run_id, Score.methodology_version == methodology_version,
+                latest_score(),
+            ).order_by(Score.id.desc())
         ).first()
         if score is None:
             return None
@@ -846,7 +848,8 @@ class _WeatherStamper:
                     select(Score.metric_values).where(
                         Score.run_id == run_id,
                         Score.methodology_version == self._meth_version,
-                    )
+                        latest_score(),
+                    ).order_by(Score.id.desc())
                 ).scalar()
             covs = _covariate_readings(list(rows), mv, self._sources)
             return self._scale.severity(covs)
@@ -879,6 +882,7 @@ def _weather_stamper(meth_version: str) -> _WeatherStamper | None:
                 select(Score.run_id, Score.metric_values).where(
                     Score.run_id.in_(select(recent.c.id)),
                     Score.methodology_version == meth_version,
+                    latest_score(),
                 )
             ).all()
         by_run: dict[int, list[tuple[str, dict | None]]] = {}
@@ -930,8 +934,9 @@ def _round_reading(
     with session_scope() as session:
         score = session.scalars(
             select(Score).where(
-                Score.run_id == run_id, Score.methodology_version == methodology_version
-            )
+                Score.run_id == run_id, Score.methodology_version == methodology_version,
+                latest_score(),
+            ).order_by(Score.id.desc())
         ).first()
         if score is None:
             return None, f"not scored under {methodology_version}"
@@ -3052,7 +3057,7 @@ def regrade_ledger(session, version: str | None = None, *, limit_sessions: int |
             for rid, axes, sub in session.execute(
                 select(Score.run_id, Score.axis_scores, Score.subscores).where(
                     Score.run_id.in_(chunk), Score.methodology_version == version,
-                    Score.comparability != "incomparable",
+                    Score.comparability != "incomparable", latest_score(),
                 )
             ).all():
                 val = (axes or {}).get("overall")

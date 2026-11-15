@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..config_store import get_config
 from .. import jobs, research_export
 from ..database import get_session, session_scope
-from ..methodology import ensure_current_methodology
+from ..methodology import ensure_current_methodology, latest_score
 from ..models import Run, Score
 from ..schemas import RunSummary
 
@@ -25,7 +25,8 @@ def _current_scores(session: Session, run_ids: list[int]) -> dict[int, Score]:
     methodology = ensure_current_methodology(session, get_config(session))
     rows = session.scalars(
         select(Score).where(
-            Score.run_id.in_(run_ids), Score.methodology_version == methodology.version
+            Score.run_id.in_(run_ids), Score.methodology_version == methodology.version,
+            latest_score(),
         )
     ).all()
     return {r.run_id: r for r in rows}

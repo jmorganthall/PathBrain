@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session, defer, selectinload
 
 from ..config_store import get_config
 from ..database import get_session
-from ..methodology import ensure_current_methodology, overall_metrics
+from ..methodology import ensure_current_methodology, latest_score, overall_metrics
 from ..models import BenchmarkResult, Run, RunStatus, Score
 from ..trends import (
     TREND_METRICS,
@@ -65,6 +65,7 @@ def _load_points(session: Session, days: int) -> list[RunPoint]:
         select(Score).where(
             Score.run_id.in_([r.id for r in runs]),
             Score.methodology_version == methodology.version,
+            latest_score(),
         )
     ).all()
     axes_by_run = {

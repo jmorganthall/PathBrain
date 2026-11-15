@@ -40,7 +40,7 @@ from . import job_queue
 from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
-from .methodology import ensure_current_methodology
+from .methodology import ensure_current_methodology, latest_score
 from .models import Run, RunStatus, Score
 
 log = get_logger("publish_followthrough")
@@ -79,6 +79,7 @@ def iterations_under(session, version: str) -> dict[str, int]:
             Run.settings_fingerprint.is_not(None),
             Score.methodology_version == version,
             Score.comparability != "incomparable",
+            latest_score(),
         )
         .group_by(Run.settings_fingerprint)
     ).all()

@@ -190,6 +190,7 @@ def run_scores(run_id: int, session: Session = Depends(get_session)) -> dict:
     run = session.get(Run, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"No run {run_id}")
+    # Wants every row on purpose (then vs now), so not routed through latest_score.
     rows = session.scalars(
         select(Score).where(Score.run_id == run_id).order_by(Score.is_at_measure.desc())
     ).all()
@@ -242,7 +243,7 @@ def _window_scores(session: Session, hours: int, fingerprint: str | None = None)
     """(methodology, Score rows) for completed runs in the window, scored under the
     current methodology and comparable (incomparable runs carry no axis scores).
     Optionally restricted to one settings profile (configTag)."""
-    from ..methodology import ensure_current_methodology
+    from ..methodology import ensure_current_methodology, latest_score
 
     methodology = ensure_current_methodology(session, get_config(session))
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
@@ -251,6 +252,7 @@ def _window_scores(session: Session, hours: int, fingerprint: str | None = None)
         Run.created_at >= cutoff,
         Score.methodology_version == methodology.version,
         Score.comparability != "incomparable",
+        latest_score(),
     ]
     if fingerprint:
         conds.append(Run.settings_fingerprint == fingerprint)
@@ -437,10 +439,13 @@ def axis_series(
         ],
         *[{**a, "role": "axis", "source": "axis"} for a in axes],
     ]
+    from ..methodology import latest_score
+
     conds = [
         Run.status == RunStatus.COMPLETE,
         Score.methodology_version == methodology.version,
         Score.comparability != "incomparable",
+        latest_score(),
     ]
     if fingerprint:
         conds.append(Run.settings_fingerprint == fingerprint)

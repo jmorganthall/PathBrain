@@ -41,7 +41,7 @@ from . import evidence
 from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
-from .methodology import ensure_current_methodology, overall_metrics, overall_weights
+from .methodology import ensure_current_methodology, latest_score, overall_metrics, overall_weights
 from .models import ExploreRecommendation, ProfileTest, Run, RunStatus, Score
 from .profile_names import names_for
 
@@ -795,6 +795,7 @@ def recommendations(session, limit: int = 50) -> dict:
                     Run.status == RunStatus.COMPLETE,
                     Run.settings_fingerprint.in_(list(dated_fps)),
                     Score.methodology_version == methodology.version,
+                    latest_score(),
                 )
             )
             if dated_since is not None:

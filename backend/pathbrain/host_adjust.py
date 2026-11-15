@@ -214,6 +214,7 @@ def noise_pairs(session, methodology_version: str, sessions: int = SESSIONS) -> 
     """The ledger's pure-noise pairs: two legs of the SAME profile within
     :data:`MAX_LEG_GAP` legs of each other in one session, as ``(Δ log readings, Δ Overall)``."""
     from .models import Duel, Run, Score
+    from .methodology import latest_score
 
     xs: list[list[float]] = []
     ys: list[float] = []
@@ -229,7 +230,7 @@ def noise_pairs(session, methodology_version: str, sessions: int = SESSIONS) -> 
             for rid, axes in session.execute(
                 select(Score.run_id, Score.axis_scores).where(
                     Score.run_id.in_(ids), Score.methodology_version == methodology_version,
-                    Score.comparability != "incomparable",
+                    Score.comparability != "incomparable", latest_score(),
                 )
             ).all()
         }
