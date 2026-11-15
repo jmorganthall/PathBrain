@@ -143,7 +143,8 @@ parallel with C once S4 is done.
 - [x] **S18. Experiments read versioned scores.** `experiment.py:155` reads `scores` for the
   current methodology instead of `run.score.sops`.
   Reads the Score row's persisted Overall via the duel's `_run_overall`; no row reads as missing (None, skipped).
-- [ ] **S19. Sweeps read versioned scores.** Same for `sweep.py:209`.
+- [x] **S19. Sweeps read versioned scores.** Same for `sweep.py:209`.
+  Same reader as S18; no row reads as None, so ranking and apply-best skip it and an all-None sweep has nothing to apply.
 - [ ] **S20. Insert-only at-measure, design.** Write a half-page note in this file: how
   `methodology.upsert_score` (line ~1616) becomes insert-only for `is_at_measure=True` rows,
   and what reads "latest". Add a failing test that a second at-measure write raises.
@@ -216,3 +217,4 @@ parallel with C once S4 is done.
 - S5: which host fix.
 - S37: which crown policy survives.
 - S36: how many ratings are enough before fitting weights.
+- Legacy methodology configs (v1–v4 or an unknown version): the Overall page and the duel read no crown legs, while the settings ranking falls back to v6's. Predates S12; decide whether to align.
