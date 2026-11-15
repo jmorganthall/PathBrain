@@ -313,6 +313,16 @@ def request_memo():
         _MEMO.reset(token)
 
 
+def request_cache() -> dict | None:
+    """Scratch space inside the open `request_memo` for other reads that a request repeats
+    (``refresh.list_profiles``), or None outside one. Same lifetime and rules as the
+    aggregates memo: one request, then gone."""
+    memo = _MEMO.get()
+    if memo is None:
+        return None
+    return memo.setdefault(("__request_cache__",), {})
+
+
 def _empty_aggregate() -> dict:
     return {"metrics": {}, "raw": {}, "iterations": 0, "run_count": 0}
 
