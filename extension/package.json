@@ -1,0 +1,9 @@
+{
+  "name": "pathbrain-field-recorder",
+  "private": true,
+  "version": "0.1.0",
+  "description": "PathBrain's MV3 field recorder for Microsoft Edge (load unpacked). No dependencies.",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
