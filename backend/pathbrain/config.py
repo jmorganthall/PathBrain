@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # (the default) disables ingest: the route answers 404. A ``SecretStr`` so the value never
     # shows in a repr, a log line or an error; set it in ``.env`` as PATHBRAIN_FIELD_INGEST_TOKEN.
     field_ingest_token: SecretStr = SecretStr("")
+    # Browser origins allowed to call that one endpoint cross-origin (S34), comma-separated.
+    # The default is the field recorder's own ID, pinned by the key in its manifest, under
+    # both spellings Chromium browsers use. No other route accepts these origins.
+    field_ingest_origins: str = "chrome-extension://ocfdagedpmcnfecmanjblkkjejeoakkf,extension://ocfdagedpmcnfecmanjblkkjejeoakkf"
 
     watchtower_url: str = Field(default="", validation_alias="WATCHTOWER_URL")
     watchtower_token: str = Field(default="", validation_alias="WATCHTOWER_TOKEN")

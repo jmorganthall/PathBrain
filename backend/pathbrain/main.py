@@ -9,12 +9,12 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__
+from . import __version__, field_ingest
 from .api import api_router
 from .config import get_settings
 from .database import init_db
@@ -126,6 +126,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+
+@app.middleware("http")
+async def _field_ingest_cors(request: Request, call_next):
+    """CORS for the field recorder extension on its one endpoint only (S34).
+
+    Added after CORSMiddleware, so it runs first: it answers the extension's preflight for
+    POST /api/field/records and adds Access-Control-Allow-Origin to that route's
+    answers, for the origins in field_ingest_origins and nothing else. Every other route
+    keeps the app-wide policy, which does not list the extension. No credentials are allowed:
+    the extension authenticates with its bearer token, never a cookie.
+    """
+    if request.url.path != field_ingest.INGEST_PATH:
+        return await call_next(request)
+    origin = request.headers.get("origin")
+    allowed = bool(origin) and origin in field_ingest.allowed_origins()
+    if request.method == "OPTIONS" and origin and request.headers.get("access-control-request-method"):
+        if not allowed:
+            return Response(status_code=403, headers={"Vary": "Origin"})
+        return Response(status_code=204, headers={
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "POST",
+            "Access-Control-Allow-Headers": "authorization, content-type",
+            "Access-Control-Max-Age": "600",
+            "Vary": "Origin",
+        })
+    response = await call_next(request)
+    if allowed:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+    return response
+
 
 app.include_router(api_router)
 

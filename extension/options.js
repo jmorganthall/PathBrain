@@ -2,6 +2,7 @@
 (function () {
   "use strict";
   const R = globalThis.PathBrainRecord;
+  const U = globalThis.PathBrainUpload;
   const $ = (id) => document.getElementById(id);
   const say = (text) => { $("status").textContent = text; };
 
@@ -26,6 +27,15 @@
       li.append(name, remove);
       list.append(li);
     }
+    const { upload, upload_status, outbox } = await chrome.storage.local.get({ upload: null, upload_status: null, outbox: [] });
+    if (upload && upload.server && document.activeElement !== $("server")) $("server").value = upload.server;
+    const on = U.configured(upload);
+    const parts = [on ? `Uploading to ${upload.server}.` : "Not uploading.", `${outbox.length} waiting to send.`];
+    if (upload_status && upload_status.at) {
+      parts.push(`Last try ${new Date(upload_status.at).toLocaleString()}: ${upload_status.message}`);
+      if (upload_status.sent_total) parts.push(`${upload_status.sent_total} sent in all.`);
+    }
+    $("upstate").textContent = parts.join(" ");
     $("count").textContent = `${records.length} record${records.length === 1 ? "" : "s"} stored (newest ${R.MAX_RECORDS} kept).`;
   }
 
@@ -51,6 +61,34 @@
   $("add").addEventListener("submit", (e) => {
     e.preventDefault();
     addSite($("site").value).then(() => { $("site").value = ""; });
+  });
+  $("upload").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const server = U.normalizeServer($("server").value);
+    const typed = $("token").value.trim();
+    const { upload } = await chrome.storage.local.get({ upload: null });
+    const token = typed || (upload && upload.token) || "";
+    if (!server) { say("That isn't a PathBrain address. Try something like http://192.168.2.6:8000."); return; }
+    if (!token) { say("Enter the token set on the PathBrain server."); return; }
+    // Inside the click: Edge asks to allow this one address, which the upload needs.
+    const ok = await chrome.permissions.request({ origins: [U.originPattern(server)] });
+    if (!ok) { say(`Not saved: access to ${server} wasn't allowed.`); return; }
+    await chrome.storage.local.set({ upload: { server, token } });
+    $("token").value = "";
+    say(`Saved. Uploading to ${server}.`);
+    chrome.runtime.sendMessage({ type: "pb-upload-now" });
+  });
+  $("send").addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "pb-upload-now" });
+    say("Sending in the background.");
+  });
+  $("stop").addEventListener("click", async () => {
+    const { upload } = await chrome.storage.local.get({ upload: null });
+    await chrome.storage.local.remove(["upload", "upload_status"]);
+    if (upload && upload.server) {
+      try { await chrome.permissions.remove({ origins: [U.originPattern(upload.server)] }); } catch (_e) { /* not granted */ }
+    }
+    say("Stopped uploading. The address and token are removed; records still wait in the outbox.");
   });
   $("defaults").addEventListener("click", async () => {
     // Inside the click, so Edge can prompt for any default whose access was removed.

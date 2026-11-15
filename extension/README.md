@@ -43,9 +43,8 @@ own FCP/LCP, so this version doesn't try.
 - At install the extension is granted access to **those seven sites only**. Any site you add
   later gets its own Edge prompt for that site and its subdomains. Removing a site from the list
   stops recording it straight away; **Restore default sites** puts the seven back.
-- Records stay in this browser (`chrome.storage.local`, newest 5,000 kept). This version
-  uploads nothing. Sending records to PathBrain comes in a later version, and will be off
-  until you set an address and token.
+- Records stay in this browser (`chrome.storage.local`, newest 5,000 kept) unless you turn on
+  uploading below. Uploads go only to the PathBrain address you enter, with the token you enter.
 
 ## Install in Edge (load unpacked)
 
@@ -64,6 +63,34 @@ If Edge's per-extension **Site access** is set to "On click", recording won't ru
 To update after changing files, click **Reload** on the extension's card in `edge://extensions`.
 Edge may show a "developer mode extensions" notice at startup; that is expected for unpacked
 extensions.
+
+## Uploading to PathBrain
+
+Optional, and off until you set it up.
+
+1. On the PathBrain server, set `PATHBRAIN_FIELD_INGEST_TOKEN` in `.env` to a long random
+   value (for example `openssl rand -hex 24`), and recreate the container. With no token set,
+   PathBrain refuses all uploads.
+2. On the extension's options page, under **Upload to PathBrain**, enter the PathBrain address
+   (for example `http://192.168.2.6:8000`) and the same token, then **Save**. Edge asks to
+   allow that one address.
+
+The service worker sends waiting records every 5 minutes, in batches of 200, in the background.
+A page never waits on an upload, and the page script never talks to the network. A batch
+leaves the outbox only when PathBrain accepts it; if PathBrain is down or refuses the token,
+the batch stays and is tried again on the next round. The options page shows how many are
+waiting and the result of the last try. **Send now** tries straight away. **Stop uploading**
+forgets the address and token. Records made before uploading was set up are sent too (the
+outbox keeps the newest 5,000).
+
+### Extension ID
+
+`manifest.json` carries a public `key`, so the extension's ID is always
+`ocfdagedpmcnfecmanjblkkjejeoakkf`, wherever the folder is loaded from. PathBrain allows that
+origin, and only for its upload endpoint (`/api/field/records`). If you load a copy without
+the key, its ID changes; list the new origin in `PATHBRAIN_FIELD_INGEST_ORIGINS`
+(comma-separated, e.g. `chrome-extension://<id>,extension://<id>`). No private key is needed or
+kept: unpacked extensions only need the public half.
 
 ## Checking it works
 
