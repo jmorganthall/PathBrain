@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, defer
 
 from . import host_adjust as host_adjust_mod
+from . import instrument_health as instrument_health_mod
 from .config_store import get_config
 from .methodology import corner_score, ensure_current_methodology, latest_score, overall_from_definition, overall_method, overall_weights, ranking_crown, weighted_score
 from .metrics import METRIC_ROLES, ROLE_WEATHER, all_metric_sources
@@ -549,6 +550,11 @@ def _compute_profiles_uncached(
     baseline_points: list[RunPoint] = []
     groups: dict[str, dict] = {}
     metric_src = all_metric_sources()  # {logical_key: (plugin, source_key)} for every metric
+    # The host readings ride on each run's derived instrument-health verdict (S23).
+    health_by = (
+        instrument_health_mod.health_by_run(session, [run.id for run, _, _ in rows])
+        if host_model is not None and host_model.active else {}
+    )
     for run, score, results_by_plugin in rows:
         comparable = _comparable(score)
         if complete_only and not comparable:
@@ -681,7 +687,7 @@ def _compute_profiles_uncached(
             covs = {k: run_vals[k] for k in _clean_covs if k in run_vals}
             weather_runs.append((run.settings_fingerprint, float(run_overall), covs))
         if host_model is not None and host_model.active and run_overall is not None:
-            host_vec = host_adjust_mod._log_vector((run.instrument_health or {}).get("readings"))
+            host_vec = host_adjust_mod._log_vector((health_by.get(run.id) or {}).get("readings"))
             if host_vec is not None:
                 host_vectors.append(host_vec)
                 g["host_runs"].append((float(run_overall), host_vec))

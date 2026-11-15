@@ -79,6 +79,7 @@ def _pause_diagnostics(run: Run) -> list[dict] | None:
 
 def _serialize_run(run: Run, overall: float | None = None) -> RunDetail:
     overlay_run(run)  # effective settings/fingerprint (S22), read-only
+    health = instrument_health.health_of(None, run)  # the derived verdict (S23)
     return RunDetail(
         id=run.id,
         created_at=run.created_at,
@@ -98,8 +99,8 @@ def _serialize_run(run: Run, overall: float | None = None) -> RunDetail:
         score=_serialize_score(run.score),
         overall=overall,
         pause_diagnostics=_pause_diagnostics(run),
-        instrument_health=run.instrument_health,
-        instrument_health_why=instrument_health.explain(run.instrument_health),
+        instrument_health=health,
+        instrument_health_why=instrument_health.explain(health),
         host_pressure=run.host_pressure,
         host_pressure_why=host_pressure.explain(run.host_pressure),
     )

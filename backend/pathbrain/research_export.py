@@ -20,6 +20,7 @@ request thread never waits on it:
   ``settings_raw`` is the newest run's own row value beside the effective ``settings``.
 * ``settings_overrides.jsonl`` — every override row for the exported runs, oldest first, so
   an effective value can be traced back to the row and the override that made it.
+* ``instrument_health_verdicts.jsonl`` — every derived instrument-health verdict (S23).
 * ``runs.jsonl`` — every run: timing, status, profile, methodology, machine health, the
   site/client stamps, per-plugin success, **each iteration's registry metrics** (from the
   cached ``details['iteration_metrics']`` — the raw blobs are never loaded for this), the
@@ -66,9 +67,11 @@ from .models import (
     Methodology,
     ProfileName,
     Run,
+    InstrumentHealthVerdict,
     Score,
     SettingsOverride,
 )
+from .instrument_health import effective_health
 from .settings_overrides import effective_fingerprint, effective_settings
 
 log = get_logger("research_export")
@@ -287,7 +290,8 @@ def _runs(session, run_ids: list[int], current: str, by_plugin, progress: Callab
                 Run.error, Run.iterations, Run.iterations_completed, Run.per_iteration_ms,
                 Run.job_group, effective_fingerprint().label("settings_fingerprint"),
                 Run.settings_fingerprint.label("fingerprint_raw"), Run.methodology_version,
-                Run.instrument_health, Run.host_pressure, Run.config_used,
+                effective_health().label("instrument_health"),
+                Run.instrument_health.label("instrument_health_raw"), Run.host_pressure, Run.config_used,
             ).where(Run.id.in_(batch)).order_by(Run.id)
         ).all()
         results: dict[int, list] = {}
@@ -363,6 +367,7 @@ def _runs(session, run_ids: list[int], current: str, by_plugin, progress: Callab
                 "fingerprint_raw": r.fingerprint_raw,
                 "methodology_version": r.methodology_version,
                 "instrument_health": r.instrument_health,
+                "instrument_health_raw": r.instrument_health_raw,
                 "host_pressure": r.host_pressure,
                 "site_set": site_set_from_config(r.config_used),
                 "client_set": client_set_from_config(r.config_used),
@@ -383,6 +388,19 @@ def _overrides(session, run_ids: list[int]) -> Iterator[dict]:
             yield {
                 "id": o.id, "run_id": o.run_id, "field": o.field, "value": o.value,
                 "source": o.source, "reason": o.reason, "created_at": _iso(o.created_at),
+            }
+
+
+def _health_verdicts(session, run_ids: list[int]) -> Iterator[dict]:
+    """Every derived instrument-health verdict for these runs, append order (S23)."""
+    for batch in _batches(run_ids):
+        for v in session.scalars(
+            select(InstrumentHealthVerdict).where(InstrumentHealthVerdict.run_id.in_(batch))
+            .order_by(InstrumentHealthVerdict.id)
+        ):
+            yield {
+                "id": v.id, "run_id": v.run_id, "version": v.version, "health": v.health,
+                "source": v.source, "created_at": _iso(v.created_at),
             }
 
 
@@ -460,6 +478,9 @@ def build(
         counts["settings_overrides.jsonl"] = _write_jsonl(
             zf, "settings_overrides.jsonl", _overrides(session, run_ids)
         )
+        counts["instrument_health_verdicts.jsonl"] = _write_jsonl(
+            zf, "instrument_health_verdicts.jsonl", _health_verdicts(session, run_ids)
+        )
         counts["methodologies.jsonl"] = _write_jsonl(zf, "methodologies.jsonl", (
             {
                 "version": m.version, "rubric_version": m.rubric_version,
@@ -495,6 +516,9 @@ def build(
                 "override); fingerprint_raw is the run row's own value.",
                 "settings_overrides.jsonl": "append-only override rows for the exported runs; "
                 "the newest per (run_id, field) is the effective value.",
+                "instrument_health_verdicts.jsonl": "derived instrument-health verdicts, keyed "
+                "by run and assessment version; runs.jsonl instrument_health is the newest "
+                "for the current version (else the run row's), instrument_health_raw the row's.",
                 "duels.jsonl": "matchups[].deltas = per-round margins (challenger minus "
                 "reference, Overall points); run_ids in leg order.",
             },

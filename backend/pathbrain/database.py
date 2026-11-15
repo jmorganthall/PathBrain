@@ -232,6 +232,39 @@ def _migrate_scores_unique(eng) -> bool:
     return True
 
 
+def _migrate_instrument_health(eng) -> int:
+    """S23: copy every instrument-health stamp already on a run row into the derived
+    ``instrument_health_verdicts`` table, under the current assessment version, source
+    ``run_row``. Additive and idempotent: a run that already has a row for that version is
+    skipped, so a restart copies nothing twice. The run columns are left as they are.
+
+    Also keeps the derived table from outliving its run: a trigger removes a run's verdicts
+    when the run is deleted (nothing in the app deletes runs, but a cleanup or a test may,
+    and SQLite re-issues a deleted max id to the next run). Returns rows copied."""
+    from sqlalchemy import text
+
+    from .instrument_health import HEALTH_VERSION
+
+    with eng.begin() as conn:
+        if not list(conn.execute(text("PRAGMA table_info(instrument_health_verdicts)"))):
+            return 0  # create_all has not made it (non-model engine); nothing to do
+        conn.execute(text(
+            "CREATE TRIGGER IF NOT EXISTS trg_runs_delete_instrument_health "
+            "AFTER DELETE ON runs BEGIN "
+            "DELETE FROM instrument_health_verdicts WHERE run_id = OLD.id; END"
+        ))
+        copied = conn.execute(text(
+            "INSERT INTO instrument_health_verdicts (run_id, version, health, source, created_at) "
+            "SELECT r.id, :v, r.instrument_health, 'run_row', CURRENT_TIMESTAMP FROM runs r "
+            "WHERE json_extract(r.instrument_health, '$.verdict') IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM instrument_health_verdicts h "
+            "WHERE h.run_id = r.id AND h.version = :v)"
+        ), {"v": HEALTH_VERSION}).rowcount
+    if copied:
+        log.info("Instrument health: copied %d run-row stamps into the derived table", copied)
+    return copied or 0
+
+
 def _migrate(eng=None) -> None:
     """Lightweight migrations for SQLite (additive, plus S21b's one ``scores`` rebuild).
 
@@ -334,6 +367,7 @@ def _migrate(eng=None) -> None:
         ("ix_link_gaps_at", "link_gaps", "at"),
     ]
     _migrate_scores_unique(eng)
+    _migrate_instrument_health(eng)
     with eng.begin() as conn:
         for table, columns in new_columns.items():
             existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}

@@ -665,6 +665,27 @@ class SettingsOverride(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class InstrumentHealthVerdict(Base):
+    """A run's instrument-health verdict, as derived (S23).
+
+    The derived record of :mod:`pathbrain.instrument_health`: one row per assessment, keyed
+    by run and :data:`~pathbrain.instrument_health.HEALTH_VERSION` (the assessment rule).
+    Insert-only; readers take the newest row per (run, version) through the accessor in
+    ``instrument_health`` and fall back to ``Run.instrument_health`` only for a run with no
+    row. ``source`` says what wrote it: ``assess`` (capture or re-grade) or ``run_row`` (the
+    one-time copy of a stamp that was already on the run row)."""
+
+    __tablename__ = "instrument_health_verdicts"
+    __table_args__ = (Index("ix_instrument_health_verdicts_run_version", "run_id", "version", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id"))
+    version: Mapped[str] = mapped_column(String(32))
+    health: Mapped[dict] = mapped_column(JSON)
+    source: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class ProfileAggregate(Base):
     """Per-profile rollup of the runs behind it — the layer between the run and the profile.
 

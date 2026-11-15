@@ -84,6 +84,12 @@ FLOOR_MS = 25.0
 
 HEALTHY, STRAINED, DEGRADED = "healthy", "strained", "degraded"
 
+#: The assessment rule's version (S23): the derived verdicts are keyed by run and this. Bump
+#: it when what a verdict means changes (the quantities, the baseline percentile, the floor,
+#: how the ratio is formed), so old verdicts stay readable under the rule they were made by
+#: and runs are re-assessed under the new one on their next grade.
+HEALTH_VERSION = "ih-1"
+
 
 def _percentile(sorted_vals: list[float], pct: float) -> float:
     """Linear-interpolated percentile of a sorted list (the ``_overall_se`` convention)."""
@@ -349,7 +355,9 @@ def assess_run(session, run, config: dict | None = None) -> dict | None:
     a run fails to score.
     """
     try:
-        stored = getattr(run, "instrument_health", None)
+        # The derived verdict for this rule version, else the run row's stamp (an old run
+        # the migration has not copied yet).
+        stored = health_of(session, run)
         if isinstance(stored, dict) and stored.get("verdict"):
             return stored
         cfg = config_block(config)
@@ -367,13 +375,123 @@ def assess_run(session, run, config: dict | None = None) -> dict | None:
         )
         if health is not None:
             try:
+                # The derived record is what readers read (S23); the run column is still
+                # written for now, so a rollback to an older build reads the same verdict.
                 run.instrument_health = health
+                if session is not None:
+                    record_verdict(session, run.id, health)
+                    session.flush()  # a second read in this session sees the verdict
             except Exception:  # noqa: BLE001 — grading matters more than the stamp
                 log.debug("Instrument health: could not stamp run %s", getattr(run, "id", "?"), exc_info=True)
         return health
     except Exception:  # noqa: BLE001
         log.debug("Instrument health: assessment failed", exc_info=True)
         return None
+
+
+# ── The derived record (S23): one accessor, newest row per (run, version) ─────
+
+def _latest_verdict(version: str | None = None):
+    from sqlalchemy import select
+    from sqlalchemy.orm import aliased
+
+    from .models import InstrumentHealthVerdict, Run
+
+    v = aliased(InstrumentHealthVerdict)
+    return (
+        select(v.health)
+        .where(v.run_id == Run.id, v.version == (version or HEALTH_VERSION))
+        .order_by(v.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+
+
+def effective_health(version: str | None = None):
+    """A run's health as a SQL expression: the newest derived verdict for the version, else
+    the run row's stamp for a run with no derived verdict at all (as :func:`health_by_run`)."""
+    from sqlalchemy import JSON, case, exists, func, select
+    from sqlalchemy.orm import aliased
+
+    from .models import InstrumentHealthVerdict, Run
+
+    anyv = aliased(InstrumentHealthVerdict)
+    row = case(
+        (exists(select(anyv.id).where(anyv.run_id == Run.id)), None),
+        else_=Run.instrument_health,
+    )
+    return func.coalesce(_latest_verdict(version), row, type_=JSON)
+
+
+def effective_ratio(version: str | None = None):
+    """The verdict's host-speed ``ratio`` as a SQL float (``None`` when there is none)."""
+    from sqlalchemy import Float, func
+
+    return func.json_extract(effective_health(version), "$.ratio", type_=Float)
+
+
+def health_by_run(session, run_ids, version: str | None = None) -> dict[int, dict]:
+    """``{run_id: health}`` for the runs that have one: the newest derived verdict for the
+    version, else — only for a run with no derived verdict under *any* version — the run
+    row's stamp. (A run that has verdicts, just not under this version, was assessed under
+    an older rule and is re-assessed on its next grade, not read off the row.)"""
+    from sqlalchemy import select
+
+    from .models import InstrumentHealthVerdict, Run
+
+    version = version or HEALTH_VERSION
+    ids = [i for i in dict.fromkeys(run_ids) if i is not None]
+    out: dict[int, dict] = {}
+    for start in range(0, len(ids), 500):
+        chunk = ids[start:start + 500]
+        for rid, health in session.execute(
+            select(InstrumentHealthVerdict.run_id, InstrumentHealthVerdict.health)
+            .where(InstrumentHealthVerdict.run_id.in_(chunk), InstrumentHealthVerdict.version == version)
+            .order_by(InstrumentHealthVerdict.id)
+        ):
+            if isinstance(health, dict):
+                out[rid] = health  # ascending id: the newest wins
+        missing = [i for i in chunk if i not in out]
+        if missing:
+            derived = set(session.scalars(
+                select(InstrumentHealthVerdict.run_id).where(InstrumentHealthVerdict.run_id.in_(missing))
+            ))
+            missing = [i for i in missing if i not in derived]
+        if missing:
+            for rid, health in session.execute(
+                select(Run.id, Run.instrument_health).where(Run.id.in_(missing))
+            ):
+                if isinstance(health, dict) and health:
+                    out[rid] = health
+    return out
+
+
+def health_of(session, run, version: str | None = None) -> dict | None:
+    """One run's health (see :func:`health_by_run`); for a loaded ``Run``."""
+    if run is None or getattr(run, "id", None) is None:
+        return None
+    if session is None:
+        from sqlalchemy.orm import object_session
+
+        try:
+            session = object_session(run)
+        except Exception:  # noqa: BLE001 — not an ORM object (a pure caller): read what it carries
+            session = None
+    if session is None:
+        stored = getattr(run, "instrument_health", None)
+        return stored if isinstance(stored, dict) and stored else None
+    return health_by_run(session, [run.id], version).get(run.id)
+
+
+def record_verdict(session, run_id: int, health: dict, *, source: str = "assess",
+                   version: str | None = None):
+    """Append a derived verdict (never updates one). Caller commits."""
+    from .models import InstrumentHealthVerdict
+
+    row = InstrumentHealthVerdict(run_id=run_id, version=version or HEALTH_VERSION,
+                                  health=health, source=source)
+    session.add(row)
+    return row
 
 
 def is_degraded(health: dict | None) -> bool:
@@ -403,7 +521,7 @@ def profile_conditions(session, fingerprint: str) -> dict:
     while head to head, under the same conditions, it was level with a #2.
 
     So per profile: the hour of day of each run (UTC; the page shows local), and how its
-    runs' host-speed ratio (``Run.instrument_health["ratio"]``, the machine's own
+    runs' host-speed ratio (the verdict's ``ratio``, :func:`effective_ratio`; the machine's own
     host-side time against its healthy baseline — nothing the shaper moves) compares with
     the field's. ``slow_share`` is the share of its runs in the field's slowest quarter of
     readings: a fair sample puts 25% there, and ``flag`` is raised at
@@ -416,7 +534,7 @@ def profile_conditions(session, fingerprint: str) -> dict:
     from .models import Run, RunStatus
     from .settings_overrides import effective_fingerprint
 
-    ratio_col = Run.instrument_health["ratio"].as_float()
+    ratio_col = effective_ratio()
     rows = session.execute(
         select(Run.created_at, ratio_col)
         .where(Run.status == RunStatus.COMPLETE, effective_fingerprint() == fingerprint)
@@ -495,7 +613,7 @@ def slow_profiles(session, fingerprints) -> set[str]:
     fps = [fp for fp in dict.fromkeys(fingerprints) if fp]
     if not fps:
         return set()
-    ratio_col = Run.instrument_health["ratio"].as_float()
+    ratio_col = effective_ratio()
     field = [
         float(v) for (v,) in session.execute(
             select(ratio_col)
