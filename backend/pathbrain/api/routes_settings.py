@@ -1906,6 +1906,9 @@ def invalidate_profiles_cache() -> None:
     with _FIELD_LOCK:
         _FIELD_CACHE.clear()
     ranking_mod.invalidate_rows_cache()
+    from .. import instrument_health
+
+    instrument_health.invalidate_ratio_cache()
     profile_aggregates.invalidate()
     # The seed's caches (stored-profile list keyed on run ids, prior-version field keyed on
     # its scores) are blind to an in-place re-key for the same reason the field memo is.

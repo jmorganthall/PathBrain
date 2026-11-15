@@ -445,7 +445,12 @@ def _rows_check(session: Session, upto: int) -> tuple:
     scores = tuple(session.execute(
         select(func.max(Score.id), func.count(Score.id)).where(Score.run_id <= upto)
     ).one())
-    return (complete, scores)
+    # The newest loaded run itself: counts alone can't tell a deleted run from a new one
+    # that reused its id (SQLite hands out the freed top id again).
+    newest = tuple(session.execute(
+        select(Run.created_at, effective_fingerprint()).where(Run.id == upto)
+    ).one_or_none() or ())
+    return (complete, scores, newest)
 
 
 def _load_rows(session: Session, version: str, after: int | None = None) -> list[tuple]:
