@@ -289,8 +289,16 @@ parallel with C once S4 is done.
   minute ago?" with three taps. Writes to S27.
 - [ ] **S30. Calibration harness reads the table.** Point
   `calibration/smoothness_calibration.py` at `perception_ratings` instead of `ratings.json`.
-- [ ] **S31. Chrome extension skeleton.** An MV3 extension that records FCP, LCP and long tasks
+- [x] **S31. Chrome extension skeleton.** An MV3 extension that records FCP, LCP and long tasks
   with `PerformanceObserver` on pages Josh visits. Local only, no upload yet.
+  Built: `extension/`, for Microsoft Edge (Chrome MV3), loaded unpacked; no store. Records TTFB,
+  FCP, LCP, CLS and long tasks per full page load into `chrome.storage.local` (newest 5,000).
+  Differed: it records only an allow-list of sites, by hostname only (never path or query),
+  rather than every page visited. The list starts with Josh's seven (news.google.com,
+  youtube.com, reddit.com, slickdeals.net, facebook.com, instagram.com, wikipedia.org, each with
+  subdomains), granted at install and editable on the options page. Full loads only: SPA in-app
+  navigation makes no record, and long tasks count only in the first 10 s. Node tests in
+  `extension/test`, run by `backend/tests/test_extension_js.py` when node is present.
 - [ ] **S32. Real-browser ingest.** A raw ingest endpoint that stores the extension's records
   unchanged, stamped with the live firewall fingerprint.
 - [ ] **S33. LAN token.** The ingest endpoint and rating page accept only a LAN token from

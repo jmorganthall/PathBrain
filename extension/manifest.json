@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "PathBrain Field Recorder",
+  "short_name": "PathBrain",
+  "version": "0.1.0",
+  "description": "Records page-load timings (TTFB, FCP, LCP, CLS, long tasks) on the sites on its list, by hostname only, kept in this browser.",
+  "minimum_chrome_version": "111",
+  "permissions": [
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://facebook.com/*",
+    "*://*.facebook.com/*",
+    "*://instagram.com/*",
+    "*://*.instagram.com/*",
+    "*://news.google.com/*",
+    "*://*.news.google.com/*",
+    "*://reddit.com/*",
+    "*://*.reddit.com/*",
+    "*://slickdeals.net/*",
+    "*://*.slickdeals.net/*",
+    "*://wikipedia.org/*",
+    "*://*.wikipedia.org/*",
+    "*://youtube.com/*",
+    "*://*.youtube.com/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "PathBrain Field Recorder"
+  }
+}
