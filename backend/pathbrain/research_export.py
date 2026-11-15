@@ -16,6 +16,10 @@ request thread never waits on it:
 * ``config.json`` — the effective runtime config, scrubbed.
 * ``methodologies.jsonl`` — every published version's frozen definition.
 * ``profiles.jsonl`` — every profile: call sign, settings (newest run's), first/last seen.
+  Grouped by the *effective* fingerprint (a run's own, or its newest override, S22);
+  ``settings_raw`` is the newest run's own row value beside the effective ``settings``.
+* ``settings_overrides.jsonl`` — every override row for the exported runs, oldest first, so
+  an effective value can be traced back to the row and the override that made it.
 * ``runs.jsonl`` — every run: timing, status, profile, methodology, machine health, the
   site/client stamps, per-plugin success, **each iteration's registry metrics** (from the
   cached ``details['iteration_metrics']`` — the raw blobs are never loaded for this), the
@@ -63,7 +67,9 @@ from .models import (
     ProfileName,
     Run,
     Score,
+    SettingsOverride,
 )
+from .settings_overrides import effective_fingerprint, effective_settings
 
 log = get_logger("research_export")
 
@@ -239,26 +245,30 @@ def _write_jsonl(zf: zipfile.ZipFile, name: str, records: Iterable[dict]) -> int
 
 def _profiles(session, fingerprints: set[str]) -> Iterator[dict]:
     names = dict(session.execute(select(ProfileName.fingerprint, ProfileName.name)).all())
+    fp_col = effective_fingerprint()
     stats = {
         fp: (first, last, n, newest)
         for fp, first, last, n, newest in session.execute(
             select(
-                Run.settings_fingerprint,
+                fp_col,
                 func.min(Run.created_at),
                 func.max(Run.created_at),
                 func.count(Run.id),
                 func.max(Run.id),
-            ).where(Run.settings_fingerprint.is_not(None)).group_by(Run.settings_fingerprint)
+            ).where(fp_col.is_not(None)).group_by(fp_col)
         ).all()
         if fp in fingerprints
     }
     for fp in sorted(stats):
         first, last, n, newest = stats[fp]
-        settings = session.scalar(select(Run.settings).where(Run.id == newest))
+        settings, settings_raw = session.execute(
+            select(effective_settings(), Run.settings).where(Run.id == newest)
+        ).one()
         yield {
             "fingerprint": fp,
             "name": names.get(fp),
             "settings": settings,
+            "settings_raw": settings_raw,
             "first_seen": _iso(first),
             "last_seen": _iso(last),
             "runs": n,
@@ -275,7 +285,8 @@ def _runs(session, run_ids: list[int], current: str, by_plugin, progress: Callab
             select(
                 Run.id, Run.created_at, Run.started_at, Run.finished_at, Run.status, Run.label,
                 Run.error, Run.iterations, Run.iterations_completed, Run.per_iteration_ms,
-                Run.job_group, Run.settings_fingerprint, Run.methodology_version,
+                Run.job_group, effective_fingerprint().label("settings_fingerprint"),
+                Run.settings_fingerprint.label("fingerprint_raw"), Run.methodology_version,
                 Run.instrument_health, Run.host_pressure, Run.config_used,
             ).where(Run.id.in_(batch)).order_by(Run.id)
         ).all()
@@ -349,6 +360,7 @@ def _runs(session, run_ids: list[int], current: str, by_plugin, progress: Callab
                 "per_iteration_ms": r.per_iteration_ms,
                 "job_group": r.job_group,
                 "fingerprint": r.settings_fingerprint,
+                "fingerprint_raw": r.fingerprint_raw,
                 "methodology_version": r.methodology_version,
                 "instrument_health": r.instrument_health,
                 "host_pressure": r.host_pressure,
@@ -359,6 +371,19 @@ def _runs(session, run_ids: list[int], current: str, by_plugin, progress: Callab
             }
         done += len(batch)
         progress(done)
+
+
+def _overrides(session, run_ids: list[int]) -> Iterator[dict]:
+    """Every override row for these runs, append order (S22): nothing an effective value
+    rests on is hidden from the export."""
+    for batch in _batches(run_ids):
+        for o in session.scalars(
+            select(SettingsOverride).where(SettingsOverride.run_id.in_(batch)).order_by(SettingsOverride.id)
+        ):
+            yield {
+                "id": o.id, "run_id": o.run_id, "field": o.field, "value": o.value,
+                "source": o.source, "reason": o.reason, "created_at": _iso(o.created_at),
+            }
 
 
 def _site_metrics(
@@ -432,6 +457,9 @@ def build(
                 site_skipped,
             ))
         counts["profiles.jsonl"] = _write_jsonl(zf, "profiles.jsonl", _profiles(session, fingerprints))
+        counts["settings_overrides.jsonl"] = _write_jsonl(
+            zf, "settings_overrides.jsonl", _overrides(session, run_ids)
+        )
         counts["methodologies.jsonl"] = _write_jsonl(zf, "methodologies.jsonl", (
             {
                 "version": m.version, "rubric_version": m.rubric_version,
@@ -463,7 +491,10 @@ def build(
             "notes": {
                 "runs.jsonl": "plugins.<plugin>.iterations = one {metric_key: value} per iteration, "
                 "registry metrics only; scores keyed by methodology version (full detail only "
-                "for current_methodology).",
+                "for current_methodology). fingerprint is the effective one (row or newest "
+                "override); fingerprint_raw is the run row's own value.",
+                "settings_overrides.jsonl": "append-only override rows for the exported runs; "
+                "the newest per (run_id, field) is the effective value.",
                 "duels.jsonl": "matchups[].deltas = per-round margins (challenger minus "
                 "reference, Overall points); run_ids in leg order.",
             },

@@ -41,6 +41,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .methodology import ensure_current_methodology, latest_score
+from .settings_overrides import effective_fingerprint
 from .models import Run, RunStatus, Score
 
 log = get_logger("publish_followthrough")
@@ -72,16 +73,16 @@ def iterations_under(session, version: str) -> dict[str, int]:
     counting rule as a profile's confidence (`correlation.min_iterations`): completed runs,
     scored under the version, not quarantined. A run with no iteration count counts as one."""
     rows = session.execute(
-        select(Run.settings_fingerprint, func.sum(func.coalesce(Run.iterations, 1)))
+        select(effective_fingerprint(), func.sum(func.coalesce(Run.iterations, 1)))
         .join(Score, Score.run_id == Run.id)
         .where(
             Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint.is_not(None),
+            effective_fingerprint().is_not(None),
             Score.methodology_version == version,
             Score.comparability != "incomparable",
             latest_score(),
         )
-        .group_by(Run.settings_fingerprint)
+        .group_by(effective_fingerprint())
     ).all()
     return {str(fp): int(total or 0) for fp, total in rows}
 

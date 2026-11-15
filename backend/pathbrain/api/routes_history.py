@@ -12,6 +12,7 @@ from ..config_store import get_config
 from .. import jobs, research_export
 from ..database import get_session, session_scope
 from ..methodology import ensure_current_methodology, latest_score
+from ..settings_overrides import effective_fingerprint, overlay
 from ..models import Run, Score
 from ..schemas import RunSummary
 
@@ -49,7 +50,7 @@ def history_count(
     settings profile (its run history)."""
     stmt = select(func.count()).select_from(Run)
     if fingerprint:
-        stmt = stmt.where(Run.settings_fingerprint == fingerprint)
+        stmt = stmt.where(effective_fingerprint() == fingerprint)
     return {"count": session.scalar(stmt) or 0}
 
 
@@ -62,8 +63,9 @@ def list_history(
 ) -> list[RunSummary]:
     stmt = select(Run).order_by(Run.created_at.desc())
     if fingerprint:
-        stmt = stmt.where(Run.settings_fingerprint == fingerprint)
+        stmt = stmt.where(effective_fingerprint() == fingerprint)
     runs = session.scalars(stmt.limit(limit).offset(offset)).all()
+    overlay(session, runs)
     scores = _current_scores(session, [r.id for r in runs])
     out = []
     for run in runs:
@@ -132,6 +134,7 @@ def history_dump(
     runs = session.scalars(
         select(Run).order_by(Run.created_at.desc()).limit(limit)
     ).all()
+    overlay(session, runs)
     out_runs = []
     for run in runs:
         out_runs.append(

@@ -428,14 +428,17 @@ def _settings_lookup(session, fingerprints: set[str]) -> dict[str, list[dict]]:
     fps = [fp for fp in fingerprints if fp]
     for i in range(0, len(fps), 500):
         chunk = fps[i:i + 500]
+        from .settings_overrides import effective_fingerprint, effective_settings
+
+        fp_col = effective_fingerprint()
         newest = (
             select(func.max(Run.id).label("id"))
-            .where(Run.settings_fingerprint.in_(chunk), Run.settings.is_not(None),
+            .where(fp_col.in_(chunk), effective_settings().is_not(None),
                    Run.status == RunStatus.COMPLETE)
-            .group_by(Run.settings_fingerprint)
+            .group_by(fp_col)
         ).subquery()
         rows = session.execute(
-            select(Run.settings_fingerprint, Run.settings).where(Run.id.in_(select(newest.c.id)))
+            select(effective_fingerprint(), effective_settings()).where(Run.id.in_(select(newest.c.id)))
         )
         for fp, settings in rows:
             if fp not in out and isinstance(settings, list):

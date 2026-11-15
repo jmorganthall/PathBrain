@@ -23,6 +23,7 @@ from ..interpret.smoothness import PERCEIVED_DEFAULTS, smoothness_record
 from ..logging_config import get_logger
 from ..models import BenchmarkResult, Run, RunStatus, ScoreResult
 from ..raw_access import browser_url_observations
+from ..settings_overrides import effective_fingerprint, overlay, overlay_run
 from ..settings_profile import summarize
 
 router = APIRouter()
@@ -117,6 +118,7 @@ def smoothness_for_run(
     run = session.get(Run, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
+    overlay_run(run)
     browser = _browser_result(session, run_id)
     if browser is None:
         raise HTTPException(status_code=404, detail="Run has no browser results")
@@ -194,10 +196,11 @@ def compare_smoothness(
         .where(
             Run.status == RunStatus.COMPLETE,
             BenchmarkResult.plugin == "browser",
-            Run.settings_fingerprint.in_([a, b]),
+            effective_fingerprint().in_([a, b]),
         )
         .order_by(Run.created_at)
     ).all()
+    overlay(session, [run for run, _, _ in rows])
 
     # Comparability is the methodology's call, not a static metric marker: a run counts
     # only if it has a current-methodology Score that isn't quarantined as incomparable

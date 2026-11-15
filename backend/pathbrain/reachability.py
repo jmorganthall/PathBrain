@@ -219,14 +219,17 @@ def audit(session, live, *, limit: int = PROFILE_LIMIT) -> dict:
 def _measurement_spent(session) -> dict[str, tuple[int, int]]:
     """``{fingerprint: (runs, iterations)}`` over every completed run — what was actually
     spent measuring each profile, graded or not."""
+    from .settings_overrides import effective_fingerprint
+
+    fp_col = effective_fingerprint()
     rows = session.execute(
         select(
-            Run.settings_fingerprint,
+            fp_col,
             func.count(Run.id),
             func.coalesce(func.sum(Run.iterations), 0),
         )
-        .where(Run.status == RunStatus.COMPLETE, Run.settings_fingerprint.is_not(None))
-        .group_by(Run.settings_fingerprint)
+        .where(Run.status == RunStatus.COMPLETE, fp_col.is_not(None))
+        .group_by(fp_col)
     ).all()
     return {fp: (int(runs or 0), int(iters or 0)) for fp, runs, iters in rows}
 

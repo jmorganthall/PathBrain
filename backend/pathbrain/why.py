@@ -42,6 +42,7 @@ from . import crown_follower, profile_aggregates, profile_names
 from .config_store import get_config
 from .interpret import derive
 from .logging_config import get_logger
+from .settings_overrides import effective_fingerprint, effective_settings
 from .methodology import (
     latest_score,
     corner_score,
@@ -205,7 +206,7 @@ def decompose_legs(
 def _comparable(version: str, fp: str):
     return (
         Run.status == RunStatus.COMPLETE,
-        Run.settings_fingerprint == fp,
+        effective_fingerprint() == fp,
         Score.methodology_version == version,
         Score.comparability != "incomparable",
         latest_score(),
@@ -247,8 +248,8 @@ def _side_values(session: Session, version: str, fp: str, crown: list[str]) -> d
 
 def _label(session: Session, fp: str) -> str | None:
     settings = session.scalar(
-        select(Run.settings)
-        .where(Run.settings_fingerprint == fp, Run.settings.is_not(None))
+        select(effective_settings())
+        .where(effective_fingerprint() == fp, effective_settings().is_not(None))
         .order_by(Run.id.desc())
         .limit(1)
     )

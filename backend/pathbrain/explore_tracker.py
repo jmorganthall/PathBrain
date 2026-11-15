@@ -42,6 +42,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .methodology import ensure_current_methodology, latest_score, overall_metrics, overall_weights
+from .settings_overrides import effective_fingerprint
 from .models import ExploreRecommendation, ProfileTest, Run, RunStatus, Score
 from .profile_names import names_for
 
@@ -592,11 +593,11 @@ def _measured_fingerprint(session, rows: list[ExploreRecommendation]) -> dict[in
     ).all():
         found[test_ids[pt_id]] = reached
     for group, fp in session.execute(
-        select(Run.job_group, Run.settings_fingerprint)
+        select(Run.job_group, effective_fingerprint())
         .where(
             Run.job_group.in_(list(by_group)),
             Run.status == RunStatus.COMPLETE,
-            Run.settings_fingerprint.is_not(None),
+            effective_fingerprint().is_not(None),
         )
         .order_by(Run.id)
     ).all():
@@ -788,12 +789,12 @@ def recommendations(session, limit: int = 50) -> dict:
                 session, fps, methodology.version, crown_metrics, crown_required, weights
             )
             dated_q = (
-                select(Run.settings_fingerprint, Run.created_at, Run.iterations,
+                select(effective_fingerprint(), Run.created_at, Run.iterations,
                        Score.subscores, Score.comparability)
                 .join(Score, Score.run_id == Run.id)
                 .where(
                     Run.status == RunStatus.COMPLETE,
-                    Run.settings_fingerprint.in_(list(dated_fps)),
+                    effective_fingerprint().in_(list(dated_fps)),
                     Score.methodology_version == methodology.version,
                     latest_score(),
                 )

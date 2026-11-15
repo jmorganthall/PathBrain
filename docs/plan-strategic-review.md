@@ -215,10 +215,18 @@ parallel with C once S4 is done.
   run (same request/response), and `pathbrain/settings_overrides.py` gives the effective value (SQL
   `effective_fingerprint()`/`effective_settings()`, or `overlay()` for loaded runs). Routed: ranking
   (`_completed_runs_with_scores`), `profile_aggregates`, `beliefs`, and routes_settings' own readers.
-- [ ] **S22b. Route the remaining settings readers** through `settings_overrides`: `refresh`, `explore_tracker`,
+- [x] **S22b. Route the remaining settings readers** through `settings_overrides`: `refresh`, `explore_tracker`,
   `why`, `runner`, `publish_followthrough`, `levers`, `reachability`, `instrument_health`, `warm_agreement`,
   `crown_agreement`, `host_adjust`, `portable`, `research_export`, and routes `results`, `history`,
   `score`, `smoothness`. Decide what `/settings/refingerprint` does with an overridden run.
+  Built: all routed except `portable` (it only copies the just-captured run's own value at capture, so
+  it is allow-listed, not routed) and the runner's capture path. `refresh`'s profile cache also keys
+  on the override table (`overrides_stamp`), since an override re-keys an old run without moving max id
+  or count. `research_export` exports effective values plus `fingerprint_raw`/`settings_raw` and a new
+  `settings_overrides.jsonl`. Refingerprint re-keys an overridden run by appending a
+  `settings_fingerprint` override (source `refingerprint`), never writing its row; row-only runs are
+  re-keyed in place as before. Ratchet: `tests/test_settings_overrides_readers.py` counts direct reads
+  per file against an allow-list.
 - [ ] **S23. Instrument health as a derived table.** Move instrument health off the run row
   into a derived, versioned table (`instrument_health_v`), filled by the derive step.
 - [ ] **S24. Version the verdict rules, part 1.** Move the duel's verdict constants
