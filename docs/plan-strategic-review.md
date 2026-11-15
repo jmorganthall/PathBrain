@@ -69,11 +69,14 @@ parallel with C once S4 is done.
 
 ## Phase B: take the host's noise out of the night (rec 1)
 
-- [ ] **S4. Baseline numbers (read-only).** Add `scripts/night_quality.py` that prints, per
+- [x] **S4. Baseline numbers (read-only).** Add `scripts/night_quality.py` that prints, per
   night for the last 30 nights: matches, decisive share, resolving power over 30 rounds, and
   the share of runs whose `host_pressure` attribution is `host`. Save today's output to
   `docs/history/night-quality-2026-11.md`. Done when: the 845 / 342 and ~0.85-point figures
   reproduce (or the gap is explained).
+  Built as `backend/scripts/night_quality.py` (test: `test_night_quality.py`); no live DB from
+  the dev session, so Josh runs `docker exec pathbrain python scripts/night_quality.py --nights 30
+  --tz America/Chicago` on the NAS and pastes the output into `docs/history/night-quality-2026-11.md`.
 - [ ] **S5. Josh: decide the host fix.** Read the NAS slowdown task's finding. Choose one:
   move the NAS's 07:00 UTC job out of the window, end the window before it, or run the
   sensor on a dedicated quiet box. No code.
