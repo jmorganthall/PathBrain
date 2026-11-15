@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     # These two are the exception to the ``PATHBRAIN_`` prefix: they read the **unprefixed**
     # ``WATCHTOWER_URL`` / ``WATCHTOWER_TOKEN`` env vars (a ``validation_alias`` bypasses the
     # class-wide prefix), so they line up with the Watchtower-style naming used in deployment.
+    # Real-browser field records (S32): ``POST /api/field/records`` from the field recorder
+    # extension. Off by default; the route answers 404 until this is set.
+    field_ingest_enabled: bool = False
+
     watchtower_url: str = Field(default="", validation_alias="WATCHTOWER_URL")
     watchtower_token: str = Field(default="", validation_alias="WATCHTOWER_TOKEN")
 

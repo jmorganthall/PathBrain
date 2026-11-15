@@ -302,6 +302,24 @@ def _backfill_duel_judged_under(conn) -> int:
     return done
 
 
+def _migrate_field_records(eng) -> bool:
+    """S32: make ``field_records`` append-only. The table itself is new and comes from
+    ``create_all``; this adds triggers that refuse UPDATE and DELETE, so a raw record is never
+    rewritten or dropped after it arrives. Idempotent. Returns whether the table was there."""
+    from sqlalchemy import text
+
+    with eng.begin() as conn:
+        if not list(conn.execute(text("PRAGMA table_info(field_records)"))):
+            return False  # create_all has not made it (non-model engine); nothing to do
+        for when in ("UPDATE", "DELETE"):
+            conn.execute(text(
+                f"CREATE TRIGGER IF NOT EXISTS trg_field_records_no_{when.lower()} "
+                f"BEFORE {when} ON field_records BEGIN "
+                "SELECT RAISE(ABORT, 'field_records is append-only'); END"
+            ))
+    return True
+
+
 def _migrate(eng=None) -> None:
     """Lightweight migrations for SQLite (additive, plus S21b's one ``scores`` rebuild).
 
@@ -405,6 +423,7 @@ def _migrate(eng=None) -> None:
     ]
     _migrate_scores_unique(eng)
     _migrate_instrument_health(eng)
+    _migrate_field_records(eng)
     with eng.begin() as conn:
         for table, columns in new_columns.items():
             existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}

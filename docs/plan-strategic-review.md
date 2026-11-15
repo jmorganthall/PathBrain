@@ -299,8 +299,15 @@ parallel with C once S4 is done.
   subdomains), granted at install and editable on the options page. Full loads only: SPA in-app
   navigation makes no record, and long tasks count only in the first 10 s. Node tests in
   `extension/test`, run by `backend/tests/test_extension_js.py` when node is present.
-- [ ] **S32. Real-browser ingest.** A raw ingest endpoint that stores the extension's records
+- [x] **S32. Real-browser ingest.** A raw ingest endpoint that stores the extension's records
   unchanged, stamped with the live firewall fingerprint.
+  Built: `POST /api/field/records` (`api/routes_field.py`, `field_ingest.py`) appends each
+  record unchanged to the new `field_records` table (create_all; triggers refuse UPDATE and
+  DELETE). Off by default (404). Differed: the stamp is never a fresh reading. It is the crown
+  follower's last live fingerprint, used only while no firewall write is logged after that
+  check, else NULL; the reading's time and source are stored with it. No provider apply,
+  reload or discover per upload (a test makes them fail). A hand change in OPNsense leaves no
+  ledger row, so analysis should weigh `fingerprint_seen_at`.
 - [ ] **S33. LAN token.** The ingest endpoint and rating page accept only a LAN token from
   config. Tests for accepted and refused.
 - [ ] **S34. Extension uploads.** The extension posts to S32 with the token.
