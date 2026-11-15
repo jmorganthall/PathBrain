@@ -50,6 +50,7 @@ about the machine must never cost a real measurement.
 """
 from __future__ import annotations
 
+import threading
 from statistics import median
 
 from .logging_config import get_logger
@@ -600,7 +601,45 @@ def profile_conditions(session, fingerprint: str) -> dict:
     return out
 
 
+_SLOW_LOCK = threading.Lock()
+_SLOW_CACHE: dict = {"key": None, "value": None}
+
+
+def _slow_stamp(session) -> tuple:
+    """What `slow_profiles` depends on, read cheaply: the completed runs (off the status
+    index), the settings overrides that re-key them, and the health verdicts."""
+    from sqlalchemy import func, select
+
+    from .models import InstrumentHealthVerdict, Run, RunStatus
+    from .settings_overrides import overrides_stamp
+
+    runs = tuple(session.execute(
+        select(func.max(Run.id), func.count(Run.id)).where(Run.status == RunStatus.COMPLETE)
+    ).one())
+    verdicts = tuple(session.execute(
+        select(func.max(InstrumentHealthVerdict.id), func.count(InstrumentHealthVerdict.id))
+    ).one())
+    return (runs, tuple(overrides_stamp(session)), verdicts)
+
+
 def slow_profiles(session, fingerprints) -> set[str]:
+    """Cached `_slow_profiles`: the scan evaluates every completed run's effective health
+    and fingerprint (about sixteen seconds per Profiles load on the NAS), and its answer
+    only moves when a run completes, an override lands or a verdict is written."""
+    fps = tuple(sorted(fp for fp in dict.fromkeys(fingerprints) if fp))
+    if not fps:
+        return set()
+    key = (_slow_stamp(session), fps, HEALTH_VERSION)
+    with _SLOW_LOCK:
+        if _SLOW_CACHE["key"] == key:
+            return set(_SLOW_CACHE["value"])
+    value = _slow_profiles(session, fps)
+    with _SLOW_LOCK:
+        _SLOW_CACHE.update({"key": key, "value": frozenset(value)})
+    return set(value)
+
+
+def _slow_profiles(session, fingerprints) -> set[str]:
     """The profiles among ``fingerprints`` that `profile_conditions` would flag — measured
     mostly while the machine was in its slowest quarter — in two queries rather than two
     per profile, for callers that read the whole ring (`overall_ranking.pooled_slack`).
