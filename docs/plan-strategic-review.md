@@ -84,9 +84,11 @@ parallel with C once S4 is done.
   (`enabled`, `max_host_share`) and a pure function in `host_pressure.py` that says whether a
   run was measured on a quiet host. Unit tests only. Done when: the function is covered and
   nothing calls it yet.
-- [ ] **S7. Quarantine slow-host runs from the duel.** In `duel.py`, a round whose legs fail
+- [x] **S7. Quarantine slow-host runs from the duel.** In `duel.py`, a round whose legs fail
   the host-quiet gate is recorded but not counted, and the match asks for a replacement round.
   Done when: a test with one noisy round shows it excluded and the verdict unchanged.
+  Replacements are capped by `host_quiet.max_replacement_rounds` (default 10) per match; past
+  the cap rounds count as before, so a busy night still decides.
 - [ ] **S8. Blackout hours.** Add `blackout` (list of local hour ranges) to the duel and
   explore schedules in `schedule.py` / `scheduler.py`, so neither starts or continues a round
   inside it. Default empty. Done when: tests cover a window that straddles midnight.

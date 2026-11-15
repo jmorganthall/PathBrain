@@ -240,10 +240,13 @@ DEFAULT_CONFIG: dict = {
     },
     # Host-quiet gate (`host_pressure.measured_quiet`): a round counts only when at most
     # `max_host_share` of its legs ran while the NAS was busy with something other than
-    # PathBrain. Off by default; nothing reads it until an engine opts in.
+    # PathBrain. Off by default. When on, the duel records a failing round but does not
+    # count it, so the match runs a replacement round — at most `max_replacement_rounds`
+    # per match, after which rounds count as before, so a busy night cannot loop.
     "host_quiet": {
         "enabled": False,
         "max_host_share": 0.0,
+        "max_replacement_rounds": 10,
     },
     # What a publish does by itself once history is re-graded (`publish_followthrough`): the
     # prior methodology's top `reseed_top` winners (confident under it) that have fewer than

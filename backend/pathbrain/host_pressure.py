@@ -23,7 +23,8 @@ Counters are read once when a run starts and once when its iterations finish, an
 the **differences** are kept: a cumulative total means nothing without the window it was
 read over. Read-only, dependency-free and best-effort throughout — every source degrades
 to ``None`` where the file is missing (a dev box, a non-Linux host, a cgroup without the
-controller) and nothing here can fail a run. Nothing reads it to grade or gate a run; it
+controller) and nothing here can fail a run. Nothing reads it to grade a run; the only
+gate on it is the opt-in ``host_quiet`` one below, which the duel consults when enabled; it
 is recorded so a slow stretch can be attributed rather than guessed at.
 """
 from __future__ import annotations
@@ -280,7 +281,7 @@ def explain(s: dict | None) -> str | None:
 # ── The host-quiet gate (config ``host_quiet``) ──────────────────────────────────────
 
 #: Used when a config carries no ``host_quiet`` block: the gate is off.
-HOST_QUIET_DEFAULTS = {"enabled": False, "max_host_share": 0.0}
+HOST_QUIET_DEFAULTS = {"enabled": False, "max_host_share": 0.0, "max_replacement_rounds": 10}
 
 
 def host_quiet_config(cfg: dict | None) -> dict:

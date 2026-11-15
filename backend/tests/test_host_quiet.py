@@ -11,7 +11,7 @@ UNREADABLE = {"host_cpu_pct": 90.0}  # busy, but no container share: attribution
 
 
 def test_the_gate_ships_off():
-    assert DEFAULT_CONFIG["host_quiet"] == {"enabled": False, "max_host_share": 0.0}
+    assert DEFAULT_CONFIG["host_quiet"] == {"enabled": False, "max_host_share": 0.0, "max_replacement_rounds": 10}
     assert hp.measured_quiet([HOST, HOST], DEFAULT_CONFIG) is True
 
 
@@ -39,6 +39,6 @@ def test_no_reading_never_quarantines():
 
 
 def test_the_block_alone_or_a_partial_block_reads_over_the_defaults():
-    assert hp.host_quiet_config(None) == {"enabled": False, "max_host_share": 0.0}
-    assert hp.host_quiet_config({"enabled": True}) == {"enabled": True, "max_host_share": 0.0}
+    assert hp.host_quiet_config(None) == hp.HOST_QUIET_DEFAULTS
+    assert hp.host_quiet_config({"enabled": True}) == {**hp.HOST_QUIET_DEFAULTS, "enabled": True}
     assert hp.measured_quiet([HOST], {"enabled": True, "max_host_share": 1.0}) is True
