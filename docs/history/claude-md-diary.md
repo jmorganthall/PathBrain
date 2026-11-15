@@ -1,0 +1,4079 @@
+# CLAUDE.md design diary (moved 2026-11-15)
+
+This is the former `## Layout` section of CLAUDE.md (lines 10–4081 at commit 3033502), moved
+here verbatim by sprint S1 of `docs/plan-strategic-review.md`. It records why each module
+is the way it is. It is history, not rules: when it disagrees with CLAUDE.md or the code,
+those win.
+
+## Layout
+
+- `backend/pathbrain/` — FastAPI app (the core). Key modules:
+  - `plugins/` — benchmark plugins (`icmp/dns/tcp/tls/http/browser`) that are
+    **pure sensors: they emit raw observations only** (`PluginResult.raw`) and never
+    interpret. `base.py` defines the contract + registry. Add one by subclassing
+    `BenchmarkPlugin` and `@register`. (icmp emits per-ping RTT series, http emits
+    bytes+timing, browser emits raw nav/paint/CLS/long-task + Resource Timing/LoAF
+    entries, and an optional filmstrip.)
+  - `interpret/` — **the interpretation layer** (`derive.py`, versioned
+    `DERIVATION_VERSION`). Turns raw observations → scoreable metric values:
+    `jitter`=stddev(RTTs), `latency`=mean, `transfer`=bytes·8/dl, the **byte-arrival
+    smoothness** metrics (`smoothness.py`: longest stall / **stall energy** (`√Σgap²`, the
+    crown's smoothness leg) / stall time / cadence CoV / byte earliness / delivery Gini /
+    perceived time / jank fraction / network-vs-render stall attribution, all from Resource
+    Timing + LoAF — no pixels; the whole instrument is **bounded to the page load**,
+    `resources_within_load`, so a late background fetch can't inflate the stall metrics),
+    the **navigation waterfall** (`waterfall.py`: the load's independent phases —
+    `nav_dns`/`nav_tcp`/`nav_tls`/`nav_request`/`nav_response`/`nav_render` — from Navigation
+    Timing marks, so DNS/TCP/TLS setup can be split out from render), and the pixel diagnostics
+    (Speed Index / paint cadence / CLS from the optional filmstrip); `fcp`/`lcp` are identity
+    pass-throughs. This is the **only** place interpretation lives, so a new metric or
+    changed formula can be re-derived over history without re-collecting.
+  - `providers/` — firewall config discovery + **apply** (`opnsense.py`,
+    `mock.py`); pick via `PATHBRAIN_CONFIG_PROVIDER`. OPNsense reads `fqcodel_quantum/limit/
+    flows` + `codel_target/interval/ecn` and writes all but `fqcodel_flows` (captured, never
+    changed — see `shaper_fields`);
+    `apply()` does `setPipe` + `reconfigure` and is the **only firewall-write path**.
+    `discover()` (read) + `apply()` (write) are the one read/write path; a provider's
+    `writable_fields()` is the single accessor for *what it can change*.
+    **A pipe's speed is two OPNsense fields** (`bandwidth`, a whole number, and
+    `bandwidthMetric`, a bit/Kbit/Mbit/Gbit select): `discover` joins them into `"880Mbit"` and
+    `apply_many` splits them again (`opnsense.split_bandwidth` — a bare number keeps the pipe's
+    unit, a fraction steps down a unit until it is whole, an unreadable value fails before
+    anything is written). It used to write the joined string into the integer field alone,
+    which the firewall rejects. **Every `setPipe` reply is read** (`_rejection`): OPNsense
+    answers a validation failure with HTTP 200 and `{"result": "failed", "validations": …}`,
+    so the status alone said nothing and a rejected write was ledgered `ok`. A rejection now
+    raises `providers.base.FirewallRejectedWrite` (a `ValueError`: never retried, ledgered
+    `failed`), puts back any pipe the same call had already saved, and skips the reload.
+    `test_firewall_write`.
+  - `firewall_write.py` — **the one way PathBrain changes the firewall.** Three functions,
+    and every engine calls one of them rather than a provider method: `apply_changes`
+    (a change list as ONE switch: `apply_many`, one shaper reload; drops `None` values and
+    planner-only keys; `dry_run`; `reload=False` for the write probe alone),
+    `set_pipes_enabled` (the baseline test's SQM off/on; `best_effort` for restores) and
+    `reload_shaper` (the write probe's reload-only step). It used to be seven shapes — two
+    private `apply_many` wrappers, a sweep that restored one field at a time (and on startup
+    restored only a hard-coded quantum + target, stranding a swept CoDel interval), an
+    apply-best that paid one shaper reload per field — so a fix to how PathBrain writes could
+    reach some callers and miss others. `profile_test._apply_all` stays as a name (engines and
+    their tests import it) and delegates. The policy is still `session_runtime`'s guarded
+    provider underneath; this module owns the *shape*.
+    `test_no_module_writes_the_firewall_except_through_firewall_write` is an AST scan that
+    fails on any `.apply`/`.apply_many`/`.set_pipe_enabled`/`.reconfigure` call outside it,
+    `session_runtime` and `providers/`.
+  - `shaper_fields.py` — **single source of truth for the SQM field model.** Each
+    `ShaperField` (key, label, kind, `identity`/`writable`/`sweepable`) is declared once;
+    `CANON_FIELDS` (profile identity / fingerprint), `FIELD_LABELS`, `WRITABLE_FIELDS`,
+    `NON_WRITABLE_FIELDS`, and `SWEEPABLE_FIELDS` all derive from it, so `settings_profile`,
+    the providers, and the sweep/experiment engines share one definition instead of
+    re-listing field names. Invariants (writable ⊆ identity; sweepable ⊆ writable; the read
+    model `FqCodelConfig` and OPNsense `_PARAM_FIELD` cover the registry) are asserted at
+    import **and** in `test_shaper_fields` — the relationships that used to drift in comments
+    and produced the "valid but unappliable profile" challenger bug. Adding a shaper field =
+    one entry here.
+    **`flows` is captured but never written**, and one facet on one line is the whole
+    mechanism. Every other shaper parameter is a value the running shaper *reads*; the flow
+    table decides how many queues dummynet allocates, so changing it — `1024 → 1025` included
+    — forces a full rebuild rather than a re-read, and the rebuild takes the link down while
+    it happens. The write ledger settled it: **every** write carrying `flows` timed out the
+    30 s `apply_many` and took the box off the network for 30–35 s (the write probe's restore
+    35.3 s with the box silent 33.3 s and the through-target 34.2 s; a duel leg's
+    `flows,quantum` 30.2 s, box silent 30.6 s, the leg FAILED), and **every** write in the
+    same hours that did not carry it was clean and sub-second (a bare shaper reload 420/449/
+    492 ms, `quantum` + reload 521 ms, `limit` + reload 498 ms). Twenty rows, no exceptions —
+    and `levers.MECHANISM` predicts the field moves nothing measurable on an unsaturated
+    link, so the outage bought nothing either. What made it invisible for months is that
+    nobody ever asked to set it: `plan_apply` writes only the fields that *differ*, so while
+    every profile shared one flows value no switch ever wrote it, and the day a profile with
+    a different one entered the field every switch to or from it rewrote the flow table.
+    `identity=True` stays, which is the "capture" half: the field is still discovered, still
+    stored per run, still part of the fingerprint. Dropping `writable` is the "never change"
+    half, and because it therefore joins `NON_WRITABLE_FIELDS` it joins
+    `environment_signature` too — so a profile whose flows differs from the live firewall now
+    reads as **unreachable**, and the duel, the challenger race and the heirs card leave it
+    alone instead of switching to it. Two seams state the consequence rather than hiding it:
+    `settings_profile.unreachable_fields` (the counterpart to `unwritable_diffs` — that one
+    answers "which writable fields did the planner drop on a pipe it can't address?", this
+    one "which differences are not writable at all?") is **warned** on `apply-profile`, where
+    a partial apply is the user's call and the confirm dialog names what stays put, and
+    **refused** on `test-profile`, where it isn't: a top-up measures whichever profile the
+    firewall settled on, files those runs under *its* fingerprint — correctly — and so would
+    add iterations to the wrong profile for ever while this one never reached confidence.
+    The decision lives here, and two locks sit behind it: `firewall_guard.before_write`
+    refuses any change naming a shaper field the registry doesn't mark writable — the only
+    thing it refuses, and a **permanent** refusal, which is why `describe_failure` states it
+    without offering any remedy (there is no state to clear; the rate valve that once sat
+    beside it is gone — see `firewall_guard`) — and `write_probe.NEVER_STEP`
+    keeps the field out of the sweep with the flow-table reason attached. The pipe on/off
+    toggle (`param: "enabled"`) is not a shaper field and is untouched.
+  - `reachability.py` — **"Can this profile exist?"** (`GET /api/methodologies/reachability`,
+    the card of that name on the Methodology page; `GET /api/settings/profiles/{fp}/settings`,
+    the **Settings** card on Profile Detail). Every other audit on that page asks whether a
+    *measurement* is sound; this one asks whether a profile is still **raceable**, which
+    became a live question the day `flows` stopped being writable. A profile differing from
+    the live firewall in a field PathBrain never writes can't be applied, so the duel, the
+    challenger race and the heirs card skip it — correctly, and **silently**: a ledger of
+    hundreds becomes a ladder of a dozen with nothing on screen saying why. Two causes, named
+    apart: `field` (a non-writable field differs — `settings_profile.unreachable_fields`) and
+    `pipe` (the planner can't address the pipe at all — `unwritable_diffs`).
+    **It reports, and it never prescribes.** The first cut led with the *move*: unreachable
+    profiles grouped by the exact change set that would restore them, ranked by the
+    measurement each one brought back, the top row reading *Flows 1024 → 512*, on the
+    reasoning that "87 profiles are unreachable" is a fact nobody can act on while a named
+    change is a decision. It had no button and it was still the one thing this card must not
+    do — the field is unwritable **because** writing it took the link down for ~30 s every
+    time, so computing the most valuable flow-table change and putting it on screen
+    re-creates the hazard as a recommendation, and a change PathBrain works out is one
+    PathBrain is answerable for. The grouping survives; the framing does not. Profiles are
+    grouped by **what they were measured at** (`measured_at`), biggest first, priced in
+    profiles *and* in measured iterations — a hundred thin profiles and six well-measured
+    ones are not the same loss — each group stated about the past (*"wan-download · Flows 512
+    (the firewall is on 1024)"*), with no target presented as an action and no ranking of
+    what to change first. The verdict ends where the evidence does: those profiles are out of
+    the running, and anything worth having among them can be measured again as a reachable
+    profile. Iterations are read from the **runs**, not the scored rollup: the rollup counts
+    only what the current methodology grades, so a profile a publish quarantined would report
+    zero and understate exactly the loss being priced. Read-only — the cached stored-profile
+    list, one rollup read, one ledger read (the ring rounds already fought on a profile that
+    can no longer be extended). The per-profile view answers the same question for one
+    profile, laying out every registry field per pipe with what the firewall is on and
+    whether PathBrain may write it — **served from the server** because which fields are
+    writable is the registry's answer, not a component's (a hardcoded list is what offered
+    the ECN field a value of 4096), and formatted with `format_display` so a CoDel target
+    never renders "5msms". Both run the one primitive, so the field audit and the profile
+    card can never disagree about what is out of reach. `test_reachability` +
+    `test_no_unwritable_field_is_offered` (below).
+  - `metrics.py` — **single source of truth for metrics.** Each `MetricDef` (key,
+    plugin+source_key, axis, default weight/thresholds, label/description/unit/
+    direction, `marks_latest`) is defined once; `METRIC_SOURCES`, the config
+    weights/thresholds, `LATEST_METRIC_KEYS`, and the `/api/metrics` catalog (which
+    the frontend's `MetricCatalogProvider`/`useMetricMeta` consume) are all derived
+    from it. Adding a measurement = one entry here (+ the plugin emitting it). It also holds
+    the **metric ledger** (`METRIC_ROLES`): every metric is bucketed into exactly one role —
+    **W** weather instrument (probe sockets: dns/tcp/tls/latency/jitter/loss/download), **N**
+    navigation network phase (the `nav_*` waterfall), **C** client CPU (render/inp/cls,
+    shaping-immune), **S** byte-arrival shape statistic (stall_energy/longest_stall/…), **O**
+    opaque milestone sum (fcp/lcp/load_event — span multiple buckets). `RANKABLE_ROLES = {N, S}`
+    is the coarse gate (`rank_eligible`/`ineligible_scored`) that keeps weather + opaque metrics
+    out of *automatic* headline/axis ranking; the crown may still explicitly name an `O` metric
+    (v10 corners over FCP/LCP by design). **The crown's hard rule is executable**
+    (`CROWN_FORBIDDEN_ROLES = {W, C}`, `crown_ledger_violations`): a weather instrument or a
+    client health-check can never be a crown leg — a probe socket's TTFB measures the probe's
+    own connection and render/INP/CLS are the measuring machine's CPU, so a crown over either
+    grades the weather or the host, not the shaper. The ledger used to say "O: never ranked"
+    while every crown since v10 named FCP and LCP and nothing checked either claim (the
+    review's M8); the enforceable half is W/C never, O explicitly, N/S freely, and
+    `methodology.py` asserts it at import over every registered version
+    (`KNOWN_CROWN_LEDGER_VIOLATIONS` lists v5's `inp` as frozen history; the current version
+    must be clean — `test_crown_legs_are_never_weather_or_client`). Completeness is asserted at
+    import — adding a metric forces a role choice.
+  - `scoring/engine.py` — the generic score **primitive**: `compute_score` takes a
+    metric set + weights + thresholds and returns a 0–100 weighted average on a
+    perception-calibrated log curve, redistributing missing-metric weight. Axis-
+    agnostic; *which* metrics form *which* axis lives in `methodology.py`.
+  - `methodology.py` — **the published, versioned rubric** (derivation + axis
+    weights/thresholds + the first-class Overall), append-only. `CURRENT_METHODOLOGY` =
+    `speed-smoothness-v17` — **a real SHAPE leg in the crown: FCP 1 · LCP 1 · cadence_cov 1
+    (weighted)**. v13–v16's smoothness leg `network_stall_all` is the load's duration minus its
+    render time, so on synthetic series an even 100 ms cadence and an 850 ms void-then-dump over
+    the same span scored identically and the optimizer could not see stall-then-lurch (the
+    review's M1); at weight 0.5 beside two time-to-milestone legs it was swamped anyway (FCP
+    0.44 pts per 10 ms against the stall leg's 0.10, M2); and its `best = 0` threshold put it on
+    a **linear ramp** — `scoring.engine._normalize` takes the perceptual log curve only when
+    `best > 0` — so the one "smoothness" leg was the one leg not perception-calibrated at all
+    (M3). `cadence_cov` (`interpret/smoothness.cadence_cov`, the coefficient of variation of
+    the gaps between resource completions, floor-free and scale-free) was already derived for
+    every run and already scored in Smoothness at 0.2/2.5 on the log curve, so **v17 is a
+    re-grade from cached scalars, no re-derive** (`DERIVATION_VERSION` unchanged). The three
+    legs are even, so the shape leg carries real weight. `network_stall_all` keeps its
+    Smoothness weight with `best` **0 → 10 ms** (R5: a positive log anchor, the scale
+    `longest_stall` anchors at) and keeps `required: True` explicitly — the crown no longer
+    names it, and without the flag the pre-LoAF runs derive-v14 quarantined (it omits the
+    metric rather than fabricating 0) would silently have become comparable and entered the
+    ranking. CLS keeps `best = 0` deliberately: a ratio with a true zero, not a time. Two
+    guards are executable at import: `linear_ramp_legs` (no current crown leg at `best ≤ 0`;
+    `test_no_current_crown_leg_anchors_best_at_zero`) beside the ledger guard above. **What the
+    publish changed in the ranking is measured, not remembered**: `crown_agreement.py`
+    (`GET /api/methodologies/crown-agreement?a=&b=&min_runs=`, the **Crown agreement between
+    versions** card on the Methodology page) prices every confident profile's cold medians
+    under two versions — each with its own thresholds and weights, through the one
+    `warm_agreement.overall_for` — ranks both ways and reports Spearman ρ, the #1 under each,
+    the pooled crown's rank under each and the biggest movers; `a` defaults to the registry
+    version before `b` and `b` to the current one, either may name any registry or stored
+    version (so a version written but not yet current can be audited before the flip), and
+    the verdicts are the warm audit's (`agree` / `same_top` / `disagree` / `insufficient`).
+    `instrument_drift.CROWN_KEYS` and `portable.CROWN_STAND_INS` follow the new leg
+    (`test_instrument_drift_crown_keys_cover_the_current_crown`; the cadence of the synthetic
+    waterfall's completions stands in for a real page's). `test_crown_agreement`,
+    `test_current_methodology_is_v17_rubric`. **`speed-smoothness-v18` is a CANDIDATE, not
+    current**: FCP 1 · LCP 1 and nothing else in the crown, every other assignment v17's —
+    written so the Crown agreement card can price it against the current version before
+    anyone decides to publish it. Nothing adopts a registry version on its own; it becomes
+    current only if `CURRENT_METHODOLOGY` or the version picker is pointed at it.
+    `test_the_fcp_lcp_candidate_is_registered_but_never_current`. **v16** was **v15's browser metrics, thresholds and weighted crown
+    byte-for-byte, minus every metric a probe plugin supplied** (the HTTP-socket `ttfb` and the
+    Completion axis `dns`/`tcp`/`tls`/`jitter`/`packet_loss`), because runs now **measure only
+    what the methodology requires** (`config.measurement.methodology_only`, default on:
+    `runner.measurement_scope` skips every plugin outside `methodology.required_plugins` — the
+    browser — plus the `always` list, the `portable` reference; the browser's per-plugin
+    iteration cap is lifted so every iteration measures the crown; the decision is baked into
+    `config_used["measurement"]["applied"]`). The probes never fed the crown and cost about half
+    of every run; a rubric still scoring them would have graded every new run *partial* and
+    changed Responsiveness's composition mid-history. Old runs' probe metrics are ignored, not
+    quarantined — re-grade from cached scalars, no re-derive. Weather keeps reading the
+    browser's `nav_dns`/`nav_tcp`/`nav_tls`/`nav_request` phases (≥ `WEATHER_MIN_COVARIATES`).
+    The post-load `networkidle` settle is the other half of the browser's time and is
+    **deliberately left alone**: the stall metrics are bounded to `loadEventEnd`, so the wait
+    can only move LCP, and only when a page paints its largest element after load — an empirical
+    question about the measured sites that `idle_audit.py` (`GET /api/methodologies/idle-audit`,
+    the **Idle-wait audit** card on the Methodology page) answers off stored raw, recommending
+    the smallest `browser.networkidle_timeout_s` that would have caught every observed late LCP;
+    lowering it below that would change a crown metric and is a methodology decision.
+    The description below is of the v13 rubric these versions inherit; v13 scored **three headline
+    axes** (the temporal phases of a load; each metric maps to exactly one axis):
+    - **Responsiveness** (time-to-first): byte-earliness (30) + FCP (25) + TTFB (15).
+    - **Smoothness** (steady fill): longest-stall (40, required) + network-stall-all (30)
+      + cadence (15) + evenness (15).
+    - **Speed** (time-to-last + interactive): LCP (40) + INP (40) + render (20) +
+      load-event (20).
+    Plus secondary **Stability** (CLS) and **Completion** (DNS/TCP/TLS/jitter/loss),
+    kept out of the headline since they barely move human feel. The **Overall** is a
+    first-class, versioned roll-up defined here (`overall_from_definition` /
+    `corner_score`) and persisted to `Score.axis_scores["overall"]` at scoring time — the
+    corner over **FCP × LCP × network_stall_all** (quickest first response × perceptual "main
+    content visible" × floor-free network-attributed dead-air): the three things that separate
+    profiles — shows initial progress fastest × loads fastest × spends least time stalled on the
+    network. FCP and LCP are *native* browser paint timestamps; `network_stall_all`
+    (`interpret/smoothness`, `stall_attribution_times(..., min_stall_ms=0)`) is the summed duration
+    of every network-attributed inter-resource gap with **no minimum-gap floor** — so it counts the
+    sub-perceptible RTT/handoff gaps a page load on fiber is made of (the resource waterfall is
+    gated by round trips — DNS/TCP/TLS/request + ACK pacing — not bandwidth), which fq_codel's
+    fairness/AQM actually moves. Render-covered time is excluded (via LoAF/long-task overlap), so it
+    isolates the shapeable share. It is **deliberately below human perception** — the objective is
+    to *crown the best profile* by measured network dead-air, not to gate on human-noticeable
+    hitches (**v13**). This replaced `worst_void_fraction` (the FCP→load "pregnant pause" fraction,
+    v11/v12), which read **0 for every profile on a fast link** because its 200ms perceptible-stall
+    floor discarded exactly these sub-perceptible handoff gaps — an inert crown leg. `load_event`
+    stays a scored Speed metric but is no longer a crown metric. v5 introduced the first-class Overall (then fcp/perceived_time/inp) and
+    re-anchored the time-to-content `best` thresholds (TTFB 30, FCP 150, byte-earliness
+    150, LCP 150ms); **v6** decomposed the crown — `perceived_time` (which baked an
+    uncalibrated 4× stall penalty into a duration) is dropped from scoring and kept as a
+    display-only diagnostic, replaced by the independent `total_stall` (cumulative time
+    behind the load's own median pace; `interpret/smoothness.total_stall`) + the built-in
+    `load_event`. **v7** swaps the crown's completion leg `load_event → lcp` — the *technical*
+    page-load (all resources fetched) for the *perceptual* "main content visible" milestone —
+    so the crown corners over three independent dimensions instead of two correlated paint
+    milestones + completion (identical axes/thresholds to v6; only the `overall` spec moved).
+    **v8** swaps Smoothness's scored stall metric + the crown's stall leg `total_stall → stall_time`:
+    the *relative* `total_stall` (excess of each completion gap over the run's **own median** pace —
+    an average baked into the metric, so a profile's stall standing is a comparison of
+    deviations-from-own-baseline) is replaced by the *absolute* `stall_time` (summed duration of
+    every gap over a fixed 200ms perceptible-stall threshold; `interpret/smoothness.stall_time`).
+    Like FCP/LCP measure an actual timestamp, `stall_time` is an **actual per-run measurement**
+    against a fixed yardstick — the same for every run — so Settings-Impact compares profiles on
+    real measured dead-air instead of averages-of-averages. `total_stall` stays a display-only
+    diagnostic. derive-v5 adds `stall_time_ms` (purely additive), so history re-grades straight
+    from raw — every run with resource-timing raw gains an actual `stall_time`.
+    **v9** (short-lived) reworked the crown to rank only *rank-eligible* ledger roles (see the
+    `metrics.py` W/N/C/S/O ledger below), swapping the crown legs to `nav_response`/
+    `byte_earliness`/`jank_fraction` — chosen for shaper-movability. **v10** reverts that: it
+    returns the crown to **FCP × LCP × stall_energy** (the first-principles felt outcome —
+    what the human experiences, not what the shaper can move) and takes `stall_energy` as the
+    Smoothness scored-stall metric. The crown deliberately corners over FCP/LCP even though
+    they're ledger role `O` (opaque milestones): the coarse rank-eligibility gate keeps
+    weather/opaque metrics out of *automatic* headline inclusion, but the crown explicitly names
+    its metrics — the finer positive selection is the crown's job. **v11** refines the crown's
+    smoothness leg `stall_energy → worst_void_fraction`: `stall_energy` was absolute ms (√Σgap²
+    over the whole in-load fill), which spanned past LCP (punishing a post-content tail the user
+    never felt) and, being absolute, *correlated* with LCP — double-counting a slow load's freeze
+    on both the LCP and smoothness legs. `worst_void_fraction` is the *scale-free* longest void
+    **within the FCP→LCP window** as a fraction of it, so it measures only the evenness of the
+    journey to main content, decoupled from the LCP endpoint — a fast-but-lurching load now scores
+    badly on smoothness even with a good LCP (`stall_energy` → display-only, exactly as
+    `stall_time` replaced `total_stall`). `derive-v11` adds `worst_void_fraction`
+    (purely additive → history re-grades straight from raw). **v12** widens that leg's window
+    `FCP→LCP → FCP→loadEventEnd` (same crown metric, `derive-v12`): on a fast link FCP→LCP is
+    near-instant, so the felt pause is in the *post-LCP settle* the LCP window read as 0 (an inert
+    leg). Widening only reverts the *window* decision — the metric stays a scale-free *fraction*, so
+    unlike v10's absolute `stall_energy` it still doesn't correlate with the load duration or
+    double-count the freeze. v12 also re-anchors two saturated `best` thresholds to the fastest
+    measured value (DNS 1.0 → 0.8ms; page-load 800 → 556.2ms) — secondary axis metrics, so this
+    sharpens their subscores + clears the saturation warnings without moving the Overall.
+    `runner.score_metrics_under` scores every axis generically via
+    `axis_rubric` + `compute_score`, persisting per-axis results + Overall to
+    `Score.axis_scores` (JSON). Predecessors (`speed-smoothness-v1..v5`, earlier rubrics)
+    are frozen for old at-measure scores. The crown metric set is read from the current
+    methodology's `overall` spec (`overall_metrics`) as the single source of truth, so the
+    persisted Overall, the live fallback, and the challenger race never drift.
+  - `config_store.py` — DB-backed runtime config + defaults (targets, weights,
+    thresholds, `iterations`, `monitoring`, `correlation`, `trends`, `experiment`,
+    `rubric_version`). **A measured default change is carried onto stored config once**
+    (`upgrade_config`, `CONFIG_UPGRADES`, run from `main.lifespan` right after `init_db`): a
+    default is only a default until a value is stored, and the Duels page stores the whole
+    statistical block the moment a preset is chosen, so a better default that lands in a
+    release never reaches an install that has ever touched the page. Each upgrade is named,
+    recorded on its own `AppConfig` row (`config_upgrades`, never in the effective config) so
+    it runs exactly once and a value set by hand afterwards is never revisited, and moves a
+    value only *from the old default it replaces* — an install on the quick preset, on four
+    iterations a round or on the floor rule chose that and keeps it. The three shipped:
+    `iterations_per_round` 3 → 5, the snap preset → balanced, `crown_rule` lineal → rating
+    (all three measured under `duel.py`). `test_duel_winner_rule` pins once-only, old-default-
+    only and fresh-install-untouched.
+  - `runner.py` — orchestrates a run across plugins (derives metrics from raw via
+    `interpret`, median-aggregated over iterations, per-run SOPS confidence band),
+    stores `BenchmarkResult.raw` as the source of truth, captures the firewall
+    settings + fingerprint per run, and holds run-lifecycle safety
+    (`reconcile_interrupted_runs`, `fail_stale_runs`, `rescore_run` = re-grade cached
+    scalars under a new rubric, `rederive_run` = re-run derivation+scoring from raw).
+  - `trends.py` — historical baselines by day-of-week × hour-of-day (viewer-local);
+    `relative_reading`/`profile_relative` give a time-adjusted "vs typical" delta
+    ("wins above replacement"). Powers `/api/trends/*` and the Dashboard delta chip;
+    `relative_overall` stays in the profiles payload (feeds `best_diff`) but is no longer a
+    surfaced column. The per-cell fallback-ladder resolution is memoized (`_BaselineResolver`,
+    ≤7×24 cells) — the per-run ladder scan + median used to make Settings-Impact quadratic in
+    history. (The old ±2h `rolling_baseline_deltas`/`profile_weather_relative` reading was
+    **deleted**: the firewall sits on one profile for hours, so a time window rarely held a
+    real cohort — time was only a proxy for conditions.)
+  - `weather.py` — **measured-weather severity + cohort residuals ("wins above the
+    weather")**, the one canonical "vs weather" reading. Weather is defined by **each run's
+    own clean covariate readings** (probe DNS/TCP/TLS/latency + nav setup phases —
+    `routes_settings._weather_covariates`, `clean` = profile-orthogonal; shaped signals like
+    download/`nav_response` are never used), not by the clock: `run_severities` ranks each
+    covariate against its all-history distribution and takes the median percentile (0–100
+    severity, "DNS at 4 ms when median is 1 ms" = high); `cohort_residuals` bands runs into
+    severity quintiles and compares each run's Overall against **other profiles' runs in the
+    same band** (own runs excluded; `WEATHER_COHORT_MIN` others required — no cohort, no
+    claim). Surfaced per profile as `weather_relative` ({delta_median,p25,p75,count,coverage},
+    the **"vs weather"** column), `weather_severity` (median conditions sampled under — a
+    sampling-fairness readout), and the **`weather_beater`** flag (residual standing ≫ raw
+    standing = "delivered average outcomes where the field delivered below-average — race
+    it"); response-level **`weather_crown_suspect`** (residual ranking's top ≠ raw crown →
+    "crown may be weather-confounded" alert). Strictly **flag-and-steer: never a crown
+    input** — a suspect triggers a race (contemporaneous head-to-head raw data), never a
+    re-rank. Empirically gated by `GET /settings/weather-sensitivity` (per clean-covariate ×
+    crown-metric Spearman ρ, pooled + **within-profile**, rendered on the dedicated
+    **Weather** tab (`Weather.tsx`, `/weather` — auto-loads, since the endpoint is memoized
+    on the field stamp; Settings Impact keeps a fetch-free one-line pointer strip beside the
+    per-profile "vs weather" columns, the same pattern as the Duel ladder pointer). The same
+    response carries the **variance decomposition**
+    (`routes_settings._weather_variance` + `stats.ols_residual_ss`, the "How much of the
+    noise is measurable weather?" card on that tab): per crown metric + the per-run
+    Overall, the **adjusted within-profile R²** of the clean covariates jointly — demeaned
+    per profile (pure-arithmetic fixed effect, so a covariate that only differs *between*
+    profiles is the profile in a weather costume and explains exactly nothing —
+    `test_weather_variance_is_strictly_within_profile` pins it), df-charged for both the
+    per-profile means and the covariates, solved by a dependency-free ridge-guarded OLS.
+    Read as a **ceiling, not a promise** (linear, in-sample): it is the most any
+    covariate-based weather adjustment could remove, and its complement — conditions no
+    probe sees plus run noise — is the duel's paired design justified as a measured number.
+    `within_sd`/`residual_sd` translate the share into ± run noise before/after the best
+    linear use of the covariates. Strictly informational; no scores change. The metric-based **"Weather-adj"** reading
+    (`weather_adjusted_overall`, setup-stripped fcp/lcp) remains in the API payload but is
+    **no longer rendered** — `weather_relative` is the one surfaced "vs weather" reading.
+  - `sweep.py` — **Shotgun Sweep**: an on-demand foreground sweep of a grid over the
+    registry's `SWEEPABLE_FIELDS` (quantum, CoDel target/interval, and a pipe's **bandwidth** —
+    off by default, in Mbit, and only ever *lowered*: `ShaperField.never_above_live` drops any
+    variant above the pipe's live rate at start and in the preview, since above the real line
+    rate the shaper stops shaping and PathBrain cannot know that rate; Explore likewise never
+    steps bandwidth past the fastest rate already run). Applies each variant for real,
+    benchmarks it, **restores the baseline at the end** (`reconcile_interrupted_sweeps`
+    restores on startup too). Variant generation, value formatting (`shaper_fields.format_value`
+    — the bare-number **wire** value; `format_display` adds the unit for labels only), apply,
+    label, and restore all iterate `SWEEPABLE_FIELDS`, so marking
+    another field sweepable in the registry extends the engine with no new branch. The Shotgun
+    Sweep **UI** is driven the same way: `GET /api/sweep/fields` returns each sweepable field's
+    label/unit/default range (from `ShaperField.sweep_default`) and the page renders a control
+    + a results column per field — so a new sweepable field needs no frontend edit. Runs in its
+    own thread; the scheduler yields while `sweep.active()`.
+  - `schedule.py` — **what is scheduled to run next, across every source** (`GET /api/schedule`,
+    the Dashboard's **"Next scheduled"** tile). The Dashboard could say when the next
+    *monitoring* run was due and nothing else, which is the wrong half of the answer:
+    monitoring is the small, frequent, unsurprising piece, while a duel window opening at
+    03:00, a nightly unshaped baseline test or an armed experiment change what the platform
+    is doing for hours — and announced themselves only by taking the pipeline, so "nothing is
+    running" and "a duel opens in twenty minutes" read identically. Each engine stores its
+    schedule in its own shape (an interval for monitoring, a wall clock for the duel and the
+    baseline test, a weekday-plus-hour-range window for the experiment, a bare cadence for
+    crown-follow), and that is why this is a module rather than a fourth inline computation:
+    `routes_baseline` had the daily-time arithmetic written out by hand and the duel had none
+    at all, so a fourth copy is where they would have started disagreeing about what "next"
+    means. Every time is emitted as a real UTC **instant** with an offset — a schedule is
+    stored in the zone the user saved it from and rendered in the viewer's, so the conversion
+    happens exactly once and is labelled. Two deliberate refusals to guess: a **disarmed**
+    schedule is listed and marked rather than dropped ("the duel is off" and "the duel is six
+    hours away" are different answers, and a list that omits the first can't tell them apart),
+    and a schedule that is a **cadence rather than a clock** (continuous duel, crown-follow)
+    reports its interval with no time, because it starts whenever the pipeline is free and
+    naming an hour would be inventing one. **`next` never names routine work**
+    (`ROUTINE_KINDS` = monitoring): the Monitoring tile beside it already says when that run
+    is due, and a "Next scheduled" that repeated it hid the answer the tile exists for — the
+    overnight duel, the baseline test, the experiment window. Monitoring stays in `upcoming`
+    (the hover is the whole schedule). With no clocked event the tile names an armed cadence
+    (*Duel ladder · continuous · 30 min gap · no fixed time*) rather than "on demand".
+  - **A nightly schedule is a window, not an instant** (`scheduler._schedule_due`,
+    `SCHEDULE_CATCHUP_MINUTES`). Reported as *"our overnight duels didn't run at all"*, and
+    it was two things compounding. The loop **abandons the rest of its tick whenever the
+    pipeline is busy** (`if coordinator.busy(): continue`) — so it never reached the duel
+    check — and the nightly gate fired only on an **exact `hour:minute` match**. Together
+    that made a whole night contingent on one 60-second window happening to be idle: any
+    session running across 03:00 meant the ladder silently did not run, with nothing logged
+    and nothing to notice. Both halves are fixed. The nightly checks now run **before** the
+    busy gate, because neither needs the pipeline free — `duel.start`/`baseline_test.start`
+    take the coordination lock on their own thread and queue behind whatever is running, so
+    the gate was withholding a *start* over a conflict the coordinator already handles. And
+    the gate is a window: due from its minute until `SCHEDULE_CATCHUP_MINUTES` (60) later,
+    paired with the existing once-per-day guard. Bounded deliberately — "past the scheduled
+    time and not yet run today" alone would kick a duel at 2pm on any restart, which is not
+    the night's run in any meaningful sense. The pressure that surfaced this came from the
+    job queue: before it, a second profile test was *refused* and the pipeline freed up
+    between tests; now they drain back-to-back (and a bets batch can queue twelve), so
+    continuously-busy stretches got much longer.
+  - `scheduler.py` — daemon thread: watchdog → (yield while the coordination lock is
+    held) → experiment step → monitoring run (serialized so benchmark runs never overlap).
+    **One leader per deployment** (`is_leader`): everything the scheduler drives assumes it
+    is the only one doing it, and the coordinator lock is a `threading.Lock` — it enforces
+    that within a process and nothing across processes, so `uvicorn --workers 2` would give
+    two schedulers racing to apply profiles and benchmark through each other's firewall
+    writes. An advisory `flock` in `/tmp` (keyed on the database URL, so the scope is
+    *processes sharing this container* rather than a shared data volume) settles it; the
+    kernel releases it if the holder dies, so a crash promotes a survivor with no stale-lock
+    file to reason about. Non-leaders serve the API and run no scheduled work.
+  - `experiment.py` — autonomous window-gated single-parameter shaper sweep
+    (writes via `provider.apply()`; disarmed + dry-run by default; restores baseline). The
+    swept `param` is validated against `shaper_fields.WRITABLE_FIELDS` at start — an
+    experiment on a non-writable field (scheduler/queues) is refused instead of no-op'ing.
+  - `session_runtime.py` — **the job runtime: what every session shares, in one module.**
+    Ten session kinds each own their thread, row and stage line; what none of them may own
+    is the *policy* for the failures they all meet the same way. **(1) A firewall call is
+    retried before it fails anything** (`call_firewall`, `ResilientProvider`; `get_provider()`
+    returns every provider wrapped, so no engine remembers to). One `ReadTimeout` on one
+    leg's apply used to end a whole lever session with 0 rounds (twice in one evening, on
+    the Levers page). A timeout, a dropped connection or a 5xx is retried (`FIREWALL_ATTEMPTS`
+    3, backoff 2 s + 5 s; a reconfigure that already took is re-applied harmlessly); a wrong
+    request (a bad param, a 4xx) is never retried. Spent attempts raise the typed
+    `FirewallUnavailable`. The OPNsense per-call timeout is `PATHBRAIN_OPNSENSE_TIMEOUT_S`
+    (30, was a hard-coded 15). **(2) A failure is described in words once**
+    (`describe_failure`; every engine's `err =` goes through it): the card says what stopped
+    and what was kept, class-aware for the designed failures (firewall quiet, lease handed
+    on, `SessionAbort` — a session stopping itself for a reason it states verbatim). **(3) A
+    run of failures is counted where it happens** (`FailureStreak`). The duel uses all
+    three: `_run_leg` records a leg whose profile could not be applied as a *failed leg* on
+    the tape (`failed`, no run, the seat's `unusable` count) and moves on; a failed opening
+    belt leg skips the cycle rather than spending the challengers' iterations against
+    nothing; only `MAX_CONSECUTIVE_LEG_FAILURES` (3) back to back abort the session, in a
+    sentence. **A restart queues the rest of an interrupted window**
+    (`reconcile_interrupted_duels`, `RESUME_MIN_MINUTES` 15): the window is a wall-clock
+    agreement and the clock did not stop, so a session with that much left writes a pending
+    `QueuedJob` (same kind, campaign and trigger, `duration_minutes` = what remains) that
+    `job_queue.restore` re-queues after every reconcile has put the firewall back — the
+    carried open matches resume in it. `test_session_runtime` + `test_duel_resilience`.
+  - `job_queue.py` — **the universal "add a job" contract: every Run button behaves the same.**
+    PathBrain runs one firewall/benchmark session at a time and `coordinator` enforces that;
+    what was never universal was *what happens when you press a button while it is busy*, and
+    there were **three** answers depending only on which button you pressed. **(1) A refusal** —
+    six engines guarded their own `start()` with an "already running" check that the API turned
+    into a 409, so the button dead-ended; the check protected nothing the coordinator wasn't
+    already protecting, it just fired earlier, and hardest exactly when queueing is what a
+    person wants. **(2) A silent queue** — start a *different* kind of session and it worked,
+    because the engine's thread simply blocked on `coordinator.hold` until its turn: correct,
+    and invisible, since the toast said the session had begun and nothing happened for hours,
+    which reads identically to a broken button. **(3) An immediate start**, when the pipeline
+    happened to be free. Three behaviours for one intent is not a policy, it is an accident of
+    which module a button landed in — and it is why "it doesn't queue" kept being reported
+    after each individual engine was fixed.
+    So: **submitting a job always succeeds**, and the caller is always told which of the two
+    things happened. `submit(kind, label, start)` calls the engine's own `start()`
+    **synchronously** when the pipeline is free (so every existing response shape survives —
+    the caller still gets the real session id, and the engine's own `ValueError` still reaches
+    the HTTP caller as a 400), and otherwise holds it as a **ticket** that a single dispatcher
+    starts when its turn comes. Every start endpoint returns the same
+    **placement block** — `queued` / `ticket_id` / `queue_position` / `queue_ahead` /
+    `blocked_by` — so "did anything happen?" has one answer whichever button asked.
+    `GET /api/queue` is the one "can I start?" read and `POST /api/queue/{id}/cancel` drops a
+    ticket, free by construction because a queued job has applied nothing.
+    **The gate is per KIND, not "is any engine active"** (`kind_active`). Cross-kind exclusion
+    is the coordinator's job and it does it properly, with a lease and stale-holder eviction; a
+    module-level `active()` flag has neither, so gating the whole queue on "no engine anywhere
+    reports itself active" would let one engine that died with its flag set stall every job
+    forever with nothing able to clear it — strictly worse than the refusals this replaces. So
+    the flag answers only the question it can: would starting *this* kind collide with itself.
+    Two consequences stated rather than discovered. **The queue survives a restart**
+    (`models.QueuedJob`, `job_queue.restore`, `RESUME_WINDOW_HOURS` = 24). It began in memory,
+    on the argument that a queued job has by definition applied nothing and so has nothing to
+    resume — true, and beside the point: the person who queued twelve bets for the night
+    pressed the button once, and a container recreate (Watchtower pulling the image a merged
+    PR just published, an OOM kill, a compose restart) emptied the line with nothing on screen
+    to say so. Reported as *"cancelled a duel job and all my queued jobs were cancelled too —
+    even the non-duel ones"*: nothing in any cancel path touches another job (the duel's
+    cancel sets one flag; the feed posts to one job's own URL), but the restart that followed
+    made every queueing layer drop its work at once — tickets gone, pending profile tests
+    marked cancelled, pending manual runs marked failed. So a route now submits a JSON
+    **`spec`** rather than a closure, each kind has one registered **starter**
+    (`register_starter`, in `register_engines`) that is the single definition of how it starts
+    — the job that runs now and the job rebuilt from a row after a restart are the same call —
+    and a queued ticket is written to `queued_jobs` and settled (started/failed/cancelled) when
+    it leaves the line, so a restart can never resurrect one that already ran. `restore()`
+    re-queues pending rows younger than the window **ahead** of anything submitted since (they
+    were asked for first), marks older ones or unknown kinds `expired` with the reason rather
+    than deleting them (the row is the only record the button was pressed), and reports itself
+    on `GET /api/queue` as `restored` and on each ticket as *"resumed after a restart"*. The
+    same window governs the other two layers: `reconcile_interrupted_profile_tests` keeps a
+    young PENDING test (stage *"Queued — resumed after a restart"*) and closes an old one
+    CANCELLED with the reason; `runner.reconcile_interrupted_runs` keeps a young PENDING
+    manual run and `routes_run.resume_pending_runs` re-dispatches it (a series' first chunk
+    resumes as the whole series). **Resuming happens after every engine's reconcile**, from
+    one block in `main.lifespan` (`restore_queue` → `resume_queued` → `resume_pending_runs`),
+    never inside a reconcile: a resumed job snapshots its baseline when it starts, and that
+    baseline must be the real one, not the profile a dead duel left on the firewall. A queued
+    job's **validation moves with it** ("nothing to race", "no stored profiles") from the HTTP
+    response to the moment its turn comes, so the failure is recorded on the ticket and
+    surfaced in the jobs feed rather than being lost.
+    **Two engines queue themselves** rather than through a ticket — `profile_test` (its
+    fingerprint is recorded in the recommendation ledger *before* it runs) and manual runs (the
+    dashboard polls the run id) — because their callers need a real row id back synchronously.
+    They report the same placement block and contribute to the same `pending` list
+    (`register_pending_source`), so there is one queue to a reader; the honest cost is that
+    ordering *between* the two layers is best-effort rather than strict FIFO, which costs at
+    most a swap between two things that were both about to run anyway.
+    Frontend: `hooks/useQueuedAction.tsx` is the policy in one place — it asks `GET /queue`
+    before submitting, shows **"Busy now — queue this?"** (`components/QueueConfirmDialog.tsx`)
+    naming the holder and what is already waiting, and phrases the outcome identically
+    everywhere (`describePlacement`). Every Run button on Dashboard, Shotgun Sweep, Baseline,
+    Duels, Settings (race / re-run / test), Explore, AI and Profile Detail goes through it.
+  - **A cancel takes effect within an ITERATION, and says so** (`runner.request_stop` /
+    `run_cancelled` / `CANCELLED_PREFIX`, `duel.cancel` / `cancel_requested`,
+    `coordinator.hold(abort=)` / `CoordinatorAborted`, the feed's `cancel_requested`).
+    Reported as *"Can't cancel this parent job"* on a running lever session. Three gaps,
+    each of which read the same from the dropdown — the row stayed *running* with the same
+    X. **(1) The runner never read a cancel.** `POST /runs/{id}/cancel` flipped the row to
+    FAILED and `execute_run` ran every remaining iteration and wrote COMPLETE over it: a
+    cancel was cosmetic for a running run. The loop now asks **before every iteration** —
+    the in-process request first (`request_stop`, free), then the row itself (re-read,
+    since `session_scope` never expires on commit, so a FAILED written by another process
+    or the watchdog is honoured too) — and a cancelled run stops with what it has: FAILED,
+    the reason and how far it got, nothing scored, the same as a run cancelled while queued.
+    Every cancel reason starts with `Cancelled` — the one convention `run_cancelled` reads.
+    **(2) The duel's flag was read only between legs.** A leg is an apply, a settle and
+    `iterations_per_round` iterations — minutes, or half an hour of probe deadlines when a
+    browser wedges. `cancel()` now also stops the run measuring the leg in flight
+    (`_state["run_id"]`, set the moment `_leg_run_created` fires and cleared when the leg
+    lands; a cancel that arrives during the apply is remembered and stops the run before its
+    first iteration), writes a *Cancelling —* stage, and the ring reads the flag at its next
+    seam and restores the baseline. Cancelling a duel's **chunk** from the feed (the nested
+    X, which promises "its broader job will stop too") now cancels the session, not one leg.
+    **(3) A cancel while queued waited out the holder.** The thread sat in `coordinator.hold`
+    behind whatever held the pipeline — a night-long ladder — and, when its turn came, took
+    the lock to do nothing (having been yielded to meanwhile, which costs the holder a seam).
+    `hold` takes an `abort` predicate (polled at `ABORT_POLL_S`), the duel passes its cancel
+    flag, and a cancelled waiter raises `CoordinatorAborted` and leaves the line: the row
+    ends CANCELLED, stage *"Cancelled before it started — nothing was applied"*, no discover,
+    no apply. And one bug found on the way: the ring leaves on its deadline or a cancel
+    without asking the lease, and the restore after it is a firewall write — an **evicted**
+    session would have restored its baseline over whoever held the pipeline. `_drive` now
+    `lease.check()`s before the restore, so an evicted session takes the no-restore path.
+    The route answers in words (`message`) and the feed row carries `cancel_requested` — the
+    dropdown shows the answer and replaces the X with *stopping…*, because a cancel that takes
+    a minute to land and one that never happened were indistinguishable. Deliberately **not**
+    a kill: Python cannot interrupt a blocked probe, so the iteration in flight always
+    finishes (bounded by the probe deadline); the promise is "the next one never starts".
+    `test_run_cancel`, `test_duel_cancel`, `test_coordinator`.
+  - `firewall_guard.py` — **every firewall write is ledgered and one kind is refused; a
+    write that times out is never reissued.** This module used to be four rules and is now
+    two, and **the rollback is the entry worth reading**.
+    It was written after the reload-storm incident: the duel ladder wrote one `setPipe` + one
+    full shaper reconfigure **per differing field** on **every leg** (the ring, #220, made every
+    leg a profile switch), and the job runtime (#251) **retried a timed-out write two seconds
+    later** — a second `shaper.reload` while the first was still running inside OPNsense, and a
+    `setPipe` landing seconds after `sshd` came up on a firewall mid-boot. It coincided with
+    OPNsense reboots and a WAN dropping several times a day, and nothing in PathBrain could have
+    caught it, because the write path was the one part of the platform with **no instrument on
+    it**: every metric a run produces is measured, versioned and audited; the reconfigure rate was
+    recorded nowhere.
+    The response was an instrument *and* a valve, and only one of them was right. The valve — a
+    `min_reconfigure_gap_s` the guard slept out, a `max_reconfigures_per_hour` budget, a
+    `cooldown_after_outage_s`, an `arm_required_after_deploy` gate that left every new build
+    read-only, and a persistent `hands_off` state (`FirewallGuardState`) that any of those could
+    trip and only a person could clear — rested on the theory that **how often** PathBrain wrote
+    was the hazard. **The ledger disproved it.** Twenty rows, no exceptions: every write carrying
+    `flows` timed out the 30 s call and took the box off the network for 30–35 s; every write in
+    the same hours that did not carry it was clean and sub-second (a bare shaper reload 420/449/
+    492 ms, `quantum` + reload 521 ms, `limit` + reload 498 ms). The cost was **one field in a
+    handful of writes**, and `flows` is non-writable now (`shaper_fields`), which removes it.
+    So the valve is gone, and it was not free while it stood: it refused writes that could not
+    have hurt, stopped whole sessions at the door (`WRITING_KINDS`/`blocked_reason` in six
+    engines, `job_queue.submit`, the ticket dispatcher and both nightly scheduler gates), turned
+    one session's bad minute into every engine's — a tripped budget refused **restores** too, so
+    a session could be left holding a profile it could not put back — and made an unattended
+    deploy a night with nothing applied, since `startup_check` ran before every reconcile. The
+    suite needed an autouse fixture to defuse it between every test, which is its own reading of
+    the cost. **PathBrain is ready to write, as it was before.** What was needed was diligence
+    about *what* gets injected into a production firewall, not a throttle on how often — and the
+    two rules that remain are exactly that, each earned in the incident rather than assumed:
+    **(1) The ledger** (`models.FirewallWrite`, `GET /api/firewall/writes`, the **Firewall**
+    page's table): when, which engine held the pipeline, which pipe and fields, how many
+    reconfigures it cost, the firewall's latency, and the outcome — `ok`, `verified` (timed out,
+    re-read showed it took), `failed`, `refused`. "What did PathBrain do in the five minutes
+    before the drop?" is one query, and it is the query that found the real cause.
+    `reconfigures_last_hour` is on `GET /api/health/pipeline` as `firewall` — a **reading**, never
+    a limit; nothing consults it to decide whether a write may happen.
+    **(2) A field the registry does not mark writable is never written** (`protected_params`,
+    checked first and last in `before_write`, raising `FirewallWriteRefused`). `shaper_fields`
+    is where the decision lives and `plan_apply` honours it, so no engine can *plan* such a
+    change — but a hand-built change list, a route, or a job spec queued before the registry
+    changed still reaches the provider, and this field costs an outage rather than a wasted call.
+    The refusal is **permanent** and `describe_failure` says so without offering a remedy, since
+    there is no longer any state a person could clear. The pipe on/off toggle (`param: "enabled"`)
+    is not a shaper field and is untouched.
+    Beside them, in `session_runtime` where the call is: **a write is attempted ONCE.** Reads
+    still retry; a write that times out, drops, or draws a 5xx is followed by a **re-read**
+    (`_verify_applied`, numeric `_field_equal` per change; `pipe_states` for a toggle) — it took
+    (`verified`), or that session reports the firewall gone and stops. Never reissued, and
+    deliberately never latched: it fails the session that met it, not the platform. This is the
+    rule about *correctness*, which is why it survived the rollback of the rules about frequency.
+    All of it is enforced in `session_runtime.ResilientProvider` (the only thing `get_provider()`
+    returns — `test_get_provider_is_always_the_guarded_wrapper` and a source scan pin that no
+    module builds a raw provider or writes a change list one field at a time).
+    **One reconfigure per profile switch** (`ConfigProvider.apply_many`; OPNsense sets every
+    changed field on every pipe, one `setPipe` per pipe, then reconfigures once — the mock and
+    the base fall back to a loop): `profile_test._apply_all` (every engine's switch and every
+    restore) and `routes_settings._write_changes` go through it, so a switch differing in three
+    fields across two pipes costs one shaper reload where it cost three. That is a real reduction
+    in writes, achieved by writing *better* rather than by writing *less often*, and it is the
+    shape a future fix here should take. `test_firewall_guard` pins both surviving rules and the
+    rollback itself — no module asks for permission to start, and the valve's API is gone.
+    **The gate on the repo** (`.github/workflows/firewall-gate.yml`, the PR template's
+    **Firewall interaction** section): a PR touching the providers, the session runtime, the
+    guard, an engine's apply path or the settings/config/sweep routes does not merge unless its
+    body states writes per session before and after (measured with `tests/faults.py`'s
+    `FaultyProvider`, which times out, refuses connections, answers 502 and goes dark like a
+    rebooting box, counting every call) and the behaviour on a timeout and on a reboot, and the
+    guard's tests are green. Prose asks; CI refuses. `test_firewall_guard`.
+  - `write_probe.py` — **write-and-ping: what one firewall write costs the household.**
+    Every other instrument measures the *link*; the one thing never on an instrument was the
+    write path's effect on the network, so *"the internet blipped"* was the only evidence
+    anyone had — and that cannot tell a 200 ms hiccup from a thirty-second outage, nor say
+    which half of a write caused it. **A profile switch is two operations with very different
+    costs**: writing the fields (`setPipe`) edits configuration and touches nothing running,
+    while reloading the shaper (`reconfigure`) rebuilds the dummynet queues, which is what
+    drops flows in flight. They could only ever be issued together, so the cost could not be
+    attributed; `ConfigProvider.apply_many(reload=False)` and a standalone
+    `ConfigProvider.reconfigure()` split them, and **only this probe uses the split** — a
+    switch is always both. **Two ping targets, never one**, because they separate the
+    diagnosis: the firewall's own address (if it stops answering the *box* is wedged — no
+    configuration API should ever do that) and a target **through** it (the box healthy while
+    forwarding is dead is what a queue rebuild looks like); one target cannot tell them apart
+    and they call for opposite responses. Steps — baseline → set fields → reload → restore
+    (a full switch, the operation the engines actually perform) — each followed by a settle
+    window, because how long the network takes to *recover* is as much the cost as the drop.
+    The reading is the **worst continuous gap** (`summarize`), not a loss rate: twenty
+    scattered drops and two seconds of nothing are the same percentage and only the second is
+    an outage; `MIN_GAP_MS` (250) keeps ordinary flicker from being named an event. Sampled at
+    10 Hz on its own thread per target (`_Sampler`, `icmplib` unprivileged like the ICMP
+    plugin), raw per-packet series persisted beside the derived summary — the same
+    raw-then-derive discipline the plugins follow. `verdict` says which half cost what in one
+    sentence with its numbers in it, and leads with the box going silent whenever both
+    happened. Guarded like any other write — ledgered, watched, and refused if it names a
+    field PathBrain never writes: a diagnostic that bypassed the write path to study the
+    write path would be the one unsupervised writer in the system. It has no exemption and
+    needs none, and it is no longer refused for *rate* reasons either — a diagnostic you are
+    watching is the last thing that should need permission. Holds the coordinator lock
+    and restores in a `finally`. `/api/firewall/write-probe`, the **Write and ping** card on
+    its own **Firewall** page beside the write ledger — Config is where settings live, not
+    where a diagnostic you actively run belongs, and below the fold of a long page behind a
+    button you had to press first it was simply unfindable (*"no such card in Config"*).
+    **A failure is never silent**, which took three fixes of one kind: the error lived inside
+    a block gated on there being steps, so a probe that failed before completing one rendered
+    nothing at all; the poll swallowed every error; and the provider and samplers were built
+    outside the `try`, so an exception there left the row RUNNING forever with no reason and
+    refused every later probe as "already running". A diagnostic whose failure mode is
+    silence is unfalsifiable — worse than not having it — so status and error render whenever
+    a probe exists, and a FAILED row with no reason is backfilled saying that is a bug. It
+    also **refuses to write for a measurement it cannot take**: no ping replies in the
+    baseline (ICMP blocked from the container, a wrong address) aborts before touching the
+    firewall, since otherwise every step reads as total loss and the probe reports the write
+    as having destroyed the network, having spent a real write to say it. The firewall's
+    address is read from the configured provider rather than typed in. `test_write_probe`.
+    **A costly RESTORE leads the verdict** — it used to be invisible. `verdict()` read only
+    the `set_fields` and `reload` steps, so a probe whose restore took the box off the
+    network for 33 s printed *"this write was cheap"* under a step showing a 33.3 s gap
+    (observed, probe #5). An instrument that can render the outage and the all-clear on one
+    screen is worse than none, because the all-clear is the line people act on — and the
+    restore is a full profile switch, the same operation every duel leg performs, so it is
+    the cost the household actually pays.
+    **The per-field sweep was REMOVED, and the removal is the entry.** It stepped every
+    writable field on its own, put each straight back and measured both (`plan_sweep` /
+    `start_sweep` / `sweep_verdict`, the *Sweep every field* panel), to answer the question
+    the single probe cannot: not "the fields or the reload?" but "*which* field?". It
+    answered — **the flow table, and only the flow table** — and that field is no longer
+    writable at all, so the finding is now a registry line rather than a capability. What
+    was left was a one-time survey whose only way of being re-asked was to write to **every
+    writable field of a live production firewall in sequence**: the most invasive operation
+    the product had, aimed at the household's own link, for a question already closed. For a
+    field that comes under suspicion later the single probe answers the same thing for that
+    one field, on a value a person picks, while they watch — which is the reusable form and
+    always was. Kept from it: `step_value` (the smallest write that is still a write — `+1`,
+    a bool toggled, the next value on the firewall's own option list for a select) and
+    `field_proposals` (`GET /firewall/write-probe/fields`), which is read-only and feeds the
+    probe's field dropdown and value box, because "what is a sensible next value for this
+    field" is the registry's answer and not a component's — a hardcoded frontend list is how
+    the value box came to offer `ecn` a value of **4096**, kept over from `flows`.
+    `NEVER_STEP` stays as the second lock and the record of why: naming `flows` explicitly
+    gets the flow-table reason rather than a bare "not writable". `test_write_probe`
+    (`test_the_per_field_sweep_is_gone`).
+  - `link_watch.py` — **a continuous ping beside every write, so the ledger says WHICH
+    write broke the firewall — now OFF by default, because it said.**
+    It answered: the writes carrying `flows`, which is no longer a writable field. Left
+    running it costs **10 ICMP packets a second forever** (864,000 a day), three permanent
+    threads and a growing `link_gaps` table, and it feeds exactly one card — no score, no
+    gate, no decision anywhere reads it. A continuous instrument for a closed question is a
+    permanent cost paid for a finding already banked, so `firewall.watch_enabled` defaults
+    **false** and the Firewall page's switch turns it on for as long as a write path is
+    actually under suspicion. The capability is what is worth keeping; the habit is not.
+    (`test_link_watch.test_the_watch_is_off_unless_somebody_turns_it_on` pins the default
+    in both places it is written, since a default that lives in two places will disagree
+    with itself.) What it does when armed: `write_probe` answers "what does *a* write cost?" on demand,
+    under supervision, on a value you pick — the right instrument for a controlled
+    experiment and the wrong one for the question actually being asked, which is *which of
+    the writes PathBrain already makes is the one that hurts*. That is a question about
+    writes that have already happened, on a link nobody was watching at the time, at 03:00
+    while a ladder ran; you cannot answer it by running a probe, because the probe is not
+    the write that hurt. So the probe's instrument runs **all the time**: two targets (the
+    firewall's own address — going quiet means the *box* is wedged — and a public address
+    *through* it — going quiet alone means forwarding broke while the box stayed healthy;
+    one target cannot separate them and they call for opposite responses), sampled at
+    `firewall.watch_hz` (5 Hz) into a rolling `RETAIN_S` (15 min) buffer, so a write's
+    window is **already on record when the write lands** — a measurement cannot be started
+    after the event it measures. Every write registers its span from inside
+    `ResilientProvider._write`'s `finally` (so a **failed** write — the one most likely to
+    have cost something — is measured too), and a worker scores it once the recovery window
+    has passed, writing `gap_ms`/`box_gap_ms`/`through_gap_ms` + a `watch` block with a
+    sentence onto that write's own `FirewallWrite` row. The headline is the **worst
+    continuous gap** (`find_gaps`, `MIN_GAP_MS` 250), never a loss rate: twenty scattered
+    drops and two seconds of nothing are the same percentage and only the second is an
+    outage. `None` is **"nothing was watching"** and is never rendered as clean.
+    **The gaps nobody wrote for are the control, and they are the point** (`models.LinkGap`,
+    `_sweep`): an instrument that only looked at write windows could only ever conclude that
+    writes cause gaps, because it never looked anywhere else. The sweep walks the *whole*
+    settled timeline and files each gap against the write in flight at the time or as
+    unattributed, so `gap_summary` reports the **split** — "six gaps last night, five with
+    nothing running" and "six gaps, every one during a reconfigure" are opposite findings
+    that a gap count alone renders identically. One gap is one row whichever path sees it
+    first (`_record_gap` dedups by target and second; `recent_windows` keeps a scored span
+    so the sweep, which runs behind the settling by design, cannot re-file it as
+    unattributed and invert the control). Attribution is deliberately **a window, not a
+    cause** — contemporaneous within [write − `PRE_S`, return + `POST_S`] is evidence, not
+    proof — and the recovery window is part of the cost because how long the network takes
+    to come *back* is as much what the household feels as the drop. Read-only throughout:
+    ICMP out, its own rows in, so no guard, no coordinator lock and no arming
+    (`test_the_watch_never_touches_the_firewall` pins it with the fault provider). Nothing
+    it does can fail a write — `note_write` appends a tuple and returns, every expensive
+    step is on the worker, and every path swallows. `GET|POST /api/firewall/watch`, the
+    **Link watch** card and the ledger's **Cost** column on the Firewall page.
+    **`latency_ms` is the firewall's own cost, full stop.** It briefly had a sibling,
+    `waited_ms`, because the guard slept out a pacing gap inside the same span: the write
+    probe's first real reading reported a 5 s `min_reconfigure_gap_s` wait as a 5.5 s
+    firewall cost — the one number that sends a reader after entirely the wrong thing. The
+    split was the right fix for a wait that should not have existed; nothing paces a write
+    now, so there is one number again and it means what it says. (The column is unmapped
+    rather than dropped, so existing rows keep their data.) `test_link_watch`.
+  - `alerts.py` — **an alert you have read stays read until the SITUATION changes.**
+    PathBrain's diagnostic banners are conditions, not events — "56% of matches produced no
+    result", a fading crown, a saturated threshold — each worth showing once and noise every
+    time after, because the condition is still true tomorrow and the banner cannot tell
+    "nobody has looked" from "somebody looked and is working on it". So every one was
+    permanent furniture, which is the same as not alerting at all. **The obvious
+    implementation is wrong here in a way that looks right in a test**: hashing the payload
+    and re-showing when the hash moves re-fires constantly, because the ladder runs
+    continuously and 577 of 1027 becomes 578 of 1030 within the hour; nor is the text stable,
+    since the causes carry profile names and fingerprints, so the same failure meeting a
+    different challenger reads as new. An alert is therefore identified by a **signature over
+    the *kinds* of cause** (`duel._reason_class` folds away the profile-specific parts;
+    `_health_signature`) plus a **state** the alert chooses, which a `supersedes` predicate
+    reads to decide whether today is materially *worse* than what was acknowledged
+    (`duel.HEALTH_REALERT_DELTA`, 10 points). An acknowledged 56% that drifts to 57% stays
+    quiet; one that reaches 75%, or grows a new kind of failure, comes back **and says
+    which**. Getting better never re-fires — the concern is resolved, and that is not an
+    alert. Both halves belong to the alert; this module only stores the acknowledgement and
+    asks the question (`acknowledge`/`clear`/`acks`/`status`, `GET /api/alerts`,
+    `POST|DELETE /api/alerts/{key}/ack`). Fails **open**: an unreadable ack shows the alert,
+    because one banner too many beats a diagnostic silently lost. A cleared alert is **muted,
+    never invisible** — the page says what it is hiding and offers the way back, so "no
+    warnings" can't mean "somebody silenced this in March". Nothing here is a score, a gate or
+    a measurement. `test_alerts`.
+  - `coordinator.py` — process-wide lock that serializes any apply-firewall + benchmark
+    session (sweep, profile test, experiment, monitoring, manual run): user-triggered
+    ones `hold` (queue), periodic ones `try_hold` (defer).
+
+    **The zipper merge** (`waiting()` / `yield_if_waiting()`): the duel ladder holds the lock
+    for its **whole window** — hours — so an Explore "Test now" pressed at midnight would
+    otherwise queue behind the entire night, with cancelling the session the only escape (and
+    in continuous mode the scheduler just starts another after `continuous_gap_minutes`).
+    `hold` now counts the queue, and a long session can call `yield_if_waiting` at a natural
+    seam to let **one** waiting session through before taking the lock back. The duel does
+    this **between pairs**, where nothing is in flight: within-pair adjacency — the thing that
+    makes a pair's two legs share their weather — is untouched, because a pair is never
+    interrupted once started. Yielded time is deliberately **not** added back to the deadline:
+    a nightly window is a wall-clock agreement about when the ladder may run, and quietly
+    running past 05:00 to make up a detour would break what the window is for. The mechanism
+    detail that matters: `threading.Lock` is documented **unfair**, so after releasing we wait
+    for the lock to actually be taken before queueing for it again — on CPython the woken
+    waiter usually wins anyway, but "usually" is a tendency and this makes it a guarantee. Pairs with the read-before/
+    read-after fingerprint check in `runner.execute_run` (FAILs a run on mid-run drift).
+    **The lock is a LEASE, not a promise** (`Lease`/`beat`/`evict_if_stalled`). Holding it for
+    hours is normal — a duel window is a night — so "held a long time" says nothing; a holder
+    that has stopped making *progress* has stopped being a session and become a wedge, and
+    every queued session then waits on a thread that is never coming back. Observed: a duel
+    wedged inside an unanswered browser call at 23:00 still owned the pipeline at 07:30, so
+    every run/test/race started overnight simply queued and the platform read as dead (the
+    "stuck automated duel" report — Settings Impact and Dueling Champions included, since
+    what those pages had to show was work that never ran). Python cannot kill a blocked
+    thread, so the holder **beats** (`coordinator.beat()`, stamped by `runner` around every
+    probe) and a holder silent past `STALE_HOLDER_S` (20 min) is **evicted** — by any waiter,
+    and by the scheduler watchdog, so the pipeline self-heals even with nobody queued. The
+    wedged thread is *disowned*, not killed: its lease is revoked, its own `lease.check()`
+    seams raise (the duel checks before every leg, so it can never wake and apply a profile
+    over a live session), and its eventual release is a **no-op** — a stale release would
+    hand a live session's lock away, the exact thing the lock exists to prevent. Eviction is
+    the backstop; `probes` is the mechanism, and 20 min sits deliberately above the 10-min
+    probe deadline so a stalled probe recovers as one failed measurement first.
+    `coordinator.status()` (owner / held-for / **stalled-for** / waiting / evictions) is what
+    the jobs feed and `GET /api/health/pipeline` render.
+  - `probes.py` — **bounded probe execution: no measurement may park the pipeline.** A plugin
+    call is the one place PathBrain hands control to something it doesn't own, and a few of
+    the browser plugin's calls have **no timeout to set** (`browser.new_context()`,
+    `page.evaluate()`, `context.close()`) — a wedged Chromium blocks the caller forever, and
+    that caller is holding the coordinator lock. So probes run on a **dedicated long-lived
+    worker thread** and the caller waits with a deadline (`monitoring.probe_timeout_minutes`,
+    default 10). On expiry the probe comes back as an ordinary `success=False` result, the
+    worker is **abandoned** (left blocked, daemon, never joined) and the next call gets a
+    fresh one. The worker is *dedicated* rather than pooled for a reason: Playwright's sync
+    API is bound to its creating thread, which is what lets one warm Chromium serve a run's
+    iterations — and it means a fresh worker implies a fresh browser, so the plugin is told
+    to **drop** its handles (`BenchmarkPlugin.abandon()`, the counterpart to `teardown()`)
+    rather than close them, since closing a wedged browser from a thread that doesn't own it
+    is the same hang one frame out. `teardown_plugins` routes through the same worker for
+    the same affinity reason (and on the same fuse). The cost of a stall is one leaked thread
+    and one leaked Chromium — the deliberate trade: a wedged probe becomes one failed
+    measurement instead of a dead platform. Leaks are counted (`probes.stats()`), and
+    since the worker is shared by the whole suite, abandoning it drops **every** plugin's
+    handles (`_abandon_all_plugins`) — a cheap probe timing out used to strand the
+    browser's Chromium on a dead thread, which the next run then "closed" cross-thread and
+    leaked. `cleanup_failures` counts closes that did not free what they claimed to.
+  - `resource_guard.py` + **browser recycling** — **the app polices its own footprint, in
+    code.** The drift audit's first real day showed the browser's host-side phases growing
+    while the network phases stayed flat: context setup 421 ms → 3.7 s, context close 2.4 →
+    5.2 s (ρ 0.84 with time), timing reads ×4 — the machine PathBrain measures *from* getting
+    steadily slower, and every graded number that includes render sliding with it (LCP
+    stepped 715 ms → 1.7 s in the first lever session's hour). A `mem_limit` on the container
+    only turns that slide into an OOM kill; the fix is the app noticing it is the thing eating
+    the host and backing off. **(1) Chromium is recycled by age** (`benchmark_browser.
+    should_recycle`, `browser.recycle_after_pages` 60 / `recycle_after_minutes` 30, 0 = off):
+    the reused browser is closed and relaunched at the next seam before a run's browser work
+    (~1 s cold start against a tens-of-seconds iteration) once it has served that many page
+    loads (cold + warm; a borrow by the portable plugin counts one) or lived that long — a
+    browser process that lives for a whole duel window bloats, and this is what stops it.
+    `request_recycle(reason)` lets the guard ask for one from any thread; the owning thread
+    honours it at its seam (`cleanup_stats` reports `recycled`, `pages_since_launch`,
+    `browser_age_s`). **(2) The guard** (`resource_guard.pressure`) reads what the kernel
+    already exposes — the cgroup's `memory.current`/`memory.max` (v2, then v1), the host's
+    `MemAvailable`, the 1-min load per CPU — and grades it `ok`/`high`/`critical`
+    (`HIGH_MEMORY_PCT` 80 / `CRITICAL_MEMORY_PCT` 92 of the container's own limit when it
+    has one, else of the host's total; load 2×/4× CPUs). `GET /api/health/pipeline` reports
+    it as `pressure`, so "the NAS is struggling" is a number. The scheduler watchdog calls
+    `relieve` every tick, and it acts at most once per `RELIEF_INTERVAL_S` (10 min): at
+    `high` it reaps leaked Chromium **only while the pipeline is idle**; at `critical` it also
+    asks the browser to recycle at its next seam, drops the field memo, and holds **this
+    tick's** scheduled monitoring run (re-read next tick, never latched, so external pressure
+    can't starve measurement for good). **The reap is refused while the pipeline is busy, and
+    keeps the browser plugin's own driver pid regardless** — the first cut reaped every tree
+    with nothing kept, once a minute, and under sustained pressure that killed the browser a
+    duel leg was measuring with, so every leg failed and the nightly session produced nothing
+    (the *"overnight duels didn't fire at all"* report the morning after it shipped);
+    `reap_orphans` cannot tell a leaked tree from a live one, so the caller must know it holds
+    no browser, and a scheduler tick never knows that while a session runs
+    (`test_the_reap_never_runs_while_a_session_may_be_measuring`). Dependency-free, never
+    raises, every reading degrades to `None` where a file is missing. `test_resource_guard` +
+    `test_browser_recycle`. The scheduler also now **says** when a nightly window opens while
+    a duel is already running (a resumed remainder, a lever session): that path returned
+    silently and read as the ladder not firing.
+  - `browser_procs.py` — **process-tree accounting + orphan reaping: the leak that ate the
+    host.** A dropped Playwright handle raises nothing, logs nothing and moves no number
+    PathBrain reports; its only symptom is the *host's* memory hours later, as an OOM kill
+    (observed: 224 node drivers at 13 GiB, 887 Chrome processes, 388 of them zombies,
+    593 MiB free on a 32 GiB NAS, with the kernel killing Chrome and nginx). Two causes,
+    both addressed here. **(1) A leak was invisible**, so the counts are read straight from
+    `/proc` (dependency-free, scoped to descendants of this process) and reported on
+    `GET /api/health/pipeline` as `processes`: `drivers` is 1 during a browser measurement
+    and 0 between them, so anything else is orphaned trees. **(2) The deliberate leak was
+    unbounded** — `probes` abandons a wedged worker rather than parking the pipeline, and an
+    abandoned worker's Chromium *cannot* be closed (closing means calling into the wedged
+    browser from a thread that does not own it). That trade is right and was uncollected:
+    every stall permanently cost a process tree. `reap_orphans` SIGKILLs any driver tree
+    still running at a point where the caller provably holds no browser it intends to use —
+    before launching a fresh one, after a close that could not complete, and on `abandon()`
+    — which needs no cooperation from the wedged browser and no thread affinity. Killing it
+    also unblocks the abandoned worker's protocol read, so that thread parks idle instead of
+    blocked. **The root cause was a thread, not a missing `close()`**: `execute_run`'s
+    `finally` called `plugin.teardown()` directly on the runner's thread, while
+    `teardown_plugins` had always routed the close back onto the probe worker for exactly
+    the reason its docstring gives. From Python the two are indistinguishable — the
+    cross-thread call raises, the plugin's best-effort handler swallows it, the handles are
+    dropped and the browser keeps running — so it leaked one tree per *standalone* run
+    (every scheduled monitoring run, every challenger-race iteration, every refresh and
+    sweep variant; chunked callers were already correct). `execute_run` now calls
+    `teardown_plugins()`. The regression test asserts **which thread** the close happens on,
+    because a counted-handles test alone passes against the bug. **The plugin now enforces
+    ownership itself** (`_owner_thread` / `_owns_handles` / `_drop_foreign_handles`): a handle
+    seen from a thread other than the one that launched it is never called into — not even
+    `is_connected()`, which is a plain attribute read that answers `True` cross-thread — it is
+    dropped, its tree reaped, and the event counted (`cross_thread_calls`) and logged as a
+    caller bug. So a future caller repeating the `execute_run` mistake fails loudly with the
+    process freed, instead of silently leaking. A clean `stop()` gets a short `wait_gone`
+    grace before a surviving driver is declared stranded; `kill_tree` `waitpid`s a killed
+    direct child (init cannot reap a live process's children); and in-container it also
+    kills **stray** headless Chromes that have escaped the subtree (`stray_chrome_pids`,
+    counted everywhere, killed only under `/.dockerenv` so a dev box's real Chrome is safe).
+    `tini` is baked into the image as PID 1 (`Dockerfile`), so zombie reaping never depends
+    on the compose flags.
+  - `instrument_drift.py` — **when a run gets longer, did the MEASUREMENT get slower, and does
+    it move a graded number?** (`GET /api/methodologies/instrument-drift?days=`, the
+    **Instrument drift** card on the Methodology page; the Dashboard's *Avg iteration* tile links
+    to it.) Reported as *"iterations have gone from 33 to 40 to 49 s — is a tool issue screwing up
+    grading consistency?"*, and the tile cannot answer that, because a wall clock climbs for two
+    opposite reasons. **The run got bigger**: the methodology-only scope lifts the browser's 2-of-N
+    cap so every iteration measures the crown, a duel round runs three browser iterations a side,
+    a publish adds pages, a longer idle wait adds seconds per page — none of which touches a graded
+    value, since the crown reads the page's own clock. **The machine got slower**: leaked Chromium
+    or a swapping host makes the browser itself slower, and that lands *inside* FCP and LCP through
+    the render phase, so every profile grades worse the later it was measured — the "best drops to
+    65th over time" failure class, and the only one of the two that corrupts grading. The audit
+    trends **three clocks per run** — the suite iteration (`Run.per_iteration_ms`, the tile), the
+    browser iteration (the browser result's `duration_ms`, mix-independent) and the page's own clock
+    (`load_event_ms`, pages-independent) — whose differences are the ungraded parts of a run (the
+    post-load idle wait `total_render − load_event`; the time outside page loads `browser − pages ×
+    total_render`), and the ledger's **client-role** metrics (`nav_render`/`inp`/`cls`, shaping-immune
+    by construction) as the detector against the **network phases** as the control. A quantity
+    "drifts" only when its rank correlation with time is significant *and* the first-third →
+    last-third median shift is material (`MATERIAL_SHIFT_PCT`, per-quantity floors): a few hundred
+    runs make a 1% wobble significant and no grade notices 1%. **A step is not a drift, and a
+    thirds comparison hides one**: the audit's first real reading showed every page metric flat
+    for twelve days and then doubling in a day (the real-browser client taking effect, so every
+    site served the page it serves a person) while the diluted trend read "+6%". So trends are
+    computed **within the methodology version in force** (`scope`; what a rubric change is meant
+    to move is not drift), `steps()` names the largest day-over-day change per quantity
+    (`STEP_PCT`, both cohorts ≥ `STEP_MIN_RUNS`), and each step is read against what changed at
+    that boundary — the browser **client** each cohort measured as (`details.client` →
+    `client_label`: headless mode, viewport, Chromium major, UA kind, automation hiding) and
+    whether the version that took effect **declares** a client (`declared_clients` →
+    `definition_client_set`). That declaration is the fact that matters: a client change under a
+    version that declares it is `published` (earlier runs quarantined, fine); under one that
+    declares none — a code-shipped version carries the prior collection forward — it is
+    **`pooled_instruments`** (`grading_at_risk`: every profile measured before that day holds an
+    unearned lead; the fix is "Publish sites + client"); a version-only change is `published`
+    hedged; neither is `unexplained_step`. A step in a client-role or crown quantity **suppresses**
+    the trend readings it would otherwise trip (`instrument`, `network`, `unattributed`): the
+    step names the day and the cause, and a gradual host degradation shows no step, so it still
+    reaches `instrument`. Verdicts, each a sentence with its numbers in it:
+    `instrument` (client readings rose within the version → `grading_at_risk`), the boundary
+    verdicts above, `network` (page clock + network phases rose, render flat → the link/profile
+    mix changed, instrument fine), `unattributed` (page clock rose, neither explains it → the
+    pages themselves changed), then the wall-clock ones **ranked by seconds added to a browser
+    iteration** (`impact_ms` — the first reading headlined a +0.5 s idle wait over a +3.2 s
+    overhead because of check order): `overhead` / `idle` (ungraded, but the same machine) and
+    `mix` (suite iteration up, browser iteration flat → what an iteration contains changed),
+    plus `browser_failed` (days on which the median run had no successful browser iteration —
+    quarantined legs, thin verdicts) and `stable`. The browser plugin now times **each phase of a
+    page load** — context setup → navigation → idle wait → timing reads + interaction → close
+    (`_PHASE_KEYS`, per-URL in raw as `phases`, per-iteration totals in `details.phases`, the
+    median over iterations via `_aggregate`) — so "outside page loads" is attributable rather than
+    a residual (the `phase_*` quantities; the overhead finding names the phases that moved).
+    Beside the trends: the live `browser_procs` snapshot (leaked trees are the usual live cause)
+    and a count of runs in the window derived under an older formula. **Bounded by the
+    question**: a window of days, sampled evenly (`_stride`) to `limit` runs, read as scalars through
+    JSON paths — never a materialized `Run`+`BenchmarkResult` scan like `drift.py`'s all-history
+    campaign reading, which answers a different question (is a metric time-stationary enough to rank
+    raw?) and is fine to be slow. Read-only; nothing here changes a score.
+  - `warm_agreement.py` + **the repeat-visit load** (`browser.warm_loads`, default on). The
+    crown grades a **first visit**: a fresh browser context per page, every handshake paid.
+    Most of a person's clicks are not that — a site's next page reuses its connections, a
+    resumed TLS/QUIC session skips the round trips — and the mission is how the Internet
+    *feels* on those clicks. So after the cold load of each page the browser plugin loads it
+    once more in the **same context with the HTTP cache disabled** (`Network.setCacheDisabled`
+    over CDP: warm sockets, every byte still fetched), reads it with the same `_read_timing`
+    (one function, so cold and warm are read identically) and files it in raw as `warm`
+    beside the cold observation; `_derive_browser` derives it with the same functions under
+    `warm_*` (**omitted, never defaulted**, when absent or failed), and five of those are
+    registry metrics, display-only, bucketed like their cold twins (`warm_fcp`/`warm_lcp`/
+    `warm_load_event` O, `warm_network_stall_all` S, `warm_nav_render` C). `derive-v15` is
+    purely additive; old raw has no warm block, so re-deriving changes nothing. Nothing graded
+    moves. The plugin times it as its own phase (`warm_ms`, the drift audit's
+    `phase_warm_ms`), since it doubles that iteration's page loads — which is why it runs on a
+    run's **first iteration only** (`warm_load_wanted`; the runner stamps `_iteration` on
+    every plugin section; `warm_loads: "every"` restores per-iteration): the audit needs a
+    per-profile median across runs, not a reading on every page of every iteration, and
+    default-on everywhere was half of the 33 s → 111 s iteration report. **Whether the
+    crown should ever read them is an empirical question, and `GET
+    /api/methodologies/warm-agreement` (the "Cold vs warm crown" card on the Methodology
+    page) answers it**: every profile with ≥ `min_runs` runs carrying both readings is ranked
+    by a cold and a warm Overall built from the methodology's **own** crown metrics,
+    thresholds and weights (`overall_from_definition` with each leg's warm median substituted
+    — the same yardstick, so the rankings differ only in what was measured; medians over the
+    same runs, so the comparison is paired), and the readout is the Spearman ρ, the #1 on
+    each, and the crown's rank on each: `agree` (the cold crown stands for the warm case, no
+    change indicated), `same_top` (the crown holds, the ladder under it doesn't), `disagree`
+    (on the repeat visit the crown is not the best-feeling profile — the measured reason to
+    publish a version that adopts the warm legs), `insufficient`. Read-only; the decision it
+    informs is a publish, made elsewhere.
+  - `why.py` — **where a win lives** (`GET /api/settings/profiles/{fp}/why?vs=&limit=`, the
+    **"Why it wins"** card on Profile Detail). The crown says *which* profile is best and by how
+    much; nothing said *where* the margin came from — a 3-point lead could be three points of
+    network stall on every page or a 30 ms LCP edge on one site, which are different findings
+    with different next steps, and one number reads the same for both. `explain` takes any
+    two profiles (default reference: the unshaped `SQM_OFF_FINGERPRINT` when it has comparable
+    runs — "what is shaping buying?" — else the churn ledger's crown, else the best-graded other
+    profile; `reference.why` says which) and splits their gap three ways on the runs the crown
+    graded. **(1) Crown legs** (`decompose_legs`, pure): under the weighted crown the Overall is a
+    weighted mean of median subscores, so the gap is *exactly* `Σ w_k·(sub_A − sub_B)/Σw` — one
+    number per leg in Overall points that add up to the gap, formed from the same
+    `profile_aggregates` rollup and the same 2-dp rounding as `crown_follower._grade_medians`,
+    so the legs and the standings grade are one arithmetic (`test_leg_points_add_up_…` pins it);
+    a corner crown has no additive split, so `exact` is False and each leg is a one-leg swap,
+    labelled as such. **(2) Navigation phases** (`NAV_PHASES`: dns/tcp/tls/request/response/
+    render, read in SQL off the browser result's metrics), so a leg's edge can be traced to the
+    part of the load it sits in — request wait is the server answering sooner, response is bytes
+    through the queue, render is the machine and not the shaper. **(3) Sites**: the crown legs
+    re-derived **per page** from the stored raw through the one `interpret.derive` (a run's own
+    number restricted to one page, never a second reading), the newest `SITE_RUN_LIMIT` (30)
+    comparable runs a side, priced on the methodology's own thresholds and weights so each site
+    reports the gap *it alone* would produce — deliberately not a split of the pooled gap (a mean
+    over pages that is then subscored is not linear) but the answer to "everywhere, or one page?".
+    Every delta is signed from the profile's own side with a noise bar: SE of the median
+    (IQR/√n, the `_overall_se` convention) on each side pooled in quadrature, `clear` when the
+    delta exceeds `correlation.crown_tie_sigma` of it — the same bar the crown uses to call a tie.
+    `verdict` is one paragraph with its numbers in it, told from the winner's side whichever
+    profile asked. Read-only, bounded by the two profiles; nothing here changes a score.
+    **Nothing is read until asked, and the site pass is priced in raws.** The card fetched on
+    mount with the per-site pass on, and `_site_samples` selected the newest 30 raws a side
+    in one statement — every page's Resource Timing + LoAF entries, materialized twice over,
+    then ~1000 pages re-derived on the request thread — on every Profile Detail load. Two
+    open profile pages was enough to take the server down. Now the card opens with an
+    **Explain** button (legs + phases + burst: SQL scalars and the rollup), the route's
+    `limit` **defaults to 0** (no raw is touched) with a hard ceiling `SITE_RUN_MAX` (30),
+    the card's separate **"Price per site"** action asks for `SITE_RUN_LIMIT` (10) with its
+    cost stated on the button, and the pass fetches ids first and then **one raw per
+    statement**, dropped before the next is loaded, so peak memory is one raw whatever the
+    limit (`test_the_site_pass_loads_one_raw_at_a_time` pins the statement shape).
+  - `jobs.py` — in-process background-job registry (progress/status/recent history).
+    The heavy score passes (`/api/score/regrade|rescore|rederive`) run as jobs and
+    return `202 {job_id}`; `/api/jobs` (`api/routes_jobs.py`) merges them with read-only
+    adapters for active runs/sweep/profile-test/experiment so the top-right jobs
+    dropdown shows everything. History is in-memory (durable ops live in their DB rows).
+    **Every job carries an ETA** (`routes_jobs._eta_ms`, exposed as `eta_ms` + `eta_basis` on
+    every entry): "3/40" is what a progress bar shows and not what anyone is asking — the
+    question is whether to wait or walk away. Three answers, best first, and the display names
+    which was used because they aren't equally trustworthy: **`scheduled`** (a time-boxed job —
+    duel window, challenger race, "test current for X" — whose finish is a *deadline*, not an
+    estimate), **`measured`** (units left × the per-iteration cost measured over recent runs),
+    **`observed`** (the job's own rate: elapsed ÷ done × remaining — the universal fallback, e.g.
+    a re-grade counting rows). `None` when genuinely unknowable; a fabricated countdown is worse
+    than none, since it's the one number a user plans around. The value is a **duration**, not a
+    formatted string (uncountable) and not an absolute server timestamp (which the browser would
+    read against *its* clock, folding in any skew): the client anchors it to its own clock on
+    arrival and **ticks it down every second** (`JobStatus.Countdown`), re-anchoring on each
+    poll, so the readout keeps falling truthfully between polls instead of freezing and jumping.
+    It floors at "finishing…" rather than counting into the past. A **queued** job — waiting on
+    the `coordinator` lock, which on a busy pipeline can be most of an hour — gets none of the
+    three, because all three answer *when does this finish?* and that is exactly what nobody
+    knows: its clock hasn't started, and how long the current holder runs is its own open
+    question. Timing it from `created_at` (the old fallback) charged the wait against work that
+    hadn't begun, so the estimate drained while the job stood still and a long enough queue read
+    "finishing…" for a job that never ran an iteration. So a fourth basis **`queued`** reports
+    the *size of the work* instead — the full time-box, or units × measured unit cost — and the
+    entry carries **`queued: true`** (stated by the adapter, never inferred from the basis, since
+    an unpriceable queued job has no basis to read it off) so the client renders it **standing
+    still** ("20m once it starts", `JobStatus.QueuedEta`) rather than ticking. `started_at` is
+    written at the PENDING → RUNNING transition, so the countdown starts when the job does.
+    **The unit cost is read recent-first** (`iteration_cost.py`): the `measured` basis, the
+    Dashboard's run ETA (`GET /runs/estimate`) and the re-run preview all multiply out ONE
+    number — what an iteration costs — and it used to be a flat mean of the last five runs
+    whatever their age, which is wrong exactly when an ETA matters: after anything changes
+    what a run does, a run from ninety minutes ago describes a different job. Now a ladder:
+    runs finished in the last 30 min (newest first, until 10 iterations are in hand, needing
+    at least 3) → the same over 6 h → the last 5 runs regardless of age → `None`. Within a
+    tier it is the **iteration-weighted median** (a 5-iteration run is five observations; a
+    median so one run that sat on a hung probe until its deadline can't double every
+    countdown after it). The estimate endpoint reports which tier answered (`basis`), how
+    many iterations it rests on and how old the newest evidence is.
+    **A job about a profile says WHICH profile** (`routes_jobs._call_sign`): the feed used to
+    print the technical settings summary — *"leader Download: 880Mbit q3550 t3 i60 ecn | Upload:
+    880Mbit q500 t3 i60 ecn"*, three wrapped lines on a phone that never name the profile — so
+    every adapter now resolves the **call sign** by fingerprint (like the duel tape and the
+    standings, so a rename lands immediately) and leads with it, keeping the settings summary as
+    the entry's `detail` (the row's hover). Best-effort: naming can never be why the feed fails,
+    and an unresolvable fingerprint falls back to the label. `CurrentTest` gained a
+    `target_fingerprint` column for this — it stored only a label, which can't be resolved back
+    to a profile — and `challenger`/`refresh` mint their **run labels** from the call sign too
+    (`race · Speedy Sloth`, as `duel` already did), so History reads in names as well. The
+    profile test also gained
+    real progress — its completed iterations were only ever in the stage sentence, so its bar was
+    indeterminate; they're now summed from its chunks (`job_group`), like the manual-run series.
+    **The bar moves between counter ticks, not only on them** (`Eta.unit_ms` →
+    `JobStatus.useSmoothProgress`). `current`/`total` counts *finished* units, so a bar drawn
+    straight from it stands dead still for the whole of a unit and then lurches — and on a
+    benchmark run a unit is a full iteration, so that is tens of seconds of a bar indistinguishable
+    from a hang. The fix is the unit's **expected cost**, which `_eta_ms` already computes on the
+    way to the countdown (the measured per-iteration price, or the job's own observed rate) and now
+    returns as a third field rather than leaving the client to form a second opinion about how fast
+    the job is going. The client crosses the unit in progress at that rate and **never crosses its
+    boundary**: interpolation is a claim about a step the job hasn't finished, so a late iteration
+    parks the bar at the edge — all that is actually known is that the step is overdue — and it
+    moves again the instant the counter ticks; a unit that finishes early simply jumps to its
+    boundary. So the bar is always either moving or waiting on a genuinely late step, and can never
+    be ahead of the work. Two deliberate limits: a **queued** job reports no unit cost at all
+    (nothing is running, so nothing may creep — the same reason its countdown stands still), and an
+    interpolated bar caps at 99% (100% is the one reading that means *finished*, and this is being
+    drawn on a job that is still running). The boundary is anchored **client-side**, on the poll
+    where the counter is seen to move, because the server keeps no per-unit timestamps — deriving
+    one would mean assuming every unit so far took exactly the estimate, which is precisely the
+    assumption that fails on the slow job this exists to keep alive; the cost is an anchor lagging
+    by up to one poll, i.e. a second or two parked early, never a bar ahead of the work.
+    **A time-boxed job's bar is its WINDOW** (`Eta.window_ms` → `JobStatus.useSmoothProgress`).
+    A duel session, a challenger race and "test current for X" run until their window closes,
+    not until a count is exhausted, so they report no `total` at all — and a bar with no
+    denominator can only be the indeterminate sweep, which reads exactly the same at minute
+    one of a six-hour duel as at minute three hundred. That was the longest-running job in
+    the system rendering the least informative thing on screen. The `scheduled` basis already
+    knows the deadline; it now reports the window's **length** beside the remainder, so the
+    share already spent is a measured fraction rather than an estimate of one, and the bar
+    and the countdown are again two views of one deadline instead of two opinions. The client
+    anchors it on its own clock exactly as `Countdown` does (skew-free, re-anchored each
+    poll), so it advances continuously rather than stepping once per poll. Same two limits as
+    the interpolated bar: **queued** jobs report no window (a bar creeping across a window
+    whose clock hasn't started is the same lie the standing-still countdown refuses to tell),
+    and it caps at 99% because 100% is the one reading that means *finished*. The duel row's
+    **message** gained the two session-level facts the stage sentence never carried — matches
+    decided and iterations measured (`_duel_message`), both already recorded after every
+    round: the stage names the bout in the ring, which is right and says nothing about how
+    far through the night the ladder is.
+  - `research_export.py` — **the research export: the whole measured record in one file, for
+    analysis off the box** (phase 1 of `docs/plan-learning-engine.md`; `POST /api/export/research`,
+    `GET /api/export/research[/estimate|/{name}]`, the **Research export** card on the Data Dump
+    page). Every later phase — the noise audits, the simulator, the surrogate — must be fitted to
+    this link's data, and neither existing export can carry it (`/history/dump` builds one JSON in
+    memory and caps at 500 runs; the optimizer export has no per-iteration readings, round margins
+    or weather). So a `jobs` background job **streams** a `.zip` of JSON-lines files, one batch of
+    rows at a time (never `raw`): runs with each iteration's registry metrics (from the cached
+    `details['iteration_metrics']`), machine health, site/client stamps and scores (full detail
+    under the current methodology only); profiles; duels and lever campaigns with per-round
+    `deltas`; the Explore ledger; crown events; methodologies; the config; and a manifest whose
+    counts are the lines written. The optional `site_metrics.jsonl` re-derives the registry's
+    browser metrics per run × iteration × site through the one `interpret.derive`, one raw per
+    statement, and is priced first (`estimate` times real raws). **Never exported**: secret-looking
+    config keys, the AI row, Away-test runs (egress IPs/ISP), and any bare IPv4 in a string value
+    (`scrub`). Files land in `data/exports`, the newest `KEEP` (3) are kept, and a download is only
+    ever a listed export name, never a composed path. Read-only. `test_research_export`.
+  - `profile_test.py` — **Test to minimum**: apply a stored profile, run exactly the
+    iterations still needed to reach `correlation.min_iterations`, then **restore the
+    baseline** (persisted to a `ProfileTest` row; `reconcile_interrupted_profile_tests`
+    restores on startup). `/api/settings/test-profile`. The post-apply verify checks the
+    firewall reached the target **semantically** — `plan_apply(target, discover())` must have
+    no remaining *writable* diffs — **not** by exact fingerprint hash, which is format-sensitive
+    and used to false-negative on an externally-supplied target (an AI suggestion), failing
+    before any benchmark ran; a genuinely unaccepted field is reported per-field ("did not
+    accept quantum …"). Field comparison is **numeric** (`settings_profile._field_equal` via
+    `_to_number`), so a duration expressed as `"5ms"`, `"5"`, or `5` all compare equal — the
+    firewall echoes CoDel `target`/`interval` back as the **bare option key** (`"5"`, not
+    `"5ms"`). Correspondingly the value **written** is always the bare number
+    (`_wire_value`/`shaper_fields.format_value`) — writing `"5ms"` to an option-keyed select
+    silently doesn't take (the real "apply didn't happen" bug); `"ms"` is display-only
+    (`format_display`). Each step is written to `ProfileTest.stage` (snapshot → apply → verify →
+    benchmark → restore → done/failed) for a live UI readout. `POST /api/settings/test-profile`
+    takes **two lengths**, the same split `start_settings_test` uses: `iterations` **omitted**
+    tops up to `correlation.min_iterations` (refused once the profile is already confident —
+    there is nothing to top up), an **explicit count** runs exactly that many whatever the
+    profile already has. The second is what "test this profile" means on a *confident* profile:
+    not a top-up but a re-measurement — "is it still this good?" — which the crown, of all
+    profiles, is the one you most want to be able to ask. The response says which ran (`mode`:
+    `top_up`/`exact`). The **Profile Detail** page leads with it: a `Test this profile (5)`
+    split button at the top (quick / longer / top-up in its menu) beside `Apply this profile`,
+    which is demoted to outlined — testing restores your settings afterwards and is the
+    everyday action, applying is the commitment. A live stage readout runs under the header
+    and the page **refreshes itself in place** when the test finishes, since the new data is
+    the entire point of having run it.
+    **Tests QUEUE; they are never refused** (`_worker`/`_ensure_worker`/`_next_pending_id`,
+    `ProfileTest.target`). The module was a strict singleton — a second `start` raised, the API
+    turned it into a 409, and the button dead-ended — which protected nothing: the coordinator
+    underneath has always queued (`hold` blocks, and the row's own stage read *"Queued — waiting
+    for any running benchmark to finish"*), so the refusal fired **before** the queueing
+    machinery was reached. Worse, the flag was set at *creation* rather than at start, so a test
+    sitting behind a duel window refused every other test for the whole night — the failure
+    landing hardest exactly when queueing is what a person wants. The reported symptom was
+    "click Test now from Explore while jobs are running and it doesn't queue"; only a *second
+    profile test* actually refused, while every other holder — duel, race, sweep, refresh,
+    baseline, monitoring, manual run — queued correctly and **silently**, which reads the same
+    from the outside: Explore polls no stage and its toast said "Testing…" in the present tense.
+    So the **pending rows are the queue** (ordered by id), each carrying its own `target` — a new
+    JSON column, because one in-memory slot cannot hold several queued targets and the next
+    request would overwrite the last one's settings — and a single worker drains them
+    oldest-first. Claiming the next test and deciding to retire both happen under one lock
+    (`_gate`), so a row committed by a request is either seen by the running worker or arrives
+    after it has cleared itself, in which case that request starts a new one; there is no third
+    case, which is what stops the queue stranding with nobody draining it. A test becomes RUNNING
+    only once it holds the coordination lock, so **pending honestly means nothing was applied** —
+    which is what makes `cancel(id)` free: a queued test leaves the line outright rather than
+    starting just to stop, and one cancelled while it waits for the lock bails at a pre-apply
+    seam instead of paying an apply-and-restore round trip. Startup reconciliation keeps a
+    queued test PENDING when it is younger than `job_queue.RESUME_WINDOW_HOURS` (stage
+    *"Queued — resumed after a restart"*; `resume_queued` starts the worker once every engine
+    has restored the firewall) and closes an older one CANCELLED ("not started"), not FAILED
+    — it never ran, and a queue from last week is a surprise, not a queue.
+    Every start path returns its **queue placement** (`routes_settings._queue_placement`:
+    `queued`/`queue_position`/`queue_ahead`/`blocked_by`), `GET /settings/test-profile/queue`
+    (`queue_status`) reports what holds the pipeline and who is waiting, and
+    `coordinator.describe` turns a lock label into words (`duel#412` → *"a duel session"*),
+    because "duel#412" is not an answer to "why can't I test now?". The jobs feed lists **every**
+    unfinished test rather than only the newest row (`routes_jobs._profile_test_entry`), each
+    cancellable by id (`POST /settings/test-profile/{id}/cancel`), since showing one row was half
+    of why a queued test read as nothing happening. Deliberately **no estimate of when the queue
+    drains**: the holder might be a monitoring run finishing in two minutes or a ladder running
+    until 05:00, and a fabricated wait is the one number someone would plan around. On the page,
+    a press that would not start immediately opens **"Busy now — queue this?"**
+    (`components/QueueTestDialog.tsx`) naming the holder, how long it has run and what is already
+    queued, with **Queue it** / **Not now** — the queue is the fix, the dialog is what makes it
+    visible.
+  - `current_test.py` — **Test current for X minutes**: a time-boxed data-collection loop on
+    whatever profile the firewall is **already** on. Unlike the other engines it **never writes
+    the firewall** (it measures the live profile as-is), so there's no baseline to snapshot or
+    restore — `reconcile_interrupted_current_tests` just closes out an orphaned `CurrentTest`
+    row. It benchmarks in short chunks (`runner.CHUNK_ITERATIONS` = 5 iterations each) under the
+    coordinator lock until the deadline (or cancel), so each chunk's data is persisted the moment
+    it finishes. `/api/current/test` (+ `/current/test/cancel`); the Dashboard drives it. Manual
+    runs over 5 iterations chunk the same way (`routes_run._locked_execute_series`): a big request
+    fans out into a series of ≤5-iteration runs so an interruption keeps every completed chunk
+    (`runner.MAX_ITERATIONS` raised to 500; `run_chunk` is the shared build block).
+  - `baseline_test.py` — **Test baseline behavior (SQM off)**: measure the *unshaped* link to
+    see what the shaper is actually buying. Snapshots each pipe's on/off state, **disables SQM on
+    every pipe** (`provider.set_pipe_enabled`, the pipe on/off toggle — a firewall write *separate*
+    from the shaper-field `apply()` model, since `enabled` isn't a profile-identity field), waits a
+    configurable **settle** interval, benchmarks a configurable number of iterations (chunked like
+    `current_test` so partial data persists), then **restores each pipe's prior state** — always,
+    in a `finally` (persisted to a `BaselineTest` row; `reconcile_interrupted_baseline_tests`
+    re-enables SQM on startup). Runs on demand **or** on a nightly schedule (`config.baseline_test`:
+    `enabled`/`hour`/`minute`/`iterations`/`settle_seconds`, gated in `scheduler.py` by local
+    container-TZ time). **All SQM-off runs collapse into one profile**: when any pipe is off the
+    shaper params don't apply (the link is unshaped regardless of the values the firewall still
+    echoes), so `settings_profile.fingerprint` returns the single canonical `SQM_OFF_FINGERPRINT`
+    for *any* disabled-pipe config — the baseline test's runs all aggregate into one "SQM off"
+    profile instead of splintering per inert field value. Normal all-enabled profiles hash
+    byte-for-byte as before (no history re-key); only SQM-off runs change key. Existing SQM-off
+    history is merged by re-keying from each run's own stored settings via
+    `POST /api/settings/refingerprint` (the **"Merge SQM-off profiles"** button on Settings Impact).
+    `_is_sqm_off` reads the stored `settings` (not the fingerprint), so the "% vs SQM off" baseline
+    is unaffected by the collapse. Own thread under the `coordinator` lock. `/api/baseline/*` + the
+    **Baseline (SQM off)** tab.
+  - `portable.py` + `interpret/portable.py` — **the Away test ("this isn't home, but here is
+    how it stood up")**: a measurement any device can take from a plain browser tab, compared
+    **only against directly comparable data**. A page served by PathBrain can never load
+    google.com and read its paint timing (same-origin policy), so this is a *different
+    instrument* from the Chromium plugin, never graded on the methodology's Overall: a
+    synthetic **resource waterfall** of public CDN objects (Resource Timing gives every fetch's
+    `responseEnd` on Safari/Chrome/Firefox, so the byte-arrival shape math in
+    `interpret/smoothness.py` — longest stall / stall energy / cadence / Gini / byte earliness —
+    runs unchanged on it; origins sending `Timing-Allow-Origin` also expose DNS/TCP/TLS/TTFB,
+    read from the first **new** connection per origin, since a reused connection reports
+    `connectStart == connectEnd` and must not read as a 0 ms handshake), one **streamed
+    download** read chunk by chunk (throughput + cadence inside a transfer), and warm **round
+    trips**. Synthetic milestones stand in for the paint legs: first / largest / last resource
+    complete. The **recipe** (resources + sizes + dependency chain, stream object, RTT probe;
+    `portable.DEFAULT_CONFIG`, overridable under `config.portable`) is served by
+    `GET /api/portable/recipe` and hashed with the derive version into an
+    **`instrument_version`** — the portable analogue of `site_set`: change the recipe and older
+    home runs stop being admitted as a reference. Every default URL was verified to send TAO +
+    CORS `*` (sizes from Content-Length). Runs live in their **own table** (`PortableRun`,
+    `POST /api/portable/runs` — the page uploads raw only, derivation is server-side like the
+    plugins) and are never joined to `runs`/`scores`, so nothing here can reach the crown, the
+    duel, trends or weather (`test_portable_runs_never_touch_the_pooled_ledger`). **"vs home"**
+    (`portable.compare`) admits a reference only when every stamp matches: the same **device**
+    (a `device_id` the page keeps in local storage — a phone compares to itself, never to a
+    laptop), the same **instrument version**, **home** — *detected, not declared*
+    (`decide_home`): the page asks a public-IP service for the device's egress — **in both
+    address families** (`portable.ip_lookup_url` for IPv4, `ip_lookup_url_v6` for IPv6, ipify by
+    default; the server's own request address is the fallback when the lookups are blocked and
+    that address is public) — the server asks the same services for its own
+    (`home_addresses`, cached an hour; `portable.home_ip` in config overrides it, one or two
+    addresses), and a match in **either** family means the device's traffic leaves through the
+    tuned firewall — the definition that matters for shaping, and one a person's answer gets
+    wrong (a phone on cellular on the couch is not home). IPv4 compares the address; IPv6
+    compares the **prefix** (`home_ipv6_prefix`, default /64), since hosts on one network never
+    share a v6 address, only a prefix. Both families are asked because a dual-stack device may
+    answer one while the server answers the other — with only one family per side and the
+    families different, nothing is comparable and the old single-address check read a home
+    device as away. Either-family-matches is deliberate: a CGNAT can hand different flows
+    different public v4 addresses while the v6 prefix stays the home's, so a v4 mismatch alone
+    is not proof of away. The page asks the server for the verdict (`GET /portable/home?
+    egress_ip=&egress_ip_v6=`), so the preview and the upload apply one rule.
+    The request's *source* address is deliberately not the primary signal: over split-tunnel
+    Tailscale/WireGuard PathBrain sees a CGNAT/private address whether the device is at home or
+    in a hotel, while its internet traffic still egresses locally — so the browser must ask from
+    its own vantage point. Private/CGNAT addresses never compare (`is_public_ip`); when neither
+    side is known the upload is refused (409) rather than guessed, and the page offers Home/Away
+    as an explicit override (`home_detection` = `ip4`/`ip6`/`manual`, both sides' addresses
+    stored, so every stamp is auditable). Home runs are stamped with the live firewall fingerprint, best-effort.
+    One **home profile** (the pooled
+    crown when it has `portable.min_home_runs` on that device, else the best-populated), the
+    nearest **time cell** with enough runs (same weekday & hour → same hour → any time, each
+    run's *own* UTC offset so "same hour" is the device's wall clock; the readout names the
+    rung), and **pairwise coverage**: resources the away run and ≥80% of the home cell both
+    completed, with **both sides re-derived from raw over that common set**
+    (`derive_portable(include_ids=)`) rather than averaged over the survivors — a hotel that
+    blocks one CDN drops that resource from home too. Each metric's verdict is read against
+    home's own IQR (`within`/`worse`/`better`), plus a small portable score (`PORTABLE_RUBRIC`,
+    reasoned thresholds on the shared log curve — for reading an away run against a home run on
+    this instrument, nothing else). Below the minimum the page says "run it at home N times"
+    rather than guessing. Sacrificed vs the Chromium test, by design: real page composition,
+    FCP/LCP/INP, LoAF attribution (the synthetic waterfall does no render work, so its dead-air
+    is network by construction), and any number on the Overall scale. The **Away test** page
+    (`Away.tsx`, `/away`, `utils/portableTest.ts` is the in-browser runner — wake lock, warm-up
+    fetch, dependency-chained fetches with `cache: "no-store"`, chunked stream read, RTT off
+    `responseStart − requestStart`) is phone-first: label the device, name the venue, and
+    home/away is detected (Auto) with Home/Away as overrides.
+    **Two home references, never merged** (`portable.compare` → `references.device` /
+    `references.server`, `headline` names which the top-level block mirrors). The
+    **`portable` plugin** (`plugins/benchmark_portable.py`) runs the same recipe as an ordinary
+    member of the suite — it loads the app's own `/away?embedded=1` in the browser plugin's
+    Chromium (`borrow_browser`) and calls `window.__pathbrainPortable.runOne(recipe)`, the
+    function the phone runs (`portableEmbed.ts`), so the two can't drift — and the runner files
+    each run's readings as one home sample from the device **`pathbrain-server`**
+    (`record_server_run`; `PortableRun.source_run_id` points at the run's `BenchmarkResult`, the
+    one copy of the raw). So a per-profile, per-hour home baseline accrues from every monitoring
+    run, duel leg and profile test with no dedicated schedule and nobody running anything at
+    home. It is a *different device* (wired, always Chromium) and is labelled so: the readout
+    prefers the same-device reference once the phone has enough home runs (it removes the
+    device difference), shows PathBrain's beside it, and says to expect a few ms better round
+    trip and jitter on the wired side. **The plugin runs the phone's exact sequence**
+    (`window.__pathbrainPortable.run` = `runPortableTest`: a warm-up fetch, then the recipe's
+    iterations in one page; `runOne` is the fallback for an older bundle; raw carries
+    `iterations: [...]`, the legacy single `iteration` still derives). It used to run one cold
+    iteration in a fresh browser context per call, and the first real cross-device reading
+    showed a phone at home "beating" the wire by 36–65% on first/largest/waterfall complete
+    while losing on round trip and jitter exactly as Wi-Fi predicts — the lead was the
+    handshake cost (DNS+TCP+TLS on every origin, chained), because a phone's long-lived tab
+    holds warm sockets to the recipe's origins from ordinary use and a fresh context pays
+    every one. **Warmth is stamped on every run** (`interpret/portable.warmth`, in
+    `coverage.warmth`: the reused-connection share over the Timing-Allow-Origin entries — a
+    reused socket reports `connectEnd <= connectStart`, never a 0 ms handshake — and the
+    `nextHopProtocol` mix; `portable.client_family` adds the browser family/engine from the
+    recorded client), and `warmth_compare` decides per reference whether the **setup-bound**
+    rows (`SETUP_BOUND`: first/largest/waterfall complete, byte earliness) may be compared:
+    not when either side is unstamped, when the reused shares differ by more than
+    `WARMTH_TOLERANCE`, or when the transports differ (h3 and h2 account for a handshake
+    differently). The rows keep their numbers and read `incomparable`; the page greys them and
+    says why. `stream_ms_per_mb` is **no longer scored** (a CPU reading at these link speeds:
+    the chunk-reader loop, not the shaper). **The per-profile phone standing**
+    (`portable.profile_standings`, `GET /api/portable/standings`, the **"What your phone
+    measured"** card on the Dueling Champions page) is the mission's own check on the crown:
+    every home run a phone uploads is stamped with the live profile, so per device, per
+    profile, the device's own readings have been accruing all along — ranked by the device's
+    portable score among profiles with ≥ `portable.min_home_runs` runs, beside the pooled
+    Overall, with the crown's rank on that device, Spearman ρ across the profiles both have,
+    and a verdict sentence (agrees / disagrees with the IQRs read / crown not yet measured /
+    too thin). Agreement is about *ranking*: the portable score is the device's own
+    instrument, never the Overall, and nothing here reaches the crown. The plugin fetches
+    the recipe from its own API first, so
+    an unreachable server (the test suite) is a fast failure with no Chromium launched;
+    `portable.enabled: false` leaves it out of runs (the runner treats `enabled: false` like
+    `skip`), and `portable.iterations` caps it like the browser's cap — default **1**, since
+    each pass is the phone's whole recipe and the home baseline accrues a sample from every
+    run anyway (the other half of that iteration report) — (one portable iteration
+    per suite iteration). Its metrics are derived by `interpret.derive` like any plugin's but are
+    **not methodology metrics** — nothing in scoring reads them.
+  - **Every Away run says WHOSE network it ran on** (`PortableRun.network`,
+    `portable.lookup_network` / `parse_network_info` / `network_for_egress` / `describe_network`
+    / `backfill_network`, `portable.isp_lookup_url`). Asked for ISP capture on the Away test.
+    The page already learns the device's public egress address (for home detection), and the
+    owner of a public address is a public fact any IP-info service answers, so the lookup is
+    done **by the server, from that address** — never by the browser, whose CORS rules would
+    decide which service can be asked from a hotel tab — at upload (a stamp on the run, never
+    a condition of it: a private/CGNAT address, a disabled lookup or a silent service leave it
+    null and the run is recorded) and on the detection preview (`GET /portable/home` carries
+    `network`, so the caption reads *"Detected: away … On Comcast Cable · Denver, Colorado"*
+    before the run). `isp_lookup_url` is a template with `{ip}` (default `https://ipwho.is/{ip}`)
+    and the parser reads the four common answer shapes — ipwho.is (`connection.isp`), ipapi.co
+    (`org`/`asn`), ip-api.com (`isp`/`as`), ipinfo.io (`org` = `"AS15169 Google LLC"`, the ASN
+    read out of it) — into one `{isp, org, asn, city, region, country, source, looked_up_at}`;
+    an error answer or one naming no owner is None, never a fabricated ISP. Cached per address
+    (`NETWORK_TTL_S` 24 h; a failure `NETWORK_FAIL_TTL_S` 1 h, so a dead or rate-limited service
+    is not re-asked on every page load). The location map stamps rows recorded before the lookup
+    existed (`backfill_network`, ≤ `NETWORK_BACKFILL_LIMIT` = 5 lookups a read, own transaction)
+    and reports per place the ISP seen most often plus every one seen (`isp` / `isps`), shown as
+    a table column and in the dot's tooltip; the result card carries an ISP chip and the history
+    list names it. **Not verified against a live service from the build sandbox** (its egress
+    allowlist blocks them): the shapes are the services' documented ones, pinned by
+    `test_parse_network_info_reads_every_common_service_shape`; the first real upload is the
+    check, and the log line names what was stamped.
+  - **The location map: every place measured, on one chart against home** (`portable.location_map`,
+    `GET /api/portable/locations`, `components/LocationQuadrant.tsx`, the **"Every place vs home"**
+    card on the Away test page). The Away readout was one run on one device against that
+    device's own home runs — "how did this hotel do?" and nothing wider; six networks measured
+    over a month were six separate answers and no picture (*"I need the same view as the
+    Settings Impact quadrant — location by location, current home profile vs all third-party
+    locations"*). So: the quadrant asked of **places**. Each dot is one venue — every away run
+    taken there, on any device, pooled to a median (`_venue_key` folds case and whitespace so the
+    label recall's one-place-one-spelling holds; the display label is the most-used spelling; no
+    venue → one `UNNAMED_VENUE` bucket) — on any two portable metrics (+ the portable score),
+    beside **home on the current home profile**: the runs stamped with the profile the firewall
+    is on *now* (`home_stamp`, `home_profile.source = live`), else the pooled crown (`crown`),
+    else every home run with the fact stated (`any`) — never a blend of every profile home has
+    ever been on, and the runs left out are counted (`excluded.home_other_profiles`). Home is
+    **two dots, never one**: the phones'/laptops' own home runs (the device class every away run
+    comes from — the ringed dot, and the reference the quadrant's lines run through) and
+    PathBrain's wired Chromium (`SERVER_DEVICE_ID`, the triangle), kept apart as everywhere else
+    on this instrument. Gated on the current `instrument_version` like every comparison here,
+    with the excluded count reported. Each away location also carries `setup_comparable` — the
+    `warmth_compare` rule applied pool to pool (`_setup_comparable`): a warm tab and a cold
+    context are two instruments on the setup-bound metrics whatever the link did, so when such
+    an axis is plotted the failing places are drawn dashed and named in a warning. Same grammar
+    as `ProfileQuadrant` (ringed reference, triangle for the other device class, grey under
+    `LOCATION_MIN_RUNS` = 3, a third metric as opacity by rank), plus a name on every dot (the
+    field is small enough) and a table with each place's runs, devices, score and score vs home.
+    **The map is WIRED to the crown** (`CROWN_STAND_INS`, `crown_stand_ins`, `crown_stand_in_score`,
+    `map.crown`, each location's `crown_score`): asked to focus on the methodology's core (FCP,
+    LCP, the smoothness leg), and a browser tab cannot read a real page's paint timing — so each
+    crown metric is translated to the nearest reading the synthetic waterfall measures (FCP →
+    first resource complete, LCP → largest resource complete, `network_stall_all` and its
+    predecessors → stall energy, `load_event` → waterfall complete, …), read off the **live**
+    methodology's `overall` spec at request time so a publish re-points the map with no code
+    change. The **crown stand-in score** is the methodology's own weights over the portable
+    subscores of those stand-ins — the weighted crown's arithmetic on this instrument's readings
+    — computed per run and medianed per location, and only when every leg has a scored stand-in
+    (`crown.complete`; a leg with none is named on the page, never defaulted). The chart opens on
+    the crown legs (X = the first leg's stand-in, Y = the second's, Shade = the stand-in score), the
+    axis pickers label each stand-in with the leg it stands for, the table pins the crown legs
+    beside the stand-in score (as Settings Impact pins the crown metrics), and *vs home* reads on
+    it. Stated on the card as a stand-in, never as FCP/LCP: nothing here is on the Overall scale.
+    Read-only; nothing here reaches the crown, the duel or the pooled record.
+    `test_location_map_*` + `test_the_map_is_wired_to_the_methodology_crown` in `test_portable`.
+  - **Burst fairness: the round-robin mechanism, measured** (`interpret/portable.py`
+    `_burst_metrics` / `BURST_METRICS`, the **"Under a burst"** section of the Why-it-wins card
+    via `why.burst_block`, the **Interleave** column on the Dueling Champions phone-standing card,
+    and three rows on the Away test's metric table). fq_codel's everyday effect on an unsaturated
+    link is not queue management — nothing stands in a queue long enough for CoDel to act — it
+    is the scheduler interleaving the flows of a page-load burst: a font's few packets get onto
+    the wire between a bundle's many instead of behind them. A **real page cannot expose that
+    mechanism**: its resource sizes are unknown (cross-origin entries report 0 bytes without
+    Timing-Allow-Origin), its overlap structure changes with every deploy and its bytes are
+    opaque. The portable recipe fixes all three — known sizes, TAO'd origins, a fixed
+    dependency chain in which small objects (fonts, small libraries) are fetched *while* large
+    ones (bundles) are in flight — so the interleave's fairness reads directly off the
+    waterfall's concurrent download windows (`responseStart → responseEnd`, TAO'd entries only):
+    **`interleave_index`** — per small object (≤ `SMALL_BYTES`) downloaded mostly (≥
+    `MIN_OVERLAP_SHARE` of its window) beside a large one (≥ `LARGE_BYTES`), its byte rate over
+    its own window divided by the large flow's over its window, median over pairs: 1 = it moved
+    at the large flow's pace (a fair share), well below 1 = it waited behind the bulk (FIFO), above
+    1 = small/new flows favoured (fq_codel's new-flow priority); the large flow's whole-window
+    average includes stretches with fewer competitors, so the reading sits slightly below 1 even
+    under perfect fairness — the same bias for every profile on the same recipe, so the
+    comparison across profiles (and against SQM off) is what to read. **`bulk_share`** — over
+    every stretch with ≥2 downloads in flight, the byte-weighted share that went to the largest
+    active flow (each flow's bytes in a stretch at its own average rate): 0.5 for two equal flows,
+    toward 1 for one flow hogging the wire. **`small_under_large_ms`** — the felt cost: the median
+    download time of those small objects while a large one was in flight. Purely additive, so
+    `PORTABLE_DERIVATION_VERSION` is deliberately **not** bumped: it is part of
+    `instrument_version`, and bumping it would stop every home run on record being admitted as a
+    reference for a metric older raws re-derive perfectly well; instead `coverage["burst"]` marks
+    a derivation that knew the metrics and `portable.backfill_burst` (called from
+    `profile_standings`, ≤ `BURST_BACKFILL_LIMIT` rows a read, own transaction, best-effort)
+    re-derives unflagged rows from raw so the standing fills in over a few page loads — a run
+    *with* the flag and no burst metric genuinely had no overlapping downloads. Per profile the
+    standing accrues on every device the same way the phone standing does: PathBrain's own wired
+    Chromium files one from every run through the `portable` plugin, a phone from every Away
+    test at home. `why.burst_block` reads them per device for the two profiles being compared
+    (≥ `BURST_MIN_RUNS` home runs a side, SE-of-median noise bars at `crown_tie_sigma`) and the
+    verdict gains a clause when the interleave delta is clear — so an outcome ("A's small
+    objects arrive sooner") sits beside the mechanism it rests on ("under A a small object moved
+    at 0.9× the large flow's pace, under B at 0.4×"). Read-only; nothing here reaches the crown,
+    the duel or the pooled record — the mechanism sits beside the crown, never in it.
+  - `challenger.py` — **Challenger Race**: the adaptive, multi-profile sibling of
+    `profile_test`. A time-boxed loop that runs **one iteration at a time** on whatever the
+    field can't currently trust against the winner, re-ranks via `rank_challengers`, and
+    **eliminates** any under-minimum profile whose *optimistic* Overall (corner over each
+    crown metric's p75 upper estimate; `routes_settings.optimistic_overall`) can no longer
+    beat the confident best. Contenders span, in priority order — **defend the crown by
+    confronting the biggest known threat first, not by gambling on the unknowns**:
+    **(1) under-minimum** profiles that can still beat the bar, **highest optimistic ceiling
+    first** (the profile most likely to dethrone the crown is confirmed/refuted first);
+    **(2) stale confident** profiles older than `challenger.contender_stale_minutes`
+    (default 180), re-measured **ordered by closeness to the winner** (in case anything has
+    changed); **(3) no-data** profiles — zero comparable runs under the current methodology
+    (`_field` augments the `compute_profiles` field with these from `refresh.list_profiles`;
+    the "run anything without data on the latest methodology" case, never eliminated until
+    measured) — sampled **last**, once the known threats and nearby incumbents have had the
+    window's time. It **bootstraps** with no confident best (bar
+    None → race everything lacking data until a winner emerges). It also **refreshes a stale
+    incumbent** (`challenger.incumbent_refresh_minutes`, default 60) first so the bar stays
+    contemporaneous (`_incumbent_stale`; counted in `incumbent_refreshes`). It only races
+    profiles **reachable** from the live environment: `apply()` can write the codel/bandwidth
+    params but not `scheduler`/`queues`/`upload_bandwidth` (`settings_profile.NON_WRITABLE_FIELDS`),
+    so a profile differing in those is unreproducible — `rank_challengers(reachable_env=…)`
+    eliminates it ("unreachable: …") instead of letting `_apply_profile` abort the whole race
+    on a fingerprint it can't reach (`_apply_profile` verifies the *writable* params took **and**
+    that the firewall landed on the profile asked for; `environment_signature` hashes the
+    non-writable fields). **A leg never measures a profile the firewall is not on**: that
+    second check used to be a log line, on the reasoning that a fingerprint mismatch means
+    only non-writable fields differ, "which the reachability filter should have excluded
+    already" — true while the non-writable set was scheduler/queues/upload bandwidth
+    (structural fields that never differ between stored profiles on one firewall, so the
+    branch was dead code), and false the moment `flows` joined it. Flows genuinely differs
+    across a hand-built field, and the pooled crown is deliberately **exempt** from the
+    reachability filter (racing it is the most informative bout there is), so exactly one
+    profile per session could reach the apply unreachable — seated first, every session —
+    be measured under another profile's name, and have that margin recorded against a
+    profile that never entered the ring. It raises now: the leg is recorded as failed on the
+    tape, the seat counts it unusable, and three in a row end the session in a sentence. The
+    crown's exemption is also narrowed to a *reachable* crown in `contender_order` and in
+    both queue hoists, so the ring doesn't spend its top slot on a bout that can't be run.
+    Eliminations are tagged **structural vs provisional** (`rank_challengers` sets `structural`):
+    only *structural* ones (unreachable — the live environment can't change mid-race) are
+    **persisted** across loops; *provisional* ones (optimistic-ceiling < bar / incomplete corner
+    coverage) are **re-evaluated every loop**, because the crown/optimistic space is a
+    **field-relative percentile rank** that re-normalizes as iterations accrue — so a contender
+    ruled out early can re-qualify once the field shifts, instead of being frozen out by a
+    transient verdict (`_drive` persists only the structural set). At the
+    end it **restores the baseline**, or applies the winner when `auto_promote`. Own thread under
+    the `coordinator` lock (so the scheduler defers via `coordinator.busy()`); persisted to
+    a `ChallengerRace` row; `reconcile_interrupted_challenges` restores on startup.
+    `/api/settings/race` (+ `/race/cancel`).
+  - `profile_aggregates.py` — **the per-profile rollup: the layer between the run and the
+    profile.** Every consumer asks about *profiles* (~150 of them); every row stores a *run*
+    (hundreds of thousands, growing nightly). With nothing in between, "what does this
+    profile score?" re-read the whole run table and decoded a JSON document per run — a cost
+    bounded by **time** rather than by the question. That is the architectural rule this
+    module exists to state: **derive-on-read is correct when the input is bounded by the
+    question, and wrong when it is bounded only by time.** The duel's verdicts (lineal belt,
+    Bradley–Terry ratings) are bounded by the ledger, so they re-derive on every read and
+    cost milliseconds; a profile's pooled Overall was bounded by all history, so it grew
+    until the client stopped waiting. *Derive, don't store* is right about **provenance** and
+    silent about **latency**, and the two had collapsed into one rule.
+    So the rollup is materialized (`ProfileAggregate`: per profile per methodology,
+    `{metric: {n, median, p25, p75}}` + iterations + run count) and **never trusted blind**.
+    `stamps()` re-reads what each profile's rollup *should* have been built from — newest run
+    id, run count, iteration total, newest `Score.computed_at` — in **one grouped query
+    returning a row per profile** (~80ms/150 rows at 120k runs, against ~1.9s to recompute
+    and ~22s for the full field pass). A stored row is used only where all four match;
+    anything else is recomputed **for that profile alone** and written back. So a stale row
+    makes a read *slower*, never *wrong* — the property that makes this safe under the crown,
+    since the number it feeds decides what gets written to the firewall. Measured:
+    `profile_overalls` 1.55s → **0.13s** warm (12×), `duel.standings()` 4.09s → **0.35s**,
+    and one new run on one profile costs 0.19s — all verified identical to a full rescan.
+    Invalidation is **per profile**, which is the other half of the fix: the field-wide memo
+    (`_field_stamp`) keys on a *global* stamp, so one completed run invalidates the entire
+    field — and during a duel a run lands every minute, so that cache was coldest exactly
+    when the system was busiest. Here a run touches one profile's stamp.
+    `invalidate_profiles_cache()` drops both, on the wholesale-rewrite paths, as a tidy-up
+    rather than a correctness requirement. Every `IN (...)` is chunked (`_CHUNK`) so the size
+    of the field is never a correctness question — SQLite's variable ceiling is a build-time
+    constant (250000 here, 999 on a conservative build), invisible until a field crossed it.
+    **`upsert_score` now stamps `computed_at`** — it refreshes a Score *in place*, so a
+    re-grade under the same methodology moved the subscores while run count and newest id
+    stayed put; the timestamp is the only thing that tells the rollup its inputs changed (and
+    the column was already serialized as "when this was scored", so it was reading wrong on
+    its own terms). Pinned by `test_a_real_regrade_through_upsert_score_moves_the_rollup`,
+    which drives the real writer rather than setting the timestamp by hand.
+    **Not yet on the rollup: `compute_profiles`** — measured at ~22s over 120k runs, of which
+    `_completed_runs_with_scores` is ~107% (it materializes full ORM `Run`+`Score` entities
+    plus ~6 `BenchmarkResult.metrics` blobs per run: ~840k JSON documents). Migrating it needs
+    the rollup to carry axis and raw-metric series too, and its genuinely per-run passes
+    (trends baseline, recent-window, weather cohort) restructured — its own change, with its
+    own equivalence harness. A measured, contained interim: deferring `Run.settings` from that
+    load is 8.0s → 5.0s (120k blobs decoded, ~150 kept).
+  - **Crown grades read three numbers per run, so they read three numbers per run.**
+    `Score.subscores` is a JSON blob of every metric a run scored; grading a profile needs
+    only the crown metrics' medians and the iteration count. Three layers of this have been
+    peeled back and the order is the lesson: `_profile_overall` in a loop (an N+1 — 143 round
+    trips on a 150-profile ledger) → one batched `IN (...)` that still decoded a document per
+    run in all of history (2.2s, **84% of the duel standings' response**) → `json_extract` in
+    SQL (3.8×, but still linear in every run ever taken) → `profile_aggregates`, one row per
+    profile. Each step removed work; only the last changed what the cost is *proportional to*.
+    `_grade_medians` is now the single place the crown grade is formed **and** the single
+    place its rounding is decided, so a grade off a stored rollup and one off a fresh scan are
+    the same arithmetic rather than two implementations that agree until one is edited;
+    `_grade_samples` delegates to it. `_collect` stays for the explore ledger, which filters
+    each run by `created_at` before grading and so needs the rows themselves.
+    **One standard error, divided by the RUN count** (`profile_aggregates.median_se`). The
+    rollup's quartiles are over per-run values — one Score per run — so the SE of a profile's
+    median Overall is IQR/√runs, and the standings (`routes_settings._overall_se`), the pooled
+    field (`pooled_field.se`) and through it every pooled anchor in the fused ranking read that
+    one function. They used to disagree: the standings divided by the run count and the pooled
+    field divided the same IQR by the **iteration total**, which understated a five-iteration-a-run
+    profile's SE by √5 (×2.2) on the Overall page, over-trusted its anchor in the fit, mis-estimated
+    the slack τ against that understated variance, and let the standings chip and the Overall
+    page call different profiles "tied" on the same data. The anti-drift test that was meant
+    to catch it handed both paths the iteration count and so manufactured agreement; it now
+    hands the run count, and `test_the_se_divides_the_run_band_by_the_run_count_not_the_
+    iteration_total` pins that two profiles with the same runs and spread carry the same SE
+    whatever each run medianed. The verdict rows carry `runs` beside `iterations`.
+  - `shrinkage.py` — **the field as a prior: a thin profile's Overall is shrunk toward it, and
+    its ceiling is a posterior quantile.** Reported as *"very high Overall on five iterations,
+    and dueling never picks them up"*, and both halves were one statistic. A profile measured
+    once reads its Overall off a single run, a run on this link wobbles by ~2 points, and among
+    a hundred such profiles the best-looking one overshoots its true value by ≈2.5–3 points
+    (the expected maximum of a hundred draws) against real gaps between the top profiles of
+    0.1–0.3 — so the high number was mostly selection, not signal. And the one number that
+    decided whether such a profile earned a night in the ring, `optimistic`, was the **p75 of
+    its own runs**: with one run that *is* the point estimate, with two `statistics.quantiles`
+    extrapolates past the larger, with three it equals the maximum — so admission (the heirs
+    card, the challenger race's eliminate-below-the-bar, the duel's `LIVE_THREAT_TIER`) was a
+    coin flip on whichever run happened to land high, and a profile whose one run landed low
+    was struck off while a sibling whose one run landed high was seated first. Now the field is
+    the prior: `fit` takes every profile's `(overall, iqr, runs)` (the unshaped baseline left
+    out — a different regime), centres on the median and fits τ, the spread of **true**
+    Overalls, by the method of moments as `pooled_slack` fits its slack (observed spread minus
+    what measurement error alone would produce, floored at `TAU_FLOOR`); `posterior` shrinks
+    each reading by `w = τ²/(τ²+se²)` and reports `ceiling = shrunk + CEILING_Z·sd` — the same
+    2σ bar as `crown_tie_sigma` and `duel.tie_sigma`, so "its ceiling reaches the crown" and
+    "the crown cannot call it clearly worse" are one statement. A 3000-iteration profile has
+    `se ≈ 0` and does not move; a one-run profile is pulled most of the way to the centre with a
+    band that says honestly what it could still be. **The per-run noise is pooled, never read
+    off the thin profile**: under `OWN_SE_MIN_RUNS` (5) runs a profile's SE is the field's
+    per-run SD (`run_noise`: median `IQR/1.349` over the well-measured profiles) over √runs,
+    and a well-measured profile's own IQR-based SE is floored at half that — a one-run profile
+    with an IQR of zero used to carry an SE of zero, which made it a co-leader the Overall
+    page could never separate and, as a pooled anchor in the fused ranking, a point held as
+    firmly as the crown (`pooled_field.graded_field` reads the same `profile_se`). Wired at the one
+    seam: `compute_profiles` (weighted crown only) sets `overall_shrunk` / `overall_shrunk_se` /
+    `overall_se` on every profile, keeps the old number as `optimistic_p75`, and makes
+    `optimistic` the posterior ceiling — so heirs, the race and the live-threat tier change
+    behaviour with no edit, exactly as they were written to; the response carries `shrinkage`
+    (centre, τ, noise, basis). **The crown is untouched**: still the argmax of the raw median
+    among confident profiles, no floor, no hysteresis. Fewer than `MIN_PRIOR_PROFILES` profiles
+    → a flat prior (nothing shrunk, the ceiling is the reading plus 2 SEs) and the response says
+    so. `test_shrinkage` + the API-level pin in `test_settings`.
+  - `crown_follower.py` — **Follow best**: keep the firewall's SQM settings on the crowned
+    best profile (`compute_profiles` → `best_fingerprint`) as the crown changes.
+    **Event-driven, not polled**: the runner queues `notify_run_complete` as each run finishes
+    (pure memory); the next scheduler tick runs the **quick filter** (`_needs_full_check`) —
+    under the v15 `weighted` crown profile Overalls are independent, so it recomputes *only
+    the completed run's profile* (`_profile_overall`, one indexed query) against the cached
+    crown/runner-up, and the full `compute_profiles` verdict runs **only when the crown could
+    actually have moved** (corner/percentile methodologies are field-relative → always
+    escalate; ties escalate). Quiet ticks are a pure in-memory test (zero I/O — enshrined by
+    `test_step_quiet_tick_does_no_io`). A slow **backstop** full check
+    (`config.crown_follow.interval_minutes`, default 360) plus `poke()` hooks on
+    re-grade completion (`score_history_under_current`) and refingerprint catch re-rankings
+    that happen without a run completing. Each full check
+    does two things. **(1) Track** — when the crown differs from the last recorded one, write a
+    `CrownEvent` ledger row; the ledger powers the **crown-churn stats** (`stats`: changes per
+    24h/7d/30d, median/current reign, changes/day — "how often does the best profile change?").
+    Tracking is read-only and always on, so the stat accrues *before* the user arms following —
+    exactly the number needed to judge whether auto-follow would thrash. **(2) Follow** (only
+    when `crown_follow.enabled`) — if the firewall isn't semantically on the crown (`plan_apply`
+    finds writable diffs; never fingerprint-hash comparison, except for the param-inert SQM-off
+    case), apply the crown's writable fields via `provider.apply()` under
+    `coordinator.try_hold` (a busy pipeline defers to the next interval). A one-way write like
+    "Apply this profile" — being on the crown *is* the steady state, so there's no baseline to
+    restore and nothing to reconcile on startup. Never auto-applied: the collapsed **"SQM off"**
+    profile (disabling shaping is the baseline test's supervised job; likewise it won't write
+    while SQM is currently off) and profiles **unreachable** from the live environment (the
+    `environment_signature` guard the race uses). Deliberately a **mirror with no hysteresis**
+    (the crown itself has none); the churn ledger + `co_leaders`/`crown_confidence` are what
+    tell the user whether the verdict is stable enough to hand over the keys.
+    **The quick filter's "on the crown" means the POOLED crown** (`_cache_standings`,
+    `crown_live_fp`). `on_crown` is judged against the governing target, which under the
+    fused or duel policy can be another profile; caching its fingerprint as the crown's live
+    echo made every monitoring run on it compare its pooled Overall against the pooled
+    runner-up and escalate to a full `compute_profiles` pass after every run (logged as
+    *"crown fell to the runner-up"* every five minutes, and the NAS's CPU with it). Only a
+    firewall on the pooled crown itself is cached as on it.
+    **The follower HOLDS while a re-grade runs** (`_regrade_in_progress`, `jobs.regrading`
+    / `jobs.REGRADE_KINDS`, `check()["skipped"]`). A re-grade rewrites the field in place
+    and, since `regrade_order`, best-first — so for the hour it runs the field is partial: the
+    profiles it has reached are scored under the current version and the rest are not, and
+    a crown read then is the pass's progress, not the field's verdict. The follower used to
+    read that crown like any other: a tracked "change" on the churn ledger that never
+    happened, and under *Follow best* a firewall write to a profile crowned on half the
+    history. Now `step()` holds before it opens a session (`retry_at` = `RETRY_SECONDS`
+    away, never the multi-hour backstop) and `_do_check` returns `skipped` naming the job
+    before any session work; the re-grade's own `poke()` runs the full check the moment it
+    finishes. Best-effort: an unreadable job registry reads as nothing running.
+    `test_the_follower_holds_while_a_regrade_is_running`.
+    `/api/settings/crown-follow` (GET status+stats+ledger, POST config, POST `/sync` = check
+    now); driven by the top-bar **"Follow best" switch** (`FollowBest.tsx`) with a status/churn
+    popover.
+  - `duel.py` — **Duel ladder**: interleaved head-to-head adjudication, the controlled-trial
+    complement to the observational pooled crown.
+    **Vocabulary (user-facing):** a **session** is a night of **matches**; a **match** is two
+    profiles head to head, decided over **rounds**; a **round** is one interleaved pair of
+    runs, one per profile, back to back so they share their conditions. The code still says
+    `bout`/`pair` throughout — those are identifiers, JSON keys (`pairs`, `min_pairs`,
+    `wins_incumbent`) and stored config, and renaming them would re-key live `AppConfig` and
+    `Duel.matchups` rows for a wording change. So the rename is **display-only**: labels and
+    sentences read match/round, the wire and the DB keep bout/pair, and the Dueling Champions
+    page states the hierarchy outright since "bout" and "pair" never said which contained
+    which. **Counterbalanced** alternation — one iteration
+    a side, with the lead alternating every pair (ABBA) — between an incumbent (the pooled crown
+    at window start) and a ladder of challengers
+    (heirs priority order, reachability-filtered), so each adjacent pair shares its weather
+    **by construction** — a thin new variant can be adjudicated against a 3000-iteration crown
+    in one night because it races the crown-five-minutes-ago, never its history. Each matchup
+    runs a **sequential stopping rule** (Wald SPRT on the pair-win rate, `duel.p1`/`alpha`,
+    min/max pairs) plus a practical-significance floor (`duel.min_margin` Overall points —
+    statistically real but negligible edges are recorded as draws), so the window never burns
+    all night on a settled question: the ring's #1 defends the next bout (see **The ring's #1
+    defends** below), and decided pairs get a `duel.rematch_days` cooldown. Two-ledger discipline: duel
+    *runs* flow into the pooled record like any runs; duel *verdicts* live beside it as the
+    head-to-head ledger (`Duel.matchups`, surfaced on the **Dueling Champions** tab) and never
+    enter the pooled score. The duel **never writes a winner to the firewall** — it restores
+    the pre-duel baseline (`reconcile_interrupted_duels` on startup); acting on verdicts is
+    the crowning policy's job. Runs nightly (`config.duel`: enabled/hour/minute/timezone/
+    duration, gated in `scheduler.py` like the baseline test) or on demand (`/api/duel/*`).
+    The window is **set as a start/finish clock pair**, not a minute count: `GET/PUT
+    /duel/config` carries derived `end_hour`/`end_minute`, and a PUT with an end time derives
+    `duration_minutes` (`_window_minutes`, wrapping past midnight — 22:15→01:45 = 210 min;
+    a zero-length window is refused). `duration_minutes` stays the canonical value the engine
+    counts down, so a window over 24h is still expressible. The on-demand button is the same
+    idea client-side: the page's "duel now until" clock becomes minutes-from-now at press.
+    **Bouts are adjudicated on the paired MARGINS, not the pair-win count** (`duel.method`,
+    default `"margins"`). The original rule was a Wald SPRT on which side won each pair — a
+    **sign test**, which discards *by how much* and so throws away most of the evidence a duel
+    produces: measured against a true 1.0-point edge with ~1.5-point run noise, a 15-pair bout
+    called a winner just **28%** of the time ("profiles are winning but aren't presented as
+    winners"). `PairedEvidence` runs a one-sided **Wilcoxon signed-rank** test on the
+    challenger-minus-incumbent Overall margins (`wilcoxon_p`: exact below 25 pairs — the regime
+    duels actually run in, where the normal approximation is needlessly conservative —
+    tie-corrected normal beyond), which lifts the same bout to **~60-70%** and calls a 2-point
+    edge essentially always. Peeking after every pair inflates false positives (an uncorrected
+    5% test fires on ~26% of true ties over a 40-pair bout), so the threshold is divided by a
+    Pocock-style `peek_penalty` **fitted by simulation** (≈`3.32·ln(peeks) − 2.97`: alpha/3 at 6
+    peeks, /5 at 11, /9 at 36) which holds the realized false-verdict rate at ~alpha. The
+    practical floor (`min_margin`) still gates every verdict — significance and *worth acting on*
+    are separate questions — and the SPRT walk is retained purely as the **futility** detector
+    (its "pair wins ~50/50" exit still ends settled ties early). The legacy sign test stays
+    available as `method="pair_wins"` for comparison. Crucially the margins rule has **no cap at
+    which a verdict becomes unreachable** — more pairs only ever help.
+    **"If it wins back to back, it wins"** is the rule, at the length that isn't luck
+    (`duel.streak_to_decide`): an unbroken run of n pairs has p = 1/2ⁿ, so a bout ends the
+    moment the run clears the threshold — 6 straight under *quick*, 8 under *balanced*, 12
+    under *strict*. The length is not arbitrary and short streaks are worthless: between two
+    **identical** profiles a 30-pair bout throws up a 3-in-a-row 99.7% of the time, 5-in-a-row
+    62%, 8-in-a-row 9%. A *pure* streak rule would also be glacial (a profile winning 70% of
+    pairs needs ~54 pairs on average to string 8 together), which is why the paired test backs
+    it: a clean run wins instantly, and a profile that goes 12–3 without ever stringing 8
+    together still gets called. The margin floor (`min_margin`) now defaults to **0** — a
+    consistent win counts however small, matching the pooled crown, which likewise has no floor
+    ("the profile that wins wins"); raising it is opt-in, in the advanced panel.
+    An explicit **"N wins in a row ends it"** rule (`duel.streak_wins`, the **snap** preset's
+    3) overrides the derived streak *and* `min_pairs` — a field that says "3 in a row wins"
+    has to mean 3. It is a deliberate trade on a ladder that keeps running: measured against a
+    true 1-point edge, 3-in-a-row names the better profile **~91%** of the time and the worse
+    one ~7%; between genuinely equal profiles it is a coin toss, which costs nothing because
+    either answer is right, and the next bout re-runs it. Read the **standings**, not one bout.
+    The ladder can also **run continuously** (`duel.continuous`, gap `continuous_gap_minutes`)
+    rather than once a night — the scheduler starts a session whenever `coordinator.busy()` is
+    clear and the gap has elapsed, so monitoring and manual runs still get the pipeline, and
+    every session still restores the baseline. And it races **leaders, not randoms**:
+    `build_queue(contenders="leaders", top_n=…)` ranks the **whole field** by Overall
+    (confident profiles first — two runs and a lucky score is noise, not a contender), puts
+    the pooled crown first whenever it isn't the one defending, and lets the heirs tail follow
+    so unknowns still get measured. Reachability is tested **per profile against the live
+    environment** (`_reachable`). It briefly wasn't: reachability was inherited from the heirs
+    pass, which silently restricted the "leaders" pool to the heirs themselves — and heirs are
+    *by definition* the under-sampled/stale profiles, capped at `challenger.heir_count` (5) —
+    so the mode built to avoid filler raced nothing but filler, and with an empty heirs list
+    produced no queue at all (`test_leaders_are_drawn_from_the_field_not_from_the_heirs_list`).
+    `_recently_decided` likewise scans duels **by `finished_at` within the cooldown**, not
+    "the last 20 sessions" (a continuous ladder finishes several a day, so a row cap covered
+    ~3 days of a 7-day cooldown).
+    **The ring: belt cadence + concurrent seats** (`duel._run_ring`, `duel.belt_every`,
+    `duel.seats`, `duel.browser_only`). A session used to be a sequence of two-profile
+    matches, each round a (belt, challenger) pair in ABBA order — which put the same profile
+    back to back at every round boundary and spent half of every session re-measuring the
+    belt. The ring generalises it with two settings and no new statistics. `belt_every`
+    (default **3**, `duel.DEFAULT_BELT_EVERY`) is how often the belt's *reference* leg recurs:
+    3 is `B C D B C D` — a third more challenger legs per hour, with a challenger leg up to
+    two legs from its nearest belt leg; 2 is strict alternation (`B C B D B C B D…` — every
+    challenger leg has a belt leg on both sides, the strongest shared-weather guarantee). It
+    shipped at 2, and the review's throughput arithmetic showed why that could not work on a
+    default window: a cycle under strict alternation is one belt leg plus one challenger leg,
+    so each of two seats got a round every other cycle — about seven rounds a seat in a
+    two-hour window against a `min_pairs` of eight, so no match reached a verdict inside one
+    night and carried matches were the norm. At 3 a cycle gives every seat a round
+    (`rounds_affordable`: 13 rounds a seat on the same window where 2 gave 10). A fourth
+    `config_store` upgrade (`duel-belt-every-three`) moves an install still on the old default;
+    any other stored cadence is a choice and keeps. `seats` (default 2) is how many
+    challengers fight at once, drawn by the same `next_challenger` ordering: they share the
+    belt legs and the weather window, and a seat refills the moment its match decides, so
+    time flows to the undecided. Each challenger leg yields **one margin** = its Overall minus
+    the mean of the usable belt legs flanking it; `pairs` on the record still counts margins,
+    so the SPRT/signed-rank rule, the Bradley–Terry fit, the standings and the tape consume
+    the record unchanged (plus `design`, `belt_every`, `leg_distances`, `max_leg_distance`).
+    When the belt moves mid-session the seated matches **drain** against the reference they
+    started with — a match is never switched mid-way — and only then does the new holder
+    defend. The zipper yield sits at the seam after a closing belt leg, and a yield
+    invalidates the lead so the next cycle opens with a fresh belt leg. Two honest limits,
+    stated so nobody reads more into it: consecutive margins share a belt leg (correlation
+    ≈1/6 at equal leg noise, so the signed-rank test is slightly optimistic), and the
+    information about an edge is still set by how many legs each profile ran — the
+    throughput gain comes from `belt_every`, not from alternation itself. **The trade is
+    priced from history, not assumed** (`weather_by_distance`, `GET /duel/weather-distance`,
+    the *"Measure weather shift by distance"* readout in the rules panel): every session's
+    legs are on record in run order (`Duel.run_ids`), so the severity shift between legs one
+    to four apart is computed from runs that already exist — if two-apart legs shift no more
+    often than adjacent ones, `belt_every=3` costs nothing the adjacent design wasn't paying.
+    `browser_only` (default off) runs duel legs with the browser plugin alone via
+    `config_overrides={plugin: {"skip": True}}` (`runner._plugin_count` returns 0 and no
+    result row is written — absent, never fabricated): every crown metric is browser-derived
+    and the weather stamp's clean covariates include the browser's own `nav_dns`/`nav_tcp`/
+    `nav_tls`/`nav_request` phases (≥ `WEATHER_MIN_COVARIATES`), so a browser-only leg scores
+    and stamps as before and drops only the probes' share of every leg; the cost is that duel
+    runs then stop contributing Completion metrics to the pooled record. The live payload
+    (`_ring_live`) carries `seats` (each seat's own scoreboard), `legs` (the recent legs in
+    run order), `reference` and `design`, with the top level mirroring the seat being
+    measured so one-match readers keep working; the page renders the **leg strip** (height =
+    that leg's Overall, belt legs capped, a weather-severity bar under each leg) and one row
+    per seated match (`RingBoard` / `LegStrip` / `SeatRow`).
+    **The board READS the ring for a person** (`utils/ringReading.ts`, `RingStanding`).
+    Reported as *"very hard to visually understand the relationship of the three profiles —
+    lots of data but not a lot of interpretation"*: every seat's numbers were relative to the
+    belt and none of them was drawn, so a reader had a tally, a signed margin, a streak and a
+    `p 1.000` per row and no picture of who stood where. `readSeat` turns a seat's board into
+    a standing (ahead / behind / level), a verdict (`called` / `too_early` / `unproven` /
+    `inside_floor`) and one sentence with its numbers in it; `ringOrder` puts every profile in
+    the ring, belt included, on ONE scale (Overall points relative to the belt at 0), best
+    first. The **Where things stand** block draws that scale — one row per seat, the dot at its
+    median margin, the whisker its best-to-worst round, the belt a zero line through all of
+    them — then the order and the sentences. Two honesties stated on the block: seats never
+    meet each other, so their order against one another is *inferred through the belt* (the
+    caption says so whenever two seats are measured); and a p-value under `min_pairs` is not
+    informative, so the seat row prints *too early to call · N more rounds* in its place
+    rather than `p 1.000`. Pure functions over the live payload; nothing here reads the API
+    or changes a score.
+    **Every participant has its own status bar** (`_leg_in_flight`, `live["leg"]`,
+    `routes_duel._leg_progress`, `ProfileLegBar`). The board used to mark a *seat* as
+    "measuring", which said nothing while the belt's own leg ran (the belt is not a seat)
+    and never moved — with three names on screen a reader could not tell which one the
+    firewall was actually set to, or whether that measurement was ten seconds or two minutes
+    in. The ring now publishes the **leg in flight** with every board: the profile, its role
+    (belt / challenger + seat index) and a `phase` that walks `applying` (written to the
+    firewall, link settling) → `measuring`; `run_chunk` gained an `on_created(run_id)` hook so
+    the board is republished with the run's id the moment the run exists, not when it lands.
+    The run's **progress is attached at poll time** by the status route, through the jobs
+    feed's own chunk adapter (`_run_entry`: counter, measured per-iteration cost, countdown),
+    so the bar under a name on the Duels page and that chunk's line in the jobs dropdown are
+    one estimate and can never disagree; a landed run reads `finished`/`failed` rather than
+    pretending to still run. On the page each name — the belt and every seat — carries a
+    bar: the active one crosses its iteration at the measured unit cost (`useSmoothProgress`,
+    the same smoothing as the jobs feed) with an "iteration 2/3 · 40s left" caption, says
+    "applying" while the profile is being written, and the rest stand idle at zero, which is
+    the honest reading — nothing of theirs is running.
+    **Open matches survive the window** (`Duel.open_matches`, `_seat_snapshot` /
+    `_seat_from_snapshot` / `_carried_open_matches`). A match's adjudication state — its
+    margins, the SPRT walk, the signed-rank evidence, the streak — used to live only in the
+    running thread. Every run was on disk the moment it landed and every *decided* match was
+    written at its verdict, but a match still open when the window closed was recorded as
+    "window closed mid-matchup (undecided)" and the next session started that pair from
+    round zero; a restart lost even the record. On a nightly ladder that is the top pairs,
+    every night — the two best profiles are seated first and resolve last, so the ladder
+    spent its evidence on exactly them and then threw it away (the *"54% of matches produced
+    no result"* report). The state is a pure function of the ordered margins (both stopping
+    rules are fed one delta at a time), so a **snapshot per seated match is written to the
+    row after every round** and the next session **moves** the snapshots onto its own row
+    (carried exactly once; a crashed session's row still holds them, so a restart carries
+    them too) and **replays** each into a seat — seated ahead of any new challenger, because
+    its evidence is already paid for, and only while its reference is the profile defending.
+    A match is never switched to a different opponent: a carried match whose belt has
+    changed hands, whose challenger left the field or is unreachable, is closed with the
+    reason (`aborted: carried over, but could not resume — …`, counted as aborted) rather
+    than resumed against someone else or dropped. The record carries `sessions` and
+    `carried`; the seat's `why` reads "resumed with N round(s) carried over" and the board
+    shows a **resumed** chip. The rule parameters are the current config's, like every
+    other match in the session. `round_health` gained `abort_reasons` — window-closed vs
+    unusable vs could-not-resume — so the health card says *why* a match produced no result.
+    **A methodology change never strands the ladder** (`_current_methodology_version` /
+    `_run_ring._reseed`). A leg is scored under whatever version is current when it lands
+    (`execute_run`), while the ring reads every leg under the version it opened with — so
+    after a publish (a new crown metric, a changed site list, a changed browser client) every
+    later round came back "not scored under <old>", every seated match aborted on unusable
+    rounds, and the ladder spent the rest of its window measuring nothing (a publish at 23:00
+    wasting the night). The ring now asks, once per cycle, whether the current version is
+    still the one it is adjudicating on; on a change it closes the seated matches with the
+    reason (`aborted: the methodology changed mid-session (old → new)` — their margins are
+    Overalls on the old scale and can't take a round on the new one), rebuilds the field
+    exactly as a fresh session does — **seeded from the prior version's standings**
+    (`_seeded_field`), so the old rubric's crown defends and its runner-up challenges first —
+    re-selects the defender, rebuilds the weather yardstick, and carries on under the new
+    version. The same rule at the session boundary: open-match snapshots are stamped with
+    their `methodology`, and a carried match from another version is closed as
+    could-not-resume (`it was fought under methodology X, and the current one is Y`) rather
+    than resumed on the wrong scale; every match record carries `methodology` so a tape
+    spanning a publish says which matches were fought on which. The ring's own ledger
+    (ratings, belt) spans versions on purpose — a head-to-head verdict is a prior too — so
+    the ladder's intelligence survives a publish; only the pooled seed is version-scoped.
+    `test_duel_methodology.py` pins all three: the prior crown defends against the prior
+    runner-up after a publish, a mid-session publish re-seeds instead of stranding, and a
+    carried snapshot from another version is closed, not resumed.
+    **The ledger re-grades with the record** (`round_legs` on every match record and open-match
+    snapshot; `duel.regrade_ledger`, run by the re-grade job after `score_history_under_current`
+    and on demand via `POST /api/duel/ledger/regrade`). A match stored only its margins —
+    Overall points on the rubric they were read under — so `overall_ranking.ring_rounds`, the
+    lever ledger and decidability's round noise had to exclude every match fought under another
+    version, and a publish silently cost the fused ranking every ring round it had while the
+    pooled record re-graded from stored raw in one job. The legs are runs and runs re-grade: each
+    usable round now records which runs made it (`{"challenger": run_id, "belt": [run_ids]}`,
+    aligned with `deltas`), and the pass re-reads every margin from those runs under the current
+    version exactly as the ring forms it live — raw (challenger minus the mean of its belt legs),
+    then the host adjustment refitted under that version (`host_adjust.model_for`) and re-applied
+    per round, then the crown split from the re-graded subscores — rebuilding `deltas`,
+    `raw_deltas`, `wins_*`, `pairs`, `median_delta`, `crown_deltas` and the aligned weather/leg
+    series. A round whose leg has no Overall under the version is **set aside, never forgotten**
+    (`round_legs_dropped`, carrying its own weather shift and leg distance, counted in
+    `regraded.rounds_dropped`) and is spliced back in round order the moment a version can read
+    it — the record of which runs made a match is the one thing a re-grade must not lose. **The
+    adjudication is never touched**: `verdict`, `reason`, the SPRT and signed-rank diagnostics
+    are the decision made at the time (the belt is a chain of custody of those decisions) and
+    stay as its record, with `verdict_methodology` saying which rubric decided it; what
+    re-grades is the *evidence*, which is what the fits consume. Records written before the leg
+    ids existed are counted and left alone. Open-match snapshots are re-stamped too, so a carried
+    match resumes across a publish instead of being closed. Bounded by the ledger (one Score
+    read per session's legs), idempotent, no firewall, no runs. `test_duel_ledger_regrade`.
+    **A round medians `duel.iterations_per_round` iterations a side (default 5, was 3) — the
+    ring's resolving power — and five wins on EQUAL wall clock, not just per round.** Measured
+    on the same simulated field (rating #1 on the true best, balanced rule, one nightly
+    window): three iterations at six bouts a night 35/52/62/82/86 % at nights 1/5/10/20/30;
+    five at four bouts 42/66/78/88/94 %; five at only *three* bouts (17% less wall clock)
+    38/68/78/84/92 %. Fewer, cleaner rounds beat more, noisier ones at every horizon.
+    The stopping-rule presets measured the same way at five iterations (rating #1 on the true
+    best at nights 10/30): snap 77/90, quick 80/96, balanced 91/96, strict 92/99 — snap also
+    moved the belt 0.15 times a night against balanced's 0.01, which is why the shipped
+    default is balanced and `config_store.upgrade_config` moves an install still on snap onto
+    it. Strict is the better dial once the field is settled; it spends a whole night on one
+    match (1.1 bouts a night), which starves exploration on a wide field. A round compares two measurements, so its margin carries the
+    noise of both: measured on a real link, ~2.3 Overall points per run becomes ~3.3 per
+    round, against observed long-run edges between top profiles of **0.17–0.30 points**. At
+    one iteration a leg that is a 3.3-point ruler measuring 0.3-point differences, and no
+    stopping rule rescues it — the recorded margin of a 3-round match is ~1.3 whether the
+    true edge is 0.3 or **exactly zero**, which is why `min_margin` cannot separate real
+    wins from lucky ones (raising it deletes matches at random, and actually selects *for*
+    short noisy bouts: it rejects a well-measured 0.3 and passes a 3-round 3.3). Medianing
+    k iterations divides the noise by √k and cuts rounds-to-verdict in proportion: at a
+    0.3-point edge, **468 rounds at k=1, 156 at k=3, 94 at k=5**. A round costs k times as
+    long, so it is roughly break-even on wall clock and a large win on *verdicts reached* —
+    a match that never resolves is time spent for nothing. The round also **lifts the
+    browser's per-plugin iteration cap** to match (`config_overrides`, as the profile test
+    does): every crown metric is browser-derived, so leaving `browser.iterations` at its
+    default would median the cheap network probes over k and the metrics that actually
+    decide the round over 2 — paying for k and buying √2.
+    **Counterbalancing + settle, so a pair measures the profiles and not the schedule.** The
+    incumbent used to run first in *every* pair, which makes "went first" and "is the incumbent"
+    the same variable: any position-in-pair effect (state the previous run left behind, a
+    still-warm cache, the shaper freshly reconfigured) lands on the same side every time and is
+    indistinguishable from a real difference. The lead now alternates each pair — ABBA, recorded
+    as `lead_alternated` on the matchup so the counterbalance is auditable from the ledger — and
+    the margin stays challenger − incumbent, so the verdict doesn't care who ran first
+    (`test_pairs_alternate_which_profile_runs_first`). Each leg also waits `duel.settle_seconds`
+    (default 3, GUI-editable in the advanced panel) after `_apply_profile` before measuring: every
+    leg is preceded by a `setPipe` + reconfigure that rebuilds the queues, and the baseline test
+    has always settled before believing a measurement. It is symmetric across both sides, so it
+    never biased a verdict — it just put reconfiguration noise into every pair, and noise costs
+    pairs. Mocked-engine tests set it to 0 and score each leg **by the profile applied**, not by
+    its position (`_score_by_profile`) — a fake keyed on run order would bake in exactly the
+    confound the alternation removes.
+    **Every round is stamped with its weather, so the shared-weather assumption is
+    VERIFIED, not trusted** (`_WeatherStamper` / `ROUND_WEATHER_SHIFT`, default 25 severity
+    pts). The round's two legs being adjacent is the whole instrument — and an assumption
+    the system leans on this hard deserves a check. At session start a severity yardstick
+    is built from recent history (`WEATHER_SCALE_SAMPLE` runs; `weather.severity_scale`,
+    the same mid-rank-ECDF arithmetic as `run_severities` — one implementation); each leg
+    is then stamped with its 0–100 severity (covariates read plugin-cache-first with the
+    re-graded `Score.metric_values` fallback, via the one `_covariate_readings` extraction,
+    so the duel stamp and the Weather tab can never read a run differently), and the round
+    records the SHIFT between its legs (`weather_shifts`, aligned with the margins;
+    summary `weather_shifted_rounds`/`weather_max_shift` on the matchup, a `weather` block
+    on the live scoreboard, a warning chip on the tape and the live card). Strictly
+    **flag-and-steer**: a shifted round still counts toward the verdict exactly as before
+    — the flag says which margins to trust less; down-weighting or discarding would change
+    adjudication, a separate decision. Best-effort by rule: no yardstick or an unstampable
+    leg degrades to None, never a failed session.
+    **The operating model: always be running the bout most likely to unseat the belt**
+    (`contender_order`, `ledger_ratings`, `duel.contenders = "ring"`, the default). The queue
+    used to be ordered by the **pooled** Overall, which made the ladder circular: the duel
+    exists to be the independent check on the pooled verdict, and the pooled verdict decided
+    who got checked. A profile the ring had *proven* strong stayed buried if its pooled score
+    was mid-table, and a pooled-flattered profile got first billing every session after losing
+    five bouts running — measured end-to-end, the old order raced the two profiles the ring had
+    already beaten and put the one that beat the belt **last**. Challengers are now ranked by
+    the **ring's own findings**: each one's **optimistic ceiling** on the fitted head-to-head
+    rating (`rating + CEILING_SIGMA·rating_se`), which does the right thing three ways at once —
+    a strong established contender ranks high on its rating, an unknown ranks high on its wide
+    error bar (it might be anything, so go and look), and a well-measured weak profile ranks low
+    and stays out of the way, because the ring has answered that question and re-asking finds
+    nothing. Four tiers, and the ring is never given to a lower one while a higher still has
+    someone: `CROWN_TIER` (the pooled crown — the two verdicts disagreeing is the most
+    informative bout there is) < `CONTENDER_TIER` (ceiling clears the belt-holder's rating) <
+    `UNTESTED_TIER` (never been in the ring, so anything is possible; ordered among themselves
+    by pooled Overall, the **only** job pooled keeps) < `OUTCLASSED_TIER` (the ring says they
+    can't reach — raced *last*, not never, the same discipline the cooldown follows). A profile
+    with no pooled score at all is still raceable: requiring one would put the pooled verdict
+    back in charge of who gets checked. `ledger_ratings` fits the same Bradley–Terry model the
+    standings rank on, straight from the matchup ledger without the pooled join, so matchmaking
+    can consult it every session cheaply; `_pair_record` is the one accumulator both share.
+    `contenders="leaders"` keeps the former pooled ordering for comparison and `"heirs"` the
+    oldest exploring order.
+    **A thin profile earns the ring by what it could still do, and an unexamined claim on the
+    crown is raced IMMEDIATELY** (`contender_order`'s `LIVE_THREAT_TIER`). The pooled Overall is
+    the winner *on paper*; the ring is the real-world back-to-back result. Paper decides who gets
+    to make a **claim** — for a profile with no ring record, that claim is its **pooled optimistic
+    ceiling** (`optimistic`, the same p75 number the heirs card and the challenger race use, so
+    all three agree on what counts as a threat) measured against the pooled crown's Overall — and
+    the ring decides whether the claim survives contact. A five-iteration profile whose ceiling
+    reaches the crown is a **live threat** and runs at `LIVE_THREAT_TIER` (1), **ahead of the
+    rated contenders** (2): a rated contender has been examined and its ceiling is a statement
+    about beating the *belt-holder*, while this is an unexamined claim on the *crown itself* —
+    that it may already be the best thing measured and nobody has checked. Racing it answers the
+    claim head-to-head **and matures it**, since a bout's paired runs enter the pooled record like
+    any others, so the same hour buys the verdict and the evidence; waiting is what costs, because
+    the claim is only interesting while unresolved. Among themselves live threats are ordered by
+    ceiling, biggest first. A profile whose own runs fall short even optimistically drops to
+    `UNTESTED_TIER` — **given up on, never excluded**, since five iterations is a weak "no" and
+    the ring hasn't actually asked. The promotion applies **only where the ring has no opinion**:
+    the moment it *has* a rating, paper stops being consulted entirely
+    (`CONTENDER_TIER`/`OUTCLASSED_TIER` read the fitted rating, so a noisy pooled number can't
+    re-litigate a question the ring already answered). That is the whole point of running two
+    verdicts. This is what makes the
+    explore→duel relationship real — a proposal is measured briefly for an *initial placement*,
+    and the ring then spends its time maturing whatever could displace the best profile found so
+    far, which is also why it isn't racing #432 against #567. It changes **matchmaking only**:
+    duel verdicts still never enter the pooled score, and the crown is untouched.
+    **The ring's #1 challenges the belt when it isn't wearing it — once per cooldown**
+    (`RING_LEADER_TIER`, above `CROWN_TIER`). Since the standings rank on the fitted rating
+    and the belt is lineal, the two can disagree honestly: the rating is *global strength*
+    across everyone, including opponents the champion never faced; the belt is a *chain of
+    custody*, blind to third parties. Two ring-derived verdicts disagreeing is more
+    informative than the pooled one below it — both sides are controlled head-to-head
+    evidence, so the disagreement is purely scope vs path, and one match collapses it.
+    The promotion is **gated on the rematch cooldown**, and that gate is load-bearing
+    rather than tidy: this tier holds exactly **one** profile by construction, so an
+    ungated promotion would open every session with the same match forever — the ladder
+    spending the night racing two profiles, which is the failure the tiering exists to
+    prevent. `fought` (a hard skip within a session) outranks it too. Note this is the one
+    place the cooldown is allowed to *withhold* rather than merely order, precisely because
+    a single-occupant tier has no lower-priority sibling to fall through to.
+    **The ring's #1 is always in the field, and only a raceable one is promoted**
+    (`_with_ring_rated`, `next_challenger`). The field is built from pooled data, so a profile
+    rated on matches two publishes old — no current runs, unranked by the prior version — was
+    simply absent, and the promotion dropped it in silence: the Overall page named it "ring
+    alone" while the ladder never seated it. Every ring-rated profile is now folded into the
+    field from its stored settings, and the promotion goes to the best rated profile the live
+    firewall can be set to (an unraceable #1 is named in the log). The Overall page's ring
+    corner carries `ledger_rounds` (rounds behind the rating, every methodology) and
+    `raceable`, so "0 rounds · rating 1635" reads as what it is.
+    **One seat is kept for a promising thin profile** (`duel.prospect_seat`, default on;
+    `prospect_max_pairs` 12; `_Seat.prospect`; `next_challenger(only_tiers=)`). Under the
+    fused policy the Overall's tied rivals sit at `FUSED_RIVAL_TIER`, above everything else,
+    and on a tight field the tied set is large — so both seats went to it every night and a
+    two-to-five-iteration profile whose pooled ceiling reached the crown (`LIVE_THREAT_TIER`)
+    never got asked. With two or more seats, a seat is now filled first from that tier
+    alone; the match is capped at `prospect_max_pairs` rounds (each round adds
+    `iterations_per_round` iterations a side, so twelve rounds carries it far past the
+    confidence bar and earns it a ring rating) and a capped draw says so. From then on the
+    ordinary tiers decide: a rated profile whose ceiling clears the belt keeps being raced,
+    one the ring says can't reach it drops to `OUTCLASSED_TIER`. Never in a lever session.
+    A carried prospect match resumes as an ordinary seat.
+    **The rematch cooldown ORDERS, it never excludes** (`contender_tiers` / `next_matchup`).
+    Queued profiles carry a priority **tier** — `CROWN_TIER` (the pooled crown) <
+    `CONTENDER_TIER` (confident, scored) < `FILLER_TIER` (thin/untested) — and the ring is
+    **never given to a lower tier while a higher one still has someone waiting**. Within a
+    tier a matchup not fought inside the window goes first; otherwise the best of that tier
+    is **re-raced**. This is the fix for the repeatedly-reported *"random duels not involving
+    the crown"*: the cooldown used to set a recently-fought contender aside and fall through
+    to the next queue entry, which is self-defeating on a ladder that runs continuously —
+    the top of the queue is what gets fought first, so it is also what goes on cooldown
+    first. Within a day or two the crown and every leader were cooled and the only entries
+    still un-fought were the ones nobody had ever raced, so a mode built to race the leaders
+    raced nothing but filler, and the pooled crown — first in the queue *by design* — was
+    the first profile pushed out of the ring (reproduced end-to-end: the old loop's order was
+    `untested → untested → crown → leader → leader`, the new one
+    `crown → leader → leader → untested → untested`;
+    `test_the_cooldown_reorders_contenders_it_does_not_hand_the_ring_to_filler`). `build_queue`
+    returns the queue already **tier-sorted** (stable, so intra-tier order is untouched), and
+    `fight_card` reports each entry's `tier`/`tier_name` so the preview shows the real running
+    order — a projection rather than a schedule, since the engine re-decides both sides
+    before every bout. Because the defender is re-read each time, the two names in the ring
+    by bout six can be neither the profile that walked in with the belt nor the crown — which
+    reads as "randoms" unless the chain is visible, so each bout records **`challenger_why`**
+    (its tier, and whether it was re-raced), the live stage line reads *"Bout 3 · X (belt)
+    defends vs Y (pooled crown) — pair 4"*, and the page lists **"this session so far"**:
+    every bout and who took
+    the belt. An empty queue
+    reports *why* (`_no_contenders_reason`): nothing scored under the current methodology, or
+    the live environment matches no stored profile. `contenders="heirs"` keeps the exploring
+    order.
+    **One dial, not six fields** (`duel.PRESETS` / `preset_for` / `preset_config`): "when is
+    someone the winner?" is a single question, and it had been spread across six interacting
+    numeric fields nobody could reason about together. `GET/PUT /duel/config` carries a
+    `preset` — **quick** / **balanced** (default) / **strict** — that writes `alpha` +
+    `min_pairs` + `max_pairs` in one move, and each preset is labelled with its **measured**
+    behavior (wrong-verdict rate, how often it spots a 1-point edge, typical pairs to decide;
+    `test_preset_behaviour_matches_its_promise` re-checks the ordering). A preset deliberately
+    never touches the practical margin or the schedule — different questions — and hand-editing
+    any derived field reads back as `"custom"` rather than pretending a preset is active. The
+    page shows the three presets plus the single "ignore differences smaller than X points"
+    field; the raw knobs live behind **Show advanced settings**.
+    `duel.sprt_requirements` answers the question the raw settings hide — **what it actually
+    takes to win a bout**. Each pair won moves the walk by `ln(p1/0.5)` and each pair lost by
+    `ln((1-p1)/0.5)`, a *bigger* step, so the pair cap and the evidence bar interact: at
+    p1=0.70/alpha=0.05 with `max_pairs=15` a winner needs **13 of 15 (87%)**, and a profile
+    genuinely taking 80% of its pairs is recorded as a draw forever (the real "why is everything
+    a draw?" report — a 12–3 bout reaches LLR 2.505 against a 2.944 boundary). `GET /duel/config`
+    returns `decision` (`sweep_pairs` / `wins_needed` / `win_rate_needed` / `restrictive`) and the
+    page states it outright, warning when the cap demands a near-sweep. `p1`/`alpha` are editable
+    from the same card ("Edge to detect" / "Error rate").
+    **The ring's #1 defends, and the matchup is re-decided before EVERY bout**
+    (`ring_leader` / `select_incumbent` / `next_challenger`). This is the operating model in
+    one line: *always be running the bout most likely to unseat the best profile we have.*
+    Two earlier rules got in the way of it. The belt went to **whoever survived the previous
+    session** (`latest_champion`), which is not the same profile as the best one; and the
+    running order was a **queue built once at session start**, walked to the end. Together
+    they produce the repeatedly-reported symptom: a mid-table profile wins one bout, inherits
+    the belt, and the ladder spends the night defending *it* against opponents chosen for a
+    defender who had already left the ring — bouts between #83 and #128 that say nothing
+    about whether anything beats the leader.
+    Now the ledger is refit before every bout (`ledger_ratings`; `_ledger_sessions` reads the
+    **running** duel, so a challenger that just won is re-rated before the next matchup is
+    picked), the defender is **the champion** (`belt_holder` → `ring_leader`), and the
+    challenger is whoever `contender_order` puts first *against that defender's* rating. `select_incumbent` falls back to the pooled crown only when the ring
+    has nothing to say (empty ledger, or no rated profile the live environment can be set
+    to), and says which in `incumbent.why`; `fight_card` calls the same helper, so the
+    preview can't name a different defender than the one who walks out.
+    **The ring names its WINNER off the fitted rating; the belt still decides who DEFENDS**
+    (`RATING_RULE`, `duel.crown_rule = "rating"`, the default; `belt_holder` names the champion,
+    `defender_reference` names who walks into the ring; `test_duel_winner_rule`). Two questions
+    that shared one answer. A title has to be fought for to be winnable, so the lineal
+    belt-holder defends every bout — but the belt is the wrong statistic for "who is best":
+    it is a chain of custody, blind to every bout its holder did not fight, so one lucky snap
+    moves it and nothing a third profile does can. The Bradley–Terry rating reads the whole
+    ledger. **Measured** with the real `PairedEvidence`/`lineal_belt`/`fit_bradley_terry` code
+    on a six-profile field 0.1 points apart at the top, round noise σ 1.47 as the live ring
+    measures it, 200–400 worlds, 30 nights, the belt defending — how often each statistic
+    named the true best: snap preset, belt 52/48/57/65/77 % at nights 1/5/10/20/30 vs rating
+    #1 44/55/66/76/84 %; balanced, belt 46/58/62/71/78 vs rating 41/61/72/82/89. Past night 3
+    the rating is 7–11 points better at every horizon, on the same rounds. Who *defends* makes
+    no measurable difference (belt 82/92/94 vs rating-#1 82/92/96 at nights 10/20/30), so the
+    belt keeps that job and the rematch logic, and the sim's caveat is stated: it seats the
+    pooled crown as the true best, so absolute levels are optimistic and the *ordering* across
+    rules is the finding. Under the rating rule the champion is row 1 **by construction** —
+    `ledger_leader(sigma=rank_sigma)` and the table sort share `_rank_key` — and `standings()`
+    reports the lineal holder beside it as `belt` (with `holds_belt` on the champion), so the
+    claims strip, the champion card and the two-crowns tile say when the winner and the title
+    are different profiles instead of leaving it to be spotted. `latest_champion` (what the
+    `duel` crowning policy applies), `standings()["champion"]` and the stored
+    `Duel.champion_fingerprint` run the one `belt_holder`; the ring-#1 promotion in
+    `next_challenger` reads the same order, so the profile promoted to challenge the belt is
+    exactly the winner the ring names. `"lineal"` and `"rating_floor"` stay selectable.
+    **The title is LINEAL** (`lineal_belt`, `duel.crown_rule = "lineal"`, selectable):
+    you take the belt by beating the profile that holds it, provided your whole shared record
+    with it then favours you on **both** counts — more matches won *and* more rounds won.
+    The champion defends every bout, which is what makes the title winnable at all.
+    This replaced ranking the belt on `rating_floor`, the same conservative number the
+    standings order on. That was honest about *evidence* and wrong about *championship*, and
+    it deadlocked: the holder defends every bout, so no challenger ever accumulates a second
+    opponent, so no challenger's error bar ever shrinks enough to overtake the incumbent's
+    floor, so the belt never moved. Four profiles beating the crown 3-0 and all sitting below
+    it on Proven was the ladder working exactly as specified and saying nothing.
+    Two questions, now answered separately and allowed to disagree: **the standings rank on
+    the fitted rating** ("what does the whole network's evidence say?") while **the belt
+    records who beat whom** — a champion at row 4 is the two verdicts disagreeing,
+    which is the point of running both, so the champion card states its own `rank` outright.
+    The aggregate gate is deliberately **vacuous on a first meeting** — there is no shared
+    history to appeal to, so a clean win transfers the belt and the new holder defends
+    immediately, which takes a fluke straight back off it. What actually decides whether the
+    belt churns is **`min_margin`**: at 0 a win by 0.01 Overall points is a win, and on a
+    field separated by less than the run-to-run noise that is a coin flip wearing a belt.
+    The belt is **replayed, never stored**: it is path-dependent (the *order* of results moves
+    it), but the ledger has a canonical order (session id, then bout index), so replaying it
+    is deterministic and re-derives from the record like every other verdict here.
+    `crown_rule = "rating_floor"` keeps the former behaviour for comparison.
+    `Duel.champion_fingerprint` is written **every bout** (the belt changes hands mid-session,
+    and on a continuous ladder a badge that waits for session end reads hours stale) and is
+    the title holder **unfiltered by reachability** — an unreachable champion simply never
+    defends (`ring_leader` stands in the ring's best reachable profile and says so), and the
+    crown follower already refuses to apply one. Still display only:
+    `latest_champion` filters to COMPLETE sessions, so the crowning policy never acts on a
+    provisional holder (and can't, mid-duel: the duel owns the firewall while its window is
+    open). Two exclusions, deliberately different strengths: a pair already fought **in this
+    session** is a hard skip — with one exception: **unfinished business gets its rematch.**
+    A challenger that *won* its bout but didn't take the belt (their shared record doesn't
+    favour it yet — it beat the champion once, the champion beat it once) has raised the most
+    informative question on the ledger, and it is now exactly computable rather than a proxy
+    — so that pair is
+    re-opened, **once** per session, and its freshly-raised rating puts it near the top of
+    the order on its own. Without it the profile with the single strongest claim to the belt
+    was set aside for the rest of the session while the leader defended against fresher,
+    weaker challengers (the *"two profiles beat this one but it keeps the belt"* report).
+    Gated on the defender actually being ledger-derived, since on the pooled fallback "the
+    belt didn't move" says nothing about the head-to-head record. Meanwhile the **rematch
+    cooldown only orders within a tier** — the fix from the
+    "random duels" report, since the leader and its nearest rivals are the first matchups to
+    cool precisely because they are fought first. One interaction is named rather than
+    hidden: a bout can be a **draw** on the practical margin floor (`min_margin`, default 0)
+    while the *rating* — fitted to pairs, magnitude-blind by design — still moves the belt,
+    because "is this difference worth acting on?" and "which profile is stronger?" are
+    different questions.
+    **Setup is progress, so it beats** (`duel._setup_step`, `SETUP_SLOW_S`; `_run_ring`
+    beats at the top of every cycle). A session's setup — the pooled standings
+    (`compute_profiles`), the heirs, the weather yardstick — runs no probe, and only the runner
+    beats, so from the moment it took the lock a session in setup was **silent** to the
+    coordinator. A field pass that outgrew `STALE_HOLDER_S` (20 min: a large table, a cold
+    memo, three page loads computing the same field under the GIL) got the ladder **evicted
+    for making progress**: the watchdog freed the pipeline, monitoring started beside it, and
+    the duel row kept reading *running · 5h left* until its next `lease.check()` raised —
+    reported as a screenshot of two jobs running at once with the ladder frozen on "Ranking
+    the field for matchmaking" for twenty minutes. Each setup step now sets a stage that
+    **names it and lists what has finished with its seconds** (*"Ranking the field for
+    matchmaking — weather yardstick (done: standings 34s · heirs 2s)"*), is timed and logged
+    (a warning past `SETUP_SLOW_S` pointing at `GET /api/health/pipeline`, whose thread stacks
+    are the one thing that says which call is not returning), and **beats the lease when it
+    ends**; the ring's per-cycle matchmaking (ledger refit, defender, seats) beats too. A
+    single step past the bar still evicts, and that is right — it is a wedge — but the log
+    now names it. **The jobs feed says when the watchdog stood a session down**
+    (`routes_jobs._evicted`): after an eviction the lease is gone, so `_stalled_ms` (which
+    reads the live holder) goes quiet exactly when the feed most needs to speak; the row now
+    reads *Stood down by the pipeline watchdog — no progress for N min while "<stage>"* with
+    the stall chip, for an eviction of this session at or after its start. The row is
+    labelled **Lever session** (linking to `/levers`) when the duel's `mode` is `levers`.
+    **The bout in progress is structured state, not a sentence** (`_live_scoreboard`,
+    persisted to `Duel.live` after every pair and cleared at session end). A scoreline inside
+    the stage line — *"pair 4 (2-1)"* — can't say **whose** wins those are, by how much, or how
+    near a verdict is, which is the whole of what a live duel readout is for. The payload
+    carries both sides with their own tally, who leads (`level` when tied, never an implied
+    lead), the **median margin signed from the challenger's side** (positive = challenger
+    ahead; this, not the pair count, is what the verdict is decided on), the per-pair margin
+    series, progress against `min_pairs`/`max_pairs`, the current streak against the streak
+    that would end it, and the running p-value against its peek-corrected threshold. The
+    Dueling Champions page renders it as a scoreboard (`BoutScoreboard`) — two tallies, a
+    split bar, and a per-pair margin strip so a steady lead and one lucky pair don't look
+    alike — falling back to the stage sentence between bouts, when there is no score to show.
+    `duel.fight_card` (`GET /api/duel/card`) answers "are we just racing randoms?" with a
+    list rather than a paragraph: the champion plus the ordered queue a duel started *now*
+    would work through, each entry carrying its Overall, iterations, why it's in the queue
+    (contender / limited-data / stale / untested) and whether it's on rematch cooldown. It is
+    built by **the same `build_queue` the engine runs**, so the page can't promise one order
+    and the duel fight another; it costs a `compute_profiles` pass, so the **Who's fighting**
+    card fetches it on demand rather than on page load. The page header also states what
+    pressing "Duel now" will do — until when, how long, who defends against how many, and what
+    ends a bout — since a button whose behavior lives in three other fields isn't a control,
+    it's a guess.
+    **The standings rank on a fitted STRENGTH, not on match points** (`rating.py`,
+    `fit_bradley_terry`). Points (3/1/0) record *how many* you beat but not *who*: beating the
+    champion and beating a profile nobody has measured were both worth three, the belt-holder
+    farmed points simply by defending (the winner stays on, so it fights more than anyone), and
+    two profiles that never met could not be compared at all — so a profile could beat the #1
+    and still sit at #4, the reported symptom. A **Bradley–Terry** fit over the ledger
+    (`P(i beats j) = γᵢ/(γᵢ+γⱼ)`, Zermelo/Ford MM iterations, reported on the Elo scale with a
+    Fisher-information error bar) fixes all three from the same data: beating a strong profile
+    moves you a lot and beating a weak one barely at all, losing to the best costs little, and
+    profiles that never met are comparable **through shared opponents**. It is a *fit over the
+    whole ledger*, not a running Elo — deterministic and order-independent, so the table
+    re-derives from the record exactly like every other score in PathBrain. The unit of evidence
+    is the **pair**, not the bout (`wins_incumbent`/`wins_challenger`), so a hard-fought 12–8
+    outweighs a 3–0 snap and a *drawn* bout still informs the rating instead of being discarded.
+    A **prior** of `DEFAULT_PRIOR_PAIRS` virtual pairs against a phantom average opponent keeps
+    unbeaten records finite and shrinks thin ones toward the field; 4 is calibrated against both
+    failure modes at once and `test_the_prior_is_calibrated_between_the_two_failure_modes` pins
+    them — at 2 a 3–0 sweep over the *weakest* profile outrates a veteran that beat the whole
+    field, and too heavy a prior stops a win over the *strongest* moving anyone, which is the
+    entire point. A rating is flagged **provisional** until it rests on ≥`PROVISIONAL_PAIRS`
+    pairs **and** ≥2 opponents — one opponent is a single edge restated, not a position in
+    the network. **A provisional record is listed but UNRANKED** (`_rank_key` sorts established
+    before provisional; `rank` is None and `unranked` True on the row; `rank_of` on the
+    profile ledger counts ranked rows only). It used to be ranked like any other, and on the
+    live ledger the "#1 of 32" and current champion rested on one match against one opponent
+    (20–10, p = 0.08) while every profile with hundreds of rounds sat mid-table: the luckiest
+    thin samples float to the top of a raw rating sort. Because the table sort and
+    `ledger_leader` share `_rank_key`, the rating-rule champion and the ring-#1 promotion are
+    the best *established* record too (a provisional one only when none is established).
+    `test_a_thin_winning_record_is_listed_unranked_below_established_ones`; tests about the
+    order itself on tiny ledgers use the `every_record_established` fixture.
+    **The standings rank on the fitted RATING; the conservative floor is a column, not the
+    order** (`duel.rank_sigma`, default **0**; `rating.RANK_SIGMA` = 1 defines the
+    `rating_floor` = `rating − 1·rating_se` printed as the sortable **"Proven"** column). The
+    table *used* to rank on the floor, for the reported *"why is the top profile ranked #1 with
+    only one opponent?"*: a 4–1 record against a single opponent fitted 55 Elo points above a
+    29–15 record against seven, on error bars of ±123 and ±53, an ordering that was noise
+    printed as a leaderboard. The floor fixed that and broke something it was not measured
+    against: on a real ledger it **overturned head-to-head results** — a challenger on 1687 ±146
+    (floor 1541) ranked below the leader on 1563 ±17 (floor 1546) it had just beaten, five
+    points of floor on a bar eight times wider than the gap, putting the profile that won the
+    match underneath the one that lost it (`config_store.py`, the `rank_sigma` comment).
+    Whoever wins the duel wins the duel, so the order is the rating itself and `ranked_by`
+    reads `"rating"`; `rank_sigma` stays a dial (0–3) for anyone asking the other question, and
+    the floor stays beside the rating as the "Proven" column. The trade is real and stated: at
+    0 a single lucky 3–0 outranks a deep winning record (measured: 1696 vs 1581), and the lever
+    for *that* is the rating prior (`rating_prior_pairs`, below), which shrinks a thin record
+    toward the field instead of letting an error bar overturn a result. Note the **symmetry
+    with matchmaking**, which ranks on the optimistic **ceiling** (`CEILING_SIGMA`): optimism
+    decides who to *race*, because a profile that might be good is worth measuring; the
+    rating decides who is *best*, because that is what the ring measured.
+    **Under the lineal rule the champion is NOT row 1, and is not meant to be** (under the
+    default rating rule it is row 1, and the *belt* is what can sit lower). The badge and the
+    ranking answer different questions (results vs. demonstrated evidence — see the
+    lineal-title note above), so they are computed separately and shown side by side; the
+    champion carries its own `rank` so the page states the disagreement instead of leaving
+    the reader to spot it. What they must never do is come from *different logic*:
+    `standings()["champion"]`, `latest_champion` and the stored `Duel.champion_fingerprint`
+    run the one `belt_holder` replay, so those three can't name different profiles; the
+    defender runs `defender_reference`, which is the belt under every rule with a title.
+    (The badge previously read a stored `champion_fingerprint` written at session end — the
+    profile that *survived that session* — which a running ladder left hours stale.)
+    `latest_champion` — which the crowning policy acts on — keeps its guards, translated onto
+    the ledger: `decisive` (a record of nothing but draws demonstrates nothing) and a
+    freshness window over the champion's own **most recent completed** bout, so it either
+    names the belt holder or returns None (fall back to pooled) — never a third answer. A
+    mid-session leader is therefore shown immediately but is not yet actionable.
+    **A tie is a MARK on a strict order, never a shared rank** (`tie_sigma`,
+    `_indistinguishable`, `_pairs_to_separate`, `co_leaders`). Two profiles whose fitted
+    ratings differ by less than `duel.tie_sigma` × the pooled SE of that difference
+    (`√(SE_a²+SE_b²)`, default 2.0 — the same bar and the same default as the pooled crown's
+    `crown_tie_sigma`, so the two verdicts mean the same thing by "tied") are not
+    distinguishable by the ring. Every row carries `tied_with_leader` and the response carries
+    `co_leaders`; **nothing moves**. Co-*ranking* (three #1s, then a #4) was considered and
+    rejected on two grounds. It would assert two profiles are equal when one of them **beat the
+    other** head-to-head — the rule the ladder exists to enforce. And statistical ties are
+    **non-transitive**: A within noise of B and B of C says nothing about A and C, so any
+    banding puts two indistinguishable profiles in different bands, with which band depending
+    on the order the grouping walked. The test is therefore a **star against row 1**, exactly as
+    `routes_settings._clearly_better` anchors `co_leaders` on the crown, which has no such
+    freedom. Measured, the star is also far more *informative* than banding: on a simulated
+    ladder of the real shape (one belt-holder defending nearly every bout, everyone else at 1–3
+    matches of ~9 rounds, 20 profiles over ~100 Elo) greedy banding at σ=2 collapsed the field
+    into **3 groups (5/14/1)** — not a leaderboard — while the star test flags **4 of 19**.
+    Expect a lot of marks regardless, and the reason is structural rather than a defect:
+    `SE = ELO_SCALE/√info` and information is dominated by *pairs fought*, so 9 pairs carries
+    **±100 Elo** against a field whose whole spread is 100–200, and separating adjacent profiles
+    at σ=1 would need ~9800 pairs each. That is the state of the evidence — which is why
+    `pairs_to_separate` sits beside the flag: how many more **head-to-head** pairs would clear
+    the bar if the ratings hold (both sides gain information, `p(1−p)` per pair at their current
+    expected split; `None` past `MAX_SEPARATING_PAIRS`). "Race them 4 more rounds and it
+    resolves" is actionable where "tied" invites a shrug — on the reported 1687 ±146 vs 1563 ±17
+    that is **3 pairs at σ=1, 32 at σ=2**.
+    `duel.standings` (`GET /api/duel/standings`) aggregates the ledger into the **head-to-head
+    league table** that page ranks on — per profile the **rating** (+ `rating_se` /
+    `rating_pairs` / `rating_provisional` / `expected_pair_wins` / `tied_with_leader` /
+    `pairs_to_separate`), W–L–D, match points (win 3 /
+    draw 1),
+    decisive-win + pair-win rate, median Overall-point margin *signed from that profile's own
+    side*, opponents beaten/lost to, title count — plus the reigning champion (with reign
+    length) and the `head_to_head[a][b]` matrix. It is **pure ledger**: only decided matchups,
+    nothing pooled, nothing averaged over history, so it never touches the crown. Rank order:
+    **`rating` less `rank_sigma` SEs** (0 by default, so the rating itself) → pairs behind it →
+    points (`ranked_by: "rating"`, or `"rating_floor"` when `rank_sigma` > 0, + `rank_sigma` in
+    the payload); the floor is printed as its own sortable **"Proven"** column beside the rating
+    rather than left implied in a sort order, and the points / win-rate / pair-rate columns stay
+    as the readable ledger and remain sortable. Each row also carries the
+    profile's **pooled Overall** (`_pooled_overalls` → `crown_follower._profile_overall`, one
+    indexed query per profile rather than a full `compute_profiles` pass) so the ring record
+    and the raw measured record sit on one line — a profile winning its bouts while mid-table
+    on Overall is exactly what running two verdicts is for. The table is **sortable on every
+    column** client-side (`compareStandings`, nulls last in both directions), and the ring
+    standing is the **default order**, named outright as the **"Duel rank"** column (it was
+    an unlabelled `#`). Beside the pooled Overall sits an **"Overall rank"** column plus a
+    ▲▼ gap chip on the rank itself, so the two verdicts are one glance apart: "duel rank 1,
+    ▲5" is a profile that beats everyone in the ring while sitting 6th on the raw measured
+    record — the disagreement running two verdicts exists to surface.
+    `duel.profile_ledger` (`GET /api/duel/profile/{fingerprint}`) is the **per-profile slice
+    of the ladder**, for the Profile Detail page's **"In the ring"** card: that profile's
+    standings row (rank / rating ± SE / W–L–D / round record / median margin, taken from
+    `standings()` rather than recomputed, so the profile page and the league table can never
+    print different numbers for one record), its per-opponent record off the same head-to-head
+    matrix, and its own **bout tape** — every match it fought, with the corner it fought from
+    (`defended`/`challenged`), the round scoreline, and what ended it. Everything is signed
+    **from that profile's own side** (`_matchup_sides`), so a bout it lost reads as a loss with
+    a negative margin whichever corner it occupied. A profile that has never fought returns
+    `record: null` + `in_ring: false` — the ordinary case (most profiles haven't), which the
+    card says outright instead of rendering an empty table. Names resolve by fingerprint like
+    the tape and the standings, and deliberately only for fingerprints the ledger actually
+    holds: naming *persists* what it derives, so reading an empty ring record must not mint a
+    name row for a profile that was only ever looked at.
+    `GET /api/settings/crowns` (`routes_settings.crowns`) serves **both verdicts side by
+    side** for the Dashboard's **"The two crowns"** card (`TwoCrowns.tsx`): the pooled crown
+    (trophy) and the duel champion (belt/medal), each marked *following* or *for reference*
+    per the crowning policy, plus an `agree` flag when they name the same profile. It is
+    deliberately **cheap** — the pooled crown is read from the crown-churn ledger
+    (`crown_follower.current_crown`, one indexed row, since tracking is always on) rather
+    than recomputing `compute_profiles` on every dashboard load, and the duel side reads the
+    matchup ledger; neither triggers a scoring pass. A duel verdict aged past
+    `duel.rematch_days` is still shown, labelled expired, instead of vanishing.
+  - `decidability.py` — **what can this ladder actually SETTLE tonight?** (`GET
+    /api/duel/decidability`, the *"What this ladder can settle"* card on the Dueling
+    Champions page.) Every other part of the duel is machinery for *answering* a question —
+    the SPRT walk, the Wilcoxon signed-rank test, the streak rule, the Bradley-Terry fit,
+    the lineal belt. Nothing asked whether the question was **answerable**: `contender_order`
+    picks *who* fights and never *whether this bout can conclude anything*. Observed on the
+    real ladder as 845 matches across 50 sessions with 342 decisive — 59.5% of every night
+    producing no result — a belt held through 57 "defences" of which ~51 were draws, and
+    three verdicts (belt, ring #1, pooled crown) naming three profiles with no way to
+    converge. None of that is the adjudication failing; it is the adjudication **correctly
+    reporting that it was handed an unanswerable question**, with nothing on screen saying
+    so.
+    **The resolving power is MEASURED, not modelled** (`round_noise` / `resolving_power`).
+    Every match record already carries `deltas`, the per-round margins written so the lever
+    ledger could run a paired test over real evidence, so the ring's own noise is derivable
+    from what is already on disk — nothing to configure and nothing to re-measure. The
+    estimator is the robust spread of **successive margins within a matchup**: consecutive
+    rounds share that match's true edge, so their difference cancels it exactly and leaves
+    `√2·σ` of measurement error. Deliberately not deviations about each match's own median,
+    for two reasons pinned in `test_decidability`: centring spends a degree of freedom on a
+    four-to-thirty-point sample and reads a known σ of 1.0 back as **0.73** — the one
+    direction of error that matters, since it would tell the ladder it can resolve
+    differences it cannot — and it books **drift** as noise, where a successive difference
+    sees one round of it (measured at 0.5 pts/round: 5% inflation against the centred
+    version's 41%). Less sensitive, not immune; the residue is conservative, which is the
+    right direction for a number that decides what to refuse. **The ring's own design is
+    corrected for** (`SHARED_BELT_SUCCESSIVE_TO_SIGMA`, `_shares_belt_legs`): a ring margin
+    is the challenger leg minus the mean of the two belt legs flanking it, and the next
+    margin of the same match reuses one of them, so consecutive margins are not independent
+    — their difference carries `2.5` leg-variances against a margin's `1.5`, a ratio of 5/3
+    rather than the 2 the plain successive-difference estimator assumes, which read the
+    noise ≈9% *low* (the review's S6, the one direction that matters here). A record
+    stamped `design: "ring"` is scaled by √(5/3) before pooling, the ABBA pair records that
+    predate the stamp keep √2, and `shared_belt_matchups` says how many of each the
+    estimate rests on (`test_the_noise_estimator_corrects_for_the_shared_belt_leg`).
+    `min_margin` =
+    `DETECT_SIGMA·σ/√max_pairs`, and `DETECT_SIGMA` is 2.0 — the same bar as `duel.tie_sigma`
+    and `correlation.crown_tie_sigma`, so "the ring can resolve this" and "the crown calls
+    this clearly better" mean the same thing.
+    **Two refusals, and they are not the same fact** (`decidable`). `cannot_differ` is
+    *structural* and needs no statistics: the profiles are identical in every writable
+    field, or differ only in fields PathBrain never writes (so the bout cannot be applied at
+    all and whichever was asked for, the other is measured — the two standings rows printing
+    an identical settings summary), or differ by a lever step immaterial against the range
+    the field has actually run that lever over (`q5799` vs `q5800` on an 880 Mbit link, one
+    part in ten thousand — a variant-generation artifact, not a contender;
+    `IMMATERIAL_SPAN_FRACTION` over `levers._measured_span`, so the scale is the field's own
+    measurements rather than an absolute step, which differs by three orders of magnitude
+    between `quantum` and `target`). `below_resolution` is about the *instrument*: the bout
+    is real and this ladder cannot reach it. **Only `cannot_differ` is refused**
+    (`REFUSED`) — `below_resolution` and `unknown` order, they never exclude, the same
+    discipline the rematch cooldown follows, and `test_only_cannot_differ_is_actually_refused`
+    pins it because widening that tuple is exactly the change that would quietly stop the
+    ladder racing. **`unknown` is never a refusal**: with no measured power or no prior on
+    the gap the bout might settle something, and refusing on an absence of evidence is how a
+    ladder stops racing the pairs nobody has looked at yet.
+    **It never withholds a crown.** A profile better by 0.000001 is better, full stop — the
+    pooled crown is an argmax with no floor (`_select_crown`) and nothing here changes that.
+    Ranking is free; *demonstrating* an ordering is what costs a night, and only the second
+    is rationed. Wired at **both** places the engine picks a challenger, which it was not at
+    first: `duel.build_queue` (wrapping `_queue_for_mode`, `undecidable_bouts` naming a
+    reason for each drop) **and `_challenger_order`'s `"ring"` branch**. The first was
+    shipped on the claim that it covered "every mode at once" — and the default mode is
+    exactly the one it missed, because `"ring"` returns `contender_order` directly and never
+    reaches `build_queue`. So the only mode a nightly session actually runs was the only one
+    left unfiltered: a guard that skips the default path is not a guard. `queue_with_reasons`
+    returns `(queue, dropped)` so the caller explaining an **empty** queue can name the
+    filter instead of blaming the rematch cooldown — every other sentence in
+    `_no_contenders_reason` is true of the field and none of them is why nothing could be
+    raced, and a correct sentence about the wrong cause sends the reader to re-measure or
+    wait out something that was never the problem. Also wired at `explore.rank_bets`, where
+    `ring_resolution` closes the propose→adjudicate loop:
+    a bet predicting a gain the ring cannot see will be raced, drawn and recorded as no
+    result, so each carries `ring_can_confirm` / `rounds_to_confirm` / `predicted_gain` —
+    a **label beside `clears_bar`, never a filter and never a re-ordering**. Read-only
+    throughout: the duel ledger, the pooled field and the shaper registry in, numbers and
+    sentences out. `test_decidability`.
+  - `host_adjust.py` — **a round's margin is adjusted for the measuring machine's own speed**
+    (`duel.host_adjust`, default on; `raw_deltas` / `host_adjusted_rounds` / `host_adjust` on
+    every match record). The research export showed the ring's leg noise is largely the HOST:
+    every night from 07:00 UTC the box runs ~30% slower for five hours (context setup +35%,
+    close +40%, render +10%) and every profile loses 3–4 points, with adjacent legs sharing
+    most but not all of it. So each round is CUPED-adjusted: `raw − β·(x_challenger − mean(x_belt))`,
+    `x` = the leg's log host readings (`instrument_health.HOST_QUANTITIES` — context setup,
+    close, timing reads, render, none of which the shaper can move, so the adjustment cannot
+    remove a real edge). β is fitted per session on the ledger's **pure-noise pairs** —
+    same-profile legs ≤ `MAX_LEG_GAP` apart in one session, whose true difference is zero —
+    by ridge least squares through the origin, with log-ratios clipped to ±`CLIP` so one
+    wedged phase can't steer it, and **kept only if it removes ≥ `MIN_GAIN` of held-out
+    variance** on ≥ `MIN_PAIRS` pairs (interleaved two-fold); otherwise margins stay raw and
+    the record says why. Measured on the live ledger: 36% of held-out leg noise removed
+    (1126 pairs) — roughly a third fewer rounds per verdict. A round missing a reading stays
+    raw (never a guessed covariate). `deltas` (what the rules, the ratings fit, the fused
+    ranking and decidability read) is the adjusted series; `raw_deltas` proves what changed.
+    `test_host_adjust`.
+    **The POOLED record is priced with the same β** (`pooled_reference` / `pooled_adjustment` /
+    `describe_reference`; `overall_host_adjusted` / `host_adjusted_runs` / `host_adjustment` on
+    every profile in `GET /settings/profiles`, response `host_adjust` + `host_crown_suspect`,
+    the **Host-adj** column and the *"may owe its rank to a faster measuring machine"* alert on
+    Profile standings — R9 in the architecture review). The ring adjusted a round and the
+    pooled record did not, so a profile the firewall sat on through the host's nightly slow
+    window wore the machine's slowness in its pooled median for ever, and the crown pools all
+    history with no window to age it out. The pooled record has no pair to difference against,
+    so the reference is the **field** — the mean log host vector over every comparable run with
+    readings (`Run.instrument_health["readings"]`) — and a run's adjustment is `β · clip(x_run −
+    x̄)`: what the machine's own speed at that moment was worth, by the β the ring earned on its
+    pure-noise pairs (a β fitted on legs minutes apart on one machine cannot carry a profile
+    effect, which is what makes it safe to apply here). A run without readings enters no
+    adjusted median rather than a guessed one; no fitted β is no reading, and the response says
+    why. **Flag-and-steer, never a crown input**: the crown is still the raw argmax, and
+    `host_crown_suspect` names the adjusted argmax when it differs — the case for a *race*
+    (back-to-back legs on one machine), exactly as `weather_crown_suspect` is. Read inside
+    `compute_profiles` (one `model_for` per field pass, memoized with it); off with
+    `duel.host_adjust`. `test_host_adjust` + two API tests in `test_settings`.
+  - `host_pressure.py` — **how loaded the NAS was while a run measured, and by whom**
+    (`Run.host_pressure`, the outlined sentence on Run Detail, `runs.jsonl` in the research
+    export). Instrument health infers a slow host from the browser's own readings and cannot
+    say *why*; the nightly ~5-hour slowdown from 07:00 UTC had nothing in PathBrain scheduled,
+    and "the NAS's own job" and "PathBrain's leaked Chromium" call for opposite fixes. So the
+    runner reads the kernel's counters when a run starts and when its iterations finish and
+    keeps only the **differences**: host pressure-stall shares for CPU/IO/memory
+    (`/proc/pressure`), the container's own where the cgroup exposes them, the host's CPU
+    busy share (`/proc/stat`) against the CPU this container used (cgroup v2 `cpu.stat`,
+    v1 `cpuacct.usage`), and load/memory/swap at the end. `attribution` reads them as
+    `host` (busy or stalled, PathBrain a small share of the busy CPU), `pathbrain`, `quiet`,
+    or None when the readings can't say. **Recorded only** — nothing grades or gates on it;
+    the machine-health gate is unchanged by decision. Every source degrades to None and a
+    failed reading never fails a run. `test_host_pressure`.
+  - **A verdict names the RULE that ended it, and never claims evidence it does not have**
+    (`PairedEvidence.decide` → `(verdict, basis)`, `duel._decided_reason`,
+    `WILCOXON_MIN_PAIRS`). Two independent rules end a match — the streak
+    (`streak_wins`, which fires first and on its own terms) and the signed-rank test — and
+    they are not equally strong evidence. `decision()` returned a bare verdict, so
+    `_adjudicate` wrote the **signed-rank sentence over both**, and a streak verdict at
+    three rounds was recorded as *"margins consistently one-sided (p=1.0000 ≤ 0.0214)"*:
+    an inequality that is arithmetically false, crediting a test that never ran. That
+    particular `1.0000` is the worst possible value to print, because it is
+    `wilcoxon_p`'s **"fewer than four rounds, I have no opinion"** sentinel — the reader is
+    handed the strongest available claim by a test making the weakest one. Reported off a
+    real tape (Duel #89, both decided matches). `decide()` now returns the basis,
+    `_decided_reason` writes the sentence for the rule that fired, and a streak verdict
+    also states where the statistical test stands — *silent* (under `WILCOXON_MIN_PAIRS`)
+    or *not cleared* (with the p it did not reach). Nothing about adjudication changes;
+    only what the ledger claims. The guarantee is pinned over the sentence itself
+    (`test_the_tape_never_asserts_an_inequality_that_is_false` parses every `p ≤ α` the
+    reason can print and checks the arithmetic), because the bug was not in a number but in
+    a template applied to two different things. `test_duel_verdict_reasons`.
+  - **Even a tiny win is a win, in the ring too — and nothing fought is thrown away**
+    (`duel._narrow_verdict` / `NARROW_PREFIX`, the record's `narrow`; `_carried_reference`;
+    `counts_as_evidence`; `_bout_cannot_differ`). The rule the pooled crown has always
+    followed (an argmax with no floor) and the margin floor's default of 0 were never
+    applied to the one place a verdict is *declared*: a match won only on the signed-rank
+    test or the streak, and everything else became a draw or an abort. On a field whose top
+    profiles sit 0.1–0.3 points apart that was nearly every match, and four ways compounded
+    into a week of nightly sessions with no result at all (Duels #125–#131). **(1) A match
+    that ends undecided goes to the side ahead** — its cap, its futility exit, or a carried
+    match that cannot resume: the median margin decides (rounds won break a zero median),
+    recorded as a real `"challenger"`/`"incumbent"` verdict with `narrow: true` and a reason
+    that says it was not statistically clear, so the standings, the ratings, the belt, the
+    cooldown and the tape all count it; only an exactly level match is a draw, and a raised
+    `min_margin` is still honoured. **(2) A carried match finishes against the defender it
+    started with**: the fused #1 is a near-tie that moved night to night, and a carried match
+    may only resume against its own reference, so re-picking the defender first closed every
+    carried match unfinished, every night. The carried matches' reference now stands in
+    (reachable, current methodology, most carried rounds first) until they are seated, no
+    fresh challenger is seated against it, and the existing drain finishes them before the
+    newly picked #1 takes the ring. **(3) An aborted verdict does not un-measure its rounds**:
+    the fused fit (`overall_ranking.ring_rounds`), the lever book (`lever_ledger`) and a
+    campaign's readings (`base_readings`) used to drop every aborted match, so 23 v17 rounds
+    fought on one night counted for nothing on the Best profile page. They now keep every
+    match with margins except one whose margins are on another rubric's scale, and a carried
+    close is stamped with the methodology its rounds were read under, not the one current at
+    close. **(4) The immaterial-step refusal fails closed**: the queue filter read the field,
+    and a defender the field did not list (the fused #1, a carried reference) passed every
+    bout — quantum 5800 met 5799 for twelve rounds. `undecidable_bouts` now reads the
+    defender's stored settings, and one gate at the seat (`_bout_cannot_differ`, on the
+    session's own books) refuses on every path, resumed matches included.
+    `test_a_match_that_ends_undecided_goes_to_the_side_ahead`,
+    `test_a_carried_match_resumes_against_its_own_defender_when_the_ranking_moved`,
+    `test_a_carried_match_that_cannot_resume_goes_to_the_side_ahead_and_keeps_its_rounds`,
+    `test_counts_as_evidence_keeps_aborted_rounds_except_another_rubrics`,
+    `test_an_immaterial_step_is_refused_even_when_the_defender_is_off_the_field`.
+  - **A draw is not a title defence** (`duel.lineal_belt`). `defences` counted three
+    different events as one — the holder won, the bout was a draw, and the holder *lost* but
+    kept the belt on the shared-record gate — which on a ladder where most matches cannot
+    reach a verdict said something false: "held the title through 57 defences" of which ~51
+    were draws is not a champion fighting off 57 challengers, it is a champion nobody could
+    be shown to have beaten. Now `defences` (won) / `drawn_defences` / `survived_losses`,
+    with `undecided_defences` as the honest denominator beside the wins, all reset together
+    when the belt changes hands, and the champion card prints the wins and the non-wins
+    apart.
+  - `levers.py` — **what moving ONE setting does: how the ring asks, and the book it keeps**
+    (the **Lever duels** page, `Levers.tsx` / `/levers`; `GET /api/explore/levers`). A profile
+    is a bundle of levers, and a bout between two bundles that differ in four of them is four
+    questions asked at once with one answer; the matched pairs answer it observationally (pairs
+    someone happened to build, measured on different nights). **A lever session is a session
+    KIND, never a stored config value** (`Duel.mode`, `duel.SESSION_MODES`, `POST /duel/start
+    {contenders: "levers"}`, `GET /duel/card?contenders=levers`): it measures settings, it does
+    not hunt the best profile, so it must not become the ladder's standing matchmaking by a
+    switch someone forgets to flip back — `PUT /duel/config {contenders: "levers"}` is refused
+    with a pointer to the page. The Levers page previews what would be seated (the same
+    `fight_card` with the kind overridden — the preview and the session are one rule), starts
+    one session through `useQueuedAction` like every other Run button, shows the live board with
+    each seat's lever and crown split, lists past lever sessions, and hosts the ledger card
+    (`components/LeverLedgerCard.tsx`, moved off Explore). The nightly/continuous ladder never
+    runs one; `_drive` applies `d.mode` over the config for that session only. **A lever
+    session runs under a CAMPAIGN pinned to one base** (`models.LeverCampaign`,
+    `Duel.campaign_id`, `levers.resolve_campaign` / `campaign_evidence` / `campaign_status`,
+    `GET/POST /api/levers/campaigns`, `GET /levers/campaigns/{id}`, `POST …/close`). The
+    first cut defended whoever the ring said was #1, re-decided every cycle — and under the
+    lineal rule a variant that wins takes the belt, so within one session the base drifted to
+    whichever variant last won, a crown change moved it between sessions, and a carried match
+    was closed the moment the belt changed hands: evidence about ONE profile's levers (the only
+    thing a single-lever reading is) scattered across bases and discarded (*"each start is
+    taking off from a new profile"*). Now `start(contenders="levers", campaign_id= |
+    base_fingerprint=)` resolves the campaign (named → open one on that base, opened if none →
+    newest open → a new one on the pooled crown), the ring's defender is the campaign's base
+    whatever the belt says (`_run_ring(campaign=)`; unreachable base → a clear failure, not a
+    substitute), and open matches are persisted to and carried from the **campaign row**
+    (`take_campaign_open_matches` / `persist_campaign_open`), where the ladder's own
+    `_carried_open_matches` never looks — so a ladder session in between cannot consume them
+    and the next lever session resumes with every round intact. The base's settings ride the
+    campaign, so it can be applied even when the field no longer lists it. **Evidence is read
+    at the base**: `campaign_evidence` orients every non-aborted single-lever match with the
+    base on either side as *variant minus base*, per transition (base value → variant value)
+    with rounds, margin, sign/signed-rank p and crown split, and a `state` — `better`/`worse`
+    (≥ `MIN_ROUNDS`, significant), `null` (≥ `NULL_ROUNDS` = 16 rounds inside ±`NULL_MARGIN` =
+    0.5 points — no gain worth more rounds, the crown's own tie floor), else `open`; per lever
+    `improves` (names the best step) / `no_gain` / `open`, with the mechanism agreement. Settled
+    transitions form the last tier of `lever_variants(settled=)` (raced last, never never — the
+    cooldown's discipline) and `rounds_by_lever(base=)` counts only matches at the base, so a
+    session spends its rounds on what is still open. `fight_card(contenders="levers",
+    base_fingerprint=)` previews the campaign the same way. The Levers page leads with the open
+    campaigns (per-lever state table, continue / close), opens a new one on any profile, and
+    the preview follows the selected campaign's base. Closing is by hand; a closed campaign
+    keeps its record and a new one can be opened on the same base. **The page runs no field
+    pass on load.** Its first cut filled the base picker from `GET /settings/profiles` (the
+    full `compute_profiles` field *with* the weather cohort pass, under its own memo key) and
+    fetched the fight-card preview (a second field pass) on mount and again on every campaign
+    selection — beside the Why card, the other half of the unresponsiveness incident. The
+    picker now reads `GET /levers/bases` (the cached stored-profile list + the rollup's pooled
+    Overall, milliseconds), the preview is fetched only from its own **Preview/Refresh**
+    button and is dropped when the selected base changes, and `_settings_lookup` reads
+    **one settings row per fingerprint** (a grouped max-id subquery) instead of every
+    completed run of the profiles it names. `backfill_burst` re-derives at most 25 rows a
+    standings read (was 100). **Asking**
+    (`lever_variants` / `next_variant`): in a lever session the belt-holder defends against
+    single-lever variants of *itself* — the field's siblings that differ from it in exactly one writable lever first
+    (they carry pooled data; the duel matures them), then **generated** steps the firewall can
+    hold (the adjacent option on a select via `provider.field_options()`, halve/double on an
+    unbounded integer, the flip on a boolean; a bandwidth is never generated — `NO_GENERATE`).
+    **A generated step stays inside the range the lever has already run on this link**
+    (`_measured_span`, over every profile with settings on record; no bound with fewer than
+    two values). A lever session runs on the connection the household is using, for minutes
+    per leg, and a halved queue limit or a halved quantum nobody has ever run here is exactly
+    the step that makes it unusable for those minutes (*"my connection blips out every time I
+    run lever duels"*). Values the field has measured are known to be livable; stepping past
+    the field's edge is Explore's deliberate, one-at-a-time job. The other blip is the
+    **reconfigure itself**: every leg is a `setPipe` + `reconfigure`, which rebuilds the
+    shaper's pipes and drops what is in flight — inherent to measuring on the live firewall,
+    and why the ladder has a nightly window.
+    A generated variant is the defender's whole settings deep-copied with one field moved, so it
+    hashes as the firewall will echo it and is reachable by construction; it joins the session's
+    `settings_by_fp` so the leg can be applied, named and recorded like any profile. Levers are
+    round-robined by the paired rounds the ledger already holds for them (`rounds_by_lever`),
+    fewest first, so a night spreads across the levers. `single_lever_diff` compares numerically
+    (`_field_equal`), so `"5ms"` vs `5` is never a phantom lever. **The ring now records where a
+    margin lived**: every leg reads its crown-metric subscores (`duel._run_crown`, `_Leg.crown`),
+    `_append_crown` keeps per-metric margins aligned index-for-index with `seat.deltas`, and the
+    match record carries `deltas` (the per-round margins themselves), `crown_deltas`,
+    `median_crown_delta` and `lever` — snapshots and the live board (`crown_margins`) carry the
+    same, so a carried match resumes with its split intact. **The book** (`lever_ledger`): every
+    non-aborted match on the duel ledger whose two profiles differ in exactly one lever — seated
+    for it (`lever` on the record) or one apart by chance (`single_lever_diff` over each side's
+    newest stored settings) — is oriented as *the effect of moving UP* (higher value minus lower)
+    and pooled per lever and per transition: rounds won each way with an exact two-sided sign
+    test (available for every record ever written), a signed-rank test over the pooled per-round
+    margins (records that carry `deltas`), the per-crown-leg medians, and a `direction`
+    (`higher`/`lower`/`none`, or `thin` under `MIN_ROUNDS` = 8). Beside each lever sits its
+    **mechanism prediction** (`MECHANISM`) for an **unsaturated** link — the regime a page load
+    runs in, per the agreed model that fq_codel's round-robin acts on page-load bursts, not on a
+    saturated queue: `quantum` → an interior optimum (the one lever whose interleave is exercised
+    without saturation); `target`/`interval`/`limit`/`flows`/`ecn` → **null** (nothing stands in
+    a queue long enough for CoDel to act); `download_bandwidth` → conditional (only below line
+    rate). `agreement` reads the measured direction against it: `as_predicted`, `consistent`
+    (one side of an interior optimum), `flat_here`, and **`surprise`** — a null-predicted lever
+    the ring finds moving the Overall, which says the model of the link is wrong (a queue forms
+    during bursts after all) or the pairs are confounded; that row is the point of the table.
+    Levers never fought get a row with their prediction and no verdict. `fight_card` previews
+    the variant order in lever mode. Strictly read-only outside the ring; nothing here changes a
+    score.
+  - `explore.py` — **the exploration landscape**: the one engine that asks what we *haven't*
+    tried. Every other engine judges profiles that already exist (Settings Impact ranks them,
+    the duel adjudicates them, the race promotes the under-sampled) — none answers "what's
+    untested that might beat all of this?", which with ~150 profiles varying several levers at
+    once is not answerable by eye. Read-only; it proposes, and the existing
+    `POST /settings/test-settings` path measures. Four outputs from one `compute_profiles` pass
+    (`GET /api/explore/landscape`, on demand — it costs that pass, same bargain as the fight card):
+    **(1) Axes** — every writable lever kept **per pipe** (`"<pipe>::<field>"`; the Download and
+    Upload legs are separate knobs and don't behave the same), dropping any lever that never
+    varies — a constant isn't a lever. **(2) Response curves** — median Overall at each measured
+    value, plus Spearman ρ and a one-word `shape`. The curve is the point: a lever with ρ≈0 can
+    still have an obvious peak in the middle, which no single coefficient can express. An
+    **interior peak beats the correlation** when labelling the shape — a lever whose far end is
+    disastrous carries a strong monotonic ρ even when its best value is mid-range, and reading
+    that as "lower is better" would send you to the low end the curve says is worse
+    (`test_an_interior_peak_beats_a_strong_correlation`). **(3) Gaps** — a **`gap`** is a blank
+    between two tested values (bracketed, one run settles it); an **`edge`** is the best value
+    being the end of the range (not bracketed at all — the optimum may lie beyond). **Each hole
+    carries a runnable variant** (`attach_gap_candidates`): a value is a finding, not a profile, so
+    the hole is materialized the way a person would do it by hand — the **best measured profile
+    with that one lever moved** to the (coerced) untested value — priced by the same
+    `_candidate_dict` the ranked candidates use, so the row posts the identical
+    `POST /explore/test` payload and the claim lands in the same ledger. It's needed because the
+    holes are already *among* the moves candidates are generated from, but that list is UCB-ranked
+    and cut to a handful, so a gap with an unremarkable prediction never surfaced as something you
+    could press — and "one run settles it" is exactly the argument for pressing it. Coverage and
+    promise are different reasons to measure, and only one of them had a button. The parent walks
+    down `_parent_order` until a variant is untested (the winner already running that value can't
+    answer the question, the runner-up can); when every parent has been there the row is flagged
+    `already_measured` rather than dropped. **(4)
+    Interactions** — per axis pair, split each at its median and read the 2×2 contrast
+    `(HH−LH)−(HL−LL)`: does the better half of one lever depend on which half of the other you're
+    in? That's the "does the best download quantum depend on the upload quantum?" question, which
+    no per-lever view can answer. A pair is only reported when the contrast clears **both**
+    `INTERACTION_MIN_CONTRAST` (1.0 pt) **and** `INTERACTION_MIN_SHARE` (15%) of the spread
+    between its four corners — otherwise every pair "interacts" on rounding noise, which is worse
+    than saying nothing.
+    **Confounding is modelled, not ignored.** A response curve is `median(Overall | lever=v)`
+    — it *marginalizes over whatever the other levers happened to be* at that value, so it
+    answers "how do profiles with this value score?" when the question being asked is "what
+    happens if I change **this** profile's value?". In a hand-built field those have different
+    answers, and the curve confidently reports the wrong one (the reported case: the marginal
+    curve named an upload quantum best that was worse than its neighbour in every controlled
+    comparison, because it co-occurred with the strong download family). Four responses, in
+    descending order of trust:
+    **(1) Matched pairs** (`matched_pairs`) — profiles differing in **exactly one** lever, found
+    by `_writable_signature` over *all* writable fields (not just the varying ones, so two
+    profiles can't be called siblings over a field the axis list dropped). Everything else is
+    identical by construction, so the Overall gap is that lever's effect with zero confounding:
+    a controlled experiment already sitting in the observational record. Reported per
+    *transition* (`7313 → 7000: −1.4 over 3 pairs`), since that's the actionable unit, sorted by
+    **evidence strength** (agreeing pairs first) rather than effect size — a dramatic
+    single-pair number is an anecdote and sorting on it buries the findings.
+    **(2) Conditioned curves** (`conditioned_curves`) — each lever restricted to profiles that
+    differ from a `reference` (default: the best measured) in the plotted lever plus at most
+    `CONDITION_MAX_OTHER_CHANGES` others. Rendered as a dashed overlay on the same axes as the
+    marginal curve, because the disagreement *is* the finding.
+    **(3) An imbalance diagnostic** (`_imbalance`) — per curve point, which *other* lever is
+    systematically skewed there and by how much (`IMBALANCE_THRESHOLD`, in normalized units).
+    It doesn't fix the curve; it names which points not to believe and why, on the chart.
+    **(4) Basins** (`basins`) — local maxima under **one-lever moves**: profiles no measured
+    sibling beats. Nearness is counted in *levers changed*, never Euclidean distance —
+    on a coarse grid two values of a 3-value lever are half its range apart, so a distance
+    radius measures how many values a lever happened to be given rather than how alike two
+    profiles are, and "no one-lever change beats this" is exactly what makes something a
+    local optimum for a coordinate-wise search. Several basins ≥2 levers apart is the
+    demonstration that the levers are **coupled**, that no single change crosses between
+    them, and that a marginal curve averaging across them describes none of them.
+    **The ring prices a move before any of these** (`explore.ring_transitions` /
+    `_ring_delta` / `_ring_block`, `RING_SESSIONS` 200, `RING_PRIOR_ROUNDS` 2; the `ring`
+    evidence class in `explore_tracker`; `levers.margin_se`). Asked *"would Explore take the
+    lever ledger into consideration?"* — it did not: `explore.py` imported nothing from
+    `levers`, so the ring's paired, interleaved, same-weather rounds on an exact single-lever
+    move — controlled by **design**, where a matched pair is controlled by coincidence and
+    measured on different nights — never reached a prediction. `landscape` now reads
+    `levers.lever_ledger` once (best-effort: an unreadable ledger is an empty book, never a
+    failed page — the fixtures pass no session) and re-keys it like the axes (both key on
+    the pipe *label* and coerce through `_to_number`, so `"5ms"` and `5` meet), and
+    `_predict` gains tier 0: the exact transition, either direction (a move DOWN takes the
+    margin negated). A **significant** transition (a direction at `levers.ALPHA` over ≥
+    `MIN_ROUNDS`) is applied shrunk by `rounds/(rounds+RING_PRIOR_ROUNDS)` — 8 rounds keep
+    80%, 16 keep 89%, lighter than a pair's `n/(n+1)` because a ring round is same-weather;
+    one the ring has settled as **null** (`NULL_ROUNDS` inside `NULL_MARGIN`) adds nothing
+    and says so; a **thin** one (under `MIN_ROUNDS`) informs without steering, shrunk against
+    the bar it hasn't reached; an unsettled one is halved. Every note starts with *"measured
+    in the ring"*, which is the needle that puts the claim in the ledger's new **`ring`**
+    class, strongest in `EVIDENCE_ORDER` and still weakest-link beside another leg. That
+    class is the point rather than a label: what the ring cannot promise is that a lever's
+    effect at the bases it fought at *transfers* to this parent — the basins say levers
+    couple — and grading ring-priced claims separately is how the recommendation ledger
+    measures whether it does. The ring's own variants never need pricing: a lever leg is a
+    run filed under the variant's fingerprint, so its coordinates are already in
+    `already_tried`; what the book adds is the generalising evidence — "512 → 1024 on the
+    upload limit gained +0.8 over 13 rounds at two bases" priced onto a parent that has
+    never run 1024. Each candidate carries `ring` (per moved leg: rounds, signed margin,
+    state; the candidate's state is its least-measured leg) and the landscape carries
+    `ring_transitions` in the matched pairs' shape; the Explore page shows *backed by the
+    ring · N rounds* / *ring found no gain* on a candidate and merges the ring's rows into
+    "What changing one lever actually did", marked **ring** (rounds, p) beside the pairs and
+    sorted first. Deliberately left alone: the stated band (open space ⊕ anchor SE — a
+    ring-priced move narrows what is known about the *move*, not the *point*; `rank_bets`
+    widens or trusts the class by its measured miss once claims are graded), and the full
+    ledger card, which stays on the Levers page with its mechanism predictions.
+    **Explore does not manufacture profiles the ring cannot use** (`MIN_STEP_FRACTION` /
+    `_immaterial`, `INERT_LEVER_CREDIT` / `_inert_levers`; `inert_levers` and
+    `exploration_credit` on every candidate). Two leaks fed the field with thin, noisy
+    fingerprints — the "high Overall on five iterations" backlog the review priced. **(1)** The
+    refine move bisected between the best value and its neighbour with no floor, so a field
+    holding `q5797` and `q5800` was offered `q5798`: a bout `decidability.cannot_differ`
+    refuses as an immaterial step and no instrument resolves, costing a 5-iteration test and
+    a permanent field member with a fresh ±1-point reading. A generated value closer than
+    `MIN_STEP_FRACTION` (5%) of the lever's measured range to an already-measured value is
+    dropped; a transplant (a measured value, which is the point of it) is exempt. **(2)** The
+    upper-confidence-bound search found open space on levers `levers.MECHANISM` predicts
+    inert on an unsaturated link (target, interval, limit, ecn — nothing stands in a queue
+    long enough for CoDel to act) *maximally* attractive precisely because nobody had been
+    there, so untested interval values and ECN flips led the list. When every moved lever is
+    predicted inert and the ring has not found it moving the Overall (no `significant`
+    transition on that axis — a `surprise` restores the credit in full, because then the
+    link's model is what is wrong), the exploration bonus is cut to `INERT_LEVER_CREDIT`
+    (25%); the prediction itself is untouched, so the curves still speak, and the candidate
+    says why in its evidence. A two-lever move that touches a live lever is not discounted.
+    **(3) An edge step is a value the firewall can hold** (`_beyond`, `_select_kind`,
+    `_snap_unavailable`; `edge_blocked` on a curve, `blocked` on a gap). The step past the
+    tested edge was `max + step` with no ceiling and no check that the value existed, so a
+    quantum edge walked past the registry's own 10000 one sweep step at a time and a CoDel
+    interval edge proposed `100 + 20 = 120 ms` on a select that offers no such option — a
+    write the firewall accepts and ignores, measured as a profile nobody proposed (the
+    review's E10). Now, in order of what is known: with the provider's **option list**
+    attached the edge steps to the *next option* (nothing when the edge is the last one); a
+    select-kind lever **without** the list proposes no untested value at all — not past the
+    edge, not in a gap, not as a refine — because nothing can check that it exists, and only
+    values the firewall has already held are offered on it (transplants); a numeric lever's
+    step is clamped to the registry's declared sweep range (`ShaperField.sweep_default`), and
+    an edge already at the clamp proposes nothing. The finding is never dropped silently: the
+    curve carries `edge_blocked` and a gap `blocked`, each a sentence, and the page shows
+    them where the button would be. The Shotgun Sweep's default is **one chunk a variant**
+    (`sweep.DEFAULT_SWEEP_ITERATIONS` = `runner.CHUNK_ITERATIONS` = 5, was 2): a 13-variant
+    sweep at two iterations minted thirteen permanent field members too thin to rank or race.
+    `test_explore_hygiene`.
+    **Candidates are priced from the best evidence available**, in that same order:
+    a matched pair for the exact move → the *parent's own* conditioned neighbourhood → the
+    marginal curve, **shrunk by `CONFOUNDED_SHRINK`** when that curve is flagged confounded
+    (believing a confounded average whole is precisely how it becomes a confident prediction).
+    Each candidate carries its `evidence` provenance so a controlled number never reads like an
+    extrapolated one. A **transplant** move was added for the coupled case — give a profile a
+    value that scores well *elsewhere* but that it has never run; the value is old, the
+    combination is new, and it is the only candidate kind a matched pair can price, since the
+    others propose values nobody has measured. Multi-lever candidates set `multi_lever` and get
+    a widened band (`MULTI_LEVER_UNCERTAINTY`) that is **subtracted from the score, not added**:
+    a UCB rewards uncertainty, so inflating the band without discounting it would push exactly
+    the candidates we trust least to the top. Predictions and upsides are clamped to the
+    Overall's 0–100 scale.
+    **Candidates** are the headline: existing profiles with one (or two) levers moved to a value
+    nobody has tried, each stating *why* that value is interesting — fills the widest untested
+    gap, refines between the best measured value and its neighbour, or steps past an edge.
+    **"Nobody has tried" is answered from two sources, not from the modelling pool**
+    (`already_tried` / `_claimed_coords`). The pool is *confident profiles only* — a lucky
+    Overall on two iterations is noise, and noise in the model comes back out as a
+    confident-sounding prediction — but "is this measured well enough to model?" and "has anyone
+    run this?" are different questions, and answering the second from the first re-proposes
+    everything below the confidence bar. With **"Test now" at 5 iterations against a 15-iteration
+    bar that is every quick test**: the page kept offering a profile whose own measurement was
+    sitting on the ledger right below it, with a prediction that ignored it (the reported *"still
+    suggesting a profile that already exists and has already been tested"*). So the dedup set is
+    **(1)** the coordinates of *every* profile with settings on record — scored or not, confident
+    or not — and **(2)** every proposal a benchmark has already been spent on, reconstructed from
+    the ledger (`explore_tracker.claimed_moves`: a claim's parent coordinates with its moves
+    applied). (2) is not redundant: when the firewall can't be driven exactly to a proposal it
+    settles on a neighbour and the runs are filed under *that* profile's coordinates, so the
+    proposed point never enters the field and a measured-profiles check alone would re-offer it
+    forever. The ledger read is best-effort — bookkeeping must never blank the landscape.
+    **A proposed value is run through `coerce_value` first**, so the number on screen is the
+    number that will run: a lever is only as fine-grained as the firewall's own control, and
+    CoDel target/interval are selects keyed by a bare integer — proposing `6.5ms` proposed
+    something that cannot exist, the apply quantized it to `6`, and the ledger then graded
+    "3ms → 6.5ms" against a profile running 6ms. They
+    are ranked by an **upper confidence bound** (`predicted + EXPLORATION_WEIGHT · uncertainty`),
+    because the question is "where might we beat everything measured?", not "where would we score
+    respectably?" — different questions with different answers, and only the first one explores.
+    `predicted` is **anchored on the parent** (its measured Overall, adjusted by what the response
+    curve says about moving that lever) rather than a global regression: a smoothed global average
+    can never exceed the best value it was fitted on, so it drags every candidate branched from
+    the winner back toward the field mean and reports the leader's own neighbourhood — the one
+    place worth looking hardest — as unpromising. Past the tested range the curve is **clamped,
+    not extrapolated**: continuing a trend past the last measurement is exactly the confident
+    guess that wastes a night, and "we don't know out there" belongs in the uncertainty term
+    (which is what makes the candidate attractive at all). `uncertainty` is the field's own spread
+    over `√(1 + effective neighbours)` under a Gaussian kernel in normalized lever space, so open
+    space carries the full spread. Deliberately **deterministic and dependency-free** (no numpy,
+    no fitted black box) — every number re-derives from the profile table and explains in a
+    sentence, the same standard the crown and the duel ratings are held to. Thin profiles are
+    **never excluded — weighted** (`evidence_weight`, `THIN_WEIGHT_FLOOR`): a five-iteration
+    reading is thin but it is the only reading anyone has of that point, and excluding it meant a
+    quick test taught the model nothing until it crossed the confidence bar (50 iterations on a
+    real link — most of the way to never). `confident_only` now scales a profile's contribution
+    by how much measurement stands behind it (linear to the bar, then flat, floored at 0.15)
+    instead of gating the pool: `_weighted_median` aggregates the curves (degenerating *exactly*
+    to the plain median at equal weights, so nothing moves until the evidence actually differs)
+    and a thin neighbour pins a candidate's uncertainty down less. Three protections stop
+    inclusion making the page worse, because a lucky two-run 99 must inform without steering:
+    it is weighted down; it cannot become a **parent** (candidates branch from *settled* ground —
+    the right response to a promising thin profile is to mature it in the ring, not to extend it
+    before anyone knows its number is real — with thin parents used only when fewer than
+    `MIN_POINTS` settled profiles exist); and it cannot set the bar (`_best_established` keeps
+    "best measured" on the best *confident* profile, the same one the crown names). **And it
+    cannot be a lever's best value or a transplant source** (`BEST_VALUE_MIN_EVIDENCE`,
+    `_best_curve_point` / `_settled_first`, `settled` + `trusted` on every curve point,
+    `best_settled` on every curve): a curve's `best_value` was a plain max over the per-value
+    medians, and a value tested by one five-iteration profile is a median of one lucky reading
+    (evidence 0.15) — named best, it seeded "refine" moves on both sides and an "edge" step
+    past it, each a 5-iteration test and a permanent field member (the review's E6). A point
+    now needs one settled profile-equivalent of evidence behind it to be named best or offered
+    as *proven elsewhere*; it still draws the curve and still informs the predictions. With no
+    settled point at all the pick falls to each point's pessimistic end (`trusted`, the
+    members' p25), so the lucky reading still cannot be it. The field spread behind every
+    uncertainty band is evidence-weighted the same way (`_weighted_stdev`, exactly `_stdev` at
+    equal weights). `test_a_thin_reading_is_never_the_best_value_nor_a_transplant_source`.
+    **The seam it leaves is the overnight module**: the
+    engine is a pure function returning runnable per-pipe overrides, so a scheduler can alternate
+    *explore* (measure these candidates) with *adjudicate* (duel the survivors) and the field
+    grows toward the optimum instead of only being re-ranked.
+    **Measuring a candidate is two lengths, not one** (`POST /api/explore/test`): **"Test now"**
+    runs `explore_tracker.QUICK_ITERATIONS` (5 — one `runner.CHUNK_ITERATIONS` block, so it
+    persists as a single chunk), enough to see whether a recommendation went anywhere and cheap
+    enough to try several in an evening; omitting `iterations` keeps the old **"Test to minimum"**
+    top-up for a candidate worth settling. Both go through the one shared
+    `routes_settings.start_settings_test` (validate reachable → apply → benchmark → restore under
+    the coordinator lock), so a caller can't invent a second set of reachability rules. The
+    candidate is materialized on the **parent's stored settings** (`explore.full_overrides`), not
+    on whatever the firewall is currently on: `_apply_writable_overrides` overlays what it's given
+    onto *live*, so sending only the moved lever measures "the firewall as it stands, with this
+    lever moved" — the proposed profile only when the firewall happens to already be on the parent.
+    And a profile test always restores the baseline, so *live* is the baseline profile at the
+    start of every test — the proposal is reproduced only when the parent happens to *be* the
+    baseline, and every candidate branched from another parent measured something nobody
+    proposed. **The existing integrity checks cannot catch this** and were never meant to:
+    `profile_test` verifies the firewall reached `target`, but `target` is *defined* as
+    live-plus-diff so the verify is true by construction; `runner.execute_run`'s
+    read-before/read-after compares the live firewall **against itself**. Both answer "is the
+    measurement internally consistent?" — it is, a real stable profile was applied, measured
+    and attributed to its own fingerprint — not "is the applied profile the one that was
+    proposed?". When the parent's settings can't be found the levers fall back to live and the
+    recommendation is stamped with a `note` saying so.
+    **A predicted fingerprint is not an identity — never correlate on one.** `fingerprint(target)`
+    hashes the profile we *intend* to reach; a run is filed under `fingerprint(normalize(discover()))`,
+    read off the firewall while it measures. Two mechanisms make those differ, and **nothing in the
+    pipeline notices** (the apply succeeds, the post-apply verify re-plans and again sees no
+    *changes*, and the read-before/read-after check sees no drift because the firewall genuinely
+    never moved): **(1) an unappliable field** — `plan_apply` skips a pipe with no live match or no
+    uuid and records only a *warning*, which every caller discards, so the firewall settles on a
+    different profile; `settings_profile.unwritable_diffs` reports exactly those dropped
+    differences (sharing `_match_live_pipes` with `plan_apply`, so the planner and the reachability
+    check can't answer "which live pipe is this?" two ways), and `start_settings_test` **reverts**
+    them so the fingerprint it returns is reachable, listing what it dropped in `warnings`.
+    **(2) a field restated in another notation** — `_apply_writable_overrides` ran `coerce_value`
+    over every supplied field ("5ms" → 5), which for an *unchanged* field is purely textual: no
+    write is planned, the firewall keeps reporting "5ms", and the target hashes a profile that will
+    never exist. It now skips any override already `_field_equal` to live, keeping the firewall's
+    own representation. This was the dominant cause — because `full_overrides` supplies the parent's
+    **whole** writable set, *every* explore test hashed an invented profile, so the runs were filed
+    correctly and the recommendation pointed at a fingerprint with no history at all.
+  - **Betting vs exploring: `explore.rank_bets` + `POST /api/explore/test-batch`.** Explore
+    routinely produces ten proposals worth measuring and, until this, exactly one button per
+    row to measure them with — a person had to press, wait, come back and press again. The
+    batch is the missing verb ("test the top X at Y iterations each"), and it is only
+    possible *because* profile tests queue: under the old singleton the second candidate
+    would have been refused, so a "queue the top three" button could only ever have started
+    one. But **which** X is the substance, not the count. The landscape ranks by an **upper**
+    confidence bound (`predicted + EXPLORATION_WEIGHT·uncertainty`) because exploring should
+    be drawn to what we don't know — and that is the wrong order for deciding what to spend a
+    night running, where it puts the candidates we understand least at the top. So a *bet* is
+    scored at the **pessimistic** end: `predicted − CONFIDENCE_SIGMA·band`, the same
+    optimism/pessimism split the duel already makes between `CEILING_SIGMA` (who to race) and
+    `RANK_SIGMA` (who is best) — **optimism decides what to explore, pessimism decides what to
+    back**. The band is *not* the model's self-assessment: every claim is graded in the
+    recommendation ledger, so each **evidence class**'s typical miss is a measured number on
+    this link (`explore_tracker.calibration`), and the band used is the **wider** of the
+    stated one and that measured miss — the wider, never a blend, because a class stating
+    ±1.0 while missing by 2.4 is overconfident and averaging keeps half of the
+    overconfidence. A class under `CALIBRATION_MIN_GRADED` (3) is reported but **untrusted**,
+    so one unlucky measurement can't bury a whole class of proposals. Each bet carries
+    `confidence_score`/`confidence_band`/`confidence`/`calibration_basis` and `clears_bar` —
+    whether the *floor* still beats the best measured profile, the strong claim, as opposed
+    to the upside claim the exploring order makes. `rank_bets` mutates nothing (the landscape
+    returns both orders over the same candidates, so the two views can never disagree about
+    what a candidate is), and with an empty ledger the stated band simply stands and
+    `calibration_basis` says so — an uncalibrated ranking is still useful, but it is the
+    model's opinion rather than a track record and the two must not read the same. The batch
+    endpoint generates `BATCH_CANDIDATE_POOL` (12) candidates and takes the top N — generating
+    more than it takes is the point, since re-ranking five and taking five ranks nothing — and
+    routes every one through the *same* `_start_candidate` the single "Test now" uses, so
+    there is one materialize → apply → benchmark → restore path and one claim-recording path.
+    One bad candidate is skipped with its reason rather than failing the batch (the discipline
+    `refresh` applies to a bad profile). Rendered as **"Run the best bets"**
+    (`components/BestBetsDialog.tsx`): pick how many, how long, and confidence-vs-upside, with
+    a preview showing each bet's floor beside its prediction and whether it clears the bar.
+    **The seam this leaves is the overnight module**: `rank_bets` is a pure function over the
+    landscape, so a scheduler can alternate *explore* (queue tonight's smartest bets) with
+    *adjudicate* (duel the survivors) — the bets mature into pooled evidence as they run, and
+    the ring then decides between them.
+  - `evidence.py` — **the evidence layer: one place where PathBrain compares two things**
+    (silver in `docs/plan-learning-engine.md`, phase 2). Three parts every consumer reads
+    instead of re-deriving. **Instrument epochs** (`instrument_epochs`, cached 15 min, never
+    raises): a sustained step in daily FCP/LCP medians from `instrument_drift.cohorts` (3 days
+    either side, `STEP_PCT`, the quantity's floor, all but one day per side on its own side of
+    the midpoint) is a boundary; a comparison never crosses one. **The comparison primitive**
+    (`control`, `margin`): a claim is graded as the candidate's margin over its parent measured
+    within `WINDOW_HOURS` (2) of it, else in the same epoch, else not as a margin at all.
+    **The search space** (`search_space`, `in_search_space`): bandwidth on either pipe is
+    `held` (decision 11); a lever the mechanism predicts inert is `inert` until one claim has
+    moved it, then `inert_checked` and closed, unless the ring catches it moving (`surprise`).
+    Explore stamps each axis with it, builds candidates only from proposable axes, strips the
+    button from holes and crown-leg moves outside it, and filters `bets` through it last.
+    `test_evidence` (the 2026-11-08 finding is pinned there: a bet level with its parent the
+    same night grades on target, where the absolute grade called it a ten-point miss).
+  - `beliefs.py` — **the belief layer: `fuse` generalised** (gold in
+    `docs/plan-learning-engine.md`, phase 3). θ_i = f(quantum) + u_i, read through the ring's
+    margins (σ from `round_noise`) and a pooled median **per instrument epoch** with an offset
+    c_e against the newest epoch; f is a quadratic over each pipe's log quantum (squares and
+    the Download × Upload interaction) with a shrinkage prior. Closed form, pure Python: every
+    profile the ring never fought is eliminated by a Schur complement onto the few surface and
+    epoch terms. s, τ and the surface's prior scale are chosen by empirical Bayes
+    (`empirical_bayes`, coordinate ascent on log grids). `fit_flat` is `fuse` exactly (test).
+    `backtest` holds a ring session out of everything, its `duel-N` runs included, and scores
+    pooled / fuse / epochs / levers / beliefs on held-out margins. `GET /api/beliefs`
+    (cached 15 min, never on a page load). **The crown still reads `fuse`** (decision 20; a
+    test fails if the crown modules import `beliefs`). `test_beliefs`.
+  - `explore_tracker.py` — **the recommendation ledger: was the data right?** Explore's output is
+    a *prediction*, and a prediction nobody scores is a horoscope — it costs the same night of
+    benchmarking either way. So the **claim is stored before the measurement exists**
+    (`models.ExploreRecommendation`, written by `POST /explore/test`): what was proposed (parent,
+    levers moved, settings applied), what the model asserted (`predicted` ± `uncertainty`, the
+    `upside` it was ranked on, the `best_overall` it claimed to beat), and — the part that makes
+    the ledger worth keeping — **what the prediction rested on** (`evidence`: a controlled matched
+    pair, the parent's own neighbourhood, or a marginal curve already flagged confounded). The
+    **verdict is derived, never stored** — recomputed from the measured field on every read
+    (`recommendations()`, one indexed query for the rows + one batched `crown_follower.profile_overalls`,
+    deliberately *not* a `compute_profiles` pass, so the page loads it immediately), exactly like
+    every other score here: a re-grade or fresh runs move it instead of leaving a frozen answer.
+    A claim is graded against **its own stated band** (`max(uncertainty, MIN_BAND)` — the model may
+    be wrong by exactly as much as it said it might be; the floor stops a ±0.1 claim manufacturing
+    a miss out of run-to-run noise) → `on_target` / `better` / `worse`, plus `pending` (nothing
+    measured yet — never counted as a success) and **`incomparable`** (proposed under another
+    methodology: a prediction is a number on one rubric's scale, so grading it under a different one
+    compares two yardsticks — the same discipline the run-comparability gate applies). A thin
+    measurement is graded but flagged `provisional`. Every row carries a **`why`** sentence joining
+    the miss to the evidence class it was priced from, and the `summary` aggregates the same split
+    **by evidence class** — which is how "that curve was confounded" turns from a caveat into a
+    measured fact about the model's own failure mode (the claim `CONFOUNDED_SHRINK` was written on
+    a hunch). The bucket is **weakest-link** (`evidence_kind`): a two-lever candidate priced one leg
+    from a matched pair and the other from a confounded curve is only as trustworthy as the
+    confounded leg. `GET /api/explore/recommendations`; rendered as the Explore page's
+    **"Was the data right?"** card.
+    **The ledger never trusts the recorded fingerprint** (`_measured_fingerprint`/`_reconcile`):
+    every chunk of a profile test carries `job_group = "profile_test-<id>"`, and each run's
+    `settings_fingerprint` is the very column `compute_profiles` groups profiles on — so resolving
+    a recommendation's profile *through the runs it produced* makes the correlation right **by
+    construction**, whatever the firewall did with the target. A row the benchmark contradicts is
+    re-pointed at the profile that actually ran and stamped with a note saying so (persisted in its
+    **own** `session_scope`, like `updates.verify_pending_updates` and `profile_names` — the request
+    session comes from the read-only `get_session` dependency and closes without committing). This
+    is the backstop behind the two source fixes above, and what rescues data already collected
+    against an invented fingerprint.
+    **One proposal is one row and one data point** (`_claim_key`/`_collapse`): testing the same
+    candidate twice writes two claims — right as a record of what was run, wrong as calibration,
+    since both resolve to the same profile and the same measurement, so counting them separately
+    says the model was checked twice when it was checked once. Rows are collapsed by
+    *(parent, levers moved, methodology, resolved profile)*, keeping the newest claim as the
+    representative and carrying `attempts`/`attempt_ids`/`first_proposed_at` (the response also
+    returns `attempts_recorded`, so nothing is hidden). The resolved profile is deliberately part
+    of the identity: two attempts that landed on **different** profiles measured different things
+    and stay separate — a disagreement worth seeing.
+    **A claim whose test never ran is `failed`, not `pending` for ever** (`_test_states`,
+    `FAILED_TEST_STATES`, `FAILED_CLAIM_COOLDOWN_DAYS` = 7; `test_status`/`test_error` on the
+    graded row, `failed` in the summary). The verdict read only the runs made after the claim
+    and never the `ProfileTest` behind it, so a value the firewall rejected at verify ("did
+    not accept quantum …"), a cancelled test or a box that went away left the claim `pending`
+    with nothing ever coming — and `claimed_moves` dedups every recorded claim, so that
+    coordinate was closed to Explore for good on the strength of a test that measured
+    nothing. Now the ledger reads each claim's profile test status in one query: a claim with
+    no run whose test `failed` or was `cancelled` grades `failed` (never counted, its `why`
+    carries the test's own error), and `claimed_moves` drops such a claim once it is
+    `FAILED_CLAIM_COOLDOWN_DAYS` old — kept blocking until then, because a failure is often
+    the firewall's night rather than the value, and a value the firewall genuinely rejects
+    would otherwise be re-proposed, re-queued by the exploration share and re-failed every
+    session. `test_explore_tracker_failed`.
+    **Claims are graded as margins** (phase 2 of the evidence backbone). The error is
+    `(actual - control) - (predicted - anchor)`, with the control from `evidence.control` and the
+    anchor recorded with the claim (`ExploreRecommendation.anchor`; older claims fall back to
+    `parent_overall`). Each row carries `grade_basis` (`margin` / `absolute`), `control` and
+    `margin`; a parented claim with no control is still graded absolutely, says so in its `why`,
+    and never reaches `summary.by_evidence_margin`, which is the only split `calibration()`
+    reads. An absolute grade across an instrument step measured the step: ten level bets read
+    as ten misses and buried the best-evidenced classes under 10- and 13-point bands.
+  - `explore_share.py` — **the duel's exploration share: a slice of every window spent on
+    Explore's best bet** (`duel.explore_share`, default 0.05; `duel.explore_iterations`,
+    default 5; 0 = off; the *Exploration share* field in the Duels page's advanced rules,
+    and the *exploring N% · spent/budget min* line under the live board). The ladder only
+    adjudicates profiles that already exist, and Explore's proposals reached the ring only
+    when a person pressed "Test now" — so the field grew by hand. Now `_run_ring` asks
+    `ExploreShare.at_seam` at every cycle seam whether a bet is owed and, if so, queues
+    Explore's top **bet** (`landscape["bets"]`, the pessimistic `rank_bets` order — the
+    candidate we would back, not merely look at) through the one `routes_explore.
+    _start_candidate` path (claim recorded in the ledger first, materialized on its parent,
+    apply → benchmark → restore as an ordinary profile test). The test waits on the
+    coordinator and the ring's own zipper yield lets it through at that seam; when it lands
+    (`newly_landed`) the ring re-reads the field (`_refresh_field`: the same seeded
+    `compute_profiles` pass `_reseed` runs, additive to `settings_by_fp`), so the new profile
+    — thin, and exactly what `contender_order`'s untested tier is for — can be seated against
+    the belt **the same session**. **Scales by construction**: the budget is `share × window`,
+    so ~1–2 bets in two hours and 5–6 in an eight-hour night, and a continuous ladder spends
+    the share of every session. **Paced, not front-loaded** (`due`, pure): a bet is owed only
+    while time spent ≤ `share × elapsed` and < `share × window`, one bet at a time, and never
+    when the window has less left than the costliest bet so far (`DEFAULT_BET_S` before any)
+    — a queued test outlives the ladder that asked for it. The first seam always owes one, so
+    a short session still contributes; the overshoot is bounded by that one bet. Spent time is
+    read off the bets' own `ProfileTest` start/finish, not estimated. Nothing to propose (or a
+    landscape failure) retries after `RETRY_AFTER_S` (30 min) rather than every cycle, since
+    the landscape costs a field pass. Never in a lever session. Recorded per session on
+    `Duel.explore` (budget, spent, the bets with their test ids and status).
+    `test_explore_share` (pacing, scaling, and end to end: bet queued → lands → field
+    re-read → the explored profile is raced).
+    **The share has two verbs, and they alternate** (`explore_share.kind_for`,
+    `duel.explore_mature`, default on; `_queue_top_heir`). Exploring adds a profile nobody has
+    tried; **maturing** tops up one that exists and is too thin to be trusted. Reported as
+    *"very high Overall on five iterations that dueling never picks up"*, and the share was
+    half of why: every bet minted a five-iteration profile, the prospect seat matured one of
+    them a night, the heirs card listed the rest — and nothing scheduled ever measured them
+    again, so the backlog only grew. Now the turns alternate: a bet, then the heir with the
+    highest posterior ceiling (`optimistic` — see `shrinkage.py`) that is not in the ring,
+    under-sampled (never a stale confident one — that is the race's job), topped up for
+    `explore_iterations` more through an ordinary `profile_test.start`, each profile once a
+    session. The ring hands the share its own books at call time (`heirs_source` = the
+    engine's heirs list, `settings_source` = `settings_by_fp`, `exclude_source` = the seats and
+    the belt), so what gets matured is exactly what the heirs card says could still beat the
+    crown and never a profile mid-match. A turn with nobody to mature falls through to a bet
+    and vice versa, so the share is never left unspent for want of one kind; both are charged
+    to the same budget, land the same way (`newly_landed` → field re-read), and a matured
+    profile that crosses the confidence bar is a contender the same session. Each entry on
+    `Duel.explore.bets` carries `kind`; the board chip reads *mature ·*. The first turn still
+    explores, so a session that only ever gets one turn grows the field as before.
+  - `crowning.py` — **the first-class CROWNING POLICY**: the single resolver for "which
+    verdict governs what automation applies". `crown_follow.policy` = **"fused"** (the
+    default: the one ranking fitted over both records, `overall_ranking.crown`, with the
+    pooled crown as the fallback when the fit names nobody), **"pooled"** (the all-time
+    Overall argmax) or **"duel"** (the duel ladder's latest fresh decisive champion,
+    `duel.latest_champion`, with pooled fallback) or **"math"** (opt-in: the fastest-on-paper profile, lowest median FCP × LCP, `pooled_field.math_crown`, pooled fallback) or **"lcp_first"** (opt-in candidate: the fastest FCP within `lcp_band_pct` of the best LCP, `pooled_field.lcp_first_crown`, pooled fallback) or its mirror **"fcp_first"** (the fastest LCP within `fcp_band_pct` of the best FCP) — the last three are references beside the fused fit,
+    kept selectable so the three can be compared on one field. One policy, one write path:
+    engines (race/duel) only measure and adjudicate; `crowning.resolve` selects; the **crown
+    follower** is the only component that writes the firewall. The pooled crown *statistic*
+    is always computed, tracked (churn ledger) and displayed regardless of policy. The GUI
+    control is the top-bar **Follow best popover** ("Crowning policy" chips + the verdicts
+    side by side); the API surface rides `GET/POST /settings/crown-follow` (`policy`,
+    `policies`, `duel_champion`) and `GET /settings/crowns` carries `fused` beside `pooled`
+    and `duel`.
+  - **The field's primary ordering is ONE scale: the fused Overall where the ring has
+    fought, the shrunk pooled Overall elsewhere** (`crowning.rank_field`,
+    `crown_follow.ranking`, default `"fused"`; `primary_score` / `primary_score_source` on
+    every profile, `score_sources` on the response; `config_store._upgrade_fused_field_order`
+    moves an install stored on the old default `"ring"`). The `"ring"` order below was a
+    partition — ring-rated profiles by Bradley–Terry Elo first, then everyone else by the
+    *raw* pooled Overall with no confidence gate — which stacked two scales never calibrated
+    to each other and put a five-iteration 95 above the 3000-iteration crown (the review's
+    S4). Now each profile is sorted on a posterior-mean estimate on the Overall scale: the
+    fused Overall (`overall_ranking`, the pooled anchor corrected by its rounds) where the
+    ring has fought it, its shrunk pooled Overall (`shrinkage.py`) otherwise, the raw one only
+    when no posterior exists; unmeasured last. An unreadable fit degrades to the shrunk
+    order, never a failed page. The Bradley–Terry rating keeps its jobs — the belt, the duel
+    standings and matchmaking — and `source` still says which evidence placed a row.
+    `"ring"` and `"pooled"` stay selectable for comparison.
+    `test_the_fused_order_is_one_scale_and_a_lucky_thin_profile_no_longer_outranks_the_crown`.
+  - **The `"ring"` ordering (selectable): the ring first, pooled as the seed**
+    (`crown_follow.ranking = "ring"`). A duel round is a
+    **paired, interleaved, counterbalanced comparison under shared weather** — a controlled
+    experiment. The pooled Overall averages runs taken at different times under conditions
+    that were never held equal — an observational statistic. On the same question the
+    controlled comparison wins, so where the ring has real head-to-head evidence for a
+    profile it orders it, and pooled orders only the profiles the ring has never produced a
+    round for. That is pooled's one job here and it is a real one: **seeding the unrated**,
+    deciding which of the unraced to race first, which is exactly what a macro map of the
+    field is good at. **Ring-rated** means the ledger holds at least one *round* — real
+    paired evidence — deliberately not "non-provisional" (a bar so high the ring would
+    almost never govern) and deliberately excluding profiles whose only appearances were
+    **aborted** matches, which produced no rounds and demonstrated nothing. The three
+    states (`ring`/`pooled`/`unmeasured`) partition the field: every profile lands in
+    exactly one, each group is ordered by *its own* verdict, and the two scales are never
+    compared against each other — a partition, not a blend. Applied at the single
+    `/settings/profiles` seam every reader shares, because five surfaces blending two
+    scales privately is precisely how the verdicts drift apart. **Two deliberate
+    exclusions**, both load-bearing: **this ordering never chooses who the duel fights**
+    (`best_fingerprint` is never re-pointed) — the ladder exists to be the independent
+    check on the pooled verdict, so letting a pooled-seeded ordering choose who gets
+    checked would make it circular, the exact failure `contender_order` was written to
+    escape (what the ring *does* take direction from is the fused fit's own unresolved
+    tie, under `overall_ranking.ring_target` — the ring's unfinished business, not the
+    pooled verdict); and **Explore keeps branching from the pooled best**, because its response
+    curves, predictions and uncertainties are all fitted in pooled-Overall space and
+    picking a parent by ring rating would price it against a scale it was never calibrated
+    to. (The *move* is a different matter: where the ring has fought an exact single-lever
+    transition, Explore prices that move from the ring's paired margin before any pooled
+    evidence — `explore.ring_transitions`, under `explore.py`.) `ranking = "pooled"` restores
+    the former behaviour for comparison.
+  - `overall_ranking.py` — **one ranking from both kinds of evidence** (`GET /api/overall`,
+    the **Overall** page, `Overall.tsx` / `/overall`; the Dashboard's verdict card reads the
+    same endpoint, so the card and the page can never name different profiles). Asked, after
+    the crowning card kept reading *"either the duel champion or the pooled Overall"*:
+    *"how do we take both sets of data — the random pooled data and the head to head — to
+    generate a new ranking?"* The two verdicts are two measurements of one quantity. The
+    **pooled** Overall measures each profile's *level* over thousands of iterations — a tiny
+    error bar, and a weather bias nobody could read off it, because the firewall sits on one
+    profile for hours and each profile samples its own slice of conditions. The **ring**
+    measures the *difference* between two profiles back to back under shared weather —
+    unbiased, and a handful of rounds wide. So they are fitted **together**, as one weighted
+    least-squares problem: `Σ (θ_i − μ_i)²/(SE_i² + τ²)` over the pooled anchors (each
+    profile's rollup median and IQR/√n, the same `_grade_medians` arithmetic as the verdict
+    card) plus `Σ (θ_b − θ_a − d)²/σ²` over every ring round (`d` = the match record's stored
+    `deltas`, challenger minus reference, already in Overall points; `σ` = the ring's own
+    `decidability.round_noise`). Solved only over the profiles the ring has fought (a few
+    dozen — pure-Python Cholesky, the inverse gives every profile a standard error and every
+    pair a covariance), everyone else drops straight out as pooled-plus-slack, so the
+    endpoint costs ~20 ms and the card renders on the Dashboard. Three properties, each
+    pinned in `test_overall_ranking`: **no rounds → the pooled ranking exactly** (the ring
+    only ever moves a pooled median, it never invents one); **τ is the whole argument, as a
+    number** — at τ = 0 a 3000-iteration median is immovable and the ring changes nothing
+    (the old pooled crown), at τ → ∞ only the ring speaks (the old duel champion), so the
+    two verdicts the user had been choosing between are the corners of one fit; and **τ is
+    measured, not chosen** (`pooled_slack`): where the ring has fought a pair, the pooled
+    difference and the ring's difference are two readings of one gap and the ring's is
+    unbiased, so `Var(pooled Δ − ring Δ) = SE_a² + SE_b² + σ²/n + 2τ²` solved for τ over
+    every fought pair — **each pair standardized by its own expected variance**
+    (`_solve_slack_variance`, `MEDIAN_CHI2_1`): the pairs rest on very different evidence
+    (two 3000-iteration medians and twenty rounds beside a five-run profile and four), so
+    "median of z² minus median of expected" compared the middle of one distribution with the
+    middle of another and misread τ whenever the wide-z pairs and the wide-bar pairs were
+    not the same pairs (the review's S5); under the model every `z²/(expected + 2τ²)` is an
+    iid χ²₁, so τ² is the value that makes their median the χ²₁ median, solved by bisection,
+    zero when the record already disagrees less than its bars allow — still a median, so one
+    failed leg's margin cannot set it; under
+    `MIN_SLACK_PAIRS` (10) pairs across `MIN_SLACK_PROFILES` (6) profiles it falls back to
+    `DEFAULT_SLACK` = 0.5 and the page says *default*. **No single profile sets it**: τ is
+    the smallest value left after removing any one profile's pairs, every such fold must
+    still meet the minimum (else the default stands, `rests_on` naming the profile the
+    reading depended on), and profiles measured mostly while the machine was slow
+    (`instrument_health.slow_profiles`, the batched form of `profile_conditions`) take no
+    part. Written after five pairs — most about one profile whose pooled median carried a
+    slow machine — measured τ at 8.94, disarmed every pooled median, and crowned a pooled
+    #33 (60% slower to first paint) for never having fought;
+    **there is no setting for it and no slider** — a weight a person chooses on the evidence
+    is exactly what the fit replaces; the page states whether τ was measured or defaulted, and
+    nothing lets anyone choose it). **The measured crown stands unless the fit clearly
+    beats it** (`crown_held` on the response): when the fused argmax is not the pooled crown
+    and its lead over it sits inside `crown_tie_sigma` × the SE of their difference, the
+    pooled crown is named — a lead inside the noise is evidence of nothing, and with a wide
+    slack it is mostly the asymmetry that a profile the ring never fought keeps its pooled
+    number while fought ones are pulled toward their opponents; the verdict says so.
+    `test_one_profile_far_off_its_pooled_median_cannot_set_the_slack`,
+    `test_a_lead_inside_the_noise_does_not_displace_the_measured_crown`. Otherwise the crown
+    is the argmax of the fused
+    Overall among profiles with enough evidence on **either** record (`min_iterations`
+    pooled, or `MIN_RING_ROUNDS_FOR_CROWN` = 8 rounds) **that are anchored** — a profile
+    the fit places from ring rounds alone has a fused Overall relative to its opponents,
+    not a number on the pooled scale; `ring_target` always refused to seat one and
+    `crown()` could still name one, so `eligible` now requires `anchored` and the two
+    agree (`test_a_profile_placed_by_ring_rounds_alone_is_never_the_crown`); the ghost
+    keeps its row and its rounds. SQM off excluded; "tied" is the
+    same `crown_tie_sigma` test on the SE of the fused *difference* (covariance included —
+    two profiles the ring fought share evidence, so their gap is known better than their
+    bars suggest), and `rounds_to_separate` says what a duel night would buy. The page
+    leads with the sentence, then the **three corners** (pooled alone / ring alone /
+    together, with a line saying which corrected which), **what went in** (profiles,
+    rounds, round noise, slack — each with its basis), a dot-and-whisker of the top of the
+    table with the pooled position drawn hollow beside each fused dot, **what the ring
+    changed** (the biggest rank moves, on how many rounds), every profile, and the
+    **predictive check** (`predictive_check`: leave-one-session-out — refit without each
+    recent session and predict its margins three ways; **the held-out night is held out of
+    τ and σ too** — both are measured from the ledger, so a fold reusing the all-sessions
+    values had already seen the night it was predicting; each fold re-reads τ from its
+    training pairs and σ from its training sessions, falling back to the caller's σ when
+    the training set is too thin to measure it, and the result says how many folds refit
+    it (`tau_refit`, `sigma_refit_folds`); the fit is reported *best*, *close*
+    (within `BACKTEST_CLOSE_ABS`/`_REL` of the better parent — the check's own noise) or
+    *worse*, in words). **Measured before shipping** (`scripts/sim_overall_ranking.py`: a
+    tight simulated field, a pooled record with a hidden per-profile bias, a ladder seating
+    the pooled crown against its nearest rivals, 150 worlds × 30 nights, τ measured from the
+    data): with no pooled bias the pooled crown is right 100% and fused converges to 98% by
+    night 30 (ring alone 84%); at 0.6 points of bias pooled is right 35% flat while ring and
+    fused reach 85/83%; at 1.5 points, 21% vs 75/76%. Neither parent is the better one across
+    conditions and the fit tracks whichever is, within the simulation's ±4% — which is the
+    reason to fuse rather than switch. **The crowning policy acts on it**: `crown_follow.policy
+    = "fused"` is the default (`crowning.DEFAULT_POLICY`; `upgrade_config` moves an install
+    stored on the old default "pooled" onto it, a deliberate "duel" is kept), `crowning.resolve`
+    reads `overall_ranking.crown` with the pooled crown as the fallback when the fit names
+    nobody, the crowns card says *following · fused ranking* with the pooled crown and the
+    duel champion demoted to *for reference*, and the Follow-best popover carries the third
+    chip. **The ring is pointed at this ranking's open question** (`ring_target`,
+    `GET /api/overall/ring-target`; `duel._fused_target` → `select_incumbent` /
+    `contender_order`'s `FUSED_RIVAL_TIER`, above the pooled crown's tier): under the fused
+    policy the fused #1 defends and the profiles the fit cannot yet separate from it — its
+    `tied` set, most ambiguous first (z = gap / SE of the gap), then the runner-up so the
+    crown's margin keeps being re-checked — are seated before every other reason to fight.
+    A round between the #1 and a tied rival is the one measurement that moves this ranking
+    where it is undecided, so that is where the ladder spends its nights; once the tie
+    clears the ordinary tiers resume. That is "the duel arbitrates the Overall" made
+    operational: pooled seeds the question, the ring answers it, the fit reads the answer
+    back. The circularity that kept the *pooled* ordering out of matchmaking does not apply
+    here, because the ring's own rounds are the unbiased part of the fit — seating the
+    fit's tie is seating the ring's own unfinished business. **And only the part of that
+    question the window can settle** (`duel.rounds_affordable` / `_session_round_budget`,
+    `contender_order(round_budget=)`, `fused_deferred`): the fit says how many head-to-head
+    rounds would separate each tied rival from the #1 (`rounds_to_separate`), and the ring
+    measures its own resolving power at ~0.85 points over 30 rounds against top-of-field gaps
+    of ~0.1 — ≈850 rounds a pair — so a ladder that can run seven rounds a seat tonight was
+    opening every night with a match it could not finish and the thin prospects waited
+    behind it (the review's D1). Before every cycle the ring prices the window that remains
+    at the measured per-iteration cost (`iteration_cost.estimate_ms`, the ring's own
+    `iterations_per_round`, settle, seats and `belt_every`: a cycle costs
+    `seats + ceil(seats/(belt_every−1))` legs and gives each seat one round) and a rival
+    whose rounds-to-separate exceed that budget is **left to its ordinary tier** — raced on
+    its ring merits, never excluded, its `why` saying what it would take and what the window
+    can run — so the seat goes to a rival the night can decide, a prospect or a bet. A gap
+    the fit cannot price (zero, or no SE) is unknown, and unknown never refuses; no measured
+    iteration cost yet means no budget and the old behaviour. The fight card carries
+    `round_budget` and prices the configured window the same way, so the preview and the
+    session agree. `test_a_fused_rival_the_window_cannot_settle_is_left_to_its_ordinary_tier`. Read once per ring cycle and
+    once per fight card, best-effort (a failed fit falls back to the belt), never in lever
+    mode, only for an **anchored** best (a profile placed by ring rounds alone has no number
+    on the pooled scale), and only under the fused policy: `pooled` and `duel` keep the
+    belt-defends matchmaking unchanged. **Explore keeps branching from the pooled best**
+    (its model is fitted in pooled-Overall space). Stated limits: consecutive rounds share a belt leg (correlation
+    ≈1/6, so the ring's bars run slightly tight — `round_noise` now corrects its own
+    estimate for the shared leg, the fit's per-round weights do not), τ is global rather than per profile (the
+    per-profile `weather_severity` could set it individually — a v2), and rounds fought under
+    another methodology are excluded (their margins are on another scale) while pre-stamp
+    matches are kept and counted as *unstamped*. Read-only; nothing here changes a score.
+  - `pooled_field.py` — **the pooled field graded off the rollup**: every stored profile
+    with its Overall and the band around it, the pooled anchors `overall_ranking` fits to
+    (`graded_field`; `se` / `pooled_se` / `quartile_grade`). Deliberately never a
+    `compute_profiles` pass — it is read on every Dashboard load through `GET /api/overall`,
+    and a cold field pass on page load is the documented way to take the process down
+    (`_field_stamp`, the unresponsiveness incident) — so everything comes from
+    `profile_aggregates`, one stamp-verified row per profile, graded through the one
+    `_grade_medians`, and the SE is `profile_aggregates.median_se` floored by
+    `shrinkage.profile_se`, the standings' own arithmetic. `is_sqm_off` on every row is the
+    one predicate `settings_profile.is_sqm_off_profile` (the collapsed fingerprint *or* a
+    stored pipe with shaping off), which `compute_profiles`, `fingerprint` and the fused
+    ranking's rows read too — before that the Overall page keyed on the fingerprint alone,
+    so a baseline run recorded before the SQM-off collapse was the control group on Settings
+    Impact and a contender for the crown on the Overall page at once.
+    **The mathematical crown lives here too** (`math_crown`, `corners.math` on `GET
+    /api/overall`, `math` on `GET /settings/crowns`, the **"Fastest on paper"** tile on the
+    Best profile page and the Dashboard's crowns card). Asked for *"simply fastest LCP ×
+    fastest FCP — the mathematical crown, not necessarily user experience"*: the confident
+    profile (≥ `min_iterations`, SQM off excluded) with the lowest **median FCP × median LCP
+    in raw milliseconds** — no perception curve, no weights, no shrinkage, no ring; the
+    product makes it scale-free, so a 10% gain on either leg counts the same, and a profile
+    best on one leg loses to one close on both. A reference beside the verdicts: it is never
+    part of `corners.agree`, and automation follows it only when someone chooses the opt-in
+    `crown_follow.policy = "math"` (the **Fastest on paper** chip in the Auto-apply popover;
+    `crowning.resolve`, pooled fallback when no confident profile has both medians) — it
+    ignores smoothness and has no tie test, so it is never the default. The raw medians come from the rollup,
+    which now keeps `raw` (`profile_aggregates.RAW_METRICS` = fcp/lcp, read in SQL off
+    `Score.metric_values` as two scalars a run); a row written before the column existed
+    reads `raw` None and is rebuilt once for that profile, like any stale stamp. When there is no answer the tile is not hidden: `corners.math_note` (and a warning in the log, if the read failed) says why, because a tile that silently vanishes reads the same as one that was never built.
+    **Every other crown is priced against it** (`paper_cost`, `vs_paper` on the pooled /
+    ring / fused corners of `GET /api/overall` and on the pooled / duel / fused verdicts of
+    `GET /settings/crowns`, `components/PaperCostLine.tsx` under each tile). The
+    experience-graded verdicts may name a profile slower to paint, and whether that trade is
+    worth it — a smoother route a few minutes longer on a long commute, never one twice as
+    long — is the reader's call, which needs the price: per verdict its median FCP and LCP,
+    the milliseconds and percent each sits behind the fastest on paper (positive = slower),
+    the product's percent, and per leg whether the gap clears `PAPER_TIE_SIGMA` (2) × the
+    pooled SE of the two medians (IQR/√runs). A gap inside that is printed as *within noise*,
+    never as a cost. Read off the rollup; best-effort.
+    `test_paper_cost_prices_a_profile_in_milliseconds_and_percent_against_the_fastest`,
+    `test_a_gap_inside_the_noise_is_reported_as_noise_not_as_a_cost`.
+    `test_the_math_crown_is_the_lowest_fcp_times_lcp_among_confident_profiles`,
+    `test_the_rollup_keeps_raw_medians_and_rebuilds_a_row_written_before_them`.
+    **The LCP-first crown is the candidate for the real crown** (`lcp_first_crown`,
+    `crown_follow.lcp_band_pct` default 10, clamped to `LCP_BAND_RANGE`; `corners.lcp_first` on
+    `GET /api/overall`, `lcp_first` on `GET /settings/crowns`, the **LCP first · candidate**
+    tile on the Best profile page and the Dashboard's crowns card, opt-in policy
+    `crown_follow.policy = "lcp_first"` and the band field in the Auto-apply popover). The
+    owner's stated preference, applied as written: *LCP is the most important metric; give up
+    maybe 10% of the best LCP to reach FCP faster.* Among confident profiles (SQM off
+    excluded), the best median LCP sets a bar; every profile within `band_pct` of it qualifies;
+    the fastest median FCP among the qualifiers is crowned (ties → lower LCP, then more
+    iterations). Raw milliseconds off the rollup, the same `_raw_rows` read as the math crown —
+    no perception curve, no weights, no smoothness leg, no ring — so each crowning is a sentence
+    with its numbers in it (`best_lcp`, `lcp_behind_pct`, `fcp_gain_ms`, `qualifiers`). Shown
+    beside the records and never part of `agree`; the fused ranking stays the default until
+    this has been watched long enough to replace it.
+    `test_the_lcp_first_crown_is_the_fastest_fcp_within_the_band_of_the_best_lcp`,
+    `test_under_the_lcp_first_policy_the_follower_writes_the_lcp_first_crown`.
+    **FCP first is its mirror, and both are one rule** (`leg_first_crown`, `LEG_FIRST`,
+    `fcp_first_crown`, `crown_follow.fcp_band_pct` default 10; `corners.fcp_first` on `GET
+    /api/overall`, `fcp_first` on `GET /settings/crowns`, the **FCP first · candidate** tile,
+    the opt-in policy `crown_follow.policy = "fcp_first"` and its own band field in the
+    Auto-apply popover): the best median FCP sets the bar, every confident profile within the
+    band qualifies, and the fastest median LCP among them is crowned. `lcp_first_crown` and
+    `fcp_first_crown` are the two named entry points onto the one function (the policy calls
+    them by name), so the two crowns cannot drift into two implementations.
+    `test_the_fcp_first_crown_is_the_fastest_lcp_within_the_band_of_the_best_fcp`,
+    `test_both_leg_first_crowns_are_one_rule_read_in_two_orders`,
+    `test_under_the_fcp_first_policy_the_follower_writes_the_fcp_first_crown`.
+    **Every crown says how much speed it gives up, leg by leg, wherever it is named**
+    (`fastest_legs`, `leg_gaps`, `vs_fastest` on every corner of `GET /api/overall` and every
+    verdict of `GET /settings/crowns` plus `fastest` beside them, `GET
+    /api/settings/fastest-gaps?fp=` for views that carry neither, `components/FastestGapLine`
+    + `hooks/useFastestGaps`). The point of an experience-graded crown is "give up a little
+    top-end speed for a smoother, more pleasing load"; somewhere along the way the ring's
+    champion came to paint about twice as slowly as the fastest profile, and no screen said
+    so. `paper_cost` prices against ONE reference (the best FCP × LCP product), which is
+    rarely the fastest on either leg; this prices each leg against its own record holder —
+    the field's fastest median LCP and fastest median FCP among confident profiles, usually
+    two profiles — in milliseconds and percent, with the same 2σ noise rule (a gap inside it
+    reads "within noise", never as a cost). The line is on the Dashboard's verdict card and
+    crowns card, every corner and candidate on the Best profile page, the Duels champion and
+    claims-to-best strip, and the followed profile and duel champion in the Auto-apply
+    popover; it turns amber past 0% and red at 25% or more on either leg.
+    `test_leg_gaps_price_any_profile_against_the_fastest_fcp_and_the_fastest_lcp`,
+    `test_every_corner_on_the_overall_page_carries_its_gap_to_the_fastest_legs`.
+    **And Auto-apply holds the line: the speed budget** (`crowning.speed_budget` /
+    `budget_check` / `BUDGET_FALLBACK_ORDER`, `crown_follow.speed_budget` = `{enabled: true,
+    lcp_pct: 20, fcp_pct: 25}`, the switch and two fields in the Auto-apply popover,
+    `governing.speed_budget` on `GET /settings/crowns`, `speed_budget` on `GET /api/overall`).
+    Showing the price was half of it; the owner's terms were that "very pleasing but slow" is
+    not an acceptable trade. `crowning.resolve` now resolves the policy's crown
+    (`_resolve_policy`, the old body) and checks it against the fastest legs: a crown whose
+    LCP is **clearly** (past the 2σ noise rule) more than `lcp_pct` slower than the fastest
+    median LCP, or whose FCP is more than `fcp_pct` slower than the fastest median FCP, is
+    passed over for the first crown in `BUDGET_FALLBACK_ORDER` (LCP first, fused, FCP first,
+    pooled, duel, fastest on paper) that fits, and `detail` names the crown passed over, by how
+    much, and what is followed instead. When none fits, the policy's choice stands and says
+    so; a crown whose gaps cannot be read is never refused. The policy keeps its name — the
+    budget changes only which profile is written, never how a write is made. The Dashboard's
+    crowns card shows the pass-over as a warning and the verdict card marks a #1 over budget.
+    `test_speed_budget`.
+    **This module was `verdict.py`, and `GET /api/settings/verdict` is RETIRED.** It carried a
+    second "which profile should I run?" answer — the pooled argmax among confident profiles,
+    a tie set against `crown_tie_sigma` × the pooled SE, the margin over SQM off and a
+    sentence — written for the Dashboard's verdict card. The card never read it: it reads
+    `GET /api/overall`, the fused ranking, which is the one verdict the crowning policy acts
+    on, and the fused page already carries the lead, the noise bar, the tied set, the
+    `vs_sqm_off` reading and the live profile. Two "the answer" endpoints with one of them
+    dead is exactly how a card and a standings chip come to disagree on one screen (the
+    review's S7), so the pooled sentence is gone — the pooled crown itself is still computed,
+    tracked and shown everywhere it was — and what survives here is the arithmetic both still
+    share. `test_pooled_field` (the SE convention, the tie test as the standings' own, cheap by
+    construction, SQM off keyed one way, the route stays retired).
+  - `refresh.py` — **Re-run profiles**: the batch sibling of `profile_test`. For
+    each stored profile it applies the settings, benchmarks a **caller-chosen** number of
+    iterations, then moves on — **restoring the baseline at the end** (persisted to a
+    `ProfileRefresh` row; `reconcile_interrupted_refreshes` restores on startup). One bad
+    profile is logged and skipped, not fatal. `refresh.preview` estimates duration
+    (median per-iteration time × total iterations + per-profile overhead) so the UI can
+    show "N profiles × M ≈ ~T" before committing. Own thread under the `coordinator` lock.
+    Use it to collect fresh, comparable data after a methodology change quarantines
+    history that can't supply a new crown metric. A **winner-first top-N** mode
+    (`ranked_profiles`/`_select`; `start`/`preview` take `top`+`rank_by`) re-runs only the best
+    performers first — ranked by their persisted Overall under the prior methodology (the
+    `rank_by` version, defaulting to the most-recent non-current methodology) — so the profiles
+    that were winning get fresh data before an arbitrary sweep of everything. `/api/settings/refresh`
+    (+ `/refresh/preview`, `/refresh/cancel`).
+  - **The site list is part of the methodology** (`methodology.collection` /
+    `publish_sites` / `apply_collection` / `site_set_from_config`, `POST /api/methodologies/sites`,
+    the **"Sites measured"** card on the Methodology page). Every browser metric is a *mean over
+    the pages loaded* (`_derive_browser`), so adding or swapping a site changes what FCP, LCP and
+    the stall metrics measure — and nothing used to notice: the pooled crown would have averaged
+    old-site runs with new-site runs of the same profile. A version can now carry a
+    `collection` block (`browser_urls` / `http_urls` / `site_set` = a hash of both sorted
+    lists). Publishing a list forks the current version as `<base>+sites-<hash>` (a later
+    change **replaces** the segment, never chains one), pins it, writes the lists to config so
+    the Config page and the plugins agree, and re-grades. Code-shipped versions declare nothing;
+    `ensure_current_methodology` **carries the collection forward** when a new shipped version
+    is adopted, so an upgrade never silently reverts the sites. **The gate is the configured
+    set, not the observed one**: `create_run` overlays the version's lists into `config_used`
+    (`apply_collection` — both lists, always, so the stamp can't disagree with the declaration),
+    and `comparability(..., site_set=site_set_from_config(run.config_used))` quarantines a run
+    whose stamp differs from the version's, or that has no stamp at all, under the single token
+    `site_set` — so a reader can tell "other sites" from "missing instrument". A version with
+    no collection ignores the stamp (the pre-existing behaviour). While the methodology owns
+    the list the Config page's URL editors are read-only and point at the Methodology page.
+    **The browser CLIENT is the other half of the collection** (`methodology.CLIENT_FIELDS` /
+    `client_from_config` / `client_set_from_config` / `CLIENT_SET_MARKER`). A site hands a
+    headless shell, an 800×600 viewport or an automated client a different page — or a
+    challenge page — than it hands a person, so the same URL loaded as two clients is two
+    measurements, exactly as two site lists are. The `browser` config's `headless_mode`
+    (`new` = Chromium's real browser via `--headless=new`, the default; `legacy` = the old
+    headless shell), `hide_automation` (`--disable-blink-features=AutomationControlled`, clears
+    `navigator.webdriver`), `user_agent` (`auto` = a current desktop-Chrome string matching the
+    bundled Chromium's major — the legacy default announces itself as `HeadlessChrome`),
+    `viewport` (1920×1080), `locale` and `timezone_id` are the client
+    (`plugins/benchmark_browser.context_options` / `launch_headless` / `build_chromium_args`,
+    reported per run in `details.client`). `publish_sites` declares the config's current client
+    by default (a `client` argument overrides), the version segment `+sites-<hash>` hashes the
+    **whole** collection (`collection_hash`) so a client-only change forks a distinct version,
+    `apply_collection` overlays the declared client onto every run's `config_used`, and
+    `comparability(..., client_set=)` quarantines a run stamped as another client — or with no
+    browser section at all — under its own token `client_set`, beside `site_set`, so a reader
+    can tell "other sites" from "other client" from "missing instrument". Versions published
+    before the client joined the collection declare none and ignore the stamp. Deliberately
+    **not a stealth arms race**: these are the three cheap, legitimate tells; a site that still
+    challenges after them doesn't want automated loads, and the answer is a different site. The
+    Methodology page's "Sites measured" card edits and publishes the client beside the lists;
+    the Config page's client fields go read-only while a version owns the collection. `http3`
+    is a client field too: with it on PathBrain *forces* QUIC onto every listed origin, so an
+    origin without HTTP/3 fails outright (`ERR_QUIC_PROTOCOL_ERROR`) and one with it is
+    measured on a path a first visit never takes — off unless QUIC itself is the study.
+    **A declared page that failed to load quarantines the run** (`runner.missing_pages` →
+    `comparability(..., pages_missing=)` → `SITE_COVERAGE_MARKER`). `_derive_browser` averages
+    over the pages that *loaded*, so a run in which any configured page errored is a mean over
+    a subset — the same measurement of a different thing — and it wore the same site-set
+    stamp, because the stamp hashes the *configured* list. Observed on the first run after a
+    site publish: three of six pages failed on forced QUIC and the run scored as fully
+    comparable on the other three. The gate reads the run's own configured list (declared or
+    not) against the browser raw per iteration, both at capture and on re-grade, and the
+    Run-Detail comparability tip spells the token out.
+    **Seeding from the prior version** (`refresh.prior_field` / `seed_field_from_prior`): right
+    after any publish, nothing has a comparable run, so the pooled crown is empty and the ring,
+    the race and the heirs card would order the field by nothing. The prior version's
+    standings (walking back past forks that scored nothing) seed the **order** — `prior_overall`
+    on every profile, no-data entries for profiles the current version has never scored, and the
+    prior crown standing in as the pooled fallback defender/bar — applied in `duel._seeded_field`
+    (`_drive` + `fight_card`), `challenger._field`, and `routes_settings._seeded_field` (heirs +
+    the `seeded` summary the Settings-Impact banner renders). Strictly an ordering: the seeded
+    copy never enters the memo, nothing seeded is scored, and the ring still decides on its own
+    paired runs. **The seed is not gated on the crown.** It used to switch off the moment the
+    current version had any crown — and after a publish the one profile the firewall sits on
+    reaches confidence within hours from monitoring alone, at which point the field read as
+    one crowned profile and nothing else: the heirs card emptied, the race had nobody to run,
+    the ladder had nobody to challenge with, and the prior version's two hundred ranked
+    profiles sat unmeasured (the *"no evidence dueling pulls profiles from the prior
+    methodology"* report). Now a current crown is **kept** (a current measurement is never
+    displaced by a seed) and the profiles the prior version ranked that the current one has
+    no data on are still folded in as `no_data` entries; with no crown at all every stored
+    profile is seeded, as before. `test_the_seed_still_applies_once_the_firewalls_own_profile_is_crowned`
+    pins it: the current crown defends, the prior's best unmeasured profile challenges first.
+    **A publish finishes itself** (`publish_followthrough.py`: `regrade_then_follow_through`,
+    the one job body every re-grade route runs — the plain re-grade, the re-anchor, the site
+    list and the version picker; `queue_prior_winners` / `plan_prior_winners`; `config.publish`
+    `reseed_top` 10 / `reseed_iterations` 5, 0 = off; `POST /api/methodologies/reseed`, with
+    `dry_run` for the plan). A publish has two costs and only the re-grade was paid by itself:
+    a publish that changes the *instrument* (sites, client, a metric old raw cannot supply)
+    quarantines history, and the seed could order the empty field but the winner-first re-run
+    that fills it was a button nobody was reminded to press. Now the re-grade job grades
+    history, re-reads the duel ledger under the new version (`duel.regrade_ledger`), and
+    queues the prior version's top winners — **confident under it** (a thin lucky reading was
+    never a winner by the project's own rule) and short of one chunk of comparable iterations
+    under the current version — as an ordinary winner-first refresh of exactly those
+    fingerprints through `job_queue`, so it waits its turn, survives a restart and restores
+    the baseline. Idempotent: a winner with its chunk is skipped, a refresh already queued or
+    running is left alone, and a re-weighting publish (history re-grades whole) queues
+    nothing — which is right. The plan says why each winner is or is not queued. It never
+    picks winners by the current version (there is no current data; that is the situation),
+    never re-runs everything (the un-ranked refresh stays a button), and writes nothing to the
+    firewall itself. `test_publish_followthrough`.
+    **The seed is cached, because it is now read on every page load** (`refresh._PROFILES_CACHE`
+    / `_PRIOR_CACHE`, dropped by `invalidate_seed_cache` from the same hook as the field memo).
+    Ungating the seed made `seed_field_from_prior` run on every Settings-Impact load and every
+    ladder session, and it decoded every completed run's `settings` blob (`list_profiles`, ~120k
+    JSON documents to keep ~150) plus every prior-version score row, in pure Python with the GIL
+    held — the *"couldn't reach the server"* report the morning after #226 landed. The profile
+    list is keyed on the newest run id and **topped up** from the rows that arrived since (one
+    indexed range query); the prior field is memoized on the prior versions' score stamp (count,
+    max id, max `computed_at`). Both verify themselves: the count catches vanished rows, and the
+    fingerprint at the cached max id catches a cache filled from a session that later rolled back
+    (SQLite re-issues those ids to the next rows, so max id and count can both match while the
+    rows differ) — checked on the fast path too, one primary-key lookup. Either → full rebuild.
+  - **`compute_profiles` is memoized** (`api/routes_settings.py`: `_field_stamp` /
+    `invalidate_profiles_cache`). It is the most expensive thing PathBrain does — it walks
+    every completed run, decodes each one's stored scalars, re-normalizes the crown against
+    the whole field and resolves a time-of-day baseline per profile — and **seven callers**
+    were each recomputing it from scratch. The consequence was not a slow endpoint but a
+    stalled process: it is a *pure Python* pass, so it holds the GIL for its whole duration
+    (~30s over a 100k-run table, measured), and while the duel ladder — which calls it at
+    every session start, continuously — or the crown follower was computing the field, every
+    request in the process queued behind it. That is why the Dueling Champions page could not
+    load its own config, a payload of a few hundred bytes, and reported *"couldn't reach the
+    server"*. It is a pure function of the runs, the scores and the methodology, which is
+    what makes it cacheable: `_field_stamp` is the cheap identity of that input (two indexed
+    aggregates, ~20ms) so a hit can never be stale, and the compute happens **outside** the
+    lock. **One pass in flight per (key, stamp)** (`_FIELD_INFLIGHT`): a second caller asking
+    the same question of the same data waits on the first's event and re-reads the cache,
+    instead of starting its own pass. "Both compute, wasteful once" was written for a page
+    and a ladder session an hour apart; once several pages asked on load, a cold cache meant
+    that many concurrent pure-Python passes each holding a copy of the field and taking the
+    GIL in turn — the process went dark and the NAS with it (the *"PathBrain became
+    unresponsive"* incident). A leader that raises clears its slot in `finally`, so a waiter
+    then computes for itself rather than waiting forever (`test_field_singleflight`). Other
+    keys still compute concurrently — waiting is only ever bounded by one pass of the
+    identical question. `invalidate_profiles_cache()` is
+    called on the two paths that mutate rows *in place* and so change no identity the stamp
+    can see: refingerprint and re-grade. The four engines that want only the field
+    (duel, challenger race, crown follower, explore) also pass **`include_weather=False`** —
+    the `weather.cohort_residuals` pass is ~half the function and feeds two display-only
+    fields none of them read (32s → 15s cold, measured; `test_skipping_the_weather_pass_…`
+    pins that it changes nothing else).
+  - `settings_profile.py` — normalize/fingerprint/summarize firewall profiles for
+    settings-vs-responsiveness correlation (`/api/settings/*`). **A fingerprint is
+    spelling-blind** (`shaper_fields.canonical_value`, applied inside `fingerprint`): every
+    identity field is hashed in the firewall's own echo form — the form OPNsense's
+    `discover()` returns: int kinds as `int`, the CoDel duration selects as the bare option
+    key as a **str** (`"5"`, never `"5ms"` and never `coerce_value`'s wire `int`), `ecn` as a
+    `bool`, bandwidth and scheduler strings untouched — so `target: "5ms"` (the mock, an AI),
+    `5` (the wire form) and `"5"` (the echo) are one profile. It used to hash the raw JSON
+    spelling, so a profile *proposed* in another notation got a fingerprint pointing at a
+    profile with no history, which three earlier fixes worked around downstream
+    (`_apply_writable_overrides` keeping live's representation, `unwritable_diffs`, the
+    ledger's `_reconcile`); those stay, as the backstops they are. The echo form is a fixed
+    point (`test_canonical_value_is_a_fixed_point_on_the_firewalls_echo`), so a run recorded
+    off a real firewall never re-keys and `POST /api/settings/refingerprint` on a live install
+    folds nothing but SQM-off history; on a mock-backed dev database it also folds the mock's
+    `"5ms"` spellings. Bandwidth restated in another unit (`"880Mbit"` vs `"0.88Gbit"`) is
+    deliberately *not* folded — out of scope, and `_to_number` already compares it numerically
+    for diffs. The duel's exploration bets report the **reached** fingerprint
+    (`ProfileTest.reached_fingerprint`) as `fingerprint` once a test has verified, with the
+    prediction beside it as `predicted_fingerprint` (`explore_share._file_under_reached`), so
+    the board names the profile that has the runs. Profile confidence is
+    gated on **total iterations** (`correlation.min_iterations`, default 15).
+    `/api/settings/profiles` ranks profiles by the **Overall**, which since methodology
+    `speed-smoothness-v5` is a **first-class, versioned quantity** defined in the
+    methodology (`overall_from_definition`) and **persisted** on each `Score`
+    (`axis_scores["overall"]`) at scoring time — so grading and crowning never drift.
+    Overall = closeness to the (100, 100, 100) corner (`methodology.corner_score`) over the
+    crown metric set — the few measurements that directly capture human feel, as
+    perception-calibrated 0–100 subscores. The set is read from the methodology's `overall`
+    spec (`overall_metrics`; module `CROWN_METRICS`/`CROWN_REQUIRED` are only the pre-v5
+    fallback): under **v13** that's **FCP × LCP × network_stall_all** (quickest first response ×
+    perceptual "main content visible" × floor-free network-attributed dead-air, the SQM-movable
+    resource-handoff gaps — render excluded, no perceptible floor, deliberately sub-perceptible to
+    rank the *best* profile; v11/v12 used fcp/lcp/worst_void_fraction (0 for every profile on a fast
+    link — inert), v10 fcp/lcp/stall_energy, v9 nav_response/byte_earliness/jank_fraction, v8
+    fcp/lcp/stall_time, v7 fcp/lcp/total_stall, v6 fcp/total_stall/load_event, v5
+    fcp/perceived_time/inp). It's an
+    *intersection* (corner, not mean — one weak metric can't be averaged away), √k-normalized
+    so corners of different arity share a scale.
+    A profile's Overall is the **corner over its field-percentile-normalized raw crown
+    measurements**, NOT the methodology grade (`compute_profiles` normalize pass,
+    `_normalized_crown`). For each crown metric it takes the profile's **median raw value** (e.g.
+    FCP in ms) and maps it to its **percentile within the field's distribution**
+    (`_percentile_norm` / `_crown_field_values` — mid-rank empirical CDF, direction-aware), then
+    corners those. **Percentile (rank) normalization gives every metric equal, uniform spread, so
+    no single metric can dominate the corner** — the failure mode of a min/max rescale, where one
+    fast/slow outlier compresses FCP/LCP and `stall_energy` (spread more evenly) steamrolls them.
+    The scale is the measurements' *ranking*, so **re-grading a metric can't move the crown** —
+    only re-measuring can (trade-off: it's magnitude-blind — a 1 ms edge and a 200 ms edge both
+    mean "one rank better"). It stays **monotonic in the crown-metric
+    columns** (which show each metric's normalized-raw standing, `crown_norm`): a profile faster
+    on every crown metric necessarily has a higher Overall, so grading never overturns a raw
+    dominance and the standings always explain the ranking. The **Overall IQR**
+    (`overall_p25/p75`) is the corner over each metric's normalized p25/p75 raw quartile, so it
+    brackets the point Overall; the **optimistic ceiling** (`optimistic`, drives heirs + the
+    race) is the corner over each metric's best-case normalized raw (good-side quartile, or
+    median + a small margin for a thin sample). The graded per-metric subscores
+    (`crown_scores`) still power the axis scores + the custom-crown lens, and the per-Score
+    `axis_scores["overall"]` (a per-run graded corner) stays for the "vs typical" baseline.
+    Because the crown reads raw, the field-normalized Overall is **field-relative** (adding a
+    profile re-normalizes the scale). No re-grade is needed — the raw values are already
+    persisted; only the
+    cross-run aggregation changed. A **custom crown** (`crown_metrics=` query param,
+    `_apply_custom_crown`) corners over any caller-chosen subset of subscores as an
+    exploratory `custom_overall` + `custom_best_fingerprint` — a what-if lens over the same
+    persisted building blocks, leaving the canonical Overall untouched. The per-axis scores
+    (Responsiveness/Smoothness/Speed; `_CORNER_AXES`) remain as display columns. It also
+    aggregates per profile the median of every axis score *and* every metric we collect
+    (`metrics.all_metric_sources`) to power the dynamic quadrant + table column selector.
+    The crowned **"best"** is the **confident** profile (total iterations ≥
+    `correlation.min_iterations`) with the **highest Overall** (the field-normalized raw corner
+    above) — full stop, the profile that wins wins, even by an infinitesimal margin (`_select_crown`).
+    The verdict is a deterministic argmax of that Overall; there is **no hysteresis/stickiness
+    and no steadiness override**. **The grade is carried at full precision** (`weighted_score`
+    no longer rounds; `_select_crown`): it used to be rounded to one decimal, so on a field
+    whose top profiles sit 0.1–0.3 points apart two readings 0.05 apart read as an exact tie
+    and the crown went to whichever had more iterations — a verdict decided by rounding and by
+    sample size rather than by the measurement (the review's M4). Rounding is for
+    serialization, at the edge (the verdict card's 2 dp, the frontend's `toFixed`). A genuine
+    exact tie now breaks toward the higher **shrunk** reading (`overall_shrunk`, the posterior
+    under the field prior — the profile whose reading rests on more evidence), then more
+    iterations, then most-recently-seen. `test_the_crown_grade_is_carried_at_full_precision_…`.
+    The Overall IQR
+    (`overall_p25/p75`) does **not** decide the crown; it only *labels* a photo finish:
+    `_clearly_better`/`co_leaders` flag every confident profile statistically
+    indistinguishable from the crown. A profile clears the bar only when its median lead
+    exceeds BOTH an absolute floor `correlation.crown_tie_min_margin` **and**
+    `correlation.crown_tie_sigma` × the pooled **standard error of the medians**
+    (`√(SE_a²+SE_b²)`, `SE = IQR/√n`; `_overall_se`). Because the SE shrinks as runs accrue,
+    the bar **tightens with sample size** — so collecting data can *break* a tie two
+    heavily-sampled profiles would otherwise be stuck in (the old `crown_tie_iqr_fraction`
+    scaled the *raw* IQR, which ignored n, so more runs never separated anything). Returned
+    **purely as information** so the UI can show a "tied" chip without changing who's crowned;
+    the response also carries `crown_confidence` (the crown's Overall ± SE, the gap to the
+    runner-up, the σ·pooled-SE significance threshold, and whether the lead clears it) so the
+    Profile-Detail Standings card shows the measured signal-vs-noise, not an adjective. No
+    posterior, no variance penalty, and no time window enters the verdict — it pools ALL
+    history (weather averages out over the pool; a brief experiment ranking on a rolling
+    last-100 window thrashed, because ~100 iterations span only a few days ≈ one weather
+    regime per profile, so windowed rankings compared different profiles' different weather
+    head-on). The window survives as the **"Overall (recent)" drift-lens column**
+    (`overall_recent` + `recent_iterations`/`recent_scores`, sized by
+    `correlation.crown_window_iterations`, default 100; 0 disables): the same crown grade
+    recomputed over only each profile's most recent iterations — read it against the
+    all-time Overall to see drift, against "vs weather" to judge conditions. Returns
+    `best_fingerprint` (+ `co_leaders` + `crown_confidence`). Each profile also carries a
+    **current-form check**
+    (`routes_settings._profile_form`, both directions): its last-`FORM_RECENT_RUNS` median
+    Overall vs its prior record, significance-gated by the same σ·pooled-IQR/√n machinery —
+    **"fading"** (pooled Overall propped by a past it no longer delivers) / **"rising"**
+    (pooled Overall understates its present), rendered as row chips; response-level
+    **`crown_fading`** raises the "the crown's bar may be a ghost" alert when the crown
+    itself fades. Flag-and-steer only — the recourse is re-measurement (race / re-run
+    top-N), never re-weighting. The
+    challenger race reads `compute_profiles` and its bar is `best_fingerprint`'s Overall.
+    **Finding challengers that could overtake the crown is a separate,
+    smarter job** — the **Heirs to the crown** card + the challenger race rank under-sampled
+    / stale profiles by their *optimistic ceiling* (`optimistic_overall`, the crown corner
+    over each crown metric's p75 upper estimate) against the crown's Overall, to decide where
+    to spend iterations to confirm or deny an heir. The **vs-typical** (`relative_overall`)
+    delta is kept as an informational column (and a hook for smarter heir-hunting), not a
+    crown input.
+  - `profile_names.py` — **call signs for profiles** ("Speedy Sloth", not `q1514 t5ms`). A
+    fingerprint identifies a profile and `summarize()` describes it, but neither is scannable:
+    150 profiles differing in one number are a wall of near-identical strings, and a duel
+    between two of them is unnarratable. Names are **deterministically derived** from the
+    fingerprint (blake2b seed → ~500 adjectives × ~500 nouns, alliterative *by preference*),
+    **persisted** in `ProfileName`, and **unique by construction** (a taken name is probed past;
+    the candidate stream ends in a fingerprint-suffixed name that cannot collide). Deliberately
+    not AI-generated: a name must be stable (never re-rolled behind the user), offline (no key,
+    no per-profile call), and unique — which a sampling model can't guarantee. Assignment always
+    opens its **own** `session_scope`, because request sessions come from the read-only
+    `get_session` dependency that closes without committing (a name written there would evaporate
+    and the next request would re-derive it against a different taken-set). `names_for` is the
+    bulk accessor every list view uses (one query, not N). SQM-off gets the fixed name **"No
+    Shaper"** — the control group is the one profile a whimsical name would obscure. Users can
+    override any name via `PUT /api/settings/profiles/{fp}/name` (the pencil on Profile Detail);
+    uniqueness is enforced. Every view leads with `name` and keeps the technical `label` beside
+    it; duel matchups record both, and the standings/tape re-resolve names **by fingerprint** so
+    bouts fought before naming (or before a rename) read under today's names.
+  - `timezones.py` — **the one place a stored IANA zone name becomes a `tzinfo`.** A
+    schedule's hour/minute mean the *user's* wall clock, so each schedule stores the browser
+    zone it was saved from — which only resolves if the system has an IANA tz database. A slim
+    container may not, and then `zoneinfo` raises for **every** name: that surfaced as
+    "unknown timezone 'America/Chicago' (use an IANA name)" — a 422 that blocked every save on
+    the Dueling Champions page, blaming the input for a missing OS package. So
+    `validate_timezone` rejects a name only when the system *can* resolve names and this one
+    isn't among them (no database → accept a well-formed name and warn; a saveable schedule
+    that falls back to container-local beats an unsaveable one), and `schedule_zone` never
+    raises — an unresolvable zone degrades to container-local instead of killing a scheduler
+    tick. The backend now depends on the `tzdata` package, so a normal install *has* the
+    database and the fallback is a safety net rather than the usual path. `routes_baseline`,
+    `routes_duel`, and `scheduler` all go through it.
+  - `database.py` — engine/session + additive SQLite `_migrate()` (ALTER for new
+    columns; `create_all` for new tables). **The connection pool is sized for this
+    server's real concurrency, not SQLAlchemy's networked-database default.** That default
+    — 5 connections + 10 overflow, and a **30-second** wait before the 16th caller fails
+    with `QueuePool limit of size 5 overflow 10 reached` — rations connections because on a
+    remote database they are a scarce server-side resource. A SQLite connection is a file
+    handle: WAL lets any number of readers work at once and there is no server to protect.
+    Meanwhile the process runs *every* sync endpoint on Starlette's 40-thread pool, plus a
+    scheduler, a duel, a probe worker and whichever engine is mid-session — so 15 was never
+    a safety margin, it was a queue. That is the *"Dueling page takes minutes to load and
+    often times out"* report, and why it survived the `compute_profiles` memoization: the
+    endpoint's own work is ~1s, and the other 30 were spent waiting for permission to run
+    it, then erroring. `_SQLITE_POOL_SIZE`/`_SQLITE_MAX_OVERFLOW` put capacity (100) past
+    the number of threads that can possibly ask, and `_SQLITE_POOL_TIMEOUT` cuts the wait
+    to 10s — a caller still queuing then is not busy, it is leaking a session, and a loud
+    failure names that where a 30-second stall reads as "the server is broken". Raising the
+    ceiling does **not** raise write pressure (the same threads do the same work; they just
+    stop queuing for a file handle), so `busy_timeout` is unchanged. `pool_status()` reports
+    `checked_out`/`capacity` on `GET /api/health/pipeline` — exhaustion is otherwise
+    invisible, since a starved request and a slow one look identical from outside.
+  - `api/` — REST routers mounted at `/api`.
+- `frontend/` — React + TS + Vite + MUI dashboard (dark mode). **Every route is code-split**
+  (`App.tsx`: `lazy` + `Suspense`): the app was one 1.2 MB chunk, so opening any page first
+  parsed every other page plus recharts — over a second of blank screen on a phone before a
+  single request was sent. Now the shell paints immediately, each page is its own small chunk
+  (Duels ~40 kB), and the 384 kB chart bundle loads only for the three views that draw charts.
+  Keep new pages lazy. **The UI rules live in `theme.ts`** (the ui-dos-and-donts rules, IDs noted inline): dark-gray surfaces that get lighter as they rise (`SURFACE`), off-white/soft-gray text with every pair checked ≥ 4.5:1 (table at the top of the file), desaturated colours as named `COLORS` (use them, never a raw saturated hex), dark text on every filled button, 1.5 body line height, running text capped at 75ch, sentence-case buttons, underlined links, 16px inputs, tabular numbers in tables, an icon in front of every error message, 44px tap targets on touch screens, and dialogs as bottom sheets on a phone. Page code keeps to the rest: one filled button per view (secondary actions outlined), spacing only from 0.5/1/2/3/4 (4–32px), numbers right-aligned, a visible label on every field, and a chart highlights one series (`SeriesChart` bolds `overall`, or the line marked `emphasis`, and quiets the rest). **The shell is written for a first-time reader** (`docs/gui-ux-audit.md`
+  is the audit this came from): the drawer is grouped (Dashboard · Results · Find a better
+  profile · Other tests · System) with a one-line hover per page, and the nav labels say what
+  a page *shows* rather than what its engine is called — the routes and component files keep
+  their old names, so `/settings` + `Settings.tsx` is labelled **Profile standings**, `/overall`
+  **Best profile**, `/duels` **Duels**, `/data-dump` **Data export**, `/baseline` **No-shaper
+  baseline**, `/ai` **AI suggestions**. Every page opens with the one `PageHeader`
+  (`components/PageHeader.tsx`: title · one plain lead sentence · the rationale folded behind
+  "More" · the page's actions), long pages use its `SectionLabel`, and the vocabulary
+  (profile, crown, duel, belt, weather, pipeline, lever, pooled, fused…) is defined once in
+  `utils/glossary.ts`, served by the top-bar **?** (`components/Glossary.tsx`, with `<Term>` for
+  inline use). The top-bar switch is labelled **Auto-apply best** (it is still `FollowBest.tsx`
+  and the crown follower underneath). Pages: **Dashboard** (`Dashboard.tsx` — the NOC wall, led by the
+  **verdict card** (`components/dashboard/VerdictCard`, reading `GET /api/overall` —
+  `overall_ranking.py`, the fused ranking the crowning policy acts on): which profile to run,
+  how sure, what shaping is worth and whether the firewall is on it — the decision every
+  reading below it is for, which is why it sits above them rather than beside the other
+  verdicts. Then a status strip
+  of KPI tiles (`components/dashboard/StatTile` — pipeline lock state from the jobs feed,
+  monitoring cadence + next run, the measured per-iteration cost with a 30-run sparkline,
+  run/profile counts, Follow-best state + crown churn), the hero 24h Overall gauge beside
+  the headline axes, the profile the firewall is on now (its Overall, rank and crown-metric
+  percentiles, with the "Test current for X min" control), the running jobs
+  (`ActiveJobs`), the three verdicts side by side — `TwoCrowns`, the pooled `Leaderboard`
+  (confident profiles by Overall, crown + live + tied marked by icon/chip, never by bar
+  colour), and the ring (`RingCard`, the duel standings on fitted strength) — then the
+  series, the per-metric breakdown and the latest waterfall. Every number is read from an
+  existing endpoint; the light ops reads re-poll every 15s while visible, the field reads
+  refresh on load and when a run lands. `GET /score/rolling` reports the window's
+  **`overall`** beside the axis spreads for the hero — the first-class Overall is persisted
+  on every Score but is not a scored axis, so the axis loop never saw it),
+  History, Trends, **Weather** (the measured-conditions view — the variance decomposition +
+  the covariate × crown-metric sensitivity table; the per-profile weather readings stay on
+  Settings Impact beside the standings they qualify), Compare, Settings Impact (**paginated** sortable table — 25/page —
+  with standard **Overall + the crown metrics** columns (the metrics the Overall corners over,
+  from the response's `overall_metrics` — fcp/lcp/network_stall_all under v13 — ranked by each metric's
+  **field-normalized raw** value via a `crown:<metric>` field key → `crown_norm` (no grading),
+  so the pinned columns are the raw measurements that actually *compute* Overall; the headline
+  axes Responsiveness/Smoothness/Speed are a different graded decomposition, demoted to opt-in)
+  plus a **"% vs SQM off"** column (`pct_vs_sqm_off`, server-computed in `compute_profiles`):
+  each profile's Overall improvement over the honest unshaped baseline — the best Overall among
+  measured "SQM off" profiles (`is_sqm_off`; response `sqm_off_overall`) — green when shaping
+  helps, red when the profile is *worse* than turning SQM off. It's derived straight from the
+  methodology's Overall, so it re-derives when the methodology changes (no separate knob). A
+  **"Hide profiles worse than SQM off"** checkbox (on by default; inert until a baseline exists)
+  drops every profile with `pct_vs_sqm_off < 0` from the table + scatter — dead weight we don't
+  care about. (This replaced the old "vs weather" column.) **Outliers are flagged once and
+  answered twice** (`routes_settings._outlier_report`, response `outliers` + per-profile
+  `outlier`): a profile whose median on a crown metric — or whose Overall — sits more than
+  `OUTLIER_Z` (3.5) robust standard deviations from the field's median (modified z-score on
+  the MAD, over ≥ `OUTLIER_MIN_PROFILES` profiles; the MAD rather than the stddev because an
+  ordinary z is pulled toward the very outlier it is meant to find) is tagged with the metric,
+  its z, the side (`worse`/`better`) and whether it is `thin` (under the iteration minimum).
+  "What do we do about it?" is two questions, and the page keeps them apart: **Hide outliers**
+  is a *view* choice (the scatter's axes scale to the outlier and the pack it exists to
+  separate collapses into a corner — hiding lets the axes fit the pack; crown and live profile
+  are always kept, nothing is re-scored), and **Re-run outliers** is an *evidence* choice — it
+  opens the Re-run-profiles dialog scoped to exactly the flagged fingerprints
+  (`refresh.start/preview(fingerprints=…)`, an explicit ordered list that overrides
+  `top`/`rank_by`), because a thin outlier is usually one bad run standing in for a median and
+  a re-measurement is what settles it, while a confident outlier is a real result the re-run
+  confirms or moves. The summary splits `thin` from `confident` so the dialog can say which.
+  Plus an optional
+  column selector; a **dynamic** any-metric quadrant where X/Y pick the axes, a **Shade**
+  picker encodes a third field as dot **opacity** (brighter = better; `ProfileQuadrant`),
+  and the crowned profile is ringed — the quadrant now warns when an axis is **saturated**
+  (every profile already past the methodology's `best` threshold, so the raw spread carries
+  no score signal, e.g. fcp/load_event on a fast link), using the effective thresholds in
+  the profiles response's `metric_thresholds`; a page-level **methodology saturation check**
+  (`saturation` in the response, `_saturation_report`) flags any scored, non-zero-`best`
+  metric that saturates >50% of profiles — too lenient to crown the fastest — and suggests
+  re-anchoring `best` to the fastest value measured (`best`=0 metrics like total_stall are a
+  physical floor and never flagged); plus a **"Heirs to the crown"** card — the
+  limited-data / stale profiles whose *optimistic ceiling* (`optimistic_overall`, the same
+  number the race uses) could still beat the crown, ordered to **mirror the race's sampling
+  priority** (biggest known threat first → nearby stale incumbents → untested last), so the
+  top heir is the first profile a race would actually run, with a
+  count badge on **"Race challengers"** ("N could beat your crown"; response field `heirs`).
+  Heirs are filtered to profiles **reachable** from the live environment (same
+  `environment_signature` check as the race), so the card never lists a profile the race
+  would refuse to apply;
+  plus "Test to minimum" and **"Race challengers"**),
+  Experiments, Shotgun Sweep, **Explore** (`Explore.tsx`, `/api/explore/landscape` — the
+  what-haven't-we-tried view: the ranked **next profiles to test** with a one-click **"Test now"**
+  (5 iterations — the cheap "did this go anywhere?" answer) beside "Test to minimum" (the full
+  confidence top-up), the **"Was the data right?"** ledger (`/api/explore/recommendations`) grading
+  every past recommendation against what the link actually did — predicted ± band vs measured, a
+  sentence on *why* it missed, and the calibration split **by evidence class** (do matched pairs
+  predict better than confounded curves? on your link, measured), a response curve per lever per pipe (marginal solid + reference-conditioned dashed,
+  with a **confounded** chip where the two disagree), **"What changing one lever actually did"**
+  (the matched-pair contrasts), **local optima** (coupled-basin detection), the holes in
+  coverage, the lever pairs that genuinely interact, and **"Leaders per crown leg"**
+  (`explore.crown_legs`, response `crown_legs`): for each crown metric — read from the
+  methodology at request time, so it follows whatever the Overall corners over now — the
+  top-`LEG_LEADERS` confident profiles on that leg, where the best profile stands on it
+  (rank / field percentile; the leg it stands lowest on is `weakest`), and the **"move the
+  best profile their way"** proposals: a lever is a move when ≥ `LEG_MOVE_AGREEMENT` (60%) of
+  the leg's leaders run it on the same side of the best profile's value, the target being the
+  leaders' median on that side coerced + snapped to a value the firewall can hold. Each move is
+  resolved against the field first — if the best profile with that lever moved **already
+  exists** it is named with its Overall and the gap to the best (an answered question, not a
+  proposal); a coordinate the ledger has already spent a benchmark on is marked
+  `already_measured`; only a genuinely untested one becomes a runnable candidate, priced by
+  the same `_candidate_dict` as the headline list so its "Test now" posts the identical
+  payload. The leaders' whole signature (every runnable move at once) is offered as a
+  `combined` multi-lever candidate when untested. This answers the "good on two legs, the
+  third struggles — what do the profiles that win the third one do differently?" question the
+  value-gap candidates cannot; fetched on demand, read-only apart
+  from the test button. **The long sections grow with the field, so they page**: a lever with
+  twenty tested values has 190 possible one-lever transitions and a 150-profile field holds
+  dozens of local optima — printed whole that's a wall nobody reads, which is the same as not
+  reporting it. Matched pairs are **flattened across levers** (grouped, the strongest finding in
+  the field can sit halfway down the fourth group) and default-sorted by **evidence** — several
+  agreeing pairs first, then pair count, then effect size — so a dramatic single-pair anecdote
+  can't lead. Local optima default to best-Overall-first and are sortable by *siblings beaten*;
+  the coupling alarm counts only **well-surrounded** optima (≥2 measured siblings), because
+  "39 of 40" from a sparse field is noise wearing a warning's clothes. Lever charts lead with
+  the levers that actually spread the Overall, with the flat ones behind a **show all** toggle),
+  **Dueling Champions** (the duel ladder's own view — the
+  *controlled-trial* counterpart to Settings Impact's observational standings, so it speaks in
+  fight-card terms rather than means: the reigning champion + reign length + which crowning
+  policy is live, the **claims-to-best strip** (the lineal belt, the standings' ring #1,
+  and the pooled crown side by side — three verdicts that may name three profiles; states
+  whether they agree and which edge of that triangle the live match is testing, since the
+  ladder resolves disagreements pairwise and a card showing only two names read as "we
+  only race two profiles"), the **ladder standings** league table (`GET /duel/standings`), the
+  **head-to-head grid** over the top of the table, the **bout tape** of every matchup with its
+  pair scoreline / margin / what ended it, and **rules of the ring** — the nightly window plus
+  the sequential stopping rule (min/max pairs, practical margin, rematch cooldown) editable
+  from the page, with the ring's **measured resolving power stated beside the streak
+  setting** (`decide.power.min_margin`, already fetched for the decidability card): a streak
+  can end a match at any margin, including one this ring cannot resolve, which is a real
+  trade rather than a defect and was invisible only because the setting and the number lived
+  on different parts of the page. Settings Impact keeps only a one-line **Duel ladder** pointer strip so the two
+  rankings don't duplicate controls; `Duels.tsx`, `/api/duel/*`), **Baseline (SQM off)** (the "Test baseline behavior" tab: arm the
+  nightly schedule — time/iterations/settle all configurable — or run one on demand, with a live
+  stage readout; `Baseline.tsx`, `/api/baseline/*`), **Away test** (the phone-first portable test +
+  its "vs home" readout; `Away.tsx`, `/api/portable/*` — see `portable.py`), Config, Methodology,
+  Plugins, Data Dump, AI, Run Detail.
+  The pages are **read on a phone**, so a control row is never a fixed `direction="row"`: the
+  Settings-Impact scatter's selected-dot panel stacks under `sm` (as a row the buttons took
+  their width first and collapsed the text half — the call sign rendered as "N…" and each
+  crown-metric chip as "F.."), the page/table header actions wrap one per line, the Dashboard's
+  run controls wrap instead of pushing "Run Benchmark" off-screen, and Profile Detail's bout
+  tape becomes a stacked list (a 7-column table showed 3 columns and hid the result, scoreline
+  and margin behind a sideways scroll nobody finds). Settings summaries never lead: the impact
+  banner reads *"Tall Garland → Sincere Kite"* with the summaries dimmed beneath, and the
+  two-crowns detail is line-clamped with the full string on hover.
+  A
+  top-right **jobs dropdown** (`JobStatus`) shows every running/recent background job
+  (re-grade, sweep, run, profile test, challenger race, …); next to it the top-bar
+  **"Follow best" switch** (`FollowBest.tsx`) arms the crown follower
+  (`crown_follower.py`) and opens a popover with the current crown, whether the firewall
+  is on it, the crown-churn stats, the recent crown-change ledger, and a "Check now". The **Data Dump** page has two
+  exports: the raw run dump (`/api/history/dump`) and the **AI optimizer export**
+  (`GET /api/settings/export/optimizer`, `build_optimizer_export`) — a profile-centric JSON of
+  each profile's **full details** (complete shaper settings + first/last seen) **and scoring
+  data** (percentile Overall + IQR, per-crown-metric percentile, axis scores, raw metric medians,
+  and per-run raw scoring metrics), plus the methodology objective (crown metrics + lower-is-better
+  + observed best/worst) and the shaper field model (writable + sweepable fields + ranges). It also
+  carries a deterministic **`analysis.field_sensitivity`** block (`_field_sensitivity`): for each
+  writable lever **per pipe label** × each crown metric, the Spearman rank correlation across the
+  exported profiles (one (field value, profile-median metric) point per profile), with
+  `metric_direction` (does the metric rise/fall as the field rises) + `effect` (improves/worsens the
+  crown). This is the settings→outcome relationship map computed *server-side* — trustworthy and
+  chartable regardless of the model — handed to the LLM so it reasons over an explicit "this up →
+  that down" map instead of eyeballing raw rows. Each lever is also correlated against the
+  **Overall** itself (the rank-corner we crown on), since a lever can move the Overall while barely
+  correlating with any single raw metric. They're **marginal** (profiles vary several fields
+  at once → possibly confounded), not partial. It **also** carries a deterministic
+  **`analysis.top_profile_signature`** block (`_lever_signature`): for each writable lever, what the
+  **top-Overall quartile** of profiles runs vs the whole field — `pattern` (higher/lower/`sweet_spot`
+  /none), `top_value`+`top_range` (the value the winners share), `field_range`, plus shift /
+  concentration / Cliff's delta. This answers what the correlations **can't**: when every ρ≈0 the
+  winners can still cluster on a specific value (a sweet spot both extremes miss) or run a lever
+  systematically higher/lower — a combination/non-monotone edge a single-lever correlation is
+  blind to (rendered as a **"What the top profiles share"** card on the AI page). It **also**
+  carries **`analysis.coverage_gaps`** (`_coverage_gaps`): levers with a **promising but
+  under-sampled** signal — a directional pattern or suggestive ρ, but too few distinct values
+  measured (or the favored direction runs off the edge of what's been tested). Each is a concrete
+  **data request** (`suggested_values`, `action` extend_lower/extend_higher/resolve, `sweepable`)
+  so the model can **kick back "go measure here" instead of a speculative profile** (the AI returns
+  these as `data_requests`; rendered as a **"What to measure next"** card linking to the Shotgun
+  Sweep). This is the active-experiment layer: a signal is only actionable once resolved.
+  `interval` is now a **sweepable** field so the most common recommendation (sweep CoDel interval)
+  is directly runnable. The prompt also forbids the model from inventing statistics (only cite ρ /
+  medians present in the JSON — a lever with too few distinct values has no `field_sensitivity` row
+  and must be described from `top_profile_signature`). Bounded
+  by `runs_per_profile` and `profile_limit` (top-N by Overall). The **AI** page (`ai.py`,
+  `routes_ai.py`) sends that export to an LLM via **OpenRouter** and shows proposed new profiles:
+  the API key lives in its own `AppConfig` `"ai"` row (isolated from the benchmark config so it
+  never leaks into run snapshots / the data dump; returned **masked** via `ai.public_config`), the
+  model + editable prompt are saved there too. `GET/PUT /api/ai/config`, `DELETE /api/ai/config/key`,
+  `GET /api/ai/models`, `POST /api/ai/suggest` (builds the export, calls OpenRouter chat-completions,
+  best-effort parses `{relationships:[…], suggestions:[{settings, displacement_likelihood, rationale}]}`,
+  **ranked by the model's crown-displacement estimate**). The prompt now runs a **two-step** interp:
+  the model FIRST returns `relationships` — its read of how each lever moves each crown metric
+  (`inverse`/`linear`/`none` + confidence + evidence), grounded in `analysis.field_sensitivity` —
+  THEN proposes suggestions consistent with them. The AI page renders a **"Settings ↔ outcome
+  relationships"** card: the deterministic `field_sensitivity` table (direction + improves/worsens
+  chips, echoed on `/ai/suggest` and the stream `meta` event) plus the model's own interpretation.
+  A **streaming** variant `POST /api/ai/suggest/stream`
+  (`ai.suggest_stream` + `_stream_chat`) returns Server-Sent Events — a `meta` event (with
+  `field_sensitivity`) then
+  `reasoning`/`content` token deltas then a terminal `done` (parsed suggestions + relationships) or `error` — so a
+  long request keeps the connection alive (no timeout) and the AI page shows the model's reasoning +
+  answer live (default on, `Stream` toggle; `client.aiSuggestStream` consumes the SSE via `fetch` +
+  `ReadableStream`). Config secrets are resolved before the generator starts, so it's session-free.
+  Each suggestion has a **one-click "Test to minimum"**:
+  `POST /api/settings/test-settings` (`_apply_writable_overrides` + `TestSettings`) materializes the
+  suggestion onto the **live** profile — overriding **only writable fields** so it's always reachable
+  — then runs a normal profile test (apply → benchmark to `min_iterations` → restore baseline). No
+  firewall write happens for an unreachable or no-op suggestion (rejected up front). Each override
+  value is run through `shaper_fields.coerce_value` so an AI's `"5ms"`/`5`/`"5"` all become the
+  firewall's **bare-number** wire form (CoDel `target`/`interval` are option-keyed selects keyed by
+  the bare number — writing `"5ms"` doesn't take). The optimizer export tells the model the exact
+  per-field format up front (`value_format` + a real `example` per shaper field, pulled live).
+  Each suggestion also has a one-click **Apply** — `POST /api/settings/apply-settings` writes the
+  suggestion to the firewall **permanently** (one-way, no restore; the arbitrary-settings sibling of
+  `apply-profile`): overlays only writable fields onto live, `preview` returns the exact planned
+  writes for the shared **`ApplyConfirmDialog`** (the same confirm-diff UI as Settings-Impact "Apply
+  this profile"), commit applies via `provider.apply()` + kicks a 1-iteration benchmark. Rejects a
+  no-op / unreachable change.
+- **The app must never go blank** (`components/ErrorBoundary.tsx`; one boundary around the
+  routes, one around each top-bar chip). React unmounts the **entire tree** when any
+  component throws during render, and with no boundary anywhere that is a white page with
+  no message, no component name and no way back. Reported as *"why does arm writes on this
+  build launch a blank page?"*: `POST /firewall/guard/arm` returned the bare state row while
+  `GET /firewall/guard` returned `summary()` + the ledger, the top-bar guard chip set its
+  whole state from whichever endpoint answered, and the next render read `info?.config.max_…`
+  — optional chaining guards `info`, not `config` — so the deref threw and took every page
+  with it. The chip was mounted on all of them, which is the asymmetry that makes this
+  catastrophic rather than local. (That chip and its Arm button are gone now, with the rate
+  valve they controlled — so this particular deref cannot recur, and the general lesson is
+  what is left.) Two fixes, in increasing order of generality: one shape per concept, so a
+  component never has to ask which endpoint answered; and the
+  boundaries make the blast radius match the failure — a **widget** fails to a small `⚠`
+  chip carrying its error (one reading unavailable, not the application), a **page** fails
+  to a card with the message and a reload while the shell and navigation stay usable, so
+  you can leave the broken page. Deliberately **not** a silent swallow: a boundary that
+  renders nothing is a blank page with extra steps, so the message and the component stack
+  are both shown and both logged. The deploy gate is why this surfaced at all — a new build
+  came up hands-off, which made **Arm** the button pressed after every update, on every
+  page, by a person who had just deployed.
+- `Dockerfile` (Playwright base image) / `docker-compose.yml` +
+  `docker-compose.ghcr.yml` — single-container deploy (API serves UI). **Resource
+  guardrails**, so PathBrain fails locally rather than taking the NAS with it: `init: true`
+  (uvicorn is PID 1 and PID 1 does not reap — a killed Chromium's re-parented children
+  become permanent zombies, the 388 observed on the host; tini's whole job is to reap
+  them), `mem_limit: 4g` (a runaway tree is OOM-killed *inside* the container instead of
+  the host killing nginx and Docker's inotify as collateral), and `pids_limit: 2048` —
+  tuned up from the 256 that reads naturally from a process count, because the cgroup pids
+  controller limits **tasks, threads included**, and one headless Chromium runs a few
+  hundred. The healthcheck hits `/api/health` (static JSON) and must never touch a path
+  that launches a browser or starts a measurement: Docker re-runs it on a timer forever, so
+  a side effect there becomes a permanent background workload. CI publishes
+  `ghcr.io/jmorganthall/pathbrain:latest` via `.github/workflows/docker-publish.yml`,
+  stamping the build commit (`--build-arg GIT_SHA=$github.sha` → `PATHBRAIN_GIT_SHA`).
+- **Version awareness** (`updates.py`, `GET /api/version`): a cached, best-effort
+  compare of this build's `git_sha` against the latest commit on `update_repo`'s
+  default branch (GitHub API; on by default, `PATHBRAIN_UPDATE_CHECK=false` to disable).
+  The top-bar `UpdateChip` shows "Update available" (→ the GitHub compare) when the
+  branch has moved past the running build — i.e. a newer `:latest` image is pullable.
+  To keep "up to date" from being a black box, `version_info` also returns `update_repo`/
+  `update_branch`/`checked_at`, and the footer renders the full comparison (running SHA · latest
+  on repo@branch · when last checked) in a tooltip plus a **"check now"** link
+  (`POST /api/version/refresh`, `version_info(force=True)`) that bypasses the 1-hour cache — so a
+  stale cached answer can be corrected on demand instead of waiting out the TTL. (Note: the check
+  is *commit*-based against GitHub, which can briefly disagree with the *image* actually published
+  to GHCR; a registry-digest check would track images exactly.)
+- **One-click self-update via Watchtower** (`updates.trigger_update`, `POST /api/update/trigger`):
+  when `WATCHTOWER_URL` (+ optional `WATCHTOWER_TOKEN`) is set — unprefixed, not `PATHBRAIN_*`
+  (a per-field `validation_alias` in `config.py` bypasses the class-wide prefix) — the
+  `UpdateChip` gains an **"Update now"** button (gated on `version_info()["self_update"]`) that
+  POSTs to `{url}/v1/update` with a `Bearer` token — Watchtower's HTTP API — telling it to pull the
+  newer image and recreate this container. Because a *successful* update severs the response as the
+  container is recreated, a dropped/reset/timed-out connection is reported as **triggered** (the
+  frontend then polls `/api/version` until the backend returns on a new `git_sha` and hard-reloads);
+  a **refused** connection (Watchtower not listening) or an **auth** error (bad token → HTTP 401) is
+  a real failure surfaced to the user. Endpoint returns `409` when unconfigured, `502` when
+  unreachable/rejected. Both env vars live in `config.py` (infra settings) + the compose files +
+  `.env.example`; empty URL (default) leaves the chip a plain link. The **Plugins page** carries a
+  **Watchtower integration card** (`WatchtowerIntegration`) showing configured/URL/token state
+  (`GET /api/update/config`, `self_update_config` — no network) with a **"Test connection"** button
+  (`POST /api/update/test`, `test_update_connection`) that probes reachability **without triggering
+  an update** — it hits the API **root**, never `/v1/update` (Watchtower's only endpoint *performs*
+  the update), so any HTTP response = reachable and only a connection-level failure = unreachable;
+  the token is verified for real only by "Update now".
+  **The self-update ledger** (`models.UpdateAttempt`, `updates._record_attempt`/`_finish_attempt`/
+  `verify_pending_updates`/`update_log`, `GET /api/update/log`): self-update is the one operation
+  that **destroys its own evidence** — a successful update recreates the container mid-response, so
+  the request is indistinguishable from a dropped connection, in-memory state is wiped, and the
+  container log the user would grep is replaced along with it. "It never seems to work" was
+  therefore unfalsifiable: `triggered: true` only ever meant *Watchtower took the call*, never
+  *the build changed*, and a Watchtower whose scope excludes this container answers **HTTP 200 and
+  updates nothing**. So every attempt is persisted to `update_attempts` **before** the request goes
+  out (url, token-sent, and crucially `git_sha_before`), completed with how the call went
+  (`outcome` = accepted / dropped / rejected / unreachable / not_configured + status, body, elapsed),
+  and **resolved afterwards across the restart** by `verify_pending_updates()` — called at startup
+  (the moment an update would have landed) and on every log read — which compares the running build
+  against `git_sha_before`: **confirmed** (build changed), **no_change** (accepted, but still the
+  same build after `VERIFY_AFTER_SECONDS` — detail names the usual causes: container outside
+  Watchtower's `--scope`/label filter, image already current, registry unreachable), or **failed**
+  (never got out). Rendered as the **"Update history"** section of the Plugins card. The chip's
+  post-trigger poll also stops guessing: after `UPDATE_POLL_MS` (4 min) with no new build it reports
+  the no-show and points at the ledger instead of spinning forever.
+
