@@ -1283,3 +1283,25 @@ class WriteProbe(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FieldRecord(Base):
+    """One real-browser page-load record from the field recorder extension (S32).
+
+    Append-only and raw: ``record`` is the JSON object exactly as the extension posted it,
+    never reshaped (the extension keeps only a hostname, never a URL). The server adds when
+    it arrived and which firewall profile was live, as far as PathBrain already knew without
+    asking the firewall (``field_ingest.known_fingerprint``): ``firewall_fingerprint`` is NULL
+    when nothing trustworthy was known. ``fingerprint_source`` names where it came from and
+    ``fingerprint_seen_at`` when that reading was taken, so a reader can judge its age.
+    SQLite triggers refuse UPDATE and DELETE on this table (``database._migrate_field_records``).
+    """
+
+    __tablename__ = "field_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+    record: Mapped[dict] = mapped_column(JSON)
+    firewall_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    fingerprint_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    fingerprint_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

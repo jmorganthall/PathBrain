@@ -12,6 +12,7 @@ from . import (
     routes_explore,
     routes_config,
     routes_experiments,
+    routes_field,
     routes_history,
     routes_jobs,
     routes_methodology,
@@ -55,3 +56,4 @@ api_router.include_router(routes_portable.router, tags=["portable"])
 api_router.include_router(routes_firewall.router, tags=["firewall"])
 api_router.include_router(routes_alerts.router, tags=["alerts"])
 api_router.include_router(routes_write_probe.router, tags=["firewall"])
+api_router.include_router(routes_field.router, tags=["field"])
