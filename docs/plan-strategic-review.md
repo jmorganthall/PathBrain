@@ -89,9 +89,11 @@ parallel with C once S4 is done.
   Done when: a test with one noisy round shows it excluded and the verdict unchanged.
   Replacements are capped by `host_quiet.max_replacement_rounds` (default 10) per match; past
   the cap rounds count as before, so a busy night still decides.
-- [ ] **S8. Blackout hours.** Add `blackout` (list of local hour ranges) to the duel and
+- [x] **S8. Blackout hours.** Add `blackout` (list of local hour ranges) to the duel and
   explore schedules in `schedule.py` / `scheduler.py`, so neither starts or continues a round
   inside it. Default empty. Done when: tests cover a window that straddles midnight.
+  Built as `duel.blackout` only: Explore has no schedule of its own (its bets ride the duel's
+  explore share), so it stops with the ring. Applies to scheduled and continuous sessions, not manual ones.
 - [ ] **S9. After snapshot.** Two weeks after S5–S8 are live, re-run S4's script and append
   the result. Success: resolving power under 0.85 points and fewer than 59.5% of matches
   undecided. If not, reopen S5.

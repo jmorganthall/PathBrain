@@ -385,6 +385,12 @@ DEFAULT_CONFIG: dict = {
         "minute": 0,
         "timezone": "",
         "duration_minutes": 120,
+        # Blackout hours (`schedule.in_blackout`): local [start_hour, end_hour) ranges in
+        # `timezone`, e.g. [{"start_hour": 7, "end_hour": 12}] or [{"start_hour": 23,
+        # "end_hour": 2}] across midnight. A scheduled or continuous session does not start
+        # inside one, and one that is running closes at its edge (open matches carried, like
+        # a window close); its Explore share goes with it. Empty = no blackout.
+        "blackout": [],
         # Sequential stopping rule (Wald SPRT on the pair-win rate): H0 p=0.5 vs H1 p=`p1`
         # at ~95% confidence (`alpha` two error rates), with a minimum of `min_pairs` before
         # any verdict, a futility cap of `max_pairs`, and a practical-significance floor —

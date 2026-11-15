@@ -164,6 +164,11 @@ def _maybe_run_duel() -> bool:
         cfg = get_config(session).get("duel", {}) or {}
     if not cfg.get("enabled"):
         return False
+    from .schedule import in_blackout_now
+
+    if in_blackout_now(cfg):
+        # Inside a blackout (`duel.blackout`): no session starts, scheduled or continuous.
+        return False
     if duel.active():
         # A session already holds the ring (a resumed window, a lever session, a manual
         # start). Silent before; a nightly window that passes this way is exactly the
