@@ -265,8 +265,19 @@ parallel with C once S4 is done.
   `judged_under` alone; its weather-shift recount falls back to the match's judged rules, not the
   current ones. A carried match is resumed only under its own version (unchanged). Writing a new
   `judged_under` for an old duel is left to a future explicit regrade path; none exists.
-- [ ] **S26. Retire legacy score paths.** Deprecate `/score/rescore` and `/score/rederive` in
+- [x] **S26. Retire legacy score paths.** Deprecate `/score/rescore` and `/score/rederive` in
   favour of the methodology-aware endpoint in `routes_score.py`; retire `score_results` reads.
+  Built: both endpoints still work and now answer with a `Deprecation` header, a `Link` to
+  `/api/score/regrade`, `deprecated: true` and `replacement`, warning once per process. The frontend
+  still calls both (Config: Re-score, Re-derive; Methodology: Re-derive) and was left alone: the
+  re-grade does not do what either button does (re-score rewrites the legacy SOPS from the config
+  rubric; re-derive refreshes the derived-metric cache that the re-grade's fast path reads). Routed
+  to `scores`: the run baseline (best profile by median current Overall, which the page already
+  labelled Overall; field name kept) and the smoothness compare (its legacy join became "has any
+  score"). Left on `score_results`, ratcheted in `tests/test_legacy_score_paths.py`: the
+  derivation-version cache stamp (runner's fast path, the rederive's selection, instrument_drift),
+  the capture write and translation, `GET /score/{run_id}` and `RunDetail.score` (API shape), and the
+  history row's legacy flag and data dump. No table drop.
 
 ## Phase E: ground truth from a person (rec 2)
 

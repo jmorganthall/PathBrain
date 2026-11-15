@@ -227,8 +227,11 @@ def get_result_baseline(
 
     The useful question on a run isn't "how does this compare to its own profile"
     (that's circular) but "how far is it from the best configuration I've found".
-    So the baseline is the settings profile with the highest median SOPS: each
-    metric arrow then shows whether this run beats — or trails — the best profile.
+    So the baseline is the settings profile with the highest median **Overall** under the
+    current methodology (comparable runs, newest score per run; S26 — it read the legacy
+    ``score_results`` SOPS before, while the page already labelled it Overall). The response
+    keeps the field name ``profile_median_sops`` for compatibility. Each metric arrow then
+    shows whether this run beats — or trails — the best profile.
 
     Confident profiles (>= ``correlation.min_runs`` runs) are preferred when any
     exist, so a single fluky run can't define "best". When no profiles with
@@ -242,12 +245,22 @@ def get_result_baseline(
     min_runs = int((get_config(session).get("correlation", {}) or {}).get("min_runs", 5) or 5)
 
     # Group completed, scored runs by settings profile.
-    rows = session.execute(
-        select(Run, ScoreResult.sops)
-        .join(ScoreResult, ScoreResult.run_id == Run.id)
-        .where(Run.status == RunStatus.COMPLETE, effective_fingerprint().is_not(None))
+    version = ensure_current_methodology(session, get_config(session)).version
+    scored = session.execute(
+        select(Run, Score.axis_scores)
+        .join(Score, Score.run_id == Run.id)
+        .where(
+            Run.status == RunStatus.COMPLETE, effective_fingerprint().is_not(None),
+            Score.methodology_version == version, Score.comparability != "incomparable",
+            latest_score(),
+        )
         .order_by(Run.created_at.desc())
     ).all()
+    rows = [
+        (r, float(axes["overall"])) for r, axes in scored
+        if isinstance((axes or {}).get("overall"), (int, float))
+        and not isinstance((axes or {}).get("overall"), bool)
+    ]
     overlay(session, [r for r, _ in rows] + ([run] if run is not None else []))
     groups: dict[str, dict] = {}
     for r, sops in rows:

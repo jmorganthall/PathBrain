@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from ..database import get_session
 from ..interpret.smoothness import PERCEIVED_DEFAULTS, smoothness_record
 from ..logging_config import get_logger
-from ..models import BenchmarkResult, Run, RunStatus, ScoreResult
+from ..models import BenchmarkResult, Run, RunStatus
 from ..raw_access import browser_url_observations
 from ..settings_overrides import effective_fingerprint, overlay, overlay_run
 from ..settings_profile import summarize
@@ -189,18 +189,21 @@ def compare_smoothness(
     from ..methodology import ensure_current_methodology, latest_score
     from ..models import Score
 
+    from sqlalchemy import exists
+
+    # A scored run: any versioned score (S26; this was a join on the legacy score_results).
     rows = session.execute(
-        select(Run, BenchmarkResult, ScoreResult)
+        select(Run, BenchmarkResult)
         .join(BenchmarkResult, BenchmarkResult.run_id == Run.id)
-        .join(ScoreResult, ScoreResult.run_id == Run.id)
         .where(
             Run.status == RunStatus.COMPLETE,
             BenchmarkResult.plugin == "browser",
             effective_fingerprint().in_([a, b]),
+            exists(select(Score.run_id).where(Score.run_id == Run.id)),
         )
         .order_by(Run.created_at)
     ).all()
-    overlay(session, [run for run, _, _ in rows])
+    overlay(session, [run for run, _ in rows])
 
     # Comparability is the methodology's call, not a static metric marker: a run counts
     # only if it has a current-methodology Score that isn't quarantined as incomparable
@@ -217,7 +220,7 @@ def compare_smoothness(
     )
 
     grouped: dict[str, list[tuple[Run, BenchmarkResult]]] = {a: [], b: []}
-    for run, br, score in rows:
+    for run, br in rows:
         if complete_only and run.id not in comparable_ids:
             continue
         grouped[run.settings_fingerprint].append((run, br))

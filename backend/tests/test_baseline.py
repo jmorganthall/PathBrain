@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import pytest
 
+from pathbrain.config_store import get_config
 from pathbrain.database import session_scope
-from pathbrain.models import BenchmarkResult, Run, RunStatus, ScoreResult
+from pathbrain.methodology import ensure_current_methodology
+from pathbrain.models import BenchmarkResult, Run, RunStatus, Score, ScoreResult
 
 
 @pytest.fixture(autouse=True)
@@ -18,6 +20,7 @@ def _isolate_runs():
     def _wipe():
         with session_scope() as session:
             session.query(ScoreResult).delete()
+            session.query(Score).delete()
             session.query(BenchmarkResult).delete()
             session.query(Run).delete()
 
@@ -26,8 +29,13 @@ def _isolate_runs():
     _wipe()
 
 
-def _seed_run(fp: str | None, lookup_ms: float, sops: float | None) -> int:
+def _seed_run(fp: str | None, lookup_ms: float, sops: float | None,
+              overall: float | None = None) -> int:
+    """A run with a legacy ``sops`` and (S26) a current-methodology Overall, which is what
+    the baseline ranks by; ``overall`` defaults to the same number."""
+    overall = sops if overall is None else overall
     with session_scope() as session:
+        version = ensure_current_methodology(session, get_config(session)).version
         run = Run(
             status=RunStatus.COMPLETE,
             settings_fingerprint=fp,
@@ -49,6 +57,10 @@ def _seed_run(fp: str | None, lookup_ms: float, sops: float | None) -> int:
                     run_id=run.id, sops=sops, subscores={}, weights_used={}, metric_values={}
                 )
             )
+        if overall is not None:
+            session.add(Score(run_id=run.id, methodology_version=version, is_at_measure=True,
+                              comparability="exact", axis_scores={"overall": overall},
+                              subscores={}, weights_used={}, metric_values={}))
         return run.id
 
 
@@ -97,6 +109,19 @@ def test_baseline_falls_back_to_recent_without_profiles(client):
     assert body["scope"] == "all"
     assert body["is_best_profile"] is False
     assert "dns" in body["metrics"]
+
+
+def test_baseline_ranks_by_the_versioned_overall_not_the_legacy_sops(client):
+    """S26: the legacy SOPS says the first profile is best; the current methodology's
+    Overall (what the page labels it) says the second is, and the Overall decides."""
+    for v in (8.0, 10.0, 12.0):
+        _seed_run("sopsfavour01", v, sops=95.0, overall=40.0)
+    for v in (30.0, 32.0, 34.0):
+        _seed_run("overallbest1", v, sops=20.0, overall=88.0)
+    target = _seed_run("sopsfavour01", 9.0, sops=95.0, overall=40.0)
+    body = client.get(f"/api/results/{target}/baseline").json()
+    assert body["profile_fingerprint"] == "overallbest1"
+    assert body["profile_median_sops"] == 88.0
 
 
 def test_baseline_404_for_missing_run(client):
