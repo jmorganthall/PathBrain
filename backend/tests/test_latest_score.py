@@ -41,7 +41,7 @@ def _private_db(*, unique: bool):
             ddl = conn.execute(
                 text("SELECT sql FROM sqlite_master WHERE type='table' AND name='scores'")
             ).scalar_one()
-            ddl = re.sub(r",\s*CONSTRAINT uq_score_run_methodology UNIQUE \([^)]*\)", "", ddl)
+            ddl = re.sub(r",\s*CONSTRAINT uq_score_run_methodology\w* UNIQUE \([^)]*\)", "", ddl)
             assert "uq_score_run_methodology" not in ddl
             conn.execute(text("DROP TABLE scores"))
             conn.execute(text(ddl))

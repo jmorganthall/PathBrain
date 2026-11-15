@@ -203,8 +203,11 @@ parallel with C once S4 is done.
   `(run, version)`); every reader goes through it. No schema or write change, so behaviour is neutral today.
   Not routed: `routes_score.py` run_scores and `research_export` want every row on purpose; the refresh and
   Settings-Impact change stamps count every row; `upsert_score`'s lookup is S21b's.
-- [ ] **S21b. Insert-only at-measure, build.** The schema change, write-once at-measure, re-grades write
+- [x] **S21b. Insert-only at-measure, build.** The schema change, write-once at-measure, re-grades write
   `is_at_measure=False` (`runner.py:813`); make S20's tests pass. `_migrate` copies `scores` to a backup first.
+  Built: the key is `UNIQUE(run_id, methodology_version, is_at_measure)`, rebuilt once on start (about 4 s per
+  120k rows; needs free disk of about twice the `scores` table). **To restore the rows from the backup** (app
+  stopped): `DELETE FROM scores; INSERT INTO scores SELECT * FROM scores_backup_s21b;`
 - [ ] **S22. Settings overrides instead of backfill.** Replace `/settings/backfill`
   (`routes_settings.py:685`), which stamps today's settings onto old runs, with a
   `settings_overrides` table that records the correction beside the run.
