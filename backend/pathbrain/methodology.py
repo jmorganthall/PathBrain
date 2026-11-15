@@ -10,6 +10,8 @@ threshold, or metric change is published as a new version, never an edit.
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass, replace
+from functools import lru_cache
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -374,6 +376,65 @@ def _ss_v8_assignments() -> dict:
     del a["total_stall"]  # relative shape stat → back to display-only diagnostic
     a["stall_time"] = {"axis": SMOOTHNESS, "weight": 30, "best": 0.0, "worst": 3000.0}
     return a
+
+
+# ── The duel's verdict rules (S24) ────────────────────────────────────────────────────
+#
+# The constants that decide (or describe) a duel's verdict, in the methodology record so a
+# rule change is a version change. The user-tunable dials (``duel.p1``, ``alpha``,
+# ``min_pairs``, ``max_pairs``, ``min_margin``, ``streak_wins``, ``method``) stay in config;
+# these are the fixed rules those dials run inside. Read them through :func:`verdict_rules`.
+
+
+@dataclass(frozen=True)
+class VerdictRules:
+    #: Severity points between a round's two legs that read as "the weather moved".
+    #: Informational (flags rounds on the tape and live); the verdict math never reads it.
+    round_weather_shift: float
+    #: Most recent completed runs the round-weather severity scale is built from.
+    weather_scale_sample: int
+    #: Rounds the signed-rank test needs before it can say anything (below: p = 1.0, no opinion).
+    wilcoxon_min_pairs: int
+    #: Largest tie-free sample the signed-rank p-value is computed exactly (normal approx above).
+    wilcoxon_exact_max_pairs: int
+    #: The Pocock-style peek penalty: ``max(floor, slope·ln(peeks) − offset)`` divides alpha.
+    peek_penalty_slope: float
+    peek_penalty_offset: float
+    peek_penalty_floor: float
+    #: The SPRT's null pair-win rate (H0), and the clamps on its configured p1 and alpha.
+    sprt_null_p: float
+    #: The SPRT readout's p1 when config gives none.
+    sprt_default_p1: float
+    sprt_p1_min: float
+    sprt_p1_max: float
+    alpha_min: float
+    alpha_max: float
+    #: The alpha when config gives none (the signed-rank rule and the SPRT readout).
+    paired_default_alpha: float
+
+
+#: Today's verdict rules, as v17 states them.
+_VERDICT_RULES_V17: dict = {
+    "round_weather_shift": 25.0,
+    "weather_scale_sample": 5000,
+    "wilcoxon_min_pairs": 4,
+    "wilcoxon_exact_max_pairs": 25,
+    "peek_penalty_slope": 3.32,
+    "peek_penalty_offset": 2.97,
+    "peek_penalty_floor": 2.0,
+    "sprt_null_p": 0.5,
+    "sprt_default_p1": 0.70,
+    "sprt_p1_min": 0.501,
+    "sprt_p1_max": 0.999,
+    "alpha_min": 0.001,
+    "alpha_max": 0.2,
+    "paired_default_alpha": 0.05,
+}
+
+#: THE fallback: a version that does not state its verdict rules (every version before v17,
+#: and any GUI-published one not in the registry) is judged by these — the rules every duel
+#: has been decided by so far. The one place that says so.
+DEFAULT_VERDICT_RULES = VerdictRules(**_VERDICT_RULES_V17)
 
 
 METHODOLOGY_REGISTRY: dict[str, dict] = {
@@ -777,6 +838,8 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "required": ["fcp", "lcp", "cadence_cov"],
             "weights": {"fcp": 1.0, "lcp": 1.0, "cadence_cov": 1.0},
         },
+        # The duel's verdict rules under this version (S24): today's values, written out.
+        "verdict_rules": dict(_VERDICT_RULES_V17),
     },
     # A CANDIDATE, written so it can be audited before anyone decides to publish it — it is
     # deliberately NOT ``CURRENT_METHODOLOGY``. Nothing adopts a registry version on its own:
@@ -804,6 +867,7 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
             "required": ["fcp", "lcp"],
             "weights": {"fcp": 1.0, "lcp": 1.0},
         },
+        "verdict_rules": dict(_VERDICT_RULES_V17),
     },
 }
 
@@ -840,6 +904,24 @@ for _ver, _spec in METHODOLOGY_REGISTRY.items():
 assert not metrics_mod.crown_ledger_violations(
     (METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY].get("overall") or {}).get("metrics") or []
 ), "the current methodology's crown must be ledger-clean"
+
+
+@lru_cache(maxsize=64)
+def _verdict_rules(version: str) -> VerdictRules:
+    spec = METHODOLOGY_REGISTRY.get(version) or METHODOLOGY_REGISTRY.get(version.split("+", 1)[0])
+    stated = (spec or {}).get("verdict_rules")
+    if not stated:
+        return DEFAULT_VERDICT_RULES
+    return replace(DEFAULT_VERDICT_RULES, **stated)
+
+
+def verdict_rules(version: str | None = None) -> VerdictRules:
+    """The duel's verdict rules under a methodology version (default: the code's current one).
+
+    Read from the version's registry record; a fork (``base+suffix``) reads its base's, and a
+    version that states none falls back to :data:`DEFAULT_VERDICT_RULES`. A version that
+    states only some rules takes the rest from the fallback. Pure and cheap (no database)."""
+    return _verdict_rules(str(version or CURRENT_METHODOLOGY))  # registry records are frozen
 
 
 def linear_ramp_legs(spec: dict) -> dict[str, float]:
