@@ -253,7 +253,17 @@ def _resolve_policy(session, pooled_best_fp: str | None, policy: str) -> dict:
         from .methodology import ensure_current_methodology
         from .pooled_field import LEG_FIRST, band_pct
 
-        spec = LEG_FIRST[policy]
+        spec = LEG_FIRST.get(policy)
+        if spec is None:
+            # The current crown has no leg pair this policy can lead with (`pooled_field`).
+            return {
+                "policy": policy,
+                "fingerprint": pooled_best_fp,
+                "source": "pooled",
+                "detail": f"the current crown has no legs for {policy} — falling back to the pooled crown",
+                "duel_champion": champion,
+                policy: None,
+            }
         lead, then = spec["lead"], spec["then"]
         lf = None
         try:
