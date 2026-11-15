@@ -179,19 +179,14 @@ def evaluate(xs: list[list[float]], ys: list[float]) -> HostModel:
 
 
 def run_readings(session, run_ids: list[int]) -> dict[int, list[float]]:
-    """``{run_id: log host vector}`` from each run's stamped instrument health."""
-    from .models import Run
+    """``{run_id: log host vector}`` from each run's instrument-health verdict."""
+    from .instrument_health import health_by_run
 
     out: dict[int, list[float]] = {}
-    ids = [i for i in run_ids if i is not None]
-    for start in range(0, len(ids), 500):
-        chunk = ids[start:start + 500]
-        for rid, health in session.execute(
-            select(Run.id, Run.instrument_health).where(Run.id.in_(chunk))
-        ).all():
-            vec = _log_vector((health or {}).get("readings"))
-            if vec is not None:
-                out[rid] = vec
+    for rid, health in health_by_run(session, run_ids).items():
+        vec = _log_vector((health or {}).get("readings"))
+        if vec is not None:
+            out[rid] = vec
     return out
 
 
@@ -204,7 +199,9 @@ def leg_vector(session, run_id: int | None) -> list[float] | None:
     run = session.get(Run, run_id)
     if run is None:
         return None
-    vec = _log_vector((run.instrument_health or {}).get("readings"))
+    from .instrument_health import health_of
+
+    vec = _log_vector((health_of(session, run) or {}).get("readings"))
     if vec is None:
         vec = _log_vector(readings_from_results(run.results))
     return vec

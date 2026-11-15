@@ -227,8 +227,19 @@ parallel with C once S4 is done.
   `settings_fingerprint` override (source `refingerprint`), never writing its row; row-only runs are
   re-keyed in place as before. Ratchet: `tests/test_settings_overrides_readers.py` counts direct reads
   per file against an allow-list.
-- [ ] **S23. Instrument health as a derived table.** Move instrument health off the run row
+- [x] **S23. Instrument health as a derived table.** Move instrument health off the run row
   into a derived, versioned table (`instrument_health_v`), filled by the derive step.
+  Built as `instrument_health_verdicts` (the repo names tables as plural nouns, not `_v`), keyed by
+  run and `instrument_health.HEALTH_VERSION` (`ih-1`), insert-only, newest row per (run, version).
+  Filled where health is assessed (`assess_run`, on the capture and re-grade score path); it is not
+  part of `interpret.derive` because it needs the cross-run baseline. One accessor in
+  `instrument_health` (`health_by_run`/`health_of`, SQL `effective_health`/`effective_ratio`); the run
+  column is still written and is read only as the fallback for a run with no derived verdict under
+  any version. Backfill: an additive, idempotent migration copies existing row stamps (source
+  `run_row`), plus a delete trigger so verdicts never outlive their run. Routed: run detail,
+  ranking's host model, `host_adjust`, `profile_conditions`/`slow_profiles`, research export (effective
+  + raw + `instrument_health_verdicts.jsonl`). One sprint, no split. Ratchet:
+  `tests/test_instrument_health_derived.py`.
 - [ ] **S24. Version the verdict rules, part 1.** Move the duel's verdict constants
   (`ROUND_WEATHER_SHIFT`, `WEATHER_SCALE_SAMPLE`, SPRT and Pocock settings) into the
   methodology record, read through one accessor.
