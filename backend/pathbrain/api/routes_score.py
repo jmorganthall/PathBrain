@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from statistics import median, quantiles
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -56,10 +56,31 @@ def _attribution(network_ms: float | None, render_ms: float | None, unknown_ms: 
     }
 
 
+#: S26: the legacy whole-history paths, kept working and marked deprecated.
+REPLACEMENT = "/api/score/regrade"
+_DEPRECATION_WARNED: set[str] = set()
+
+
+def _deprecated(response: Response, path: str, body: dict) -> dict:
+    """Mark a legacy endpoint's answer deprecated: a ``Deprecation`` header, a ``Link`` to
+    its successor, ``deprecated: true`` and ``replacement`` in the body, and one warning per
+    process per endpoint in the log."""
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = f'<{REPLACEMENT}>; rel="successor-version"'
+    if path not in _DEPRECATION_WARNED:
+        _DEPRECATION_WARNED.add(path)
+        log.warning("%s is deprecated: use %s (the methodology-aware re-grade)", path, REPLACEMENT)
+    return {**body, "deprecated": True, "replacement": REPLACEMENT}
+
+
 @router.post("/score/rescore", status_code=202)
-def rescore_history() -> dict:
-    """Re-grade every completed run with the current scoring rubric, **in the
+def rescore_history(response: Response) -> dict:
+    """**Deprecated (S26)** — use ``POST /api/score/regrade``. Still works.
+
+    Re-grade every completed run with the current scoring rubric, **in the
     background**. Returns ``{job_id}`` immediately; track it in the jobs feed.
+    It rewrites only the legacy ``score_results`` SOPS from the config rubric; nothing
+    the methodology-scored views read changes.
 
     Run this after changing thresholds/weights so historical scores stay
     comparable (no discontinuity in the SOPS timeline at the change).
@@ -86,12 +107,16 @@ def rescore_history() -> dict:
             return {"rescored": rescored, "rubric_version": rubric_version}
 
     job_id = jobs.start("rescore", "Re-score history (current rubric)", task, href="/config")
-    return {"job_id": job_id}
+    return _deprecated(response, "/api/score/rescore", {"job_id": job_id})
 
 
 @router.post("/score/rederive", status_code=202)
-def rederive_history(force: bool = Query(False)) -> dict:
-    """Re-derive *and* re-grade every completed run from its stored raw observations,
+def rederive_history(response: Response, force: bool = Query(False)) -> dict:
+    """**Deprecated (S26)** — use ``POST /api/score/regrade``, which re-derives any run whose
+    cache is stale from raw itself. Still works (it also refreshes the derived-metric cache,
+    which makes later re-grades take the fast path).
+
+    Re-derive *and* re-grade every completed run from its stored raw observations,
     **in the background**. Returns ``{job_id}`` immediately.
 
     Heavier than ``/score/rescore`` (which only re-applies the rubric to cached
@@ -156,7 +181,7 @@ def rederive_history(force: bool = Query(False)) -> dict:
             }
 
     job_id = jobs.start("rederive", "Re-derive history from raw", task, href="/config")
-    return {"job_id": job_id}
+    return _deprecated(response, "/api/score/rederive", {"job_id": job_id})
 
 
 @router.post("/score/regrade", status_code=202)
