@@ -639,44 +639,117 @@ def slow_profiles(session, fingerprints) -> set[str]:
     return set(value)
 
 
-def _slow_profiles(session, fingerprints) -> set[str]:
-    """The profiles among ``fingerprints`` that `profile_conditions` would flag — measured
-    mostly while the machine was in its slowest quarter — in two queries rather than two
-    per profile, for callers that read the whole ring (`overall_ranking.pooled_slack`).
-    Same newest-run bounds, same cutoff, same share. Best-effort by the caller."""
+# Every completed run's (id, effective fingerprint, host-speed ratio), oldest first, kept
+# between reads and extended rather than re-read when the only change is newly completed
+# runs. Evaluating each run's effective health and fingerprint in SQL was the whole cost of
+# `_slow_profiles` (about eighteen seconds on the NAS) and every new run used to repeat it.
+# Anything else that moves under the loaded runs (a verdict, a status change, an override,
+# another rule version) reloads them all.
+_RATIO_LOCK = threading.Lock()
+_RATIO_CACHE: dict = {"base": None, "upto": None, "check": None, "rows": None}
+
+
+def invalidate_ratio_cache() -> None:
+    with _RATIO_LOCK:
+        _RATIO_CACHE.update({"base": None, "upto": None, "check": None, "rows": None})
+
+
+def _ratio_check(session, upto: int) -> tuple:
+    """What must not have moved under the runs up to ``upto`` for loaded ratios to stand."""
+    from sqlalchemy import func, select
+
+    from .models import InstrumentHealthVerdict, Run, RunStatus
+
+    complete = session.execute(
+        select(func.count(Run.id)).where(Run.status == RunStatus.COMPLETE, Run.id <= upto)
+    ).scalar_one()
+    verdicts = tuple(session.execute(
+        select(func.max(InstrumentHealthVerdict.id), func.count(InstrumentHealthVerdict.id))
+        .where(InstrumentHealthVerdict.run_id <= upto)
+    ).one())
+    # The newest loaded run itself: counts alone can't tell a deleted run from a new one
+    # that reused its id (SQLite hands out the freed top id again).
+    from .settings_overrides import effective_fingerprint
+
+    newest = tuple(session.execute(
+        select(Run.created_at, effective_fingerprint()).where(Run.id == upto)
+    ).one_or_none() or ())
+    return (complete, verdicts, newest)
+
+
+def _load_ratios(session, after: int | None = None) -> list[tuple]:
     from sqlalchemy import select
 
     from .models import Run, RunStatus
     from .settings_overrides import effective_fingerprint
 
-    fps = [fp for fp in dict.fromkeys(fingerprints) if fp]
+    ratio_col = effective_ratio()
+    filters = [Run.status == RunStatus.COMPLETE]
+    if after is not None:
+        filters.append(Run.id > after)
+    return [
+        (rid, fp, float(ratio) if isinstance(ratio, (int, float)) and not isinstance(ratio, bool) else None)
+        for rid, fp, ratio in session.execute(
+            select(Run.id, effective_fingerprint(), ratio_col).where(*filters).order_by(Run.id)
+        ).all()
+    ]
+
+
+def _run_ratios(session) -> list[tuple]:
+    """``(run_id, effective_fingerprint, ratio or None)`` for every completed run, by id."""
+    from sqlalchemy import func, select
+
+    from .models import Run, RunStatus
+    from .settings_overrides import overrides_stamp
+
+    # The engine compared by identity: a second database in one process (the tests'
+    # private ones) is never served the first one's runs.
+    base = (session.get_bind(), HEALTH_VERSION, tuple(overrides_stamp(session)))
+    newest = session.execute(
+        select(func.max(Run.id)).where(Run.status == RunStatus.COMPLETE)
+    ).scalar_one() or 0
+    with _RATIO_LOCK:
+        cached = dict(_RATIO_CACHE)
+    if (cached["base"] == base and cached["rows"] is not None and cached["upto"] <= newest
+            and _ratio_check(session, cached["upto"]) == cached["check"]):
+        if newest == cached["upto"]:
+            return cached["rows"]
+        rows = cached["rows"] + _load_ratios(session, after=cached["upto"])
+    else:
+        rows = _load_ratios(session)
+    check = _ratio_check(session, newest)
+    with _RATIO_LOCK:
+        _RATIO_CACHE.update({"base": base, "upto": newest, "check": check, "rows": rows})
+    return rows
+
+
+def _slow_profiles(session, fingerprints) -> set[str]:
+    """The profiles among ``fingerprints`` that `profile_conditions` would flag — measured
+    mostly while the machine was in its slowest quarter — from one pass over the completed
+    runs' ratios (see `_run_ratios`) rather than two queries per profile, for callers that
+    read the whole ring (`overall_ranking.pooled_slack`). Same newest-run bounds, same
+    cutoff, same share. Best-effort by the caller."""
+    fps = {fp for fp in fingerprints if fp}
     if not fps:
         return set()
-    ratio_col = effective_ratio()
-    field = [
-        float(v) for (v,) in session.execute(
-            select(ratio_col)
-            .where(Run.status == RunStatus.COMPLETE, ratio_col.is_not(None))
-            .order_by(Run.id.desc())
-            .limit(CONDITIONS_FIELD_RUNS)
-        ).all()
-        if isinstance(v, (int, float))
-    ]
+    rows = _run_ratios(session)
+    field: list[float] = []
+    for _rid, _fp, ratio in reversed(rows):
+        if ratio is not None:
+            field.append(ratio)
+            if len(field) >= CONDITIONS_FIELD_RUNS:
+                break
     if len(field) < 4 * CONDITIONS_MIN_RUNS:
         return set()
     cutoff = _percentile(sorted(field), 75.0)
     per: dict[str, list[float]] = {}
-    for start in range(0, len(fps), 500):
-        chunk = fps[start:start + 500]
-        for fp, ratio in session.execute(
-            select(effective_fingerprint(), ratio_col)
-            .where(Run.status == RunStatus.COMPLETE, effective_fingerprint().in_(chunk))
-            .order_by(Run.id.desc())
-        ).all():
-            got = per.setdefault(fp, [])
-            if len(got) >= CONDITIONS_PROFILE_RUNS:
-                continue
-            got.append(float(ratio) if isinstance(ratio, (int, float)) else float("nan"))
+    for _rid, fp, ratio in reversed(rows):
+        if fp not in fps:
+            continue
+        got = per.setdefault(fp, [])
+        if len(got) >= CONDITIONS_PROFILE_RUNS:
+            continue
+        got.append(ratio if ratio is not None else float("nan"))
     out: set[str] = set()
     for fp, vals in per.items():
         ratios = [v for v in vals if v == v]

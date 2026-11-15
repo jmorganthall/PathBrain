@@ -83,3 +83,51 @@ def test_a_cached_answer_is_a_copy(field):
         first = ih.slow_profiles(s, ["cacheslow", "cachefair"])
         first.add("tampered")
         assert ih.slow_profiles(s, ["cacheslow", "cachefair"]) == {"cacheslow"}
+
+
+def _ratio_loads():
+    """(answer, the ``after`` of each ratio load the read made) for a fresh slow read."""
+    ih._SLOW_CACHE.update({"key": None, "value": None})
+    with mock.patch.object(ih, "_load_ratios", side_effect=ih._load_ratios) as spy:
+        with session_scope() as s:
+            got = ih.slow_profiles(s, ["cacheslow", "cachefair"])
+    return got, [c.kwargs.get("after") for c in spy.call_args_list]
+
+
+def test_a_new_run_reads_only_that_run(field):
+    _, loads = _ratio_loads()
+    with session_scope() as s:
+        for _ in range(12):
+            s.add(Run(status=RunStatus.COMPLETE, settings_fingerprint="cachefair",
+                      created_at=datetime(2026, 10, 31, 10),
+                      instrument_health={"verdict": "healthy", "ratio": 1.7}))
+    got, loads = _ratio_loads()
+    assert len(loads) == 1 and loads[0] is not None  # appended, not re-read
+    ih.invalidate_ratio_cache()
+    assert _ratio_loads() == (got, [None])  # a full re-read agrees
+
+
+def test_a_verdict_under_the_loaded_runs_rereads_them(field):
+    _ratio_loads()
+    with session_scope() as s:
+        rid = s.query(Run.id).filter(Run.settings_fingerprint == "cacheslow").first()[0]
+        s.add(InstrumentHealthVerdict(run_id=rid, version=ih.HEALTH_VERSION, source="assess",
+                                      health={"verdict": "healthy", "ratio": 1.0}))
+    _, loads = _ratio_loads()
+    assert loads == [None]
+
+
+def test_a_reused_run_id_rereads(field):
+    _ratio_loads()
+    with session_scope() as s:
+        top = s.query(Run).order_by(Run.id.desc()).first()
+        top_id, top_fp = top.id, top.settings_fingerprint
+        s.delete(top)
+    with session_scope() as s:  # SQLite hands the freed top id out again
+        s.add(Run(status=RunStatus.COMPLETE, settings_fingerprint=top_fp,
+                  created_at=datetime(2026, 11, 2, 9),
+                  instrument_health={"verdict": "healthy", "ratio": 1.1}))
+        s.flush()
+        assert s.query(Run.id).order_by(Run.id.desc()).first()[0] == top_id
+    _, loads = _ratio_loads()
+    assert loads == [None]
