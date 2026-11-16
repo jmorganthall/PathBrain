@@ -47,7 +47,10 @@ export function overallShares(m: MethodologyDetail | null): { key: string; share
 }
 
 /** "FCP, LCP and Cadence CoV" from the methodology's own labels. */
-export function joinLabels(keys: string[], metrics: MethodologyMetric[] | undefined): string {
+export function joinLabels(
+  keys: string[],
+  metrics: Pick<MethodologyMetric, "key" | "label">[] | undefined
+): string {
   const byKey = new Map((metrics ?? []).map((x) => [x.key, x.label]));
   const names = keys.map((k) => byKey.get(k) ?? k);
   if (names.length <= 1) return names.join("");

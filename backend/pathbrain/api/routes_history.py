@@ -82,6 +82,7 @@ def list_history(
                 responsiveness=(axes or {}).get("responsiveness"),
                 speed=(axes or {}).get("speed"),
                 smoothness=(axes or {}).get("smoothness"),
+                axes=axes,
                 # "legacy" now = not comparable under the current methodology.
                 legacy=run.score is not None and axes is None,
                 iterations=run.iterations,
@@ -184,7 +185,7 @@ def history_series(
     ),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Time-series of Speed/Smoothness + key metrics for charting (oldest → newest).
+    """Time-series of the axis scores and metrics for charting (oldest → newest).
 
     Runs that aren't comparable under the current methodology are excluded by
     default so the trend isn't built on non-comparable scores.
@@ -214,12 +215,13 @@ def history_series(
                 "smoothness": axes.get("smoothness"),
                 "stability": axes.get("stability"),
                 "completion": axes.get("completion"),
-                "dns_ms": values.get("dns"),
-                "tcp_ms": values.get("tcp"),
-                "tls_ms": values.get("tls"),
-                "ttfb_ms": values.get("ttfb"),
-                "jitter_ms": values.get("jitter"),
-                "packet_loss_pct": values.get("packet_loss"),
+                # Every axis score, metric subscore and raw value under the current
+                # methodology, so the chart follows its axes and Overall inputs rather
+                # than a fixed list (the old dns/tcp/tls/jitter fields were never
+                # collected under methodology-only runs and always came back empty).
+                "axes": axes,
+                "subscores": (score.subscores if score else {}) or {},
+                "values": values,
             }
         )
     return {"points": points}
