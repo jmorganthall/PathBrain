@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
+import Divider from "@mui/material/Divider";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
@@ -66,6 +67,7 @@ import { useMetricMeta } from "../utils/metrics";
 import { fmtDateTime, fmtDuration, fmtNum, parseApiDate, runRemainingMs } from "../utils/format";
 import { useNow } from "../utils/useNow";
 import { axisColor } from "../utils/axisColors";
+import { useMethodology } from "../utils/methodology";
 
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
@@ -125,6 +127,7 @@ function RunDots({ runs }: { runs: RunSummary[] }) {
 }
 
 export default function Dashboard() {
+  const methodology = useMethodology();
   const metricMeta = useMetricMeta();
   const [latest, setLatest] = useState<RunDetail | null>(null);
   const [axisSeries, setAxisSeries] = useState<AxisSeriesResponse | null>(null);
@@ -1110,13 +1113,34 @@ export default function Dashboard() {
                   help={
                     aggBreakdown
                       ? `Median subscore per metric over the last ${rolling?.window_hours ?? 24}h (${rolling?.count} runs).`
-                      : "The latest run's subscore per metric."
+                      : "Shows once there are scored runs in the window."
                   }
                 />
-                {aggBreakdown ? (
+                {aggBreakdown && methodology ? (
+                  <Stack spacing={2} divider={<Divider flexItem />}>
+                    {methodology.definition.axes.map((axis) => {
+                      const keys = methodology.definition.metrics
+                        .filter((m) => m.axis === axis.key && m.weight > 0)
+                        .map((m) => m.key)
+                        .filter((k) => aggBreakdown.subscores[k] != null);
+                      if (keys.length === 0) return null;
+                      return (
+                        <Box key={axis.key}>
+                          <Typography variant="overline" color="text.secondary">
+                            {axis.label}
+                          </Typography>
+                          <SubscoreBreakdown
+                            score={aggBreakdown}
+                            keys={keys}
+                            weightCaption={`of ${axis.label}`}
+                            attribution={rolling?.attribution}
+                          />
+                        </Box>
+                      );
+                    })}
+                  </Stack>
+                ) : aggBreakdown ? (
                   <SubscoreBreakdown score={aggBreakdown} attribution={rolling?.attribution} />
-                ) : latest?.score ? (
-                  <SubscoreBreakdown score={latest.score} />
                 ) : (
                   <Typography variant="body2" color="text.secondary">
                     Score not available yet.
