@@ -65,25 +65,7 @@ import { profileValue } from "../utils/profileFields";
 import { rankByMetric, rankColor } from "../utils/ranking";
 import { useMetricMeta } from "../utils/metrics";
 import { sopsColor } from "../theme";
-
-// Headline colours mirror the Dashboard/History charts (Overall is the bright lead line).
-const AXIS_COLORS: Record<string, string> = {
-  overall: "#e8eaed",
-  responsiveness: "#f5a65b",
-  speed: "#6fd0dc",
-  smoothness: "#c58af9",
-  stability: "#9fd5a6",
-  completion: "#9aa6b2",
-};
-// The over-time chart's headline series are the CROWN LEGS, which are metric keys and so
-// are never in the map above — a publish changes them. Falling back to one colour for
-// everything drew three legs in the same cyan, which is a chart of one line pretending to
-// be three, so an unknown key takes a distinct colour by position instead. Deliberately
-// keyed on index rather than hashed off the key: a hash gives two legs near-identical hues
-// often enough to matter, and position here is stable within a render.
-const SERIES_COLORS = ["#6fd0dc", "#f5a65b", "#c58af9", "#9fd5a6", "#f48fb1", "#9aa6b2"];
-const axisColor = (key: string, index = 0) =>
-  AXIS_COLORS[key] ?? SERIES_COLORS[index % SERIES_COLORS.length];
+import { axisColor } from "../utils/axisColors";
 
 // The short test: one runner chunk (`runner.CHUNK_ITERATIONS`), the same length Explore's
 // "Test now" runs. Sent explicitly with the request, so the label and what runs can't drift.

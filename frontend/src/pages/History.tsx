@@ -26,6 +26,28 @@ import EmptyState from "../components/EmptyState";
 import { fmtDateTime, fmtScore, runRemainingMs } from "../utils/format";
 import { useNow } from "../utils/useNow";
 import { sopsColor } from "../theme";
+import { axisColor } from "../utils/axisColors";
+import { joinLabels, overallShares, useMethodology } from "../utils/methodology";
+
+const FALLBACK_HEADLINE = [
+  { key: "responsiveness", label: "Responsiveness", role: "headline" },
+  { key: "smoothness", label: "Smoothness", role: "headline" },
+  { key: "speed", label: "Speed", role: "headline" },
+];
+
+// SeriesChart reads flat keys, so lift each point's axes, subscores and values to the top.
+function flattenSeries(points: SeriesPoint[]) {
+  return points.map((p) => {
+    const flat: Record<string, unknown> = { ...p };
+    for (const [k, v] of Object.entries(p.axes ?? {})) flat[`axis_${k}`] = v;
+    for (const [k, v] of Object.entries(p.subscores ?? {})) flat[`sub_${k}`] = v;
+    for (const [k, v] of Object.entries(p.values ?? {})) flat[`val_${k}`] = v;
+    return flat as SeriesPoint & Record<string, unknown>;
+  });
+}
+
+const axisOf = (r: RunSummary, key: string): number | null | undefined =>
+  r.axes?.[key] ?? (r as unknown as Record<string, number | null | undefined>)[key];
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
 
@@ -99,6 +121,21 @@ export default function History() {
   if (loading) return <Loading label="Loading history…" />;
 
   const shownRuns = hideLegacy ? runs.filter((r) => !r.legacy) : runs;
+
+  // Axes, the Overall's inputs and their labels come from the current methodology, so
+  // the charts and columns follow it. Until it loads, the three headline axes stand in.
+  const methodology = useMethodology();
+  const axisNames = methodology?.definition.axes.map((a) => ({ key: a.key, label: a.label })) ?? [];
+  const headline =
+    methodology?.definition.axes.filter((a) => a.role === "headline") ?? FALLBACK_HEADLINE;
+  const overallKeys = overallShares(methodology).map((o) => o.key);
+  const chartData = flattenSeries(series);
+  const overallMethod = methodology?.definition.overall?.method ?? "weighted";
+  const metricLabel = (k: string) =>
+    methodology?.definition.metrics.find((m) => m.key === k)?.label ?? k;
+  const msKeys = overallKeys.filter(
+    (k) => methodology?.definition.metrics.find((m) => m.key === k)?.unit === "ms"
+  );
   const hiddenCount = runs.length - shownRuns.length;
 
   return (
@@ -137,16 +174,21 @@ export default function History() {
             <Card>
               <CardContent>
                 <Typography variant="h6" gutterBottom>
-                  Overall, Responsiveness, Smoothness &amp; Speed
+                  {joinLabels(
+                    ["overall", ...headline.map((a) => a.key)],
+                    [{ key: "overall", label: "Overall" }, ...axisNames]
+                  )}
                 </Typography>
                 <SeriesChart
-                  data={series}
+                  data={chartData}
                   yDomain={[0, 100]}
                   lines={[
-                    { key: "overall", name: "Overall", color: "#e8eaed" },
-                    { key: "responsiveness", name: "Responsiveness", color: "#f5a65b" },
-                    { key: "smoothness", name: "Smoothness", color: "#c58af9" },
-                    { key: "speed", name: "Speed", color: "#6fd0dc" },
+                    { key: "overall", name: "Overall", color: axisColor("overall") },
+                    ...headline.map((a, i) => ({
+                      key: `axis_${a.key}`,
+                      name: a.label,
+                      color: axisColor(a.key, i),
+                    })),
                   ]}
                 />
               </CardContent>
@@ -155,34 +197,44 @@ export default function History() {
             <Card>
               <CardContent>
                 <Typography variant="h6" gutterBottom>
-                  Latency (ms)
+                  What makes up the Overall (score)
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                  {overallKeys.length > 0
+                    ? `Each input's 0 to 100 score; the Overall is their ${overallMethod} average.`
+                    : "Loading the current methodology…"}
                 </Typography>
                 <SeriesChart
-                  data={series}
-                  unit="ms"
-                  lines={[
-                    { key: "dns_ms", name: "DNS", color: "#a88bff" },
-                    { key: "tcp_ms", name: "TCP", color: "#6fd0dc" },
-                    { key: "tls_ms", name: "TLS", color: "#f6c06b" },
-                    { key: "ttfb_ms", name: "TTFB", color: "#81c995" },
-                  ]}
+                  data={chartData}
+                  yDomain={[0, 100]}
+                  lines={overallKeys.map((k, i) => ({
+                    key: `sub_${k}`,
+                    name: metricLabel(k),
+                    color: axisColor(k, i),
+                  }))}
                 />
               </CardContent>
             </Card>
 
-            <Card sx={{ gridColumn: { lg: "1 / -1" } }}>
-              <CardContent>
-                <Typography variant="h6" gutterBottom>
-                  Jitter (ms)
-                </Typography>
-                <SeriesChart
-                  data={series}
-                  unit="ms"
-                  height={220}
-                  lines={[{ key: "jitter_ms", name: "Jitter", color: "#f28b82" }]}
-                />
-              </CardContent>
-            </Card>
+            {msKeys.length > 0 && (
+              <Card sx={{ gridColumn: { lg: "1 / -1" } }}>
+                <CardContent>
+                  <Typography variant="h6" gutterBottom>
+                    {joinLabels(msKeys, methodology?.definition.metrics)} (ms)
+                  </Typography>
+                  <SeriesChart
+                    data={chartData}
+                    unit="ms"
+                    height={220}
+                    lines={msKeys.map((k, i) => ({
+                      key: `val_${k}`,
+                      name: metricLabel(k),
+                      color: axisColor(k, i),
+                    }))}
+                  />
+                </CardContent>
+              </Card>
+            )}
           </Box>
 
           {/* Runs list (paginated) below the graphs */}
@@ -219,9 +271,11 @@ export default function History() {
                       <TableCell>Label</TableCell>
                       <TableCell>Status</TableCell>
                       <TableCell align="right">Overall</TableCell>
-                      <TableCell align="right">Respons.</TableCell>
-                      <TableCell align="right">Smoothness</TableCell>
-                      <TableCell align="right">Speed</TableCell>
+                      {headline.map((a) => (
+                        <TableCell key={a.key} align="right">
+                          {a.label}
+                        </TableCell>
+                      ))}
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -251,7 +305,7 @@ export default function History() {
                           />
                         </TableCell>
                         {r.legacy ? (
-                          <TableCell align="right" colSpan={4}>
+                          <TableCell align="right" colSpan={1 + headline.length}>
                             <Tooltip title="Not comparable under the current methodology — re-grade or re-run.">
                               <Chip size="small" variant="outlined" label="legacy" />
                             </Tooltip>
@@ -263,21 +317,16 @@ export default function History() {
                                 {fmtScore(r.overall)}
                               </Typography>
                             </TableCell>
-                            <TableCell align="right">
-                              <Typography component="span" sx={{ fontWeight: 600, color: sopsColor(r.responsiveness) }}>
-                                {fmtScore(r.responsiveness)}
-                              </Typography>
-                            </TableCell>
-                            <TableCell align="right">
-                              <Typography component="span" sx={{ fontWeight: 600, color: sopsColor(r.smoothness) }}>
-                                {fmtScore(r.smoothness)}
-                              </Typography>
-                            </TableCell>
-                            <TableCell align="right">
-                              <Typography component="span" sx={{ fontWeight: 600, color: sopsColor(r.speed) }}>
-                                {fmtScore(r.speed)}
-                              </Typography>
-                            </TableCell>
+                            {headline.map((ax) => {
+                              const v = axisOf(r, ax.key);
+                              return (
+                                <TableCell key={ax.key} align="right">
+                                  <Typography component="span" sx={{ fontWeight: 600, color: sopsColor(v) }}>
+                                    {fmtScore(v)}
+                                  </Typography>
+                                </TableCell>
+                              );
+                            })}
                           </>
                         )}
                       </TableRow>

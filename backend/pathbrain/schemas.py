@@ -317,6 +317,9 @@ class RunSummary(BaseModel):
     responsiveness: float | None = None
     speed: float | None = None
     smoothness: float | None = None
+    # Every axis score under the current methodology, keyed by axis (and "overall"),
+    # so the UI can show whichever axes the methodology defines.
+    axes: dict[str, float] | None = None
     # True when the run has a score but isn't comparable under the current
     # methodology. False for runs with no score yet (running/failed).
     legacy: bool = False

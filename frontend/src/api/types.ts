@@ -18,6 +18,8 @@ export interface RunSummary {
   responsiveness?: number | null;
   speed?: number | null;
   smoothness?: number | null;
+  // Every axis score under the current methodology (incl. "overall"), keyed by axis.
+  axes?: Record<string, number> | null;
   // True when the run has a score but isn't comparable under the current methodology.
   legacy?: boolean;
   iterations: number;
@@ -998,12 +1000,11 @@ export interface SeriesPoint {
   smoothness: number | null;
   stability?: number | null;
   completion?: number | null;
-  dns_ms: number | null;
-  tcp_ms: number | null;
-  tls_ms: number | null;
-  ttfb_ms: number | null;
-  jitter_ms: number | null;
-  packet_loss_pct: number | null;
+  // Every axis score, metric subscore (0-100) and raw metric value under the current
+  // methodology, keyed by axis or metric key.
+  axes?: Record<string, number> | null;
+  subscores?: Record<string, number> | null;
+  values?: Record<string, number> | null;
 }
 
 export interface SeriesResponse {

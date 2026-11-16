@@ -103,3 +103,20 @@ def test_rolling_excludes_incomparable(client):
     body = client.get("/api/score/rolling?hours=24").json()
     assert body["count"] == 1  # the incomparable run is excluded
     assert body["axis_scores"]["speed"]["median"] == 90.0
+
+
+def test_series_and_history_carry_every_axis_and_metric(client):
+    # The History charts and columns follow the methodology's axes and Overall inputs,
+    # so the endpoints hand over every axis score, subscore and raw value, not a fixed few.
+    rid = _seed({"longest_stall": 1500.0, "fcp": 400.0, "lcp": 600.0})
+    with session_scope() as s:
+        score = s.query(Score).filter(Score.run_id == rid).one()
+        score.axis_scores = {"overall": 50.0, "speed": 80.0, "stability": 90.0}
+        score.subscores = {"fcp": 70.0, "cadence_cov": 20.0}
+    point = client.get("/api/history/series").json()["points"][0]
+    assert point["axes"]["stability"] == 90.0
+    assert point["subscores"] == {"fcp": 70.0, "cadence_cov": 20.0}
+    assert point["values"]["lcp"] == 600.0
+    assert "dns_ms" not in point
+    row = next(r for r in client.get("/api/history").json() if r["id"] == rid)
+    assert row["axes"]["stability"] == 90.0
