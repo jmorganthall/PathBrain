@@ -40,6 +40,7 @@ import Loading from "../components/Loading";
 import MetricDelta from "../components/MetricDelta";
 import { HelpTip } from "../components/Explain";
 import { useMetricMeta, useMetricOrder } from "../utils/metrics";
+import { joinLabels, overallShares, useMethodology } from "../utils/methodology";
 import { fmtDateTime, fmtDuration, metricValue, parseApiDate, runRemainingMs } from "../utils/format";
 
 const isRunning = (s: string) => ["running", "pending", "queued"].includes(s.toLowerCase());
@@ -112,6 +113,7 @@ export default function RunDetail() {
   const runId = Number(id);
   const metricMeta = useMetricMeta();
   const metricOrder = useMetricOrder();
+  const methodology = useMethodology();
   const [run, setRun] = useState<RunDetailType | null>(null);
   const [baseline, setBaseline] = useState<RunBaseline | null>(null);
   const [loading, setLoading] = useState(true);
@@ -190,6 +192,20 @@ export default function RunDetail() {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [run?.status, run?.started_at]);
+
+  // The Score Breakdown shows the run's score under the current methodology when it has
+  // one, else its at-measure score: never the old engine's score, whose subscores and
+  // weights are a different rubric.
+  const shownScore =
+    runScores.find((s) => s.methodology_version === methodology?.version) ??
+    runScores.find((s) => s.is_at_measure) ??
+    null;
+  const overallKeys = overallShares(methodology).map((o) => o.key);
+  const overallWeights = Object.fromEntries(
+    overallShares(methodology).map((o) => [o.key, o.share])
+  );
+  const overallMethod = methodology?.definition.overall?.method ?? "weighted";
+  const fmtAxis = (v: number | null | undefined) => (v != null ? Math.round(v) : "—");
 
   if (loading) return <Loading label="Loading run…" />;
 
@@ -286,7 +302,7 @@ export default function RunDetail() {
       {run.score?.legacy && (
         <Alert severity="warning" sx={{ mb: 2 }}>
           <strong>Legacy scoring.</strong> This run predates the current metrics (no paint data), so
-          its SOPS was computed from a thinner set and isn't comparable to current runs — shown for
+          its score was computed from a thinner set and isn't comparable to current runs — shown for
           reference only.
         </Alert>
       )}
@@ -303,8 +319,9 @@ export default function RunDetail() {
           <CardContent sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
             <ScoreGauge value={run.overall ?? null} label="Overall (how it feels)" />
             <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>
-              Overall — closeness to the perfect quick-first-response / stall-free / fast-load
-              corner, as the methodology defines it.
+              {overallKeys.length > 0
+                ? `Overall: the ${overallMethod} average of ${joinLabels(overallKeys, methodology?.definition.metrics)}, as ${methodology?.version} defines it.`
+                : "Overall, as the current methodology defines it."}
             </Typography>
             {run.score?.completion != null && (
               <>
@@ -365,10 +382,55 @@ export default function RunDetail() {
             <Typography variant="h6" gutterBottom>
               Score Breakdown
             </Typography>
-            {run.score ? (
+            {shownScore ? (
               <>
-                <Typography variant="overline" color="text.secondary">
-                  Overall · how it feels {run.overall != null ? Math.round(run.overall) : "—"}
+                {shownScore.methodology_version !== methodology?.version && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                    Scored under {shownScore.methodology_version}; the current methodology is{" "}
+                    {methodology?.version ?? "loading"}.
+                  </Typography>
+                )}
+                {overallKeys.length > 0 && (
+                  <>
+                    <Typography variant="overline" color="text.secondary">
+                      Overall {fmtAxis(shownScore.axis_scores.overall ?? run.overall)}
+                    </Typography>
+                    <SubscoreBreakdown
+                      score={{
+                        subscores: shownScore.subscores,
+                        weights_used: overallWeights,
+                        metric_values: shownScore.metric_values,
+                      }}
+                      keys={overallKeys}
+                      weightCaption="of Overall"
+                    />
+                  </>
+                )}
+                {(methodology?.definition.axes ?? []).map((axis) => {
+                  const keys = (methodology?.definition.metrics ?? [])
+                    .filter((m) => m.axis === axis.key && m.weight > 0)
+                    .map((m) => m.key)
+                    .filter((k) => shownScore.subscores[k] != null);
+                  if (keys.length === 0) return null;
+                  return (
+                    <Box key={axis.key}>
+                      <Divider sx={{ my: 2 }} />
+                      <Typography variant="overline" color="text.secondary">
+                        {axis.label} {fmtAxis(shownScore.axis_scores[axis.key])}
+                      </Typography>
+                      <SubscoreBreakdown
+                        score={shownScore}
+                        keys={keys}
+                        weightCaption={`of ${axis.label}`}
+                      />
+                    </Box>
+                  );
+                })}
+              </>
+            ) : run.score ? (
+              <>
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                  No score under the current methodology yet; this is the run's original scoring.
                 </Typography>
                 <SubscoreBreakdown score={run.score} />
                 {run.score.completion_subscores &&

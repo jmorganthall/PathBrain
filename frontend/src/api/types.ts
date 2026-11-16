@@ -1475,10 +1475,19 @@ export interface MethodologyCollection {
   client_set?: string | null;
 }
 
+// How a methodology builds the Overall from its metrics (v5+). Absent on older versions.
+export interface MethodologyOverall {
+  method: string; // e.g. "weighted"
+  metrics: string[];
+  required?: string[];
+  weights?: Record<string, number>;
+}
+
 export interface MethodologyDefinition {
   axes: MethodologyAxis[];
   metrics: MethodologyMetric[];
   collection?: MethodologyCollection | null;
+  overall?: MethodologyOverall | null;
 }
 
 export interface MethodologySummary {
