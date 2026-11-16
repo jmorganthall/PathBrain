@@ -945,7 +945,8 @@ def _compute_profiles_uncached(
                 "confident": g["iterations"] >= min_iterations,
                 "first_seen": g["first_seen"].isoformat(),
                 "last_seen": g["last_seen"].isoformat(),
-                # Primary ranking is Smoothness (top-level median/p25/p75/min/max).
+                # Smoothness spread (top-level median/p25/p75/min/max), kept for the
+                # table's Smoothness range column; the Overall ranks.
                 **_spread(g["smoothness"]),
                 # Speed shown alongside (the other headline axis).
                 "speed": _spread(g["speed"]) if g["speed"] else None,
