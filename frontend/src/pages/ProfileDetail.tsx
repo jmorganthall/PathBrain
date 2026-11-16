@@ -64,6 +64,7 @@ import { fmtDateTime, fmtScore, fmtTimeShort } from "../utils/format";
 import { profileValue } from "../utils/profileFields";
 import { rankByMetric, rankColor } from "../utils/ranking";
 import { useMetricMeta } from "../utils/metrics";
+import { useMethodology } from "../utils/methodology";
 import { sopsColor } from "../theme";
 import { axisColor } from "../utils/axisColors";
 
@@ -287,6 +288,13 @@ export default function ProfileDetail() {
   // same crown-driven ranking as the Settings-Impact table, never a hardcoded axis set. Each crown
   // metric ranks by its field-normalized-raw value via the `crown:<metric>` key (→ `crown_norm`).
   const metricMeta = useMetricMeta();
+  // The run table's axis columns are the current methodology's headline axes.
+  const methodology = useMethodology();
+  const headlineAxes = methodology?.definition.axes.filter((a) => a.role === "headline") ?? [
+    { key: "responsiveness", label: "Responsiveness", role: "headline" },
+    { key: "smoothness", label: "Smoothness", role: "headline" },
+    { key: "speed", label: "Speed", role: "headline" },
+  ];
   const rankedMetrics = useMemo(
     () => [
       { key: "overall", label: "Overall" },
@@ -1100,7 +1108,7 @@ export default function ProfileDetail() {
               <>
                 The longest void per page load, median across {pauses.runs} run
                 {pauses.runs === 1 ? "" : "s"}.
-                <HelpTip title="Where nothing finished loading: how long, where in the load it falls, and whether it's network (the part your shaper moves) or render (main thread, shaping-immune). The crown's network-stall leg is built on this." />
+                <HelpTip title="Where nothing finished loading: how long, where in the load it falls, and whether it's network (the part your shaper moves) or render (main thread, shaping-immune). Smoothness's network-stall metrics are built on this." />
               </>
             }
           >
@@ -1182,9 +1190,11 @@ export default function ProfileDetail() {
                         <TableCell>Label</TableCell>
                         <TableCell>Status</TableCell>
                         <TableCell align="right">Overall</TableCell>
-                        <TableCell align="right">Respons.</TableCell>
-                        <TableCell align="right">Smoothness</TableCell>
-                        <TableCell align="right">Speed</TableCell>
+                        {headlineAxes.map((a) => (
+                          <TableCell key={a.key} align="right">
+                            {a.label}
+                          </TableCell>
+                        ))}
                       </TableRow>
                     </TableHead>
                     <TableBody>
@@ -1202,7 +1212,7 @@ export default function ProfileDetail() {
                             <StatusChip status={r.status} />
                           </TableCell>
                           {r.legacy ? (
-                            <TableCell align="right" colSpan={4}>
+                            <TableCell align="right" colSpan={1 + headlineAxes.length}>
                               <Tooltip title="Not comparable under the current methodology.">
                                 <Chip size="small" variant="outlined" label="legacy" />
                               </Tooltip>
@@ -1214,9 +1224,14 @@ export default function ProfileDetail() {
                                   {fmtScore(r.overall)}
                                 </Typography>
                               </TableCell>
-                              <TableCell align="right">{fmtScore(r.responsiveness)}</TableCell>
-                              <TableCell align="right">{fmtScore(r.smoothness)}</TableCell>
-                              <TableCell align="right">{fmtScore(r.speed)}</TableCell>
+                              {headlineAxes.map((a) => (
+                                <TableCell key={a.key} align="right">
+                                  {fmtScore(
+                                    r.axes?.[a.key] ??
+                                      (r as unknown as Record<string, number | null | undefined>)[a.key]
+                                  )}
+                                </TableCell>
+                              ))}
                             </>
                           )}
                         </TableRow>

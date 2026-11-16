@@ -468,7 +468,7 @@ const COLUMN_TIPS: Record<string, string> = {
     "How much better this profile's Overall is than the honest unshaped baseline (the best measured 'SQM off' profile). Green = shaping helps; red = worse than turning SQM off. Needs a Baseline (SQM off) test to populate.",
   overall_p25:
     "The p25–p75 spread of this profile's per-run Overall — how steady the felt experience is run-to-run. A tight band means reliable; a wide band means noisy.",
-  min: "The best and worst single-run Smoothness scores observed for this profile (the primary ranking axis's range).",
+  min: "The best and worst single-run Smoothness scores observed for this profile. Smoothness is one axis; the Overall ranks.",
   completion:
     "Secondary Completion score from the raw connection probes (DNS/TCP/TLS/jitter/loss). A diagnostic only — it doesn't decide ranking and can move opposite to the headline.",
   last_seen: "When this profile was most recently benchmarked.",
@@ -626,12 +626,16 @@ export default function Settings() {
   const [diag, setDiag] = useState<SettingsDiagnostics | null>(null);
   // Total iterations a profile needs before it's "confident" (the unit of signal).
   const [minIterations, setMinIterations] = useState(15);
-  // Completion (infra) is a secondary diagnostic — hidden by default so SOPS is
-  // unmistakably the headline metric. Opt in via the toggle on the Profiles card.
+  // Completion (infra) is a secondary diagnostic — hidden by default so the Overall is
+  // unmistakably the headline. Opt in via the toggle on the Profiles card, which only
+  // appears when some profile has Completion data (runs skip the probes by default).
   const [showCompletion, setShowCompletion] = useState(false);
-  // Default to runs scored under the latest (paint) rubric so legacy data — which
-  // scores its SOPS off a thinner metric set and reads high — doesn't skew things.
+  // Default to runs scored under the current methodology so legacy data — scored off a
+  // thinner metric set, reading high — doesn't skew things.
   const [completeOnly, setCompleteOnly] = useState(true);
+  // Completion comes from the raw connection probes, which runs skip by default; offer its
+  // column only when some profile actually carries it.
+  const hasCompletion = (profiles ?? []).some((p) => p.completion != null);
   // Hide "dead weight" profiles that rank worse than running with SQM off: if a shaper
   // profile can't even beat the unshaped link, it's not worth looking at. On by default;
   // only has an effect once a baseline "SQM off" profile has been measured.
@@ -1620,13 +1624,15 @@ export default function Settings() {
                     )),
                   ])}
                 </Menu>
-                <Chip
-                  size="small"
-                  variant={showCompletion ? "filled" : "outlined"}
-                  color={showCompletion ? "primary" : "default"}
-                  onClick={() => setShowCompletion((v) => !v)}
-                  label={showCompletion ? "Hide completion detail" : "Show completion detail"}
-                />
+                {(hasCompletion || showCompletion) && (
+                  <Chip
+                    size="small"
+                    variant={showCompletion ? "filled" : "outlined"}
+                    color={showCompletion ? "primary" : "default"}
+                    onClick={() => setShowCompletion((v) => !v)}
+                    label={showCompletion ? "Hide completion detail" : "Show completion detail"}
+                  />
+                )}
                 {/* Re-run profiles lives here (not in the scatter card) so it's reachable even with
                     <2 comparable profiles — exactly the state right after a methodology change
                     quarantines history, when re-collecting comparable data matters most. It runs
@@ -1911,7 +1917,7 @@ export default function Settings() {
                     />
                     <SortHeader
                       id="min"
-                      label="Min–Max"
+                      label="Smoothness range"
                       align="right"
                       orderBy={orderBy}
                       order={order}
