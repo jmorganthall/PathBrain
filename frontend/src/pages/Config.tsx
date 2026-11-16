@@ -5,6 +5,7 @@ import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
+import Collapse from "@mui/material/Collapse";
 import Divider from "@mui/material/Divider";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import MenuItem from "@mui/material/MenuItem";
@@ -45,6 +46,7 @@ import StringListEditor from "../components/config/StringListEditor";
 import HostPortListEditor from "../components/config/HostPortListEditor";
 import DnsProviderListEditor from "../components/config/DnsProviderListEditor";
 import { fmtDateTime } from "../utils/format";
+import { overallShares, useMethodology } from "../utils/methodology";
 import {
   vHostOrIp,
   vHostname,
@@ -185,6 +187,16 @@ export default function Config() {
   // changing the sites is a methodology change (it decides which runs are comparable), so
   // it happens on the Methodology page and is published as a new version.
   const [siteOwner, setSiteOwner] = useState<{ version: string; collection: MethodologyCollection } | null>(null);
+  const [showLegacyScoring, setShowLegacyScoring] = useState(false);
+  // The Scoring card shows what the current methodology scores; the config weights and
+  // thresholds below it only reach the old engine (registry methodologies ignore them).
+  const methodology = useMethodology();
+  const scoredMetrics = (methodology?.definition.metrics ?? []).filter((m) => m.weight > 0);
+  const overallShare = Object.fromEntries(overallShares(methodology).map((o) => [o.key, o.share]));
+  const axisLabel = (key: string | null) =>
+    methodology?.definition.axes.find((a) => a.key === key)?.label ?? key ?? "—";
+  const fmtBound = (v: number | null, unit: string) =>
+    v == null ? "—" : `${Number.isInteger(v) ? v : v.toFixed(2)}${unit ? ` ${unit}` : ""}`;
 
   const loadProvider = useCallback(async () => {
     try {
@@ -453,7 +465,7 @@ export default function Config() {
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
             When enabled, PathBrain runs the suite automatically on this interval — building the
-            history that powers the rolling "Current Responsiveness" score on the Dashboard. Takes
+            history that powers the rolling Overall on the Dashboard. Takes
             effect after saving (no restart needed).
           </Typography>
         </CardContent>
@@ -649,6 +661,13 @@ export default function Config() {
         </CardContent>
       </Card>
 
+      <Alert severity="info" sx={{ mb: 2 }}>
+        Runs skip the ICMP, DNS, TCP, TLS and HTTP probes below by default, because the
+        current methodology scores only what the browser measures (
+        <code>measurement.methodology_only</code> in the raw config). These targets apply when
+        that is turned off and the full suite runs.
+      </Alert>
+
       {/* ICMP */}
       <Card sx={{ mb: 2 }}>
         <CardContent>
@@ -657,7 +676,7 @@ export default function Config() {
           </Typography>
           <StringListEditor
             label="Targets"
-            helperText="Hosts or IPs to ping for latency / jitter / packet loss."
+            helperText="Hosts or IPs to ping for latency, jitter and packet loss."
             items={d.icmp.targets}
             onChange={(targets) => setDraft((p) => (p ? { ...p, icmp: { ...p.icmp, targets } } : p))}
             validate={vHostOrIp}
@@ -1005,6 +1024,68 @@ export default function Config() {
             sx={{ mb: 1 }}
           >
             <Typography variant="h6">Scoring</Typography>
+            <Chip size="small" variant="outlined" label={methodology?.version ?? "loading…"} />
+          </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+            What the current methodology scores. These are fixed when a methodology is
+            published; to change a weight or threshold, publish a new one from the{" "}
+            <Link component={RouterLink} to="/methodology">
+              Methodology
+            </Link>{" "}
+            page.
+          </Typography>
+          <TableContainer sx={{ mb: 2 }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Metric</TableCell>
+                  <TableCell>Axis</TableCell>
+                  <TableCell align="right">Weight in axis</TableCell>
+                  <TableCell align="right">Share of Overall</TableCell>
+                  <TableCell align="right">Best</TableCell>
+                  <TableCell align="right">Worst</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {scoredMetrics.map((m) => (
+                  <TableRow key={m.key}>
+                    <TableCell title={m.description}>
+                      {m.label}
+                      {m.required && (
+                        <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                          required
+                        </Typography>
+                      )}
+                    </TableCell>
+                    <TableCell>{axisLabel(m.axis)}</TableCell>
+                    <TableCell align="right">{m.weight}</TableCell>
+                    <TableCell align="right">
+                      {overallShare[m.key] != null ? `${Math.round(overallShare[m.key] * 100)}%` : "—"}
+                    </TableCell>
+                    <TableCell align="right">{fmtBound(m.best, m.unit)}</TableCell>
+                    <TableCell align="right">{fmtBound(m.worst, m.unit)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+
+          <Button size="small" onClick={() => setShowLegacyScoring((v) => !v)}>
+            {showLegacyScoring ? "Hide old scoring engine settings" : "Show old scoring engine settings"}
+          </Button>
+          <Collapse in={showLegacyScoring}>
+          <Alert severity="info" sx={{ my: 1 }}>
+            These tune the original scoring engine, which only scores runs from before
+            methodologies. They don't change the Overall or any axis under{" "}
+            {methodology?.version ?? "the current methodology"}.
+          </Alert>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            justifyContent="flex-end"
+            alignItems={{ xs: "flex-start", sm: "center" }}
+            spacing={1}
+            sx={{ mb: 1 }}
+          >
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
               <Chip size="small" variant="outlined" label={`rubric: ${String(d.rubric_version ?? "—")}`} />
               <Button size="small" onClick={handleAdoptRubric} disabled={saving}>
@@ -1117,6 +1198,7 @@ export default function Config() {
               </TableBody>
             </Table>
           </TableContainer>
+          </Collapse>
         </CardContent>
       </Card>
 
