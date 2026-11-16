@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -41,6 +41,7 @@ import PageHeader from "../components/PageHeader";
 import ReachabilityCard from "../components/ReachabilityCard";
 import StringListEditor from "../components/config/StringListEditor";
 import { fmtDateTime } from "../utils/format";
+import { joinLabels, overallShares, useMethodology } from "../utils/methodology";
 import { vHttpUrl } from "../utils/validate";
 
 // The client block as the Config page's browser section carries it (the same fields, with
@@ -661,6 +662,22 @@ export default function Methodology() {
                 What changed in this version:
               </Blurb>
             )}
+            {overallShares(current).length > 0 && (
+              <Typography variant="body2" sx={{ mt: 1 }}>
+                <b>Overall</b>: the {current.definition.overall?.method ?? "weighted"} average of{" "}
+                {overallShares(current)
+                  .map(
+                    (o) =>
+                      `${joinLabels([o.key], current.definition.metrics)} (${Math.round(o.share * 100)}%)`
+                  )
+                  .join(", ")}
+                {(current.definition.overall?.required ?? []).length > 0 &&
+                  `; a run missing any of ${joinLabels(
+                    current.definition.overall?.required ?? [],
+                    current.definition.metrics
+                  )} can't be scored exactly.`}
+              </Typography>
+            )}
             <MetricTable metrics={current.definition.metrics} />
           </CardContent>
         </Card>
@@ -693,7 +710,7 @@ export default function Methodology() {
             />
             <StringListEditor
               label="HTTP URLs"
-              helperText="TTFB and transfer speed probes."
+              helperText="For the HTTP probe (TTFB and transfer speed), which runs skip by default."
               items={siteHttp}
               onChange={setSiteHttp}
               validate={vHttpUrl}
@@ -887,10 +904,17 @@ const DRIFT_COLUMNS: Array<[string, string]> = [
   ["nav_render_ms", "Render"],
   ["inp_ms", "INP"],
   ["nav_network_ms", "Network"],
-  ["fcp_ms", "FCP"],
-  ["lcp_ms", "LCP"],
+];
+// After the fixed instrument columns come the Overall's own inputs (read from the current
+// methodology, by each metric's source key, which is what the drift rows are keyed by), then
+// the mix columns. Until it loads, FCP and LCP stand in.
+const DRIFT_TAIL_COLUMNS: Array<[string, string]> = [
   ["browser_share", "Browser/it."],
   ["pages", "Pages"],
+];
+const DRIFT_FALLBACK_CROWN: Array<[string, string]> = [
+  ["fcp_ms", "FCP"],
+  ["lcp_ms", "LCP"],
 ];
 
 /** A methodology version, shortened to what distinguishes it: "v16" or "v16+sites-ab12". */
@@ -912,6 +936,15 @@ function fmtQuantity(unit: string, v: number | null | undefined): string {
  * rising client reading means the machine got slower and FCP/LCP carry it — the one case that
  * corrupts grading. Read-only; nothing here changes a score. */
 function InstrumentDriftAudit({ autoRun }: { autoRun: boolean }) {
+  const methodology = useMethodology();
+  const driftColumns: Array<[string, string]> = useMemo(() => {
+    const keys = methodology?.definition.overall?.metrics ?? [];
+    const crown = keys
+      .map((k) => methodology?.definition.metrics.find((m) => m.key === k))
+      .filter((m): m is MethodologyMetric => m != null)
+      .map((m): [string, string] => [m.source_key, m.key.length <= 4 ? m.key.toUpperCase() : m.label]);
+    return [...DRIFT_COLUMNS, ...(crown.length ? crown : DRIFT_FALLBACK_CROWN), ...DRIFT_TAIL_COLUMNS];
+  }, [methodology]);
   const [days, setDays] = useState(14);
   const [audit, setAudit] = useState<InstrumentDrift | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1118,7 +1151,7 @@ function InstrumentDriftAudit({ autoRun }: { autoRun: boolean }) {
                         <span>Browser fail</span>
                       </Tooltip>
                     </TableCell>
-                    {DRIFT_COLUMNS.map(([k, label]) => (
+                    {driftColumns.map(([k, label]) => (
                       <TableCell key={k} align="right">
                         <Tooltip title={q[k]?.label ?? k} arrow enterTouchDelay={0}>
                           <span>{label}</span>
@@ -1163,7 +1196,7 @@ function InstrumentDriftAudit({ autoRun }: { autoRun: boolean }) {
                       <TableCell align="right" sx={{ color: (c.browser_failed_share ?? 0) >= 0.5 ? "warning.main" : undefined }}>
                         {c.browser_failed_share != null ? `${Math.round(c.browser_failed_share * 100)}%` : "—"}
                       </TableCell>
-                      {DRIFT_COLUMNS.map(([k]) => (
+                      {driftColumns.map(([k]) => (
                         <TableCell key={k} align="right" sx={{ whiteSpace: "nowrap" }}>
                           {fmtQuantity(q[k]?.unit ?? "", c.medians[k])}
                         </TableCell>

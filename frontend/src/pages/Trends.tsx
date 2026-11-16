@@ -25,31 +25,22 @@ import RelativeDelta, { fmtBucket } from "../components/RelativeDelta";
 import Loading from "../components/Loading";
 import PageHeader from "../components/PageHeader";
 import { useMetricMeta } from "../utils/metrics";
+import { useMethodology } from "../utils/methodology";
 
-// The headline Overall always leads; the crown measurements (what we rank on today) are
-// injected from the methodology at runtime — see `withCrown` — so this never drifts when the
-// crown changes. The score axes and the config-insensitive infra metrics follow.
-const AXIS_OPTIONS: { key: string; label: string }[] = [
+// The headline Overall always leads; the crown measurements (what we rank on today) come from
+// the relative response, then the methodology's axes and its other scored metrics, all read
+// from the current methodology so the picker follows it. (The probe metrics that used to
+// close the list, DNS/TCP/TLS/latency/jitter, are no longer collected by default runs.)
+const FALLBACK_AXES: { key: string; label: string }[] = [
   { key: "responsiveness", label: "Responsiveness" },
   { key: "smoothness", label: "Smoothness" },
   { key: "speed", label: "Speed" },
-  { key: "stability", label: "Stability" },
-  { key: "completion", label: "Completion" },
-];
-const INFRA_OPTIONS: { key: string; label: string }[] = [
-  { key: "latency", label: "Latency (ping)" },
-  { key: "jitter", label: "Jitter" },
-  { key: "packet_loss", label: "Packet loss" },
-  { key: "transfer", label: "Transfer speed" },
-  { key: "dns", label: "DNS lookup" },
-  { key: "tcp", label: "TCP connect" },
-  { key: "tls", label: "TLS handshake" },
-  { key: "ttfb", label: "Time to First Byte" },
 ];
 
 export default function Trends() {
   const theme = useTheme();
   const meta = useMetricMeta();
+  const methodology = useMethodology();
   const [metric, setMetric] = useState("overall");
   const [heatmap, setHeatmap] = useState<TrendHeatmapResponse | null>(null);
   const [relative, setRelative] = useState<TrendRelativeResponse | null>(null);
@@ -62,13 +53,21 @@ export default function Trends() {
     () => (relative?.crown_metrics ?? []).map((k) => ({ key: k, label: meta(k).label })),
     [relative, meta],
   );
-  // Metric picker: Overall → crown measurements → score axes → infra ("weather"). Deduped by
-  // key (first wins) so a crown metric that's also an axis/infra key can't double up.
+  // Metric picker: Overall → crown measurements → the axes that score something → the other
+  // scored metrics. Deduped by key (first wins) so a crown metric can't double up.
   const metricOptions = useMemo(() => {
-    const all = [{ key: "overall", label: "Overall" }, ...crownOptions, ...AXIS_OPTIONS, ...INFRA_OPTIONS];
+    const scored = (methodology?.definition.metrics ?? []).filter((m) => m.weight > 0);
+    const axisOptions = methodology
+      ? methodology.definition.axes
+          .filter((a) => scored.some((m) => m.axis === a.key))
+          .map((a) => ({ key: a.key, label: a.label }))
+      : FALLBACK_AXES;
+    const scoredOptions = scored
+      .map((m) => ({ key: m.key, label: m.label }));
+    const all = [{ key: "overall", label: "Overall" }, ...crownOptions, ...axisOptions, ...scoredOptions];
     const seen = new Set<string>();
     return all.filter((o) => (seen.has(o.key) ? false : seen.add(o.key)));
-  }, [crownOptions]);
+  }, [crownOptions, methodology]);
   // "Right now vs typical" panel keys, same headline-first ordering.
   const relativeKeys = useMemo(() => [...new Set(metricOptions.map((o) => o.key))], [metricOptions]);
 

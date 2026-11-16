@@ -17,17 +17,19 @@ import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
 
 import { api } from "../api/client";
-import type { RunDetail, RunSummary } from "../api/types";
+import type { RunScore, RunSummary } from "../api/types";
 import Loading from "../components/Loading";
 import PageHeader from "../components/PageHeader";
 import EmptyState from "../components/EmptyState";
 import { fmtDateTime, fmtNum } from "../utils/format";
+import { useMethodology } from "../utils/methodology";
 
 type Verdict = "Improved" | "Regressed" | "Neutral";
 
 interface Row {
   name: string;
-  group: "Score" | "Subscore" | "Metric";
+  group: string; // "Score", an axis label, or "Measured"
+  unit?: string;
   a: number | null;
   b: number | null;
   higherIsBetter: boolean;
@@ -52,8 +54,10 @@ export default function Compare() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [aId, setAId] = useState<number | "">("");
   const [bId, setBId] = useState<number | "">("");
-  const [aRun, setARun] = useState<RunDetail | null>(null);
-  const [bRun, setBRun] = useState<RunDetail | null>(null);
+  const methodology = useMethodology();
+  // Each run's Scores under every methodology it has one for; the rows use the current one.
+  const [aScores, setAScores] = useState<RunScore[] | null>(null);
+  const [bScores, setBScores] = useState<RunScore[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -78,56 +82,55 @@ export default function Compare() {
 
   useEffect(() => {
     if (aId === "") {
-      setARun(null);
+      setAScores(null);
       return;
     }
-    api.result(aId).then(setARun).catch((e) => setError(e.message));
+    api.runScores(aId).then((r) => setAScores(r.scores)).catch((e) => setError(e.message));
   }, [aId]);
 
   useEffect(() => {
     if (bId === "") {
-      setBRun(null);
+      setBScores(null);
       return;
     }
-    api.result(bId).then(setBRun).catch((e) => setError(e.message));
+    api.runScores(bId).then((r) => setBScores(r.scores)).catch((e) => setError(e.message));
   }, [bId]);
 
+  const version = methodology?.version;
+  const aScore = aScores?.find((x) => x.methodology_version === version) ?? null;
+  const bScore = bScores?.find((x) => x.methodology_version === version) ?? null;
+
+  // Rows follow the current methodology: the Overall, each axis that scores something with
+  // its metrics' 0-100 scores, then the raw measurements with their units and direction.
   const rows = useMemo<Row[]>(() => {
-    if (!aRun?.score || !bRun?.score) return [];
+    if (!methodology || !aScore || !bScore) return [];
     const out: Row[] = [];
-    const aOverall = aRun.overall ?? null;
-    const bOverall = bRun.overall ?? null;
-    out.push({
-      name: "Overall",
-      group: "Score",
-      a: aOverall,
-      b: bOverall,
-      higherIsBetter: true,
-      verdict: verdictFor(aOverall, bOverall, true),
-    });
+    const push = (name: string, group: string, a: number | null, b: number | null, hib: boolean, unit?: string) =>
+      out.push({ name, group, a, b, unit, higherIsBetter: hib, verdict: verdictFor(a, b, hib) });
 
-    const subKeys = Array.from(
-      new Set([...Object.keys(aRun.score.subscores), ...Object.keys(bRun.score.subscores)])
-    ).sort();
-    for (const k of subKeys) {
-      const a = aRun.score.subscores[k] ?? null;
-      const b = bRun.score.subscores[k] ?? null;
-      out.push({ name: k, group: "Subscore", a, b, higherIsBetter: true, verdict: verdictFor(a, b, true) });
+    push("Overall", "Score", aScore.axis_scores.overall ?? null, bScore.axis_scores.overall ?? null, true);
+    const scored = methodology.definition.metrics.filter((m) => m.weight > 0);
+    for (const axis of methodology.definition.axes) {
+      const inAxis = scored.filter((m) => m.axis === axis.key);
+      if (inAxis.length === 0) continue;
+      push(axis.label, "Score", aScore.axis_scores[axis.key] ?? null, bScore.axis_scores[axis.key] ?? null, true);
+      for (const m of inAxis) {
+        push(m.label, axis.label, aScore.subscores[m.key] ?? null, bScore.subscores[m.key] ?? null, true);
+      }
     }
-
-    const metKeys = Array.from(
-      new Set([
-        ...Object.keys(aRun.score.metric_values),
-        ...Object.keys(bRun.score.metric_values),
-      ])
-    ).sort();
-    for (const k of metKeys) {
-      const a = aRun.score.metric_values[k] ?? null;
-      const b = bRun.score.metric_values[k] ?? null;
-      out.push({ name: k, group: "Metric", a, b, higherIsBetter: false, verdict: verdictFor(a, b, false) });
+    for (const m of scored) {
+      push(
+        m.label,
+        "Measured",
+        aScore.metric_values[m.key] ?? null,
+        bScore.metric_values[m.key] ?? null,
+        m.higher_is_better,
+        m.unit
+      );
     }
     return out;
-  }, [aRun, bRun]);
+  }, [methodology, aScore, bScore]);
+  const unscored = (aScores != null && !aScore) || (bScores != null && !bScore);
 
   if (loading) return <Loading label="Loading runs…" />;
 
@@ -199,10 +202,11 @@ export default function Compare() {
             </FormControl>
           </Box>
 
-          {(aRun?.score?.legacy || bRun?.score?.legacy) && (
+          {unscored && (
             <Alert severity="warning" sx={{ mb: 2 }}>
-              One of these runs uses <strong>legacy scoring</strong> (predates the current metrics),
-              so the Overall comparison isn't meaningful. Pick two current runs to compare like-for-like.
+              One of these runs has no score under {version ?? "the current methodology"}, so
+              there's nothing like-for-like to compare. Pick two current runs, or re-grade history
+              from the Methodology page.
             </Alert>
           )}
 
@@ -218,7 +222,7 @@ export default function Compare() {
                     <TableHead>
                       <TableRow>
                         <TableCell>Metric</TableCell>
-                        <TableCell>Type</TableCell>
+                        <TableCell>Group</TableCell>
                         <TableCell align="right">Run A</TableCell>
                         <TableCell align="right">Run B</TableCell>
                         <TableCell align="center">Change</TableCell>
@@ -235,8 +239,14 @@ export default function Compare() {
                               {row.group}
                             </Typography>
                           </TableCell>
-                          <TableCell align="right">{fmtNum(row.a)}</TableCell>
-                          <TableCell align="right">{fmtNum(row.b)}</TableCell>
+                          <TableCell align="right">
+                            {fmtNum(row.a)}
+                            {row.unit && row.a != null ? ` ${row.unit}` : ""}
+                          </TableCell>
+                          <TableCell align="right">
+                            {fmtNum(row.b)}
+                            {row.unit && row.b != null ? ` ${row.unit}` : ""}
+                          </TableCell>
                           <TableCell align="center">
                             <Chip
                               size="small"
