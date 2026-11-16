@@ -175,7 +175,7 @@ export default function Trends() {
                 </Box>
               ) : (
                 <Typography variant="body2" color="text.secondary">
-                  No recent runs to compare against the baseline.
+                  {relative ? "No recent runs to compare against the baseline." : "Loading the current reading…"}
                 </Typography>
               )}
             </CardContent>

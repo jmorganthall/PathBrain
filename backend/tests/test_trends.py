@@ -182,3 +182,67 @@ def test_trends_relative_endpoint(client):
     # Every crown measurement is a trendable metric, so the same matrix applies to it.
     from pathbrain.trends import TREND_METRICS
     assert all(m in TREND_METRICS for m in body["crown_metrics"])
+
+
+def test_load_points_matches_full_row_load():
+    """The column-only loader returns exactly what loading whole ``Run`` rows did:
+    same runs in the same order, later results winning per plugin, axis scores only
+    from comparable scores under the current methodology."""
+    from datetime import timedelta, timezone
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from pathbrain.api.routes_trends import _load_points
+    from pathbrain.config_store import get_config
+    from pathbrain.database import session_scope
+    from pathbrain.methodology import ensure_current_methodology, latest_score
+    from pathbrain.models import BenchmarkResult, Run, RunStatus, Score
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        version = ensure_current_methodology(s, get_config(s)).version
+
+        def add(status, age_h, results, comparability=None, axes=None):
+            run = Run(status=status, created_at=now - timedelta(hours=age_h), iterations=1,
+                      config_used={"big": list(range(50))})
+            s.add(run)
+            s.flush()
+            for plugin, metrics in results:
+                s.add(BenchmarkResult(run_id=run.id, plugin=plugin, success=True, metrics=metrics))
+            if comparability:
+                s.add(Score(run_id=run.id, methodology_version=version, comparability=comparability,
+                            axis_scores=axes, subscores={}, metric_values={}))
+            return run.id
+
+        add(RunStatus.COMPLETE, 3, [("browser", {"fcp_ms": 500.0}), ("browser", {"fcp_ms": 700.0})],
+            "exact", {"speed": 61.0})
+        add(RunStatus.COMPLETE, 2, [("browser", {"lcp_ms": 900.0})], "incomparable", {"speed": 10.0})
+        add(RunStatus.COMPLETE, 1, [], None)
+        add(RunStatus.FAILED, 1, [("browser", {"fcp_ms": 1.0})], "exact", {"speed": 1.0})
+        add(RunStatus.COMPLETE, 24 * 40, [("browser", {"fcp_ms": 2.0})], "exact", {"speed": 2.0})
+        s.commit()
+
+    with session_scope() as s:
+        got = _load_points(s, 30)
+
+        cutoff = now - timedelta(days=30)
+        runs = s.execute(
+            select(Run).options(selectinload(Run.results))
+            .where(Run.status == RunStatus.COMPLETE, Run.created_at >= cutoff)
+            .order_by(Run.created_at, Run.id)
+        ).scalars().all()
+        scores = s.scalars(select(Score).where(
+            Score.run_id.in_([r.id for r in runs]), Score.methodology_version == version, latest_score(),
+        )).all()
+        axes = {sc.run_id: (sc.axis_scores or {}) for sc in scores if sc.comparability != "incomparable"}
+        want = [
+            RunPoint(created_at=r.created_at,
+                     values=run_metric_values(None, {x.plugin: x for x in r.results}, axes.get(r.id)))
+            for r in runs
+        ]
+
+    assert [(p.created_at, p.values) for p in got] == [(p.created_at, p.values) for p in want]
+    assert len(got) >= 3
+    fcp_vals = [p.values.get("fcp") for p in got]
+    assert 700.0 in fcp_vals and 500.0 not in fcp_vals and 1.0 not in fcp_vals and 2.0 not in fcp_vals

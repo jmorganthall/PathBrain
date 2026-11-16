@@ -14,10 +14,11 @@ coarse day/hour pattern, not minute-accurate alignment.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session, defer, selectinload
+from sqlalchemy.orm import Session
 
 from ..config_store import get_config
 from ..database import get_session
@@ -47,40 +48,48 @@ def _load_points(session: Session, days: int) -> list[RunPoint]:
 
     Axis scores (Speed/Smoothness/…) come from the (run × methodology) Score under
     the current methodology; infra metrics come from the runs' plugin results.
+
+    Reads only the columns it uses (run id and time, each result's plugin and
+    ``metrics``, each score's axes). Loading whole ``Run`` rows also parsed every
+    run's ``config_used``/``settings`` JSON, which made a 90-day window (about 11k
+    runs) take 12 to 15 seconds on the NAS.
     """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
-    runs = (
-        session.execute(
-            select(Run)
-            # Only ``metrics`` is read per result; skip the heavy raw/details JSON blobs.
-            .options(selectinload(Run.results).options(defer(BenchmarkResult.raw), defer(BenchmarkResult.details)))
-            .where(Run.status == RunStatus.COMPLETE, Run.created_at >= cutoff)
-            .order_by(Run.created_at)
-        )
-        .scalars()
-        .all()
-    )
-    methodology = ensure_current_methodology(session, get_config(session))
-    score_rows = session.scalars(
-        select(Score).where(
-            Score.run_id.in_([r.id for r in runs]),
-            Score.methodology_version == methodology.version,
-            latest_score(),
-        )
+    in_window = (Run.status == RunStatus.COMPLETE, Run.created_at >= cutoff)
+    runs = session.execute(
+        select(Run.id, Run.created_at).where(*in_window).order_by(Run.created_at, Run.id)
     ).all()
+    if not runs:
+        return []
+
+    results: dict[int, dict[str, SimpleNamespace]] = {}
+    for run_id, plugin, metrics in session.execute(
+        select(BenchmarkResult.run_id, BenchmarkResult.plugin, BenchmarkResult.metrics)
+        .join(Run, Run.id == BenchmarkResult.run_id)
+        .where(*in_window)
+        .order_by(BenchmarkResult.id)
+    ):
+        # Later rows win, as ``{r.plugin: r for r in run.results}`` did.
+        results.setdefault(run_id, {})[plugin] = SimpleNamespace(metrics=metrics)
+
+    methodology = ensure_current_methodology(session, get_config(session))
     axes_by_run = {
-        s.run_id: (s.axis_scores or {}) for s in score_rows if s.comparability != "incomparable"
-    }
-    points: list[RunPoint] = []
-    for run in runs:
-        results_by_plugin = {r.plugin: r for r in run.results}
-        points.append(
-            RunPoint(
-                created_at=run.created_at,
-                values=run_metric_values(None, results_by_plugin, axes_by_run.get(run.id)),
-            )
+        run_id: (axis_scores or {})
+        for run_id, axis_scores, comparability in session.execute(
+            select(Score.run_id, Score.axis_scores, Score.comparability)
+            .join(Run, Run.id == Score.run_id)
+            .where(*in_window, Score.methodology_version == methodology.version, latest_score())
         )
-    return points
+        if comparability != "incomparable"
+    }
+
+    return [
+        RunPoint(
+            created_at=created_at,
+            values=run_metric_values(None, results.get(run_id, {}), axes_by_run.get(run_id)),
+        )
+        for run_id, created_at in runs
+    ]
 
 
 @router.get("/trends/heatmap")
