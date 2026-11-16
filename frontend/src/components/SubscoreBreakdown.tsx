@@ -48,9 +48,15 @@ function fmtWeight(w: number | undefined): string {
 export default function SubscoreBreakdown({
   score,
   attribution,
+  weightCaption = "weight",
+  keys: only,
 }: {
   score: ScoreLike;
   attribution?: StallAttribution | null;
+  // What the weight is a share of, e.g. "of Overall" or "of Speed"; shown after the %.
+  weightCaption?: string;
+  // Show only these metrics (in this order) instead of every subscore.
+  keys?: string[];
 }) {
   const metricMeta = useMetricMeta();
   const metricOrder = useMetricOrder();
@@ -64,7 +70,9 @@ export default function SubscoreBreakdown({
   };
 
   // Order by when each metric happens in a page load (chronological), not weight.
-  const keys = Object.keys(score.subscores).sort((a, b) => metricOrder(a) - metricOrder(b));
+  const keys = only
+    ? only.filter((k) => score.subscores[k] != null)
+    : Object.keys(score.subscores).sort((a, b) => metricOrder(a) - metricOrder(b));
 
   if (keys.length === 0) {
     return (
@@ -83,11 +91,13 @@ export default function SubscoreBreakdown({
         return (
           <Box key={k}>
             <Box sx={{ display: "flex", justifyContent: "space-between", mb: 0.5, alignItems: "baseline" }}>
-              <Typography variant="body2" sx={{ textTransform: "uppercase", letterSpacing: 0.5 }}>
-                {k}
+              <Typography variant="body2" title={metricMeta(k).description}>
+                {metricMeta(k).label}
                 {weight != null && (
                   <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                    weight {fmtWeight(weight)}
+                    {weightCaption === "weight"
+                      ? `weight ${fmtWeight(weight)}`
+                      : `${fmtWeight(weight)} ${weightCaption}`}
                   </Typography>
                 )}
                 {k === "longest_stall" && attribution && (

@@ -6,6 +6,7 @@ import { ThemeProvider } from "@mui/material/styles";
 import { theme } from "./theme";
 import App from "./App";
 import { MetricCatalogProvider } from "./utils/metrics";
+import { MethodologyProvider } from "./utils/methodology";
 import "./portableEmbed";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -14,7 +15,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <CssBaseline />
       <BrowserRouter>
         <MetricCatalogProvider>
-          <App />
+          <MethodologyProvider>
+            <App />
+          </MethodologyProvider>
         </MetricCatalogProvider>
       </BrowserRouter>
     </ThemeProvider>
