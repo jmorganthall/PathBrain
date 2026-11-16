@@ -1918,6 +1918,10 @@ def invalidate_profiles_cache() -> None:
     # profiles without changing any id or count, and the decomposition's within-profile
     # grouping would silently keep the old world.
     _weather_memo = None
+    # The Trends points read the same scores, so a wholesale re-grade or re-key drops them too.
+    from .routes_trends import invalidate_points_cache
+
+    invalidate_points_cache()
 
 
 def compute_profiles(

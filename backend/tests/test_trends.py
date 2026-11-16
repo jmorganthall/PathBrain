@@ -246,3 +246,61 @@ def test_load_points_matches_full_row_load():
     assert len(got) >= 3
     fcp_vals = [p.values.get("fcp") for p in got]
     assert 700.0 in fcp_vals and 500.0 not in fcp_vals and 1.0 not in fcp_vals and 2.0 not in fcp_vals
+
+
+def test_load_points_is_kept_until_something_changes(monkeypatch):
+    """Repeat loads reuse the points; a new run, an explicit invalidate or the TTL
+    makes the next load read again."""
+    from datetime import timezone
+
+    from pathbrain.api import routes_trends
+    from pathbrain.database import session_scope
+    from pathbrain.models import Run, RunStatus
+
+    calls = []
+    real = routes_trends._read_points
+
+    def counting(session, days):
+        calls.append(days)
+        return real(session, days)
+
+    monkeypatch.setattr(routes_trends, "_read_points", counting)
+    routes_trends.invalidate_points_cache()
+
+    with session_scope() as s:
+        first = routes_trends._load_points(s, 30)
+        again = routes_trends._load_points(s, 30)
+    assert len(calls) == 1
+    assert [p.values for p in again] == [p.values for p in first]
+    assert again is not first  # each caller gets its own list
+
+    with session_scope() as s:
+        s.add(Run(status=RunStatus.COMPLETE, created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                  iterations=1))
+        s.commit()
+    with session_scope() as s:
+        after_run = routes_trends._load_points(s, 30)
+    assert len(calls) == 2
+    assert len(after_run) == len(first) + 1
+
+    routes_trends.invalidate_points_cache()
+    with session_scope() as s:
+        routes_trends._load_points(s, 30)
+    assert len(calls) == 3
+
+    monkeypatch.setattr(routes_trends, "_POINTS_TTL_S", 0.0)
+    with session_scope() as s:
+        routes_trends._load_points(s, 30)
+    assert len(calls) == 4
+
+
+def test_profiles_invalidate_also_drops_trend_points(monkeypatch):
+    from pathbrain.api import routes_trends
+    from pathbrain.api.routes_settings import invalidate_profiles_cache
+    from pathbrain.database import session_scope
+
+    with session_scope() as s:
+        routes_trends._load_points(s, 30)
+    assert routes_trends._POINTS_CACHE
+    invalidate_profiles_cache()
+    assert not routes_trends._POINTS_CACHE
