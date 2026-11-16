@@ -13,11 +13,13 @@ coarse day/hour pattern, not minute-accurate alignment.
 """
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config_store import get_config
@@ -43,7 +45,7 @@ def _trends_cfg(session: Session) -> dict:
     return get_config(session).get("trends", {})
 
 
-def _load_points(session: Session, days: int) -> list[RunPoint]:
+def _read_points(session: Session, days: int) -> list[RunPoint]:
     """All completed runs in the lookback window as ``RunPoint`` records.
 
     Axis scores (Speed/Smoothness/…) come from the (run × methodology) Score under
@@ -90,6 +92,64 @@ def _load_points(session: Session, days: int) -> list[RunPoint]:
         )
         for run_id, created_at in runs
     ]
+
+
+# The heatmap, the "right now" panel and the sweep page all read the same points, and the
+# Trends page asks for a fresh heatmap each time the metric changes. Loading them is the
+# whole cost of those requests (several seconds on the NAS), so they are kept between
+# requests while nothing they are built from has changed.
+_POINTS_TTL_S = 600.0
+_POINTS_LOCK = threading.Lock()
+_POINTS_CACHE: dict[int, tuple[tuple, float, list[RunPoint]]] = {}
+
+
+def _points_stamp(session: Session, days: int) -> tuple:
+    """The cheap identity of everything ``_read_points`` reads.
+
+    New or finished runs, new results, new or re-graded scores (new ``Score`` rows) and a
+    change of methodology all move it. The window's start is included to the hour, so a
+    run ageing out of the window drops out within the hour. In-place rewrites that create
+    no row (a re-derive, a re-grade that updates rows) are covered by
+    ``invalidate_points_cache`` where the path calls it, and otherwise by the TTL.
+    """
+    run_max, run_count = session.execute(
+        select(func.max(Run.id), func.count(Run.id)).where(Run.status == RunStatus.COMPLETE)
+    ).one()
+    result_max, result_count = session.execute(
+        select(func.max(BenchmarkResult.id), func.count(BenchmarkResult.id))
+    ).one()
+    score_max, score_count = session.execute(select(func.max(Score.id), func.count(Score.id))).one()
+    methodology = ensure_current_methodology(session, get_config(session))
+    cutoff_hour = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H")
+    return (
+        run_max, run_count, result_max, result_count, score_max, score_count,
+        methodology.version, cutoff_hour,
+    )
+
+
+def invalidate_points_cache() -> None:
+    """Drop the cached trend points (called where scores are rewritten in place)."""
+    with _POINTS_LOCK:
+        _POINTS_CACHE.clear()
+
+
+def _load_points(session: Session, days: int) -> list[RunPoint]:
+    """``_read_points``, kept between requests while its stamp is unchanged.
+
+    Requests that arrive together (the Trends page asks for the heatmap and the panel at
+    once) wait for one load instead of each doing it. Callers only read the points; each
+    gets its own list.
+    """
+    with _POINTS_LOCK:
+        stamp = _points_stamp(session, days)
+        hit = _POINTS_CACHE.get(days)
+        if hit is not None and hit[0] == stamp and time.monotonic() - hit[1] < _POINTS_TTL_S:
+            return list(hit[2])
+        points = _read_points(session, days)
+        if len(_POINTS_CACHE) >= 4:
+            _POINTS_CACHE.clear()
+        _POINTS_CACHE[days] = (stamp, time.monotonic(), points)
+        return list(points)
 
 
 @router.get("/trends/heatmap")

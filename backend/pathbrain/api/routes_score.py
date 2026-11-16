@@ -172,6 +172,10 @@ def rederive_history(response: Response, force: bool = Query(False)) -> dict:
                     session.commit()
                 job.set_progress(i + 1, total, f"re-derived {rederived}/{total}")
             session.commit()
+            # A re-derive rewrites results' metrics in place, which no cache stamp can see.
+            from .routes_trends import invalidate_points_cache
+
+            invalidate_points_cache()
             return {
                 "rederived": rederived,
                 "stale_selected": total,
