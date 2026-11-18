@@ -1518,6 +1518,16 @@ export interface MethodologiesResponse {
   current_version?: string;
   code_default?: string;
   pinned?: string | null;
+  // Code-shipped versions after code_default that were never recorded here (v18, v19):
+  // what the "Score under" picker can switch to. Picking one is a publish.
+  candidates?: MethodologyCandidate[];
+}
+
+export interface MethodologyCandidate {
+  version: string;
+  notes: string;
+  pooled_read: "all" | "epochs";
+  same_scale_as: string | null;
 }
 
 export type Comparability = "exact" | "partial" | "incomparable";
@@ -4022,9 +4032,21 @@ export interface CrownAgreementRow {
   b_rank: number;
 }
 
+export interface CrownAgreementRead {
+  a_read: "all" | "epochs";
+  b_read: "all" | "epochs";
+  rubric_alike: boolean;
+  verdict: "insufficient" | "agree" | "same_top" | "disagree";
+  text: string;
+  rho: number | null;
+  profiles: number;
+}
+
 export interface CrownAgreement {
   verdict: "insufficient" | "agree" | "same_top" | "disagree";
   text: string;
+  // Set when the two versions read the pooled record differently (v17 vs v19).
+  read?: CrownAgreementRead | null;
   rho: number | null;
   profiles: number;
   thin_profiles: number;
@@ -4603,6 +4625,9 @@ export interface OverallProfile {
   // The pooled median and its SE (IQR/√n); null for a profile the field never scored.
   pooled: number | null;
   pooled_se: number | null;
+  // Under the per-era read (v19): the whole-record median and the shift taken off it.
+  pooled_all?: number | null;
+  era_shift?: number | null;
   iterations: number;
   // Ring evidence: rounds fought and distinct opponents.
   rounds: number;
@@ -4681,9 +4706,23 @@ export interface OverallBacktest {
   sentence: string;
 }
 
+export interface OverallEras {
+  applied: boolean;
+  reason: string | null;
+  boundaries?: string[];
+  offsets?: Record<string, { offset: number; se: number; reference: boolean }>;
+  profiles_shifted?: number;
+  largest_shifts?: { fingerprint: string; shift: number }[];
+}
+
 export interface OverallOut {
   methodology: string;
   overall_method: string;
+  // How the pooled record was read: one median over everything, or per instrument era (v19).
+  pooled_read?: "all" | "epochs";
+  published_read?: "all" | "epochs";
+  preview?: boolean;
+  eras?: OverallEras | null;
   min_iterations: number;
   tie_sigma: number;
   best: OverallProfile | null;

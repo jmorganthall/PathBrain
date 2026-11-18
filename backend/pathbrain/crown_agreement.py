@@ -42,7 +42,14 @@ def base_version(version: str) -> str:
 
 
 def prior_version(current: str) -> str | None:
-    """The registry version published before ``current``'s base, or None at the start."""
+    """The registry version published before ``current``'s base, or None at the start. A
+    version on another's scale (``same_scale_as``, v19 over v17) is compared with that one:
+    it is the version it was written against, whatever candidates sit between them."""
+    from .methodology import METHODOLOGY_REGISTRY
+
+    same = (METHODOLOGY_REGISTRY.get(base_version(current)) or {}).get("same_scale_as")
+    if same:
+        return str(same)
     versions = registry_versions()
     base = base_version(current)
     if base not in versions:
@@ -239,9 +246,92 @@ def crown_agreement(session, cfg: dict | None, *, a: str | None = None, b: str |
     out = assess(profiles, a=a, b=b, a_definition=a_def, b_definition=b_def,
                  min_runs=max(2, int(min_runs)), crown_fp=crown_fp, names=names)
     out["methodology"] = current.version
+    out["read"] = None
+    from .methodology import pooled_read, same_scale
+
+    read_a, read_b = pooled_read(a_def), pooled_read(b_def)
+    if read_a != read_b:
+        out["read"] = read_comparison(session, a, b, read_a, read_b, rubric_alike=same_scale(a, b))
+        if same_scale(a, b):
+            # The cold medians are priced identically under both, so their audit can only say
+            # "alike": the difference is in how the ranking reads the record, so that is the verdict.
+            out["verdict"] = out["read"]["verdict"]
+            out["text"] = out["read"]["text"]
     out["runs_compared"] = sum(len(v) for v in profiles.values())
     out["versions"] = registry_versions()
     return out
 
 
-__all__ = ["UnknownVersion", "assess", "crown_agreement", "load_profiles", "prior_version", "resolve_definition"]
+_READ_WORDS = {
+    "all": "one median per profile over the whole record",
+    "epochs": "each profile's median per instrument era, on today's scale",
+}
+
+
+def read_comparison(session, a: str, b: str, read_a: str, read_b: str, *, rubric_alike: bool) -> dict:
+    """Two versions that read the pooled record differently (v17's whole-record median, v19's
+    per-era one): the fused ranking under each read, from today's scores and ring, compared
+    the way `assess` compares two rubrics. Read-only (`overall_ranking.ranking` previews)."""
+    from . import overall_ranking
+
+    ra = overall_ranking.ranking(session, backtest=False, live=False, read=read_a)
+    rb = overall_ranking.ranking(session, backtest=False, live=False, read=read_b)
+
+    def order(r: dict) -> dict[str, int]:
+        rows = [p for p in r.get("profiles") or [] if p.get("eligible")]
+        return {p["fingerprint"]: i for i, p in enumerate(rows, start=1)}
+
+    oa, ob = order(ra), order(rb)
+    shared = [fp for fp in oa if fp in ob]
+    rho = spearman([oa[f] for f in shared], [ob[f] for f in shared]) if len(shared) >= 3 else None
+    best_a, best_b = ra.get("best") or {}, rb.get("best") or {}
+    fa, fb = best_a.get("fingerprint"), best_b.get("fingerprint")
+
+    def nm(p: dict) -> str:
+        return p.get("name") or (p.get("fingerprint") or "—")[:8]
+
+    sa, sb = _short(a), _short(b)
+    prefix = (
+        f"{sa} and {sb} grade every run alike; they differ in how the ranking reads the pooled record "
+        f"({sa}: {_READ_WORDS[read_a]}; {sb}: {_READ_WORDS[read_b]}). "
+        if rubric_alike else
+        f"{sa} and {sb} also read the pooled record differently ({sa}: {_READ_WORDS[read_a]}; "
+        f"{sb}: {_READ_WORDS[read_b]}). "
+    )
+    if not fa or not fb:
+        verdict = "insufficient"
+        body = "One of the two reads names no crown yet, so there is nothing to compare."
+    elif fa == fb:
+        verdict = "agree" if rho is None or rho >= AGREE_RHO else "same_top"
+        body = (
+            f"Both crown {nm(best_a)}"
+            + (f" (ρ = {rho:+.2f} over {len(shared)} eligible profiles)." if rho is not None else ".")
+            + f" Under {sb} it leads by {rb.get('lead')} against a noise bar of {rb.get('noise_bar')}"
+            + f", with {rb.get('tied_count') or 0} profile(s) tied with it."
+        )
+    else:
+        verdict = "disagree"
+        rank_a_in_b = ob.get(fa)
+        body = (
+            f"Under {sa} {nm(best_a)} is the crown; under {sb} {nm(best_b)} is"
+            + (f", and {nm(best_a)} drops to #{rank_a_in_b}" if rank_a_in_b else "")
+            + (f" (ρ = {rho:+.2f} over {len(shared)} eligible profiles)." if rho is not None else ".")
+            + f" {sb}'s lead is {rb.get('lead')} against a noise bar of {rb.get('noise_bar')}"
+            + f", with {rb.get('tied_count') or 0} profile(s) tied with its #1. Switching to {sb} "
+            "changes what Auto-apply follows."
+        )
+    eras = rb.get("eras") or ra.get("eras") or {}
+    return {
+        "a_read": read_a, "b_read": read_b, "rubric_alike": rubric_alike,
+        "verdict": verdict, "text": prefix + body,
+        "rho": round(rho, 3) if rho is not None else None, "profiles": len(shared),
+        "top_a": {"fingerprint": fa, "name": best_a.get("name"), "fused": best_a.get("fused")} if fa else None,
+        "top_b": {"fingerprint": fb, "name": best_b.get("name"), "fused": best_b.get("fused")} if fb else None,
+        "a_rank_of_b_top": oa.get(fb) if fb else None,
+        "b_rank_of_a_top": ob.get(fa) if fa else None,
+        "b_tied": rb.get("tied_count"), "b_lead": rb.get("lead"), "b_noise_bar": rb.get("noise_bar"),
+        "eras": {"boundaries": eras.get("boundaries"), "offsets": eras.get("offsets")},
+    }
+
+
+__all__ = ["UnknownVersion", "read_comparison", "assess", "crown_agreement", "load_profiles", "prior_version", "resolve_definition"]

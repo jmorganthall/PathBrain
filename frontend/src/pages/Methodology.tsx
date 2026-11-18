@@ -31,6 +31,7 @@ import type {
   CrownAgreement,
   BrowserClient,
   BrowserConfig,
+  MethodologyCandidate,
   MethodologyDetail,
   MethodologyMetric,
   MethodologySummary,
@@ -265,6 +266,7 @@ function VersionRow({ m }: { m: MethodologySummary }) {
 export default function Methodology() {
   const [current, setCurrent] = useState<MethodologyDetail | null>(null);
   const [versions, setVersions] = useState<MethodologySummary[]>([]);
+  const [candidates, setCandidates] = useState<MethodologyCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [regrading, setRegrading] = useState(false);
@@ -313,6 +315,7 @@ export default function Methodology() {
       ]);
       setCurrent(cur);
       setVersions(list.methodologies);
+      setCandidates(list.candidates ?? []);
       setSiteBrowser(cur.collection?.browser_urls ?? cfg?.browser.urls ?? []);
       setSiteHttp(cur.collection?.http_urls ?? cfg?.http.urls ?? []);
       setSiteClient(cur.collection?.client ?? clientFromBrowser(cfg?.browser));
@@ -535,7 +538,17 @@ export default function Methodology() {
                   size="small"
                   label="Score under"
                   value={pinState.current}
-                  onChange={(e) => handleSetCurrent(e.target.value)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const cand = candidates.find((c) => c.version === v);
+                    // A candidate is a publish: the crown, Auto-apply and the standings follow it.
+                    if (cand && !window.confirm(
+                      `Switch to ${v}? History re-grades under it, and the crown, Auto-apply and the ` +
+                      `standings follow it from then on.` +
+                      (cand.pooled_read === "epochs" ? " It ranks each profile's runs per instrument era, on today's scale." : ""),
+                    )) return;
+                    handleSetCurrent(v);
+                  }}
                   disabled={switching}
                   sx={{ minWidth: 300 }}
                 >
@@ -543,6 +556,11 @@ export default function Methodology() {
                     <MenuItem key={v.version} value={v.version}>
                       {v.version}
                       {v.version === pinState.codeDefault ? " · latest" : ""}
+                    </MenuItem>
+                  ))}
+                  {candidates.map((c) => (
+                    <MenuItem key={c.version} value={c.version}>
+                      {c.version} · candidate{c.pooled_read === "epochs" ? " (reads per era)" : ""}
                     </MenuItem>
                   ))}
                 </TextField>

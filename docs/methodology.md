@@ -331,6 +331,13 @@ actually rode on it, because the list is the argument for having built it:
   a re-score from scalars.
 - The **`Methodology.version`** is the bundle id that pairs a specific rubric with a specific
   derivation; it's what scores reference and what the tab lists.
+- A version can change **how the ranking reads the record** without changing a single grade:
+  `ranking.pooled_read` (`methodology.pooled_read`) is `all` (one median per profile over the
+  whole record) or `epochs` (one per instrument era, on the newest era's scale; v19). Such a
+  version declares **`same_scale_as`** the version whose rubric it copies, the registry
+  asserts the rubrics are identical, and duel rounds fought under either count under the
+  other (`methodology.same_scale`). It is still a publish: picking it re-grades history and
+  moves the crown Auto-apply follows.
 
 ## 9. Migration (clean from current version forward)
 
