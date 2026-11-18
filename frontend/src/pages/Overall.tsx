@@ -417,6 +417,16 @@ export default function Overall() {
               <Typography variant="body1" sx={{ mt: 2 }}>
                 {data.verdict}
               </Typography>
+              {data.pooled_read === "epochs" && data.eras && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                  {data.eras.applied
+                    ? `Pooled medians are read per instrument era (${(data.eras.boundaries ?? []).length + 1} eras` +
+                      `${(data.eras.boundaries ?? []).length ? `, new ones from ${(data.eras.boundaries ?? []).join(", ")}` : ""}) ` +
+                      `and put on today's scale, so a profile last measured before a step in the test sites is ranked on ` +
+                      `what it would read now. ${data.eras.profiles_shifted ?? 0} profile(s) moved.`
+                    : `Pooled medians are read per instrument era: ${data.eras.reason ?? "nothing to adjust"}.`}
+                </Typography>
+              )}
 
               <Stack direction="row" spacing={1} sx={{ mt: 2 }} flexWrap="wrap" useFlexGap alignItems="center">
                 <Button size="small" variant="outlined" component={RouterLink} to={profileHref(best.fingerprint)}>

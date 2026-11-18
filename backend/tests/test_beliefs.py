@@ -225,12 +225,64 @@ def test_the_surface_skips_shaping_off_and_constant_quanta():
     assert basis["x"]["a"] == [-1.0, 1.0] and basis["x"]["b"] == [1.0, 1.0]
 
 
-def test_the_crown_does_not_read_the_belief_layer_yet():
-    """Decision 20: the crown moves to the belief model only through a publish, after the
-    backtest shows it predicts the ring better."""
+def test_the_crown_reads_the_belief_layer_only_through_the_published_read():
+    """Decision 20: the crown moves off the whole-record read only through a publish. The one
+    door is `overall_ranking._read_per_era`, reached only when the methodology's
+    ``pooled_read`` is ``epochs`` (v19); nothing else on the crown's path reads this layer."""
+    import ast
+
     root = Path(beliefs.__file__).parent
-    for name in ("overall_ranking.py", "crown_follower.py", "crowning.py", "duel.py"):
+    for name in ("crown_follower.py", "crowning.py", "duel.py"):
         assert "beliefs" not in (root / name).read_text(), name
+    tree = ast.parse((root / "overall_ranking.py").read_text())
+    users = {
+        fn.name for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef)
+        and any(isinstance(n, ast.Name) and n.id == "beliefs" for n in ast.walk(fn))
+    }
+    assert users == {"_read_per_era"}
+
+
+def test_the_whole_record_read_never_touches_the_era_fit(client, monkeypatch):
+    """Off by default: under v17 (``pooled_read = "all"``) the ranking never asks for the era
+    fit, so nothing the crown, Auto-apply or the ring read changes until v19 is published."""
+    from pathbrain.methodology import CURRENT_METHODOLOGY, METHODOLOGY_REGISTRY
+
+    assert (METHODOLOGY_REGISTRY[CURRENT_METHODOLOGY].get("ranking") or {}).get("pooled_read", "all") == "all"
+
+    def boom(_session):
+        raise AssertionError("the era fit was read under the whole-record methodology")
+
+    monkeypatch.setattr(beliefs, "era_adjusted", boom)
+    body = client.get("/api/overall", params={"backtest": "false"}).json()
+    assert body["pooled_read"] == "all" and body["published_read"] == "all" and body["eras"] is None
+
+
+def test_an_era_shift_puts_an_old_reading_on_today_s_scale():
+    """The late-October case in miniature: every site read 10 points lower after the step.
+    Profile ``old`` was measured only before it (read 70, as good as ``new`` is now at 60),
+    ``both`` on both sides, ``new`` only after. The whole-record median puts ``old`` first;
+    read per era, ``old`` lands on 60, level with ``new``, and ``new`` is untouched."""
+    t_before, t_after = datetime(2026, 10, 1, tzinfo=UTC), datetime(2026, 11, 10, tzinfo=UTC)
+    bounds = [datetime(2026, 10, 26, tzinfo=UTC)]
+    rows = []
+    for i in range(12):
+        rows.append(("old", t_before + timedelta(hours=i), 5, {"m": 70.0 + (i % 3 - 1) * 0.3}, None))
+        rows.append(("both", t_before + timedelta(hours=i), 5, {"m": 66.0 + (i % 3 - 1) * 0.3}, None))
+        rows.append(("both", t_after + timedelta(hours=i), 5, {"m": 56.0 + (i % 3 - 1) * 0.3}, None))
+        rows.append(("new", t_after + timedelta(hours=i), 5, {"m": 60.0 + (i % 3 - 1) * 0.3}, None))
+    store = beliefs.RunStore.build(rows, bounds, ["m"], ["m"], {"m": 1.0})
+    per, one = store.anchors(epochs=True), store.anchors(epochs=False)
+    fit = beliefs.empirical_bayes(per, [], 3.0, epochs=True, x=None)
+    assert fit.offsets[0]["offset"] == pytest.approx(10.0, abs=0.5)
+    shifts = beliefs.shifts_from(per, one, fit.offsets)
+    pooled = {a["fingerprint"]: {"overall": a["overall"], "se": a["se"], "name": a["fingerprint"]} for a in one}
+    assert max(pooled, key=lambda fp: pooled[fp]["overall"]) == "old"
+    read = beliefs.apply_shifts(pooled, shifts)
+    assert read["old"]["overall"] == pytest.approx(60.0, abs=0.6)
+    assert read["old"]["pooled_all"] == pooled["old"]["overall"] and read["old"]["era_shift"] > 9
+    assert read["new"]["overall"] == pytest.approx(pooled["new"]["overall"], abs=1e-9)
+    assert read["both"]["overall"] == pytest.approx(56.0, abs=0.6)
+    assert read["old"]["name"] == "old"  # the row keeps everything else the ranking reads
 
 
 def test_the_read_answers_on_a_live_store(client):
@@ -238,5 +290,5 @@ def test_the_read_answers_on_a_live_store(client):
     res = client.get("/api/beliefs", params={"backtest": "false"})
     assert res.status_code == 200
     body = res.json()
-    assert body["crown_reads"] == "fuse"
+    assert body["crown_reads"] == "fuse" and body["pooled_read"] == "all"
     assert {"profiles", "epochs", "surface", "hyper"} <= set(body)

@@ -16,6 +16,15 @@ router = APIRouter()
 def overall(
     session: Session = Depends(get_session),
     backtest: bool = Query(True, description="Include the leave-one-session-out predictive check."),
+    read: str | None = Query(
+        None,
+        pattern="^(all|epochs)$",
+        description=(
+            "Preview the ranking under another pooled read (`all` = one median over the whole "
+            "record, `epochs` = per instrument era, v19's read). A preview only: the crown, "
+            "Auto-apply and the ring follow the published methodology."
+        ),
+    ),
 ) -> dict:
     """The fused ranking: every profile's Overall fitted from its pooled median AND every
     head-to-head round it fought, with an error bar from both; the crown it names; the
@@ -23,7 +32,7 @@ def overall(
     well each verdict predicted past nights. Read-only, and there is nothing to set: the
     pooled slack is measured from the ledger, never chosen."""
     with profile_aggregates.request_memo():
-        return overall_ranking.ranking(session, backtest=backtest)
+        return overall_ranking.ranking(session, backtest=backtest, read=read)
 
 
 @router.get("/overall/ring-target")
@@ -41,8 +50,9 @@ def beliefs_read(
 ) -> dict:
     """The belief layer (`beliefs`): every profile's θ fitted from the ring's margins and
     its pooled median per instrument epoch, with each epoch's offset and the quantum
-    surface. Read-only, and nothing reads it for the crown yet: ``backtest`` says whether it
-    predicts held-out ring margins better than today's fit, which is what the crown reads."""
+    surface. Read-only. The crown reads today's fit (``fuse``); under a methodology whose
+    ``pooled_read`` is ``epochs`` (v19) it reads that fit on per-era anchors, which the
+    backtest scores as ``fuse_eras``."""
     from .. import beliefs
 
     return beliefs.beliefs(session, with_backtest=backtest, refresh=refresh)

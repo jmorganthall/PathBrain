@@ -27,7 +27,11 @@ not set by hand, and re-chosen on every read: a model that keeps missing widens 
 
 **With f ≡ 0 and one epoch it is exactly ``fuse``** (`fit_flat`, pinned by a test). The
 crown keeps reading ``fuse`` (decision 20) until `backtest` shows the belief model predicts
-held-out ring margins better, and then only through a methodology-style publish.
+held-out ring margins better, and then only through a methodology-style publish. That
+publish is ``speed-smoothness-v19`` (``ranking.pooled_read = "epochs"``): under it the
+crown still reads ``fuse``, but on pooled anchors put on today's scale era by era
+(`era_adjusted`, `adjust_anchors`), which the backtest scores as its own arm
+(``fuse_eras``) so the switch is judged on the read the crown would actually make.
 
 Pure Python: the dense part of the system is the ring's profiles plus a handful of lever
 and epoch terms. Every other profile touches only those terms, so it is eliminated in
@@ -62,7 +66,7 @@ SURFACE_FIELD = "quantum"
 #: How long a full read (fit plus backtest) is reused.
 CACHE_SECONDS = 15 * 60
 #: The arms the backtest scores, in the order the page lists them.
-ARMS = ("pooled", "fuse", "epochs", "levers", "beliefs")
+ARMS = ("pooled", "fuse", "fuse_eras", "epochs", "levers", "beliefs")
 
 _cache_lock = threading.Lock()
 _cache: dict = {}
@@ -599,6 +603,100 @@ def predict(fit: Fit, row: list[float]) -> dict | None:
     return {"theta": mean, "se": math.sqrt(max(0.0, var + s * s))}
 
 
+# ── the era-adjusted read (methodology ``pooled_read = "epochs"``) ────────────────────────
+
+
+def adjust_anchors(per: list[dict], offsets: dict[int, dict]) -> dict[str, dict]:
+    """Each profile's pooled reading put on the newest era's scale.
+
+    ``per`` are the per-era anchors (`RunStore.anchors` with ``epochs=True``) and ``offsets``
+    a fit's epoch offsets (``μ_i,e = θ_i + c_e``, the newest era ``c = 0``). A profile's era
+    reading ``μ_i,e − c_e`` carries the anchor's SE and the offset's, and its readings are
+    combined inverse-variance. Returns ``{fp: {overall, se, epochs}}``; a profile measured
+    only in the newest era comes back as its own anchor."""
+    acc: dict[str, list[tuple[float, float, int]]] = {}
+    for a in per:
+        if a.get("overall") is None:
+            continue
+        e = int(a.get("epoch") or 0)
+        o = offsets.get(e) or {"offset": 0.0, "se": 0.0}
+        var = float(a.get("se") or 0.0) ** 2 + float(o.get("se") or 0.0) ** 2
+        acc.setdefault(a["fingerprint"], []).append((float(a["overall"]) - float(o["offset"]), max(var, 1e-6), e))
+    out: dict[str, dict] = {}
+    for fp, rows in acc.items():
+        w = [1.0 / v for _, v, _ in rows]
+        mean = sum(wi * y for wi, (y, _, _) in zip(w, rows)) / sum(w)
+        out[fp] = {"overall": mean, "se": math.sqrt(1.0 / sum(w)), "epochs": sorted({e for *_, e in rows})}
+    return out
+
+
+def shifts_from(per: list[dict], one: list[dict], offsets: dict[int, dict]) -> dict[str, dict]:
+    """How far each profile's whole-record median sits from its era-adjusted reading:
+    ``{fp: {shift, se, epochs}}`` with ``shift = one-epoch anchor − era-adjusted anchor``
+    (positive: the record flattered it, because some of its runs predate a step that made
+    every run read lower). The ranking subtracts the shift from its own pooled median, so
+    a profile measured only in the newest era is untouched to the digit."""
+    adj = adjust_anchors(per, offsets)
+    whole = {a["fingerprint"]: a for a in one if a.get("overall") is not None}
+    out: dict[str, dict] = {}
+    for fp, a in adj.items():
+        w = whole.get(fp)
+        if w is None:
+            continue
+        out[fp] = {"shift": float(w["overall"]) - a["overall"], "se": a["se"], "epochs": a["epochs"]}
+    return out
+
+
+def apply_shifts(pooled: dict[str, dict], shifts: dict[str, dict]) -> dict[str, dict]:
+    """The pooled field the ranking fuses, read per era: each row's Overall less its shift,
+    its SE the era-combined one, and the whole-record median kept beside as
+    ``pooled_all``. A row with no shift (no era reading) is returned as it was."""
+    out: dict[str, dict] = {}
+    for fp, p in pooled.items():
+        sh = shifts.get(fp)
+        if sh is None or p.get("overall") is None:
+            out[fp] = p
+            continue
+        out[fp] = {
+            **p,
+            "overall": float(p["overall"]) - float(sh["shift"]),
+            "se": max(float(p.get("se") or 0.0), float(sh["se"])),
+            "pooled_all": float(p["overall"]),
+            "era_shift": round(float(sh["shift"]), 2),
+            "eras": list(sh["epochs"]),
+        }
+    return out
+
+
+def era_adjusted(session) -> dict:
+    """The era shifts the ranking applies under ``pooled_read = "epochs"``, cached like the
+    full read: ``{shifts, offsets, boundaries, hyper}``. The offsets come from the epochs
+    arm (per-era anchors and the ring, no surface), the arm the backtest scores as
+    ``epochs``; ``fuse_eras`` scores what the ranking then does with them."""
+    key = ("eras",)
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
+            return hit[1]
+    data = _load(session)
+    store = data["store"]
+    out: dict = {"shifts": {}, "offsets": {}, "boundaries": data["boundaries"], "hyper": None,
+                 "methodology": data["version"]}
+    if len(store.epochs) > 1:
+        per = store.anchors(epochs=True)
+        one = store.anchors(epochs=False)
+        fit = empirical_bayes(per, data["rounds"], data["sigma"], epochs=True, x=None)
+        out["shifts"] = shifts_from(per, one, fit.offsets)
+        out["offsets"] = {
+            str(e): {"offset": round(o["offset"], 2), "se": round(o["se"], 2), "reference": o["reference"]}
+            for e, o in sorted(fit.offsets.items())
+        }
+        out["hyper"] = {k: (round(v, 3) if isinstance(v, float) else v) for k, v in fit.hyper.items()}
+    with _cache_lock:
+        _cache[key] = (time.monotonic(), out)
+    return out
+
+
 # ── the backtest ────────────────────────────────────────────────────────────────────────
 
 
@@ -616,6 +714,9 @@ def backtest(
 
     * ``pooled``: ``μ_b − μ_a`` over the whole record,
     * ``fuse``: today's fit (``f ≡ 0``, one epoch, τ from `pooled_slack`),
+    * ``fuse_eras``: today's fit on anchors put on the newest era's scale by the fold's own
+      epoch offsets (`shifts_from`), τ re-measured on them: what the crown reads under
+      ``pooled_read = "epochs"`` (v19),
     * ``epochs``: per-epoch anchors with offsets, no surface,
     * ``levers``: the quantum surface, one epoch,
     * ``beliefs``: both.
@@ -665,6 +766,9 @@ def backtest(
             fits["levers"] = empirical_bayes(one, train, sigma_f, epochs=False, x=None)
         if fits["beliefs"] is None:
             fits["beliefs"] = fits["epochs"]
+        shifted = apply_shifts(pooled, shifts_from(per, one, fits["epochs"].offsets))
+        tau_e = float(pooled_slack(shifted, pair_summaries(train), sigma_f)["tau"])
+        fits["fuse_eras"] = fit_flat(shifted, train, sigma_f, tau_e)
         folds += 1
         chosen.append({k: v.hyper for k, v in fits.items()})
         for (a, b), s in pair_summaries(by_session[sid]).items():
@@ -694,7 +798,8 @@ def backtest(
     sentence = (
         f"Over the last {folds} ring sessions, predicting each night's margins from the "
         f"other nights: today's fit missed by {mae['fuse']:.2f} points a match, the belief "
-        f"model by {mae['beliefs']:.2f} (epochs alone {mae['epochs']:.2f}, the quantum "
+        f"model by {mae['beliefs']:.2f} (today's fit read per era {mae['fuse_eras']:.2f}, "
+        f"epochs alone {mae['epochs']:.2f}, the quantum "
         f"surface alone {mae['levers']:.2f}, pooled medians alone {mae['pooled']:.2f})."
     )
     sentence += {
@@ -746,8 +851,11 @@ def _load(session) -> dict:
     rr = ring_rounds(sessions_data, version)
     noise = decidability.round_noise(sessions_data)
     sigma = float(noise["sigma"]) if noise and noise.get("sigma") else FALLBACK_ROUND_SIGMA
+    from .methodology import pooled_read
+
     return {
-        "version": version, "store": store, "profiles": profiles, "rounds": rr["rounds"],
+        "version": version, "pooled_read": pooled_read(definition),
+        "store": store, "profiles": profiles, "rounds": rr["rounds"],
         "sessions_data": sessions_data, "sigma": sigma,
         "boundaries": [t.date().isoformat() for t in boundaries],
     }
@@ -801,6 +909,7 @@ def beliefs(session, *, with_backtest: bool = True, refresh: bool = False) -> di
         "surface": {"pipes": basis["pipes"], "spans": basis["spans"], "terms": surface},
         "profiles": profiles,
         "crown_reads": "fuse",
+        "pooled_read": data.get("pooled_read", "all"),
         "backtest": None,
     }
     if with_backtest:
@@ -820,6 +929,7 @@ def clear_cache() -> None:
 
 
 __all__ = [
-    "ARMS", "Fit", "RunStore", "backtest", "beliefs", "clear_cache", "coordinates",
-    "empirical_bayes", "fit_flat", "lever_basis", "predict", "solve",
+    "ARMS", "Fit", "RunStore", "adjust_anchors", "apply_shifts", "backtest", "beliefs",
+    "clear_cache", "coordinates", "empirical_bayes", "era_adjusted", "fit_flat", "lever_basis",
+    "predict", "shifts_from", "solve",
 ]

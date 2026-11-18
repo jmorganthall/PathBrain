@@ -65,7 +65,28 @@ def list_methodologies(session: Session = Depends(get_session)) -> dict:
         "current_version": current_version(config),
         "code_default": CURRENT_METHODOLOGY,   # the version this build ships as latest
         "pinned": pinned,                       # config override, if any (else None → follows code)
+        # Code-shipped versions written after the default and never recorded here: the
+        # candidates (v18, v19) the "Score under" picker can switch to. Picking one is a
+        # publish (`/methodologies/set-current`): it becomes current and history re-grades.
+        "candidates": [
+            {
+                "version": v,
+                "notes": (METHODOLOGY_REGISTRY[v].get("notes") or "")[:400],
+                "pooled_read": ((METHODOLOGY_REGISTRY[v].get("ranking") or {}).get("pooled_read") or "all"),
+                "same_scale_as": METHODOLOGY_REGISTRY[v].get("same_scale_as"),
+            }
+            for v in _candidates(rows)
+        ],
     }
+
+
+def _candidates(rows) -> list[str]:
+    """Registry versions after ``CURRENT_METHODOLOGY`` with no stored row yet."""
+    names = list(METHODOLOGY_REGISTRY)
+    if CURRENT_METHODOLOGY not in names:
+        return []
+    stored = {r.version for r in rows}
+    return [v for v in names[names.index(CURRENT_METHODOLOGY) + 1:] if v not in stored]
 
 
 @router.get("/methodologies/instrument-drift")

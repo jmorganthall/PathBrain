@@ -162,6 +162,15 @@ New:
   define the search space; consumers honour them, tested.
 - **20. The crown keeps reading `f ≡ 0`** until a backtest shows the lever model improves
   held-out ring predictions, and then only through a methodology-style publish.
+  *2026-11-17:* the epochs half is now that publish, written and not switched on:
+  **`speed-smoothness-v19`** is v17's rubric with `ranking.pooled_read = "epochs"`. The crown
+  still reads `fuse`, but on pooled anchors put on the newest era's scale (`beliefs.era_adjusted`,
+  `overall_ranking._read_per_era`); the backtest scores that read as its own arm, `fuse_eras`.
+  v19 declares `same_scale_as` v17, so the ring's v17 rounds carry over. Switching is the
+  Methodology page's "Score under" picker, after the Crown agreement card (which compares the
+  two reads). Why: the late-October step in GitHub and Slickdeals' LCP was found by the drift
+  audit and the epoch layer, but nothing the crown read used it, so profiles last measured
+  before it out-ranked profiles measured after it for the date alone.
 
 ## Phases (one PR each)
 

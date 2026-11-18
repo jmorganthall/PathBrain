@@ -869,7 +869,62 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         },
         "verdict_rules": dict(_VERDICT_RULES_V17),
     },
+    # A CANDIDATE, like v18: written so it can be audited and switched on from the
+    # Methodology page, never adopted on its own. v17's rubric exactly, read differently: the
+    # crown, Auto-apply and the standings read each profile's pooled median **per instrument
+    # era**, put on today's scale, instead of one median over the whole record.
+    "speed-smoothness-v19": {
+        "derivation_version": DERIVATION_VERSION,  # rubric unchanged — re-grade, never re-derive
+        "notes": (
+            "CANDIDATE — v17's rubric, read per instrument era. v17 grades every run the same way, "
+            "but the crown pooled each profile's runs into one median over the whole record. When "
+            "the test sites themselves got slower (GitHub and Slickdeals' main content, late "
+            "October), every run after the step scored lower, so a profile last measured before it "
+            "out-ranked one measured after it for the date alone. The drift audit and the epoch "
+            "layer (evidence.instrument_epochs) already found the step; this version makes the "
+            "ranking use it. Each profile's median is read per era, the era offsets are learned "
+            "from the profiles measured on both sides and from the ring (beliefs.era_adjusted), and "
+            "each profile is placed on the newest era's scale before the ring is fused in. Same "
+            "axes, metrics, thresholds, weights and verdict rules as v17, so a run's Overall and "
+            "a duel round's margin mean what they did: the ring's v17 rounds carry over "
+            "(same_scale_as). Compare it with v17 on the Crown agreement card before switching."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v17_assignments(),
+        "overall": {
+            "method": "weighted",
+            "metrics": ["fcp", "lcp", "cadence_cov"],
+            "required": ["fcp", "lcp", "cadence_cov"],
+            "weights": {"fcp": 1.0, "lcp": 1.0, "cadence_cov": 1.0},
+        },
+        "verdict_rules": dict(_VERDICT_RULES_V17),
+        "ranking": {"pooled_read": "epochs"},
+        "same_scale_as": "speed-smoothness-v17",
+    },
 }
+
+
+#: How the ranking reads the pooled record: ``all`` (one median per profile over the whole
+#: record, every version before v19) or ``epochs`` (one median per instrument era, each put
+#: on the newest era's scale). A property of the methodology, so switching it is a publish.
+POOLED_READS = ("all", "epochs")
+#: The spec keys that change how a version's numbers are *read*, not what they are. Two
+#: versions that differ only here grade every run alike (`same_scale`).
+READ_ONLY_KEYS = ("ranking", "notes", "same_scale_as", "derivation_version")
+
+
+# Invariant: a version that says it is on another's scale is that version's rubric exactly —
+# only how the ranking reads it may differ — or a duel round fought under one would be added
+# to rounds fought under the other on a different scale.
+for _ver, _spec in METHODOLOGY_REGISTRY.items():
+    _same = _spec.get("same_scale_as")
+    if not _same:
+        continue
+    assert _same in METHODOLOGY_REGISTRY, f"methodology {_ver}: same_scale_as names unknown {_same}"
+    _a = {k: v for k, v in _spec.items() if k not in READ_ONLY_KEYS}
+    _b = {k: v for k, v in METHODOLOGY_REGISTRY[_same].items() if k not in READ_ONLY_KEYS}
+    assert _a == _b, f"methodology {_ver}: same_scale_as {_same}, but the rubrics differ"
+    assert (_spec.get("ranking") or {}).get("pooled_read", "all") in POOLED_READS
 
 
 # Invariant: every Overall/crown metric a version *requires* must be a scored metric in
@@ -998,6 +1053,8 @@ def build_definition_from_spec(spec: dict) -> dict:
     definition = {"axes": spec["axes"], "metrics": out_metrics}
     if spec.get("overall"):  # first-class Overall spec (v5+), carried into the frozen def
         definition["overall"] = spec["overall"]
+    if spec.get("ranking"):  # how the ranking reads the record (v19+); absent = "all"
+        definition["ranking"] = copy.deepcopy(spec["ranking"])
     return definition
 
 
@@ -1310,6 +1367,32 @@ def overall_method(definition: dict) -> str:
     """The crown's combine method (``corner`` default | ``weighted``) — read by the settings/crown
     layer so it ranks with the same rule the persisted per-run Overall was graded under."""
     return str(((definition or {}).get("overall") or {}).get("method") or "corner")
+
+
+def pooled_read(definition: dict | None) -> str:
+    """How this methodology's ranking reads the pooled record: ``"all"`` (one median per
+    profile over everything, the default and every version before v19) or ``"epochs"`` (per
+    instrument era, on the newest era's scale). The one accessor; a fork copies it."""
+    read = str(((definition or {}).get("ranking") or {}).get("pooled_read") or "all")
+    return read if read in POOLED_READS else "all"
+
+
+def scale_of(version: str | None) -> str | None:
+    """The version whose Overall scale ``version`` grades on: itself, or the registry version
+    it declares ``same_scale_as`` (a read-only change such as v19 over v17). A fork
+    (``base+…``) changes what is graded, so it is always its own scale."""
+    if version is None:
+        return None
+    spec = METHODOLOGY_REGISTRY.get(str(version)) or {}
+    return str(spec.get("same_scale_as") or version)
+
+
+def same_scale(a: str | None, b: str | None) -> bool:
+    """Whether a duel round fought under ``a`` can be added to rounds read under ``b``:
+    the same version, or two versions that grade every run alike (`scale_of`)."""
+    if a is None or b is None:
+        return a == b
+    return scale_of(a) == scale_of(b)
 
 
 def required_metric_keys(definition: dict) -> list[str]:

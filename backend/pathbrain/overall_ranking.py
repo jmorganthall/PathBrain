@@ -71,7 +71,7 @@ from datetime import datetime, timezone
 from . import decidability
 from .config_store import get_config
 from .logging_config import get_logger
-from .methodology import ensure_current_methodology, overall_method
+from .methodology import ensure_current_methodology, overall_method, pooled_read, same_scale
 from .settings_profile import SQM_OFF_FINGERPRINT
 
 log = get_logger(__name__)
@@ -143,7 +143,8 @@ def ring_rounds(sessions_data: list[dict], methodology: str | None) -> dict:
     ``a`` is the match's reference (the belt), ``b`` the challenger, so the stored
     ``deltas`` (challenger minus reference) are already the right sign. A match fought
     under another methodology is excluded — its margins are Overalls on a different scale
-    — and counted; one recorded before the ledger stamped methodologies is kept and
+    — and counted (a version that only reads the record differently, `methodology.same_scale`,
+    is the same scale and keeps them); one recorded before the ledger stamped methodologies is kept and
     counted as unstamped, because the alternative is discarding every round from before
     the stamp existed. Aborted matches produced no rounds and contribute nothing.
     """
@@ -169,7 +170,7 @@ def ring_rounds(sessions_data: list[dict], methodology: str | None) -> dict:
             fought_under = m.get("methodology")
             if fought_under is None:
                 unstamped += 1
-            elif methodology is not None and fought_under != methodology:
+            elif methodology is not None and not same_scale(fought_under, methodology):
                 excluded_methodology += 1
                 continue
             a, b = str(m["incumbent"]), str(m["challenger"])
@@ -605,13 +606,48 @@ def _sentence(best: dict, runner: dict | None, lead: float | None, bar: float | 
     return out
 
 
-def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
+def _read_per_era(session, pooled: dict[str, dict]) -> tuple[dict[str, dict], dict | None]:
+    """The pooled field on the newest era's scale, and what was applied. A failure leaves
+    the field as the whole record reads it and says so: the ranking must still name a crown,
+    and a crown on the old read is what every version before v19 named."""
+    from . import beliefs
+
+    try:
+        eras = beliefs.era_adjusted(session)
+    except Exception:  # noqa: BLE001 — a refinement of the anchors, never why the ranking fails
+        log.warning("Overall ranking: could not read the pooled record per era", exc_info=True)
+        return pooled, {"applied": False, "reason": "the era fit failed; the whole record is read"}
+    shifts = eras.get("shifts") or {}
+    adjusted = beliefs.apply_shifts(pooled, shifts)
+    moved = sorted(
+        ((fp, p["era_shift"]) for fp, p in adjusted.items() if p.get("era_shift")),
+        key=lambda kv: -abs(kv[1]),
+    )
+    return adjusted, {
+        "applied": bool(shifts),
+        "reason": None if shifts else "one era on record; nothing to adjust",
+        "boundaries": eras.get("boundaries") or [],
+        "offsets": eras.get("offsets") or {},
+        "profiles_shifted": len([1 for _, v in moved if abs(v) >= 0.01]),
+        "largest_shifts": [{"fingerprint": fp, "shift": v} for fp, v in moved[:MAX_MOVERS]],
+    }
+
+
+def ranking(session, *, backtest: bool = True, live: bool = True, read: str | None = None) -> dict:
     """The fused ranking, the crown it names, and everything a reader needs to see why.
 
     τ is always the measured slack (or the stated default under `MIN_SLACK_PAIRS`); there
     is deliberately no override. ``backtest=False`` skips the held-out predictive check
     and ``live=False`` the firewall read (the crown follower needs neither — it reads the
     firewall itself).
+
+    How the pooled record is read is the methodology's (`methodology.pooled_read`): under
+    ``"epochs"`` (v19) each profile's pooled median is put on the newest instrument era's
+    scale before the ring is fused in (`beliefs.era_adjusted`), so a profile last measured
+    before a step in the test sites is no longer ranked on the faster numbers the sites gave
+    then. ``read`` overrides it for a **preview only** (the Crown agreement card, the
+    Overall page's "what v19 would show"): the crown, Auto-apply and the ring call this with
+    no override and so follow the published methodology, never a request.
     """
     from .phase_timing import laps
 
@@ -626,6 +662,8 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     methodology = ensure_current_methodology(session, cfg)
     version = methodology.version
     method = overall_method(methodology.definition or {})
+    published_read = pooled_read(methodology.definition or {})
+    read_as = read if read in ("all", "epochs") else published_read
     lap("methodology")
 
     out: dict = {
@@ -652,6 +690,10 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
         "corners": {},
         "movers": [],
         "backtest": None,
+        "pooled_read": read_as,
+        "published_read": published_read,
+        "preview": read_as != published_read,
+        "eras": None,
         "computed_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
     }
     if method != "weighted":
@@ -668,6 +710,9 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
     field = _pooled_field(session, version)
     pooled = {p["fingerprint"]: p for p in field}
     lap("pooled")
+    if read_as == "epochs":
+        pooled, out["eras"] = _read_per_era(session, pooled)
+        lap("eras")
     sessions_data = _ledger_sessions(session, 200)
     lap("ledger")
     rr = ring_rounds(sessions_data, version)
@@ -711,6 +756,10 @@ def ranking(session, *, backtest: bool = True, live: bool = True) -> dict:
             "fused_se": round(float(f["se"]), 3),
             "pooled": None if p.get("overall") is None else round(float(p["overall"]), 2),
             "pooled_se": None if p.get("se") is None else round(float(p["se"]), 3),
+            # Under the per-era read: the whole-record median the shift was taken from, and the
+            # shift itself (None under the whole-record read, or for a newest-era-only row).
+            "pooled_all": None if p.get("pooled_all") is None else round(float(p["pooled_all"]), 2),
+            "era_shift": p.get("era_shift"),
             "iterations": int(p.get("iterations") or 0),
             "rounds": int(f["rounds"]),
             "opponents": int(f["opponents"]),

@@ -50,7 +50,7 @@ from .config_store import get_config
 from .database import session_scope
 from .logging_config import get_logger
 from .session_runtime import FailureStreak, FirewallUnavailable, SessionAbort, describe_failure
-from .methodology import VerdictRules, judged_rules, latest_score, overall_metrics, verdict_rules
+from .methodology import VerdictRules, judged_rules, latest_score, overall_metrics, same_scale, verdict_rules
 from .models import Duel, DuelStatus, LeverCampaign, Methodology, Score
 from .rating import ELO_SCALE, PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
 from .providers import get_provider
@@ -3177,7 +3177,7 @@ def _carried_reference(
         if not ref or ref not in settings_by_fp:
             continue
         fought_under = snap.get("methodology")
-        if fought_under and meth_version and str(fought_under) != str(meth_version):
+        if fought_under and meth_version and not same_scale(str(fought_under), str(meth_version)):
             continue
         if not _reachable((settings_by_fp.get(ref) or {}).get("settings"), baseline):
             continue
@@ -4129,7 +4129,7 @@ def _run_ring(
                     cfp = str(snap.get("challenger") or "")
                     prof = settings_by_fp.get(cfp)
                     fought_under = snap.get("methodology")
-                    if fought_under and str(fought_under) != meth_version:
+                    if fought_under and not same_scale(str(fought_under), meth_version):
                         # Its margins are Overalls on another rubric's scale; a round read
                         # under this one cannot be added to them.
                         problem = (
@@ -4274,14 +4274,14 @@ def _run_ring(
             stale = _seat_from_snapshot(snap, prof, **seat_kw)
             fought_under = snap.get("methodology")
             narrow = (
-                None if (fought_under and str(fought_under) != meth_version)
+                None if (fought_under and not same_scale(str(fought_under), meth_version))
                 else _narrow_verdict(stale)
             )
             if narrow is not None:
                 # Its rounds were fought and they count: the side ahead takes it.
                 verdict, why = narrow
                 _close(stale, verdict, f"{why} — carried over, could not resume: {problem}", ref=ref)
-            elif stale.deltas and not (fought_under and str(fought_under) != meth_version):
+            elif stale.deltas and not (fought_under and not same_scale(str(fought_under), meth_version)):
                 _close(stale, "draw", f"level when closed — carried over, could not resume: {problem}", ref=ref)
             else:
                 # No rounds, or rounds on another rubric's scale: nothing comparable to keep.
