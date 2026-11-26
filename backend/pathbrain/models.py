@@ -1345,3 +1345,27 @@ class VerdictRecord(Base):
     speed_budget: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # None means no other judge's crown was read on the way; else {judge: fingerprint}.
     evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class RingNomination(Base):
+    """A profile put forward for the ring by an engine that found it promising.
+
+    One chain: only Auto-apply writes the crown to the firewall. A challenger race or an
+    experiment that finds a winner (with its promote option on) used to apply it directly;
+    now it nominates the winner here and restores the baseline, and the ring seats the
+    nominee against the crown as a live threat (`duel.contender_order`). The crown moves
+    only if the nominee then wins in the ring. A nomination is open until the ring has
+    decided a match involving the profile after it was made, or until it expires
+    (`nominations.OPEN_DAYS`).
+    """
+
+    __tablename__ = "ring_nominations"
+    __table_args__ = (Index("ix_ring_nominations_created_at", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    fingerprint: Mapped[str] = mapped_column(String(40))
+    # "challenger" or "experiment": the engine that put it forward.
+    source: Mapped[str] = mapped_column(String(20))
+    # One sentence on why, shown as the ring seat's reason.
+    reason: Mapped[str] = mapped_column(Text)

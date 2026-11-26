@@ -9,9 +9,11 @@ Safety model (the part that matters):
 * **Dry-run by default** — logs intended changes without touching the firewall.
 * **Snapshot the baseline** (the param's value + full settings) when an
   experiment starts.
-* **Restore the pre-experiment baseline when the window closes** — always, unless
+* **Restore the pre-experiment baseline when the window closes** — always. When
   ``auto_promote`` is on AND a candidate beat the baseline by ``improve_pct`` with
-  enough trials. Disarming mid-run also restores and aborts.
+  enough trials, that candidate's profile is **nominated for the ring**
+  (`nominations`) rather than left applied: only Auto-apply writes the crown, and
+  only a ring win moves it. Disarming mid-run also restores and aborts.
 
 The engine runs inside the scheduler thread, so it never overlaps benchmark runs.
 """
@@ -174,8 +176,23 @@ def _run_trial_step(session, exp: Experiment, cfg: dict) -> None:
     _state["applied_at"] = time.time()
 
 
+def _winner_fingerprint(session, trials, value: str) -> str | None:
+    """The settings fingerprint the winning value was measured under: the newest trial of
+    that value that has a run with a fingerprint."""
+    from .models import Run
+    from .settings_overrides import effective_fingerprint
+
+    for t in sorted(trials, key=lambda t: t.id, reverse=True):
+        if t.value != value or t.run_id is None:
+            continue
+        fp = session.scalar(select(effective_fingerprint()).where(Run.id == t.run_id))
+        if fp:
+            return str(fp)
+    return None
+
+
 def _finalize(session, exp: Experiment, cfg: dict) -> None:
-    """Window closed (or disabled): decide promote vs restore, end the experiment."""
+    """Window closed (or disabled): restore the baseline, nominate a winner, end the experiment."""
     provider = get_provider()
     trials = session.scalars(
         select(ExperimentTrial).where(ExperimentTrial.experiment_id == exp.id)
@@ -200,9 +217,18 @@ def _finalize(session, exp: Experiment, cfg: dict) -> None:
             winner, winner_med = v, med
             break
 
-    promote = bool(cfg.get("auto_promote")) and winner is not None
-    final_value = winner if promote else baseline
+    # The baseline goes back on, always: an experiment's winner is a nomination for the
+    # ring, never a write of the crown (the one chain).
+    final_value = baseline
     applied_ok = _apply(provider, cfg, final_value, exp.dry_run)
+    nominated_fp = None
+    if bool(cfg.get("auto_promote")) and winner is not None:
+        nominated_fp = _winner_fingerprint(session, trials, winner)
+        if nominated_fp:
+            from .nominations import nominate
+
+            nominate(session, nominated_fp, "experiment",
+                     f"won experiment #{exp.id} ({exp.param}={winner}) against the baseline")
 
     exp.status = ExperimentStatus.COMPLETED
     exp.finished_at = datetime.now(timezone.utc)
@@ -212,7 +238,8 @@ def _finalize(session, exp: Experiment, cfg: dict) -> None:
         "baseline_median": base_med,
         "winner": winner,
         "winner_median": winner_med,
-        "action": "promoted" if promote else "restored_baseline",
+        "action": "nominated" if nominated_fp else "restored_baseline",
+        "nominated_fingerprint": nominated_fp,
         "final_value": final_value,
         "final_applied_ok": applied_ok,
         "min_trials_per_value": min_trials,

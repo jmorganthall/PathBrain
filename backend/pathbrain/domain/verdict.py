@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -81,3 +82,19 @@ class CrownRead:
     label: str | None
     since: str | None
     basis: str
+
+
+@dataclass(frozen=True)
+class OpenNomination:
+    """A profile an engine put forward for the ring that the ring has not yet answered.
+
+    * ``fingerprint`` — the nominee.
+    * ``source`` — the engine that nominated it (``"challenger"`` or ``"experiment"``).
+    * ``reason`` — what it won, in words, shown as why the ring seats it.
+    * ``made`` — when it was nominated (UTC).
+    """
+
+    fingerprint: str
+    source: str
+    reason: str
+    made: datetime

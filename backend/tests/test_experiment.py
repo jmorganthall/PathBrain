@@ -46,7 +46,7 @@ def _stub_benchmarks(monkeypatch, *, versioned=True):
         q = int(mockmod._OVERRIDES.get("quantum", 1514))
         sops = 90.0 if q == 3000 else 70.0
         with session_scope() as s:
-            run = Run(status=RunStatus.COMPLETE)
+            run = Run(status=RunStatus.COMPLETE, settings_fingerprint=f"q{q}")
             s.add(run)
             s.flush()
             s.add(ScoreResult(run_id=run.id, sops=sops, subscores={}, weights_used={}, metric_values={}))
@@ -121,9 +121,14 @@ def test_sweep_auto_promotes_winner(client, monkeypatch):
         exp = s.scalars(
             __import__("sqlalchemy").select(Experiment).order_by(Experiment.id.desc())
         ).first()
-        assert exp.result["action"] == "promoted"
-        assert exp.result["final_value"] == "3000"
-    assert int(mockmod._OVERRIDES.get("quantum", 1514)) == 3000
+        # The baseline goes back on; the winner is a ring nomination, not a firewall write.
+        assert exp.result["final_value"] == "1514"
+        assert exp.result["action"] == "nominated"
+        assert exp.result["nominated_fingerprint"] == "q3000"
+        from pathbrain.nominations import open_nominations
+
+        assert "q3000" in {n.fingerprint for n in open_nominations(s)}
+    assert int(mockmod._OVERRIDES.get("quantum", 1514)) == 1514
     client.post("/api/config/reset")
     _reset()
 

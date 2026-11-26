@@ -1169,7 +1169,7 @@ export default function Settings() {
       queue.submit({
         label:
           `Challenger race · up to ${raceMinutes} min` +
-          (raceAutoPromote ? " (winner auto-applied)" : ""),
+          (raceAutoPromote ? " (winner nominated for the ring)" : ""),
         run: startRace,
       }),
     [queue, startRace, raceMinutes, raceAutoPromote],
@@ -1189,7 +1189,7 @@ export default function Settings() {
           } else if (cur.race.winner_fingerprint) {
             setToast(
               cur.race.promoted
-                ? `Race done — promoted a new best (${cur.race.winner_fingerprint.slice(0, 8)})`
+                ? `Race done — nominated ${cur.race.winner_fingerprint.slice(0, 8)} for the ring; baseline restored`
                 : `Race done — found a new best (${cur.race.winner_fingerprint.slice(0, 8)}); baseline restored`
             );
           } else {
@@ -1391,7 +1391,7 @@ export default function Settings() {
           {(activeRace.incumbent_refreshes ?? 0) > 0
             ? `, ${activeRace.incumbent_refreshes} incumbent refresh(es)`
             : ""}
-          {activeRace.auto_promote ? " · winner will be auto-applied" : " · baseline restored at end"}.
+          {activeRace.auto_promote ? " · winner nominated for the ring, baseline restored at end" : " · baseline restored at end"}.
         </Alert>
       )}
 
@@ -2768,7 +2768,7 @@ export default function Settings() {
                 onChange={(e) => setRaceAutoPromote(e.target.checked)}
               />
             }
-            label="Auto-promote the winner (apply it instead of restoring the baseline)"
+            label="Nominate the winner for the ring (the crown moves only on a ring win)"
           />
         </DialogContent>
         <DialogActions>

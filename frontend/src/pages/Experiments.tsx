@@ -113,7 +113,7 @@ export default function Experiments() {
                 color={status.in_window ? "success" : "default"}
                 label={status.in_window ? "in window" : "outside window"}
               />
-              {status.auto_promote && <Chip size="small" variant="outlined" label="auto-promote" />}
+              {status.auto_promote && <Chip size="small" variant="outlined" label="nominates winner" />}
               {status.active_experiment_id != null && (
                 <Button
                   size="small"
@@ -178,7 +178,7 @@ export default function Experiments() {
                       <TableCell>
                         {e.result ? (
                           <span>
-                            {e.result.action === "promoted" ? "✅ promoted " : "↩ restored "}
+                            {e.result.action === "nominated" ? "🥊 nominated for the ring " : e.result.action === "promoted" ? "✅ promoted " : "↩ restored "}
                             {e.result.winner != null && (
                               <Typography component="span" variant="caption" color="text.secondary">
                                 winner {e.result.winner} ({e.result.winner_median}) vs baseline{" "}
