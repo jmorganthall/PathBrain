@@ -339,11 +339,16 @@ def test_drive_auto_promotes_winner(monkeypatch):
     race, spy = _drive_with(monkeypatch, auto_promote=True)
     assert race.status == ChallengerRaceStatus.COMPLETE
     assert race.winner_fingerprint == "C"
-    assert race.promoted is True
+    assert race.promoted is True  # "promoted" now means nominated for the ring
     assert race.iterations_run == 1  # sampled C once, then C confirmed → break
-    # Applied C during the race AND promoted C at the end; never ran the restore path.
-    assert spy["apply_profile"] == ["C", "C"]
-    assert spy["restore"] == 0
+    # Applied C once during the race; the baseline goes back on (one writer of the crown)
+    # and C is nominated for the ring instead of left live.
+    assert spy["apply_profile"] == ["C"]
+    assert spy["restore"] == 1
+    from pathbrain.nominations import open_nominations
+
+    with session_scope() as s:
+        assert "C" in {n.fingerprint for n in open_nominations(s)}
 
 
 def test_drive_restores_baseline_when_not_promoting(monkeypatch):

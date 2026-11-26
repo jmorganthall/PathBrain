@@ -17,8 +17,10 @@ wasted on a fluke), this races every *limited-data* profile against the confiden
    - else apply the top challenger (only when it isn't already live), run **one**
      benchmark iteration, and re-rank. A challenger that reaches the minimum and beats
      the best becomes the new bar the rest race against.
-3. At the end, **restore the baseline** — unless ``auto_promote`` is set and a
-   challenger confirmed it beats the best, in which case the winner is left applied.
+3. At the end, **restore the baseline**, always. With ``auto_promote`` set and a
+   challenger that confirmed it beats the best, the winner is **nominated for the ring**
+   (`nominations`) instead of left applied: only Auto-apply writes the crown, and only a
+   ring win moves it (the one chain).
 
 It runs in its own thread and holds the coordination lock for the whole session, so it
 never overlaps a sweep, an experiment, or a monitoring/manual run (the scheduler yields
@@ -442,18 +444,24 @@ def _drive(race_id: int) -> None:  # noqa: C901 — linear session lifecycle, ke
             if _state.get("cancel"):
                 final_status = ChallengerRaceStatus.CANCELLED
 
-            # Finalize the firewall: promote the winner, or restore the baseline.
+            # Finalize the firewall: restore the baseline, always. A winner is put forward
+            # for the ring (the crown moves only on a ring win), never left applied.
             try:
-                if auto_promote and winner_fp and winner_settings is not None:
-                    _apply_profile(provider, winner_settings, winner_fp)
-                    promoted = True
-                    log.info("Challenger race %s: auto-promoted winner %s", race_id, winner_fp)
-                else:
-                    restore, _ = plan_apply(baseline, provider.discover())
-                    _apply_all(provider, restore)
-                    log.info("Challenger race %s: restored baseline", race_id)
+                restore, _ = plan_apply(baseline, provider.discover())
+                _apply_all(provider, restore)
+                log.info("Challenger race %s: restored baseline", race_id)
             except Exception:  # noqa: BLE001 — never raise out of cleanup
                 log.exception("Challenger race %s: final firewall step failed", race_id)
+            if auto_promote and winner_fp:
+                try:
+                    from .nominations import nominate
+
+                    with session_scope() as session:
+                        nominate(session, winner_fp, "challenger",
+                                 f"won challenger race #{race_id} against the best measured profile")
+                    promoted = True
+                except Exception:  # noqa: BLE001 — a lost nomination never fails the race
+                    log.exception("Challenger race %s: could not nominate %s", race_id, winner_fp)
     except Exception as exc:  # noqa: BLE001 — record + (best-effort) restore, never crash the thread
         log.exception("Challenger race %s failed", race_id)
         final_status = ChallengerRaceStatus.FAILED

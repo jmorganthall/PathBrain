@@ -48,6 +48,7 @@ from . import host_adjust
 from . import host_pressure
 from .config_store import get_config
 from .database import session_scope
+from .domain.verdict import OpenNomination
 from .logging_config import get_logger
 from .session_runtime import FailureStreak, FirewallUnavailable, SessionAbort, describe_failure
 from .methodology import VerdictRules, judged_rules, latest_score, overall_metrics, same_scale, verdict_rules
@@ -2466,6 +2467,19 @@ def ledger_ratings(session, limit_sessions: int = 50) -> dict[str, dict]:
     return fit_bradley_terry(_pair_record(_ledger_sessions(session, limit_sessions)))
 
 
+def _open_nominations() -> list[OpenNomination]:
+    """The open ring nominations (`nominations.open_nominations`), or none when they
+    cannot be read: a nomination orders the queue, it is never why the ring stops."""
+    try:
+        from .nominations import open_nominations
+
+        with session_scope() as session:
+            return open_nominations(session)
+    except Exception:  # noqa: BLE001
+        log.debug("duel: ring nominations unavailable", exc_info=True)
+        return []
+
+
 def contender_order(
     field: dict,
     ratings: dict[str, dict],
@@ -2684,6 +2698,16 @@ def contender_order(
             "prior_overall": p.get("prior_overall"),
             "why": why,
         })
+
+    # An engine's winner (a challenger race or an experiment) is a nomination, not a
+    # firewall write: it is seated as a live threat until the ring has answered it.
+    nominated = {n.fingerprint: n.reason for n in _open_nominations()}
+    for c in out:
+        reason = nominated[c["fingerprint"]] if c["fingerprint"] in nominated else None
+        if reason and c["tier"] > LIVE_THREAT_TIER:
+            c["tier"] = LIVE_THREAT_TIER
+            c["why"] = f"nominated for the ring — {reason}"
+            c["nominated"] = True
 
     for c in out:
         note = deferred.get(c["fingerprint"])

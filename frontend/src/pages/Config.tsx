@@ -479,8 +479,8 @@ export default function Config() {
           </Typography>
           <Alert severity="warning" sx={{ mb: 2 }}>
             When <b>armed</b> and not in dry-run, PathBrain will change your firewall's traffic shaper
-            during the window. The pre-window config is restored when the window closes unless
-            auto-promote is on. Start in dry-run to validate.
+            during the window. The pre-window config is always restored when the window closes; with
+            nominate on, a winner is put forward for the overnight ring instead. Start in dry-run to validate.
           </Alert>
           <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="center">
             <Tooltip title="Master on/off switch for the experiment engine. Off = it never runs and never touches the firewall. On = it runs during the window below. Leave dry-run on until you trust it.">
@@ -509,7 +509,7 @@ export default function Config() {
                 label="Dry-run (no changes applied)"
               />
             </Tooltip>
-            <Tooltip title="At the window's close: ON keeps the best-performing candidate value live; OFF restores the original pre-window setting regardless of the result. Start with OFF.">
+            <Tooltip title="At the window's close the original pre-window setting is always restored. ON also nominates a winning candidate for the overnight ring, which crowns it only if it beats the crown head to head.">
               <FormControlLabel
                 control={
                   <Switch
@@ -519,7 +519,7 @@ export default function Config() {
                     }
                   />
                 }
-                label="Auto-promote winner"
+                label="Nominate winner for the ring"
               />
             </Tooltip>
           </Stack>
@@ -594,7 +594,7 @@ export default function Config() {
               min={0}
               step={0.5}
               width={190}
-              helperText="A candidate must beat the baseline Overall by at least this % to be promoted."
+              helperText="A candidate must beat the baseline Overall by at least this % to be nominated for the ring."
               onChange={(v) =>
                 setDraft((p) => (p ? { ...p, experiment: { ...p.experiment, improve_pct: v } } : p))
               }
