@@ -48,6 +48,7 @@ from .methodology import (
     latest_score,
     corner_score,
     ensure_current_methodology,
+    judgement as methodology_judgement,
     overall_method,
     overall_metrics,
     overall_weights,
@@ -585,7 +586,7 @@ def explain(session: Session, fingerprint: str, vs: str | None = None, *, site_r
     definition = methodology.definition or {}
     version = methodology.version
     corr = config.get("correlation", {}) or {}
-    sigma = float(corr.get("crown_tie_sigma", DEFAULT_SIGMA) or DEFAULT_SIGMA)
+    sigma = methodology_judgement(version, definition, config).tie_sigma  # the crown's own bar
     min_iterations = int(corr.get("min_iterations", 15) or 15)
     crown, required = overall_metrics(definition)
     if not crown:
