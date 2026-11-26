@@ -92,7 +92,11 @@ export default function ProfileDetail() {
   const [currentFp, setCurrentFp] = useState<string | null>(null);
   // The confidence bar (total iterations), so the page can say how far a top-up would go.
   const [minIterations, setMinIterations] = useState<number | null>(null);
+  // The pooled #1, which the field's tie group is measured around…
   const [bestFp, setBestFp] = useState<string | null>(null);
+  // …and the crown as the Verdict names it, which is what the crown chip marks.
+  const [crownFp, setCrownFp] = useState<string | null>(null);
+  const [crownWhy, setCrownWhy] = useState<string | null>(null);
   // Fingerprints statistically tied with the crown (within run-to-run noise). Lets the standings
   // say "tied for #1" instead of implying a precise, decisive rank when the top is a photo finish.
   const [coLeaders, setCoLeaders] = useState<string[]>([]);
@@ -177,6 +181,13 @@ export default function ProfileDetail() {
         setCurrentFp(profsResp.current_fingerprint);
         setMinIterations(profsResp.min_iterations ?? null);
         setBestFp(profsResp.best_fingerprint);
+        api
+          .verdict(1)
+          .then((v) => {
+            setCrownFp(v.verdict.fingerprint);
+            setCrownWhy(v.verdict.detail);
+          })
+          .catch(() => {});
         setCoLeaders(profsResp.co_leaders ?? []);
         setCrownConf(profsResp.crown_confidence ?? null);
         setSeries(s);
@@ -305,12 +316,14 @@ export default function ProfileDetail() {
   const standings = useMemo(
     () =>
       rankedMetrics.map((m) => {
-        const rk = rankByMetric(allProfiles, m.key);
+        // Confident profiles only, as on the profiles table.
+        const confident = allProfiles.filter((p) => p.confident);
+        const rk = rankByMetric(confident, m.key);
         const rank = profile ? rk.rankByFp[profile.fingerprint] ?? null : null;
         const raw = profile ? profileValue(profile, m.key) : null;
         // How far behind the crown (rank 1) this profile is, as a percentage. All these values are
         // higher-is-better (Overall 0–100, crown percentiles), so the best is the field max.
-        const values = allProfiles
+        const values = confident
           .map((p) => profileValue(p, m.key))
           .filter((v): v is number => v != null);
         const best = values.length ? Math.max(...values) : null;
@@ -344,7 +357,8 @@ export default function ProfileDetail() {
     activeTest != null && (activeTest.status === "running" || activeTest.status === "pending");
   // How many iterations a top-up would still run (0 once the profile is confident).
   const topUpNeeded = Math.max(0, (minIterations ?? 0) - (profile?.iterations ?? 0));
-  const isBest = bestFp != null && bestFp === fingerprint;
+  const isCrown = crownFp != null && crownFp === fingerprint;
+  const isPooledFirst = bestFp != null && bestFp === fingerprint;
   // Crown-confidence context: is #1 a decisive lead or a statistical tie? The tie group is the
   // crown plus every co-leader (median lead within run-to-run noise). Surfacing this reframes a
   // profile hopping #1↔#N as "it's in an N-way tie", not "its quality swung".
@@ -497,21 +511,23 @@ export default function ProfileDetail() {
       {/* Status chips */}
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
         {isActive && <Chip color="info" label="active on firewall" />}
-        {/* Crown chip, tie-aware: a decisive #1 vs a statistical tie for the lead. */}
-        {isBest && tieCount > 1 ? (
+        {/* The crown chip reads the Verdict (what Auto-apply follows); the tie chip reads the
+            pooled record's tie group, which is evidence beside it. */}
+        {isCrown && (
+          <Tooltip title={`The crown: the profile the Verdict names and Auto-apply follows.${crownWhy ? ` ${crownWhy}` : ""}`}>
+            <Chip color="success" label="the crown" />
+          </Tooltip>
+        )}
+        {(isPooledFirst || isCoLeader) && tieCount > 1 ? (
           <Tooltip
-            title={`The crown's median Overall lead over ${tieCount - 1} other profile${
+            title={`In the pooled record, the #1's median Overall lead over ${tieCount - 1} other profile${
               tieCount - 1 === 1 ? "" : "s"
-            } is within run-to-run noise${tieBand ? ` (tie-group Overall ${tieBand})` : ""}. Which of these holds #1 can flip between measurements without any real change in quality.`}
+            } is within run-to-run noise${tieBand ? ` (tie-group Overall ${tieBand})` : ""}. Which of these holds pooled #1 can flip between measurements without any real change in quality.`}
           >
-            <Chip color="warning" label={`tied for #1 · ${tieCount}-way (within noise)`} />
+            <Chip color="warning" variant="outlined" label={`tied for pooled #1 · ${tieCount}-way (within noise)`} />
           </Tooltip>
-        ) : isBest ? (
-          <Chip color="success" label="best (crown) · clear lead" />
-        ) : isCoLeader ? (
-          <Tooltip title="This profile is statistically tied with the crown — its median Overall is within run-to-run noise of #1, so it's effectively a co-leader.">
-            <Chip color="info" variant="outlined" label="tied with the crown (within noise)" />
-          </Tooltip>
+        ) : isPooledFirst ? (
+          <Chip color="info" variant="outlined" label="pooled #1 · clear lead" />
         ) : null}
         {relDelta != null && Math.abs(relDelta) >= 0.5 && (
           <Tooltip title="This profile's recent Overall vs its own typical for this day-of-week × hour. A negative value usually means the network was worse than usual (weather), not that the profile changed.">
@@ -560,7 +576,8 @@ export default function ProfileDetail() {
               Standings
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-              Rank among all {standings[0].total || 0} measured profiles (1 = best).
+              Rank among the {standings[0].total || 0} confident profiles (1 = fastest on that measure).
+              Unranked until this profile is confident.
               <HelpTip title="For the Overall and each crown metric the current methodology scores on. The red arrow is how far behind #1 it is, as a percent." />
             </Typography>
             {/* Crown lead vs noise: the measured signal-to-noise behind #1 — is the lead real, or is
@@ -570,7 +587,7 @@ export default function ProfileDetail() {
                 <Typography variant="caption">
                   {crownConf.clear_lead ? (
                     <>
-                      <b>The best profile&apos;s lead is real:</b> +{crownConf.gap_to_runner_up.toFixed(2)} over the
+                      <b>The pooled #1&apos;s lead is real:</b> +{crownConf.gap_to_runner_up.toFixed(2)} over the
                       runner-up, past the {crownConf.noise_threshold.toFixed(2)} noise bar.
                     </>
                   ) : (
@@ -619,7 +636,7 @@ export default function ProfileDetail() {
                     >
                       <ArrowDownwardIcon sx={{ fontSize: "0.95rem" }} />
                       <Typography component="span" variant="caption" sx={{ fontWeight: 700 }}>
-                        {s.pctWorse < 0.1 ? "<0.1" : s.pctWorse.toFixed(1)}% vs crown
+                        {s.pctWorse < 0.1 ? "<0.1" : s.pctWorse.toFixed(1)}% vs #1
                       </Typography>
                     </Box>
                   )}
@@ -1166,7 +1183,7 @@ export default function ProfileDetail() {
 
         {/* ── Where a win lives: what this profile's gap to a reference is made of ─────── */}
         {profile && (
-          <WhyCard fingerprint={fingerprint} profiles={allProfiles} bestFp={bestFp} />
+          <WhyCard fingerprint={fingerprint} profiles={allProfiles} bestFp={crownFp} />
         )}
 
         <Card>

@@ -77,8 +77,8 @@ function QuadrantTooltip({
     >
       <Typography variant="caption" sx={{ display: "block", fontWeight: 700, overflowWrap: "anywhere" }}>
         {p.name || p.label}
-        {p.isBest ? " · best" : ""}
-        {p.isCoLeader && !p.isBest ? " · tied with best" : ""}
+        {p.isBest ? " · crown" : ""}
+        {p.isCoLeader && !p.isBest ? " · tied with pooled #1" : ""}
         {p.isActive ? " · active" : ""}
         {p.isBaseline ? " · baseline (SQM off)" : ""}
       </Typography>
