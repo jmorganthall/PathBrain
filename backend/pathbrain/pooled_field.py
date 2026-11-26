@@ -18,6 +18,8 @@ screen, so the pooled sentence is gone and what survives is the arithmetic both 
 """
 from __future__ import annotations
 
+import threading
+
 from .config_store import get_config
 from .profile_aggregates import RAW_METRICS
 from .logging_config import get_logger
@@ -129,6 +131,7 @@ __all__ = [
     "lcp_first_crown", "lcp_band_pct", "DEFAULT_LCP_BAND_PCT",
     "fcp_first_crown", "fcp_band_pct", "DEFAULT_FCP_BAND_PCT",
     "leg_first_crown", "band_pct", "LEG_FIRST", "fastest_legs", "leg_gaps",
+    "invalidate_era_cache",
 ]
 
 
@@ -424,7 +427,16 @@ def paper_cost(
 def fastest_legs(session, version: str, min_iterations: int) -> dict | None:
     """The field's fastest median FCP and fastest median LCP, each with the profile that
     holds it — usually two different profiles. Confident, shaped profiles only (the same
-    read as the math and leg-first crowns). None when no profile has both medians."""
+    read as the math and leg-first crowns). None when no profile has both medians.
+
+    Under a methodology that reads the pooled record per instrument era
+    (`methodology.pooled_read` ``"epochs"``, v19), the fastest is found **per era**
+    (`_fastest_legs_per_era`): a profile measured before the test sites slowed must never set
+    the bar a profile measured after them is priced against. The top-level legs are then the
+    newest era's, and ``by_era`` carries every era's so `leg_gaps` can compare like with like.
+    """
+    if _reads_per_era(session, version):
+        return _fastest_legs_per_era(session, version, min_iterations)
     rows = _raw_rows(session, version, min_iterations)
     if not rows:
         return None
@@ -455,6 +467,8 @@ def leg_gaps(
 
     if not fastest:
         return {}
+    if fastest.get("by_era") is not None:
+        return _leg_gaps_per_era(session, version, fastest, fingerprints, sigma)
     refs = {m: (fastest.get(m) or {}).get("fingerprint") for m in ("fcp", "lcp")}
     wanted = [fp for fp in dict.fromkeys([*refs.values(), *fingerprints]) if fp]
     rolled = profile_aggregates.aggregates(session, version, wanted)
@@ -481,6 +495,199 @@ def leg_gaps(
                 "bar_ms": None if bar is None else round(bar, 1),
                 "clear": bar is not None and abs(delta) > bar,
                 "is_fastest": fp == refs[m],
+            }
+        if row:
+            out[fp] = row
+    return out
+
+
+# ── "vs fastest" per instrument era ─────────────────────────────────────────────────────
+#
+# The whole-record leg medians above pool every run a profile ever had. When the test sites
+# themselves get slower (late October: GitHub and Slickdeals' main content), a profile
+# measured mostly before the step carries the fast era's medians and one measured after it
+# the slow era's, so "LCP +145% slower than the fastest" compared a date, not a profile.
+# v19 already ranks per era (`overall_ranking._read_per_era`); these read the legs the same
+# way, so the speed budget and every "vs fastest" line compare runs from one era only.
+
+_ERA_LOCK = threading.Lock()
+_ERA_CACHE: dict = {"key": None, "rows": None}
+
+
+def _reads_per_era(session, version: str) -> bool:
+    """Whether ``version`` reads the pooled record per instrument era. The methodology's
+    own declaration (`methodology.pooled_read`), never a setting; a version this database
+    does not hold reads the whole record."""
+    from .methodology import pooled_read
+    from .models import Methodology
+
+    try:
+        row = session.get(Methodology, version)
+    except Exception:  # noqa: BLE001 — unreadable means the old read, never a failure
+        return False
+    return row is not None and pooled_read(row.definition or {}) == "epochs"
+
+
+def _era_dates(session) -> list:
+    """The instrument era boundaries (`evidence.instrument_epochs`), as UTC datetimes."""
+    from . import evidence
+
+    return list((evidence.instrument_epochs(session) or {}).get("times") or [])
+
+
+def _era_rows(session, version: str, boundaries: list) -> dict[tuple[str, int], dict]:
+    """``{(fingerprint, era): {iterations, runs, raw: {leg: summary}}}`` — each profile's raw
+    millisecond legs summarised per era, from the same comparable runs the rollup reads
+    (`profile_aggregates._comparable_runs`). Kept until a profile's rollup stamp or the era
+    boundaries move, so the crown follower's budget check does not rescan every run."""
+    from sqlalchemy import select
+
+    from . import profile_aggregates
+    from .evidence import epoch_of
+    from .models import Run, Score
+    from .settings_overrides import effective_fingerprint
+
+    stamps = profile_aggregates._field_stamps(session, version)
+    key = (session.get_bind(), version, tuple(boundaries),
+           tuple(sorted((fp, tuple(st)) for fp, st in stamps.items())))
+    with _ERA_LOCK:
+        if _ERA_CACHE["key"] == key and _ERA_CACHE["rows"] is not None:
+            return _ERA_CACHE["rows"]
+    values: dict[tuple[str, int], dict] = {}
+    rows = session.execute(
+        select(effective_fingerprint(), Run.created_at, Run.iterations,
+               *[Score.metric_values[m].as_float() for m in RAW_METRICS])
+        .join(Score, Score.run_id == Run.id)
+        .where(*profile_aggregates._comparable_runs(version))
+    )
+    for fp, at, iterations, *raw_values in rows:
+        if not fp:
+            continue
+        slot = values.setdefault((fp, epoch_of(at, boundaries)),
+                                 {"iterations": 0, "runs": 0, "raw": {}})
+        slot["iterations"] += int(iterations or 1)
+        slot["runs"] += 1
+        for metric, value in zip(RAW_METRICS, raw_values):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                slot["raw"].setdefault(metric, []).append(float(value))
+    out = {
+        k: {"iterations": v["iterations"], "runs": v["runs"],
+            "raw": {m: profile_aggregates._summary(vals) for m, vals in v["raw"].items() if vals}}
+        for k, v in values.items()
+    }
+    with _ERA_LOCK:
+        _ERA_CACHE.update({"key": key, "rows": out})
+    return out
+
+
+def invalidate_era_cache() -> None:
+    """Forget the per-era legs (tests; correctness never depends on it — the key does)."""
+    with _ERA_LOCK:
+        _ERA_CACHE.update({"key": None, "rows": None})
+
+
+def _era_since(boundaries: list, era: int) -> str | None:
+    """The day an era starts (None for the first era, which starts with the record)."""
+    if era <= 0 or era > len(boundaries):
+        return None
+    return boundaries[era - 1].date().isoformat()
+
+
+def _fastest_legs_per_era(session, version: str, min_iterations: int) -> dict | None:
+    """`fastest_legs`, per instrument era: in each era, the fastest median of each leg among
+    confident (``min_iterations`` **in that era**), shaped profiles. The top-level legs are
+    the newest era that has any; ``by_era`` holds them all (string keys, for JSON)."""
+    from .refresh import list_profiles
+
+    boundaries = _era_dates(session)
+    stored = {p["fingerprint"]: p for p in list_profiles(session)}
+    if not stored:
+        return None
+    eras = _era_rows(session, version, boundaries)
+    by_era: dict[str, dict] = {}
+    for (fp, era), row in eras.items():
+        p = stored.get(fp)
+        if p is None or is_sqm_off_profile(fp, p.get("settings")):
+            continue
+        if row["iterations"] < int(min_iterations or 0):
+            continue
+        meds = {m: _leg(row["raw"], m)[0] for m in RAW_METRICS}
+        if any(v is None for v in meds.values()):
+            continue
+        slot = by_era.setdefault(str(era), {"era": era, "since": _era_since(boundaries, era),
+                                            "profiles": 0, "_best": {}})
+        slot["profiles"] += 1
+        for m, med in meds.items():
+            best = slot["_best"].get(m)
+            cand = (med, -row["iterations"], fp)
+            if best is None or cand < best[0]:
+                slot["_best"][m] = (cand, {
+                    "fingerprint": fp, "name": p.get("name"), "label": p.get("label"),
+                    "ms": round(med, 1), "iterations": row["iterations"],
+                })
+    if not by_era:
+        return None
+    for slot in by_era.values():
+        for m, (_c, holder) in slot.pop("_best").items():
+            slot[m] = holder
+    newest = by_era[str(max(int(e) for e in by_era))]
+    return {
+        **{m: newest.get(m) for m in RAW_METRICS},
+        "profiles": newest["profiles"],
+        "era": newest["era"],
+        "since": newest["since"],
+        "read": "epochs",
+        "min_iterations": int(min_iterations or 0),
+        "by_era": by_era,
+    }
+
+
+def _leg_gaps_per_era(
+    session, version: str, fastest: dict, fingerprints: list[str], sigma: float,
+) -> dict[str, dict]:
+    """`leg_gaps`, same era only: each profile is priced in the **newest era it is
+    confident in**, against that era's fastest median on the leg — never a run from one
+    era against a run from another. A profile confident in no era that has a fastest gets
+    no entry (cannot tell), exactly as a profile without medians always has."""
+    boundaries = _era_dates(session)
+    eras = _era_rows(session, version, boundaries)
+    by_era = fastest.get("by_era") or {}
+    floor = int(fastest.get("min_iterations") or 0)
+    out: dict[str, dict] = {}
+    for fp in dict.fromkeys(fingerprints):
+        if not fp:
+            continue
+        mine = sorted(
+            (era for (f, era), row in eras.items()
+             if f == fp and row["iterations"] >= floor and str(era) in by_era),
+            reverse=True,
+        )
+        if not mine:
+            continue
+        era = mine[0]
+        ref = by_era[str(era)]
+        own = eras[(fp, era)]["raw"]
+        row: dict = {}
+        for m in RAW_METRICS:
+            holder = ref.get(m) or {}
+            href = eras.get((holder.get("fingerprint"), era))
+            med, se = _leg(own, m)
+            rmed, rse = _leg((href or {}).get("raw") or {}, m)
+            if med is None or rmed is None:
+                continue
+            delta = med - rmed
+            bar = None if se is None or rse is None else sigma * (se ** 2 + rse ** 2) ** 0.5
+            row[m] = {
+                "ms": round(med, 1),
+                "fastest_ms": round(rmed, 1),
+                "delta_ms": round(delta, 1),
+                "pct": round(100.0 * delta / rmed, 1),
+                "bar_ms": None if bar is None else round(bar, 1),
+                "clear": bar is not None and abs(delta) > bar,
+                "is_fastest": fp == holder.get("fingerprint"),
+                "era": era,
+                "era_since": ref.get("since"),
+                "fastest_name": holder.get("name") or holder.get("label"),
             }
         if row:
             out[fp] = row
