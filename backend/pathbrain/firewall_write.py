@@ -10,6 +10,8 @@ else. The functions are:
 * :func:`set_pipes_enabled` — the pipe on/off toggle (the baseline test's SQM off/on).
   ``enabled`` is not a shaper field, so it is a separate firewall operation, but it is
   still made here.
+  :func:`unshape` and :func:`reshape` are the ring's SQM off leg built on it: every pipe
+  off, then every pipe the session found on turned back on.
 * :func:`reload_shaper` — reload the shaper without writing a field (only the write
   probe uses it, to time the two halves of a switch separately).
 
@@ -87,6 +89,34 @@ def set_pipes_enabled(provider, pipe_uuids: Iterable[str | None], enabled: bool,
                 raise
             log.exception("Could not turn shaping %s on pipe %s", "on" if enabled else "off", uuid)
     return done
+
+
+def unshape(provider) -> list[str | None]:
+    """Turn shaping off on every pipe that has it on: the ring's SQM off leg. Returns the
+    pipes switched. A failure part-way turns back on what it turned off, then raises, so a
+    leg that cannot go fully unshaped never leaves half the link unshaped."""
+    on = [s["uuid"] for s in provider.pipe_states() if s["enabled"]]
+    try:
+        return set_pipes_enabled(provider, on, False)
+    except Exception:
+        set_pipes_enabled(provider, on, True, best_effort=True)
+        raise
+
+
+def reshape(provider, baseline: list[dict] | None) -> list[str | None]:
+    """Turn shaping back on on every pipe that has it off, except a pipe ``baseline`` (the
+    normalized settings a session started from) says was already off then. Best effort: a
+    pipe that fails is logged and the rest are still switched. Returns the pipes switched;
+    nothing is written when every pipe is on."""
+    off_before = {
+        p["label"] for p in (baseline or [])
+        if "enabled" in p and p["enabled"] is False and "label" in p
+    }
+    targets = [s["uuid"] for s in provider.pipe_states()
+               if not s["enabled"] and s["label"] not in off_before]
+    if not targets:
+        return []
+    return set_pipes_enabled(provider, targets, True, best_effort=True)
 
 
 def reload_shaper(provider) -> dict:

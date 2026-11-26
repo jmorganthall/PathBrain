@@ -89,7 +89,8 @@ class OpenNomination:
     """A profile an engine put forward for the ring that the ring has not yet answered.
 
     * ``fingerprint`` — the nominee.
-    * ``source`` — the engine that nominated it (``"challenger"`` or ``"experiment"``).
+    * ``source`` — what nominated it: an engine (``"challenger"``, ``"experiment"``) or
+      the ring's own cadence (``"schedule"``, the regular SQM off check).
     * ``reason`` — what it won, in words, shown as why the ring seats it.
     * ``made`` — when it was nominated (UTC).
     """
