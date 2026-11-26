@@ -12,6 +12,7 @@ exactly as they always were: from the settings and constants that held these num
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 #: Where a judgement's numbers came from: the version's own ``judgement`` block, or (a
@@ -91,8 +92,57 @@ class Judgement:
     allow_unshaped_crown: bool
 
 
+@dataclass(frozen=True)
+class BudgetOver:
+    """One way a profile breaks the speed budget, judged back to back in the ring.
+
+    * ``leg`` — ``"lcp"`` or ``"fcp"``.
+    * ``pct`` — how much slower than ``against`` it was, in percent: the mean over the
+      paired ring rounds the two fought.
+    * ``limit_pct`` — the most the methodology allows on that leg.
+    * ``delta_ms`` — the same gap in milliseconds (mean over the rounds).
+    * ``against`` — the opponent it trails: the fastest profile it met on that leg.
+    * ``rounds`` — paired rounds the gap rests on.
+    """
+
+    leg: str
+    pct: float
+    limit_pct: float
+    delta_ms: float
+    against: str
+    rounds: int
+
+
+@dataclass(frozen=True)
+class RingBudgetCheck:
+    """Whether a profile is within the speed budget, judged on ring milliseconds.
+
+    * ``within`` — no leg is clearly over (`over` is empty).
+    * ``over`` — every leg it is clearly over on, worst first.
+    * ``pairs`` — how many (opponent, leg) pairs had enough rounds to judge.
+    """
+
+    within: bool
+    over: tuple[BudgetOver, ...]
+    pairs: int
+
+    def as_dict(self) -> Mapping[str, object]:
+        """The shape `crowning.budget_check` serves, so a reader reads either alike."""
+        return {
+            "within": self.within,
+            "over": [
+                {"leg": o.leg, "pct": o.pct, "limit_pct": o.limit_pct, "delta_ms": o.delta_ms,
+                 "against": o.against, "rounds": o.rounds}
+                for o in self.over
+            ],
+            "pairs": self.pairs,
+        }
+
+
 __all__ = [
     "BLOCK_KEYS",
+    "BudgetOver",
+    "RingBudgetCheck",
     "BUDGET_JUDGED_ON",
     "CROWNED_BY",
     "Judgement",

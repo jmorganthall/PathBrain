@@ -17,6 +17,8 @@ policy — the policy only decides which verdict automation acts on.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from .config_store import get_config
 from .domain.judgement import Judgement
 from .logging_config import get_logger
@@ -136,11 +138,14 @@ def resolve(session, pooled_best_fp: str | None) -> dict:
     `BUDGET_FALLBACK_ORDER` that fits is followed instead and ``detail`` says why. When
     none fits, the policy's choice stands and ``detail`` says that too. ``speed_budget``
     on the result records the check either way."""
-    policy = active_policy(session)
-    chosen = _resolve_policy(session, pooled_best_fp, policy)
     from .methodology import current_judgement  # lazy: methodology imports this module
 
-    budget = speed_budget(get_config(session), current_judgement(session))
+    judged = current_judgement(session)
+    if judged.crowned_by == "ring":
+        return _resolve_ring(session, pooled_best_fp, judged)
+    policy = active_policy(session)
+    chosen = _resolve_policy(session, pooled_best_fp, policy)
+    budget = speed_budget(get_config(session), judged)
     if not budget["enabled"] or not chosen.get("fingerprint"):
         chosen["speed_budget"] = {**budget, "checked": False}
         return chosen
@@ -185,6 +190,98 @@ def resolve(session, pooled_best_fp: str | None) -> dict:
     chosen["speed_budget"] = {**budget, "checked": True, "within": False, "over": check["over"],
                               "replaced": None}
     return chosen
+
+
+#: The Verdict's ``policy`` when the methodology crowns by the ring: no crowning policy
+#: applies, so the Auto-apply card's picker has nothing to say.
+RING_POLICY = "ring"
+
+
+def _resolve_ring(session, pooled_best_fp: str | None, judged: Judgement) -> Mapping[str, object]:
+    """The crown when the methodology crowns by the ring (``judged.crowned_by == "ring"``).
+
+    The ring's champion under the methodology's crown rule (`duel.latest_champion`, which
+    reads the rule from the judgement) holds the crown. Two things can pass it on, both the
+    methodology's: SQM off may not hold the crown unless ``allow_unshaped_crown``, and a
+    profile clearly over the speed budget on paired ring milliseconds
+    (`ring_budget.ring_budget_checks`) may not either. Then the next profile in the ring's
+    own standings that may hold it does. If none may, the champion stands and the detail
+    says so. No other judge is consulted: no fallback chain, no pooled stand-in while the
+    ring has an answer.
+
+    With no fresh decided match in the ring there is no answer to give, so the crown stays
+    where the Verdict last put it (a draw changes nothing); only a fresh install with no
+    Verdict yet falls back to the pooled crown, and says so."""
+    from . import duel as duel_mod
+    from .ring_budget import ring_budget_checks
+    from .settings_profile import is_sqm_off_profile
+
+    cfg = get_config(session)
+    freshness = duel_mod.champion_freshness_days(cfg["duel"] if "duel" in cfg else None)
+    champion = duel_mod.latest_champion(session, max_age_days=freshness)
+    budget = speed_budget(None, judged)
+    base = {"policy": RING_POLICY, "duel_champion": champion}
+
+    def stays(reason: str) -> Mapping[str, object]:
+        from . import verdict
+
+        sitting = verdict.crown_fingerprint(session)
+        if sitting:
+            return {**base, "fingerprint": sitting, "source": "ring",
+                    "detail": f"{reason}, so the crown stays where it is",
+                    "speed_budget": {**budget, "checked": False}}
+        return {**base, "fingerprint": pooled_best_fp, "source": "pooled",
+                "detail": f"{reason} and no crown has been decided yet, so the pooled crown stands in",
+                "speed_budget": {**budget, "checked": False}}
+
+    if champion is None or not champion["decisive"]:
+        return stays("the ring has no fresh decided match")
+    champ = champion["fingerprint"]
+    order = [champ] + [fp for fp in duel_mod.ring_order(session) if fp != champ]
+    barred_unshaped = [] if judged.allow_unshaped_crown else [fp for fp in order if is_sqm_off_profile(fp)]
+    order = [fp for fp in order if fp not in barred_unshaped]
+    if not order:
+        return stays("SQM off holds the ring's title and this methodology keeps it off the crown")
+    lead = order[0]
+    note = (" (SQM off holds the ring's title; this methodology keeps it off the crown)"
+            if champ in barred_unshaped else "")
+    if not budget["enabled"]:
+        return {**base, "fingerprint": lead, "source": "ring",
+                "detail": f"the ring's champion under the {judged.ring_crown_rule} rule{note}",
+                "speed_budget": {**budget, "checked": False}}
+    checks = ring_budget_checks(session, order, judged.speed_budget, judged.version, judged.tie_sigma)
+    for fp in order:
+        check = checks[fp]
+        if check is not None and not check.within:
+            continue
+        passed = [o for o in order[: order.index(fp)]]
+        if not passed:
+            detail = f"the ring's champion under the {judged.ring_crown_rule} rule{note}"
+        else:
+            first = checks[passed[0]]
+            detail = (
+                f"the ring's champion is {_ring_over_text(first)} back to back, so the crown "
+                f"passes to the next profile in the ring's standings within the budget{note}"
+            )
+        return {**base, "fingerprint": fp, "source": "ring", "detail": detail,
+                "speed_budget": {**budget, "checked": check is not None, "within": True,
+                                 "judged_on": "ring",
+                                 "replaced": ({"fingerprint": passed[0], "source": "ring"} if passed else None),
+                                 **({"over": checks[passed[0]].as_dict()["over"]} if passed else {})}}
+    over = checks[lead]
+    return {**base, "fingerprint": lead, "source": "ring",
+            "detail": (f"the ring's champion under the {judged.ring_crown_rule} rule{note}, "
+                       f"{_ring_over_text(over)} back to back, but no profile in the ring fits "
+                       "the budget either, so it stands"),
+            "speed_budget": {**budget, "checked": True, "within": False, "judged_on": "ring",
+                             "over": over.as_dict()["over"], "replaced": None}}
+
+
+def _ring_over_text(check) -> str:
+    return ", ".join(
+        f"{o.leg.upper()} +{o.pct:.0f}% slower than {o.against[:8]} (budget {o.limit_pct:g}%)"
+        for o in check.over
+    )
 
 
 def _resolve_policy(session, pooled_best_fp: str | None, policy: str) -> dict:
@@ -354,6 +451,7 @@ def _resolve_policy(session, pooled_best_fp: str | None, policy: str) -> dict:
 
 __all__ = [
     "POLICIES",
+    "RING_POLICY",
     "DEFAULT_POLICY",
     "RANKINGS",
     "RING_SOURCE",
